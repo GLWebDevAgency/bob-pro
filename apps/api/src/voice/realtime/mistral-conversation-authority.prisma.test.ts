@@ -52,6 +52,7 @@ describe('Prisma Mistral conversation authority — configuration fail-closed', 
     await expect(authority.open({
       grant: {
         bootstrapId: '30000000-0000-4000-8000-000000000001',
+        admissionSessionId: '30000000-0000-4000-8000-000000000002',
         companyId: 'company-1',
         subjectHash: 'a'.repeat(64),
         subjectKeyVersion: 1,
@@ -101,6 +102,7 @@ describe('Prisma Mistral conversation authority — configuration fail-closed', 
     const authority = new PrismaMistralConversationDurableAuthority(prisma, completion, validKeys);
     const grant = {
       bootstrapId: '30000000-0000-4000-8000-000000000001',
+      admissionSessionId: '30000000-0000-4000-8000-000000000002',
       companyId: 'company-1',
       subjectHash: 'a'.repeat(64),
       subjectKeyVersion: 1,

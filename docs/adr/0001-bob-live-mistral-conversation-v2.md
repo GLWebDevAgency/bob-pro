@@ -2,10 +2,12 @@
 
 ## Statut
 
-Proposed — 2026-07-15, amendé après revue adversariale Claude. Les codecs et reducers v2 sont
-implémentés et testés, mais le gateway, le raccord mobile et les preuves acoustiques restent en
-construction. Le passage à `Accepted` exige une nouvelle revue gelée de cet ADR. Le rollout v2 et
-le duplex restent fermés jusqu'aux preuves PostgreSQL, appareil et SLO décrites ci-dessous.
+Proposed — 2026-07-15, amendé le 2026-07-18 après revues adversariales croisées. Les codecs,
+reducers, gateway à ports et autorités PostgreSQL Mission/Outbox sont implémentés et testés. La
+capacité de replay terminal atomique décrite ici est une fondation serveur **dormante** : elle n'est
+ni émise par une route HTTP publique, ni composée dans le runtime actif. Le raccord mobile, le
+lease/reaper provider-neutral et les preuves acoustiques restent en construction. Le passage à
+`Accepted`, le rollout v2 et le duplex restent fermés jusqu'aux preuves appareil et SLO ci-dessous.
 
 ## Contexte
 
@@ -19,7 +21,7 @@ composition Voxtral STT + LLM + Voxtral TTS, et non comme une session speech-to-
 elle-même la conversation. Bob doit donc être l'autorité du duplex, du contexte, des tours et des
 annulations.
 
-### État réel du code au 15 juillet 2026
+### État réel du code au 18 juillet 2026
 
 Le chantier a commencé avant l'acceptation de cette décision. Les éléments suivants existent dans
 le worktree et ne constituent pas encore, à eux seuls, une fonctionnalité v2 activable :
@@ -34,17 +36,22 @@ le worktree et ne constituent pas encore, à eux seuls, une fonctionnalité v2 a
   conserve une mission sur perte de socket, fence les ACK par `missionConnectionEpoch`, borne la
   fenêtre non acquittée et distingue maintenant reprise live et replay terminal. Le core référence
   finalise un `draining` sans dépendre du downlink, rejoue un `closed` sans rouvrir de provider et
-  réserve ses compteurs terminalement ; les adapters PostgreSQL, la rétention d'outbox et
-  l'ouverture atomique du contrôle audité restent à construire et certifier ;
+  réserve ses compteurs terminalement. L'autorité PostgreSQL Mission/Outbox, ses triggers H/G,
+  l'outbox chiffrée et le fence multi-owner sont présents. Le nouveau chemin `r2_` ne peut pas
+  retomber vers le bootstrap en deux transactions ; il accepte seulement `terminal_replay`, traite
+  l'ACK reçu pendant `opening` et reste non composé ;
 - la route mobile déployable reste `bob.mistral-pcm.v1`, semi-duplex et one-shot. Elle annonce
   honnêtement `fullDuplex: false` et `bargeIn: false` ;
-- les briques RLS, admission, reaper, stockage audité et fencing de réplica sont réutilisables,
-  mais ne prouvent pas encore la persistance Mission/Turn v2 ni sa reprise multi-owner.
+- les briques RLS, admission, reaper, stockage audité et fencing de réplica sont réutilisables. La
+  persistance Mission/Turn et la concurrence d'owner sont certifiées séparément ; la reprise live
+  par ticket reste volontairement interdite tant qu'un lease/reaper de mission provider-neutral
+  n'existe pas.
 
 Manquent donc encore le transport mobile v2, le raccord VAD → interruption → nouveau tour, la
-lecture native interruptible, les adapters PostgreSQL/outbox du gateway, la reprise réseau sur
-deux répliques réelles, les métriques Mistral et la certification acoustique sur appareils. Le flag
-de rollout doit rester éteint tant que cette liste n'est pas fermée.
+lecture native interruptible, l'émission HTTP authentifiée/rate-limitée des tickets, le bootstrap
+initial atomique `redeemAndCreate`, le lease/reaper provider-neutral, les métriques Mistral et la
+certification acoustique sur appareils. Le flag de rollout doit rester éteint tant que cette liste
+n'est pas fermée.
 
 ## Décision drivers
 
@@ -233,8 +240,9 @@ le pruning (la livraison est déjà rejouable sans lui, mais l'acquittement dura
 
 La reprise n'émet jamais une seconde admission. La lease initiale représente le droit d'occuper la
 session ; un ticket de reprise représente seulement le droit ponctuel, one-shot, de reprendre cette
-même mission. Il est émis par une route HTTP authentifiée à partir du principal serveur, stocké
-uniquement sous forme SHA-256 et lié à : tenant, sujet HMAC + version de clé, mission,
+même mission. L'autorité d'émission est implémentée mais sa future route HTTP authentifiée n'est pas
+encore exposée. Le ticket est stocké uniquement sous forme SHA-256 domain-separated et lié à :
+tenant, sujet HMAC + version de clé, mission, admission initiale immuable,
 `sessionHandle`, protocole, premier curseur non appliqué et dernier `missionConnectionEpoch`
 accepté. Son TTL est court et sa portée est explicite : `live_takeover` avant l'expiration dure ou
 `terminal_replay` pendant la grâce. Il ne crée ni lease ni événement d'admission.
@@ -242,18 +250,30 @@ accepté. Son TTL est court et sa portée est explicite : `live_takeover` avant 
 Le ticket ne peut pas être consommé puis la mission ouverte dans deux transactions. L'autorité
 PostgreSQL expose un unique `redeemAndOpen` qui, sous RLS et locks ticket + mission :
 
-1. vérifie le hash one-shot, le tenant, le sujet, la session, le protocole, le curseur, l'epoch, la
-   portée et l'horloge BDD ;
+1. verrouille ticket → mission → admission, puis vérifie le hash one-shot, le tenant, le sujet, la
+   session, le protocole, le curseur, l'epoch, la portée attendue et l'horloge BDD ;
 2. vérifie la lease initiale encore active pour un takeover live ;
 3. CAS l'epoch `N → N + 1`, change l'owner, annule le tour orphelin et calcule le suffixe contigu ;
-4. consomme le ticket dans le même commit.
+4. consomme le ticket par CAS en dernière écriture du même commit.
 
 Deux tickets différents liés à l'epoch `N` ne peuvent donc jamais produire deux takeovers. Un
 crash ou rollback laisse ticket et mission réessayables ensemble. Le ticket brut ne traverse aucun
-autre port et n'entre jamais dans les logs.
+autre port et n'entre jamais dans les logs. Exception de sûreté documentée : à `H`, la
+terminalisation monotone gagne avant la restitution. Si le curseur, l'historique ou le budget rend
+ensuite le replay impossible, la fermeture peut être commitée sans succès réseau et le ticket reste
+`issued`; aucune rotation d'owner ni action métier n'a alors été autorisée.
 
-Jusqu'au déploiement de ce `consume-result` discriminé, le bootstrap générique reste fail-closed à
-`H` dans le gateway : la grâce durable ne constitue pas, à elle seule, une capacité réseau. Les
+Dans ce lot, le transport WSS passe explicitement `expectedScope = terminal_replay`. Le scope est
+comparé sous lock **avant** l'appel qui pourrait muter la mission. `liveTakeoverEnabled` reste faux
+par défaut et aucun providerCallId n'est fabriqué à partir du `sessionHandle` : la reprise live ne
+sera ouverte qu'avec un lease/reaper Mistral v2 provider-neutral réellement composé et certifié.
+Une mission déjà `recovering_route` ne reçoit aucun ticket live et le réducteur de takeover la
+refuse tant que le suffixe canonique correspondant n'est pas défini et certifié de bout en bout.
+
+Le bootstrap générique reste fail-closed à `H` dans le gateway : la grâce durable ne constitue pas,
+à elle seule, une capacité réseau. Il demeure aussi non atomique (`bootstrap.consume`, puis
+`authority.open`) et ne doit donc servir qu'à la création initiale tant que `redeemAndCreate` n'est
+pas livré. Les
 méthodes de l'autorité possèdent en outre leur transaction PostgreSQL racine et refusent toute
 transaction ambiante ; Prisma n'offrant pas de savepoint imbriqué ici, cette règle empêche un appelant
 de capturer une erreur puis de committer un outbox ou un side-effect écrit avant un CAS perdant.
@@ -283,9 +303,23 @@ contexte, audio ou outbox. Pendant la grâce, cet ACK n'entre pas dans le ledger
 idempotence vient du curseur durable monotone (`ACK ≤ curseur courant` est un replay sûr), ce qui
 interdit de greffer après coup un faux ledger ACK sur une version produite par drain ou fermeture.
 Le gateway traite aussi l'ACK reçu synchroniquement pendant l'ouverture,
-attend une fenêtre courte bornée par `G`, puis ferme ; la perte de cet ACK reste récupérable par un
-nouveau ticket. Une mission abandonnée par crash devient purgeable après sa rétention même si elle
-n'a jamais atteint `closed`.
+préserve en FIFO tout ACK déjà admis même si une trame invalide le suit, attend une fenêtre courte
+bornée par `G`, puis ferme. Il réserve au moins 3 s à l'ACK avant d'autoriser l'envoi du replay ; la
+perte de cet ACK reste récupérable par un nouveau ticket. Une mission abandonnée par crash devient
+purgeable après sa rétention même si elle n'a jamais atteint `closed`.
+
+Le token ACK est un secret CSPRNG distinct du token owner, hashé dans un autre domaine et borné à
+`min(G, consumedAt + 30 s)` (20 s par défaut). L'adapter pose son identifiant de connexion et son
+hash dans des paramètres PostgreSQL transaction-local ; le trigger exige une capacité consommée,
+non expirée, liée à la mission et au curseur maximal exact. Cette preuve protège contre les bypass
+accidentels du code runtime. Le rôle SQL applicatif reste une frontière de confiance : comme tout
+code possédant ses identifiants BDD tenant, un composant arbitraire compromis dans le même process
+pourrait reconstruire ces paramètres. Les utilisateurs et tenants n'ont jamais d'accès SQL direct.
+L'autorité exige au moins 6 s utiles avant `G` et le gateway en réserve 3 à l'ACK ; une fenêtre
+devenue trop courte rollbacke l'ouverture avant consommation. Une seconde supplémentaire couvre
+le skew NTP borné à ±1 s et laisse encore au moins 1 s de replay dans le pire sens. Ce skew est
+soustrait du budget de replay et d'ACK : il ne prolonge jamais la deadline PostgreSQL, qui reste
+l'autorité finale.
 
 ### VAD, AEC et barge-in
 

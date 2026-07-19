@@ -56,6 +56,7 @@ interface MissionRow {
   readonly id: string;
   readonly companyId: string;
   readonly initialBootstrapId: string;
+  readonly admissionSessionId: string | null;
   readonly protocol: string;
   readonly subjectHash: string;
   readonly subjectKeyVersion: number;
@@ -152,6 +153,7 @@ function canonicalDate(value: string): Date | null {
 
 function validGrant(grant: MistralConversationBootstrapGrant): boolean {
   return UUID.test(grant.bootstrapId)
+    && UUID.test(grant.admissionSessionId)
     && COMPANY_ID.test(grant.companyId)
     && SHA256.test(grant.subjectHash)
     && isIntegerBetween(grant.subjectKeyVersion, 1, INT32_MAX)
@@ -248,13 +250,18 @@ function snapshotFromRow(row: MissionRow): MistralConversationDurableSnapshot {
 }
 
 function sameGrant(row: MissionRow, grant: MistralConversationBootstrapGrant): boolean {
-  return row.companyId === grant.companyId
+  return row.initialBootstrapId === grant.bootstrapId
+    && row.admissionSessionId === grant.admissionSessionId
+    && row.protocol === PROTOCOL
+    && row.companyId === grant.companyId
     && row.subjectHash.trim() === grant.subjectHash
     && row.subjectKeyVersion === grant.subjectKeyVersion
     && row.plan === grant.plan
     && row.sessionHandle === grant.sessionHandle
     && row.contextRevision === grant.contextRevision
     && row.contextDigest.trim() === grant.contextDigest
+    && row.routeMode === grant.routeMode
+    && row.fullDuplexCertified === grant.fullDuplexCertified
     && row.maxMissionAudioBytes === grant.maxMissionAudioBytes
     && row.hardExpiresAt.toISOString() === grant.hardExpiresAt;
 }
@@ -353,220 +360,10 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     // outbox/side-effect écrit avant un CAS temporel perdant.
     if (this.prisma.inTransaction()) return { status: 'unavailable' };
     try {
-      return await this.prisma.withTenant(input.grant.companyId, async (tx) => {
-        await this.lockMissionKey(tx, input.grant.companyId, input.grant.sessionHandle);
-        const hardExpiresAt = canonicalDate(input.grant.hardExpiresAt);
-        if (!hardExpiresAt) return { status: 'unavailable' as const };
-        const row = await this.lockMission(tx, input.grant.companyId, input.grant.sessionHandle);
-        const databaseNow = await this.databaseNow(tx);
-        if (!row) {
-          if (input.resumeNextServerSequence !== 0) return { status: 'invalid_cursor' as const };
-          if (hardExpiresAt.getTime() <= databaseNow.getTime()) return { status: 'expired' as const };
-          const created = createMistralConversationDurableSession({
-            grant: input.grant,
-            missionConnectionEpoch: 1,
-          });
-          const replayGraceExpiresAt = new Date(hardExpiresAt.getTime() + this.replayGraceMs);
-          const missionId = this.missionId().toLowerCase();
-          if (!UUID.test(missionId)) return { status: 'unavailable' as const };
-          await this.insertMission(tx, {
-            missionId,
-            grant: input.grant,
-            ownerTokenHash: tokenHash(input.ownerLeaseToken),
-            snapshot: created.snapshot,
-            replayGraceExpiresAt,
-          });
-          await this.appendEvents(tx, {
-            companyId: input.grant.companyId,
-            missionId,
-            sessionHandle: input.grant.sessionHandle,
-            retentionExpiresAt: replayGraceExpiresAt,
-            events: created.events,
-          });
-          return {
-            status: 'opened' as const,
-            ...created,
-            replayFromServerSequence: 0,
-            recovery: null,
-            terminal: null,
-          };
-        }
-        if (!sameGrant(row, input.grant)) return { status: 'conflict' as const };
-        if (row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
-          return { status: 'expired' as const };
-        }
-        const hardExpired = hardExpiresAt.getTime() <= databaseNow.getTime();
-        let current = snapshotFromRow(row);
-
-        // À H, la disposition durable gagne avant toute validation du curseur client. Un curseur
-        // faux ou un budget de replay trop petit peut refuser la restitution, jamais empêcher la
-        // mission d'être drainée/fermée exactement une fois.
-        if (hardExpired && current.mission.phase !== 'closed') {
-          const terminalized = closeDurably(current, 'expired');
-          let persistenceRow = row;
-          for (const step of terminalized.steps) {
-            await this.appendEvents(tx, {
-              companyId: row.companyId,
-              missionId: row.id,
-              sessionHandle: row.sessionHandle,
-              retentionExpiresAt: row.retentionExpiresAt,
-              events: step.events,
-            });
-            const persisted = await this.updateMission(
-              tx,
-              persistenceRow,
-              step.snapshot,
-              row.ownerTokenHash.trim(),
-              true,
-            );
-            if (!persisted) throw new TemporalBoundaryAbort();
-            persistenceRow = {
-              ...persistenceRow,
-              version: BigInt(step.snapshot.version),
-            };
-          }
-          current = terminalized.snapshot;
-        }
-
-        if (input.resumeNextServerSequence > current.nextServerSequence) {
-          return { status: 'invalid_cursor' as const };
-        }
-        const retainedFrom = asSafeNumber(row.retainedFromServerSequence);
-        if (retainedFrom === null) return { status: 'unavailable' as const };
-        const replayFrom = Math.min(
-          input.resumeNextServerSequence,
-          current.acknowledgedServerSequence,
-        );
-        if (replayFrom < retainedFrom) return { status: 'history_unavailable' as const };
-        const prefix = await this.readReplay(tx, row, replayFrom, current.nextServerSequence, {
-          maxEvents: input.maxReplayEvents,
-          maxBytes: input.maxReplayBytes,
-        });
-        if (!prefix) return { status: 'history_unavailable' as const };
-
-        if (current.mission.phase === 'closed') {
-          return {
-            status: 'terminal_replay' as const,
-            snapshot: current,
-            events: prefix.events,
-            replayFromServerSequence: replayFrom,
-            recovery: null,
-            terminal: terminalMetadata(current, row.replayGraceExpiresAt),
-          };
-        }
-        if (current.mission.phase === 'recovering_route') {
-          return { status: 'unavailable' as const };
-        }
-
-        const previousEpoch = current.missionConnectionEpoch;
-        const previousCancellationGeneration = current.mission.cancellationGeneration;
-        let next: {
-          readonly snapshot: MistralConversationDurableSnapshot;
-          readonly events: readonly MistralConversationServerEvent[];
-          readonly steps: readonly {
-            readonly snapshot: MistralConversationDurableSnapshot;
-            readonly events: readonly MistralConversationServerEvent[];
-          }[];
-        };
-        let recoveryCancellation: MistralConversationRecoveryCancellation | null = null;
-        let recovered = false;
-
-        if (current.mission.phase === 'draining') {
-          next = closeDurably(current, 'fatal_error');
-        } else {
-          let candidate: ReturnType<typeof recoverMistralConversationDurableSession> | null = null;
-          if (current.missionConnectionEpoch < INT32_MAX) {
-            const cancellationId = this.recoveryCancellationId().toLowerCase();
-            if (!UUID.test(cancellationId)) return { status: 'unavailable' as const };
-            try {
-              candidate = recoverMistralConversationDurableSession(current, {
-                newMissionConnectionEpoch: current.missionConnectionEpoch + 1,
-                cancellationId,
-                routeMode: input.grant.routeMode,
-                fullDuplexCertified: input.grant.fullDuplexCertified,
-              });
-            } catch {
-              candidate = null;
-            }
-          }
-          const backlog = await this.outboxStats(
-            tx,
-            row,
-            current.acknowledgedServerSequence,
-            current.nextServerSequence,
-          );
-          if (!backlog) return { status: 'history_unavailable' as const };
-          const candidateBytes = candidate ? replayBytes(candidate.events) : 0;
-          if (
-            candidate === null
-            || backlog.eventCount + candidate.events.length > input.maxReplayEvents - 3
-            || backlog.payloadBytes + candidateBytes > input.maxReplayBytes
-              - 3 * MISTRAL_CONVERSATION_MAX_SERVER_EVENT_BYTES
-          ) {
-            next = closeDurably(current, 'fatal_error');
-          } else {
-            next = { ...candidate, steps: [candidate] };
-            recoveryCancellation = candidate.recoveryCancellation;
-            recovered = true;
-          }
-        }
-
-        const totalEvents = [...prefix.events, ...next.events];
-        if (
-          totalEvents.length > input.maxReplayEvents
-          || prefix.payloadBytes + replayBytes(next.events) > input.maxReplayBytes
-        ) return { status: 'history_unavailable' as const };
-
-        const nextOwnerHash = recovered ? tokenHash(input.ownerLeaseToken) : row.ownerTokenHash.trim();
-        let persistenceRow = row;
-        for (const step of next.steps) {
-          await this.appendEvents(tx, {
-            companyId: row.companyId,
-            missionId: row.id,
-            sessionHandle: row.sessionHandle,
-            retentionExpiresAt: row.retentionExpiresAt,
-            events: step.events,
-          });
-          const persisted = await this.updateMission(
-            tx,
-            persistenceRow,
-            step.snapshot,
-            nextOwnerHash,
-            false,
-          );
-          if (!persisted) throw new TemporalBoundaryAbort();
-          persistenceRow = {
-            ...persistenceRow,
-            ownerTokenHash: nextOwnerHash,
-            missionConnectionEpoch: step.snapshot.missionConnectionEpoch,
-            version: BigInt(step.snapshot.version),
-          };
-        }
-
-        if (next.snapshot.mission.phase === 'closed') {
-          return {
-            status: 'terminal_replay' as const,
-            snapshot: next.snapshot,
-            events: totalEvents,
-            replayFromServerSequence: replayFrom,
-            recovery: null,
-            terminal: terminalMetadata(next.snapshot, row.replayGraceExpiresAt),
-          };
-        }
-        return {
-          status: 'recovered' as const,
-          snapshot: next.snapshot,
-          events: totalEvents,
-          replayFromServerSequence: replayFrom,
-          recovery: {
-            fromServerSequence: current.nextServerSequence,
-            previousMissionConnectionEpoch: previousEpoch,
-            previousCancellationGeneration,
-            cancellation: recoveryCancellation,
-          },
-          terminal: null,
-        };
-      });
+      return await this.prisma.withTenant(
+        input.grant.companyId,
+        (tx) => this.openWithinTransaction(tx, input),
+      );
     } catch (error) {
       if (error instanceof TemporalBoundaryAbort) return { status: 'expired' };
       return {
@@ -577,6 +374,236 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
         ),
       };
     }
+  }
+
+  /**
+   * Primitive de composition réservée à l'autorité de reprise. L'appelant possède déjà la
+   * transaction tenant racine et doit avoir verrouillé son ticket avant d'entrer ici.
+   */
+  async openWithinTransaction(
+    tx: Prisma.TransactionClient,
+    input: Parameters<MistralConversationDurableAuthority['open']>[0],
+    options: { readonly existingMissionId?: string } = {},
+  ): Promise<MistralConversationDurableOpenResult> {
+    if (!validOpenInput(input) || input.signal.aborted) return { status: 'unavailable' };
+    await this.lockMissionKey(tx, input.grant.companyId, input.grant.sessionHandle);
+    const hardExpiresAt = canonicalDate(input.grant.hardExpiresAt);
+    if (!hardExpiresAt) return { status: 'unavailable' as const };
+    const row = await this.lockMission(tx, input.grant.companyId, input.grant.sessionHandle);
+    const databaseNow = await this.databaseNow(tx);
+    if (options.existingMissionId !== undefined) {
+      if (!UUID.test(options.existingMissionId) || row?.id !== options.existingMissionId) {
+        return { status: 'unavailable' as const };
+      }
+    }
+    if (!row) {
+      if (input.resumeNextServerSequence !== 0) return { status: 'invalid_cursor' as const };
+      if (hardExpiresAt.getTime() <= databaseNow.getTime()) return { status: 'expired' as const };
+      const created = createMistralConversationDurableSession({
+        grant: input.grant,
+        missionConnectionEpoch: 1,
+      });
+      const replayGraceExpiresAt = new Date(hardExpiresAt.getTime() + this.replayGraceMs);
+      const missionId = this.missionId().toLowerCase();
+      if (!UUID.test(missionId)) return { status: 'unavailable' as const };
+      await this.insertMission(tx, {
+        missionId,
+        grant: input.grant,
+        ownerTokenHash: tokenHash(input.ownerLeaseToken),
+        snapshot: created.snapshot,
+        replayGraceExpiresAt,
+      });
+      await this.appendEvents(tx, {
+        companyId: input.grant.companyId,
+        missionId,
+        sessionHandle: input.grant.sessionHandle,
+        retentionExpiresAt: replayGraceExpiresAt,
+        events: created.events,
+      });
+      return {
+        status: 'opened' as const,
+        ...created,
+        replayFromServerSequence: 0,
+        recovery: null,
+        terminal: null,
+      };
+    }
+    if (!sameGrant(row, input.grant)) return { status: 'conflict' as const };
+    if (row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
+      return { status: 'expired' as const };
+    }
+    const hardExpired = hardExpiresAt.getTime() <= databaseNow.getTime();
+    let current = snapshotFromRow(row);
+
+    // À H, la disposition durable gagne avant toute validation du curseur client. Un curseur
+    // faux ou un budget de replay trop petit peut refuser la restitution, jamais empêcher la
+    // mission d'être drainée/fermée exactement une fois.
+    if (hardExpired && current.mission.phase !== 'closed') {
+      const terminalized = closeDurably(current, 'expired');
+      let persistenceRow = row;
+      for (const step of terminalized.steps) {
+        await this.appendEvents(tx, {
+          companyId: row.companyId,
+          missionId: row.id,
+          sessionHandle: row.sessionHandle,
+          retentionExpiresAt: row.retentionExpiresAt,
+          events: step.events,
+        });
+        const persisted = await this.updateMission(
+          tx,
+          persistenceRow,
+          step.snapshot,
+          row.ownerTokenHash.trim(),
+          true,
+        );
+        if (!persisted) throw new TemporalBoundaryAbort();
+        persistenceRow = {
+          ...persistenceRow,
+          version: BigInt(step.snapshot.version),
+        };
+      }
+      current = terminalized.snapshot;
+    }
+
+    if (input.resumeNextServerSequence > current.nextServerSequence) {
+      return { status: 'invalid_cursor' as const };
+    }
+    const retainedFrom = asSafeNumber(row.retainedFromServerSequence);
+    if (retainedFrom === null) return { status: 'unavailable' as const };
+    const replayFrom = Math.min(
+      input.resumeNextServerSequence,
+      current.acknowledgedServerSequence,
+    );
+    if (replayFrom < retainedFrom) return { status: 'history_unavailable' as const };
+    const prefix = await this.readReplay(tx, row, replayFrom, current.nextServerSequence, {
+      maxEvents: input.maxReplayEvents,
+      maxBytes: input.maxReplayBytes,
+    });
+    if (!prefix) return { status: 'history_unavailable' as const };
+
+    if (current.mission.phase === 'closed') {
+      return {
+        status: 'terminal_replay' as const,
+        snapshot: current,
+        events: prefix.events,
+        replayFromServerSequence: replayFrom,
+        recovery: null,
+        terminal: terminalMetadata(current, row.replayGraceExpiresAt),
+      };
+    }
+    // Le transport exige encore la paire route_recovering/route_recovered. Ne jamais committer
+    // un suffixe partiel : le takeover d'une recovery déjà durable reste fail-closed.
+    if (current.mission.phase === 'recovering_route') {
+      return { status: 'unavailable' as const };
+    }
+    const previousEpoch = current.missionConnectionEpoch;
+    const previousCancellationGeneration = current.mission.cancellationGeneration;
+    let next: {
+      readonly snapshot: MistralConversationDurableSnapshot;
+      readonly events: readonly MistralConversationServerEvent[];
+      readonly steps: readonly {
+        readonly snapshot: MistralConversationDurableSnapshot;
+        readonly events: readonly MistralConversationServerEvent[];
+      }[];
+    };
+    let recoveryCancellation: MistralConversationRecoveryCancellation | null = null;
+    let recovered = false;
+
+    if (current.mission.phase === 'draining') {
+      next = closeDurably(current, 'fatal_error');
+    } else {
+      let candidate: ReturnType<typeof recoverMistralConversationDurableSession> | null = null;
+      if (current.missionConnectionEpoch < INT32_MAX) {
+        const cancellationId = this.recoveryCancellationId().toLowerCase();
+        if (!UUID.test(cancellationId)) return { status: 'unavailable' as const };
+        try {
+          candidate = recoverMistralConversationDurableSession(current, {
+            newMissionConnectionEpoch: current.missionConnectionEpoch + 1,
+            cancellationId,
+            routeMode: input.grant.routeMode,
+            fullDuplexCertified: input.grant.fullDuplexCertified,
+          });
+        } catch {
+          candidate = null;
+        }
+      }
+      const backlog = await this.outboxStats(
+        tx,
+        row,
+        current.acknowledgedServerSequence,
+        current.nextServerSequence,
+      );
+      if (!backlog) return { status: 'history_unavailable' as const };
+      const candidateBytes = candidate ? replayBytes(candidate.events) : 0;
+      if (
+        candidate === null
+        || backlog.eventCount + candidate.events.length > input.maxReplayEvents - 3
+        || backlog.payloadBytes + candidateBytes > input.maxReplayBytes
+          - 3 * MISTRAL_CONVERSATION_MAX_SERVER_EVENT_BYTES
+      ) {
+        next = closeDurably(current, 'fatal_error');
+      } else {
+        next = { ...candidate, steps: [candidate] };
+        recoveryCancellation = candidate.recoveryCancellation;
+        recovered = true;
+      }
+    }
+
+    const totalEvents = [...prefix.events, ...next.events];
+    if (
+      totalEvents.length > input.maxReplayEvents
+      || prefix.payloadBytes + replayBytes(next.events) > input.maxReplayBytes
+    ) return { status: 'history_unavailable' as const };
+
+    const nextOwnerHash = recovered ? tokenHash(input.ownerLeaseToken) : row.ownerTokenHash.trim();
+    let persistenceRow = row;
+    for (const step of next.steps) {
+      await this.appendEvents(tx, {
+        companyId: row.companyId,
+        missionId: row.id,
+        sessionHandle: row.sessionHandle,
+        retentionExpiresAt: row.retentionExpiresAt,
+        events: step.events,
+      });
+      const persisted = await this.updateMission(
+        tx,
+        persistenceRow,
+        step.snapshot,
+        nextOwnerHash,
+        false,
+      );
+      if (!persisted) throw new TemporalBoundaryAbort();
+      persistenceRow = {
+        ...persistenceRow,
+        ownerTokenHash: nextOwnerHash,
+        missionConnectionEpoch: step.snapshot.missionConnectionEpoch,
+        version: BigInt(step.snapshot.version),
+      };
+    }
+
+    if (next.snapshot.mission.phase === 'closed') {
+      return {
+        status: 'terminal_replay' as const,
+        snapshot: next.snapshot,
+        events: totalEvents,
+        replayFromServerSequence: replayFrom,
+        recovery: null,
+        terminal: terminalMetadata(next.snapshot, row.replayGraceExpiresAt),
+      };
+    }
+    return {
+      status: 'recovered' as const,
+      snapshot: next.snapshot,
+      events: totalEvents,
+      replayFromServerSequence: replayFrom,
+      recovery: {
+        fromServerSequence: current.nextServerSequence,
+        previousMissionConnectionEpoch: previousEpoch,
+        previousCancellationGeneration,
+        cancellation: recoveryCancellation,
+      },
+      terminal: null,
+    };
   }
 
   async transition(
@@ -812,7 +839,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     sessionHandle: string,
   ): Promise<MissionRow | null> {
     const [row] = await tx.$queryRaw<MissionRow[]>`
-      SELECT id, "companyId", "initialBootstrapId", protocol, "subjectHash",
+      SELECT id, "companyId", "initialBootstrapId", "admissionSessionId", protocol, "subjectHash",
              "subjectKeyVersion", plan, "sessionHandle", "ownerTokenHash",
              "missionConnectionEpoch", version, "acknowledgedServerSequence",
              "retainedFromServerSequence", "nextServerSequence", "nextProviderSequence",
@@ -841,7 +868,8 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     const missionJson = JSON.stringify(input.snapshot.mission);
     await tx.$executeRaw`
       INSERT INTO realtime_mistral_conversation_missions (
-        id, "companyId", "initialBootstrapId", protocol, "subjectHash", "subjectKeyVersion",
+        id, "companyId", "initialBootstrapId", "admissionSessionId", protocol,
+        "subjectHash", "subjectKeyVersion",
         plan, "sessionHandle", "ownerTokenHash", "missionConnectionEpoch", version,
         "acknowledgedServerSequence", "retainedFromServerSequence", "nextServerSequence",
         "nextProviderSequence", "contextRevision", "contextDigest", "routeMode",
@@ -851,7 +879,8 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
         "hardExpiresAt", "replayGraceExpiresAt", "retentionExpiresAt", "createdAt", "updatedAt"
       ) VALUES (
         ${input.missionId}::uuid, ${input.grant.companyId}, ${input.grant.bootstrapId}::uuid,
-        ${PROTOCOL}, ${input.grant.subjectHash}, ${input.grant.subjectKeyVersion},
+        ${input.grant.admissionSessionId}::uuid, ${PROTOCOL},
+        ${input.grant.subjectHash}, ${input.grant.subjectKeyVersion},
         ${input.grant.plan}, ${input.grant.sessionHandle}, ${input.ownerTokenHash},
         ${input.snapshot.missionConnectionEpoch}, ${BigInt(input.snapshot.version)},
         ${BigInt(input.snapshot.acknowledgedServerSequence)}, 0,

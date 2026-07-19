@@ -27,6 +27,14 @@ import {
   type MistralConversationTurnPhaseEvent,
   type MistralConversationTurnState,
 } from '@bob/ai';
+import {
+  MISTRAL_CONVERSATION_TERMINAL_ACK_RESERVE_MS,
+  isMistralConversationConnectionLeaseToken,
+  isMistralConversationReplayConnectionId,
+  isMistralConversationResumeTicket,
+  type MistralConversationRedeemAndOpenResult,
+  type MistralConversationResumeAuthority,
+} from './mistral-conversation-resume-ticket';
 
 const MAX_INGRESS_MESSAGES = 256;
 const MAX_INGRESS_BYTES = 128 * 1024;
@@ -45,6 +53,11 @@ const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
 const DEFAULT_PROVIDER_CLOSE_TIMEOUT_MS = 1_500;
 const DEFAULT_OPERATION_TIMEOUT_MS = 5_000;
 const DEFAULT_REPLAY_TIMEOUT_MS = 10_000;
+const MAX_TERMINAL_ACK_CAPABILITY_MS = 30_000;
+// L'autorité SQL impose au plus 30 s. Le gateway tolère uniquement le faible skew NTP
+// d'une base distante et le soustrait ensuite de tous ses budgets ; il ne prolonge donc
+// jamais une capability au-delà de l'horloge PostgreSQL qui l'a créée.
+const MAX_SERVER_CLOCK_SKEW_MS = 1_000;
 const DEFAULT_PIPELINE_TIMEOUT_MS = 30_000;
 const DEFAULT_PROVIDER_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 2_000;
@@ -105,6 +118,8 @@ export interface MistralConversationGatewayV2Socket {
 
 export interface MistralConversationBootstrapGrant {
   readonly bootstrapId: string;
+  /** UUID durable du bail d'admission ayant autorisé cette mission. */
+  readonly admissionSessionId: string;
   readonly companyId: string;
   readonly subjectHash: string;
   readonly subjectKeyVersion: number;
@@ -460,6 +475,11 @@ export interface MistralConversationGatewayV2Entropy {
 
 export interface MistralConversationGatewayV2Dependencies {
   readonly bootstrap: MistralConversationBootstrapAuthority;
+  /**
+   * Port atomique des seules capacités `r2_`. Optionnel tant que le runtime v2 reste dormant ;
+   * son absence refuse ces tickets sans jamais retomber sur le bootstrap historique.
+   */
+  readonly resume?: MistralConversationResumeAuthority;
   readonly authority: MistralConversationDurableAuthority;
   readonly context: MistralConversationContextAuthority;
   readonly provider: MistralConversationProvider;
@@ -503,10 +523,14 @@ function canonicalEpoch(value: string): number | null {
   }
 }
 
-function validateGrant(grant: MistralConversationBootstrapGrant, companyId: string, now: number): number {
+function validateGrantBinding(
+  grant: MistralConversationBootstrapGrant,
+  companyId: string,
+): number {
   const hardExpiry = canonicalEpoch(grant.hardExpiresAt);
   if (
     !UUID.test(grant.bootstrapId)
+    || !UUID.test(grant.admissionSessionId)
     || !TENANT_ID.test(grant.companyId)
     || grant.companyId !== companyId
     || !SHA256.test(grant.subjectHash)
@@ -520,10 +544,6 @@ function validateGrant(grant: MistralConversationBootstrapGrant, companyId: stri
       || (grant.routeMode === 'full_duplex' && grant.fullDuplexCertified)
     )
     || hardExpiry === null
-    // Le bootstrap générique reste strictement live. Seul le futur consume-result discriminé du
-    // ticket de reprise pourra ouvrir la fenêtre H..G ; ne jamais élargir cette capacité ici.
-    || hardExpiry <= now
-    || hardExpiry > now + MAX_SESSION_MS
     || !isIntegerBetween(
       grant.maxMissionAudioBytes,
       MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES,
@@ -531,6 +551,16 @@ function validateGrant(grant: MistralConversationBootstrapGrant, companyId: stri
     )
     || grant.maxMissionAudioBytes % MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES !== 0
   ) gatewayError('temporarily_unavailable');
+  return hardExpiry;
+}
+
+function validateGrant(grant: MistralConversationBootstrapGrant, companyId: string, now: number): number {
+  const hardExpiry = validateGrantBinding(grant, companyId);
+  // Le bootstrap générique reste strictement live. Seul le résultat discriminé de l'autorité de
+  // reprise peut ouvrir la fenêtre H..G ; ne jamais élargir cette capacité ici.
+  if (hardExpiry <= now || hardExpiry > now + MAX_SESSION_MS) {
+    gatewayError('temporarily_unavailable');
+  }
   return hardExpiry;
 }
 
@@ -1362,8 +1392,8 @@ export function recoverMistralConversationDurableSession(
     || !UUID.test(input.cancellationId)
     || snapshot.mission.phase === 'draining'
     || snapshot.mission.phase === 'closed'
-    || snapshot.mission.phase === 'connecting'
     || snapshot.mission.phase === 'recovering_route'
+    || snapshot.mission.phase === 'connecting'
   ) gatewayError('invalid_state');
 
   const serverCursor = { value: snapshot.nextServerSequence };
@@ -1394,7 +1424,8 @@ export function recoverMistralConversationDurableSession(
       ...cancellation,
     });
   }
-  let mission = reduceMistralConversationMissionState(snapshot.mission, {
+  let mission = snapshot.mission;
+  mission = reduceMistralConversationMissionState(mission, {
     type: 'ROUTE_RECOVERY_STARTED',
     cancellation,
   });
@@ -1495,7 +1526,8 @@ class BoundedAsyncQueue<T> {
   private readonly values: T[] = [];
   private readonly waiters: QueueWaiter<T>[] = [];
   private queuedBytes = 0;
-  private failure: Error | null = null;
+  private immediateFailure: Error | null = null;
+  private deferredFailure: Error | null = null;
 
   constructor(private readonly limits: {
     readonly maxValues: number;
@@ -1508,8 +1540,11 @@ class BoundedAsyncQueue<T> {
     return this.values.length;
   }
 
-  push(value: T): boolean {
-    if (this.failure) return false;
+  push(
+    value: T,
+    options: { readonly preserveAcceptedOnOverflow?: boolean } = {},
+  ): boolean {
+    if (this.immediateFailure || this.deferredFailure) return false;
     const waiter = this.waiters.shift();
     if (waiter) {
       this.cleanup(waiter);
@@ -1523,7 +1558,9 @@ class BoundedAsyncQueue<T> {
       || this.values.length >= this.limits.maxValues
       || this.queuedBytes + bytes > this.limits.maxBytes
     ) {
-      this.fail(this.limits.overflow());
+      const error = this.limits.overflow();
+      if (options.preserveAcceptedOnOverflow) this.failAfterDrain(error);
+      else this.fail(error);
       return false;
     }
     this.values.push(value);
@@ -1532,8 +1569,9 @@ class BoundedAsyncQueue<T> {
   }
 
   fail(error: Error): void {
-    if (this.failure) return;
-    this.failure = error;
+    if (this.immediateFailure) return;
+    this.immediateFailure = error;
+    this.deferredFailure = null;
     this.values.splice(0);
     this.queuedBytes = 0;
     for (const waiter of this.waiters.splice(0)) {
@@ -1542,14 +1580,28 @@ class BoundedAsyncQueue<T> {
     }
   }
 
+  /**
+   * Ferme l'entrée sans effacer les valeurs déjà admises. Une erreur protocolaire reçue après
+   * un ACK ne doit jamais remonter dans le temps et annuler cet ACK accepté en FIFO.
+   */
+  failAfterDrain(error: Error): void {
+    if (this.immediateFailure || this.deferredFailure) return;
+    this.deferredFailure = error;
+    for (const waiter of this.waiters.splice(0)) {
+      this.cleanup(waiter);
+      waiter.reject(error);
+    }
+  }
+
   next(input: { readonly signal: AbortSignal; readonly timeoutMs?: number }): Promise<T> {
-    if (this.failure) return Promise.reject(this.failure);
+    if (this.immediateFailure) return Promise.reject(this.immediateFailure);
     if (input.signal.aborted) return Promise.reject(new MistralConversationGatewayV2Error('aborted'));
     const value = this.values.shift();
     if (value !== undefined) {
       this.queuedBytes -= this.limits.sizeOf(value);
       return Promise.resolve(value);
     }
+    if (this.deferredFailure) return Promise.reject(this.deferredFailure);
     return new Promise<T>((resolve, reject) => {
       const waiter: QueueWaiter<T> = {
         resolve,
@@ -1593,7 +1645,7 @@ interface IngressMessage {
   readonly data: SocketData;
   readonly isBinary: boolean;
   readonly size: number;
-  readonly receivedPhase: 'auth' | 'opening' | 'ready';
+  readonly receivedPhase: 'auth' | 'opening' | 'replay_only' | 'ready';
 }
 
 interface TerminalDisposition {
@@ -1976,7 +2028,7 @@ export async function serveMistralConversationGatewayV2(
     sizeOf: (message) => message.size,
     overflow: () => new MistralConversationGatewayV2Error('backpressure'),
   });
-  let phase: 'auth' | 'opening' | 'ready' | 'draining' | 'closed' = 'auth';
+  let phase: 'auth' | 'opening' | 'replay_only' | 'ready' | 'draining' | 'closed' = 'auth';
   let hardExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   let terminationReason: MistralConversationSessionEndReason = 'fatal_error';
   let grant: MistralConversationBootstrapGrant | null = null;
@@ -1990,6 +2042,9 @@ export async function serveMistralConversationGatewayV2(
   let terminalReplayOpened = false;
   let openingRecovery: MistralConversationRecoveryMetadata | null = null;
   let terminalDisposition: TerminalDisposition | null = null;
+  let resumeHandshakeActive = false;
+  let resumeRedemptionCommitted = false;
+  let acceptedResumeAcknowledgements = 0;
 
   const latchTerminalDisposition = (
     source: TerminalDisposition['source'],
@@ -2059,42 +2114,77 @@ export async function serveMistralConversationGatewayV2(
         // Le décodeur séquentiel produira l'erreur protocolaire ; aucune intention n'est latched.
       }
     }
-    let validOpeningAck = false;
-    if (receivedPhase === 'opening' && !isBinary && !invalidSize) {
+    let validReplayAck = false;
+    if (
+      (receivedPhase === 'opening' || receivedPhase === 'replay_only')
+      && !isBinary
+      && !invalidSize
+    ) {
       try {
-        validOpeningAck = decodeMistralConversationClientControl(asText({
+        validReplayAck = decodeMistralConversationClientControl(asText({
           data,
           isBinary,
           size,
           receivedPhase,
         })).type === 'events.ack';
       } catch {
-        validOpeningAck = false;
+        validReplayAck = false;
       }
     }
     // Le client peut ACKer synchroniquement le dernier événement de replay avant que le
     // callback socket.send rende la main. Cette frame est bornée puis traitée seulement après
     // la barrière `phase = ready`; toute autre commande reste interdite pendant l'ouverture.
-    if ((receivedPhase === 'opening' && !validOpeningAck) || invalidSize) {
-      fatalIngressError = new MistralConversationGatewayV2Error('protocol_error');
-      ingress.fail(fatalIngressError);
-      if (phase === 'ready') lifecycle.abort();
+    const openingProtocolError = (
+      (receivedPhase === 'opening' || receivedPhase === 'replay_only')
+      && !validReplayAck
+    );
+    if (openingProtocolError || invalidSize) {
+      fatalIngressError ??= new MistralConversationGatewayV2Error('protocol_error');
+      if (receivedPhase === 'opening' || receivedPhase === 'replay_only') {
+        ingress.failAfterDrain(fatalIngressError);
+      } else {
+        ingress.fail(fatalIngressError);
+        if (phase === 'ready') lifecycle.abort();
+      }
       return;
     }
-    if (!ingress.push({ data, isBinary, size, receivedPhase })) {
-      fatalIngressError = new MistralConversationGatewayV2Error('backpressure');
+    if (!ingress.push(
+      { data, isBinary, size, receivedPhase },
+      {
+        preserveAcceptedOnOverflow:
+          receivedPhase === 'opening' || receivedPhase === 'replay_only',
+      },
+    )) {
+      fatalIngressError ??= new MistralConversationGatewayV2Error('backpressure');
       if (phase === 'ready') lifecycle.abort();
     } else if (acceptedSessionEndReason !== null) {
       // La cause terminale est acquise au moment exact où la frame validée entre dans la FIFO.
       // Une commande durable antérieure peut bloquer sa consommation sans permettre à close,
       // expiry ou shutdown de réécrire cette décision utilisateur.
       latchTerminalDisposition('client', acceptedSessionEndReason);
+    } else if (
+      resumeHandshakeActive
+      && validReplayAck
+      && (receivedPhase === 'opening' || receivedPhase === 'replay_only')
+    ) {
+      acceptedResumeAcknowledgements += 1;
     }
   };
   const onClose = (): void => {
     routeLost = true;
     // Une perte de route seule reste reprenable. Toute disposition déjà établie est immuable.
     if (terminalDisposition === null) terminationReason = 'fatal_error';
+    // Une frame ACK n'est une intention serveur acquise qu'après commit de la capability.
+    // Le booléen distinct ferme le DoS pré-auth sans perdre la fenêtre étroite située entre le
+    // retour SQL terminal_replay et le passage de phase à replay_only.
+    if (
+      resumeRedemptionCommitted
+      && acceptedResumeAcknowledgements > 0
+      && (phase === 'opening' || phase === 'replay_only')
+    ) {
+      ingress.failAfterDrain(new MistralConversationGatewayV2Error('aborted'));
+      return;
+    }
     ingress.fail(new MistralConversationGatewayV2Error('aborted'));
     lifecycle.abort();
   };
@@ -2686,16 +2776,29 @@ export async function serveMistralConversationGatewayV2(
   const onLifecycleHandshakeAbort = (): void => handshake.abort();
   lifecycle.signal.addEventListener('abort', onLifecycleHandshakeAbort, { once: true });
   const authTimer = setTimeout(() => {
-    authTimedOut = true;
-    fatalIngressError = new MistralConversationGatewayV2Error('auth_timeout');
+    if (fatalIngressError === null) {
+      authTimedOut = true;
+      fatalIngressError = new MistralConversationGatewayV2Error('auth_timeout');
+    }
     ingress.fail(fatalIngressError);
     handshake.abort();
   }, authTimeoutMs);
-  const consumeHandshake = async (): Promise<{
-    readonly companyId: string;
-    readonly grant: MistralConversationBootstrapGrant;
-    readonly resumeNextServerSequence: number;
-  }> => {
+  type AuthenticatedHandshake =
+    | {
+        readonly kind: 'bootstrap';
+        readonly companyId: string;
+        readonly grant: MistralConversationBootstrapGrant;
+        readonly resumeNextServerSequence: number;
+      }
+    | {
+        readonly kind: 'resume';
+        readonly companyId: string;
+        readonly resumeNextServerSequence: number;
+        readonly opened: Extract<MistralConversationRedeemAndOpenResult, {
+          readonly status: 'terminal_replay';
+        }>;
+      };
+  const consumeHandshake = async (): Promise<AuthenticatedHandshake> => {
     let message: IngressMessage | null = await ingress.next({ signal: handshake.signal });
     let rawText = asText(message);
     let auth: MistralConversationClientControl | null = decodeMistralConversationClientControl(rawText);
@@ -2705,6 +2808,49 @@ export async function serveMistralConversationGatewayV2(
     let rawTicket = auth.ticket;
     phase = 'opening';
     try {
+      if (isMistralConversationResumeTicket(rawTicket)) {
+        resumeHandshakeActive = true;
+        if (
+          typeof dependencies.resume?.redeemAndOpen !== 'function'
+          || typeof dependencies.resume.acknowledgeTerminal !== 'function'
+        ) gatewayError('temporarily_unavailable');
+        const resumed = await runWithDeadline({
+          parentSignal: handshake.signal,
+          timeoutMs: authTimeoutMs,
+          timeoutCode: 'auth_timeout',
+          operation: (operationSignal) => dependencies.resume!.redeemAndOpen({
+            companyId,
+            ticket: rawTicket,
+            protocol: MISTRAL_CONVERSATION_PROTOCOL,
+            // Tant que le bail/reaper provider-neutral n'est pas composé, le WSS n'autorise
+            // structurellement que le replay terminal. La comparaison précède toute mutation SQL.
+            expectedScope: 'terminal_replay',
+            resumeNextServerSequence,
+            maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
+            maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
+            signal: operationSignal,
+          }),
+        });
+        if (resumed.status !== 'terminal_replay') {
+          if (resumed.status === 'expired') gatewayError('expired');
+          if (resumed.status === 'invalid_cursor') gatewayError('sequence_error');
+          if (resumed.status === 'aborted') gatewayError('aborted');
+          if (
+            resumed.status === 'invalid'
+            || resumed.status === 'replayed'
+            || resumed.status === 'stale_epoch'
+            || resumed.status === 'scope_mismatch'
+          ) gatewayError('authentication_failed');
+          gatewayError('temporarily_unavailable');
+        }
+        resumeRedemptionCommitted = true;
+        return {
+          kind: 'resume',
+          companyId,
+          resumeNextServerSequence,
+          opened: resumed,
+        };
+      }
       const consumed = await runWithDeadline({
         parentSignal: handshake.signal,
         timeoutMs: authTimeoutMs,
@@ -2719,7 +2865,12 @@ export async function serveMistralConversationGatewayV2(
       if (consumed.status !== 'consumed') {
         gatewayError(consumed.status === 'unavailable' ? 'temporarily_unavailable' : 'authentication_failed');
       }
-      return { companyId, grant: consumed.grant, resumeNextServerSequence };
+      return {
+        kind: 'bootstrap',
+        companyId,
+        grant: consumed.grant,
+        resumeNextServerSequence,
+      };
     } finally {
       // Les strings JS ne sont pas effaçables en place ; cette frame courte ne survit pas au consume.
       rawTicket = '';
@@ -2730,22 +2881,35 @@ export async function serveMistralConversationGatewayV2(
   };
   try {
     const authenticated = await consumeHandshake();
-    grant = authenticated.grant;
-    const hardExpiry = validateGrant(grant, authenticated.companyId, now());
-    ownerLeaseToken = validateEntropyValue(entropy.ownerLeaseToken(), OWNER_TOKEN);
-    const opened = await runWithDeadline({
-      parentSignal: handshake.signal,
-      timeoutMs: authTimeoutMs,
-      timeoutCode: 'auth_timeout',
-      operation: (operationSignal) => dependencies.authority.open({
-        grant: grant as MistralConversationBootstrapGrant,
-        ownerLeaseToken,
-        resumeNextServerSequence: authenticated.resumeNextServerSequence,
-        maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
-        maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
-        signal: operationSignal,
-      }),
-    });
+    let opened: MistralConversationDurableOpenResult
+      | Extract<MistralConversationRedeemAndOpenResult, {
+        readonly status: 'terminal_replay';
+      }>;
+    let connectionGrant: MistralConversationBootstrapGrant;
+    let hardExpiry: number;
+    if (authenticated.kind === 'bootstrap') {
+      connectionGrant = authenticated.grant;
+      hardExpiry = validateGrant(connectionGrant, authenticated.companyId, now());
+      ownerLeaseToken = validateEntropyValue(entropy.ownerLeaseToken(), OWNER_TOKEN);
+      opened = await runWithDeadline({
+        parentSignal: handshake.signal,
+        timeoutMs: authTimeoutMs,
+        timeoutCode: 'auth_timeout',
+        operation: (operationSignal) => dependencies.authority.open({
+          grant: connectionGrant,
+          ownerLeaseToken,
+          resumeNextServerSequence: authenticated.resumeNextServerSequence,
+          maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
+          maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
+          signal: operationSignal,
+        }),
+      });
+    } else {
+      opened = authenticated.opened;
+      connectionGrant = authenticated.opened.grant;
+      hardExpiry = validateGrantBinding(connectionGrant, authenticated.companyId);
+    }
+    grant = connectionGrant;
     if (
       opened.status !== 'opened'
       && opened.status !== 'recovered'
@@ -2757,12 +2921,55 @@ export async function serveMistralConversationGatewayV2(
       gatewayError('temporarily_unavailable');
     }
     if (opened.status === 'terminal_replay') {
-      validateTerminalOpenResult(opened, grant, authenticated.resumeNextServerSequence);
+      validateTerminalOpenResult(opened, connectionGrant, authenticated.resumeNextServerSequence);
       terminalReplayOpened = true;
       clearTimeout(authTimer);
       const replayGraceExpiry = canonicalEpoch(opened.terminal.replayGraceExpiresAt);
       if (replayGraceExpiry === null) gatewayError('temporarily_unavailable');
-      const replayBudgetMs = Math.min(replayTimeoutMs, replayGraceExpiry - now());
+      const replayClock = now();
+      let replayBudgetMs = Math.min(
+        replayTimeoutMs,
+        replayGraceExpiry - replayClock - MAX_SERVER_CLOCK_SKEW_MS,
+      );
+      let resumeAuthority: MistralConversationResumeAuthority | null = null;
+      let acknowledgement: Extract<
+        MistralConversationRedeemAndOpenResult,
+        { readonly status: 'terminal_replay' }
+      >['terminalAcknowledgement'] | null = null;
+      let acknowledgementExpiry: number | null = null;
+      if (authenticated.kind === 'resume') {
+        if (authenticated.opened.status !== 'terminal_replay') {
+          gatewayError('temporarily_unavailable');
+        }
+        resumeAuthority = dependencies.resume ?? null;
+        acknowledgement = authenticated.opened.terminalAcknowledgement;
+        acknowledgementExpiry = canonicalEpoch(acknowledgement?.expiresAt ?? '');
+        if (
+          !resumeAuthority
+          || !acknowledgement
+          || !isMistralConversationReplayConnectionId(acknowledgement.replayConnectionId)
+          || !isMistralConversationConnectionLeaseToken(
+            acknowledgement.connectionLeaseToken,
+          )
+          || acknowledgementExpiry === null
+          || new Date(acknowledgementExpiry).toISOString() !== acknowledgement.expiresAt
+          || acknowledgementExpiry > replayGraceExpiry
+          || acknowledgementExpiry - replayClock
+            > MAX_TERMINAL_ACK_CAPABILITY_MS + MAX_SERVER_CLOCK_SKEW_MS
+          || acknowledgementExpiry - replayClock
+            <= MISTRAL_CONVERSATION_TERMINAL_ACK_RESERVE_MS
+              + MAX_SERVER_CLOCK_SKEW_MS
+        ) gatewayError('temporarily_unavailable');
+        // Le TTL de la capacité démarre avant le replay. Réserve + skew garantissent qu'un envoi
+        // autorisé par la deadline ne peut pas consommer la fenêtre d'ACK selon l'horloge BDD.
+        replayBudgetMs = Math.min(
+          replayBudgetMs,
+          acknowledgementExpiry - replayClock
+            - MISTRAL_CONVERSATION_TERMINAL_ACK_RESERVE_MS
+            - MAX_SERVER_CLOCK_SKEW_MS,
+        );
+        phase = 'replay_only';
+      }
       if (replayBudgetMs <= 0) gatewayError('expired');
       await runWithDeadline({
         parentSignal: handshake.signal,
@@ -2770,20 +2977,105 @@ export async function serveMistralConversationGatewayV2(
         timeoutCode: 'backpressure',
         operation: (replaySignal) => sendEvents(opened.events, replaySignal),
       });
+      if (authenticated.kind === 'resume') {
+        if (!resumeAuthority || !acknowledgement || acknowledgementExpiry === null) {
+          gatewayError('temporarily_unavailable');
+        }
+        const finalCursor = opened.snapshot.nextServerSequence;
+        if (opened.snapshot.acknowledgedServerSequence < finalCursor) {
+          const acknowledgementBudgetMs = Math.min(
+            replayTimeoutMs,
+            acknowledgementExpiry - now() - MAX_SERVER_CLOCK_SKEW_MS,
+            replayGraceExpiry - now() - MAX_SERVER_CLOCK_SKEW_MS,
+          );
+          if (acknowledgementBudgetMs > 0) {
+            let connectionLeaseToken = acknowledgement.connectionLeaseToken;
+            try {
+              await runWithDeadline({
+                parentSignal: handshake.signal,
+                timeoutMs: acknowledgementBudgetMs,
+                // L'absence d'ACK est une fermeture normale : le mobile redemandera un ticket.
+                timeoutCode: 'aborted',
+                operation: async (ackSignal) => {
+                  while (!ackSignal.aborted) {
+                    const message = await ingress.next({ signal: ackSignal });
+                    if (message.receivedPhase === 'auth' || message.isBinary) {
+                      gatewayError('protocol_error');
+                    }
+                    const control = decodeMistralConversationClientControl(asText(message));
+                    if (
+                      control.type !== 'events.ack'
+                      || control.missionConnectionEpoch
+                        !== opened.snapshot.missionConnectionEpoch
+                      || control.nextServerSequence > finalCursor
+                    ) {
+                      acceptedResumeAcknowledgements = Math.max(
+                        0,
+                        acceptedResumeAcknowledgements - 1,
+                      );
+                      gatewayError('protocol_error');
+                    }
+                    let acknowledged: Awaited<
+                      ReturnType<MistralConversationResumeAuthority['acknowledgeTerminal']>
+                    >;
+                    try {
+                      acknowledged = await runWithDeadline({
+                        parentSignal: ackSignal,
+                        timeoutMs: Math.min(operationTimeoutMs, acknowledgementBudgetMs),
+                        timeoutCode: 'temporarily_unavailable',
+                        operation: (operationSignal) => resumeAuthority.acknowledgeTerminal({
+                          companyId: connectionGrant.companyId,
+                          subjectHash: connectionGrant.subjectHash,
+                          sessionHandle: connectionGrant.sessionHandle,
+                          missionConnectionEpoch: opened.snapshot.missionConnectionEpoch,
+                          replayConnectionId: acknowledgement.replayConnectionId,
+                          connectionLeaseToken,
+                          nextServerSequence: control.nextServerSequence,
+                          signal: operationSignal,
+                        }),
+                      });
+                    } finally {
+                      acceptedResumeAcknowledgements = Math.max(
+                        0,
+                        acceptedResumeAcknowledgements - 1,
+                      );
+                    }
+                    if (
+                      acknowledged.status === 'invalid'
+                      || acknowledged.status === 'unavailable'
+                    ) {
+                      gatewayError('temporarily_unavailable');
+                    }
+                    if (acknowledged.status === 'expired' || acknowledged.status === 'aborted') {
+                      return;
+                    }
+                    if (control.nextServerSequence === finalCursor) return;
+                  }
+                },
+              });
+            } catch (error) {
+              const acknowledgementError = fatalIngressError ?? mapProtocolError(error);
+              if (acknowledgementError.code !== 'aborted') throw acknowledgementError;
+            } finally {
+              connectionLeaseToken = '';
+            }
+          }
+        }
+      }
       phase = 'closed';
       lifecycle.signal.removeEventListener('abort', onLifecycleHandshakeAbort);
       if (fatalIngressError) throw fatalIngressError;
       return;
     }
-    validateOpenResult(opened, grant, authenticated.resumeNextServerSequence);
+    validateOpenResult(opened, connectionGrant, authenticated.resumeNextServerSequence);
     openingRecovery = opened.recovery;
     clearTimeout(authTimer);
     authority = new SerializedAuthority(
       dependencies.authority,
       {
-        companyId: grant.companyId,
-        subjectHash: grant.subjectHash,
-        sessionHandle: grant.sessionHandle,
+        companyId: connectionGrant.companyId,
+        subjectHash: connectionGrant.subjectHash,
+        sessionHandle: connectionGrant.sessionHandle,
         ownerLeaseToken,
       },
       opened.snapshot,
