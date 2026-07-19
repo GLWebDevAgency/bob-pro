@@ -95,6 +95,8 @@ import type {
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
   RealtimeVoiceCallInput,
+  RealtimeVoiceResumeTicketInput,
+  RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
@@ -189,7 +191,10 @@ const REALTIME_SPEECH_MAX_WAIT_MS = 2_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
 const MISTRAL_REALTIME_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN = /^r2_[A-Za-z0-9_-]{43}$/;
 const COMPANY_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+const MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH = 0x7fff_ffff;
+const MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR = 0x1_0000_0000;
 const REALTIME_SPEECH_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
   'audio/mpeg',
   'audio/wav',
@@ -1204,6 +1209,82 @@ function decodeRealtimeVoiceCall(
   return null;
 }
 
+function decodeRealtimeVoiceResumeTicket(
+  value: unknown,
+  expected: {
+    readonly apiBaseUrl: string;
+    readonly companyId: string;
+    readonly sessionHandle: string;
+    readonly input: RealtimeVoiceResumeTicketInput;
+  },
+): RealtimeVoiceResumeTicketResult | null {
+  if (!isRecord(value)) return null;
+  if (value.status === 'terminal_complete') {
+    return hasExactKeys(value, ['status']) ? { status: 'terminal_complete' } : null;
+  }
+  if (
+    value.status !== 'issued' ||
+    !hasExactKeys(value, [
+      'status',
+      'websocketUrl',
+      'companyId',
+      'sessionHandle',
+      'ticket',
+      'protocol',
+      'scope',
+      'ticketExpiresAt',
+      'expectedMissionConnectionEpoch',
+      'clientAcceptedMissionConnectionEpoch',
+      'resumeNextServerSequence',
+    ]) ||
+    !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl) ||
+    typeof value.companyId !== 'string' ||
+    !COMPANY_ID_PATTERN.test(value.companyId) ||
+    value.companyId !== expected.companyId ||
+    typeof value.sessionHandle !== 'string' ||
+    value.sessionHandle !== expected.sessionHandle ||
+    typeof value.ticket !== 'string' ||
+    !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket) ||
+    value.protocol !== 'bob.mistral-pcm.v2' ||
+    value.scope !== 'terminal_replay' ||
+    !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+    !isBoundedInteger(
+      value.expectedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    ) ||
+    !isBoundedInteger(
+      value.clientAcceptedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    ) ||
+    value.clientAcceptedMissionConnectionEpoch !== expected.input.missionConnectionEpoch ||
+    value.expectedMissionConnectionEpoch < value.clientAcceptedMissionConnectionEpoch ||
+    !isBoundedInteger(
+      value.resumeNextServerSequence,
+      0,
+      MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+    ) ||
+    Object.is(value.resumeNextServerSequence, -0) ||
+    value.resumeNextServerSequence !== expected.input.nextServerSequence
+  ) {
+    return null;
+  }
+  return {
+    status: 'issued',
+    websocketUrl: value.websocketUrl,
+    companyId: value.companyId,
+    sessionHandle: value.sessionHandle,
+    ticket: value.ticket,
+    protocol: value.protocol,
+    scope: value.scope,
+    ticketExpiresAt: value.ticketExpiresAt,
+    expectedMissionConnectionEpoch: value.expectedMissionConnectionEpoch,
+    clientAcceptedMissionConnectionEpoch: value.clientAcceptedMissionConnectionEpoch,
+    resumeNextServerSequence: value.resumeNextServerSequence,
+  };
+}
+
 function decodeRealtimeVoiceControlAcknowledgement(
   value: unknown,
 ): RealtimeVoiceControlAcknowledgement | null {
@@ -1672,6 +1753,62 @@ export class HttpBobClient implements BobClient {
       body,
       undefined,
       (value) => decodeRealtimeVoiceCall(value, this.companyId, this.opts.baseUrl),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  requestRealtimeVoiceResumeTicket(
+    sessionHandle: string,
+    input: RealtimeVoiceResumeTicketInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isRecord(input) || !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'resumeTicket',
+        'La preuve de reprise Bob Live doit contenir exactement l’epoch et la prochaine séquence.',
+      );
+    }
+    if (
+      !isBoundedInteger(
+        input.missionConnectionEpoch,
+        1,
+        MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+      )
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'missionConnectionEpoch',
+        'L’epoch de connexion Bob Live doit être un entier compris entre 1 et 2147483647.',
+      );
+    }
+    if (
+      !isBoundedInteger(
+        input.nextServerSequence,
+        0,
+        MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+      ) ||
+      Object.is(input.nextServerSequence, -0)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'nextServerSequence',
+        'La prochaine séquence Bob Live doit être un entier compris entre 0 et 4294967296.',
+      );
+    }
+    const body: RealtimeVoiceResumeTicketInput = {
+      missionConnectionEpoch: input.missionConnectionEpoch,
+      nextServerSequence: input.nextServerSequence,
+    };
+    return this.req<RealtimeVoiceResumeTicketResult>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/resume-tickets`,
+      body,
+      undefined,
+      (value) =>
+        decodeRealtimeVoiceResumeTicket(value, {
+          apiBaseUrl: this.opts.baseUrl,
+          companyId: this.companyId,
+          sessionHandle,
+          input: body,
+        }),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );

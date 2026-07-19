@@ -236,6 +236,8 @@ import type {
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
   RealtimeVoiceCallInput,
+  RealtimeVoiceResumeTicketInput,
+  RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
@@ -1275,6 +1277,14 @@ export class LocalBobClient implements BobClient {
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>> {
     return { ok: false, error: appForbidden('Bob Live nécessite le backend sécurisé.') };
+  }
+
+  async requestRealtimeVoiceResumeTicket(
+    _sessionHandle: string,
+    _input: RealtimeVoiceResumeTicketInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceResumeTicketResult, AppError>> {
+    return err(appUnavailable('bob-live-resume-ticket'));
   }
 
   async hangupRealtimeVoiceCall(

@@ -436,6 +436,32 @@ export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceCallCommon {
 
 export type RealtimeVoiceCall = RealtimeVoiceWebRtcCall | RealtimeVoiceMistralPcmCall;
 
+/** Preuve locale minimale permettant de reprendre une mission Mistral v2 sans nouvelle admission. */
+export interface RealtimeVoiceResumeTicketInput {
+  /** Dernier epoch de connexion effectivement appliqué par le mobile. */
+  readonly missionConnectionEpoch: number;
+  /** Première séquence serveur dont les effets ne sont pas encore appliqués localement. */
+  readonly nextServerSequence: number;
+}
+
+export interface RealtimeVoiceIssuedResumeTicket {
+  readonly status: 'issued';
+  readonly websocketUrl: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly ticket: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly scope: 'terminal_replay';
+  readonly ticketExpiresAt: string;
+  readonly expectedMissionConnectionEpoch: number;
+  readonly clientAcceptedMissionConnectionEpoch: number;
+  readonly resumeNextServerSequence: number;
+}
+
+export type RealtimeVoiceResumeTicketResult =
+  | RealtimeVoiceIssuedResumeTicket
+  | { readonly status: 'terminal_complete' };
+
 export interface RealtimeVoiceContextUpdate {
   version: 1;
   revision: number;
@@ -891,6 +917,15 @@ export interface BobClient {
     input: RealtimeVoiceCallInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>>;
+  /**
+   * Demande une capability one-shot pour rejouer exclusivement le terminal Mistral v2.
+   * `terminal_complete` est la seule preuve autorisant le mobile à supprimer son checkpoint.
+   */
+  requestRealtimeVoiceResumeTicket(
+    sessionHandle: string,
+    input: RealtimeVoiceResumeTicketInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceResumeTicketResult, AppError>>;
   hangupRealtimeVoiceCall(
     sessionHandle: string,
     signal?: AbortSignal,
