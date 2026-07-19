@@ -6,6 +6,7 @@ import {
   MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE,
   PrismaMistralConversationKeyVersionAuthority,
 } from './mistral-conversation-key-version.prisma';
+import { BOB_LIVE_SUBJECT_HMAC_KEY_SPACE } from './mistral-conversation-subject-key-version.prisma';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_MISTRAL_CONVERSATION_CERT === 'true';
 const FEATURE_ENABLED =
@@ -171,19 +172,26 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                (
                  SELECT count(*)
                    FROM realtime_mistral_conversation_key_version_floors
-                  WHERE "keySpace" <> ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
+                  WHERE "keySpace" NOT IN (
+                    ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE},
+                    ${BOB_LIVE_SUBJECT_HMAC_KEY_SPACE}
+                  )
                ) AS "invalidFloorKeySpaceCount",
                (
                  SELECT count(*)
                    FROM realtime_mistral_conversation_key_bindings
-                  WHERE "keySpace" <> ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
+                  WHERE "keySpace" NOT IN (
+                    ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE},
+                    ${BOB_LIVE_SUBJECT_HMAC_KEY_SPACE}
+                  )
                ) AS "invalidBindingKeySpaceCount"
       `;
       expect(shape).toMatchObject({
         invalidFloorKeySpaceCount: 0n,
         invalidBindingKeySpaceCount: 0n,
       });
-      expect(Number(shape?.floorCount ?? -1n)).toBeLessThanOrEqual(1);
+      expect(Number(shape?.floorCount ?? -1n)).toBeLessThanOrEqual(2);
+      if (FEATURE_ENABLED) expect(shape?.floorCount).toBe(2n);
     });
 
     it('certifie migration, contraintes validées et policies bornées au rôle DIRECT_URL', async () => {

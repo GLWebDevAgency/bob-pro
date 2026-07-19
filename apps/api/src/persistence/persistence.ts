@@ -41,6 +41,9 @@ import type {
 } from '../voice/realtime/realtime-admission';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
+import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
+import type { MistralConversationBootstrapReaperPort } from '../voice/realtime/mistral-conversation-bootstrap-reaper';
+import type { BobLiveSubjectHmacKeyRingAdmission } from '../voice/realtime/mistral-conversation-subject-key-version';
 import type { RealtimeControlRepositoryPort } from '../voice/realtime/realtime-control.repository';
 import type { RealtimeSidebandOwnerPort } from '../voice/realtime/realtime-sideband-owner';
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../voice/realtime/realtime-speech-delivery.repository';
@@ -141,7 +144,15 @@ export interface Persistence {
    */
   createMistralConversationTerminalReplayAuthorities(
     keys: MistralConversationPersistenceKeyRing,
+    identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    admissionPolicy: MistralConversationAdmissionPolicy,
   ): MistralConversationTerminalReplayAuthorities | null;
+  /**
+   * Canal global de rétention. `null` est accepté uniquement lorsque le replay v2 est désactivé ;
+   * la composition Nest refuse sinon de démarrer.
+   */
+  createMistralConversationBootstrapReaper(): MistralConversationBootstrapReaperPort | null;
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
   runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T>;

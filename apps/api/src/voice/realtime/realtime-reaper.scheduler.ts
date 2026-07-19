@@ -175,6 +175,9 @@ export class RealtimeAdmissionReaperScheduler {
         sessionId: claim.sessionId,
         providerId: claim.providerId,
         providerCallId: claim.providerCallId,
+        reaperToken: claim.reaperToken,
+        reaperLeaseExpiresAt: claim.reaperLeaseExpiresAt,
+        terminationCause: 'lease_expired',
         hardExpiryProof: claim.hardExpiryProof,
       });
     } catch {

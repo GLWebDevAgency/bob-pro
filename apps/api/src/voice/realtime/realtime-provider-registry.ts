@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   isRealtimeDatabaseHardExpiryProof,
   isRealtimeCompanyId,
@@ -18,6 +19,18 @@ export interface RealtimeProviderCallIdentity {
   hardExpiryProof: RealtimeDatabaseHardExpiryProof | null;
 }
 
+export type RealtimeProviderTerminationCause =
+  | 'explicit_hangup'
+  | 'lease_expired'
+  | 'reservation_recovery';
+
+/** Claim complet owner-fencé. Le token brut n'est ni loggé ni utilisé comme clé en mémoire. */
+export interface RealtimeProviderTerminationRequest extends RealtimeProviderCallIdentity {
+  reaperToken: string;
+  reaperLeaseExpiresAt: string;
+  terminationCause: RealtimeProviderTerminationCause;
+}
+
 /**
  * Port minimal de terminaison d'un fournisseur temps réel.
  *
@@ -27,10 +40,7 @@ export interface RealtimeProviderCallIdentity {
  */
 export interface RealtimeProviderTerminationAdapter {
   readonly providerId: RealtimeProviderId;
-  hangupCall(
-    providerCallId: string,
-    hardExpiryProof?: RealtimeDatabaseHardExpiryProof,
-  ): Promise<void>;
+  hangupCall(request: RealtimeProviderTerminationRequest): Promise<void>;
 }
 
 export class RealtimeProviderRegistryError extends Error {
@@ -81,13 +91,22 @@ export class RealtimeProviderTerminationRegistry {
     return this.adapters.has(providerId);
   }
 
-  async hangupCall(identity: RealtimeProviderCallIdentity): Promise<void> {
+  async hangupCall(identity: RealtimeProviderTerminationRequest): Promise<void> {
+    const reaperExpiry = Date.parse(identity.reaperLeaseExpiresAt);
     if (
       !isRealtimeCompanyId(identity.companyId)
       || !isRealtimeSubjectHash(identity.subjectHash)
       || !isRealtimeSessionId(identity.sessionId)
       || !isRealtimeProviderId(identity.providerId)
       || !isRealtimeProviderCallId(identity.providerCallId)
+      || !/^[A-Za-z0-9_-]{32,128}$/u.test(identity.reaperToken)
+      || !Number.isFinite(reaperExpiry)
+      || new Date(reaperExpiry).toISOString() !== identity.reaperLeaseExpiresAt
+      || (
+        identity.terminationCause !== 'explicit_hangup'
+        && identity.terminationCause !== 'lease_expired'
+        && identity.terminationCause !== 'reservation_recovery'
+      )
       || (
         identity.hardExpiryProof !== null
         && (
@@ -105,17 +124,33 @@ export class RealtimeProviderTerminationRegistry {
     const adapter = this.adapters.get(identity.providerId);
     if (!adapter) throw new RealtimeProviderRegistryError('provider_adapter_unavailable');
 
-    // Une preuve DB post-hard-cap ne doit pas rester coalescée derrière une tentative egress
-    // antérieure sans preuve : elle constitue une autorité terminale plus forte.
-    const key = `${identity.providerId}\u0000${identity.providerCallId}\u0000${identity.hardExpiryProof ? 'hard' : 'egress'}`;
+    // Deux claims successifs portent des fences différents et ne doivent jamais être coalescés.
+    // Seule l'empreinte du secret vit en mémoire ; le token brut ne devient pas une clé JS longue.
+    const reaperTokenHash = createHash('sha256')
+      .update(identity.reaperToken, 'utf8')
+      .digest('hex');
+    const proofVersion = identity.hardExpiryProof?.leaseVersion ?? 0;
+    const key = [
+      identity.companyId,
+      identity.subjectHash,
+      identity.sessionId,
+      identity.providerId,
+      identity.providerCallId,
+      reaperTokenHash,
+      identity.reaperLeaseExpiresAt,
+      identity.terminationCause,
+      String(proofVersion),
+    ].join('\u0000');
     const existing = this.inFlight.get(key);
     if (existing) return existing;
 
-    const hangup = Promise.resolve().then(() => (
-      identity.hardExpiryProof
-        ? adapter.hangupCall(identity.providerCallId, identity.hardExpiryProof)
-        : adapter.hangupCall(identity.providerCallId)
-    ));
+    const request = Object.freeze({
+      ...identity,
+      hardExpiryProof: identity.hardExpiryProof
+        ? Object.freeze({ ...identity.hardExpiryProof })
+        : null,
+    });
+    const hangup = Promise.resolve().then(() => adapter.hangupCall(request));
     this.inFlight.set(key, hangup);
     try {
       await hangup;
@@ -128,17 +163,19 @@ export class RealtimeProviderTerminationRegistry {
 /** Associe explicitement un port historique à son fournisseur, sans lui faire lire la config live. */
 export function realtimeProviderTerminationAdapter(
   providerId: RealtimeProviderId,
-  provider: Pick<RealtimeProviderTerminationAdapter, 'hangupCall'>,
+  provider: {
+    hangupCall(
+      providerCallId: string,
+      hardExpiryProof?: RealtimeDatabaseHardExpiryProof,
+    ): Promise<void>;
+  },
 ): RealtimeProviderTerminationAdapter {
   return Object.freeze({
     providerId,
-    hangupCall: (
-      providerCallId: string,
-      hardExpiryProof?: RealtimeDatabaseHardExpiryProof,
-    ) => (
-      hardExpiryProof
-        ? provider.hangupCall(providerCallId, hardExpiryProof)
-        : provider.hangupCall(providerCallId)
+    hangupCall: (request: RealtimeProviderTerminationRequest) => (
+      request.hardExpiryProof
+        ? provider.hangupCall(request.providerCallId, request.hardExpiryProof)
+        : provider.hangupCall(request.providerCallId)
     ),
   });
 }

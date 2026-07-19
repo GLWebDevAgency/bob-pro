@@ -50,6 +50,15 @@ import {
   isRealtimeMistralPcmNegotiation,
   MistralRealtimeTransport,
 } from '../realtime/mistral-realtime-transport';
+import {
+  isRealtimeMistralConversationNegotiation,
+  MistralConversationTransport,
+  type MistralConversationCheckpointBinding,
+} from '../realtime/mistral-conversation-runtime';
+import {
+  useMistralConversationCheckpointBinding,
+  useRetryMistralConversationCheckpointRecovery,
+} from '../realtime/mistral-conversation-checkpoint-provider';
 import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
 
@@ -113,6 +122,10 @@ function wait(ms: number): Promise<void> {
 export function AgentSessionProvider({ children }: { readonly children: ReactNode }) {
   const { personality } = useTheme();
   const client = useBobClient();
+  const mistralConversationCheckpoint = useMistralConversationCheckpointBinding();
+  const retryMistralConversationCheckpoint = useRetryMistralConversationCheckpointRecovery();
+  const mistralConversationCheckpointRef = useRef(mistralConversationCheckpoint);
+  mistralConversationCheckpointRef.current = mistralConversationCheckpoint;
   const agent = useMemo(() => makeBobAgent(client), [client]);
   const liveContext = useAgentContext();
   const contextRef = useRef(liveContext);
@@ -156,12 +169,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // (entitlement voice_live + rollout dans realtimeVoiceConfig().available) — tant qu'il dit
   // non, ce chemin est inerte et la session reste 100 % historique. ──
   const realtimeRef = useRef<RealtimeSessionController | null>(null);
+  const realtimeControllerClientRef = useRef(client);
+  const realtimeMistralCheckpointUsedRef = useRef<MistralConversationCheckpointBinding | null>(null);
   const realtimeActiveRef = useRef(false);
   const driverRef = useRef<AgentSessionDriver>('idle');
   const sessionGenerationRef = useRef(0);
   const appStateRef = useRef(AppState.currentState);
   const getRealtimeController = (): RealtimeSessionController => {
     if (realtimeRef.current) return realtimeRef.current;
+    realtimeControllerClientRef.current = client;
     realtimeRef.current = new RealtimeSessionController(
       {
         negotiate: async () => {
@@ -169,15 +185,27 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           return config.ok ? config.value : null;
         },
         updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
-        createOrchestrator: (negotiation, legacyFallback, currentFence, onPrimaryCreated) =>
-          new RealtimeResilienceOrchestrator({
+        createOrchestrator: (negotiation, legacyFallback, currentFence, onPrimaryCreated) => {
+          const conversationV2 = isRealtimeMistralConversationNegotiation(negotiation);
+          return new RealtimeResilienceOrchestrator({
             createPrimary: () => {
               // Le provider choisi par le serveur est autoritaire : une mission n'essaie jamais
-              // une seconde clé en parallèle. OpenAI reste WebRTC ; Mistral utilise son PCM natif
-              // one-shot et annonce honnêtement fullDuplex=false jusqu'à certification v2.
+              // une seconde clé en parallèle. V2 possède sa mission durable et ses reprises b2/r2.
               const uplink = isRealtimeWebRtcNegotiation(negotiation)
                 ? new RealtimeWebRtcTransport(client, negotiation)
-                : isRealtimeMistralPcmNegotiation(negotiation)
+                : conversationV2
+                  ? (() => {
+                      const checkpoint = mistralConversationCheckpointRef.current;
+                      if (checkpoint === null) {
+                        throw new RealtimeTransportError('bootstrap_failed');
+                      }
+                      realtimeMistralCheckpointUsedRef.current = checkpoint;
+                      return new MistralConversationTransport(client, negotiation, {
+                        getInitialContext: () => snapshotAgentContext(contextRef.current),
+                        checkpoint,
+                      });
+                    })()
+                  : isRealtimeMistralPcmNegotiation(negotiation)
                   ? new MistralRealtimeTransport(client, negotiation, {
                       getInitialContext: () => snapshotAgentContext(contextRef.current),
                     })
@@ -198,7 +226,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
               return transport;
             },
             legacyFallback,
-          }),
+            // Une reconnexion générique recréerait une deuxième mission v2. Le runtime v2 est
+            // seul propriétaire de ses routes ; l'orchestrateur attend son verdict/fallback.
+            maxReconnectAttempts: conversationV2 ? 0 : 1,
+          });
+        },
         createControlGate: (currentFence) =>
           new RealtimeControlAcknowledgementGate(client, () => {
             const fence = currentFence();
@@ -369,6 +401,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
     realtimeActiveRef.current = false;
     driverRef.current = 'idle';
+    realtimeMistralCheckpointUsedRef.current = null;
     sessionGenerationRef.current += 1;
     void realtimeRef.current?.stop(reason);
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
@@ -385,6 +418,23 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [setSessionPhase, stopSpeaking]);
 
   const stop = useCallback((): void => stopWithReason('user'), [stopWithReason]);
+
+  useEffect(() => {
+    const controller = realtimeRef.current;
+    if (controller === null) return;
+    const clientChanged = realtimeControllerClientRef.current !== client;
+    const usedCheckpoint = realtimeMistralCheckpointUsedRef.current;
+    const checkpointChanged = usedCheckpoint !== null
+      && usedCheckpoint !== mistralConversationCheckpoint;
+    if (!clientChanged && !checkpointChanged) return;
+
+    // Defense en profondeur sous la frontiere keyee de _layout : invalider synchroniquement les
+    // callbacks UI, puis fermer l'ancienne mission avant qu'un futur start ne capture B.
+    stopWithReason('unmount');
+    if (realtimeRef.current === controller) realtimeRef.current = null;
+    realtimeControllerClientRef.current = client;
+    realtimeMistralCheckpointUsedRef.current = null;
+  }, [client, mistralConversationCheckpoint, stopWithReason]);
 
   const say = useCallback(
     async (
@@ -657,6 +707,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
   const start = useCallback((): void => {
     if (activeRef.current) return;
+    if (mistralConversationCheckpointRef.current === null) {
+      // Le tap Bob est le retry utilisateur explicite. La mission courante reste fail-closed ;
+      // une reprise reussie publiera la capability pour le prochain demarrage.
+      retryMistralConversationCheckpoint?.();
+    }
     // Nouvelle session = nouvelle mission : guidages, historique et disjoncteur repartent à zéro.
     spokenGreetingsRef.current.clear();
     historyRef.current = [];
@@ -710,7 +765,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         void say(t('live.on', { personality }), true);
       }
     })();
-  }, [personality, say, speakGreeting]);
+  }, [personality, retryMistralConversationCheckpoint, say, speakGreeting]);
 
   const dismissResponse = useCallback((): void => {
     setResponse(null);

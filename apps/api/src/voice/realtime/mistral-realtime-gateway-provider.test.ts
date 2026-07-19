@@ -21,6 +21,7 @@ const SETTINGS: RealtimeVoiceSettings = {
   localAuditToken: 'audit-token',
   mistralTargetDelayMs: 240,
   mistralWebsocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+  mistralV2InitialBootstrapEnabled: false,
 };
 
 describe('MistralRealtimeGatewayProviderAdapter', () => {

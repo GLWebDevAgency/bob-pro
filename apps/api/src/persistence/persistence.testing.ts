@@ -47,6 +47,9 @@ import {
 } from '../voice/realtime/realtime-control.repository';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
+import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
+import type { MistralConversationBootstrapReaperPort } from '../voice/realtime/mistral-conversation-bootstrap-reaper';
+import type { BobLiveSubjectHmacKeyRingAdmission } from '../voice/realtime/mistral-conversation-subject-key-version';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -137,8 +140,15 @@ export class InMemoryPersistence implements Persistence {
   }
   createMistralConversationTerminalReplayAuthorities(
     _keys: MistralConversationPersistenceKeyRing,
+    _identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+    _subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    _admissionPolicy: MistralConversationAdmissionPolicy,
   ): MistralConversationTerminalReplayAuthorities | null {
     // Le harness mémoire ne fabrique jamais de mission, ticket ou outbox v2.
+    return null;
+  }
+  createMistralConversationBootstrapReaper(): MistralConversationBootstrapReaperPort | null {
+    // Une purge globale multi-tenant n'a volontairement aucun double de production en mémoire.
     return null;
   }
 

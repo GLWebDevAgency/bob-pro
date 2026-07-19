@@ -2,6 +2,7 @@ import {
   isAllowedAgentNavigationRoute,
   type AgentRun,
   type JournalEntry,
+  type MistralConversationSessionEndReason,
   type PendingAction,
 } from '@bob/ai';
 import { isCustomPrestationId, parseCustomPrestation } from '@bob/core';
@@ -95,6 +96,8 @@ import type {
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
   RealtimeVoiceCallInput,
+  RealtimeVoiceBootstrapReconciliationInput,
+  RealtimeVoiceBootstrapReconciliationResult,
   RealtimeVoiceResumeTicketInput,
   RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
@@ -191,10 +194,23 @@ const REALTIME_SPEECH_MAX_WAIT_MS = 2_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
 const MISTRAL_REALTIME_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN = /^b2_[A-Za-z0-9_-]{43}$/;
 const MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN = /^r2_[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const COMPANY_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+const MISTRAL_CONVERSATION_BOOTSTRAP_RECONCILIATION_MAX_ATTEMPTS = 8;
 const MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH = 0x7fff_ffff;
 const MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR = 0x1_0000_0000;
+const MISTRAL_CONVERSATION_SESSION_END_REASONS = new Set<MistralConversationSessionEndReason>([
+  'user',
+  'background',
+  'context_changed',
+  'client_handoff',
+  'expired',
+  'service_shutdown',
+  'fatal_error',
+]);
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 const REALTIME_SPEECH_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
   'audio/mpeg',
   'audio/wav',
@@ -210,6 +226,17 @@ const REALTIME_SPEECH_CANCELLATION_REASONS = new Set<RealtimeVoiceSpeechCancella
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCanonicalBase64Url256Ticket(value: unknown, prefix: 'b2_' | 'r2_'): value is string {
+  if (typeof value !== 'string' || value.length !== prefix.length + 43 || !value.startsWith(prefix)) {
+    return false;
+  }
+  const payload = value.slice(prefix.length);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(payload)) return false;
+  const lastIndex = BASE64URL_ALPHABET.indexOf(payload.at(-1) ?? '');
+  // 32 octets produisent 43 caractères : les deux bits bas du dernier sextet sont nuls.
+  return lastIndex >= 0 && lastIndex % 4 === 0;
 }
 
 function assertSecureApiBaseUrl(value: string): void {
@@ -296,6 +323,17 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isMistralConversationSessionEndReason(
+  value: unknown,
+): value is MistralConversationSessionEndReason {
+  return (
+    typeof value === 'string' &&
+    MISTRAL_CONVERSATION_SESSION_END_REASONS.has(
+      value as MistralConversationSessionEndReason,
+    )
+  );
 }
 
 const CUSTOMER_LIST_ITEM_FIELDS = [
@@ -1004,6 +1042,11 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     value.maxSessionSeconds < 60 ||
     value.maxSessionSeconds > 900 ||
     value.speechDelivery !== 'audited-signed-url-v1' ||
+    (value.transport === 'webrtc' && value.protocol !== undefined) ||
+    (value.transport === 'mistral-pcm' &&
+      value.protocol !== undefined &&
+      value.protocol !== 'bob.mistral-pcm.v1' &&
+      value.protocol !== 'bob.mistral-pcm.v2') ||
     (value.availabilityReason !== undefined &&
       value.availabilityReason !== 'disabled' &&
       value.availabilityReason !== 'not_entitled' &&
@@ -1026,6 +1069,10 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     requiresDevelopmentBuild: true,
     maxSessionSeconds: value.maxSessionSeconds,
     speechDelivery: 'audited-signed-url-v1',
+    ...(value.transport === 'mistral-pcm' &&
+      (value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
+      ? { protocol: value.protocol }
+      : {}),
   };
 }
 
@@ -1165,6 +1212,52 @@ function decodeRealtimeVoiceCall(
   }
 
   if (value.transport === 'mistral-pcm') {
+    if (value.protocol === 'bob.mistral-pcm.v2') {
+      if (
+        !hasExactKeys(value, [
+          ...commonKeys,
+          'websocketUrl',
+          'companyId',
+          'ticket',
+          'protocol',
+          'ticketExpiresAt',
+          'maxMissionAudioBytes',
+          'contextRevision',
+          'contextDigest',
+          'routeMode',
+          'fullDuplexCertified',
+        ])
+        || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl)
+        || typeof value.companyId !== 'string'
+        || !COMPANY_ID_PATTERN.test(value.companyId)
+        || value.companyId !== expectedCompanyId
+        || typeof value.ticket !== 'string'
+        || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(value.ticket)
+        || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
+        || Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt)
+        || !isBoundedInteger(value.maxMissionAudioBytes, 320, 28_800_000)
+        || value.maxMissionAudioBytes % 320 !== 0
+        || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
+        || typeof value.contextDigest !== 'string'
+        || !SHA_256_PATTERN.test(value.contextDigest)
+        || value.routeMode !== 'push_to_talk'
+        || value.fullDuplexCertified !== false
+      ) return null;
+      return {
+        transport: 'mistral-pcm',
+        websocketUrl: value.websocketUrl,
+        companyId: value.companyId,
+        ticket: value.ticket,
+        protocol: value.protocol,
+        ticketExpiresAt: value.ticketExpiresAt,
+        maxMissionAudioBytes: value.maxMissionAudioBytes,
+        contextRevision: value.contextRevision,
+        contextDigest: value.contextDigest,
+        routeMode: value.routeMode,
+        fullDuplexCertified: value.fullDuplexCertified,
+        ...common,
+      };
+    }
     if (
       !hasExactKeys(value, [
         ...commonKeys,
@@ -1220,7 +1313,51 @@ function decodeRealtimeVoiceResumeTicket(
 ): RealtimeVoiceResumeTicketResult | null {
   if (!isRecord(value)) return null;
   if (value.status === 'terminal_complete') {
-    return hasExactKeys(value, ['status']) ? { status: 'terminal_complete' } : null;
+    if (
+      !hasExactKeys(value, [
+        'status',
+        'companyId',
+        'sessionHandle',
+        'protocol',
+        'missionConnectionEpoch',
+        'nextServerSequence',
+        'reason',
+        'closedAt',
+      ]) ||
+      value.companyId !== expected.companyId ||
+      value.sessionHandle !== expected.sessionHandle ||
+      value.protocol !== 'bob.mistral-pcm.v2' ||
+      !isBoundedInteger(
+        value.missionConnectionEpoch,
+        1,
+        MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+      ) ||
+      value.missionConnectionEpoch < expected.input.missionConnectionEpoch ||
+      !isBoundedInteger(
+        value.nextServerSequence,
+        3,
+        MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+      ) ||
+      value.nextServerSequence < expected.input.nextServerSequence ||
+      (
+        value.missionConnectionEpoch > expected.input.missionConnectionEpoch &&
+        value.nextServerSequence <= expected.input.nextServerSequence
+      ) ||
+      !isMistralConversationSessionEndReason(value.reason) ||
+      !isCanonicalIsoTimestamp(value.closedAt)
+    ) {
+      return null;
+    }
+    return {
+      status: value.status,
+      companyId: value.companyId,
+      sessionHandle: value.sessionHandle,
+      protocol: value.protocol,
+      missionConnectionEpoch: value.missionConnectionEpoch,
+      nextServerSequence: value.nextServerSequence,
+      reason: value.reason,
+      closedAt: value.closedAt,
+    };
   }
   if (
     value.status !== 'issued' ||
@@ -1282,6 +1419,67 @@ function decodeRealtimeVoiceResumeTicket(
     expectedMissionConnectionEpoch: value.expectedMissionConnectionEpoch,
     clientAcceptedMissionConnectionEpoch: value.clientAcceptedMissionConnectionEpoch,
     resumeNextServerSequence: value.resumeNextServerSequence,
+  };
+}
+
+function decodeRealtimeVoiceBootstrapReconciliation(
+  value: unknown,
+  expected: {
+    readonly apiBaseUrl: string;
+    readonly companyId: string;
+    readonly sessionHandle: string;
+  },
+): RealtimeVoiceBootstrapReconciliationResult | null {
+  if (!isRecord(value)) return null;
+  if (value.status === 'retry_initial' || value.status === 'attempt_consumed') {
+    return hasExactKeys(value, ['status']) ? { status: value.status } : null;
+  }
+  if (
+    value.status !== 'issued'
+    || !hasExactKeys(value, [
+      'status',
+      'websocketUrl',
+      'companyId',
+      'sessionHandle',
+      'ticket',
+      'protocol',
+      'scope',
+      'ticketExpiresAt',
+      'expectedMissionConnectionEpoch',
+      'clientAcceptedMissionConnectionEpoch',
+      'resumeNextServerSequence',
+    ])
+    || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl)
+    || typeof value.companyId !== 'string'
+    || !COMPANY_ID_PATTERN.test(value.companyId)
+    || value.companyId !== expected.companyId
+    || value.sessionHandle !== expected.sessionHandle
+    || typeof value.ticket !== 'string'
+    || !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket)
+    || !isCanonicalBase64Url256Ticket(value.ticket, 'r2_')
+    || value.protocol !== 'bob.mistral-pcm.v2'
+    || (value.scope !== 'live_takeover' && value.scope !== 'terminal_replay')
+    || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
+    || !isBoundedInteger(
+      value.expectedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    )
+    || value.clientAcceptedMissionConnectionEpoch !== 0
+    || value.resumeNextServerSequence !== 0
+  ) return null;
+  return {
+    status: 'issued',
+    websocketUrl: value.websocketUrl,
+    companyId: value.companyId,
+    sessionHandle: expected.sessionHandle,
+    ticket: value.ticket,
+    protocol: 'bob.mistral-pcm.v2',
+    scope: value.scope,
+    ticketExpiresAt: value.ticketExpiresAt,
+    expectedMissionConnectionEpoch: value.expectedMissionConnectionEpoch,
+    clientAcceptedMissionConnectionEpoch: 0,
+    resumeNextServerSequence: 0,
   };
 }
 
@@ -1741,6 +1939,7 @@ export class HttpBobClient implements BobClient {
       input.transport === 'mistral-pcm'
         ? {
             context: input.context,
+            ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           }
         : {
@@ -1809,6 +2008,55 @@ export class HttpBobClient implements BobClient {
           sessionHandle,
           input: body,
         }),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  reconcileRealtimeVoiceBootstrap(
+    sessionHandle: string,
+    input: RealtimeVoiceBootstrapReconciliationInput,
+    signal?: AbortSignal,
+  ) {
+    if (!MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceBootstrapReconciliationResult>(
+        'sessionHandle',
+        'La session de réconciliation Bob Live est invalide.',
+      );
+    }
+    if (
+      !isRecord(input)
+      || !hasExactKeys(input, ['protocol', 'bootstrapTicket', 'attempt'])
+      || input.protocol !== 'bob.mistral-pcm.v2'
+      || typeof input.bootstrapTicket !== 'string'
+      || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(input.bootstrapTicket)
+      || !isCanonicalBase64Url256Ticket(input.bootstrapTicket, 'b2_')
+      || !isBoundedInteger(
+        input.attempt,
+        1,
+        MISTRAL_CONVERSATION_BOOTSTRAP_RECONCILIATION_MAX_ATTEMPTS,
+      )
+      || Object.is(input.attempt, -0)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceBootstrapReconciliationResult>(
+        'reconciliation',
+        'La preuve de réconciliation Bob Live est invalide.',
+      );
+    }
+    const body: RealtimeVoiceBootstrapReconciliationInput = {
+      protocol: 'bob.mistral-pcm.v2',
+      bootstrapTicket: input.bootstrapTicket,
+      attempt: input.attempt,
+    };
+    return this.req<RealtimeVoiceBootstrapReconciliationResult>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/bootstrap-reconciliations`,
+      body,
+      undefined,
+      (value) => decodeRealtimeVoiceBootstrapReconciliation(value, {
+        apiBaseUrl: this.opts.baseUrl,
+        companyId: this.companyId,
+        sessionHandle,
+      }),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );

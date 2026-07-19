@@ -86,6 +86,7 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   private driftReported = false;
   private auditedFailureReported = false;
   private responseStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private microphoneRequested = false;
   private closed = false;
   private closeTask: Promise<void> | null = null;
 
@@ -164,18 +165,25 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   }
 
   setMicrophoneEnabled(enabled: boolean): void {
-    this.uplink.setMicrophoneEnabled(enabled);
+    this.microphoneRequested = enabled;
+    if (!enabled || !this.speechActive) this.uplink.setMicrophoneEnabled(enabled);
+  }
+
+  async synchronizePublishedContext(fence: RealtimePublishedContextFence): Promise<boolean> {
+    const synchronize = this.uplink.synchronizePublishedContext;
+    return synchronize === undefined ? true : synchronize.call(this.uplink, fence);
   }
 
   async finishUserInput(): Promise<boolean> {
     const accepted = await (this.uplink.finishUserInput?.() ?? Promise.resolve(false));
-    if (accepted && this.uplink.completesConversationAfterAuditedSpeech === true) {
-      this.armResponseStartTimeout();
-    }
+    if (accepted) this.armResponseStartTimeout();
     return accepted;
   }
 
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean {
+    // Toute interruption annule la reponse attendue. Le watchdog appartient au commit courant,
+    // jamais au prochain contexte ni a une utterance annulee.
+    this.clearResponseStartTimeout();
     const player = this.player;
     const hadSpeech = this.speechActive;
     if (player) {
@@ -190,6 +198,7 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   close(reason: RealtimeCloseReason): Promise<void> {
     if (this.closeTask) return this.closeTask;
     this.closed = true;
+    this.microphoneRequested = false;
     this.uplink.setMicrophoneEnabled(false);
     const task = this.performClose(reason).finally(() => {
       if (this.closeTask === task) this.closeTask = null;
@@ -220,6 +229,11 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
 
   private onUplinkEvent(event: RealtimeTransportEvent): void {
     if (this.closed) return;
+    if (event.type === 'user_input_committed') {
+      // Signal autoritatif commun au VAD automatique et au commit manuel. Le runtime ne
+      // l'emet qu'apres l'envoi local de turn.commit.
+      this.armResponseStartTimeout();
+    }
     if (event.type === 'bob_transcript' || event.type === 'agent_control_candidate') {
       this.reportProviderDownlinkDrift();
       return;
@@ -245,6 +259,8 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     if (event.type === 'speech_started') {
       this.clearResponseStartTimeout();
       this.speechActive = true;
+      // La sortie acoustique auditée possède alors le lease : aucune capture concurrente.
+      this.uplink.setMicrophoneEnabled(false);
       this.currentState = { ...this.currentState, phase: 'bob_speaking' };
       this.emit({ type: 'state', state: this.currentState });
       return;
@@ -265,6 +281,7 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
       }
       this.currentState = { ...this.currentState, phase: 'ready' };
       this.emit({ type: 'state', state: this.currentState });
+      if (this.microphoneRequested) this.uplink.setMicrophoneEnabled(true);
       return;
     }
     if (event.type === 'control_candidate') {
@@ -285,12 +302,15 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     if (this.closed || this.auditedFailureReported) return;
     this.auditedFailureReported = true;
     this.clearResponseStartTimeout();
+    this.uplink.setMicrophoneEnabled(false);
     this.emit({ type: 'error', code });
     this.emit({ type: 'fallback', reason: 'provider_error' });
   }
 
   private armResponseStartTimeout(): void {
-    this.clearResponseStartTimeout();
+    // finishUserInput() et l'evenement autoritatif peuvent arriver dans la meme pile. Garder
+    // l'echeance initiale evite un second timer et interdit de rallonger silencieusement le SLO.
+    if (this.closed || this.auditedFailureReported || this.responseStartTimer !== null) return;
     const configured = this.options.responseStartTimeoutMs ?? DEFAULT_RESPONSE_START_TIMEOUT_MS;
     const timeoutMs = Number.isInteger(configured)
       ? Math.min(MAX_RESPONSE_START_TIMEOUT_MS, Math.max(MIN_RESPONSE_START_TIMEOUT_MS, configured))

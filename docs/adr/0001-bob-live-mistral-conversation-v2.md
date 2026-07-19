@@ -2,12 +2,14 @@
 
 ## Statut
 
-Proposed — 2026-07-15, amendé le 2026-07-18 après revues adversariales croisées. Les codecs,
-reducers, gateway à ports et autorités PostgreSQL Mission/Outbox sont implémentés et testés. La
-capacité de replay terminal atomique décrite ici est une fondation serveur **dormante** : elle n'est
-ni émise par une route HTTP publique, ni composée dans le runtime actif. Le raccord mobile, le
-lease/reaper provider-neutral et les preuves acoustiques restent en construction. Le passage à
-`Accepted`, le rollout v2 et le duplex restent fermés jusqu'aux preuves appareil et SLO ci-dessous.
+Accepted / rollout fermé — 2026-07-15, amendé le 2026-07-19 après revues adversariales
+croisées. Codecs, reducers, gateway, bootstrap atomique, réconciliation de commit tardif, reprise
+terminale HTTP/WSS, checkpoint mobile auth-bound, VAD natif et rétention PostgreSQL ordonnée sont
+implémentés et testés. Le canary v2 reste explicitement `push_to_talk` et
+`fullDuplexCertified: false` : le provider/pipeline live serveur demeure fail-closed et aucune
+configuration publique ne doit promettre le duplex. L'acceptation porte sur l'architecture et les
+preuves terminales ; le rollout live reste fermé jusqu'à la composition, aux appareils et aux SLO
+ci-dessous.
 
 ## Contexte
 
@@ -21,16 +23,17 @@ composition Voxtral STT + LLM + Voxtral TTS, et non comme une session speech-to-
 elle-même la conversation. Bob doit donc être l'autorité du duplex, du contexte, des tours et des
 annulations.
 
-### État réel du code au 18 juillet 2026
+### État réel du code au 19 juillet 2026
 
 Le chantier a commencé avant l'acceptation de cette décision. Les éléments suivants existent dans
-le worktree et ne constituent pas encore, à eux seuls, une fonctionnalité v2 activable :
+le worktree et constituent un vertical canary contrôlé, pas encore une promesse duplex publique :
 
 - `mistral-conversation-protocol.ts` contient les codecs stricts, les reducers Mission/Turn, les
   budgets, les séquences, le curseur de reprise et l'ACK cumulatif ; sa suite ciblée est verte ;
-- le module natif iOS/Android publie PCM et événements VAD, le contrat TypeScript les fence, et un
-  ring borné reconstitue le pré-roll ; le lifecycle mobile v2 et le transport ne les consomment pas
-  encore de bout en bout ;
+- le module natif iOS/Android publie PCM et événements VAD, le contrat TypeScript les fence, un
+  ring borné reconstitue le pré-roll et le runtime mobile les consomme après `session.ready` et
+  publication du contexte. Les générations obsolètes, l'arrière-plan et l'ACK acoustique ferment
+  la capture ; la preuve sur appareils physiques reste à produire ;
 - `mistral-conversation-gateway-v2.ts` est un core expérimental à ports. Sa deadline fournisseur
   est désormais armée après l'ACK `turn.commit`. Son contrat exige un replay d'outbox contigu,
   conserve une mission sur perte de socket, fence les ACK par `missionConnectionEpoch`, borne la
@@ -40,18 +43,24 @@ le worktree et ne constituent pas encore, à eux seuls, une fonctionnalité v2 a
   l'outbox chiffrée et le fence multi-owner sont présents. Le nouveau chemin `r2_` ne peut pas
   retomber vers le bootstrap en deux transactions ; il accepte seulement `terminal_replay`, traite
   l'ACK reçu pendant `opening` et reste non composé ;
-- la route mobile déployable reste `bob.mistral-pcm.v1`, semi-duplex et one-shot. Elle annonce
-  honnêtement `fullDuplex: false` et `bargeIn: false` ;
+- la configuration garde v1 par défaut. v2 n'est annoncé qu'avec les flags canary explicites ; son
+  bootstrap reste `push_to_talk`, `fullDuplexCertified: false`, et le mobile refuse toute
+  heuristique de protocole ;
+- le flag de bootstrap n'est jamais une attestation live. La composition `terminal-replay-only`
+  publie `liveTurnsAvailable: false`; l'API conserve alors v1 dans sa configuration publique et
+  refuse avant admission toute création ou réconciliation v2. Son wrapper refuse également tout
+  ancien `b2_` et tout `r2_ live_takeover` avant délégation, y compris pendant un rolling deploy ;
 - les briques RLS, admission, reaper, stockage audité et fencing de réplica sont réutilisables. La
   persistance Mission/Turn et la concurrence d'owner sont certifiées séparément ; la reprise live
   par ticket reste volontairement interdite tant qu'un lease/reaper de mission provider-neutral
   n'existe pas.
 
-Manquent donc encore le transport mobile v2, le raccord VAD → interruption → nouveau tour, la
-lecture native interruptible, l'émission HTTP authentifiée/rate-limitée des tickets, le bootstrap
-initial atomique `redeemAndCreate`, le lease/reaper provider-neutral, les métriques Mistral et la
-certification acoustique sur appareils. Le flag de rollout doit rester éteint tant que cette liste
-n'est pas fermée.
+Restent bloquants avant ouverture : composer le provider/pipeline live multi-tour côté serveur,
+rendre le takeover mobile effectif après une perte WSS postérieure à `session.ready`, corréler un
+échec serveur pré-`turn.started` sans laisser de tour local orphelin, certifier
+AEC/barge-in/playback sur appareils physiques, mesurer les SLO Mistral par route/réseau, et
+exécuter le canary prolongé. Le flag de rollout doit rester éteint tant que ces preuves ne sont pas
+fermées.
 
 ## Décision drivers
 
@@ -230,11 +239,12 @@ mais ne draine ni ne ferme durablement la mission. Le prochain takeover annule l
 l'intervalle manquant. À l'inverse, `session.end`, expiration, arrêt de service et faute de protocole
 terminent explicitement la mission.
 
-Deux exigences restent bloquantes avant rollout : le bootstrap doit distinguer expiration de
-capacité et `replayGraceExpiresAt`, afin qu'un terminal `expired` perdu reste relisible sans rouvrir
-une capacité métier ; et le mobile/gateway doivent décider puis certifier l'ACK terminal permettant
-le pruning (la livraison est déjà rejouable sans lui, mais l'acquittement durable n'avance pas après
-`session.closed`).
+Le bootstrap distingue désormais expiration de capacité et `replayGraceExpiresAt`. L'ACK terminal
+avance durablement le curseur après sauvegarde locale, puis une route HTTP authentifiée renvoie un
+reçu terminal exact. Ce reçu minimal survit à la purge Mission : un mobile hors ligne peut donc
+écrire `closed` puis effacer son checkpoint sans interpréter un `not_found` comme une fermeture.
+La rétention ordonnée, les privilèges et le lifecycle de cette preuve sont détaillés dans
+[ADR-0003](0003-mistral-v2-ordered-retention.md).
 
 #### Capacité de reprise et grâce terminale
 
@@ -305,8 +315,10 @@ interdit de greffer après coup un faux ledger ACK sur une version produite par 
 Le gateway traite aussi l'ACK reçu synchroniquement pendant l'ouverture,
 préserve en FIFO tout ACK déjà admis même si une trame invalide le suit, attend une fenêtre courte
 bornée par `G`, puis ferme. Il réserve au moins 3 s à l'ACK avant d'autoriser l'envoi du replay ; la
-perte de cet ACK reste récupérable par un nouveau ticket. Une mission abandonnée par crash devient
-purgeable après sa rétention même si elle n'a jamais atteint `closed`.
+perte de cet ACK reste récupérable par un nouveau ticket. Une Mission qui n'atteint jamais
+`closed` reste volontairement non purgeable par l'autorité ordonnée : le reaper de terminaison doit
+d'abord produire les deux événements terminaux et confirmer le hangup, sans quoi l'incident demeure
+visible et fail-closed.
 
 Le token ACK est un secret CSPRNG distinct du token owner, hashé dans un autre domaine et borné à
 `min(G, consumedAt + 30 s)` (20 s par défaut). L'adapter pose son identifiant de connexion et son
@@ -415,6 +427,108 @@ continuité d'une conversation entre personnes sont explicitement hors scope de 
   Voxtral non documentés.
 
 ## Plan d'implémentation et gates
+
+### Lot A — bootstrap initial atomique (contrat binaire)
+
+Avant tout tour Voxtral, un harness d'intégration v2 doit fermer un vertical volontairement étroit :
+`POST /voice/realtime/calls` avec demande explicite v2 → ticket opaque → première trame WSS →
+création Mission + `session.ready` dans le même commit PostgreSQL → `session.end` → replay/ACK
+terminal existant. Ce lot ne rend pas encore les tours audio disponibles et ne doit donc jamais
+être annoncé ni émis par la configuration publique mobile. Le flag d'initial bootstrap, conservé
+pour la migration et les certificats, ne suffit jamais : seule une composition live explicite peut
+attester `liveTurnsAvailable: true`.
+
+Le bootstrap initial possède une autorité PostgreSQL dédiée. Son opération
+`redeemAndOpenInitial` verrouille le ticket, le bail d'admission et la clé de mission, relit
+`clock_timestamp()`, puis crée la mission et son outbox avant de consommer le ticket dans la même
+transaction. Le gateway n'appelle plus successivement `bootstrap.consume()` puis
+`authority.open()` : cette composition en deux transactions est interdite. Un crash avant commit
+laisse le ticket `issued` et réessayable ; après commit, le ticket est `consumed` et tout replay est
+refusé. La continuité après perte de route passe exclusivement par un ticket de reprise, jamais par
+la réutilisation du bootstrap initial.
+
+Le ticket initial est lié de façon immuable à : tenant, sujet HMAC + version, bail d'admission,
+session, plan, contexte canonique, route `push_to_talk`, budget audio, expiration dure et protocole
+`bob.mistral-pcm.v2`. Seul son hash domain-separated est stocké. Le contexte et l'entitlement
+proviennent de la réservation serveur réelle ; aucun champ autorisant n'est accepté depuis le
+mobile. La voix v2 reste mono-fournisseur Mistral et ce lot n'introduit aucune dépendance OpenAI.
+
+Critères d'acceptation du lot A :
+
+- sans flag serveur explicite ET capability live attestée, aucun bootstrap v2 ne peut être émis ni
+  annoncé ;
+- une requête v2 authentifiée et entitled reçoit un ticket v2, jamais un ticket v1 recodé ;
+- deux consommateurs concurrents donnent exactement un succès ;
+- crash/abort avant commit ne consomme ni ticket, ni bail, ni mission, ni outbox ;
+- le succès persiste ensemble ticket consommé, mission, bail exact et `session.ready` chiffré ;
+- ticket expiré, tenant croisé, contexte/bail divergent et curseur initial non nul échouent fermés ;
+- le live-shell accepte ACK et `session.end`, mais toute tentative de tour échoue sans fournisseur,
+  parole, contrôle ni action métier ;
+- la fermeture est récupérable par la route terminale déjà certifiée et devient
+  `terminal_complete` seulement après ACK durable ;
+- RLS forcée, immutabilité, rétention et concurrence sont certifiées sur PostgreSQL réel.
+
+#### Réconciliation d'un commit initial tardif
+
+Une deadline WebSocket est locale au processus : elle peut expirer pendant que PostgreSQL est
+déjà en train de valider la transaction initiale. Le commit peut alors persister ensemble Mission,
+bail actif, ticket `b2_` consommé et `session.ready`, sans que le mobile ait reçu le token owner.
+Cette issue n'est ni un rollback, ni un motif pour réutiliser `b2_`.
+
+Le client conserve donc `b2_` uniquement en mémoire jusqu'à réception de `session.ready`. Après
+une fermeture d'authentification ambiguë, il appelle une route HTTP authentifiée dédiée avec le
+handle, le ticket initial et une tentative bornée `1..8`. L'autorité relit sous RLS et verrous le
+ticket initial, son identité AEAD, la Mission, l'admission et l'outbox initiale. Elle répond :
+
+- `retry_initial` quand la transaction initiale n'a pas été commitée et que `b2_` reste valide ;
+- `issued` avec une capacité `r2_` exacte quand le commit initial est prouvé ;
+- `attempt_consumed` quand la capacité déterministe de cette tentative a déjà servi, afin que le
+  mobile incrémente la tentative sans réutiliser une capacité one-shot.
+
+Une capacité de réconciliation est déterminée par HMAC versionné et liée à tenant, sujet,
+bootstrap, session et numéro de tentative. Seuls son hash, sa version de clé et sa finalité sont
+persistés. Une répétition de la même tentative restitue le même ticket encore `issued`; elle ne
+crée pas un second owner. Une tentative suivante n'est autorisée qu'après consommation ou
+expiration de la précédente. Le scope vaut `live_takeover` uniquement si le bail exact est actif
+avant H, sinon `terminal_replay` dans la fenêtre H→G. Cette exception ciblée n'active jamais la
+politique générale de reprise live, qui reste fermée.
+
+Le endpoint refuse tenant, sujet, identité AEAD, binding bootstrap/Mission, protocole ou version
+de clé divergents. Il n'accepte aucun curseur client inventé : l'epoch accepté et la séquence sont
+zéro pour cette seule finalité, puis l'ouverture WSS recalcule l'état depuis la Mission. La preuve
+de livraison exige une certification PostgreSQL FORCE RLS couvrant commit tardif, réponse HTTP
+perdue, concurrence, rotation, expiration, phase terminale et impossibilité d'utiliser une
+capacité standard pour un takeover live.
+
+La réconciliation ne recalcule pas le pseudonyme historique avec la seule clé HMAC « courante » :
+une rotation entre le commit et le retry rendrait sinon la preuve valide introuvable. Elle compare
+l'utilisateur authentifié à l'identité AEAD scellée dans le bootstrap, puis reprend le sujet et sa
+version depuis cette preuve durable et vérifie leur égalité avec la Mission et l'admission.
+
+La rotation des deux secrets utilisés par ce chemin fait partie du contrat transactionnel, pas
+d'une simple configuration de déploiement. Le keyring d'identité AEAD doit conserver toute version
+encore référencée par une preuve bootstrap jusqu'à sa purge après `retentionExpiresAt`; un runtime
+qui ne connaît que la clé courante est interdit. De même, la version HMAC qui dérive `r2_` participe
+au registre durable anti-rollback des clés de persistance : son insertion prend le même verrou de
+version que l'outbox et les commandes, et le rituel de retrait refuse toute version encore
+référencée par une ligne de réconciliation retenue. Une rotation ou un déploiement mixte ne peut
+donc rendre irrécupérable ni une identité bootstrap, ni une réponse HTTP `issued` perdue.
+
+Le pseudonyme sujet possède son propre keyring et son propre registre append-only de fingerprints.
+La route de reprise calcule les bindings de toutes les versions conservées côté serveur ; aucune
+ancienne clé n'est envoyée au mobile. Le rituel de release refuse une clé rebinding, une version
+absente du keyring ou le retrait d'une version encore référencée par un bootstrap, une Mission ou
+un reçu terminal durable. Cette famille cryptographique reste distincte de l'AEAD identité et des
+clés de persistance/outbox.
+
+Le rituel de release n'est pas la seule barrière. Avant d'exposer le runtime v2, le boot compare
+les empreintes exactes de la plage de writers et de chaque version réellement retenue à son
+keyring local. Une fonction PostgreSQL `SECURITY DEFINER` minimale ne retourne que ces numéros de
+version et leurs empreintes, jamais tenant, sujet ou secret ; elle est nécessaire sous `FORCE RLS`
+pour voir les preuves de tous les tenants. Une clé historique absente ou modifiée, une version
+courante non préparée, ou un binding incomplet empêchent donc aussi un démarrage manuel hors du
+pipeline. Le trigger writer exige lui-même un binding avant toute insertion, ce qui ferme la
+fenêtre entre migration et `stage`.
 
 1. Codecs v2 et machines d'état — implémentés ; figer leur contrat après seconde revue.
 2. Gateway multi-tour push-to-talk : fermer deadlines post-commit, contrôle verrouillé, historique

@@ -71,6 +71,15 @@ import {
 } from '../../voice/realtime/mistral-conversation-resume-ticket';
 import { PrismaMistralConversationResumeAuthority } from '../../voice/realtime/mistral-conversation-resume-ticket.prisma';
 import { PrismaMistralConversationKeyVersionAuthority } from '../../voice/realtime/mistral-conversation-key-version.prisma';
+import { PrismaMistralConversationBootstrapTicketAuthority } from '../../voice/realtime/mistral-conversation-bootstrap-ticket.prisma';
+import type { MistralConversationAdmissionPolicy } from '../../voice/realtime/mistral-conversation-admission';
+import { PrismaMistralConversationAdmissionAuthority } from '../../voice/realtime/mistral-conversation-admission.prisma';
+import { PrismaMistralConversationBootstrapReaper } from '../../voice/realtime/mistral-conversation-bootstrap-reaper.prisma';
+import type { MistralConversationBootstrapReaperPort } from '../../voice/realtime/mistral-conversation-bootstrap-reaper';
+import {
+  PrismaBobLiveSubjectHmacKeyVersionAuthority,
+} from '../../voice/realtime/mistral-conversation-subject-key-version.prisma';
+import type { BobLiveSubjectHmacKeyRingAdmission } from '../../voice/realtime/mistral-conversation-subject-key-version';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -142,6 +151,9 @@ export class PrismaPersistence implements Persistence {
 
   createMistralConversationTerminalReplayAuthorities(
     keys: MistralConversationPersistenceKeyRing,
+    identityKeys: MistralRealtimeIngressIdentityKeyRing | null,
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    admissionPolicy: MistralConversationAdmissionPolicy,
   ): MistralConversationTerminalReplayAuthorities {
     const currentSecret = keys.secret(keys.currentVersion);
     if (!(currentSecret instanceof Uint8Array) || currentSecret.byteLength !== 32) {
@@ -151,6 +163,10 @@ export class PrismaPersistence implements Persistence {
       this.prisma,
       keys.currentVersion,
       currentSecret,
+    );
+    const subjectKeyVersions = new PrismaBobLiveSubjectHmacKeyVersionAuthority(
+      this.prisma,
+      subjectKeys,
     );
     const durable = new PrismaMistralConversationDurableAuthority(
       this.prisma,
@@ -163,12 +179,41 @@ export class PrismaPersistence implements Persistence {
         // Aucun réglage d'environnement ne peut élargir ce plancher de sécurité.
         liveTakeoverEnabled: false,
       },
+      ...(identityKeys ? {
+        reconciliationKeys: keys,
+        reconciliationIdentityKeys: identityKeys,
+      } : {}),
     });
+    const admission = new PrismaMistralConversationAdmissionAuthority(
+      this.prisma,
+      admissionPolicy,
+    );
+    const initialBootstrap = identityKeys
+      ? new PrismaMistralConversationBootstrapTicketAuthority(
+          this.prisma,
+          durable,
+          identityKeys,
+          undefined,
+          undefined,
+          admissionPolicy,
+        )
+      : null;
     return Object.freeze({
       durable,
       resume,
-      assertCurrentKeyVersion: () => keyVersions.assertCurrentVersion(),
+      initialBootstrap,
+      admission,
+      termination: durable,
+      assertCurrentKeyVersion: async () => {
+        // Les deux attestations sont séquentielles et échouent sans exposer leurs matériaux.
+        await keyVersions.assertCurrentVersion();
+        await subjectKeyVersions.assertCurrentVersion();
+      },
     });
+  }
+
+  createMistralConversationBootstrapReaper(): MistralConversationBootstrapReaperPort {
+    return new PrismaMistralConversationBootstrapReaper(this.prisma);
   }
 
   constructor(private readonly prisma: PrismaService) {

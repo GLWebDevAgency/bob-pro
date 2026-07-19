@@ -72,6 +72,11 @@ export interface RealtimeResilienceOptions {
   readonly reconnectDelayMs?: (input: RealtimeReconnectDelayInput) => number;
   readonly disconnectedGraceMs?: number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
+  /**
+   * V2 possède sa réconciliation de route dans le transport. `0` interdit à l'orchestrateur de
+   * créer une seconde mission HTTP quand la mission durable vient d'échouer.
+   */
+  readonly maxReconnectAttempts?: 0 | 1;
 }
 
 interface PrimaryAttempt {
@@ -137,6 +142,7 @@ export class RealtimeResilienceOrchestrator {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly reconnectDelay: (input: RealtimeReconnectDelayInput) => number;
   private readonly disconnectedGraceMs: number;
+  private readonly maxReconnectAttempts: 0 | 1;
   private sessionGeneration = 0;
   private reconnectAttempts = 0;
   private primary: PrimaryAttempt | null = null;
@@ -156,6 +162,7 @@ export class RealtimeResilienceOrchestrator {
       options.disconnectedGraceMs ?? DEFAULT_DISCONNECTED_GRACE_MS,
       DEFAULT_DISCONNECTED_GRACE_MS,
     );
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? MAX_RECONNECT_ATTEMPTS;
   }
 
   get state(): RealtimeResilienceState {
@@ -464,7 +471,7 @@ export class RealtimeResilienceOrchestrator {
 
     if (
       classifyRealtimeFailure(reason) === 'transient'
-      && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS
+      && this.reconnectAttempts < this.maxReconnectAttempts
     ) {
       this.reconnectAttempts += 1;
       let requestedDelay = DEFAULT_RECONNECT_DELAY_MS;

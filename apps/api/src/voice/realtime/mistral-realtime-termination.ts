@@ -4,7 +4,6 @@ import {
   type RealtimeDatabaseHardExpiryProof,
 } from './realtime-admission';
 import type { MistralRealtimeGatewayProviderConnection } from './mistral-realtime-gateway';
-import type { RealtimeProviderTerminationAdapter } from './realtime-provider-registry';
 
 const MAX_TRACKED_CONNECTIONS = 20_000;
 const TERMINAL_PROOF_RETENTION_MS = 60_000;
@@ -47,7 +46,7 @@ export class MistralRealtimeTerminationError extends Error {
  * hangup avant le hard cap uniquement lorsqu'elle possède réellement la connexion. Après le hard
  * cap, une preuve issue de l'horloge DB permet au reaper de terminer le bail sans inventer d'egress.
  */
-export class MistralRealtimeTerminationAuthority implements RealtimeProviderTerminationAdapter {
+export class MistralRealtimeTerminationAuthority {
   readonly providerId = 'mistral' as const;
   private readonly connections = new Map<string, TrackedConnection>();
   private readonly terminalProofs = new Map<string, number>();

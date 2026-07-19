@@ -6,6 +6,7 @@ import {
   loadEnv,
   resolveBobLiveEnv,
   resolveMistralConversationPersistenceKeyRing,
+  resolveMistralV2IdentityEncryptionKeyRing,
   type Env,
 } from '../../config/env';
 import { allowedCorsOrigins } from '../../config/cors';
@@ -25,6 +26,12 @@ import {
   REALTIME_REAPER_TENANT_DIRECTORY,
   RealtimeAdmissionReaperScheduler,
 } from './realtime-reaper.scheduler';
+import {
+  MISTRAL_CONVERSATION_BOOTSTRAP_REAPER,
+  MISTRAL_CONVERSATION_BOOTSTRAP_REAPER_OPTIONS,
+  MistralConversationBootstrapReaperScheduler,
+  type MistralConversationBootstrapReaperOptions,
+} from './mistral-conversation-bootstrap-reaper.scheduler';
 import { RealtimeSidebandManager } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
@@ -56,6 +63,7 @@ import {
 import { MistralRealtimeAgentSink } from './mistral-realtime-agent-sink';
 import { MistralRealtimeGatewayProviderAdapter } from './mistral-realtime-gateway-provider';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import { MistralConversationTerminationRouter } from './mistral-conversation-reaper-termination';
 import {
   RealtimeProviderTerminationRegistry,
   realtimeProviderTerminationAdapter,
@@ -69,6 +77,7 @@ import {
   type MistralConversationTerminalReplayRuntime,
 } from './mistral-conversation-terminal-replay';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
+import { DisabledMistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
 import {
   ActiveMistralRealtimeIngressRuntime,
   DisabledMistralRealtimeIngressRuntime,
@@ -78,6 +87,7 @@ import {
   MISTRAL_REALTIME_INGRESS_RUNTIME,
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   MISTRAL_CONVERSATION_RESUME_AUTHORITY,
+  MISTRAL_CONVERSATION_BOOTSTRAP_AUTHORITY,
   MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
@@ -209,21 +219,24 @@ const providerTerminationRegistryProvider: Provider = {
     REALTIME_VOICE_SETTINGS,
     OPENAI_REALTIME_CALL_PROVIDER,
     MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+    MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
   ],
   useFactory: (
     settings: RealtimeVoiceSettings,
     openAi: OpenAiRealtimeCallProvider,
     mistral: MistralRealtimeTerminationAuthority | null,
+    conversation: MistralConversationTerminalReplayRuntime | null,
   ) => {
-    // Une seule route est enregistrée, celle du profil actif. Le gateway reçoit ci-dessous la
-    // même instance Mistral ; aucune réplique ne peut donc simuler un hangup vers l'autre provider.
-    const adapters = !settings.enabled
-      ? []
-      : settings.provider === 'openai'
-        ? [realtimeProviderTerminationAdapter('openai', openAi)]
-        : mistral
-          ? [mistral]
-          : [];
+    const adapters = [];
+    if (settings.enabled && settings.provider === 'openai') {
+      adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
+    }
+    if (mistral || conversation) {
+      adapters.push(new MistralConversationTerminationRouter(
+        mistral,
+        conversation?.termination ?? null,
+      ));
+    }
     return new RealtimeProviderTerminationRegistry(adapters);
   },
 };
@@ -291,9 +304,28 @@ export async function buildMistralConversationTerminalReplayRuntime(
   if (!live.mistralV2TerminalReplayEnabled) return null;
   const keys = resolveMistralConversationPersistenceKeyRing(env);
   if (!keys) throw new Error('Mistral conversation persistence keyring is unavailable.');
-  const authorities = persistence.createMistralConversationTerminalReplayAuthorities(keys);
+  const identityKeys = resolveMistralV2IdentityEncryptionKeyRing(env);
+  if (live.mistralV2InitialBootstrapEnabled && !identityKeys) {
+    throw new Error('Mistral conversation bootstrap identity keyring is unavailable.');
+  }
+  const subjectKeys = live.subjectHmacKeyRing;
+  if (!subjectKeys || subjectKeys.secret(subjectKeys.currentVersion) === null) {
+    throw new Error('Bob Live subject HMAC keyring is unavailable for durable replay.');
+  }
+  const authorities = persistence.createMistralConversationTerminalReplayAuthorities(
+    keys,
+    identityKeys,
+    subjectKeys,
+    {
+      activeLeaseSeconds: live.activeLeaseSeconds,
+      heartbeatSeconds: live.heartbeatSeconds,
+    },
+  );
   if (!authorities) {
     throw new Error('Mistral conversation PostgreSQL terminal replay authority is unavailable.');
+  }
+  if (live.mistralV2InitialBootstrapEnabled && !authorities.initialBootstrap) {
+    throw new Error('Mistral conversation PostgreSQL bootstrap authority is unavailable.');
   }
   await authorities.assertCurrentKeyVersion();
   return createMistralConversationTerminalReplayRuntime(authorities);
@@ -313,6 +345,38 @@ const mistralConversationResumeAuthorityProvider: Provider = {
   inject: [MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME],
   useFactory: (runtime: MistralConversationTerminalReplayRuntime | null) =>
     runtime?.resume ?? new DisabledMistralConversationResumeAuthority(),
+};
+
+const mistralConversationBootstrapAuthorityProvider: Provider = {
+  provide: MISTRAL_CONVERSATION_BOOTSTRAP_AUTHORITY,
+  inject: [MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME],
+  useFactory: (runtime: MistralConversationTerminalReplayRuntime | null) =>
+    runtime?.initialBootstrap ?? new DisabledMistralConversationBootstrapTicketAuthority(),
+};
+
+export function buildMistralConversationBootstrapReaperOptions(
+  env: Env = loadEnv(),
+): MistralConversationBootstrapReaperOptions {
+  const live = resolveBobLiveEnv(env);
+  return Object.freeze({
+    // Aucun second feature flag : le replay terminal implique sa rétention, y compris en drain.
+    enabled: live.mistralV2TerminalReplayEnabled,
+    intervalMs: live.mistralV2BootstrapReaperIntervalMs,
+    batchSize: live.mistralV2BootstrapReaperBatchSize,
+    maxBatchesPerSweep: live.mistralV2BootstrapReaperMaxBatches,
+  });
+}
+
+const mistralConversationBootstrapReaperProvider: Provider = {
+  provide: MISTRAL_CONVERSATION_BOOTSTRAP_REAPER,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) =>
+    persistence.createMistralConversationBootstrapReaper(),
+};
+
+const mistralConversationBootstrapReaperOptionsProvider: Provider = {
+  provide: MISTRAL_CONVERSATION_BOOTSTRAP_REAPER_OPTIONS,
+  useFactory: () => buildMistralConversationBootstrapReaperOptions(),
 };
 
 const mistralRealtimeIngressRuntimeProvider: Provider = {
@@ -482,6 +546,9 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeDurableControlProvider,
     mistralConversationTerminalReplayRuntimeProvider,
     mistralConversationResumeAuthorityProvider,
+    mistralConversationBootstrapAuthorityProvider,
+    mistralConversationBootstrapReaperProvider,
+    mistralConversationBootstrapReaperOptionsProvider,
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,
@@ -490,6 +557,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeSpeechSourcePolicyProvider,
     mistralRealtimeIngressRuntimeProvider,
     RealtimeAdmissionReaperScheduler,
+    MistralConversationBootstrapReaperScheduler,
     RealtimeVoiceService,
   ],
   exports: [MISTRAL_REALTIME_INGRESS_RUNTIME],

@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -73,6 +73,8 @@ describe.skipIf(!RUN_MUTATION_CERT)(
     const companyId = `mistral-key-rotation-${suffix}`;
     let admins: [PrismaClient, PrismaClient, PrismaClient];
     let worker: PrismaService;
+    let identityKeyVersion: number;
+    let subjectKeyVersion: number;
 
     function keySecret(version: number): Uint8Array {
       return new Uint8Array(32).fill(version % 256);
@@ -122,33 +124,173 @@ describe.skipIf(!RUN_MUTATION_CERT)(
       );
     }
 
+    function digest(label: string): string {
+      return createHash('sha256')
+        .update(`mistral-key-rotation:${suffix}:${label}`, 'utf8')
+        .digest('hex');
+    }
+
     function grant(label: string): MistralConversationBootstrapGrant {
+      const admissionSessionId = randomUUID().toLowerCase();
       return {
         bootstrapId: randomUUID(),
-        admissionSessionId: randomUUID(),
+        admissionSessionId,
         companyId,
-        subjectHash: 'a'.repeat(64),
-        subjectKeyVersion: 1,
+        subjectHash: digest(`subject:${label}`),
+        subjectKeyVersion,
         plan: 'pro',
-        sessionHandle: `mistral_rotation_${suffix}_${label}`,
+        sessionHandle: admissionSessionId,
         hardExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
         contextRevision: 1,
-        contextDigest: 'b'.repeat(64),
+        contextDigest: digest(`context:${label}`),
         routeMode: 'push_to_talk',
         fullDuplexCertified: false,
         maxMissionAudioBytes: 320_000,
       };
     }
 
-    function open(version: number, label: string) {
-      return authority(version).open({
-        grant: grant(label),
+    async function seedGrantEvidence(
+      missionGrant: MistralConversationBootstrapGrant,
+    ): Promise<void> {
+      const now = Date.now();
+      const hardExpiresAt = new Date(missionGrant.hardExpiresAt);
+      if (
+        !Number.isFinite(hardExpiresAt.getTime())
+        || hardExpiresAt.getTime() <= now
+        || missionGrant.sessionHandle !== missionGrant.admissionSessionId.toLowerCase()
+      ) {
+        throw new Error('Invalid exact Mistral key-rotation certification grant.');
+      }
+      const issuedAt = new Date(now - 1_000);
+      const ticketExpiresAt = new Date(Math.min(now + 60_000, hardExpiresAt.getTime()));
+      const retentionExpiresAt = new Date(hardExpiresAt.getTime() + 24 * 60 * 60_000);
+      const leaseTokenHash = digest(`lease:${missionGrant.bootstrapId}`);
+      const ticketHash = digest(`ticket:${missionGrant.bootstrapId}`);
+      const providerCallId = `mcv2:${missionGrant.bootstrapId}`;
+
+      await worker.withTenant(missionGrant.companyId, async (tx) => {
+        await tx.$executeRaw`
+          INSERT INTO realtime_session_leases (
+            "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+            "providerId", "providerCallId", "reservedAt", "leaseExpiresAt", "hardExpiresAt",
+            "activatedAt", "contextSchemaVersion", "contextRevision", "contextPayload",
+            "contextDigest", "contextUpdatedAt", "updatedAt", version
+          ) VALUES (
+            ${missionGrant.companyId}, ${missionGrant.subjectHash},
+            ${missionGrant.admissionSessionId}::uuid, ${leaseTokenHash}, 'active', 'mistral',
+            ${providerCallId}, ${issuedAt}, ${hardExpiresAt}, ${hardExpiresAt}, ${issuedAt}, 1,
+            ${missionGrant.contextRevision},
+            ${JSON.stringify({ screen: { name: '/certification/key-rotation' } })}::jsonb,
+            ${missionGrant.contextDigest}, ${issuedAt}, ${issuedAt}, 3
+          )
+        `;
+        await tx.$executeRaw`
+          INSERT INTO realtime_mistral_conversation_bootstrap_tickets (
+            id, "companyId", "admissionSessionId", "sessionHandle", "subjectHash",
+            "subjectKeyVersion", "admissionLeaseTokenHash", "ticketHash", protocol, state, plan,
+            "contextSchemaVersion", "contextRevision", "contextSnapshot", "contextDigest",
+            "userIdentityCiphertext", "userIdentityNonce", "userIdentityTag",
+            "identityEncryptionKeyVersion", "routeMode", "fullDuplexCertified",
+            "maxMissionAudioBytes", "issuedAt", "ticketExpiresAt", "leaseExpiresAt",
+            "hardExpiresAt", "consumedAt", "retentionExpiresAt", version, "updatedAt"
+          ) VALUES (
+            ${missionGrant.bootstrapId}::uuid, ${missionGrant.companyId},
+            ${missionGrant.admissionSessionId}::uuid, ${missionGrant.sessionHandle},
+            ${missionGrant.subjectHash}, ${missionGrant.subjectKeyVersion}, ${leaseTokenHash},
+            ${ticketHash}, 'bob.mistral-pcm.v2', 'issued', ${missionGrant.plan}, 1,
+            ${missionGrant.contextRevision},
+            ${JSON.stringify({ version: 1, revision: missionGrant.contextRevision, context: {} })}::jsonb,
+            ${missionGrant.contextDigest}, decode('aa', 'hex'), decode(repeat('11', 12), 'hex'),
+            decode(repeat('22', 16), 'hex'), ${identityKeyVersion}, ${missionGrant.routeMode},
+            ${missionGrant.fullDuplexCertified}, ${missionGrant.maxMissionAudioBytes}, ${issuedAt},
+            ${ticketExpiresAt}, ${hardExpiresAt}, ${hardExpiresAt}, NULL, ${retentionExpiresAt},
+            1, ${issuedAt}
+          )
+        `;
+
+        const [evidence] = await tx.$queryRaw<Array<{
+          admissionSessionId: string;
+          admissionLeaseTokenHash: string;
+          companyId: string;
+          contextDigest: string;
+          fullDuplexCertified: boolean;
+          hardExpiresAt: Date;
+          identityEncryptionKeyVersion: number;
+          maxMissionAudioBytes: number;
+          plan: string;
+          providerCallId: string | null;
+          providerId: string | null;
+          routeMode: string;
+          sessionHandle: string;
+          state: string;
+          subjectHash: string;
+          subjectKeyVersion: number;
+        }>>`
+          SELECT bootstrap."admissionSessionId"::text AS "admissionSessionId",
+                 btrim(bootstrap."admissionLeaseTokenHash") AS "admissionLeaseTokenHash",
+                 bootstrap."companyId", btrim(bootstrap."contextDigest") AS "contextDigest",
+                 bootstrap."fullDuplexCertified", bootstrap."hardExpiresAt",
+                 bootstrap."identityEncryptionKeyVersion", bootstrap."maxMissionAudioBytes",
+                 bootstrap.plan, lease."providerCallId", lease."providerId",
+                 bootstrap."routeMode", bootstrap."sessionHandle", bootstrap.state,
+                 btrim(bootstrap."subjectHash") AS "subjectHash", bootstrap."subjectKeyVersion"
+            FROM realtime_mistral_conversation_bootstrap_tickets AS bootstrap
+            JOIN realtime_session_leases AS lease
+              ON lease."companyId" = bootstrap."companyId"
+             AND lease."subjectHash" = bootstrap."subjectHash"
+             AND lease."sessionId" = bootstrap."admissionSessionId"
+           WHERE bootstrap.id = ${missionGrant.bootstrapId}::uuid
+        `;
+        expect(evidence).toEqual({
+          admissionSessionId: missionGrant.admissionSessionId,
+          admissionLeaseTokenHash: leaseTokenHash,
+          companyId: missionGrant.companyId,
+          contextDigest: missionGrant.contextDigest,
+          fullDuplexCertified: missionGrant.fullDuplexCertified,
+          hardExpiresAt,
+          identityEncryptionKeyVersion: identityKeyVersion,
+          maxMissionAudioBytes: missionGrant.maxMissionAudioBytes,
+          plan: missionGrant.plan,
+          providerCallId,
+          providerId: 'mistral',
+          routeMode: missionGrant.routeMode,
+          sessionHandle: missionGrant.sessionHandle,
+          state: 'issued',
+          subjectHash: missionGrant.subjectHash,
+          subjectKeyVersion: missionGrant.subjectKeyVersion,
+        });
+      });
+    }
+
+    async function consumeGrantEvidence(
+      missionGrant: MistralConversationBootstrapGrant,
+    ): Promise<void> {
+      const updated = await worker.withTenant(missionGrant.companyId, (tx) => tx.$executeRaw`
+        UPDATE realtime_mistral_conversation_bootstrap_tickets
+           SET state = 'consumed', "consumedAt" = clock_timestamp(), version = 2,
+               "updatedAt" = clock_timestamp()
+         WHERE id = ${missionGrant.bootstrapId}::uuid
+           AND "companyId" = ${missionGrant.companyId}
+           AND state = 'issued'
+      `);
+      if (updated !== 1) {
+        throw new Error('Mistral key-rotation bootstrap was not consumed exactly.');
+      }
+    }
+
+    async function open(version: number, label: string) {
+      const missionGrant = grant(label);
+      await seedGrantEvidence(missionGrant);
+      const result = await authority(version).open({
+        grant: missionGrant,
         ownerLeaseToken: `owner_${label}_${randomUUID().replaceAll('-', '')}`,
         resumeNextServerSequence: 0,
         maxReplayEvents: 256,
         maxReplayBytes: 240 * 1024,
         signal: new AbortController().signal,
       });
+      if (result.status === 'opened') await consumeGrantEvidence(missionGrant);
+      return result;
     }
 
     async function waitForBlockedRetirement(): Promise<void> {
@@ -238,6 +380,21 @@ describe.skipIf(!RUN_MUTATION_CERT)(
           'La certification reprise exige exactement la plage éphémère [base-1, base].',
         );
       }
+      const [identityRange] = await admins[0].$queryRaw<Array<{ minimumVersion: number }>>`
+        SELECT "minimumVersion"
+          FROM realtime_mistral_conversation_identity_key_version_floors
+         WHERE "keySpace" = 'mistral-conversation-bootstrap-identity-v1'
+      `;
+      const [subjectRange] = await admins[0].$queryRaw<Array<{ minimumVersion: number }>>`
+        SELECT "minimumVersion"
+          FROM realtime_mistral_conversation_key_version_floors
+         WHERE "keySpace" = 'bob-live-subject-hmac-v1'
+      `;
+      if (!identityRange || !subjectRange) {
+        throw new Error('Les registres identité et sujet doivent précéder la rotation persistance.');
+      }
+      identityKeyVersion = identityRange.minimumVersion;
+      subjectKeyVersion = subjectRange.minimumVersion;
       const siren = String(randomInt(100_000_000, 999_999_999));
       await admins[0].company.create({
         data: {

@@ -2041,6 +2041,49 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     vi.unstubAllGlobals();
   });
 
+  it('négocie explicitement Mistral v2 et conserve le repli v1 pour un ancien serveur', async () => {
+    const responses = [
+      {
+        available: true,
+        transport: 'mistral-pcm',
+        protocol: 'bob.mistral-pcm.v2',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v3',
+        requiresDevelopmentBuild: true,
+        maxSessionSeconds: 900,
+        speechDelivery: 'audited-signed-url-v1',
+      },
+      {
+        available: true,
+        transport: 'mistral-pcm',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v3',
+        requiresDevelopmentBuild: true,
+        maxSessionSeconds: 900,
+        speechDelivery: 'audited-signed-url-v1',
+      },
+    ];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(responses.shift()), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+    });
+
+    await expect(client.realtimeVoiceConfig()).resolves.toMatchObject({
+      ok: true,
+      value: { transport: 'mistral-pcm', protocol: 'bob.mistral-pcm.v2' },
+    });
+    await expect(client.realtimeVoiceConfig()).resolves.toMatchObject({
+      ok: true,
+      value: { transport: 'mistral-pcm' },
+    });
+  });
+
   it('décode strictement la capacité et négocie le SDP via le backend authentifié', async () => {
     const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
     const sessionHandle = '00000000-0000-4000-8000-000000000001';
@@ -2231,6 +2274,124 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       },
+    });
+  });
+
+  it('décode le bootstrap conversation v2 explicite et transmet le protocole dans le corps', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000014';
+    const ticket = `b2_${Buffer.alloc(32, 2).toString('base64url')}`;
+    const contextDigest = 'c'.repeat(64);
+    const context = {
+      version: 1 as const,
+      revision: 5,
+      context: {
+        screen: { name: '/devis/new', instanceId: 'quote-v2-1' },
+        entities: [],
+        capabilities: ['screen.read'] as const,
+      },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/voice/realtime/calls');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        protocol: 'bob.mistral-pcm.v2',
+        context,
+        sessionHandle,
+      });
+      return new Response(JSON.stringify({
+        transport: 'mistral-pcm',
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket,
+        protocol: 'bob.mistral-pcm.v2',
+        ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+        maxMissionAudioBytes: 28_800_000,
+        contextRevision: 5,
+        contextDigest,
+        routeMode: 'push_to_talk',
+        fullDuplexCertified: false,
+        sessionHandle,
+        hardExpiresAt: '2026-07-19T12:15:00.000Z',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v2',
+        maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      protocol: 'bob.mistral-pcm.v2',
+      context,
+      sessionHandle,
+    })).resolves.toEqual({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket,
+        protocol: 'bob.mistral-pcm.v2',
+        ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+        maxMissionAudioBytes: 28_800_000,
+        contextRevision: 5,
+        contextDigest,
+        routeMode: 'push_to_talk',
+        fullDuplexCertified: false,
+        sessionHandle,
+        hardExpiresAt: '2026-07-19T12:15:00.000Z',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v2',
+        maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
+      },
+    });
+  });
+
+  it('rejette un bootstrap v2 qui prétend certifier le plein duplex', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000015';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      transport: 'mistral-pcm',
+      websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+      companyId: 'company-1',
+      ticket: `b2_${Buffer.alloc(32, 3).toString('base64url')}`,
+      protocol: 'bob.mistral-pcm.v2',
+      ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+      maxMissionAudioBytes: 28_800_000,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      routeMode: 'push_to_talk',
+      fullDuplexCertified: true,
+      sessionHandle,
+      hardExpiresAt: '2026-07-19T12:15:00.000Z',
+      model: 'voxtral-mini-transcribe-realtime-2602',
+      voice: 'marin',
+      configVersion: 'bob-live-provider-neutral-v2',
+      maxSessionSeconds: 900,
+      speechSourcePolicy: speechSourcePolicy(sessionHandle),
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      protocol: 'bob.mistral-pcm.v2',
+      context: {
+        version: 1,
+        revision: 1,
+        context: {
+          screen: { name: '/home', instanceId: 'home-v2-invalid' },
+          entities: [],
+          capabilities: ['screen.read'],
+        },
+      },
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
     });
   });
 

@@ -35,6 +35,11 @@ import {
   type MistralConversationRedeemAndOpenResult,
   type MistralConversationResumeAuthority,
 } from './mistral-conversation-resume-ticket';
+import type {
+  MistralConversationAdmissionAuthority,
+  MistralConversationAdmissionOwner,
+} from './mistral-conversation-admission';
+import { validateMistralConversationAdmissionPolicy } from './mistral-conversation-admission';
 
 const MAX_INGRESS_MESSAGES = 256;
 const MAX_INGRESS_BYTES = 128 * 1024;
@@ -131,20 +136,6 @@ export interface MistralConversationBootstrapGrant {
   readonly routeMode: MistralConversationRouteMode;
   readonly fullDuplexCertified: boolean;
   readonly maxMissionAudioBytes: number;
-}
-
-export type MistralConversationBootstrapConsumeResult =
-  | { readonly status: 'consumed'; readonly grant: MistralConversationBootstrapGrant }
-  | { readonly status: 'invalid' | 'expired' | 'replayed' | 'unavailable' };
-
-/** Ticket WSS à usage unique. Le ticket brut ne doit traverser aucun autre port. */
-export interface MistralConversationBootstrapAuthority {
-  consume(input: {
-    readonly companyId: string;
-    readonly ticket: string;
-    readonly protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
-    readonly signal: AbortSignal;
-  }): Promise<MistralConversationBootstrapConsumeResult>;
 }
 
 export interface MistralConversationDurableSnapshot {
@@ -325,6 +316,38 @@ export type MistralConversationDurableOpenResult =
         | 'unavailable';
     };
 
+export type MistralConversationBootstrapOpenResult =
+  | (Extract<MistralConversationDurableOpenResult, { readonly status: 'opened' }> & {
+      readonly grant: MistralConversationBootstrapGrant;
+    })
+  | {
+      readonly status:
+        | 'invalid'
+        | 'expired'
+        | 'replayed'
+        | 'invalid_cursor'
+        | 'history_unavailable'
+        | 'aborted'
+        | 'unavailable';
+    };
+
+/**
+ * Autorité atomique du ticket WSS initial. Elle possède la transaction PostgreSQL racine et
+ * consomme le ticket uniquement dans le même commit que Mission + outbox `session.ready`.
+ */
+export interface MistralConversationBootstrapAuthority {
+  redeemAndOpenInitial(input: {
+    readonly companyId: string;
+    readonly ticket: string;
+    readonly protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
+    readonly ownerLeaseToken: string;
+    readonly resumeNextServerSequence: number;
+    readonly maxReplayEvents: number;
+    readonly maxReplayBytes: number;
+    readonly signal: AbortSignal;
+  }): Promise<MistralConversationBootstrapOpenResult>;
+}
+
 /**
  * Autorité obligatoire pour chaque succès. L'adapter doit :
  * - CASer `version` + `missionConnectionEpoch` + `ownerLeaseToken` ;
@@ -484,6 +507,8 @@ export interface MistralConversationGatewayV2Dependencies {
   readonly context: MistralConversationContextAuthority;
   readonly provider: MistralConversationProvider;
   readonly pipeline: MistralConversationBobAuditPipeline;
+  /** Obligatoire pour tout owner live ; absent uniquement sur un runtime de replay terminal pur. */
+  readonly admission?: MistralConversationAdmissionAuthority;
   readonly entropy?: MistralConversationGatewayV2Entropy;
   readonly now?: () => number;
   readonly authTimeoutMs?: number;
@@ -558,7 +583,10 @@ function validateGrant(grant: MistralConversationBootstrapGrant, companyId: stri
   const hardExpiry = validateGrantBinding(grant, companyId);
   // Le bootstrap générique reste strictement live. Seul le résultat discriminé de l'autorité de
   // reprise peut ouvrir la fenêtre H..G ; ne jamais élargir cette capacité ici.
-  if (hardExpiry <= now || hardExpiry > now + MAX_SESSION_MS) {
+  if (
+    hardExpiry <= now
+    || hardExpiry > now + MAX_SESSION_MS + MAX_SERVER_CLOCK_SKEW_MS
+  ) {
     gatewayError('temporarily_unavailable');
   }
   return hardExpiry;
@@ -838,6 +866,31 @@ function validateOpenResult(
     || recovered.routeMode !== grant.routeMode
     || recovered.fullDuplexCertified !== grant.fullDuplexCertified
   ) gatewayError('temporarily_unavailable');
+}
+
+/**
+ * Dernière fence avant le CAS one-shot initial. L'autorité PostgreSQL l'appelle avec son horloge
+ * autoritative, dans la même transaction que Mission + outbox + activation admission.
+ */
+export function isMistralConversationInitialCommitCandidate(input: {
+  readonly opened: Extract<MistralConversationDurableOpenResult, { readonly status: 'opened' }>;
+  readonly grant: MistralConversationBootstrapGrant;
+  readonly companyId: string;
+  readonly resumeNextServerSequence: number;
+  readonly databaseNow: number;
+}): boolean {
+  try {
+    const hardExpiry = validateGrantBinding(input.grant, input.companyId);
+    if (
+      !Number.isFinite(input.databaseNow)
+      || hardExpiry <= input.databaseNow
+      || hardExpiry > input.databaseNow + MAX_SESSION_MS
+    ) return false;
+    validateOpenResult(input.opened, input.grant, input.resumeNextServerSequence);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function validateTerminalOpenResult(
@@ -1989,7 +2042,7 @@ export async function serveMistralConversationGatewayV2(
 ): Promise<void> {
   if (
     socket.readyState !== 1
-    || typeof dependencies.bootstrap?.consume !== 'function'
+    || typeof dependencies.bootstrap?.redeemAndOpenInitial !== 'function'
     || typeof dependencies.authority?.open !== 'function'
     || typeof dependencies.authority?.transition !== 'function'
     || typeof dependencies.context?.authorize !== 'function'
@@ -2045,6 +2098,11 @@ export async function serveMistralConversationGatewayV2(
   let resumeHandshakeActive = false;
   let resumeRedemptionCommitted = false;
   let acceptedResumeAcknowledgements = 0;
+  let admissionOwner: MistralConversationAdmissionOwner | null = null;
+  let admissionHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  let admissionHeartbeatAbort: AbortController | null = null;
+  let admissionHeartbeatGeneration = 0;
+  let admissionOwnershipLost = false;
 
   const latchTerminalDisposition = (
     source: TerminalDisposition['source'],
@@ -2053,6 +2111,135 @@ export async function serveMistralConversationGatewayV2(
     terminalDisposition ??= { source, reason };
     terminationReason = terminalDisposition.reason;
     return terminalDisposition;
+  };
+
+  const stopAdmissionHeartbeat = (): void => {
+    admissionHeartbeatGeneration += 1;
+    if (admissionHeartbeatTimer) clearTimeout(admissionHeartbeatTimer);
+    admissionHeartbeatTimer = null;
+    admissionHeartbeatAbort?.abort();
+    admissionHeartbeatAbort = null;
+  };
+
+  const markAdmissionOwnershipLost = (
+    status: Exclude<
+      Awaited<ReturnType<MistralConversationAdmissionAuthority['renewOwner']>>['status'],
+      'renewed'
+    >,
+  ): void => {
+    if (terminalDisposition !== null || phase === 'draining' || phase === 'closed') return;
+    admissionOwnershipLost = true;
+    fatalIngressError ??= new MistralConversationGatewayV2Error(
+      status === 'expired' ? 'expired' : 'temporarily_unavailable',
+    );
+    ingress.fail(fatalIngressError);
+    lifecycle.abort();
+  };
+
+  const renewAdmissionOwner = async (
+    owner: MistralConversationAdmissionOwner,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const admission = dependencies.admission;
+    if (!admission) gatewayError('temporarily_unavailable');
+    const result = await runWithDeadline({
+      parentSignal: signal,
+      timeoutMs: Math.min(operationTimeoutMs, admission.policy.heartbeatSeconds * 1_000),
+      timeoutCode: 'temporarily_unavailable',
+      operation: (operationSignal) => admission.renewOwner({
+        ...owner,
+        signal: operationSignal,
+      }),
+    });
+    if (result.status === 'renewed') return;
+    markAdmissionOwnershipLost(result.status);
+    gatewayError(result.status === 'expired' ? 'expired' : 'temporarily_unavailable');
+  };
+
+  const scheduleAdmissionHeartbeat = (): void => {
+    const admission = dependencies.admission;
+    const owner = admissionOwner;
+    if (!admission || !owner || phase === 'draining' || phase === 'closed') return;
+    const generation = admissionHeartbeatGeneration;
+    admissionHeartbeatTimer = setTimeout(() => {
+      if (
+        generation !== admissionHeartbeatGeneration
+        || phase === 'draining'
+        || phase === 'closed'
+      ) return;
+      const controller = new AbortController();
+      admissionHeartbeatAbort = controller;
+      const onLifecycleAbort = (): void => controller.abort();
+      lifecycle.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+      void renewAdmissionOwner(owner, controller.signal)
+        .then(() => {
+          if (
+            generation === admissionHeartbeatGeneration
+            && !controller.signal.aborted
+            && !lifecycle.signal.aborted
+          ) scheduleAdmissionHeartbeat();
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted || lifecycle.signal.aborted) return;
+          const mapped = mapProtocolError(error);
+          markAdmissionOwnershipLost(
+            mapped.code === 'expired' ? 'expired' : 'unavailable',
+          );
+        })
+        .finally(() => {
+          lifecycle.signal.removeEventListener('abort', onLifecycleAbort);
+          if (admissionHeartbeatAbort === controller) admissionHeartbeatAbort = null;
+        });
+    }, admission.policy.heartbeatSeconds * 1_000);
+  };
+
+  const startAdmissionHeartbeat = async (
+    connectionGrant: MistralConversationBootstrapGrant,
+    missionConnectionEpoch: number,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const admission = dependencies.admission;
+    if (!admission) gatewayError('temporarily_unavailable');
+    try {
+      validateMistralConversationAdmissionPolicy(admission.policy);
+    } catch {
+      gatewayError('temporarily_unavailable');
+    }
+    stopAdmissionHeartbeat();
+    admissionOwner = {
+      companyId: connectionGrant.companyId,
+      subjectHash: connectionGrant.subjectHash,
+      admissionSessionId: connectionGrant.admissionSessionId,
+      sessionHandle: connectionGrant.sessionHandle,
+      bootstrapId: connectionGrant.bootstrapId,
+      missionConnectionEpoch,
+      ownerLeaseToken,
+    };
+    await renewAdmissionOwner(admissionOwner, signal);
+    scheduleAdmissionHeartbeat();
+  };
+
+  const releaseClosedAdmission = async (signal: AbortSignal): Promise<void> => {
+    const admission = dependencies.admission;
+    const owner = admissionOwner;
+    if (
+      !admission
+      || !owner
+      || !authority
+      || authority.snapshot.mission.phase !== 'closed'
+    ) return;
+    const released = await runWithDeadline({
+      parentSignal: signal,
+      timeoutMs: cleanupTimeoutMs,
+      timeoutCode: 'temporarily_unavailable',
+      operation: (operationSignal) => admission.releaseClosed({
+        ...owner,
+        signal: operationSignal,
+      }),
+    });
+    if (released.status !== 'released' && released.status !== 'replayed') {
+      gatewayError('temporarily_unavailable');
+    }
   };
 
   const sendEvents = async (
@@ -2749,6 +2936,7 @@ export async function serveMistralConversationGatewayV2(
     signal: AbortSignal = lifecycle.signal,
   ): Promise<void> => {
     if (!authority || phase === 'closed') return;
+    stopAdmissionHeartbeat();
     phase = 'draining';
     const terminalEvents: MistralConversationServerEvent[] = [];
     let result = await authority.execute({
@@ -2787,15 +2975,17 @@ export async function serveMistralConversationGatewayV2(
     | {
         readonly kind: 'bootstrap';
         readonly companyId: string;
-        readonly grant: MistralConversationBootstrapGrant;
         readonly resumeNextServerSequence: number;
+        readonly opened: Extract<MistralConversationBootstrapOpenResult, {
+          readonly status: 'opened';
+        }>;
       }
     | {
         readonly kind: 'resume';
         readonly companyId: string;
         readonly resumeNextServerSequence: number;
         readonly opened: Extract<MistralConversationRedeemAndOpenResult, {
-          readonly status: 'terminal_replay';
+          readonly status: 'terminal_replay' | 'live_takeover';
         }>;
       };
   const consumeHandshake = async (): Promise<AuthenticatedHandshake> => {
@@ -2805,10 +2995,12 @@ export async function serveMistralConversationGatewayV2(
     if (auth.type !== 'authenticate') gatewayError('authentication_failed');
     const companyId = auth.companyId;
     const resumeNextServerSequence = auth.resumeNextServerSequence;
+    const resumeScope = auth.resumeScope;
     let rawTicket = auth.ticket;
     phase = 'opening';
     try {
       if (isMistralConversationResumeTicket(rawTicket)) {
+        if (resumeScope === undefined) gatewayError('authentication_failed');
         resumeHandshakeActive = true;
         if (
           typeof dependencies.resume?.redeemAndOpen !== 'function'
@@ -2822,16 +3014,16 @@ export async function serveMistralConversationGatewayV2(
             companyId,
             ticket: rawTicket,
             protocol: MISTRAL_CONVERSATION_PROTOCOL,
-            // Tant que le bail/reaper provider-neutral n'est pas composé, le WSS n'autorise
-            // structurellement que le replay terminal. La comparaison précède toute mutation SQL.
-            expectedScope: 'terminal_replay',
+            // Le scope explicite vient du bootstrap HTTP authentifié et est comparé sous lock
+            // avant toute mutation SQL. Une capacité live ne peut jamais être rabattue en replay.
+            expectedScope: resumeScope,
             resumeNextServerSequence,
             maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
             maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
             signal: operationSignal,
           }),
         });
-        if (resumed.status !== 'terminal_replay') {
+        if (resumed.status !== 'terminal_replay' && resumed.status !== 'live_takeover') {
           if (resumed.status === 'expired') gatewayError('expired');
           if (resumed.status === 'invalid_cursor') gatewayError('sequence_error');
           if (resumed.status === 'aborted') gatewayError('aborted');
@@ -2851,25 +3043,35 @@ export async function serveMistralConversationGatewayV2(
           opened: resumed,
         };
       }
-      const consumed = await runWithDeadline({
+      if (resumeScope !== undefined) gatewayError('authentication_failed');
+      ownerLeaseToken = validateEntropyValue(entropy.ownerLeaseToken(), OWNER_TOKEN);
+      const opened = await runWithDeadline({
         parentSignal: handshake.signal,
         timeoutMs: authTimeoutMs,
         timeoutCode: 'auth_timeout',
-        operation: (operationSignal) => dependencies.bootstrap.consume({
+        operation: (operationSignal) => dependencies.bootstrap.redeemAndOpenInitial({
           companyId,
           ticket: rawTicket,
           protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          ownerLeaseToken,
+          resumeNextServerSequence,
+          maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
+          maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
           signal: operationSignal,
         }),
       });
-      if (consumed.status !== 'consumed') {
-        gatewayError(consumed.status === 'unavailable' ? 'temporarily_unavailable' : 'authentication_failed');
+      if (opened.status !== 'opened') {
+        if (opened.status === 'expired') gatewayError('expired');
+        if (opened.status === 'invalid_cursor') gatewayError('sequence_error');
+        if (opened.status === 'unavailable') gatewayError('temporarily_unavailable');
+        if (opened.status === 'aborted') gatewayError('aborted');
+        gatewayError('authentication_failed');
       }
       return {
         kind: 'bootstrap',
         companyId,
-        grant: consumed.grant,
         resumeNextServerSequence,
+        opened,
       };
     } finally {
       // Les strings JS ne sont pas effaçables en place ; cette frame courte ne survit pas au consume.
@@ -2888,26 +3090,27 @@ export async function serveMistralConversationGatewayV2(
     let connectionGrant: MistralConversationBootstrapGrant;
     let hardExpiry: number;
     if (authenticated.kind === 'bootstrap') {
-      connectionGrant = authenticated.grant;
-      hardExpiry = validateGrant(connectionGrant, authenticated.companyId, now());
-      ownerLeaseToken = validateEntropyValue(entropy.ownerLeaseToken(), OWNER_TOKEN);
-      opened = await runWithDeadline({
-        parentSignal: handshake.signal,
-        timeoutMs: authTimeoutMs,
-        timeoutCode: 'auth_timeout',
-        operation: (operationSignal) => dependencies.authority.open({
-          grant: connectionGrant,
-          ownerLeaseToken,
-          resumeNextServerSequence: authenticated.resumeNextServerSequence,
-          maxReplayEvents: MAX_OPEN_REPLAY_EVENTS,
-          maxReplayBytes: MAX_OPEN_REPLAY_BYTES,
-          signal: operationSignal,
-        }),
-      });
-    } else {
-      opened = authenticated.opened;
       connectionGrant = authenticated.opened.grant;
-      hardExpiry = validateGrantBinding(connectionGrant, authenticated.companyId);
+      hardExpiry = validateGrant(connectionGrant, authenticated.companyId, now());
+      opened = authenticated.opened;
+    } else {
+      const resumed = authenticated.opened;
+      connectionGrant = resumed.grant;
+      if (resumed.status === 'live_takeover') {
+        hardExpiry = validateGrant(connectionGrant, authenticated.companyId, now());
+        ownerLeaseToken = validateEntropyValue(resumed.ownerLeaseToken, OWNER_TOKEN);
+        opened = {
+          status: 'recovered',
+          snapshot: resumed.snapshot,
+          replayFromServerSequence: resumed.replayFromServerSequence,
+          events: resumed.events,
+          recovery: resumed.recovery,
+          terminal: null,
+        };
+      } else {
+        hardExpiry = validateGrantBinding(connectionGrant, authenticated.companyId);
+        opened = resumed;
+      }
     }
     grant = connectionGrant;
     if (
@@ -3083,6 +3286,11 @@ export async function serveMistralConversationGatewayV2(
       lifecycle.signal,
       operationTimeoutMs,
     );
+    await startAdmissionHeartbeat(
+      connectionGrant,
+      opened.snapshot.missionConnectionEpoch,
+      handshake.signal,
+    );
     const readyBudgetMs = Math.min(replayTimeoutMs, hardExpiry - now());
     if (readyBudgetMs <= 0) gatewayError('expired');
     await runWithDeadline({
@@ -3151,6 +3359,7 @@ export async function serveMistralConversationGatewayV2(
     handshake.abort();
     lifecycle.signal.removeEventListener('abort', onLifecycleHandshakeAbort);
     if (hardExpiryTimer) clearTimeout(hardExpiryTimer);
+    stopAdmissionHeartbeat();
     ingress.fail(new MistralConversationGatewayV2Error('aborted'));
     lifecycle.abort();
     if (authority) {
@@ -3170,10 +3379,12 @@ export async function serveMistralConversationGatewayV2(
         settlementController.abort();
       }
     }
-    const preserveDurableMission = routeLost
+    const preserveDurableMission = admissionOwnershipLost || (
+      routeLost
       && terminalDisposition === null
       && terminationReason === 'fatal_error'
-      && (terminalError?.code === 'aborted' || terminalError?.code === 'backpressure');
+      && (terminalError?.code === 'aborted' || terminalError?.code === 'backpressure')
+    );
     if (authority && !preserveDurableMission) {
       const cleanup = new AbortController();
       const cleanupTimer = setTimeout(() => cleanup.abort(), cleanupTimeoutMs);
@@ -3186,6 +3397,18 @@ export async function serveMistralConversationGatewayV2(
         cleanup.abort();
       }
     }
+    if (authority?.snapshot.mission.phase === 'closed') {
+      const release = new AbortController();
+      const releaseTimer = setTimeout(() => release.abort(), cleanupTimeoutMs);
+      try {
+        await releaseClosedAdmission(release.signal);
+      } catch {
+        // Le bail reste visible et sera repris par le reaper ; aucune suppression non prouvée.
+      } finally {
+        clearTimeout(releaseTimer);
+        release.abort();
+      }
+    }
     // Sur perte de route, le takeover suivant annule atomiquement le tour et rejoue l'outbox.
     // Pour toute terminaison produit/serveur, le cleanup durable reste fail-closed ci-dessus.
     abortRuntime(activeRuntime);
@@ -3195,6 +3418,7 @@ export async function serveMistralConversationGatewayV2(
     socket.off('error', onError);
     input.signal?.removeEventListener('abort', onExternalAbort);
     ownerLeaseToken = '';
+    admissionOwner = null;
 
     if (socket.readyState === 1) {
       if (!authority && !terminalReplayOpened && terminalError && terminalError.code !== 'aborted') {

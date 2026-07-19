@@ -60,6 +60,11 @@ export type RealtimeTransportEvent =
   | { type: 'connectivity'; state: 'connected' | 'disconnected' }
   | { type: 'user_transcript'; text: string; final: boolean }
   | { type: 'bob_transcript'; text: string; final: boolean }
+  /**
+   * Preuve locale autoritative que `turn.commit` a ete envoye. Une fin VAD, une annulation
+   * ou un simple retour a READY ne doivent jamais emettre cet evenement.
+   */
+  | { type: 'user_input_committed'; turnId: string }
   | {
       type: 'agent_control_candidate';
       reference:
@@ -90,6 +95,13 @@ export interface VoiceConversationTransport {
   connect(input?: { signal?: AbortSignal }): Promise<void>;
   sendUserText(text: string): boolean;
   setMicrophoneEnabled(enabled: boolean): void;
+  /**
+   * Aligne le contexte durable du transport sur la fence confirmée par l'API avant toute
+   * réouverture du micro. Les transports sans canal contextuel séquencé peuvent l'omettre.
+   */
+  synchronizePublishedContext?(
+    fence: import('./realtime-control-gate').RealtimePublishedContextFence,
+  ): Promise<boolean>;
   /**
    * Finalise l'utterance sans fermer la réponse. Absent pour un transport à VAD continu ;
    * `true` signifie que le commit a été accepté et que Bob est désormais en traitement.

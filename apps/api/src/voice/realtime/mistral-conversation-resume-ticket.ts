@@ -1,6 +1,7 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   MISTRAL_CONVERSATION_PROTOCOL,
+  type MistralConversationResumeScope,
   type MistralConversationServerEvent,
   type MistralConversationSessionEndReason,
 } from '@bob/ai';
@@ -18,8 +19,18 @@ const SUBJECT_HASH = /^[a-f0-9]{64}$/u;
 const SESSION_HANDLE = /^[A-Za-z0-9_-]{16,128}$/u;
 const CONNECTION_TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 const RESUME_TICKET = /^r2_[A-Za-z0-9_-]{43}$/u;
+const RESUME_TICKET_HASH_DOMAIN = 'bob-pro:mistral-v2-resume-ticket:v1\0';
+const TERMINAL_REASONS: ReadonlySet<MistralConversationSessionEndReason> = new Set([
+  'user',
+  'background',
+  'context_changed',
+  'client_handoff',
+  'expired',
+  'service_shutdown',
+  'fatal_error',
+]);
 
-export type MistralConversationResumeScope = 'live_takeover' | 'terminal_replay';
+export type { MistralConversationResumeScope } from '@bob/ai';
 
 export interface MistralConversationResumeTicketPolicy {
   /** TTL court de la capacité HTTP -> WSS, toujours borné ensuite par H ou G en BDD. */
@@ -73,6 +84,14 @@ export function isMistralConversationResumeTicket(value: unknown): value is stri
   return typeof value === 'string' && RESUME_TICKET.test(value);
 }
 
+/** Le domaine est partagé par émission aléatoire et réconciliation déterministe. */
+export function hashMistralConversationResumeTicket(ticket: string): string {
+  return createHash('sha256')
+    .update(RESUME_TICKET_HASH_DOMAIN, 'utf8')
+    .update(ticket, 'utf8')
+    .digest('hex');
+}
+
 export function isMistralConversationSessionHandle(value: unknown): value is string {
   return typeof value === 'string' && SESSION_HANDLE.test(value);
 }
@@ -100,12 +119,19 @@ export interface MistralConversationResumeTicketIssueInput {
   readonly companyId: string;
   readonly subjectHash: string;
   readonly subjectKeyVersion: number;
+  /** Anciennes versions encore retenues ; jamais fournies par le client HTTP. */
+  readonly historicalSubjectBindings?: readonly MistralConversationSubjectBinding[];
   readonly sessionHandle: string;
   /** Dernier epoch que le mobile a effectivement appliqué, jamais une autorité serveur. */
   readonly clientAcceptedMissionConnectionEpoch: number;
   /** Première séquence serveur dont les effets ne sont pas encore appliqués localement. */
   readonly resumeNextServerSequence: number;
   readonly signal: AbortSignal;
+}
+
+export interface MistralConversationSubjectBinding {
+  readonly subjectHash: string;
+  readonly subjectKeyVersion: number;
 }
 
 export interface MistralConversationResumeTicketBootstrap {
@@ -120,9 +146,26 @@ export interface MistralConversationResumeTicketBootstrap {
   readonly resumeNextServerSequence: number;
 }
 
+/**
+ * Reçu terminal durable et non sensible.
+ *
+ * Cette projection survit à la rétention de Mission afin qu'un mobile resté hors ligne puisse
+ * converger vers `closed` sans inventer une fermeture locale. L'identité propriétaire reste
+ * uniquement côté serveur (`subjectHash`) et n'est jamais exposée sur le wire.
+ */
+export interface MistralConversationTerminalReceipt {
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
+  readonly missionConnectionEpoch: number;
+  readonly nextServerSequence: number;
+  readonly reason: MistralConversationSessionEndReason;
+  readonly closedAt: string;
+}
+
 export type MistralConversationResumeTicketIssueResult =
   | { readonly status: 'issued'; readonly bootstrap: MistralConversationResumeTicketBootstrap }
-  | { readonly status: 'terminal_complete' }
+  | { readonly status: 'terminal_complete'; readonly receipt: MistralConversationTerminalReceipt }
   | {
       readonly status:
         | 'invalid'
@@ -132,6 +175,31 @@ export type MistralConversationResumeTicketIssueResult =
         | 'stale_epoch'
         | 'invalid_cursor'
         | 'history_unavailable'
+        | 'unavailable';
+    };
+
+export interface MistralConversationBootstrapReconciliationInput {
+  readonly companyId: string;
+  /** Identité authentifiée courante, comparée à l'identité AEAD historique du bootstrap. */
+  readonly userId: string;
+  readonly sessionHandle: string;
+  readonly protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
+  /** Capacité initiale gardée uniquement en mémoire par le mobile jusqu'à session.ready. */
+  readonly bootstrapTicket: string;
+  /** Tentative monotone bornée ; la même tentative restitue la même capacité r2 encore valide. */
+  readonly attempt: number;
+  readonly signal: AbortSignal;
+}
+
+export type MistralConversationBootstrapReconciliationResult =
+  | { readonly status: 'retry_initial' | 'attempt_consumed' }
+  | { readonly status: 'issued'; readonly bootstrap: MistralConversationResumeTicketBootstrap }
+  | {
+      readonly status:
+        | 'invalid'
+        | 'not_found'
+        | 'forbidden'
+        | 'expired'
         | 'unavailable';
     };
 
@@ -191,6 +259,14 @@ export interface MistralConversationResumeAuthority {
   ): Promise<MistralConversationResumeTicketIssueResult>;
 
   /**
+   * Répare uniquement l'ambiguïté « COMMIT PostgreSQL réussi / réponse WSS perdue » du bootstrap
+   * initial. Ce chemin ne peut pas ouvrir la reprise live générale.
+   */
+  reconcileInitialBootstrap(
+    input: MistralConversationBootstrapReconciliationInput,
+  ): Promise<MistralConversationBootstrapReconciliationResult>;
+
+  /**
    * Possède la transaction PostgreSQL racine. Tout takeover/replay restitué consomme son ticket
    * au même commit ; aucun appel à `bootstrap.consume()` ou `authority.open()` n'est permis.
    * Exception de sûreté volontaire : à H, la fermeture monotone peut gagner même si le replay
@@ -231,6 +307,11 @@ implements MistralConversationResumeAuthority {
     return { status: 'unavailable' };
   }
 
+  async reconcileInitialBootstrap():
+  Promise<MistralConversationBootstrapReconciliationResult> {
+    return { status: 'unavailable' };
+  }
+
   async acknowledgeTerminal(): Promise<MistralConversationTerminalAcknowledgementResult> {
     return { status: 'unavailable' };
   }
@@ -239,7 +320,28 @@ implements MistralConversationResumeAuthority {
 export function isMistralConversationResumeIssueInput(
   input: MistralConversationResumeTicketIssueInput,
 ): boolean {
-  return COMPANY_ID.test(input.companyId)
+  const historical = input.historicalSubjectBindings ?? [];
+  const versions = new Set<number>([input.subjectKeyVersion]);
+  const hashes = new Set<string>([input.subjectHash]);
+  const historicalValid = Array.isArray(historical)
+    && historical.length <= 31
+    && historical.every((binding) => {
+      if (
+        binding === null
+        || typeof binding !== 'object'
+        || !SUBJECT_HASH.test(binding.subjectHash)
+        || !Number.isSafeInteger(binding.subjectKeyVersion)
+        || binding.subjectKeyVersion < 1
+        || binding.subjectKeyVersion > INT32_MAX
+        || versions.has(binding.subjectKeyVersion)
+        || hashes.has(binding.subjectHash)
+      ) return false;
+      versions.add(binding.subjectKeyVersion);
+      hashes.add(binding.subjectHash);
+      return true;
+    });
+  return historicalValid
+    && COMPANY_ID.test(input.companyId)
     && SUBJECT_HASH.test(input.subjectHash)
     && Number.isSafeInteger(input.subjectKeyVersion)
     && input.subjectKeyVersion >= 1
@@ -252,6 +354,26 @@ export function isMistralConversationResumeIssueInput(
     && !Object.is(input.resumeNextServerSequence, -0)
     && input.resumeNextServerSequence >= 0
     && input.resumeNextServerSequence <= UINT32_CURSOR_END;
+}
+
+export function isMistralConversationTerminalReceipt(
+  value: MistralConversationTerminalReceipt,
+): boolean {
+  const closedAt = Date.parse(value.closedAt);
+  return COMPANY_ID.test(value.companyId)
+    && SESSION_HANDLE.test(value.sessionHandle)
+    && value.protocol === MISTRAL_CONVERSATION_PROTOCOL
+    && Number.isSafeInteger(value.missionConnectionEpoch)
+    && value.missionConnectionEpoch >= 1
+    && value.missionConnectionEpoch <= INT32_MAX
+    && Number.isSafeInteger(value.nextServerSequence)
+    && !Object.is(value.nextServerSequence, -0)
+    // session.ready, session.draining et session.closed ont nécessairement été alloués.
+    && value.nextServerSequence >= 3
+    && value.nextServerSequence <= UINT32_CURSOR_END
+    && TERMINAL_REASONS.has(value.reason)
+    && Number.isFinite(closedAt)
+    && new Date(closedAt).toISOString() === value.closedAt;
 }
 
 export function isMistralConversationConnectionLeaseToken(value: unknown): value is string {

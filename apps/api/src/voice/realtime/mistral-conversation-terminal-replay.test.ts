@@ -4,6 +4,7 @@ import type {
   MistralConversationProvider,
 } from './mistral-conversation-gateway-v2';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
+import { DisabledMistralConversationAdmissionAuthority } from './mistral-conversation-admission';
 import {
   TerminalReplayOnlyMistralConversationCompletion,
   createMistralConversationTerminalReplayRuntime,
@@ -17,21 +18,71 @@ function durableAuthority(): MistralConversationDurableAuthority {
 }
 
 describe('Mistral conversation terminal replay composition', () => {
-  it('réutilise les autorités exactes tout en refusant chaque port live', async () => {
+  it('encapsule les autorités et refuse chaque chemin live avant toute mutation', async () => {
     const durable = durableAuthority();
     const resume = new DisabledMistralConversationResumeAuthority();
-    const runtime = createMistralConversationTerminalReplayRuntime({ durable, resume });
+    const reconcile = vi.spyOn(resume, 'reconcileInitialBootstrap');
+    const redeem = vi.spyOn(resume, 'redeemAndOpen');
+    const admission = new DisabledMistralConversationAdmissionAuthority();
+    const termination = { terminateReaping: vi.fn(async () => ({ status: 'unavailable' as const })) };
+    const runtime = createMistralConversationTerminalReplayRuntime({
+      durable,
+      resume,
+      initialBootstrap: null,
+      admission,
+      termination,
+    });
     const signal = new AbortController().signal;
 
-    expect(runtime.resume).toBe(resume);
+    expect(runtime.resume).not.toBe(resume);
+    expect(runtime.initialBootstrap).toBeNull();
+    expect(runtime.liveTurnsAvailable).toBe(false);
     expect(runtime.gatewayDependencies.authority).toBe(durable);
-    expect(runtime.gatewayDependencies.resume).toBe(resume);
-    await expect(runtime.gatewayDependencies.bootstrap.consume({
+    expect(runtime.gatewayDependencies.resume).toBe(runtime.resume);
+    expect(runtime.gatewayDependencies.admission).toBe(admission);
+    expect(runtime.termination).toBe(termination);
+    await expect(runtime.gatewayDependencies.bootstrap.redeemAndOpenInitial({
       companyId: 'company-1',
       ticket: 'A'.repeat(32),
       protocol: 'bob.mistral-pcm.v2',
+      ownerLeaseToken: 'O'.repeat(43),
+      resumeNextServerSequence: 0,
+      maxReplayEvents: 256,
+      maxReplayBytes: 240_000,
       signal,
     })).resolves.toEqual({ status: 'unavailable' });
+    await expect(runtime.resume.reconcileInitialBootstrap({
+      companyId: 'company-1',
+      userId: 'user-1',
+      sessionHandle: 'mistral_terminal_session_1',
+      protocol: 'bob.mistral-pcm.v2',
+      bootstrapTicket: `b2_${'B'.repeat(43)}`,
+      attempt: 1,
+      signal,
+    })).resolves.toEqual({ status: 'unavailable' });
+    expect(reconcile).not.toHaveBeenCalled();
+    await expect(runtime.resume.redeemAndOpen({
+      companyId: 'company-1',
+      ticket: `r2_${'R'.repeat(43)}`,
+      protocol: 'bob.mistral-pcm.v2',
+      expectedScope: 'live_takeover',
+      resumeNextServerSequence: 0,
+      maxReplayEvents: 256,
+      maxReplayBytes: 240_000,
+      signal,
+    })).resolves.toEqual({ status: 'unavailable' });
+    expect(redeem).not.toHaveBeenCalled();
+    await expect(runtime.resume.redeemAndOpen({
+      companyId: 'company-1',
+      ticket: `r2_${'T'.repeat(43)}`,
+      protocol: 'bob.mistral-pcm.v2',
+      expectedScope: 'terminal_replay',
+      resumeNextServerSequence: 0,
+      maxReplayEvents: 256,
+      maxReplayBytes: 240_000,
+      signal,
+    })).resolves.toEqual({ status: 'unavailable' });
+    expect(redeem).toHaveBeenCalledOnce();
     await expect(runtime.gatewayDependencies.context.authorize({
       companyId: 'company-1',
       subjectHash: 'a'.repeat(64),
@@ -76,6 +127,9 @@ describe('Mistral conversation terminal replay composition', () => {
     expect(() => createMistralConversationTerminalReplayRuntime({
       durable: {} as MistralConversationDurableAuthority,
       resume: new DisabledMistralConversationResumeAuthority(),
+      initialBootstrap: null,
+      admission: new DisabledMistralConversationAdmissionAuthority(),
+      termination: {} as never,
     })).toThrow(/authorities are unavailable/i);
   });
 });

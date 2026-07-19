@@ -110,6 +110,75 @@ if (mistralV2TerminalReplay === 'true') {
     fail('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION must be a PostgreSQL positive integer');
   }
   present('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING');
+
+  const subjectVersion = process.env.BOB_LIVE_SUBJECT_KEY_VERSION ?? '1';
+  if (
+    !/^[1-9][0-9]{0,9}$/.test(subjectVersion)
+    || !Number.isSafeInteger(Number(subjectVersion))
+    || Number(subjectVersion) > 2_147_483_647
+  ) fail('BOB_LIVE_SUBJECT_KEY_VERSION must be a canonical PostgreSQL positive integer');
+
+  const rawSubjectKeyring = process.env.BOB_LIVE_SUBJECT_HMAC_KEYRING;
+  if (
+    typeof rawSubjectKeyring !== 'string'
+    || rawSubjectKeyring.length < 1
+    || rawSubjectKeyring.length > 4_096
+  ) {
+    fail('BOB_LIVE_SUBJECT_HMAC_KEYRING size is invalid');
+  } else {
+    let subjectKeyring;
+    try {
+      subjectKeyring = JSON.parse(rawSubjectKeyring);
+    } catch {
+      fail('BOB_LIVE_SUBJECT_HMAC_KEYRING must be valid JSON');
+    }
+    if (
+      !subjectKeyring
+      || typeof subjectKeyring !== 'object'
+      || Array.isArray(subjectKeyring)
+      || Object.getPrototypeOf(subjectKeyring) !== Object.prototype
+    ) {
+      fail('BOB_LIVE_SUBJECT_HMAC_KEYRING must be an object');
+    } else {
+      const entries = Object.entries(subjectKeyring);
+      const seenSecrets = new Set();
+      if (entries.length < 1 || entries.length > 32) {
+        fail('BOB_LIVE_SUBJECT_HMAC_KEYRING must contain between 1 and 32 keys');
+      }
+      for (const [keyVersion, secret] of entries) {
+        if (
+          !/^[1-9][0-9]{0,9}$/.test(keyVersion)
+          || Number(keyVersion) > 2_147_483_647
+          || typeof secret !== 'string'
+          || secret.length < 32
+          || secret.length > 512
+          || secret.includes('[')
+          || secret.includes(']')
+          || [...secret].some((character) => {
+            const codePoint = character.codePointAt(0) ?? 0;
+            return codePoint < 0x21 || codePoint > 0x7e;
+          })
+          || seenSecrets.has(secret)
+        ) {
+          fail('BOB_LIVE_SUBJECT_HMAC_KEYRING contains an invalid version or secret');
+          break;
+        }
+        seenSecrets.add(secret);
+      }
+      const currentSubjectSecret = subjectKeyring[subjectVersion];
+      if (typeof currentSubjectSecret !== 'string') {
+        fail('BOB_LIVE_SUBJECT_HMAC_KEYRING must contain the current subject version');
+      }
+      const legacyCurrentSubjectSecret =
+        process.env.BOB_LIVE_SUBJECT_HMAC_SECRET
+        ?? process.env.OPENAI_REALTIME_SAFETY_SECRET
+        ?? null;
+      if (
+        legacyCurrentSubjectSecret !== null
+        && legacyCurrentSubjectSecret !== currentSubjectSecret
+      ) fail('legacy subject HMAC secret must match the current keyring version');
+    }
+  }
 } else if (
   process.env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
   || process.env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined

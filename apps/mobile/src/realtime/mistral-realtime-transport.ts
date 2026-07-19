@@ -52,12 +52,14 @@ type AudioCoordinator = Pick<
 
 export type RealtimeMistralPcmNegotiation = RealtimeVoiceConfig & {
   readonly transport: 'mistral-pcm';
+  readonly protocol?: typeof MISTRAL_PCM_UPLINK_PROTOCOL;
 };
 
 export function isRealtimeMistralPcmNegotiation(
   value: RealtimeVoiceConfig,
 ): value is RealtimeMistralPcmNegotiation {
-  return value.transport === 'mistral-pcm';
+  return value.transport === 'mistral-pcm'
+    && (value.protocol === undefined || value.protocol === MISTRAL_PCM_UPLINK_PROTOCOL);
 }
 
 export interface MistralRealtimeTransportOptions {
@@ -292,7 +294,11 @@ export class MistralRealtimeTransport
         bootstrapAbort.signal,
       );
       this.assertGeneration(generation);
-      if (!call.ok || call.value.transport !== 'mistral-pcm') {
+      if (
+        !call.ok
+        || call.value.transport !== 'mistral-pcm'
+        || call.value.protocol !== MISTRAL_PCM_UPLINK_PROTOCOL
+      ) {
         throw new RealtimeTransportError('bootstrap_failed');
       }
       if (!bootstrapMatchesNegotiation(call.value, this.negotiation, requestedSessionHandle)) {

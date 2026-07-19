@@ -19,6 +19,15 @@ function liveLocalEnv(): void {
   vi.stubEnv('EAS_BUILD_PROFILE', undefined);
 }
 
+function distributedEnv(profile: 'preview' | 'production'): void {
+  liveLocalEnv();
+  vi.stubEnv('EAS_BUILD_PROFILE', profile);
+  vi.stubEnv('EXPO_PUBLIC_API_URL', 'https://api.bob.example');
+  vi.stubEnv('EXPO_PUBLIC_SUPABASE_URL', 'https://tenant.supabase.co');
+  vi.stubEnv('EXPO_PUBLIC_TERMS_URL', 'https://bob.example/legal/cgu');
+  vi.stubEnv('EXPO_PUBLIC_PRIVACY_URL', 'https://bob.example/legal/confidentialite');
+}
+
 describe('app.config BDD-only gate', () => {
   afterEach(() => vi.unstubAllEnvs());
 
@@ -43,18 +52,25 @@ describe('app.config BDD-only gate', () => {
     expect(() => resolveConfig(context)).toThrow(/EXPO_PUBLIC_API_URL est requis/u);
   });
 
-  it('refuse les coordonnées légales absentes, fictives ou invalides', () => {
+  it('refuse les coordonnées légales absentes, fictives en production ou invalides', () => {
     liveLocalEnv();
     vi.stubEnv('EXPO_PUBLIC_TERMS_URL', '');
     expect(() => resolveConfig(context)).toThrow(/EXPO_PUBLIC_TERMS_URL est requis/u);
 
-    liveLocalEnv();
+    distributedEnv('production');
     vi.stubEnv('EXPO_PUBLIC_PRIVACY_URL', 'https://demo.bobpro.fr/legal/confidentialite');
     expect(() => resolveConfig(context)).toThrow(/domaine de démonstration/u);
 
     liveLocalEnv();
     vi.stubEnv('EXPO_PUBLIC_SUPPORT_EMAIL', 'pas-un-email');
     expect(() => resolveConfig(context)).toThrow(/adresse email valide/u);
+  });
+
+  it('tolère le domaine légal de QA seulement hors soumission publique', () => {
+    distributedEnv('preview');
+    vi.stubEnv('EXPO_PUBLIC_TERMS_URL', 'https://demo.bobpro.fr/legal/cgu');
+    vi.stubEnv('EXPO_PUBLIC_PRIVACY_URL', 'https://demo.bobpro.fr/legal/confidentialite');
+    expect(resolveConfig(context)).toEqual(context.config);
   });
 
   it('exige HTTPS et interdit le loopback dans une build EAS distribuée', () => {

@@ -236,6 +236,8 @@ import type {
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
   RealtimeVoiceCallInput,
+  RealtimeVoiceBootstrapReconciliationInput,
+  RealtimeVoiceBootstrapReconciliationResult,
   RealtimeVoiceResumeTicketInput,
   RealtimeVoiceResumeTicketResult,
   RealtimeVoiceContextUpdate,
@@ -1285,6 +1287,14 @@ export class LocalBobClient implements BobClient {
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceResumeTicketResult, AppError>> {
     return err(appUnavailable('bob-live-resume-ticket'));
+  }
+
+  async reconcileRealtimeVoiceBootstrap(
+    _sessionHandle: string,
+    _input: RealtimeVoiceBootstrapReconciliationInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceBootstrapReconciliationResult, AppError>> {
+    return err(appUnavailable('bob-live-bootstrap-reconciliation'));
   }
 
   async hangupRealtimeVoiceCall(

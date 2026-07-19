@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEnv,
   resolveBobLiveEnv,
+  resolveBobLiveSubjectHmacKeyRing,
   resolveMistralConversationPersistenceKeyRing,
+  resolveMistralV2IdentityEncryptionKeyRing,
 } from './env';
 
 function validRealtimeEnv(): void {
@@ -40,6 +42,17 @@ function validMistralRealtimeEnv(): void {
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
+}
+
+function enableMistralV2TerminalReplay(): void {
+  const subjectSecret = Buffer.alloc(32, 6).toString('base64url');
+  vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
+  vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', subjectSecret);
+  vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: subjectSecret }));
+  vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
+  vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
+    1: Buffer.alloc(32, 7).toString('base64url'),
+  }));
 }
 
 describe('Bob Live — validation de la politique d’admission', () => {
@@ -126,11 +139,32 @@ describe('Bob Live — validation de la politique d’admission', () => {
       gatewayShutdownGraceMs: 1_500,
       gatewayTlsMode: 'direct',
       mistralV2TerminalReplayEnabled: false,
+      mistralV2InitialBootstrapEnabled: false,
+      mistralV2BootstrapReaperIntervalMs: 60_000,
+      mistralV2BootstrapReaperBatchSize: 10,
+      mistralV2BootstrapReaperMaxBatches: 4,
     });
+  });
+
+  it('borne strictement la cadence et le volume du reaper bootstrap v2', () => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_INTERVAL_MS', '9999');
+    expect(() => loadEnv()).toThrow(/BOOTSTRAP_REAPER_INTERVAL_MS/u);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_INTERVAL_MS', '60000');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_BATCH_SIZE', '101');
+    expect(() => loadEnv()).toThrow(/BOOTSTRAP_REAPER_BATCH_SIZE/u);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_BATCH_SIZE', '10');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_MAX_BATCHES', '0');
+    expect(() => loadEnv()).toThrow(/BOOTSTRAP_REAPER_MAX_BATCHES/u);
   });
 
   it('active le replay terminal v2 avec un keyring canonique et conserve les anciennes versions', () => {
     validMistralRealtimeEnv();
+    const subject = Buffer.alloc(32, 6).toString('base64url');
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', subject);
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: subject }));
     const first = Buffer.alloc(32, 1).toString('base64url');
     const current = Buffer.alloc(32, 2).toString('base64url');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
@@ -144,6 +178,166 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(Buffer.from(keys?.secret(1) ?? []).toString('base64url')).toBe(first);
     expect(Buffer.from(keys?.secret(2) ?? []).toString('base64url')).toBe(current);
     expect(keys?.secret(3)).toBeNull();
+  });
+
+  it('conserve les versions HMAC sujet nécessaires aux reçus terminaux après rotation', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    const previous = Buffer.alloc(32, 4).toString('base64url');
+    const current = Buffer.alloc(32, 5).toString('base64url');
+    vi.stubEnv('BOB_LIVE_SUBJECT_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', current);
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: previous, 2: current }));
+
+    const keyRing = resolveBobLiveSubjectHmacKeyRing(loadEnv());
+    expect(keyRing?.currentVersion).toBe(2);
+    expect(keyRing?.versions).toEqual([1, 2]);
+    expect(keyRing?.secret(1)).toBe(previous);
+    expect(keyRing?.secret(2)).toBe(current);
+    expect(keyRing?.secret(3)).toBeNull();
+  });
+
+  it('conserve octet pour octet un secret sujet historique non base64url', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    const legacy = 'legacy-HMAC-secret-kept-byte-for-byte-2026';
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', legacy);
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: legacy }));
+
+    const keyRing = resolveBobLiveSubjectHmacKeyRing(loadEnv());
+    expect(keyRing?.secret(1)).toBe(legacy);
+    expect(resolveBobLiveEnv(loadEnv()).subjectHmacSecret).toBe(legacy);
+  });
+
+  it('refuse le replay v2 sans keyring sujet ou avec une version courante divergente', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', '');
+    expect(() => loadEnv()).toThrow(/SUBJECT_HMAC_KEYRING/u);
+
+    const old = Buffer.alloc(32, 4).toString('base64url');
+    const current = Buffer.alloc(32, 5).toString('base64url');
+    vi.stubEnv('BOB_LIVE_SUBJECT_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', current);
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: old }));
+    expect(() => loadEnv()).toThrow(/version courante sujet/u);
+
+    vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: old, 2: old }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+  });
+
+  it('n’autorise le bootstrap initial v2 qu’au-dessus du replay terminal', () => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(/exige le replay terminal/i);
+
+    enableMistralV2TerminalReplay();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
+      1: Buffer.alloc(32, 8).toString('base64url'),
+    }));
+    expect(resolveBobLiveEnv(loadEnv()).mistralV2InitialBootstrapEnabled).toBe(true);
+  });
+
+  it('retient les identités v1 sous une clé courante v2, y compris pendant un rollback drain-only', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    const first = Buffer.alloc(32, 8).toString('base64url');
+    const current = Buffer.alloc(32, 9).toString('base64url');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
+      1: first,
+      2: current,
+    }));
+
+    const drainEnv = loadEnv();
+    const drainKeys = resolveMistralV2IdentityEncryptionKeyRing(drainEnv);
+    expect(resolveBobLiveEnv(drainEnv).mistralV2InitialBootstrapEnabled).toBe(false);
+    expect(drainKeys?.currentVersion).toBe(2);
+    expect(drainKeys?.secret(1)).toBe(first);
+    expect(drainKeys?.secret(2)).toBe(current);
+    expect(drainKeys?.secret(3)).toBeNull();
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED', 'true');
+    expect(resolveMistralV2IdentityEncryptionKeyRing(loadEnv())?.secret(1)).toBe(first);
+  });
+
+  it('exige le keyring identité complet pour émettre et refuse toute paire partielle', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(/identité.*incomplet/i);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
+    expect(() => loadEnv()).toThrow(/identité.*incomplet/i);
+  });
+
+  it('refuse aussi une paire identité partielle en mode drain-only', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
+    expect(() => loadEnv()).toThrow(/identité.*incomplet/i);
+  });
+
+  it('interdit le keyring identité lorsque le replay terminal est désactivé', () => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
+      1: Buffer.alloc(32, 8).toString('base64url'),
+    }));
+    expect(() => loadEnv()).toThrow(/identité.*replay terminal.*désactivé/i);
+  });
+
+  it('refuse version invalide, version courante absente, doublon et dépassement de borne', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    const first = Buffer.alloc(32, 8).toString('base64url');
+    const current = Buffer.alloc(32, 9).toString('base64url');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '2');
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({ 1: first }));
+    expect(() => loadEnv()).toThrow(/version courante.*identité/i);
+
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      `{"01":"${first}","2":"${current}"}`,
+    );
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
+      1: first,
+      2: first,
+    }));
+    let duplicateError: unknown;
+    try {
+      loadEnv();
+    } catch (error) {
+      duplicateError = error;
+    }
+    expect(String(duplicateError)).toMatch(/version ou une clé invalide/i);
+    expect(String(duplicateError)).not.toContain(first);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify(
+      Object.fromEntries(Array.from({ length: 9 }, (_, index) => [
+        index + 1,
+        Buffer.alloc(32, index + 8).toString('base64url'),
+      ])),
+    ));
+    expect(() => loadEnv()).toThrow(/entre 1 et 8 clés/i);
+  });
+
+  it('refuse un secret identité mal formé ou réutilisé par la persistance', () => {
+    validMistralRealtimeEnv();
+    enableMistralV2TerminalReplay();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', '{"1":"not-a-key"}');
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
+
+    const persistenceSecret = Buffer.alloc(32, 7).toString('base64url');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
+      1: persistenceSecret,
+    }));
+    expect(() => loadEnv()).toThrow(/doit être dédiée/i);
   });
 
   it('refuse toute configuration partielle ou dormante du keyring v2', () => {

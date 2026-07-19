@@ -44,6 +44,7 @@ const SETTINGS: RealtimeVoiceSettings = {
   localAuditToken: null,
   mistralTargetDelayMs: 240,
   mistralWebsocketUrl: 'ws://127.0.0.1:3000/v1/voice/realtime/mistral',
+  mistralV2InitialBootstrapEnabled: false,
 };
 
 const OWNER: RealtimeSidebandOwnerIdentity = {

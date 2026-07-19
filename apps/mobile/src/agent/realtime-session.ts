@@ -61,6 +61,7 @@ export interface RealtimeOrchestratorLike {
 export interface RealtimeTransportLike {
   readonly completionMode: 'continuous' | 'one-shot';
   setMicrophoneEnabled(enabled: boolean): void;
+  synchronizePublishedContext?(fence: RealtimePublishedFence): Promise<boolean>;
   finishUserInput?(): Promise<boolean>;
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean;
   getSessionHandle(): string | null;
@@ -123,6 +124,10 @@ export class RealtimeSessionController {
   private readonly pendingControlAcks = new Set<Promise<void>>();
   /** Effet terminal authentifie, retenu jusqu'a la fermeture COMPLETE du transport one-shot. */
   private pendingTerminalDecision: AgentControlDecision | null = null;
+  /** Deduplication du signal autoritatif et du fallback manuel de finishUserInput(). */
+  private committedTurnId: string | null = null;
+  /** READY technique ne doit pas ecraser THINKING entre le commit et le debut de Bob. */
+  private responsePendingForCurrentInput = false;
 
   constructor(
     private readonly deps: RealtimeSessionDeps,
@@ -138,6 +143,7 @@ export class RealtimeSessionController {
     const gen = ++this.generation;
     this.fallbackTaken = false;
     this.pendingTerminalDecision = null;
+    this.resetCommittedInputLifecycle();
     // Un orchestrateur zombie (repli mid-call scellé sans stop explicite) meurt ici :
     // chaque start() repart d'un monde propre, jamais d'un transport mort.
     if (this.orchestrator) await this.teardown('user');
@@ -195,6 +201,7 @@ export class RealtimeSessionController {
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     const publisher = this.publisher;
+    this.resetCommittedInputLifecycle();
     transport.setMicrophoneEnabled(false);
     transport.interrupt('navigation');
     const result = await publisher.publish(this.hooks.getContextSnapshot());
@@ -215,6 +222,12 @@ export class RealtimeSessionController {
       );
       return;
     }
+    if (!await this.synchronizeTransportContext(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      result.fence,
+    )) return;
     await this.openMicrophoneIfActive(
       controllerGeneration,
       primaryGeneration,
@@ -235,7 +248,7 @@ export class RealtimeSessionController {
       accepted = false;
     }
     if (accepted && this.activeFlag && this.lastTransport === transport) {
-      this.hooks.onPhase('thinking');
+      this.publishThinkingForCurrentInput();
     }
     return accepted;
   }
@@ -249,6 +262,7 @@ export class RealtimeSessionController {
     this.activeFlag = false;
     this.pendingControlAcks.clear();
     this.pendingTerminalDecision = null;
+    this.resetCommittedInputLifecycle();
     this.publisher?.close();
     this.publisher = null;
     this.controlGate?.close?.();
@@ -269,13 +283,24 @@ export class RealtimeSessionController {
   private async handleTransportEvent(event: RealtimeTransportEvent): Promise<void> {
     switch (event.type) {
       case 'state': {
-        this.hooks.onPhase(mapTransportPhase(event.state.phase));
+        if (event.state.phase === 'user_speaking') {
+          this.resetCommittedInputLifecycle();
+        }
+        const preserveThinking = event.state.phase === 'ready'
+          && this.responsePendingForCurrentInput;
+        if (event.state.phase === 'bob_speaking') {
+          this.responsePendingForCurrentInput = false;
+        }
+        if (!preserveThinking) this.hooks.onPhase(mapTransportPhase(event.state.phase));
         if (event.state.phase === 'ready' && !this.contextPublished) {
           this.contextPublished = true;
           await this.publishThenOpenMicrophone();
         }
         return;
       }
+      case 'user_input_committed':
+        this.publishThinkingForCurrentInput(event.turnId);
+        return;
       case 'user_transcript':
         this.hooks.onUserTranscript(event.text, event.final);
         return;
@@ -382,6 +407,7 @@ export class RealtimeSessionController {
     this.controlGate = null;
     this.pendingControlAcks.clear();
     this.pendingTerminalDecision = null;
+    this.resetCommittedInputLifecycle();
     this.lastTransport = transport;
     this.contextPublished = false;
     this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
@@ -398,6 +424,21 @@ export class RealtimeSessionController {
       this.primaryGeneration === primaryGeneration &&
       this.lastTransport === transport
     );
+  }
+
+  private publishThinkingForCurrentInput(turnId?: string): void {
+    if (turnId !== undefined) {
+      if (this.committedTurnId === turnId) return;
+      this.committedTurnId = turnId;
+    }
+    if (this.responsePendingForCurrentInput) return;
+    this.responsePendingForCurrentInput = true;
+    this.hooks.onPhase('thinking');
+  }
+
+  private resetCommittedInputLifecycle(): void {
+    this.committedTurnId = null;
+    this.responsePendingForCurrentInput = false;
   }
 
   private async stopCurrentPrimaryWithFallback(
@@ -438,6 +479,33 @@ export class RealtimeSessionController {
     return true;
   }
 
+  /** Le PUT HTTP ne suffit pas au protocole Mistral v2 : sa fence doit aussi être appliquée
+   * dans le stream WSS séquencé. Tout refus/timeout ferme la mission avant le micro. */
+  private async synchronizeTransportContext(
+    controllerGeneration: number,
+    primaryGeneration: number,
+    transport: RealtimeTransportLike,
+    fence: RealtimePublishedFence,
+  ): Promise<boolean> {
+    const synchronize = transport.synchronizePublishedContext;
+    if (synchronize === undefined) return true;
+    let synchronized = false;
+    try {
+      synchronized = await synchronize.call(transport, fence);
+    } catch {
+      synchronized = false;
+    }
+    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (synchronized) return true;
+    await this.stopCurrentPrimaryWithFallback(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      'provider_error',
+    );
+    return false;
+  }
+
   /** L'ORDRE du contrat, FAIL-CLOSED (P0 GPT 20:24) : micro ON UNIQUEMENT si handle présent
    * ET PUT contexte confirmé — sinon stop + repli. Jamais une oreille sans contexte publié. */
   private async publishThenOpenMicrophone(): Promise<void> {
@@ -474,6 +542,12 @@ export class RealtimeSessionController {
       );
       return;
     }
+    if (!await this.synchronizeTransportContext(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      result.fence,
+    )) return;
     await this.openMicrophoneIfActive(
       controllerGeneration,
       primaryGeneration,

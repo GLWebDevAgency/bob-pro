@@ -39,6 +39,7 @@ import type {
   MistralConversationRedeemAndOpenResult,
   MistralConversationResumeAuthority,
 } from './mistral-conversation-resume-ticket';
+import type { MistralConversationAdmissionAuthority } from './mistral-conversation-admission';
 
 const NOW = 1_000_000;
 const TICKET = 'A'.repeat(43);
@@ -61,7 +62,7 @@ const BASE_GRANT: MistralConversationBootstrapGrant = {
   subjectHash: 'd'.repeat(64),
   subjectKeyVersion: 2,
   plan: 'pro',
-  sessionHandle: 'session_handle_1234567890abcdef',
+  sessionHandle: '30000000-0000-4000-8000-000000000002',
   hardExpiresAt: new Date(NOW + 60_000).toISOString(),
   contextRevision: 1,
   contextDigest: DIGEST_1,
@@ -92,6 +93,10 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error('condition_not_reached');
+}
+
+async function flushMicrotasks(iterations = 80): Promise<void> {
+  for (let index = 0; index < iterations; index += 1) await Promise.resolve();
 }
 
 class FakeSocket extends EventEmitter implements MistralConversationGatewayV2Socket {
@@ -547,6 +552,63 @@ class DeterministicEntropy implements MistralConversationGatewayV2Entropy {
   }
 }
 
+function durableResumeAuthority(
+  grant: MistralConversationBootstrapGrant,
+  authority: FakeDurableAuthority,
+): MistralConversationResumeAuthority & {
+  readonly redeemAndOpen: ReturnType<typeof vi.fn>;
+  readonly acknowledgeTerminal: ReturnType<typeof vi.fn>;
+} {
+  let leaseOrdinal = 0;
+  return {
+    issue: vi.fn(async () => ({ status: 'unavailable' as const })),
+    reconcileInitialBootstrap: vi.fn(async () => ({ status: 'unavailable' as const })),
+    redeemAndOpen: vi.fn(async (
+      input: Parameters<MistralConversationResumeAuthority['redeemAndOpen']>[0],
+    ): Promise<MistralConversationRedeemAndOpenResult> => {
+      leaseOrdinal += 1;
+      const ownerLeaseToken = String.fromCharCode('L'.charCodeAt(0) + leaseOrdinal).repeat(43);
+      const opened = await authority.open({
+        grant,
+        ownerLeaseToken,
+        resumeNextServerSequence: input.resumeNextServerSequence,
+        maxReplayEvents: input.maxReplayEvents,
+        maxReplayBytes: input.maxReplayBytes,
+        signal: input.signal,
+      });
+      if (opened.status === 'recovered' || opened.status === 'replayed') {
+        return {
+          ...opened,
+          status: 'live_takeover',
+          grant,
+          ownerLeaseToken,
+          terminal: null,
+          terminalAcknowledgement: null,
+        };
+      }
+      if (opened.status === 'terminal_replay') {
+        return {
+          ...opened,
+          grant,
+          terminalAcknowledgement: {
+            replayConnectionId: '60000000-0000-4000-8000-000000000001',
+            connectionLeaseToken: 'Z'.repeat(43),
+            expiresAt: new Date(NOW + 6_000).toISOString(),
+          },
+        };
+      }
+      if (
+        opened.status === 'expired'
+        || opened.status === 'invalid_cursor'
+        || opened.status === 'history_unavailable'
+        || opened.status === 'unavailable'
+      ) return { status: opened.status };
+      return { status: 'unavailable' };
+    }),
+    acknowledgeTerminal: vi.fn(async () => ({ status: 'applied' as const })),
+  };
+}
+
 interface Harness {
   readonly grant: MistralConversationBootstrapGrant;
   readonly log: string[];
@@ -554,7 +616,12 @@ interface Harness {
   readonly authority: FakeDurableAuthority;
   readonly provider: ControlledProvider;
   readonly pipeline: ControlledPipeline;
-  readonly consume: ReturnType<typeof vi.fn>;
+  readonly resume: ReturnType<typeof durableResumeAuthority>;
+  readonly admission: MistralConversationAdmissionAuthority & {
+    readonly renewOwner: ReturnType<typeof vi.fn>;
+    readonly releaseClosed: ReturnType<typeof vi.fn>;
+  };
+  readonly redeemAndOpenInitial: ReturnType<typeof vi.fn>;
   readonly contextAuthorize: ReturnType<typeof vi.fn>;
   readonly dependencies: MistralConversationGatewayV2Dependencies;
 }
@@ -566,6 +633,7 @@ function harness(input: {
   readonly pipelineTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
   readonly providerResponseTimeoutMs?: number;
+  readonly admissionPolicy?: MistralConversationAdmissionAuthority['policy'];
 } = {}): Harness {
   const grant = { ...BASE_GRANT, ...input.grant };
   const log: string[] = [];
@@ -573,11 +641,38 @@ function harness(input: {
   const authority = new FakeDurableAuthority(grant, log);
   const provider = new ControlledProvider(log);
   const pipeline = new ControlledPipeline(log);
-  const consume = vi.fn(async () => {
-    log.push('bootstrap:consume');
-    return { status: 'consumed' as const, grant };
+  const resume = durableResumeAuthority(grant, authority);
+  const admission = {
+    policy: Object.freeze(input.admissionPolicy ?? { activeLeaseSeconds: 30, heartbeatSeconds: 10 }),
+    renewOwner: vi.fn(async () => ({
+      status: 'renewed' as const,
+      leaseExpiresAt: new Date(NOW + 30_000).toISOString(),
+    })),
+    releaseClosed: vi.fn(async () => ({ status: 'released' as const })),
+  };
+  const redeemAndOpenInitial = vi.fn(async (
+    input: Parameters<MistralConversationBootstrapAuthority['redeemAndOpenInitial']>[0],
+  ): ReturnType<MistralConversationBootstrapAuthority['redeemAndOpenInitial']> => {
+    log.push('bootstrap:redeem_and_open_initial');
+    const opened = await authority.open({
+      grant,
+      ownerLeaseToken: input.ownerLeaseToken,
+      resumeNextServerSequence: input.resumeNextServerSequence,
+      maxReplayEvents: input.maxReplayEvents,
+      maxReplayBytes: input.maxReplayBytes,
+      signal: input.signal,
+    });
+    if (opened.status === 'opened') return { ...opened, grant };
+    if (
+      opened.status === 'expired'
+      || opened.status === 'invalid_cursor'
+      || opened.status === 'history_unavailable'
+      || opened.status === 'unavailable'
+    ) return { status: opened.status };
+    if (opened.status === 'replayed') return { status: 'replayed' };
+    return { status: 'unavailable' };
   });
-  const bootstrap: MistralConversationBootstrapAuthority = { consume };
+  const bootstrap: MistralConversationBootstrapAuthority = { redeemAndOpenInitial };
   const context = {
     authorize: vi.fn(async () => ({
       status: 'authorized' as const,
@@ -592,11 +687,15 @@ function harness(input: {
     authority,
     provider,
     pipeline,
-    consume,
+    resume,
+    admission,
+    redeemAndOpenInitial,
     contextAuthorize: context.authorize,
     dependencies: {
       bootstrap,
       authority,
+      resume,
+      admission,
       context,
       provider,
       pipeline,
@@ -618,6 +717,7 @@ function authenticate(
   socket: FakeSocket,
   resumeNextServerSequence = 0,
   ticket = TICKET,
+  resumeScope?: 'live_takeover' | 'terminal_replay',
 ): void {
   socket.clientControl({
     type: 'authenticate',
@@ -625,12 +725,25 @@ function authenticate(
     companyId: BASE_GRANT.companyId,
     ticket,
     resumeNextServerSequence,
+    ...(resumeScope === undefined
+      ? ticket === RESUME_TICKET
+        ? { resumeScope: 'terminal_replay' as const }
+        : {}
+      : { resumeScope }),
   });
+}
+
+function authenticateLiveTakeover(
+  socket: FakeSocket,
+  resumeNextServerSequence = 0,
+): void {
+  authenticate(socket, resumeNextServerSequence, RESUME_TICKET, 'live_takeover');
 }
 
 async function connect(h: Harness, resumeNextServerSequence = 0): Promise<{ readonly run: Promise<void> }> {
   const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-  authenticate(h.socket, resumeNextServerSequence);
+  if (h.authority.snapshot) authenticateLiveTakeover(h.socket, resumeNextServerSequence);
+  else authenticate(h.socket, resumeNextServerSequence);
   await waitFor(() => h.socket.events().some((event) => (
     event.type === 'session.ready' || event.type === 'session.route_recovered'
   )));
@@ -793,6 +906,7 @@ function resumeAuthority(
 } {
   return {
     issue: vi.fn(async () => ({ status: 'unavailable' as const })),
+    reconcileInitialBootstrap: vi.fn(async () => ({ status: 'unavailable' as const })),
     redeemAndOpen: vi.fn(async () => result),
     acknowledgeTerminal: vi.fn(async () => ({ status: 'applied' as const })),
   };
@@ -816,6 +930,94 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       ...created.snapshot,
       version: 0,
     })).toThrow(/temporarily_unavailable/u);
+  });
+
+  it('renouvelle le bail exact avant ready puis ne le libère qu’après close durable', async () => {
+    const h = harness();
+    const initialRenewal = deferred<{
+      readonly status: 'renewed';
+      readonly leaseExpiresAt: string;
+    }>();
+    h.admission.renewOwner.mockImplementationOnce(() => initialRenewal.promise);
+    h.admission.releaseClosed.mockImplementationOnce(async () => {
+      expect(h.authority.snapshot?.mission.phase).toBe('closed');
+      h.log.push('admission:release_closed');
+      return { status: 'released' as const };
+    });
+
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    authenticate(h.socket);
+    await waitFor(() => h.admission.renewOwner.mock.calls.length === 1);
+    expect(h.socket.events().some((event) => event.type === 'session.ready')).toBe(false);
+    expect(h.admission.renewOwner).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: h.grant.companyId,
+      subjectHash: h.grant.subjectHash,
+      admissionSessionId: h.grant.admissionSessionId,
+      sessionHandle: h.grant.sessionHandle,
+      bootstrapId: h.grant.bootstrapId,
+      missionConnectionEpoch: 1,
+      ownerLeaseToken: expect.any(String),
+      signal: expect.any(AbortSignal),
+    }));
+
+    initialRenewal.resolve({
+      status: 'renewed',
+      leaseExpiresAt: new Date(NOW + 30_000).toISOString(),
+    });
+    await waitFor(() => h.socket.events().some((event) => event.type === 'session.ready'));
+    await endSession(h, run);
+
+    expect(h.admission.releaseClosed).toHaveBeenCalledOnce();
+    expect(h.log.indexOf('durable:close')).toBeLessThan(h.log.indexOf('admission:release_closed'));
+  });
+
+  it('préserve la Mission et stoppe le heartbeat quand la route disparaît', async () => {
+    vi.useFakeTimers();
+    const h = harness({
+      admissionPolicy: { activeLeaseSeconds: 20, heartbeatSeconds: 5 },
+    });
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    authenticate(h.socket);
+    await flushMicrotasks();
+    expect(h.socket.events().some((event) => event.type === 'session.ready')).toBe(true);
+    expect(h.admission.renewOwner).toHaveBeenCalledOnce();
+
+    h.socket.close(1006, 'route_lost');
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(h.admission.renewOwner).toHaveBeenCalledOnce();
+    expect(h.admission.releaseClosed).not.toHaveBeenCalled();
+    expect(h.authority.snapshot?.mission.phase).toBe('ready');
+    expect(h.authority.applied.some((entry) => entry.command.type === 'drain')).toBe(false);
+  });
+
+  it('fence immédiatement l’ancien owner quand un heartbeat devient stale', async () => {
+    vi.useFakeTimers();
+    const h = harness({
+      admissionPolicy: { activeLeaseSeconds: 20, heartbeatSeconds: 5 },
+    });
+    h.admission.renewOwner
+      .mockResolvedValueOnce({
+        status: 'renewed',
+        leaseExpiresAt: new Date(NOW + 20_000).toISOString(),
+      })
+      .mockResolvedValueOnce({ status: 'stale_owner' });
+
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    const rejected = expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+    authenticate(h.socket);
+    await flushMicrotasks();
+    expect(h.socket.events().some((event) => event.type === 'session.ready')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejected;
+
+    expect(h.admission.renewOwner).toHaveBeenCalledTimes(2);
+    expect(h.admission.releaseClosed).not.toHaveBeenCalled();
+    expect(h.authority.snapshot?.mission.phase).toBe('ready');
+    expect(h.authority.applied.some((entry) => entry.command.type === 'drain')).toBe(false);
+    expect(h.socket.events().some((event) => event.type === 'session.closed')).toBe(false);
   });
 
   it('enchaîne trois tours sur la même socket et persiste avant provider et downlink', async () => {
@@ -842,7 +1044,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     });
 
     expect(h.socket.closes).toEqual([]);
-    expect(h.consume).toHaveBeenCalledTimes(1);
+    expect(h.redeemAndOpenInitial).toHaveBeenCalledTimes(1);
     expect(h.authority.openInputs).toHaveLength(1);
     expect(h.provider.openTurn).toHaveBeenCalledTimes(3);
     for (const [providerInput] of h.provider.openTurn.mock.calls) {
@@ -1098,7 +1300,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
     h.socket.clientBinary(audioFrame(1, 0));
     await expect(run).rejects.toMatchObject({ code: 'protocol_error' });
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.socket.events()).toEqual([expect.objectContaining({
       type: 'error',
       code: 'protocol_error',
@@ -1114,7 +1316,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     await expect(serveMistralConversationGatewayV2(h.socket, incomplete)).rejects.toMatchObject({
       code: 'temporarily_unavailable',
     });
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.authority.openInputs).toHaveLength(0);
   });
 
@@ -1378,7 +1580,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
     h.socket.clientRawTextBytes(Uint8Array.of(0xc3, 0x28));
     await expect(run).rejects.toMatchObject({ code: 'protocol_error' });
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.socket.closes[0]).toEqual({ code: 4400, reason: 'protocol_error' });
   });
 
@@ -1407,10 +1609,10 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     expect(h.socket.closes[0]).toEqual({ code: 1013, reason: 'backpressure' });
   });
 
-  it('applique la deadline globale si bootstrap.consume ignore son AbortSignal', async () => {
+  it('applique la deadline globale si bootstrap.redeemAndOpenInitial ignore son AbortSignal', async () => {
     vi.useFakeTimers();
     const h = harness({ authTimeoutMs: 1_000 });
-    h.consume.mockImplementation(async () => new Promise(() => undefined));
+    h.redeemAndOpenInitial.mockImplementation(async () => new Promise(() => undefined));
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
     authenticate(h.socket);
     await Promise.resolve();
@@ -1541,7 +1743,9 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       };
     });
 
-    const { run } = await connect(h);
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    authenticateLiveTakeover(h.socket);
+    await waitFor(() => h.socket.events().some((event) => event.type === 'session.route_recovered'));
     expect(h.socket.events().map((event) => event.type)).toEqual([
       'session.ready',
       'session.context_updated',
@@ -1733,7 +1937,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     });
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket);
+    authenticateLiveTakeover(h.socket);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     expect(h.provider.openTurn).not.toHaveBeenCalled();
   });
@@ -1776,7 +1980,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       });
 
       const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-      authenticate(h.socket);
+      authenticateLiveTakeover(h.socket);
       await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     }
   });
@@ -1803,7 +2007,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const ownerBefore = h.authority.ownerLeaseToken;
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket);
+    authenticateLiveTakeover(h.socket);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
 
     expect(h.authority.openInputs.at(-1)).toMatchObject({
@@ -1831,8 +2035,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     };
     h.authority.outbox.push(...created.events, ...backlog);
 
-    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticateLiveTakeover(h.socket);
     await run;
 
     expect(h.socket.events().slice(-2).map((event) => event.type)).toEqual([
@@ -1940,7 +2147,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
 
     const replacement = new FakeSocket(h.log);
     const replacementRun = serveMistralConversationGatewayV2(replacement, h.dependencies);
-    authenticate(replacement, 1);
+    authenticateLiveTakeover(replacement, 1);
     await waitFor(() => replacement.events().some((event) => event.type === 'session.route_recovered'));
 
     expect(h.authority.ownerLeaseToken).not.toBe(firstLease);
@@ -2007,7 +2214,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     };
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 1);
+    authenticateLiveTakeover(h.socket, 1);
     await waitFor(() => h.authority.snapshot?.acknowledgedServerSequence === 3);
 
     expect(h.socket.closes).toEqual([]);
@@ -2044,7 +2251,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     };
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 0);
+    authenticateLiveTakeover(h.socket, 0);
     await waitFor(() => h.authority.snapshot?.acknowledgedServerSequence === 3);
 
     expect(h.socket.closes).toEqual([]);
@@ -2072,7 +2279,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     h.authority.outbox.push(...created.events);
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 0);
+    authenticateLiveTakeover(h.socket, 0);
     await waitFor(() => h.socket.events().some((event) => event.type === 'session.route_recovered'));
     h.socket.clientControl({ type: 'context.update', contextRevision: 2, contextDigest: DIGEST_2 });
     await waitFor(() => h.socket.events().some((event) => (
@@ -2118,8 +2325,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     expect(h.authority.outbox.filter((event) => event.type === 'session.closed')).toHaveLength(0);
 
     const resumed = new FakeSocket(h.log);
-    const resumedRun = serveMistralConversationGatewayV2(resumed, h.dependencies);
-    authenticate(resumed, 1);
+    const resumedRun = serveMistralConversationGatewayV2(resumed, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(resumed, 1, RESUME_TICKET);
     await resumedRun;
     expect(resumed.events().map((event) => event.type)).toEqual([
       'session.draining',
@@ -2132,8 +2342,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     expect(h.authority.outbox.filter((event) => event.type === 'session.closed')).toHaveLength(1);
 
     const replayed = new FakeSocket(h.log);
-    const replayedRun = serveMistralConversationGatewayV2(replayed, h.dependencies);
-    authenticate(replayed, 1);
+    const replayedRun = serveMistralConversationGatewayV2(replayed, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(replayed, 1, RESUME_TICKET);
     await replayedRun;
     expect(replayed.events().map((event) => event.type)).toEqual([
       'session.draining',
@@ -2156,8 +2369,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     ]);
 
     const resumed = new FakeSocket(h.log);
-    const resumedRun = serveMistralConversationGatewayV2(resumed, h.dependencies);
-    authenticate(resumed, 1);
+    const resumedRun = serveMistralConversationGatewayV2(resumed, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(resumed, 1, RESUME_TICKET);
     await resumedRun;
     expect(resumed.events().slice(-2)).toMatchObject([
       { type: 'session.draining', reason: 'background' },
@@ -2190,8 +2406,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     ]);
 
     const resumed = new FakeSocket(h.log);
-    const resumedRun = serveMistralConversationGatewayV2(resumed, h.dependencies);
-    authenticate(resumed, 1);
+    const resumedRun = serveMistralConversationGatewayV2(resumed, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(resumed, 1, RESUME_TICKET);
     await resumedRun;
     expect(resumed.events().map((event) => event.type)).toEqual([
       'session.draining',
@@ -2222,8 +2441,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       drainReason: 'background',
     });
     const resumed = new FakeSocket(h.log);
-    const resumedRun = serveMistralConversationGatewayV2(resumed, h.dependencies);
-    authenticate(resumed, 1);
+    const resumedRun = serveMistralConversationGatewayV2(resumed, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(resumed, 1, RESUME_TICKET);
     await resumedRun;
     expect(resumed.events().map((event) => event.type)).toEqual([
       'turn.started',
@@ -2308,8 +2530,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     };
     h.authority.outbox.push(...created.events, ...drained.events, ...closed.events);
 
-    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, closed.snapshot.nextServerSequence);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, closed.snapshot.nextServerSequence, RESUME_TICKET);
     h.socket.clientControl(startControl(CLIENT_1, 1_000));
     await run;
 
@@ -2356,7 +2581,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       connectionLeaseToken: terminal.terminalAcknowledgement.connectionLeaseToken,
       nextServerSequence: terminal.snapshot.nextServerSequence,
     }));
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.authority.openInputs).toEqual([]);
     expect(h.provider.openTurn).not.toHaveBeenCalled();
     expect(h.pipeline.reason).not.toHaveBeenCalled();
@@ -2391,7 +2616,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     await run;
 
     expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.authority.openInputs).toEqual([]);
   });
 
@@ -2760,18 +2985,21 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     await expect(run).rejects.toMatchObject({ code: 'protocol_error' });
 
     expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.authority.openInputs).toEqual([]);
     expect(h.provider.openTurn).not.toHaveBeenCalled();
   });
 
   it('refuse un ticket r2 sans port resume et ne le rabat jamais vers le bootstrap', async () => {
     const h = harness();
-    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume: undefined,
+    });
     authenticate(h.socket, 0, RESUME_TICKET);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
 
-    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.redeemAndOpenInitial).not.toHaveBeenCalled();
     expect(h.authority.openInputs).toEqual([]);
     expect(h.socket.events()).toEqual([
       expect.objectContaining({ type: 'error', code: 'temporarily_unavailable' }),
@@ -2785,8 +3013,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const terminal = terminalReplayFixture(h, 'user', replayGraceExpiresAt);
     const open = vi.spyOn(h.authority, 'open').mockResolvedValueOnce(terminal);
 
-    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 0);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume: undefined,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
 
     expect(open).not.toHaveBeenCalled();
@@ -2819,7 +3050,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       vi.spyOn(h.authority, 'open').mockResolvedValueOnce(terminal);
 
       const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-      authenticate(h.socket, 0);
+      authenticate(h.socket, 0, RESUME_TICKET);
       await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
 
       expect(h.socket.events()).toEqual([
@@ -2839,7 +3070,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     vi.spyOn(h.authority, 'open').mockResolvedValueOnce(terminal);
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, terminal.snapshot.nextServerSequence + 1);
+    authenticate(h.socket, terminal.snapshot.nextServerSequence + 1, RESUME_TICKET);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     expect(h.socket.events()).toMatchObject([{
       type: 'error',
@@ -2868,7 +3099,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     vi.spyOn(h.authority, 'open').mockResolvedValueOnce(corrupt);
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 0);
+    authenticate(h.socket, 0, RESUME_TICKET);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     expect(h.provider.openTurn).not.toHaveBeenCalled();
   });
@@ -2889,7 +3120,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
       vi.spyOn(h.authority, 'open').mockResolvedValueOnce(corrupt);
 
       const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-      authenticate(h.socket, 0);
+      authenticate(h.socket, 0, RESUME_TICKET);
       await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
       expect(h.provider.openTurn).not.toHaveBeenCalled();
     }
@@ -2915,7 +3146,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     vi.spyOn(h.authority, 'open').mockResolvedValueOnce(corrupt);
 
     const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, 0);
+    authenticate(h.socket, 0, RESUME_TICKET);
     await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     expect(h.provider.openTurn).not.toHaveBeenCalled();
   });
@@ -2943,8 +3174,11 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     h.authority.snapshot = drained.snapshot;
     h.authority.outbox.push(...created.events, ...started.events, ...drained.events);
 
-    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
-    authenticate(h.socket, started.snapshot.nextServerSequence);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, started.snapshot.nextServerSequence, RESUME_TICKET);
     await run;
 
     expect(h.socket.events().map((event) => event.type)).toEqual([
@@ -2973,7 +3207,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
 
     const resumedSocket = new FakeSocket(first.log);
     const resumedRun = serveMistralConversationGatewayV2(resumedSocket, first.dependencies);
-    authenticate(resumedSocket, 1);
+    authenticateLiveTakeover(resumedSocket, 1);
     await waitFor(() => resumedSocket.events().some((event) => event.type === 'session.route_recovered'));
     expect(resumedSocket.events().map((event) => event.serverSequence)).toEqual([1, 2, 3, 4]);
     expect(resumedSocket.events().map((event) => event.type)).toEqual([
@@ -3011,7 +3245,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
 
     const resumedSocket = new FakeSocket(first.log);
     const resumedRun = serveMistralConversationGatewayV2(resumedSocket, first.dependencies);
-    authenticate(resumedSocket, 2);
+    authenticateLiveTakeover(resumedSocket, 2);
     await waitFor(() => resumedSocket.events().some((event) => event.type === 'session.route_recovered'));
     expect(resumedSocket.events().map((event) => event.serverSequence)).toEqual([1, 2, 3, 4]);
     expect(first.authority.openInputs.at(-1)?.resumeNextServerSequence).toBe(2);
@@ -3031,7 +3265,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const aheadBefore = structuredClone(ahead.authority.snapshot);
     const aheadOwnerBefore = ahead.authority.ownerLeaseToken;
     const aheadRun = serveMistralConversationGatewayV2(ahead.socket, ahead.dependencies);
-    authenticate(ahead.socket, 2);
+    authenticateLiveTakeover(ahead.socket, 2);
     await expect(aheadRun).rejects.toMatchObject({ code: 'sequence_error' });
     expect(ahead.authority.snapshot).toEqual(aheadBefore);
     expect(ahead.authority.outbox).toEqual(createdAhead.events);
@@ -3048,7 +3282,7 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     const missingBefore = structuredClone(missing.authority.snapshot);
     const missingOwnerBefore = missing.authority.ownerLeaseToken;
     const missingRun = serveMistralConversationGatewayV2(missing.socket, missing.dependencies);
-    authenticate(missing.socket, 0);
+    authenticateLiveTakeover(missing.socket, 0);
     await expect(missingRun).rejects.toMatchObject({ code: 'temporarily_unavailable' });
     expect(missing.authority.snapshot).toEqual(missingBefore);
     expect(missing.authority.outbox).toEqual(createdMissing.events);

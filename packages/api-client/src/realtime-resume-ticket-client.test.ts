@@ -35,6 +35,22 @@ function issuedBody(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+function terminalCompleteBody(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    status: 'terminal_complete',
+    companyId: 'company-1',
+    sessionHandle: SESSION_HANDLE,
+    protocol: 'bob.mistral-pcm.v2',
+    missionConnectionEpoch: 9,
+    nextServerSequence: 43,
+    reason: 'user',
+    closedAt: '2026-07-19T12:00:20.000Z',
+    ...overrides,
+  };
+}
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'content-type': 'application/json' },
@@ -68,22 +84,48 @@ describe('BobClient — ticket de reprise terminale Mistral v2', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('encode le handle dans le chemin et ne reconnaît terminal_complete qu’avec sa forme exacte', async () => {
+  it('encode le handle et lie la preuve terminale complète à la mission demandée', async () => {
     const handle = 'conversation/session?tenant=1#checkpoint';
+    const receipt = terminalCompleteBody({ sessionHandle: handle });
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       expect(String(url)).toBe(
         'https://api.bob.test/voice/realtime/calls/'
           + 'conversation%2Fsession%3Ftenant%3D1%23checkpoint/resume-tickets',
       );
       expect(JSON.parse(String(init?.body))).toEqual(INPUT);
-      return jsonResponse({ status: 'terminal_complete' });
+      return jsonResponse(receipt);
     });
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(client().requestRealtimeVoiceResumeTicket(handle, INPUT)).resolves.toEqual({
       ok: true,
-      value: { status: 'terminal_complete' },
+      value: receipt,
     });
+  });
+
+  it('accepte les bornes publiques exactes de la preuve terminale', async () => {
+    const receipt = terminalCompleteBody({
+      missionConnectionEpoch: 0x7fff_ffff,
+      nextServerSequence: 0x1_0000_0000,
+      reason: 'fatal_error',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(receipt)));
+
+    await expect(
+      client().requestRealtimeVoiceResumeTicket(SESSION_HANDLE, INPUT),
+    ).resolves.toEqual({ ok: true, value: receipt });
+  });
+
+  it('accepte un reçu CLOSED exactement égal à la preuve locale envoyée', async () => {
+    const receipt = terminalCompleteBody({
+      missionConnectionEpoch: INPUT.missionConnectionEpoch,
+      nextServerSequence: INPUT.nextServerSequence,
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(receipt)));
+
+    await expect(
+      client().requestRealtimeVoiceResumeTicket(SESSION_HANDLE, INPUT),
+    ).resolves.toEqual({ ok: true, value: receipt });
   });
 
   it.each([
@@ -101,7 +143,45 @@ describe('BobClient — ticket de reprise terminale Mistral v2', () => {
     ['epoch serveur antérieur', issuedBody({ expectedMissionConnectionEpoch: 6 })],
     ['curseur différent', issuedBody({ resumeNextServerSequence: 43 })],
     ['timestamp non canonique', issuedBody({ ticketExpiresAt: '2026-07-19T12:00:30Z' })],
-    ['terminal enrichi', { status: 'terminal_complete', ticket: TICKET }],
+    ['preuve terminale historique incomplète', { status: 'terminal_complete' }],
+    ['preuve terminale avec champ supplémentaire', terminalCompleteBody({ ticket: TICKET })],
+    ['preuve terminale autre tenant', terminalCompleteBody({ companyId: 'company-2' })],
+    [
+      'preuve terminale autre mission',
+      terminalCompleteBody({ sessionHandle: 'conversation_session_0002' }),
+    ],
+    ['preuve terminale protocole v1', terminalCompleteBody({ protocol: 'bob.mistral-pcm.v1' })],
+    ['preuve terminale epoch zéro', terminalCompleteBody({ missionConnectionEpoch: 0 })],
+    ['preuve terminale epoch fractionnaire', terminalCompleteBody({ missionConnectionEpoch: 1.5 })],
+    [
+      'preuve terminale epoch antérieur à la preuve locale',
+      terminalCompleteBody({ missionConnectionEpoch: 6 }),
+    ],
+    [
+      'preuve terminale epoch hors int32',
+      terminalCompleteBody({ missionConnectionEpoch: 0x8000_0000 }),
+    ],
+    ['preuve terminale curseur zéro', terminalCompleteBody({ nextServerSequence: 0 })],
+    ['preuve terminale curseur un', terminalCompleteBody({ nextServerSequence: 1 })],
+    ['preuve terminale curseur deux', terminalCompleteBody({ nextServerSequence: 2 })],
+    ['preuve terminale curseur fractionnaire', terminalCompleteBody({ nextServerSequence: 1.5 })],
+    [
+      'preuve terminale curseur global antérieur à la preuve locale',
+      terminalCompleteBody({ missionConnectionEpoch: 7, nextServerSequence: 41 }),
+    ],
+    [
+      'preuve terminale nouvel epoch sans avance stricte du curseur',
+      terminalCompleteBody({ missionConnectionEpoch: 8, nextServerSequence: 42 }),
+    ],
+    [
+      'preuve terminale curseur hors uint32',
+      terminalCompleteBody({ nextServerSequence: 0x1_0000_0001 }),
+    ],
+    ['preuve terminale raison inconnue', terminalCompleteBody({ reason: 'unknown' })],
+    [
+      'preuve terminale timestamp non canonique',
+      terminalCompleteBody({ closedAt: '2026-07-19T12:00:20Z' }),
+    ],
   ])('décode fail-closed une réponse invalide : %s', async (_label, payload) => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(payload)));
 

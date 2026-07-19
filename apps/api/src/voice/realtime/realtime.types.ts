@@ -1,3 +1,4 @@
+import type { MistralConversationSessionEndReason } from '@bob/ai';
 import { resolveBobLiveEnv, type BobLiveAuditProviderId, type BobLiveProviderId, type Env } from '../../config/env';
 
 export const BOB_REALTIME_CONFIG_VERSION = 'bob-live-provider-neutral-v3';
@@ -11,6 +12,8 @@ export interface RealtimeVoiceSettings {
   apiKey: string | null;
   safetySecret: string | null;
   subjectKeyVersion: number;
+  /** Versions HMAC conservées pour authentifier les Missions/reçus créés avant rotation. */
+  subjectHmacKeyRing?: readonly Readonly<{ version: number; secret: string }>[];
   providerTimeoutMs: number;
   sidebandTimeoutMs: number;
   maxSessionSeconds: number;
@@ -21,6 +24,7 @@ export interface RealtimeVoiceSettings {
   localAuditToken: string | null;
   mistralTargetDelayMs: number;
   mistralWebsocketUrl: string;
+  mistralV2InitialBootstrapEnabled: boolean;
 }
 
 export function realtimeVoiceSettingsFromEnv(env: Env): RealtimeVoiceSettings {
@@ -34,6 +38,11 @@ export function realtimeVoiceSettingsFromEnv(env: Env): RealtimeVoiceSettings {
     apiKey: (live.provider === 'mistral' ? env.MISTRAL_API_KEY : env.OPENAI_API_KEY) ?? null,
     safetySecret: live.subjectHmacSecret,
     subjectKeyVersion: live.subjectKeyVersion,
+    subjectHmacKeyRing: live.subjectHmacKeyRing?.versions.map((version) => {
+      const secret = live.subjectHmacKeyRing?.secret(version);
+      if (!secret) throw new Error(`Bob Live subject HMAC key ${version} is unavailable.`);
+      return Object.freeze({ version, secret });
+    }) ?? [],
     providerTimeoutMs: live.providerTimeoutMs,
     sidebandTimeoutMs: live.controlTimeoutMs,
     maxSessionSeconds: live.maxSessionSeconds,
@@ -44,6 +53,7 @@ export function realtimeVoiceSettingsFromEnv(env: Env): RealtimeVoiceSettings {
     localAuditToken: live.localAuditToken,
     mistralTargetDelayMs: live.mistralTargetDelayMs,
     mistralWebsocketUrl: live.mistralWebsocketUrl,
+    mistralV2InitialBootstrapEnabled: live.mistralV2InitialBootstrapEnabled,
   };
 }
 
@@ -59,6 +69,8 @@ export interface RealtimeVoicePublicConfig {
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
   speechDelivery: 'audited-signed-url-v1';
+  /** Présent uniquement pour le transport Mistral ; permet un rollout v1/v2 sans heuristique. */
+  protocol?: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
 }
 
 interface RealtimeCallBootstrapCommon {
@@ -88,7 +100,25 @@ export interface MistralRealtimeCallBootstrap extends RealtimeCallBootstrapCommo
   contextDigest: string;
 }
 
-export type RealtimeCallBootstrap = OpenAiRealtimeCallBootstrap | MistralRealtimeCallBootstrap;
+/** Canary serveur v2 : session durable push-to-talk, sans annonce publique ni tour actif. */
+export interface MistralConversationInitialCallBootstrap extends RealtimeCallBootstrapCommon {
+  transport: 'mistral-pcm';
+  websocketUrl: string;
+  companyId: string;
+  ticket: string;
+  protocol: 'bob.mistral-pcm.v2';
+  ticketExpiresAt: string;
+  maxMissionAudioBytes: number;
+  contextRevision: number;
+  contextDigest: string;
+  routeMode: 'push_to_talk';
+  fullDuplexCertified: false;
+}
+
+export type RealtimeCallBootstrap =
+  | OpenAiRealtimeCallBootstrap
+  | MistralRealtimeCallBootstrap
+  | MistralConversationInitialCallBootstrap;
 
 export interface RealtimeVoiceResumeTicketIssued {
   readonly status: 'issued';
@@ -106,7 +136,37 @@ export interface RealtimeVoiceResumeTicketIssued {
 
 export type RealtimeVoiceResumeTicket =
   | RealtimeVoiceResumeTicketIssued
-  | { readonly status: 'terminal_complete' };
+  | {
+      readonly status: 'terminal_complete';
+      readonly companyId: string;
+      readonly sessionHandle: string;
+      readonly protocol: 'bob.mistral-pcm.v2';
+      readonly missionConnectionEpoch: number;
+      readonly nextServerSequence: number;
+      readonly reason: MistralConversationSessionEndReason;
+      readonly closedAt: string;
+    };
+
+export interface RealtimeVoiceBootstrapReconciliationIssued {
+  readonly status: 'issued';
+  readonly websocketUrl: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly ticket: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly scope: 'live_takeover' | 'terminal_replay';
+  readonly ticketExpiresAt: string;
+  readonly expectedMissionConnectionEpoch: number;
+  /** Le mobile n'a jamais reçu `session.ready` sur le bootstrap ambigu. */
+  readonly clientAcceptedMissionConnectionEpoch: 0;
+  /** Aucun événement serveur n'a encore été appliqué par ce mobile. */
+  readonly resumeNextServerSequence: 0;
+}
+
+export type RealtimeVoiceBootstrapReconciliation =
+  | RealtimeVoiceBootstrapReconciliationIssued
+  | { readonly status: 'retry_initial' }
+  | { readonly status: 'attempt_consumed' };
 
 export interface OpenAiRealtimeCallInput {
   offerSdp: string;
