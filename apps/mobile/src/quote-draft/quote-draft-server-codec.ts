@@ -91,6 +91,11 @@ export function encodeQuoteDraftServerPayload(state: QuoteDraftState): QuoteDraf
       vatDecision: vatDecisionOf(state),
       depositPct: state.flow.draft.depositPct,
       signMode: state.flow.draft.signMode,
+      // Exception dépannage urgent : encodée uniquement quand déclarée (payload minimal,
+      // brouillons antérieurs inchangés — absent = non sollicitée, fail-closed).
+      ...(state.flow.draft.urgentRepairRequested === true
+        ? { urgentRepairRequested: true }
+        : {}),
     },
   };
   const parsed = parseQuoteDraftPayload(candidate);
@@ -137,6 +142,8 @@ export function decodeQuoteDraftServerSlot(slot: QuoteDraftSlotView): QuoteDraft
         depositPct: draft.depositPct,
         signMode: draft.signMode,
         signerName: null,
+        // Exception dépannage urgent : reprise fidèle — absent = non sollicitée (fail-closed).
+        urgentRepairRequested: draft.urgentRepairRequested === true,
       },
     },
     customer: draft.customer === null ? null : { ...draft.customer },

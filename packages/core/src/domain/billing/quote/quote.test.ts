@@ -293,3 +293,53 @@ describe('Quote', () => {
     });
   });
 });
+
+  describe('exception dépannage urgent (L221-10, al. 2 / L221-28, 8°)', () => {
+    it('posée à la composition : champ porté, horodaté, événement dédié journalisé', () => {
+      const r = Quote.compose({
+        id: 'q-urgent',
+        companyId: 'c1',
+        customerId: 'k1',
+        at: AT,
+        urgentRepair: { requestedAt: AT },
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.urgentRepair).toEqual({ requestedAt: AT });
+      expect(r.value.pullEvents().map((e) => e.type)).toEqual([
+        'QuoteComposed',
+        'QuoteUrgentRepairDeclared',
+      ]);
+    });
+
+    it('non sollicitée (défaut) : null honnête, aucun événement d’urgence', () => {
+      const q = freshQuote();
+      expect(q.urgentRepair).toBeNull();
+      expect(q.pullEvents().map((e) => e.type)).toEqual(['QuoteComposed']);
+    });
+
+    it('aller-retour snapshot : le fait survit à la réhydratation, défensivement copié', () => {
+      const r = Quote.compose({
+        id: 'q-urgent-2',
+        companyId: 'c1',
+        customerId: 'k1',
+        at: AT,
+        urgentRepair: { requestedAt: AT },
+      });
+      if (!r.ok) throw new Error('compose');
+      const snapshot = r.value.toSnapshot();
+      expect(snapshot.urgentRepair).toEqual({ requestedAt: AT });
+      // Copie défensive : muter le snapshot ne touche pas l'agrégat.
+      snapshot.urgentRepair!.requestedAt = '1999-01-01T00:00:00.000Z';
+      expect(r.value.urgentRepair).toEqual({ requestedAt: AT });
+      const rehydrated = Quote.rehydrate(r.value.toSnapshot());
+      expect(rehydrated.urgentRepair).toEqual({ requestedAt: AT });
+    });
+
+    it('compat ascendante : snapshot antérieur sans le champ → null (fail-closed, jamais inventé)', () => {
+      const q = freshQuote();
+      const snapshot = q.toSnapshot();
+      delete (snapshot as Partial<typeof snapshot>).urgentRepair;
+      expect(Quote.rehydrate(snapshot).urgentRepair).toBeNull();
+    });
+  });

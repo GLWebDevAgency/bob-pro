@@ -43,6 +43,15 @@ export type DomainError =
       /** Premier jour calendaire (Europe/Paris) où la facturation devient possible. */
       availableFrom: string;
       message: string;
+      /**
+       * L'embargo protège L'ARTISAN (contrat annulable) : un override RESPONSABILISÉ existe —
+       * flag explicite `embargoOverride: true` (jamais implicite), confirmation dédiée côté
+       * client, événement payment.embargo_overridden journalisé. `true` signale aux clients
+       * que l'affordance d'override peut être proposée avec le risque concret (`overrideRisk`).
+       */
+      overridable?: true;
+      /** Reformulation CONCRÈTE du risque (offPremisesEmbargoOverrideRisk) — source unique. */
+      overrideRisk?: string;
     }
   | {
       /**

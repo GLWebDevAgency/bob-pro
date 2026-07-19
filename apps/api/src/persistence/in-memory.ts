@@ -633,7 +633,9 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       if (existing.payloadFingerprint !== payloadFingerprint) {
         throw new NotificationDedupeConflictError(input.dedupeKey);
       }
-      if (existing.status !== 'done') {
+      // Un job ANNULÉ ne se réactive jamais par ré-enqueue (parité Prisma : seul pending|failed
+      // se relance) — l'intention révoquée reste révoquée, l'appelant voit le statut honnête.
+      if (existing.status === 'pending' || existing.status === 'failed') {
         // Une clé provider identifie une requête IMMUABLE. Modifier to/subject/body sous la
         // même UUID ferait croire que B a été livré si Brevo avait déjà accepté A.
         // Un lease, même expiré, reste en place pour le chemin de récupération/quarantaine.
@@ -665,7 +667,9 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       payloadFingerprint,
       status: 'pending',
       attempts: 0,
-      nextAttemptAt: input.now,
+      // Livraison planifiée (notBefore) : le worker ne réclame que les jobs dus — un job J+7
+      // reste durable et invisible jusqu'à son échéance (embargo L221-10).
+      nextAttemptAt: input.notBefore ?? input.now,
       leaseToken: null,
       providerAttemptedAt: null,
       lastError: null,
@@ -820,9 +824,62 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     return false;
   }
 
+  async cancelByDedupeKey(
+    companyId: string,
+    kind: NotificationJob['kind'],
+    dedupeKey: string,
+    at: string,
+  ): Promise<boolean> {
+    const job = [...this.map.values()].find(
+      (candidate) =>
+        candidate.companyId === companyId &&
+        candidate.kind === kind &&
+        candidate.dedupeKey === dedupeKey,
+    );
+    if (!job || (job.status !== 'pending' && job.status !== 'failed')) return false;
+    this.map.set(job.id, {
+      ...job,
+      // Payload purgé : même si un état incohérent réapparaissait, ce job n'est PLUS livrable.
+      notification: null,
+      status: 'cancelled',
+      leaseToken: null,
+      lastError: null,
+      updatedAt: at,
+    });
+    return true;
+  }
+
+  async cancelClaimed(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    at: string,
+  ): Promise<boolean> {
+    const job = this.map.get(id);
+    if (
+      !job ||
+      job.companyId !== companyId ||
+      job.leaseToken !== leaseToken ||
+      (job.status !== 'pending' && job.status !== 'failed')
+    ) {
+      return false;
+    }
+    this.map.set(id, {
+      ...job,
+      notification: null,
+      status: 'cancelled',
+      leaseToken: null,
+      lastError: null,
+      updatedAt: at,
+    });
+    return true;
+  }
+
   async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
     return [...this.map.values()]
       .filter((job) => job.companyId === companyId)
+      // Un job annulé n'a jamais rien livré : il ne surface pas dans le fil (C25).
+      .filter((job) => job.status !== 'cancelled')
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
       .map((job) => this.clone(job));
@@ -830,7 +887,11 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
 
   async previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview> {
     const unreadCount = [...this.map.values()].filter(
-      (job) => job.companyId === companyId && job.readAt === null && job.createdAt < observedAt,
+      (job) =>
+        job.companyId === companyId &&
+        job.status !== 'cancelled' &&
+        job.readAt === null &&
+        job.createdAt < observedAt,
     ).length;
     return { unreadCount, throughCreatedAt: observedAt };
   }

@@ -1225,7 +1225,13 @@ export function useGenerateInvoice() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { quoteId: string; mode: 'deposit' | 'final' }) => {
+    mutationFn: async (input: {
+      quoteId: string;
+      mode: 'deposit' | 'final';
+      /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict, après la feuille de
+       *  confirmation dédiée (risque concret) ; journalisé serveur. Jamais implicite. */
+      embargoOverride?: boolean;
+    }) => {
       const r = await client.generateInvoice(input);
       if (!r.ok) throw r.error;
       return r.value;
@@ -1239,6 +1245,22 @@ export function useGenerateInvoice() {
       // auto-émise). Coût nul : re-fetch d'une donnée inchangée.
       void qc.invalidateQueries({ queryKey: ['cashflow'] });
       void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+    },
+  });
+}
+
+/** Embargo L221-10 — DÉFAUT légal du flow « encaisser » pendant la fenêtre : l'encaissement est
+ * PROGRAMMÉ au premier jour autorisé (J+7, outbox serveur planifiée — le message part seul). */
+export function useScheduleEmbargoPayment() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (quoteId: string) => {
+      if (client.scheduleEmbargoPayment === undefined) {
+        throw { kind: 'unavailable', service: 'embargo-scheduled-payment' };
+      }
+      const r = await client.scheduleEmbargoPayment(quoteId);
+      if (!r.ok) throw r.error;
+      return r.value;
     },
   });
 }
@@ -1394,14 +1416,23 @@ export function useIssueInvoice() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (invoiceId: string) => {
-      const r = await client.issueInvoice({ invoiceId });
+    mutationFn: async (input: {
+      invoiceId: string;
+      /** Override RESPONSABILISÉ de l'embargo L221-10 (l'émission est une demande de paiement) —
+       *  `true` strict après la feuille de confirmation dédiée ; journalisé serveur. Sans lui,
+       *  l'override confirmé à la génération finissait en cul-de-sac « Oups » à l'émission. */
+      embargoOverride?: boolean;
+    }) => {
+      const r = await client.issueInvoice({
+        invoiceId: input.invoiceId,
+        ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+      });
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (_data, invoiceId) => {
+    onSuccess: (_data, input) => {
       void qc.invalidateQueries({ queryKey: keys.invoices });
-      void qc.invalidateQueries({ queryKey: keys.invoice(invoiceId) });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
       // L'émission poste l'écriture comptable (RecordIssuedInvoiceAccountingEntry,
       // backend.service.ts::issueInvoice) ET fait passer la facture en 'issued' — donc entre
       // AUSSI dans les créances de GetCashflow (statuts issued/partially_paid/late). Sans ces

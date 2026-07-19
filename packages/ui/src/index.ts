@@ -46,6 +46,10 @@ export * from './components/segmented-control';
 export * from './components/client-row';
 export * from './components/score';
 
+// Conformité (divulgation progressive des protections légales)
+export * from './components/legal-hint';
+export * from './components/legal-hint.logic';
+
 // Chrome
 export * from './components/bottom-tab-bar';
 export * from './components/fab';

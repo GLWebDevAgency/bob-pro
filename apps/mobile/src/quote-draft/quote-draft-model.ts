@@ -109,6 +109,8 @@ export type QuoteDraftCommand =
   | { readonly type: 'set_signer_name'; readonly signerName: string | null }
   | { readonly type: 'set_deposit_pct'; readonly depositPct: number }
   | { readonly type: 'set_sign_mode'; readonly signMode: DevisSignMode | null }
+  /** Exception dépannage urgent (L221-10, al. 2) : réponse à la question du wizard (B2C). */
+  | { readonly type: 'set_urgent_repair'; readonly requested: boolean }
   | { readonly type: 'next_step' }
   | { readonly type: 'previous_step' };
 
@@ -649,6 +651,21 @@ function applyRawCommand(
     });
   }
 
+  if (command.type === 'set_urgent_repair') {
+    // Posée AVANT l'engagement (le fait est repris à la CRÉATION du devis, jamais rétroactif) :
+    // modifiable jusqu'à l'étape signature incluse — figée au recap.
+    const step = requireStep(
+      state,
+      ['client', 'lignes', 'tvaMentions', 'acompte', 'signature'],
+      'La déclaration d’intervention urgente',
+    );
+    if (!step.ok) return step;
+    return ok({
+      ...state,
+      flow: devisEdit(cloneFlow(state.flow), { urgentRepairRequested: command.requested === true }),
+    });
+  }
+
   if (command.type === 'set_deposit_pct') {
     // L'acompte est une clause CHIFFRÉE du brouillon, décidée AVANT l'engagement : il reste
     // modifiable jusqu'à l'étape acompte incluse. Le seed des Réglages facturation s'applique
@@ -1053,7 +1070,8 @@ function cloneCommand(command: QuoteDraftCommand): QuoteDraftCommand {
     command.type === 'remove_line' ||
     command.type === 'set_deposit_pct' ||
     command.type === 'set_signer_name' ||
-    command.type === 'set_sign_mode'
+    command.type === 'set_sign_mode' ||
+    command.type === 'set_urgent_repair'
   ) {
     return { ...command };
   }

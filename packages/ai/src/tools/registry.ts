@@ -37,6 +37,8 @@ import {
   type RecordExpenseActionInput,
   type RecordExpenseSettlementDeclaration,
   type GenerateInvoiceActionInput,
+  type ScheduleEmbargoPaymentActionInput,
+  type ScheduleEmbargoPaymentActionOutput,
   type ExportFecActionInput,
   type FecExportSummary,
   type CreateCustomerActionInput,
@@ -169,18 +171,28 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.sendQuote(input),
   };
 
-  const issueInvoice: Tool<{ invoiceId: string }, { number: string }> = {
+  const issueInvoice: Tool<{ invoiceId: string; embargoOverride?: boolean }, { number: string }> = {
     name: 'emettre_facture',
-    description: 'Émet une facture définitive : numéro légal séquentiel, mentions et PDF/Factur-X archivés.',
+    description:
+      'Émet une facture définitive : numéro légal séquentiel, mentions et PDF/Factur-X archivés. ' +
+      'Si le serveur refuse pour embargo L221-10 (signature à domicile, 7 jours), explique le refus honnête et propose le DÉFAUT ' +
+      '(programmer_encaissement_embargo) ; « embargoOverride: true » n’est permis qu’après avoir reformulé le risque concret ' +
+      '(contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée.',
     mutating: true,
     outbound: false,
     compliance: 'high',
     safetyFloor: true,
-    parse: (raw): Result<{ invoiceId: string }, AppError> => {
-      const r = raw as { invoiceId?: unknown };
+    parse: (raw): Result<{ invoiceId: string; embargoOverride?: boolean }, AppError> => {
+      const r = raw as { invoiceId?: unknown; embargoOverride?: unknown };
       if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
         return err(appValidation('invoiceId', 'Facture manquante.'));
-      return ok({ invoiceId: r.invoiceId });
+      // Override L221-10 : booléen strict — seul `true` traverse (jamais par truthiness).
+      if (r.embargoOverride !== undefined && typeof r.embargoOverride !== 'boolean')
+        return err(appValidation('embargoOverride', 'Booléen attendu.'));
+      return ok({
+        invoiceId: r.invoiceId,
+        ...(r.embargoOverride === true ? { embargoOverride: true } : {}),
+      });
     },
     riskTier: 'fiscal',
     run: (input) => actions.issueInvoice(input),
@@ -345,7 +357,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     const genererFacture: Tool<GenerateInvoiceActionInput, { invoiceId: string }> = {
       name: 'generer_facture',
       description:
-        'Génère la facture (acompte « deposit » ou solde « final ») d’un devis signé — même use case GenerateInvoiceFromQuote que l’UI.',
+        'Génère la facture (acompte « deposit » ou solde « final ») d’un devis signé — même use case GenerateInvoiceFromQuote que l’UI. Si le serveur refuse pour embargo L221-10 (signature à domicile, 7 jours), explique le refus honnête et propose le DÉFAUT : programmer_encaissement_embargo (message client planifié au premier jour légal) ; « embargoOverride: true » n’est permis qu’après avoir reformulé le risque concret (contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée.',
       mutating: true,
       outbound: false,
       compliance: 'high',
@@ -353,18 +365,60 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       safetyFloor: true,
       riskTier: 'fiscal',
       parse: (raw): Result<GenerateInvoiceActionInput, AppError> => {
-        const r = raw as { quoteId?: unknown; mode?: unknown };
+        const r = raw as { quoteId?: unknown; mode?: unknown; embargoOverride?: unknown };
         if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0) return err(appValidation('quoteId', 'Devis manquant.'));
         if (!(typeof r.mode === 'string' && (INVOICE_MODES as readonly string[]).includes(r.mode)))
           return err(appValidation('mode', 'Mode de facture requis (deposit | final).'));
+        // Override L221-10 : booléen strict — seul `true` traverse (jamais par truthiness) ;
+        // le safetyFloor du tool impose la confirmation explicite, le serveur journalise.
+        if (r.embargoOverride !== undefined && typeof r.embargoOverride !== 'boolean')
+          return err(appValidation('embargoOverride', 'Booléen attendu.'));
         return ok({
           quoteId: r.quoteId,
           mode: r.mode as GenerateInvoiceActionInput['mode'],
+          ...(r.embargoOverride === true ? { embargoOverride: true } : {}),
         });
       },
       run: (input) => generateInvoiceAction(input),
     };
     tools.push(genererFacture as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL programmer_encaissement_embargo : le DÉFAUT LÉGAL du refus L221-10 est
+  // exécutable À LA VOIX (hiérarchie doctrine fondateur : le chemin sûr d'abord, l'override en
+  // second niveau — jamais l'inverse). MÊME endpoint que le bouton « Programmer l'encaissement »
+  // (POST /quotes/:id/embargo-scheduled-payment) : message client planifié au premier jour
+  // exigible, annulable si le client se rétracte, revalidé à la livraison.
+  const scheduleEmbargoPaymentAction = actions.scheduleEmbargoPayment?.bind(actions);
+  if (scheduleEmbargoPaymentAction) {
+    const programmerEncaissement: Tool<
+      ScheduleEmbargoPaymentActionInput,
+      ScheduleEmbargoPaymentActionOutput
+    > = {
+      name: 'programmer_encaissement_embargo',
+      description:
+        'DÉFAUT légal quand l’encaissement est refusé pour embargo L221-10 (devis B2C signé à domicile) : programme le message au client au premier jour où le paiement peut être demandé — l’artisan est prévenu ce jour-là pour envoyer le lien de paiement. À proposer AVANT tout embargoOverride. Idempotent par devis ; annulé seul si le client se rétracte.',
+      mutating: true,
+      // Sortant DIFFÉRÉ vers le client (email planifié) : même palier de consentement que les
+      // envois immédiats — la promesse produit reste « rien ne part sans ta validation ».
+      outbound: true,
+      compliance: 'high',
+      safetyFloor: true,
+      riskTier: 'outbound',
+      parse: (raw): Result<ScheduleEmbargoPaymentActionInput, AppError> => {
+        const r = raw as { quoteId?: unknown };
+        if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0)
+          return err(appValidation('quoteId', 'Devis manquant.'));
+        return ok({ quoteId: r.quoteId });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        scheduledFor: output.scheduledFor,
+        availableFrom: output.availableFrom,
+        status: output.status,
+      }),
+      run: (input) => scheduleEmbargoPaymentAction(input),
+    };
+    tools.push(programmerEncaissement as AnyTool);
   }
 
   const exportFecAction = actions.exportFec?.bind(actions);

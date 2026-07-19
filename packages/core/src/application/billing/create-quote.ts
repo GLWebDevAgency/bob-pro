@@ -31,6 +31,14 @@ export interface CreateQuoteInput {
   depositPct?: number;
   validUntil?: string;
   context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+  /**
+   * Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso) : travaux
+   * d'entretien/réparation à réaliser EN URGENCE au domicile du client, EXPRESSÉMENT sollicités
+   * par lui. Posé À LA CRÉATION du devis (question du wizard quand le client est un
+   * particulier), horodaté serveur ici — JAMAIS rétroactif. Refusé pour un client
+   * professionnel/public : l'exception ne protège que le régime du consommateur à domicile.
+   */
+  urgentRepairRequested?: boolean;
 }
 
 export interface CreateQuoteOutput {
@@ -70,6 +78,7 @@ export function canonicalCreateQuotePayload(input: Omit<CreateQuoteInput, 'compa
       housingOlderThan2y: input.context?.housingOlderThan2y ?? false,
       energyRenovation: input.context?.energyRenovation ?? false,
     },
+    urgentRepairRequested: input.urgentRepairRequested ?? false,
   } as const;
 }
 
@@ -149,12 +158,29 @@ export class CreateQuote {
     if (!customer || customer.companyId !== input.companyId)
       return err(appNotFound('customer', input.customerId));
 
+    // Exception dépannage urgent : réservée au CONSOMMATEUR (b2c) — l'art. L221-10/L221-28 ne
+    // régit que le contrat conclu avec un consommateur. La déclarer sur un devis pro serait un
+    // fait légal sans objet : refus honnête plutôt qu'une trace trompeuse.
+    if (input.urgentRepairRequested === true && customer.type !== 'b2c') {
+      return err(
+        appDomain({
+          code: 'VALIDATION',
+          field: 'urgentRepairRequested',
+          message:
+            "L'intervention urgente (art. L221-10 du code de la consommation) ne concerne qu'un client particulier.",
+        }),
+      );
+    }
+
+    const at = this.deps.clock.now();
     const composed = Quote.compose({
       id: this.deps.ids.newId(),
       companyId: input.companyId,
       customerId: input.customerId,
-      at: this.deps.clock.now(),
+      at,
       ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+      // Horodaté SERVEUR à la création — la trace qui fonde l'exception L221-10, al. 2.
+      urgentRepair: input.urgentRepairRequested === true ? { requestedAt: at } : null,
     });
     if (!composed.ok) return err(appDomain(composed.error));
     const quote = composed.value;

@@ -145,6 +145,8 @@ enum NotificationJobStatus {
   pending
   done
   failed
+  // Intention métier révoquée avant livraison (rétractation, paiement déjà reçu) : jamais livré.
+  cancelled
 }
 
 enum AgentJournalPhase {
@@ -595,6 +597,10 @@ model Quote {
   /// A3 — rétractation du consommateur exercée via la fonctionnalité en ligne (art. L221-21
   /// dernier al. c. conso). NULL = jamais exercée ; horodatée SERVEUR, jamais réécrite.
   retractedAt      DateTime?              @db.Timestamptz(6)
+  /// Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso) : intervention
+  /// urgente EXPRESSÉMENT sollicitée par le client B2C, posée À LA CRÉATION du devis (wizard),
+  /// horodatée SERVEUR, immuable. NULL = jamais sollicitée (fail-closed : embargo L221-10 plein).
+  urgentRepairRequestedAt DateTime?       @db.Timestamptz(6)
   totalsHt         Int                    @default(0)
   totalsVat        Int                    @default(0)
   totalsTtc        Int                    @default(0)

@@ -275,6 +275,8 @@ export class PrismaQuoteRepository implements QuoteRepository {
       signatureCustomerType: s.signature?.customerType ?? null,
       // A3 — rétractation en ligne (L221-21) : fait horodaté serveur, NULL = jamais exercée.
       retractedAt: s.retractedAt ? new Date(s.retractedAt) : null,
+      // Exception dépannage urgent (L221-10, al. 2) : posée à la création, immuable, NULL sinon.
+      urgentRepairRequestedAt: s.urgentRepair ? new Date(s.urgentRepair.requestedAt) : null,
       signatureProof:
         signatureProof === null
           ? Prisma.DbNull
@@ -1257,7 +1259,9 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
           payloadFingerprint,
           status: 'pending',
           attempts: 0,
-          nextAttemptAt: new Date(input.now),
+          // Livraison planifiée (notBefore) : listDue/claim ne servent que les jobs dus — un
+          // job J+7 (embargo L221-10) reste durable et invisible jusqu'à son échéance.
+          nextAttemptAt: new Date(input.notBefore ?? input.now),
         },
       ],
       skipDuplicates: true,
@@ -1465,9 +1469,57 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     return count === 1;
   }
 
+  async cancelByDedupeKey(
+    companyId: string,
+    kind: NotificationJob['kind'],
+    dedupeKey: string,
+    at: string,
+  ): Promise<boolean> {
+    void at; // Horloge autoritaire : statement_timestamp() PostgreSQL, comme markDone/markFailed.
+    // Annulation d'intention : gagne sur un lease en vol (le worker perdra markDone/markFailed —
+    // la course provider résiduelle est inhérente, l'état FINAL reste `cancelled`). Un job done
+    // n'est jamais réécrit. Le payload est purgé : plus jamais livrable, quoi qu'il arrive.
+    const count = await this.prisma.client().$executeRaw`
+      UPDATE "notification_jobs"
+         SET status = 'cancelled',
+             payload = NULL,
+             "leaseToken" = NULL,
+             "lastError" = NULL,
+             "updatedAt" = statement_timestamp()
+       WHERE "companyId" = ${companyId}
+         AND kind = ${kind}
+         AND "dedupeKey" = ${dedupeKey}
+         AND status IN ('pending', 'failed')
+    `;
+    return count === 1;
+  }
+
+  async cancelClaimed(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    at: string,
+  ): Promise<boolean> {
+    void at;
+    const count = await this.prisma.client().$executeRaw`
+      UPDATE "notification_jobs"
+         SET status = 'cancelled',
+             payload = NULL,
+             "leaseToken" = NULL,
+             "lastError" = NULL,
+             "updatedAt" = statement_timestamp()
+       WHERE id = ${id}
+         AND "companyId" = ${companyId}
+         AND "leaseToken" = ${leaseToken}
+         AND status IN ('pending', 'failed')
+    `;
+    return count === 1;
+  }
+
   async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
     const rows = await this.prisma.client().notificationJob.findMany({
-      where: { companyId },
+      // Un job annulé n'a jamais rien livré : il ne surface pas dans le fil (C25).
+      where: { companyId, status: { not: 'cancelled' } },
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
@@ -1492,6 +1544,7 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
         FROM cutoff
         LEFT JOIN "notification_jobs" AS job
           ON job."companyId" = ${companyId}
+         AND job.status <> 'cancelled'
          AND job."readAt" IS NULL
          AND job."createdAt" < cutoff.value
        GROUP BY cutoff.value

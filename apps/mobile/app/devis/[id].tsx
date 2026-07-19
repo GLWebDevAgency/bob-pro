@@ -627,6 +627,11 @@ export default function DevisDetail() {
               ref={actionsRef}
               quote={q}
               customerName={view.customerName}
+              // Conseil du canal de signature (item 4) : la qualité du client pilote le conseil
+              // B2C non urgent — les gardes légales, elles, restent au serveur.
+              customerType={
+                (customers.data ?? []).find((c) => c.id === q.customerId)?.type ?? null
+              }
               linkedInvoices={quoteLinkedInvoices}
             />
           ) : null

@@ -328,6 +328,8 @@ interface QuoteRow {
   signatureCustomerType: string | null;
   /** A3 — rétractation en ligne exercée (L221-21). NULL = jamais exercée. */
   retractedAt: Date | null;
+  /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°). NULL = jamais sollicitée. */
+  urgentRepairRequestedAt: Date | null;
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
@@ -455,6 +457,10 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
     signature: signatureFromQuoteRow(row),
     // A3 : rétractation en ligne (L221-21) — NULL honnête pour les devis jamais rétractés.
     retractedAt: row.retractedAt ? row.retractedAt.toISOString() : null,
+    // Exception dépannage urgent (L221-10, al. 2) — NULL honnête : jamais inventée à la relecture.
+    urgentRepair: row.urgentRepairRequestedAt
+      ? { requestedAt: row.urgentRepairRequestedAt.toISOString() }
+      : null,
     purchaseOrder: purchaseOrderFromRow(row),
     revision: row.revision,
   };

@@ -57,6 +57,14 @@ export interface DevisDraft {
   /** Sur place (pad + preuve, signQuote appelé) ou envoi (email avec le lien, signature différée). */
   signMode: DevisSignMode | null;
   signerName: string | null;
+  /**
+   * Exception dépannage urgent (art. L221-10, al. 2 / L221-28, 8° c. conso) : « travaux
+   * d'entretien/réparation à réaliser EN URGENCE au domicile, expressément sollicités par le
+   * client » — question posée au wizard quand le client est un PARTICULIER, reprise à la
+   * création du devis (CreateQuote horodate serveur et refuse tout client non-b2c).
+   * Défaut false : fail-closed, jamais une urgence déduite.
+   */
+  urgentRepairRequested: boolean;
 }
 
 export interface DevisFlowState {
@@ -75,6 +83,7 @@ export function startDevis(): DevisFlowState {
       depositPct: 30,
       signMode: null,
       signerName: null,
+      urgentRepairRequested: false,
     },
   };
 }

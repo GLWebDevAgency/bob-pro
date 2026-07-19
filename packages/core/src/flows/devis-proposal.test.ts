@@ -24,6 +24,7 @@ const base = (): DevisFlowStateWithProposal => ({
     depositPct: 30,
     signMode: null,
     signerName: null,
+    urgentRepairRequested: false,
   },
   proposal: null,
 });

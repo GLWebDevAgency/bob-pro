@@ -4,6 +4,10 @@ import { NotificationDeliveryService } from '../jobs/notification-delivery.servi
 import { ScheduledTenantDirectory } from '../jobs/tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryNotificationJobRepository } from './in-memory';
+import {
+  embargoScheduledPaymentDedupeKey,
+  quoteIdOfEmbargoScheduledPaymentDedupeKey,
+} from './notification-jobs';
 import { InMemoryPersistence } from './persistence.testing';
 
 const logger = {
@@ -44,6 +48,62 @@ describe('InMemoryNotificationJobRepository', () => {
     const due = await repo.listDue('co-1', '2026-07-01T10:01:00.000Z', 10);
     expect(due).toHaveLength(1);
     expect(due[0]!).toMatchObject({ id: 'job-1', status: 'pending', subject: 'Devis' });
+  });
+
+  it('cancelByDedupeKey : pending -> cancelled, payload purgé, jamais relisté ni réactivé, hors du fil', async () => {
+    const repo = new InMemoryNotificationJobRepository();
+    const dedupeKey = embargoScheduledPaymentDedupeKey('q-1');
+    // Aller-retour de la clé partagée : la garde de livraison retrouve exactement le devis.
+    expect(quoteIdOfEmbargoScheduledPaymentDedupeKey(dedupeKey)).toBe('q-1');
+    expect(quoteIdOfEmbargoScheduledPaymentDedupeKey('quote:q-1:relance:v1')).toBeNull();
+    const notification = {
+      channel: 'email' as const,
+      to: 'client@example.com',
+      subject: 'Règlement possible',
+      body: 'Invite de paiement planifiée.',
+    };
+    const job = await repo.enqueue({
+      id: 'job-embargo',
+      companyId: 'co-1',
+      kind: 'embargo-scheduled-payment',
+      dedupeKey,
+      notification,
+      now: '2026-07-01T10:00:00.000Z',
+      notBefore: '2026-07-08T00:00:00.000Z',
+    });
+
+    // Mauvais tenant / mauvaise clé : rien n'est annulé (anti-IDOR, fail-closed).
+    await expect(
+      repo.cancelByDedupeKey('co-2', 'embargo-scheduled-payment', dedupeKey, '2026-07-03T00:00:00.000Z'),
+    ).resolves.toBe(false);
+    await expect(
+      repo.cancelByDedupeKey('co-1', 'embargo-scheduled-payment', dedupeKey, '2026-07-03T00:00:00.000Z'),
+    ).resolves.toBe(true);
+    // Idempotent : une seconde annulation ne trouve plus rien à annuler.
+    await expect(
+      repo.cancelByDedupeKey('co-1', 'embargo-scheduled-payment', dedupeKey, '2026-07-03T00:01:00.000Z'),
+    ).resolves.toBe(false);
+
+    const after = await repo.findById('co-1', job.id);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.notification).toBeNull();
+    // Plus jamais dû (même après l'échéance), invisible dans le fil et les non-lus.
+    await expect(repo.listDue('co-1', '2026-07-09T00:00:00.000Z', 10)).resolves.toHaveLength(0);
+    await expect(repo.listRecent('co-1', 10)).resolves.toHaveLength(0);
+    const unread = await repo.previewUnread('co-1', '2026-07-09T00:00:00.000Z');
+    expect(unread.unreadCount).toBe(0);
+    // Un ré-enqueue ne RESSUSCITE jamais une intention révoquée (parité Prisma).
+    const reenqueued = await repo.enqueue({
+      id: 'job-embargo-retry',
+      companyId: 'co-1',
+      kind: 'embargo-scheduled-payment',
+      dedupeKey,
+      notification,
+      now: '2026-07-10T00:00:00.000Z',
+    });
+    expect(reenqueued.id).toBe(job.id);
+    expect(reenqueued.status).toBe('cancelled');
+    await expect(repo.listDue('co-1', '2026-07-11T00:00:00.000Z', 10)).resolves.toHaveLength(0);
   });
 
   it('retrouve un job par id uniquement dans son tenant', async () => {

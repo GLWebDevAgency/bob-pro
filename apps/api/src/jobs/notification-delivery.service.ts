@@ -5,6 +5,7 @@ import { SystemClock, type Notification, type NotificationPort } from '@bob/core
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import {
+  quoteIdOfEmbargoScheduledPaymentDedupeKey,
   type DeliverableNotificationJob,
   type NotificationJob,
 } from '../persistence/notification-jobs';
@@ -68,6 +69,8 @@ export class NotificationDeliveryService {
     kind: NotificationJob['kind'];
     dedupeKey: string;
     notification: Notification;
+    /** Livraison PLANIFIÉE (première tentative à cet instant) — encaissement J+7 embargo L221-10. */
+    notBefore?: string;
   }): Promise<NotificationJob> {
     const now = this.clock.now();
     const id = randomUUID();
@@ -85,6 +88,7 @@ export class NotificationDeliveryService {
       dedupeKey: input.dedupeKey,
       notification,
       now,
+      ...(input.notBefore !== undefined ? { notBefore: input.notBefore } : {}),
     });
   }
 
@@ -165,6 +169,39 @@ export class NotificationDeliveryService {
       });
       return 'skipped';
     }
+    // REVALIDATION MÉTIER par kind, juste avant l'I/O provider : un job planifié (J+7) est un
+    // payload FIGÉ — le monde a pu changer entre la programmation et l'échéance. Fail-closed :
+    // toute invalidation ANNULE le job (cancelClaimed, par le détenteur du lease) au lieu de
+    // livrer aveuglément. Aucun contenu n'est jamais réécrit (payload immuable).
+    try {
+      const staleReason = await this.staleDeliveryReason(companyId, claimedJob);
+      if (staleReason !== null) {
+        const cancelled = await this.p.runWithTenant(companyId, () =>
+          this.p.notificationJobs.cancelClaimed(
+            claimedJob.id,
+            companyId,
+            leaseToken,
+            this.clock.now(),
+          ),
+        );
+        this.logger.audit('notification.job.cancelled', {
+          companyId,
+          kind: claimedJob.kind,
+          jobId: claimedJob.id,
+          reason: staleReason,
+          cancelled,
+        });
+        return 'skipped';
+      }
+    } catch (e) {
+      // Indisponibilité pendant la revalidation : ne pas livrer un contenu potentiellement
+      // périmé, ne pas casser le sweep — le lease expirera, un prochain worker re-jugera.
+      this.logger.warn(
+        `Revalidation notification impossible (${claimedJob.kind}): ${e instanceof Error ? e.message : String(e)}`,
+        'notifications',
+      );
+      return 'failed';
+    }
     try {
       // Appel réseau hors transaction : le job/outbox est déjà commité et porte une clé
       // provider stable. Aucun lock/GUC Postgres ne reste ouvert pendant Brevo.
@@ -215,6 +252,35 @@ export class NotificationDeliveryService {
       this.logger.warn(`Notification en retry (${claimedJob.kind}): ${cause}`, 'notifications');
       return 'failed';
     }
+  }
+
+  /**
+   * Garde de PÉREMPTION par kind — null = livraison légitime, sinon la raison d'annulation.
+   * `embargo-scheduled-payment` (invite de paiement J+7, embargo L221-10) est annulé si :
+   *  • le devis a été RÉTRACTÉ depuis la programmation (L221-25 : rien n'est dû — demander le
+   *    paiement à un consommateur rétracté contredirait l'accusé D221-5 et exposerait
+   *    l'artisan à la qualification de pratique trompeuse/agressive) ;
+   *  • un paiement a DÉJÀ été reçu sur une pièce dérivée du devis (override + encaissement
+   *    anticipé) : jamais une seconde demande d'un montant déjà payé ;
+   *  • le devis est introuvable dans le tenant (fail-closed).
+   */
+  private async staleDeliveryReason(
+    companyId: string,
+    job: DeliverableNotificationJob,
+  ): Promise<string | null> {
+    if (job.kind !== 'embargo-scheduled-payment') return null;
+    const quoteId = quoteIdOfEmbargoScheduledPaymentDedupeKey(job.dedupeKey);
+    if (quoteId === null) return 'dedupe-key-unrecognized';
+    return this.p.runWithTenant(companyId, async () => {
+      const quote = await this.p.quotes.findById(quoteId);
+      if (!quote || quote.companyId !== companyId) return 'quote-missing';
+      if (quote.retractedAt !== null) return 'quote-retracted';
+      for (const kind of ['deposit', 'final', 'situation'] as const) {
+        const invoice = await this.p.invoices.findByParentQuoteId(companyId, quoteId, kind);
+        if (invoice !== null && invoice.paid > 0) return 'payment-already-received';
+      }
+      return null;
+    });
   }
 
   /** Notifie les devices du tenant (chunké côté ExpoPushService) — échecs par ticket loggés,

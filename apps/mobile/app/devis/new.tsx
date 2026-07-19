@@ -92,6 +92,7 @@ import {
   EmptyState,
   ErrorRetry,
   MoneyText,
+  LegalHint,
   SignaturePad,
   SkeletonRow,
   Sheet,
@@ -124,6 +125,7 @@ import {
   type AgentSurface,
 } from '../../src/agent';
 import { useConfirm } from '../../src/components/ConfirmSheet';
+import { shouldAdviseRemoteSignature } from '../../src/lib/embargo-prompt';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
 import {
   hasUnsavedQuoteDraftChanges,
@@ -641,6 +643,43 @@ export default function DevisNew() {
         },
       },
       {
+        // Parité « papa vocal » (question d'urgence du wizard, L221-10, al. 2) : « c'est un
+        // dépannage urgent » / « non, pas un dépannage urgent » pose le MÊME fait que les
+        // radios Oui/Non (set_urgent_repair — modifiable jusqu'à la signature incluse, client
+        // PARTICULIER uniquement). Sans cette affordance, le chemin vocal ne pouvait JAMAIS
+        // fonder l'exception légale — seul l'override risqué restait exécutable à la voix.
+        id: 'devis.urgentRepair',
+        match: (utterance) => {
+          // La dictée d'une LIGNE (« ajoute un dépannage urgent à 120 € ») garde la priorité.
+          if (isVoiceAddLineUtterance(utterance)) return null;
+          const n = normalizeVoiceText(utterance);
+          if (!/(urgent|urgence)/.test(n)) return null;
+          if (!/(depannage|intervention|reparation|urgence)/.test(n)) return null;
+          // Négation = déclaration EXPLICITE de non-urgence — le fait n'est jamais déduit.
+          const requested = !/( pas | non | aucune | aucun | sans )/.test(` ${n} `);
+          return () => {
+            const draft = flowRef.current.draft;
+            if (draft.customerId === null) {
+              return { say: `${tt('devis.voice.needClientFirst')} ${tt('devis.voice.greetClient')}` };
+            }
+            const selected = customersRef.current.find((c) => c.id === draft.customerId);
+            if (selected === undefined || selected.type !== 'b2c') {
+              return { say: tt('legal.urgentRepair.voiceUnavailable') };
+            }
+            const applied = quoteDraft.applyAtRevision(
+              { type: 'set_urgent_repair', requested },
+              quoteStateRef.current.revision,
+            );
+            if (!applied.ok) return { say: tt('devis.voice.screenOnlyStep') };
+            return {
+              say: requested
+                ? tt('legal.urgentRepair.voiceOn')
+                : tt('legal.urgentRepair.voiceOff'),
+            };
+          };
+        },
+      },
+      {
         id: 'devis.next',
         match: (utterance) => {
           const n = normalizeVoiceText(utterance);
@@ -899,19 +938,37 @@ export default function DevisNew() {
     signature: 'devis.voice.greetSignature',
   };
   const greetKey = GREET_BY_STEP[flow.step];
+  // Parité vocale (item 4) : à l'étape signature d'un devis B2C NON urgent, Bob dit le MÊME
+  // conseil que le bandeau (lien = acompte immédiat / sur place = 7 jours) — dit simplement,
+  // le choix reste à l'artisan. Même prédicat pur que l'écran (shouldAdviseRemoteSignature).
+  const speaksSignatureAdvice =
+    flow.step === 'signature'
+    && shouldAdviseRemoteSignature({
+      customerType: customer?.type ?? null,
+      urgentRepairRequested: draft.urgentRepairRequested,
+    });
   const agentSurface = useMemo<AgentSurface>(
     () => ({
       ...(greetKey
         ? {
             greeting: {
               key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
-              text: t(greetKey, { personality }),
+              text: speaksSignatureAdvice
+                ? `${t(greetKey, { personality })} ${t('legal.signatureChannel.voice', { personality })}`
+                : t(greetKey, { personality }),
             },
           }
         : {}),
       affordances: voiceAffordances,
     }),
-    [flow.step, greetKey, personality, quoteDraft.state.sessionId, voiceAffordances],
+    [
+      flow.step,
+      greetKey,
+      personality,
+      quoteDraft.state.sessionId,
+      speaksSignatureAdvice,
+      voiceAffordances,
+    ],
   );
   const wizardAgentContext = useMemo<AgentContext>(
     () => ({
@@ -1127,6 +1184,12 @@ export default function DevisNew() {
           },
           ...(d.depositPct > 0 ? { depositPct: d.depositPct } : {}),
           validUntil,
+          // Exception dépannage urgent : reprise UNIQUEMENT pour un client PARTICULIER (le
+          // serveur horodate et refuse tout autre régime) — jamais un flag orphelin d'un
+          // ancien choix si l'artisan a changé de client entre-temps.
+          ...(d.urgentRepairRequested === true && customer?.type === 'b2c'
+            ? { urgentRepairRequested: true }
+            : {}),
         });
         quoteId = created.quoteId;
         chain.current.quoteId = quoteId;
@@ -1686,6 +1749,76 @@ export default function DevisNew() {
                   );
                 })
               )}
+              {/* Exception dépannage urgent (art. L221-10, al. 2 / L221-28, 8° c. conso) :
+                  question posée À LA CRÉATION, client PARTICULIER uniquement — jamais
+                  rétroactive. Formulation BÉNÉFICE + LegalHint (divulgation progressive). */}
+              {customer?.type === 'b2c' ? (
+                <Card radius={18} padding={16}>
+                  <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900, marginBottom: 10 }]}>
+                    {t('legal.urgentRepair.question', { personality })}
+                  </Text>
+                  <View
+                    accessible={false}
+                    accessibilityRole="radiogroup"
+                    style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}
+                  >
+                    {([
+                      { value: false, label: 'Non' },
+                      { value: true, label: 'Oui' },
+                    ] as const).map((option) => {
+                      const selected = draft.urgentRepairRequested === option.value;
+                      return (
+                        <Pressable
+                          key={String(option.value)}
+                          onPress={() =>
+                            quoteDraft.applyAtRevision(
+                              { type: 'set_urgent_repair', requested: option.value },
+                              quoteDraft.state.revision,
+                            )
+                          }
+                          accessibilityRole="radio"
+                          accessibilityLabel={option.label}
+                          accessibilityState={{ selected }}
+                          style={{
+                            flex: 1,
+                            minHeight: 44,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: radius.card,
+                            borderWidth: selected ? 2 : 1,
+                            borderColor: selected ? theme.ink : controls.cardBorder,
+                            backgroundColor: colors.surface,
+                          }}
+                        >
+                          <Text style={[font('label', 700), { fontSize: 14, color: colors.ink900 }]}>
+                            {option.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  {draft.urgentRepairRequested ? (
+                    <>
+                      <LegalHint
+                        label={t('legal.urgentRepair.inline', { personality })}
+                        lawKey="legal.urgentRepair.law"
+                        whyKey="legal.urgentRepair.why"
+                        source="art. L221-10, al. 2 et L221-28, 8° du code de la consommation"
+                      />
+                      <Text style={[font('meta'), { fontSize: 12, lineHeight: 16, color: colors.slate400, marginTop: 6 }]}>
+                        {t('legal.urgentRepair.scopeWarning', { personality })}
+                      </Text>
+                    </>
+                  ) : (
+                    <LegalHint
+                      label={t('legal.signatureChannel.inline', { personality })}
+                      lawKey="legal.embargo.law"
+                      whyKey="legal.embargo.why"
+                      source="art. L221-10 du code de la consommation"
+                    />
+                  )}
+                </Card>
+              ) : null}
             </>
           ) : null}
 
@@ -2265,6 +2398,26 @@ export default function DevisNew() {
                   );
                 })}
               </View>
+              {/* Conseil du canal (B2C NON urgent, « sur place » sélectionné) : lien signé PLUS
+                  TARD à distance = contrat à distance (L221-1, I-1°) → acompte dès la signature ;
+                  sur place OU lien signé immédiatement après la visite = hors établissement
+                  (L221-1, I-2°, b) → embargo 7 jours (L221-10). Le conseil porte la condition —
+                  jamais une exonération inconditionnelle. Le choix reste 100 % libre. */}
+              {draft.signMode === 'onsite'
+              && customer?.type === 'b2c'
+              && !draft.urgentRepairRequested ? (
+                <Card radius={18} padding={14}>
+                  <Text style={[font('sub', 600), { color: colors.ink900, lineHeight: 20, marginBottom: 6 }]}>
+                    {t('legal.signatureChannel.banner', { personality })}
+                  </Text>
+                  <LegalHint
+                    label={t('legal.signatureChannel.inline', { personality })}
+                    lawKey="legal.signatureChannel.law"
+                    whyKey="legal.signatureChannel.why"
+                    source="art. L221-1 et L221-10 du code de la consommation"
+                  />
+                </Card>
+              ) : null}
               {draft.signMode === 'onsite' ? (
                 <>
                   <Card radius={18} padding={16}>

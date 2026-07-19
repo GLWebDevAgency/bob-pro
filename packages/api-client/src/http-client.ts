@@ -2425,6 +2425,10 @@ export class HttpBobClient implements BobClient {
       ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
       ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
       ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+      // Exception dépannage urgent (L221-10, al. 2) : le fait légal fonde l'absence d'embargo
+      // ET la mention datée du PDF — il DOIT atteindre le serveur (`true` strict uniquement,
+      // même contrat que le contrôleur ; parité LocalClient).
+      ...(input.urgentRepairRequested === true ? { urgentRepairRequested: true } : {}),
       ...(input.context !== undefined
         ? {
             context: {
@@ -2511,9 +2515,24 @@ export class HttpBobClient implements BobClient {
   refuseQuote(quoteId: string) {
     return this.req<{ status: string }>('POST', `/quotes/${quoteId}/refuse`);
   }
-  generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
+  /** Embargo L221-10 — programme l'encaissement à J+7 (défaut légal, outbox serveur planifiée). */
+  scheduleEmbargoPayment(quoteId: string) {
+    return this.req<{
+      scheduledFor: string;
+      availableFrom: string;
+      jobId: string;
+      status: string;
+    }>('POST', `/quotes/${encodeURIComponent(quoteId)}/embargo-scheduled-payment`);
+  }
+  generateInvoice(input: {
+    quoteId: string;
+    mode: 'deposit' | 'final';
+    embargoOverride?: boolean;
+  }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, {
       mode: input.mode,
+      // Override L221-10 : contrat HTTP `override: true` EXPLICITE — jamais envoyé sinon.
+      ...(input.embargoOverride === true ? { override: true } : {}),
     });
   }
   updateQuoteLine(input: UpdateQuoteLineInput) {
@@ -2599,7 +2618,13 @@ export class HttpBobClient implements BobClient {
     return this.req<PaymentView[]>('GET', '/payments');
   }
   issueInvoice(input: IssueInvoiceInput) {
-    return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
+    // Override L221-10 : le contrat HTTP porte `override: true` (jamais le nom interne du use
+    // case) — strictement explicite, retiré du corps sinon.
+    const { embargoOverride, ...rest } = input;
+    return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, {
+      ...rest,
+      ...(embargoOverride === true ? { override: true } : {}),
+    });
   }
   deleteDraftInvoice(invoiceId: string) {
     return this.req<{ deleted: true }>(

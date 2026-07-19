@@ -2220,3 +2220,93 @@ describe('LocalBobClient — régularisation d’une ligne historique payée san
     expect(r.error.entity).toBe('expense_payment_legacy');
   });
 });
+
+describe('LocalBobClient — embargo L221-10 : override responsabilisé + exception dépannage urgent (parité serveur)', () => {
+  class FlowClock {
+    constructor(public day: string) {}
+    now(): string {
+      return `${this.day}T09:00:00.000Z`;
+    }
+    today(): string {
+      return this.day;
+    }
+  }
+
+  it('pendant l’embargo : refus par défaut (overridable + risque concret), puis override EXPLICITE journalisé', async () => {
+    const clock = new FlowClock('2026-06-01');
+    const client = new LocalBobClient({ clock });
+    const quote = await client.createQuote({
+      customerId: 'cust-durand', // b2c, signé SUR PLACE ci-dessous (hors établissement)
+      depositPct: 30,
+      lines: [{ label: 'Chantier test', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(true);
+    if (!quote.ok) return;
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'Mme Durand' });
+    clock.day = '2026-06-03'; // en pleine fenêtre L221-10 (libre le 09/06)
+
+    const refused = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'deposit' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok || refused.error.kind !== 'domain') throw new Error('erreur domaine attendue');
+    expect(refused.error.error).toMatchObject({
+      code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+      overridable: true,
+    });
+    if (refused.error.error.code === 'OFF_PREMISES_PAYMENT_EMBARGO') {
+      expect(refused.error.error.overrideRisk).toContain('L242-1');
+    }
+    expect(client.embargoOverrideEvents).toHaveLength(0);
+
+    // Override responsabilisé : flag EXPLICITE → pièce produite + payment.embargo_overridden.
+    const overridden = await client.generateInvoice({
+      quoteId: quote.value.quoteId,
+      mode: 'deposit',
+      embargoOverride: true,
+    });
+    expect(overridden.ok).toBe(true);
+    expect(client.embargoOverrideEvents).toHaveLength(1);
+    expect(client.embargoOverrideEvents[0]).toMatchObject({
+      type: 'payment.embargo_overridden',
+      quoteId: quote.value.quoteId,
+      invoiceKind: 'deposit',
+      occurredAt: '2026-06-03T09:00:00.000Z',
+    });
+  });
+
+  it('dépannage urgent TRACÉ à la création : pas d’embargo — acompte immédiat SANS override, vue exposée', async () => {
+    const clock = new FlowClock('2026-06-01');
+    const client = new LocalBobClient({ clock });
+    const quote = await client.createQuote({
+      customerId: 'cust-durand',
+      depositPct: 30,
+      urgentRepairRequested: true,
+      lines: [{ label: 'Fuite urgente', category: 'labor', qty: 1, unitPriceHT: 45000, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(true);
+    if (!quote.ok) return;
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'Mme Durand' });
+    clock.day = '2026-06-03'; // pendant la fenêtre : l'exception L221-10, al. 2 s'applique
+
+    const view = await client.getQuote(quote.value.quoteId);
+    expect(view.ok).toBe(true);
+    if (view.ok) expect(view.value.urgentRepair).toEqual({ requestedAt: '2026-06-01T09:00:00.000Z' });
+
+    const acompte = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'deposit' });
+    expect(acompte.ok).toBe(true);
+    expect(client.embargoOverrideEvents).toHaveLength(0); // exception légale, pas un override
+  });
+
+  it('dépannage urgent refusé pour un client PROFESSIONNEL (l’exception ne vise que le consommateur)', async () => {
+    const client = new LocalBobClient();
+    const quote = await client.createQuote({
+      customerId: 'cust-martin', // b2b
+      urgentRepairRequested: true,
+      lines: [{ label: 'Dépannage', category: 'labor', qty: 1, unitPriceHT: 45000, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(false);
+    if (quote.ok || quote.error.kind !== 'domain') throw new Error('erreur domaine attendue');
+    expect(quote.error.error).toMatchObject({ code: 'VALIDATION', field: 'urgentRepairRequested' });
+  });
+});

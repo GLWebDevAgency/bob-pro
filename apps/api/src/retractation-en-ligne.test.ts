@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import type { NotificationPort, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
-import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import type { ScheduledTenantDirectory } from './jobs/tenant-directory';
+import { embargoScheduledPaymentDedupeKey } from './persistence/notification-jobs';
 import type { Metrics } from './observability/metrics';
 
 /**
@@ -220,5 +222,92 @@ describe('A3 — fonctionnalité de rétractation en ligne (L221-21/D221-5)', ()
     const view = await service.publicRetractationView('jeton-inconnu');
     expect(view.ok).toBe(false);
     if (!view.ok) expect(view.error.kind).toBe('not_found');
+  });
+});
+
+describe('A3 × L221-10 — rétractation vs encaissement programmé (job outbox J+7)', () => {
+  beforeEach(() => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://sign.bob.test');
+  });
+
+  const EMBARGO_NOTIFICATION = {
+    channel: 'email' as const,
+    to: 'durand@example.fr',
+    subject: 'Votre devis — règlement possible',
+    body: 'Le règlement peut désormais vous être demandé.',
+  };
+
+  it('rétractation en ligne → le job « encaissement programmé » est ANNULÉ dans la transaction, plus jamais dû', async () => {
+    const { service, persistence } = makeService();
+    await persistence.seed();
+    const { quoteId, signed } = await asPrincipal(MERCIER, () => signRemoteB2c(service));
+    // Encaissement programmé PENDANT la fenêtre : job durable, dû seulement à l'échéance.
+    const job = await persistence.notificationJobs.enqueue({
+      id: 'job-embargo-cancel-1',
+      companyId: MERCIER_PROPS.id,
+      kind: 'embargo-scheduled-payment',
+      dedupeKey: embargoScheduledPaymentDedupeKey(quoteId),
+      notification: EMBARGO_NOTIFICATION,
+      now: new Date().toISOString(),
+      notBefore: '2099-01-01T00:00:00.000Z',
+    });
+
+    const token = tokenFromUrl(signed.retractation!.url);
+    const exercised = await service.publicExerciseRetractation(token, {
+      declarantName: 'Mme Durand',
+      acknowledgmentEmail: 'durand@example.fr',
+    });
+    expect(exercised.ok).toBe(true);
+
+    // Un consommateur rétracté ne doit JAMAIS recevoir l'invite de paiement planifiée
+    // (L221-25 : rien n'est dû — elle contredirait l'accusé D221-5 qui vient de partir).
+    const after = await persistence.notificationJobs.findById(MERCIER_PROPS.id, job.id);
+    expect(after?.status).toBe('cancelled');
+    const due = await persistence.notificationJobs.listDue(
+      MERCIER_PROPS.id,
+      '2099-02-01T00:00:00.000Z',
+      50,
+    );
+    expect(due.find((candidate) => candidate.id === job.id)).toBeUndefined();
+  });
+
+  it('défense en profondeur : un job embargo encore actif d’un devis RÉTRACTÉ est annulé À LA LIVRAISON (jamais envoyé)', async () => {
+    const { service, persistence } = makeService();
+    await persistence.seed();
+    const { quoteId, signed } = await asPrincipal(MERCIER, () => signRemoteB2c(service));
+    const token = tokenFromUrl(signed.retractation!.url);
+    const exercised = await service.publicExerciseRetractation(token, {
+      declarantName: 'Mme Durand',
+      acknowledgmentEmail: 'durand@example.fr',
+    });
+    expect(exercised.ok).toBe(true);
+
+    // Job qui aurait survécu à l'annulation transactionnelle (version antérieure, course…) :
+    // DÛ immédiatement — la garde par kind du worker doit l'annuler avant tout I/O provider.
+    const job = await persistence.notificationJobs.enqueue({
+      id: 'job-embargo-stale-1',
+      companyId: MERCIER_PROPS.id,
+      kind: 'embargo-scheduled-payment',
+      dedupeKey: embargoScheduledPaymentDedupeKey(quoteId),
+      notification: EMBARGO_NOTIFICATION,
+      now: '2020-01-01T00:00:00.000Z',
+    });
+    const send = vi.fn(async () => undefined);
+    const delivery = new NotificationDeliveryService(
+      persistence,
+      { send } as unknown as NotificationPort,
+      { listCompanyIds: vi.fn(async () => [MERCIER_PROPS.id]) } as unknown as ScheduledTenantDirectory,
+      { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger,
+    );
+
+    const outcome = await delivery.runForCompany(MERCIER_PROPS.id, 25);
+    expect(send).not.toHaveBeenCalled();
+    expect(outcome.sent).toBe(0);
+    const after = await persistence.notificationJobs.findById(MERCIER_PROPS.id, job.id);
+    expect(after?.status).toBe('cancelled');
+    // Annulé = plus jamais réclamé, même par un sweep ultérieur.
+    const again = await delivery.runForCompany(MERCIER_PROPS.id, 25);
+    expect(again.scanned).toBe(0);
+    expect(send).not.toHaveBeenCalled();
   });
 });

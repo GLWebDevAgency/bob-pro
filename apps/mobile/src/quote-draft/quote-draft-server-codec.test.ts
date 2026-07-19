@@ -28,6 +28,7 @@ function state(): QuoteDraftState {
         depositPct: 30,
         signMode: 'onsite',
         signerName: 'Signature manuscrite éphémère',
+        urgentRepairRequested: false,
       },
     },
     customer: { id: 'customer-1', name: 'Camping Les Pins' },

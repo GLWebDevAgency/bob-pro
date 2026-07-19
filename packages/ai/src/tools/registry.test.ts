@@ -32,6 +32,15 @@ function fullActions(calls: Record<string, unknown[]>): BobActions {
       ok({ filename: '732829320FEC20261231.txt', entryCount: 2, rowCount: 5, warnings: [] })
     ),
     createCustomer: async (input) => (track('createCustomer', input), ok({ id: 'cust-9' })),
+    scheduleEmbargoPayment: async (input) => (
+      track('scheduleEmbargoPayment', input),
+      ok({
+        scheduledFor: '2026-06-09T00:00:00.000Z',
+        availableFrom: '2026-06-09',
+        jobId: 'job-1',
+        status: 'pending',
+      })
+    ),
   };
 }
 
@@ -72,6 +81,49 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
     const run = await t.run(parsed.value);
     expect(run.ok && run.value).toEqual({ invoiceId: 'inv-9' });
     expect(calls.generateInvoice).toEqual([{ quoteId: 'q-1', mode: 'deposit' }]);
+  });
+
+  it('programmer_encaissement_embargo : le DÉFAUT légal L221-10 est exécutable à la voix — jamais le seul chemin risqué', async () => {
+    // Hiérarchie doctrine fondateur : le chemin sûr (programmation) doit exister PARTOUT où
+    // l'override existe. Hôte legacy sans l'action : l'outil n'apparaît pas (rétro-compat).
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain(
+      'programmer_encaissement_embargo',
+    );
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(fullActions(calls), 'programmer_encaissement_embargo')!;
+    expect(t).toBeDefined();
+    // Sortant DIFFÉRÉ vers le client (email planifié) : plancher de consentement, même en auto.
+    expect(t.outbound).toBe(true);
+    expect(riskTierOf(t)).toBe('outbound');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({}).ok).toBe(false); // quoteId manquant
+    const parsed = t.parse({ quoteId: 'q-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toMatchObject({ availableFrom: '2026-06-09', status: 'pending' });
+    expect(calls.scheduleEmbargoPayment).toEqual([{ quoteId: 'q-1' }]);
+    // Projection publique : dates/statut seulement — jamais l'id interne du job outbox.
+    expect(t.projectPublicResult?.(run.ok ? run.value : {})).not.toHaveProperty('jobId');
+  });
+
+  it('emettre_facture : embargoOverride booléen STRICT — seul `true` traverse jusqu’à l’hôte', async () => {
+    const overrides: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      issueInvoice: async (input) => (overrides.push(input), ok({ number: 'F-1' })),
+    };
+    const t = tool(actions, 'emettre_facture')!;
+    expect(t.parse({ invoiceId: 'inv-1', embargoOverride: 'oui' }).ok).toBe(false);
+    const plain = t.parse({ invoiceId: 'inv-1', embargoOverride: false });
+    expect(plain.ok && !('embargoOverride' in (plain.value as Record<string, unknown>))).toBe(true);
+    const forced = t.parse({ invoiceId: 'inv-1', embargoOverride: true });
+    expect(forced.ok).toBe(true);
+    if (!forced.ok) return;
+    await t.run(forced.value);
+    expect(overrides).toEqual([{ invoiceId: 'inv-1', embargoOverride: true }]);
   });
 
   it('generer_facture : le mode est obligatoire pour garantir un rejeu déterministe', () => {

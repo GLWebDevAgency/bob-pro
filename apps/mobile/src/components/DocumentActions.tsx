@@ -3,9 +3,10 @@ import { View, Alert, Share, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
+import { formatDateOnlyFr } from '@bob/core';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t, type Personality } from '@bob/i18n';
-import { DeleteIconButton, QuestionSheet, font, useTheme } from '@bob/ui';
+import { DeleteIconButton, LegalHint, QuestionSheet, Sheet, font, useTheme } from '@bob/ui';
 import {
   useCompanyMe,
   useCompanyBillingSettings,
@@ -19,8 +20,14 @@ import {
   useRegisterPayment,
   useInvoicePaymentLink,
   useDeleteDraftInvoice,
+  useScheduleEmbargoPayment,
   appErrorMessage,
 } from '../data/hooks';
+import {
+  embargoPromptOf,
+  shouldAdviseRemoteSignature,
+  type EmbargoPrompt,
+} from '../lib/embargo-prompt';
 import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useBobClient } from '../data/client';
@@ -126,6 +133,118 @@ export function collectConfirmSpec(
   };
 }
 
+/**
+ * Feuille embargo L221-10 PARTAGÉE devis/facture (génération ET émission) : DÉFAUT en premier
+ * plan (programmer au premier jour légal, formulé BÉNÉFICE + LegalHint sourcé), override
+ * responsabilisé en SECOND niveau (feuille de confirmation dédiée au risque concret, action
+ * tracée serveur). Une seule feuille, deux étages — jamais le risque et le défaut au même écran.
+ */
+function EmbargoPromptSheet({
+  prompt,
+  stage,
+  busyDefault,
+  busyOverride,
+  disabled,
+  onClose,
+  onDefault,
+  onOverride,
+  onStage,
+}: {
+  prompt: EmbargoPrompt | null;
+  stage: 'choice' | 'confirm';
+  busyDefault: boolean;
+  busyOverride: boolean;
+  disabled: boolean;
+  onClose: () => void;
+  onDefault: () => void;
+  onOverride: () => void;
+  onStage: (stage: 'choice' | 'confirm') => void;
+}): ReactNode {
+  const { personality, colors } = useTheme();
+  return (
+    <Sheet
+      visible={prompt !== null}
+      onClose={onClose}
+      accessibilityLabel={t('legal.embargoSheet.title', { personality })}
+    >
+      {prompt !== null && stage === 'choice' ? (
+        <>
+          <Text
+            accessibilityRole="header"
+            style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8 }]}
+          >
+            {t('legal.embargoSheet.title', { personality })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginBottom: 10 }]}>
+            {prompt.message}
+          </Text>
+          <View style={{ marginBottom: 14 }}>
+            <LegalHint
+              label={t('legal.embargo.inline', {
+                personality,
+                params: { date: prompt.availableFromFr },
+              })}
+              lawKey="legal.embargo.law"
+              whyKey="legal.embargo.why"
+              source="art. L221-10 du code de la consommation"
+            />
+          </View>
+          <View style={{ gap: 8, marginBottom: 8 }}>
+            <Button
+              title={t('legal.embargoSchedule.button', {
+                personality,
+                params: { date: prompt.availableFromFr },
+              })}
+              loading={busyDefault}
+              disabled={disabled}
+              onPress={onDefault}
+            />
+            {prompt.overridable ? (
+              <Button
+                title={t('legal.embargoOverride.button', { personality })}
+                variant="secondary"
+                disabled={disabled}
+                onPress={() => onStage('confirm')}
+              />
+            ) : null}
+          </View>
+        </>
+      ) : null}
+      {prompt !== null && stage === 'confirm' ? (
+        <>
+          <Text
+            accessibilityRole="header"
+            style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8 }]}
+          >
+            {t('legal.embargoOverride.sheetTitle', { personality })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginBottom: 14 }]}>
+            {prompt.overrideRisk ?? t('legal.embargoOverride.risk', { personality })}
+          </Text>
+          <View style={{ gap: 8, marginBottom: 8 }}>
+            <Button
+              title={t('legal.embargoOverride.confirm', { personality })}
+              variant="danger"
+              loading={busyOverride}
+              disabled={disabled}
+              onPress={onOverride}
+            />
+            <Button
+              title={t('legal.embargoOverride.cancel', {
+                personality,
+                params: { date: prompt.availableFromFr },
+              })}
+              variant="secondary"
+              disabled={disabled}
+              onPress={() => onStage('choice')}
+            />
+          </View>
+        </>
+      ) : null}
+    </Sheet>
+  );
+}
+
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
 function useActionLock() {
   const [busy, setBusy] = useState<string | null>(null);
@@ -181,17 +300,21 @@ export const QuoteActions = forwardRef<
     quote: QuoteView;
     customerName: string;
     linkedInvoices?: QuoteLinkedInvoices;
+    /** Qualité du client (fiche) — pilote le conseil du canal de signature (B2C non urgent)
+     *  et rien d'autre : les gardes légales restent au SERVEUR. Absent = pas de conseil. */
+    customerType?: 'b2c' | 'b2b' | 'b2g' | null;
   }
 >(function QuoteActions(
-  { quote, customerName, linkedInvoices = NO_LINKED_INVOICES },
+  { quote, customerName, linkedInvoices = NO_LINKED_INVOICES, customerType = null },
   ref,
 ): ReactNode {
-  const { personality, semantic } = useTheme();
+  const { personality, semantic, colors } = useTheme();
   const send = useSendQuote();
   const sign = useSignQuote();
   const signatureLink = useCreateQuoteSignatureLink();
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
+  const scheduleEmbargo = useScheduleEmbargoPayment();
   const { busy, run } = useActionLock();
   const confirm = useConfirm();
   // Gate entreprise complète — ne concerne QUE le premier envoi (état brouillon), cf. doc du
@@ -207,6 +330,13 @@ export const QuoteActions = forwardRef<
   // R4 : choix de signature (Sur place / Envoyer le lien) puis, si « Sur place », le pad lui-même.
   const [signChoiceOpen, setSignChoiceOpen] = useState(false);
   const [onsiteOpen, setOnsiteOpen] = useState(false);
+  // Conseil du canal (item 4) : B2C non urgent + « sur place » choisi → feuille conseil AVANT le
+  // pad — le choix reste 100 % libre (« Continuer sur place » toujours proposé).
+  const [signAdviceOpen, setSignAdviceOpen] = useState(false);
+  // Embargo L221-10 : refus serveur traduit en invite (DÉFAUT = programmer à J+7 ; override
+  // responsabilisé en second niveau — jamais au même écran que le défaut).
+  const [embargoPrompt, setEmbargoPrompt] = useState<EmbargoPrompt | null>(null);
+  const [embargoStage, setEmbargoStage] = useState<'choice' | 'confirm'>('choice');
   // Mode passage client durci (challenge GPT 20260714, P1 reprise) : un échec réseau de
   // `signQuote` ne doit jamais vider le pad — l'erreur vit ICI (pas dans SignOnsiteSheet) pour
   // survivre à ses re-renders, et n'est réarmée qu'à une ouverture explicite du pad.
@@ -239,16 +369,73 @@ export const QuoteActions = forwardRef<
   // Un SEUL point d'écriture pour les deux boutons (a) et (b) : mode TOUJOURS explicite — c'est
   // précisément le correctif R3 (sans mode, l'inférence retombait sur 'deposit' déjà facturé et
   // l'idempotence renvoyait l'existante sans créer la finale).
+  const markGenerated = (mode: 'deposit' | 'final', invoiceId: string): void => {
+    setLocalLinked((prev) => ({
+      ...prev,
+      ...(mode === 'deposit'
+        ? { hasDepositInvoice: true, depositStatus: 'draft' as const }
+        : { hasFinalInvoice: true, finalStatus: 'draft' as const }),
+    }));
+    router.push(`/facture/${invoiceId}`);
+  };
+
   const generateInvoice = (mode: 'deposit' | 'final') =>
     run('gen', async () => {
-      const out = await generate.mutateAsync({ quoteId: quote.id, mode });
-      setLocalLinked((prev) => ({
-        ...prev,
-        ...(mode === 'deposit'
-          ? { hasDepositInvoice: true, depositStatus: 'draft' as const }
-          : { hasFinalInvoice: true, finalStatus: 'draft' as const }),
-      }));
-      router.push(`/facture/${out.invoiceId}`);
+      try {
+        const out = await generate.mutateAsync({ quoteId: quote.id, mode });
+        markGenerated(mode, out.invoiceId);
+      } catch (e) {
+        // Embargo L221-10 : le refus devient une INVITE (défaut = programmer à J+7, override
+        // responsabilisé en second niveau) — toute autre erreur garde l'alerte générique.
+        const prompt = embargoPromptOf(e, mode);
+        if (prompt === null) {
+          Alert.alert('Oups', appErrorMessage(e));
+          return;
+        }
+        setEmbargoStage('choice');
+        setEmbargoPrompt(prompt);
+      }
+    });
+
+  /** DÉFAUT légal : programme le message client au premier jour où le paiement est exigible. */
+  const scheduleEmbargoDefault = () =>
+    run('schedule', async () => {
+      try {
+        const scheduled = await scheduleEmbargo.mutateAsync(quote.id);
+        setEmbargoPrompt(null);
+        Alert.alert(
+          t('legal.embargoSheet.title', { personality }),
+          t('legal.embargoSchedule.confirmed', {
+            personality,
+            // Date SERVEUR (source de vérité) : pour un devis SANS acompte, la pièce visée est
+            // la FINALE, gelée jusqu'à la fin du délai de rétractation — la date du refus
+            // embargo (J+7) serait alors une promesse fausse.
+            params: { date: formatDateOnlyFr(scheduled.availableFrom) },
+          }),
+        );
+      } catch (e) {
+        Alert.alert('Oups', appErrorMessage(e));
+      }
+    });
+
+  /** OVERRIDE responsabilisé : rejoue la génération avec le flag EXPLICITE — tracé serveur. */
+  const overrideEmbargo = (prompt: EmbargoPrompt) =>
+    run('gen', async () => {
+      try {
+        const out = await generate.mutateAsync({
+          quoteId: quote.id,
+          mode: prompt.mode,
+          embargoOverride: true,
+        });
+        setEmbargoPrompt(null);
+        Alert.alert(
+          t('legal.embargoSheet.title', { personality }),
+          t('legal.embargoOverride.traced', { personality }),
+        );
+        markGenerated(prompt.mode, out.invoiceId);
+      } catch (e) {
+        Alert.alert('Oups', appErrorMessage(e));
+      }
     });
 
   // P0 R4 (fermé) : « Envoyer le lien » n'appelle PLUS sendQuote — l'ancienne implémentation
@@ -419,6 +606,19 @@ export const QuoteActions = forwardRef<
           onSelect={(values) => {
             setSignChoiceOpen(false);
             if (values[0] === 'onsite') {
+              // Item 4 — devis B2C NON urgent : conseil « envoie plutôt le lien » AVANT le pad
+              // (lien signé PLUS TARD = contrat à distance = acompte dès la signature ; signé
+              // dans la foulée de la visite = hors établissement, L221-1, I-2°, b — 7 jours).
+              // Le choix reste 100 % libre.
+              if (
+                shouldAdviseRemoteSignature({
+                  customerType,
+                  urgentRepairRequested: quote.urgentRepair != null,
+                })
+              ) {
+                setSignAdviceOpen(true);
+                return;
+              }
               setOnsiteError(null);
               setOnsiteOpen(true);
             } else if (values[0] === 'email') {
@@ -431,6 +631,50 @@ export const QuoteActions = forwardRef<
             }
           }}
         />
+        {/* Item 4 — conseil du canal AU BON MOMENT (B2C non urgent, « sur place » choisi) :
+            bandeau bénéfice + LegalHint (différence à distance / hors établissement), puis le
+            choix libre — « Envoyer le lien » OU « Continuer sur place ». */}
+        <Sheet
+          visible={signAdviceOpen}
+          onClose={() => setSignAdviceOpen(false)}
+          accessibilityLabel={t('legal.signatureChannel.banner', { personality })}
+        >
+          <Text
+            accessibilityRole="header"
+            style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8, lineHeight: 22 }]}
+          >
+            {t('legal.signatureChannel.banner', { personality })}
+          </Text>
+          <View style={{ marginBottom: 14 }}>
+            <LegalHint
+              label={t('legal.signatureChannel.inline', { personality })}
+              lawKey="legal.signatureChannel.law"
+              whyKey="legal.signatureChannel.why"
+              source="art. L221-1 et L221-10 du code de la consommation"
+            />
+          </View>
+          <View style={{ gap: 8, marginBottom: 8 }}>
+            <Button
+              title="Envoyer le lien"
+              loading={busy === 'sendLink'}
+              disabled={!!busy}
+              onPress={() => {
+                setSignAdviceOpen(false);
+                void handleSendLink();
+              }}
+            />
+            <Button
+              title="Continuer sur place"
+              variant="secondary"
+              disabled={!!busy}
+              onPress={() => {
+                setSignAdviceOpen(false);
+                setOnsiteError(null);
+                setOnsiteOpen(true);
+              }}
+            />
+          </View>
+        </Sheet>
         <SignOnsiteSheet
           visible={onsiteOpen}
           customerName={customerName}
@@ -450,6 +694,26 @@ export const QuoteActions = forwardRef<
   }
   if (quote.status === 'signed') {
     const invoiceCtaState = deriveQuoteInvoiceCtaState(linked);
+    // Embargo L221-10 — l'invite du refus « encaisser » : feuille PARTAGÉE (EmbargoPromptSheet),
+    // défaut d'abord, override responsabilisé en second niveau.
+    const embargoSheet = (
+      <EmbargoPromptSheet
+        prompt={embargoPrompt}
+        stage={embargoStage}
+        busyDefault={busy === 'schedule'}
+        busyOverride={busy === 'gen'}
+        disabled={!!busy}
+        onClose={() => {
+          setEmbargoPrompt(null);
+          setEmbargoStage('choice');
+        }}
+        onDefault={() => void scheduleEmbargoDefault()}
+        onOverride={() => {
+          if (embargoPrompt !== null) void overrideEmbargo(embargoPrompt);
+        }}
+        onStage={setEmbargoStage}
+      />
+    );
     // B8 : le devis porte un bon de commande — l'étape de génération AFFICHE la reprise
     // (« Bon de commande n° X repris sur la facture ») : réassurance, jamais de re-saisie.
     const poReassurance = quote.purchaseOrder ? (
@@ -504,6 +768,7 @@ export const QuoteActions = forwardRef<
             disabled={!!busy}
             onPress={() => void generateInvoice('final')}
           />
+          {embargoSheet}
         </View>
       );
     }
@@ -539,6 +804,7 @@ export const QuoteActions = forwardRef<
             void generateInvoice(values[0] === 'deposit' ? 'deposit' : 'final');
           }}
         />
+        {embargoSheet}
       </>
     );
   }
@@ -562,10 +828,71 @@ export function InvoiceActions({
   const link = useInvoicePaymentLink();
   const createCreditNote = useCreateCreditNote();
   const deleteDraft = useDeleteDraftInvoice();
+  const scheduleEmbargo = useScheduleEmbargoPayment();
   const { busy, lock, run } = useActionLock();
   const confirm = useConfirm();
   const client = useBobClient();
   const { semantic, personality } = useTheme();
+  // Embargo L221-10 à l'ÉMISSION (l'acte qui rend la pièce opposable et permet le lien de
+  // paiement) : le refus serveur devient la MÊME invite deux étages qu'à la génération —
+  // jamais un « Oups » générique en cul-de-sac après un override déjà confirmé côté brouillon.
+  const [embargoPrompt, setEmbargoPrompt] = useState<EmbargoPrompt | null>(null);
+  const [embargoStage, setEmbargoStage] = useState<'choice' | 'confirm'>('choice');
+
+  /** DÉFAUT légal : programme le message client (le devis parent porte la fenêtre embargo). */
+  const scheduleEmbargoDefault = () =>
+    run('schedule', async () => {
+      try {
+        if (invoice.parentQuoteId === null) {
+          // Garde théorique : l'embargo ne frappe que les pièces dérivées d'un devis.
+          throw { kind: 'unavailable', service: 'embargo-scheduled-payment' };
+        }
+        const scheduled = await scheduleEmbargo.mutateAsync(invoice.parentQuoteId);
+        setEmbargoPrompt(null);
+        Alert.alert(
+          t('legal.embargoSheet.title', { personality }),
+          t('legal.embargoSchedule.confirmed', {
+            personality,
+            // Date SERVEUR : source de vérité (gel de rétractation compris pour une finale).
+            params: { date: formatDateOnlyFr(scheduled.availableFrom) },
+          }),
+        );
+      } catch (e) {
+        Alert.alert('Oups', appErrorMessage(e));
+      }
+    });
+
+  /** OVERRIDE responsabilisé : rejoue l'ÉMISSION avec le flag explicite — tracé serveur. */
+  const overrideEmbargoIssue = () =>
+    run('issue', async () => {
+      try {
+        await issue.mutateAsync({ invoiceId: invoice.id, embargoOverride: true });
+        setEmbargoPrompt(null);
+        Alert.alert(
+          t('legal.embargoSheet.title', { personality }),
+          t('legal.embargoOverride.traced', { personality }),
+        );
+      } catch (e) {
+        Alert.alert('Oups', appErrorMessage(e));
+      }
+    });
+
+  const embargoSheet = (
+    <EmbargoPromptSheet
+      prompt={embargoPrompt}
+      stage={embargoStage}
+      busyDefault={busy === 'schedule'}
+      busyOverride={busy === 'issue'}
+      disabled={!!busy}
+      onClose={() => {
+        setEmbargoPrompt(null);
+        setEmbargoStage('choice');
+      }}
+      onDefault={() => void scheduleEmbargoDefault()}
+      onOverride={() => void overrideEmbargoIssue()}
+      onStage={setEmbargoStage}
+    />
+  );
   // Gate entreprise complète — même doctrine que QuoteActions (voir showCompanyIncompleteGate) :
   // ne concerne que la toute première émission (état brouillon → numéro légal alloué).
   const companyMe = useCompanyMe();
@@ -604,6 +931,7 @@ export function InvoiceActions({
 
   if (invoice.status === 'draft') {
     return (
+      <>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         <View style={{ flex: 1 }}>
           <Button
@@ -657,7 +985,25 @@ export function InvoiceActions({
                   ),
                   challenge: challengeFor(FISCAL, 'confirm_all'),
                 });
-                if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
+                if (ok)
+                  await run('issue', async () => {
+                    try {
+                      await issue.mutateAsync({ invoiceId: invoice.id });
+                    } catch (e) {
+                      // Embargo L221-10 : le refus devient l'invite deux étages (défaut =
+                      // programmer, override responsabilisé) — parité avec la génération.
+                      const prompt = embargoPromptOf(
+                        e,
+                        invoice.kind === 'deposit' ? 'deposit' : 'final',
+                      );
+                      if (prompt === null) {
+                        Alert.alert('Oups', appErrorMessage(e));
+                        return;
+                      }
+                      setEmbargoStage('choice');
+                      setEmbargoPrompt(prompt);
+                    }
+                  });
               })()
             }
           />
@@ -689,6 +1035,8 @@ export function InvoiceActions({
           }
         />
       </View>
+      {embargoSheet}
+      </>
     );
   }
   // S5 : prédicat PARTAGÉ avec l'affordance vocale « lien de paiement » (facture/[id].tsx) —

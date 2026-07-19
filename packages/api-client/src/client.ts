@@ -90,6 +90,10 @@ export interface QuoteView {
   purchaseOrder?: PurchaseOrderRef | null;
   /** Révision optimiste des mutations de bon de commande — absent ⇒ 1 (normalisé par le codec). */
   revision?: number;
+  /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) : intervention urgente sollicitée
+   *  par le client B2C, posée à la CRÉATION du devis. Optionnel (compat serveurs antérieurs) :
+   *  absent ⇒ traité comme null par les écrans — jamais une urgence inventée. */
+  urgentRepair?: { requestedAt: string } | null;
 }
 
 export interface InvoiceView {
@@ -1141,9 +1145,24 @@ export interface BobClient {
     earlyExecutionRequested?: boolean;
   }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
+  /** Embargo L221-10 — DÉFAUT légal du flow « encaisser » pendant la fenêtre : l'encaissement
+   * est PROGRAMMÉ au premier jour autorisé (J+7) ; le message de règlement part SEUL à
+   * l'échéance (outbox serveur planifiée, un job par devis). OPTIONNELLE (compat transports
+   * existants) — le client HTTP et le client local de démo l'implémentent tous les deux
+   * (parité stricte). */
+  scheduleEmbargoPayment?(quoteId: string): Promise<
+    Result<
+      { scheduledFor: string; availableFrom: string; jobId: string; status: string },
+      AppError
+    >
+  >;
   generateInvoice(input: {
     quoteId: string;
     mode: 'deposit' | 'final';
+    /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict UNIQUEMENT, après la
+     *  feuille de confirmation dédiée (risque concret reformulé) ; le serveur journalise
+     *  payment.embargo_overridden avant de produire la pièce. Jamais implicite. */
+    embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>>;
   /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,
    * un devis signé est un contrat (l'agrégat garde assertDraft). */

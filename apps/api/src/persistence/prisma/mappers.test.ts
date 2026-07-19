@@ -35,6 +35,8 @@ const baseRow = {
   // A3 — ligne historique SANS qualité figée ni rétractation (compat ascendante honnête).
   signatureCustomerType: null as string | null,
   retractedAt: null as Date | null,
+  // Ligne historique SANS exception dépannage urgent (jamais inventée — embargo plein).
+  urgentRepairRequestedAt: null as Date | null,
   lines: [],
   // B8 — colonnes bon de commande : ligne historique SANS bon de commande (compat ascendante).
   purchaseOrderNumber: null,

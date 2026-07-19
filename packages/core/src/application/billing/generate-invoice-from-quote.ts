@@ -3,6 +3,7 @@ import { type AppError, appDomain, appNotFound } from '../result';
 import { Invoice } from '../../domain/billing/invoice/invoice';
 import {
   deriveRetractation,
+  offPremisesEmbargoOverrideRisk,
   offPremisesPaymentEmbargo,
   offPremisesPaymentEmbargoMessage,
   retractationFreeze,
@@ -13,7 +14,11 @@ import {
   type InvoiceRepository,
   type CustomerRepository,
 } from '../ports/repositories';
-import { type ClockPort, type IdGeneratorPort } from '../ports/services';
+import {
+  type ClockPort,
+  type EmbargoOverrideAuditPort,
+  type IdGeneratorPort,
+} from '../ports/services';
 
 export interface GenerateInvoiceDeps {
   quotes: QuoteRepository;
@@ -23,13 +28,31 @@ export interface GenerateInvoiceDeps {
   ids: IdGeneratorPort;
   /** A3 — « maintenant » du gel : le délai est comparé à l'horloge injectée, jamais Date.now(). */
   clock: ClockPort;
+  /**
+   * Journal de l'override L221-10 — FAIL-CLOSED : sans port câblé, `embargoOverride` est
+   * refusé comme un embargo ordinaire (jamais d'override sans trace écrite).
+   */
+  audit?: EmbargoOverrideAuditPort;
+}
+
+export interface GenerateInvoiceInput {
+  quoteId: string;
+  mode: 'deposit' | 'final';
+  /**
+   * Override RESPONSABILISÉ de l'embargo L221-10 — flag EXPLICITE uniquement (`true` strict,
+   * jamais implicite) : l'artisan a vu le risque concret (contrat annulable, remboursement
+   * exigible) et l'a confirmé dans la feuille dédiée. L'événement payment.embargo_overridden
+   * est journalisé AVANT de produire la pièce. Ne lève JAMAIS le gel de rétractation de la
+   * facture finale (protection du CLIENT, non contournable) ni un devis rétracté.
+   */
+  embargoOverride?: boolean;
 }
 
 /** Génère la facture (acompte si depositPct, sinon finale) depuis un devis signé. */
 export class GenerateInvoiceFromQuote {
   constructor(private readonly deps: GenerateInvoiceDeps) {}
 
-  async execute(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+  async execute(input: GenerateInvoiceInput): Promise<Result<{ invoiceId: string }, AppError>> {
     const quote = await this.deps.quotes.findById(input.quoteId);
     if (!quote) return err(appNotFound('quote', input.quoteId));
 
@@ -71,20 +94,38 @@ export class GenerateInvoiceFromQuote {
     // c'est demander un paiement : acompte ET finale sont bloqués pendant la fenêtre. Le
     // contrat À DISTANCE (`remote_link`) n'est pas visé par L221-10 (aucun embargo). Sanction
     // du manquement : nullité du contrat (art. L242-1 ; Civ. 1re, 20/12/2023, n° 22-13.014).
+    // Exception L221-10, al. 2 : intervention urgente sollicitée et TRACÉE à la création du
+    // devis → pas d'embargo. Sans trace : fail-closed, embargo plein.
     const embargo = offPremisesPaymentEmbargo(
-      { customerType: customer.type, signature: quote.signature },
+      { customerType: customer.type, signature: quote.signature, urgentRepair: quote.urgentRepair },
       now,
     );
     if (embargo.active) {
-      return err(
-        appDomain({
-          code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+      if (input.embargoOverride === true && this.deps.audit !== undefined) {
+        // Override responsabilisé : l'artisan informé assume — TRACÉ AVANT la pièce (si le
+        // journal échoue, l'action échoue : jamais d'override silencieux ; port absent →
+        // refus fail-closed dans la branche else).
+        await this.deps.audit.embargoOverridden({
+          type: 'payment.embargo_overridden',
           quoteId: quote.id,
-          expiresAt: embargo.expiresAt,
-          availableFrom: embargo.availableFrom,
-          message: offPremisesPaymentEmbargoMessage(embargo.availableFrom),
-        }),
-      );
+          companyId: quote.companyId,
+          invoiceKind: kind,
+          embargoExpiresAt: embargo.expiresAt,
+          occurredAt: now,
+        });
+      } else {
+        return err(
+          appDomain({
+            code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+            quoteId: quote.id,
+            expiresAt: embargo.expiresAt,
+            availableFrom: embargo.availableFrom,
+            message: offPremisesPaymentEmbargoMessage(embargo.availableFrom),
+            overridable: true,
+            overrideRisk: offPremisesEmbargoOverrideRisk(embargo.availableFrom),
+          }),
+        );
+      }
     }
 
     // A3 — GEL LÉGAL de la FACTURE FINALE pendant le délai de rétractation d'un devis B2C signé

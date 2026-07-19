@@ -114,6 +114,10 @@ import {
   appForbidden,
   appDomain,
   appConflict,
+  // Embargo L221-10 : la fenêtre est dérivée par le MÊME domaine que le serveur (parité).
+  offPremisesPaymentEmbargo,
+  deriveRetractation,
+  retractationFreeze,
   parseQuoteDraftPayload,
   QUOTE_DRAFT_PAYLOAD_VERSION,
   type ClockPort,
@@ -674,6 +678,28 @@ export class LocalBobClient implements BobClient {
   private readonly snapshots: FixtureCashflowSnapshot;
   // Assistant local (C40 ⑧) : journal append-only en mémoire + agent @bob/ai instancié à la demande.
   private readonly journal = new InMemoryJournalStore();
+  /** Journal LOCAL de l'override L221-10 (payment.embargo_overridden) — parité serveur : sans
+   *  journal, pas d'override (fail-closed du use case) ; observable par les tests. */
+  readonly embargoOverrideEvents: {
+    type: 'payment.embargo_overridden';
+    quoteId: string;
+    companyId: string;
+    invoiceKind: string;
+    embargoExpiresAt: string;
+    occurredAt: string;
+  }[] = [];
+  private readonly embargoOverrideAudit = {
+    embargoOverridden: async (event: (typeof this.embargoOverrideEvents)[number]) => {
+      this.embargoOverrideEvents.push(event);
+    },
+  };
+  /** Encaissements PROGRAMMÉS à J+7 (embargo L221-10) — parité démo du job outbox serveur. */
+  readonly embargoScheduledPayments: {
+    quoteId: string;
+    jobId: string;
+    scheduledFor: string;
+    availableFrom: string;
+  }[] = [];
   private agent: BobAgent | null = null;
   private billingSettings: CompanyBillingSettings;
 
@@ -964,6 +990,8 @@ export class LocalBobClient implements BobClient {
       // B8 : parité serveur — bon de commande + révision toujours présents en local.
       purchaseOrder: q.purchaseOrder ? { ...q.purchaseOrder } : null,
       revision: q.revision,
+      // Exception dépannage urgent : parité serveur (mapQuote de l'API expose le même champ).
+      urgentRepair: q.urgentRepair ? { ...q.urgentRepair } : null,
     };
   }
 
@@ -3300,14 +3328,84 @@ export class LocalBobClient implements BobClient {
   async generateInvoice(input: {
     quoteId: string;
     mode: 'deposit' | 'final';
+    embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>> {
     await this.ready;
     return this.generateInvoiceInternal(input);
   }
 
+  /** Embargo L221-10 — parité serveur du DÉFAUT légal : encaissement programmé à J+7 (la démo
+   *  enregistre l'intention localement ; le serveur planifie le job outbox `notBefore`). */
+  async scheduleEmbargoPayment(quoteId: string): Promise<
+    Result<
+      { scheduledFor: string; availableFrom: string; jobId: string; status: string },
+      AppError
+    >
+  > {
+    await this.ready;
+    const quote = await this.quotes.findById(quoteId);
+    if (!quote) return err(appNotFound('quote', quoteId));
+    const customer = await this.customers.findById(quote.customerId);
+    if (!customer) return err(appNotFound('customer', quote.customerId));
+    const embargo = offPremisesPaymentEmbargo(
+      { customerType: customer.type, signature: quote.signature, urgentRepair: quote.urgentRepair },
+      this.clock.now(),
+    );
+    if (!embargo.active) {
+      return err({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'quoteId',
+            message:
+              'Aucun embargo de paiement en cours sur ce devis — encaisse directement, rien à programmer.',
+          },
+        ],
+      });
+    }
+    const existing = this.embargoScheduledPayments.find((j) => j.quoteId === quoteId);
+    if (existing) {
+      return ok({
+        scheduledFor: existing.scheduledFor,
+        availableFrom: existing.availableFrom,
+        jobId: existing.jobId,
+        status: 'pending',
+      });
+    }
+    // Parité serveur : sans acompte, la pièce visée est la FINALE — gelée pendant le délai de
+    // rétractation (L221-18, sauf exécution anticipée L221-25). La date programmée est le
+    // premier jour réellement exigible (max embargo / gel), jamais une promesse intenable.
+    let scheduledFor = embargo.expiresAt;
+    let availableFrom = embargo.availableFrom;
+    if (quote.depositPct === null) {
+      const freeze = retractationFreeze(
+        deriveRetractation({ customerType: customer.type, signature: quote.signature }),
+        this.clock.now(),
+      );
+      if (freeze.active && freeze.expiresAt > scheduledFor) {
+        scheduledFor = freeze.expiresAt;
+        availableFrom = freeze.availableFrom;
+      }
+    }
+    const job = {
+      quoteId,
+      jobId: this.ids.newId(),
+      scheduledFor,
+      availableFrom,
+    };
+    this.embargoScheduledPayments.push(job);
+    return ok({
+      scheduledFor: job.scheduledFor,
+      availableFrom: job.availableFrom,
+      jobId: job.jobId,
+      status: 'pending',
+    });
+  }
+
   private generateInvoiceInternal(input: {
     quoteId: string;
     mode: 'deposit' | 'final';
+    embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>> {
     // A3 : le gel de rétractation B2C (facture finale sous 14 jours, L221-18 s.) est porté par
     // le use case core — le client local le fait respecter EXACTEMENT comme le serveur (parité).
@@ -3317,7 +3415,13 @@ export class LocalBobClient implements BobClient {
       customers: this.customers,
       ids: this.ids,
       clock: this.clock,
-    }).execute(input);
+      // Override L221-10 : parité serveur — journal local (fail-closed sans lui, comme l'API).
+      audit: this.embargoOverrideAudit,
+    }).execute({
+      quoteId: input.quoteId,
+      mode: input.mode,
+      embargoOverride: input.embargoOverride === true,
+    });
   }
 
   /** R6 : édition d'une ligne de devis BROUILLON — même use case core que l'API (parité d'actions). */
@@ -3444,6 +3548,8 @@ export class LocalBobClient implements BobClient {
       counters: this.counters,
       uow: this.uow,
       clock,
+      // Override L221-10 : parité serveur — journalisé localement, fail-closed sans journal.
+      audit: this.embargoOverrideAudit,
     }).execute(issueInput);
     if (!issued.ok) {
       const missingTerms =
@@ -4245,7 +4351,15 @@ export class LocalBobClient implements BobClient {
             `local-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
-      issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      issueInvoice: async (input) =>
+        this.issueInvoice({
+          invoiceId: input.invoiceId,
+          // Override L221-10 : `true` strict uniquement — même contrat que le serveur.
+          ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+        }),
+      // Embargo L221-10 — le DÉFAUT légal est exécutable à la voix (parité avec le bouton
+      // « Programmer l'encaissement » et avec l'hôte serveur) : jamais le seul chemin risqué.
+      scheduleEmbargoPayment: async (input) => this.scheduleEmbargoPayment(input.quoteId),
       // B8 — outil vocal lier_bon_commande : MÊME use case AttachPurchaseOrderToQuote que
       // attachQuotePurchaseOrder (miroir de PUT /quotes/:id/purchase-order) et MÊME forme de
       // sortie que le serveur. La révision courante est résolue ici (le geste vocal n'a pas de
@@ -4313,7 +4427,12 @@ export class LocalBobClient implements BobClient {
             : {}),
         }),
       generateInvoice: async (input) =>
-        this.generateInvoice({ quoteId: input.quoteId, mode: input.mode }),
+        this.generateInvoice({
+          quoteId: input.quoteId,
+          mode: input.mode,
+          // Sans ce passage, l'override confirmé à la voix serait silencieusement ignoré.
+          ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+        }),
       exportFec: async (input) => {
         const r = await this.exportFec(input);
         if (!r.ok) return r;

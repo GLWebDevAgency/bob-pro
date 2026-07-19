@@ -20,6 +20,7 @@ import { isVatRate } from '../shared/vat-rate';
 import { Quantity } from '../shared/quantity';
 import { computeTotals } from '../../services/compute-totals';
 import { assertTransition, type QuoteStatus, QUOTE_TRANSITIONS } from '../shared/state-machines';
+import { type UrgentRepairRequest } from '../../compliance/retractation';
 
 const MAX_QUOTE_QTY = 1_000_000;
 
@@ -29,6 +30,13 @@ export interface ComposeQuoteInput {
   customerId: string;
   at: Instant;
   validUntil?: DateOnly;
+  /**
+   * Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso) : intervention
+   * urgente expressément sollicitée par le client B2C, posée À LA CRÉATION du devis (question
+   * du wizard), horodatée serveur — JAMAIS rétroactive (aucun mutateur : le fait naît avec le
+   * devis ou n'existe pas).
+   */
+  urgentRepair?: UrgentRepairRequest | null;
 }
 
 /**
@@ -53,6 +61,11 @@ export class Quote extends AggregateRoot<string> {
    * rétractation est un événement postérieur qui gèle toute facturation dérivée.
    */
   private _retractedAt: Instant | null = null;
+  /**
+   * Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — fait posé à la composition,
+   * horodaté serveur, IMMUABLE ensuite (aucun mutateur) : null = jamais sollicité.
+   */
+  private _urgentRepair: UrgentRepairRequest | null = null;
   /** Révision optimiste — incrémentée par les mutations post-signature (bon de commande). */
   private _revision = 1;
 
@@ -67,7 +80,12 @@ export class Quote extends AggregateRoot<string> {
 
   static compose(input: ComposeQuoteInput): DomainResult<Quote> {
     const q = new Quote(input.id, input.companyId, input.customerId, input.validUntil ?? null);
+    // Trace de l'urgence : événement DÉDIÉ (en plus du champ horodaté) — le fait légal qui
+    // lève l'embargo L221-10 est journalisé à sa naissance, jamais ajouté après coup.
+    q._urgentRepair = input.urgentRepair ? { requestedAt: input.urgentRepair.requestedAt } : null;
     q.record({ type: 'QuoteComposed', occurredAt: input.at, version: 1 });
+    if (q._urgentRepair)
+      q.record({ type: 'QuoteUrgentRepairDeclared', occurredAt: input.at, version: 1 });
     return ok(q);
   }
 
@@ -102,6 +120,10 @@ export class Quote extends AggregateRoot<string> {
   /** A3 — instant de la rétractation en ligne du consommateur (null = jamais exercée). */
   get retractedAt(): Instant | null {
     return this._retractedAt;
+  }
+  /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — null = jamais sollicitée. */
+  get urgentRepair(): UrgentRepairRequest | null {
+    return this._urgentRepair;
   }
   get purchaseOrder(): PurchaseOrderRef | null {
     return this._purchaseOrder;
@@ -357,6 +379,7 @@ export class Quote extends AggregateRoot<string> {
       issuedAt: this._issuedAt,
       signature: this._signature,
       retractedAt: this._retractedAt,
+      urgentRepair: this._urgentRepair ? { ...this._urgentRepair } : null,
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
       revision: this._revision,
     };
@@ -383,6 +406,9 @@ export class Quote extends AggregateRoot<string> {
     q._signature = s.signature;
     // Compat ascendante A3 : snapshots antérieurs sans rétractation en ligne (null honnête).
     q._retractedAt = s.retractedAt ?? null;
+    // Compat ascendante : snapshots antérieurs sans exception dépannage urgent (null honnête —
+    // fail-closed : l'embargo L221-10 reste plein, jamais une urgence inventée).
+    q._urgentRepair = s.urgentRepair ? { requestedAt: s.urgentRepair.requestedAt } : null;
     return q;
   }
 }
@@ -404,4 +430,6 @@ export interface QuoteSnapshot {
   issuedAt?: DateOnly | null;
   /** A3 — optionnel : rétractation en ligne absente des snapshots antérieurs (jamais inventée). */
   retractedAt?: Instant | null;
+  /** Optionnel : exception dépannage urgent absente des snapshots antérieurs (jamais inventée). */
+  urgentRepair?: UrgentRepairRequest | null;
 }

@@ -280,6 +280,29 @@ describe('HttpBobClient', () => {
     );
   });
 
+  it('transmet le fait légal urgentRepairRequested (L221-10, al. 2) — `true` strict uniquement', async () => {
+    const output = {
+      quoteId: 'quote-urgent-1',
+      totals: { ht: 16_000, vat: 3_200, ttc: 19_200, netToPay: 19_200, vatByRate: { 20: 3_200 } },
+    };
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(output), { headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const lines = [{ label: 'Dépannage fuite', category: 'labor' as const, qty: 1, unitPriceHT: 8_000, vatRate: 20 as const }];
+
+    // Le fait déclaré traverse : sans lui, pas de mention datée serveur, embargo plein maintenu
+    // et l'artisan serait poussé vers l'override risqué alors que l'exception lui était acquise.
+    await client.createQuote({ customerId: 'customer-1', lines, urgentRepairRequested: true });
+    expect(bodies[0]).toMatchObject({ urgentRepairRequested: true });
+
+    // Jamais implicite : absent (ou non-true) => le champ ne traverse pas.
+    await client.createQuote({ customerId: 'customer-1', lines });
+    expect(bodies[1]).not.toHaveProperty('urgentRepairRequested');
+  });
+
   it('rejette une réponse 2xx createQuote malformée avant tout checkpoint local', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       quoteId: 'quote-1',

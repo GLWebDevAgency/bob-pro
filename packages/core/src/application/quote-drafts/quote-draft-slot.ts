@@ -73,6 +73,13 @@ export interface QuoteDraftPayloadV1 {
     } | null;
     readonly depositPct: number;
     readonly signMode: 'onsite' | 'remote' | null;
+    /**
+     * Exception dépannage urgent (art. L221-10, al. 2 / L221-28, 8° c. conso) : réponse du
+     * wizard « intervention urgente expressément sollicitée par le client » — B2C uniquement,
+     * reprise à la CRÉATION du devis (CreateQuote horodate serveur). Optionnel : les
+     * brouillons antérieurs restent valides (absent = non sollicitée, fail-closed).
+     */
+    readonly urgentRepairRequested?: boolean;
   };
 }
 
@@ -266,21 +273,32 @@ export function parseQuoteDraftPayload(value: unknown): QuoteDraftPayloadResult 
   const draft = record(root['draft']);
   if (
     !draft
-    || !exactKeys(draft, [
-      'sessionId',
-      'contentRevision',
-      'stagingRevision',
-      'step',
-      'customer',
-      'lines',
-      'lineMetadata',
-      'lineForm',
-      'vatDecision',
-      'depositPct',
-      'signMode',
-    ])
+    || !exactKeys(
+      draft,
+      [
+        'sessionId',
+        'contentRevision',
+        'stagingRevision',
+        'step',
+        'customer',
+        'lines',
+        'lineMetadata',
+        'lineForm',
+        'vatDecision',
+        'depositPct',
+        'signMode',
+      ],
+      // Additif (exception dépannage urgent) : optionnel — brouillons antérieurs valides.
+      ['urgentRepairRequested'],
+    )
   ) {
     return fail('invalid_shape', '$.draft');
+  }
+  if (
+    draft['urgentRepairRequested'] !== undefined
+    && typeof draft['urgentRepairRequested'] !== 'boolean'
+  ) {
+    return fail('invalid_value', '$.draft.urgentRepairRequested');
   }
   if (!canonicalIdentifier(draft['sessionId'])) return fail('invalid_value', '$.draft.sessionId');
   if (!safeRevision(draft['contentRevision'], true)) return fail('invalid_value', '$.draft.contentRevision');
@@ -408,6 +426,9 @@ export function parseQuoteDraftPayload(value: unknown): QuoteDraftPayloadResult 
         vatDecision,
         depositPct: draft['depositPct'],
         signMode: draft['signMode'] as 'onsite' | 'remote' | null,
+        ...(draft['urgentRepairRequested'] !== undefined
+          ? { urgentRepairRequested: draft['urgentRepairRequested'] as boolean }
+          : {}),
       },
     },
   };

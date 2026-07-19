@@ -126,12 +126,24 @@ import {
   retractationNoticeLines,
   retractationFormLines,
   RETRACTATION_EARLY_EXECUTION_LABEL,
+  // Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) : mention datée du devis + bloc
+  // rétractation ADAPTÉ (exception limitée au strict nécessaire, formulaire conservé).
+  urgentRepairQuoteMention,
+  urgentRepairRetractationLines,
+  type EmbargoOverrideAuditPort,
+  // Embargo L221-10 : défaut légal = encaissement PROGRAMMÉ à J+7 (outbox planifiée) — le
+  // dérivé domaine décide de la fenêtre, le message client vient de la même source unique.
+  offPremisesPaymentEmbargo,
+  offPremisesEmbargoLiftedClientLines,
   // A3 — fonctionnalité de rétractation EN LIGNE (art. L221-21 dernier al. et D221-5 c. conso,
   // en vigueur depuis le 19/06/2026) : libellés réglementaires, disponibilité, exercice.
   RETRACTATION_WITHDRAW_FUNCTION_LABEL,
   RETRACTATION_CONFIRM_FUNCTION_LABEL,
   onlineRetractationAvailability,
   deriveRetractation,
+  // Gel de la FINALE pendant le délai de rétractation (L221-18/L221-25) : l'encaissement
+  // programmé d'un devis SANS acompte vise la finale — sa date honore AUSSI ce gel.
+  retractationFreeze,
   ExerciseRetractation,
   type ExerciseRetractationOutput,
   ResolveQuoteRetractationToken,
@@ -275,6 +287,9 @@ import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } 
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
 import { clampAgentAutonomy } from './ai/autonomy-entitlements';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+// Clé de déduplication du job « encaissement programmé » (embargo L221-10) — source unique
+// partagée entre la programmation, l'annulation à la rétractation et la garde de livraison.
+import { embargoScheduledPaymentDedupeKey } from './persistence/notification-jobs';
 // Import circulaire assumé (RelanceService ↔ BackendService) : résolu par forwardRef des deux
 // côtés — l'action Bob envoyer_relance délègue au MÊME service que POST /invoices/:id/relance.
 import { RelanceService } from './jobs/relance.service';
@@ -299,6 +314,8 @@ export interface QuoteView {
   purchaseOrder: PurchaseOrderRef | null;
   /** Révision optimiste des mutations de bon de commande (>= 1). */
   revision: number;
+  /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — null si jamais sollicitée. */
+  urgentRepair: { requestedAt: string } | null;
 }
 
 export interface InvoiceView {
@@ -1089,6 +1106,8 @@ export class BackendService {
       signed: q.signature !== null,
       purchaseOrder: q.purchaseOrder ? { ...q.purchaseOrder } : null,
       revision: q.revision,
+      // Exception dépannage urgent : les clients affichent le LegalHint adapté (pas d'embargo).
+      urgentRepair: q.urgentRepair ? { ...q.urgentRepair } : null,
     };
   }
 
@@ -1510,7 +1529,14 @@ export class BackendService {
     if (r.ok) this.logger.audit('quote.refused', { quoteId, status: r.value.status });
     return r;
   }
-  async generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
+  async generateInvoice(input: {
+    quoteId: string;
+    mode: 'deposit' | 'final';
+    /** Override RESPONSABILISÉ de l'embargo L221-10 — flag EXPLICITE `true` uniquement (jamais
+     *  implicite) : le serveur refuse toujours par défaut ; l'override est journalisé
+     *  (payment.embargo_overridden) AVANT de produire la pièce, sinon l'action échoue. */
+    embargoOverride?: boolean;
+  }) {
     if (!(await this.ownedQuote(input.quoteId)))
       return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     return new GenerateInvoiceFromQuote({
@@ -1521,7 +1547,148 @@ export class BackendService {
       customers: this.p.customers,
       ids: this.ids,
       clock: this.clock,
-    }).execute(input);
+      audit: this.embargoOverrideAudit(),
+    }).execute({
+      quoteId: input.quoteId,
+      mode: input.mode,
+      // Jamais implicite : seul `true` strict traverse (tout autre payload est ignoré).
+      embargoOverride: input.embargoOverride === true,
+    });
+  }
+
+  /**
+   * DÉFAUT LÉGAL du flow « encaisser » pendant l'embargo L221-10 : le MESSAGE au client est
+   * PROGRAMMÉ au premier jour où le paiement peut légalement être demandé — job outbox durable
+   * (`notBefore`, dédupé par devis), livré SEUL à l'échéance. HONNÊTETÉS structurelles :
+   *  • le message n'embarque AUCUN lien de paiement (il n'existe pas encore) — il annonce que
+   *    l'entreprise le transmet séparément, et l'artisan est notifié le jour même (push miroir
+   *    + fil C25 à la livraison) pour l'envoyer ;
+   *  • la PIÈCE visée dépend du devis : acompte si depositPct, sinon la FINALE — laquelle reste
+   *    GELÉE pendant le délai de rétractation de 14 jours (L221-18, sauf exécution anticipée
+   *    L221-25) : la date programmée honore ALORS le gel (max embargo/gel), jamais une promesse
+   *    datée impossible à tenir ni un libellé « acompte » faux (sans acompte, netToPay = TTC) ;
+   *  • le job est ANNULABLE (rétractation du client → annulation transactionnelle) et REVALIDÉ
+   *    à la livraison (worker NotificationDelivery, garde par kind).
+   * L'artisan garde l'alternative responsabilisée (`generateInvoice` + `embargoOverride: true`).
+   */
+  async scheduleEmbargoPayment(quoteId: string): Promise<
+    Result<
+      { scheduledFor: string; availableFrom: string; jobId: string; status: string },
+      AppError
+    >
+  > {
+    const quote = await this.ownedQuote(quoteId);
+    if (!quote) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const customer = await this.p.customers.findById(quote.customerId);
+    if (!customer || customer.companyId !== quote.companyId)
+      return { ok: false as const, error: appNotFound('customer', quote.customerId) };
+    if (quote.retractedAt !== null) {
+      return err<AppError>({
+        kind: 'validation',
+        issues: [
+          { field: 'quoteId', message: 'Devis rétracté : plus aucun encaissement à programmer.' },
+        ],
+      });
+    }
+    const embargo = offPremisesPaymentEmbargo(
+      { customerType: customer.type, signature: quote.signature, urgentRepair: quote.urgentRepair },
+      this.clock.now(),
+    );
+    if (!embargo.active) {
+      return err<AppError>({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'quoteId',
+            message:
+              'Aucun embargo de paiement en cours sur ce devis — encaisse directement, rien à programmer.',
+          },
+        ],
+      });
+    }
+    const email = customer.toProps().email ?? null;
+    if (!email) {
+      return err<AppError>({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'customer.email',
+            message:
+              'Email du client manquant — complète sa fiche pour programmer l’envoi du lien de paiement.',
+          },
+        ],
+      });
+    }
+    const company = await this.p.companies.findById(quote.companyId);
+    if (!company) return { ok: false as const, error: appNotFound('company', quote.companyId) };
+    const totals = quote.totals();
+    // Pièce visée par l'invite : acompte si le devis signé en prévoit un, sinon la FINALE.
+    const piece: 'deposit' | 'final' = quote.depositPct !== null ? 'deposit' : 'final';
+    // Sans acompte, la pièce encaissable est la FINALE — gelée pendant le délai de rétractation
+    // (L221-18, sauf demande expresse d'exécution anticipée L221-25) : la date programmée est
+    // le PREMIER jour où la pièce est réellement exigible (max embargo / gel), jamais avant.
+    let scheduledFor = embargo.expiresAt;
+    let availableFrom = embargo.availableFrom;
+    if (piece === 'final') {
+      const freeze = retractationFreeze(
+        deriveRetractation({ customerType: customer.type, signature: quote.signature }),
+        this.clock.now(),
+      );
+      if (freeze.active && freeze.expiresAt > scheduledFor) {
+        scheduledFor = freeze.expiresAt;
+        availableFrom = freeze.availableFrom;
+      }
+    }
+    const body = offPremisesEmbargoLiftedClientLines({
+      companyName: company.name,
+      quoteNumber: quote.number ?? quoteId,
+      amountLabel: formatEUR(totals.netToPay),
+      availableFrom,
+      piece,
+    }).join('\n\n');
+    const job = await this.notificationDelivery.enqueue({
+      companyId: quote.companyId,
+      kind: 'embargo-scheduled-payment',
+      // Un seul encaissement programmé par devis — rejouer la programmation est idempotent.
+      // Clé PARTAGÉE avec l'annulation (rétractation) et la garde de livraison du worker.
+      dedupeKey: embargoScheduledPaymentDedupeKey(quoteId),
+      notification: {
+        channel: 'email',
+        to: email,
+        subject: `Votre devis ${quote.number ?? ''} — règlement possible depuis le ${availableFrom.split('-').reverse().join('/')}`.trim(),
+        body,
+      },
+      // Le job ne devient DÛ qu'au premier jour réellement exigible : il part seul à l'échéance.
+      notBefore: scheduledFor,
+    });
+    this.logger.audit('payment.embargo_scheduled', {
+      quoteId,
+      piece,
+      scheduledFor,
+      availableFrom,
+      jobId: job.id,
+    });
+    return ok({
+      scheduledFor,
+      availableFrom,
+      jobId: job.id,
+      status: job.status,
+    });
+  }
+
+  /** Journal de l'override L221-10 (port core) — événement dédié, horodaté, structuré. */
+  private embargoOverrideAudit(): EmbargoOverrideAuditPort {
+    return {
+      embargoOverridden: async (event) => {
+        this.logger.audit('payment.embargo_overridden', {
+          quoteId: event.quoteId,
+          companyId: event.companyId,
+          invoiceKind: event.invoiceKind,
+          embargoExpiresAt: event.embargoExpiresAt,
+          occurredAt: event.occurredAt,
+        });
+      },
+    };
   }
   /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
   async updateQuoteLine(input: {
@@ -1680,6 +1847,8 @@ export class BackendService {
     servicePeriod?: { start: string; end: string | null };
     /** A7 — adresse de chantier/livraison si distincte de la facturation. */
     deliveryAddress?: string;
+    /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict uniquement, journalisé. */
+    embargoOverride?: boolean;
   }) {
     // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
     const locator = await this.ownedInvoice(input.invoiceId);
@@ -1718,6 +1887,7 @@ export class BackendService {
           terms?: { days: number; endOfMonth: boolean; label: string };
           servicePeriod?: { start: string; end: string | null };
           deliveryAddress?: string;
+          embargoOverride?: boolean;
         } =
           paymentTermsDays === null || paymentTermsDays === undefined
             ? { invoiceId: input.invoiceId, ...emissionData }
@@ -1730,6 +1900,8 @@ export class BackendService {
                   label: `Paiement à ${paymentTermsDays} jours`,
                 },
               };
+        // Jamais implicite : seul `true` strict traverse jusqu'au use case (qui journalise).
+        if (input.embargoOverride === true) issueInput.embargoOverride = true;
 
         const issued = await new IssueInvoice({
           invoices: this.p.invoices,
@@ -1740,6 +1912,7 @@ export class BackendService {
           counters: this.p.counters,
           uow: this.p,
           clock: this.clock,
+          audit: this.embargoOverrideAudit(),
         }).execute(issueInput);
         if (!issued.ok) {
           const missingTerms =
@@ -2130,10 +2303,9 @@ export class BackendService {
           customer.type === 'b2c'
             ? {
                 // A3 — l'avis servi à la page de signature mentionne aussi la fonctionnalité
-                // en ligne (L221-5, 7°) : le client la voit AVANT de conclure.
-                noticeLines: retractationNoticeLines(this.retractationProfessional(company), {
-                  onlineFunctionLocation: this.retractationOnlineFunctionLocation(),
-                }),
+                // en ligne (L221-5, 7°) : le client la voit AVANT de conclure. Même source
+                // unique que le PDF (bloc urgent en tête quand l'exception est tracée).
+                noticeLines: this.quoteRetractationBlock(q, company).noticeLines,
                 earlyExecutionLabel: RETRACTATION_EARLY_EXECUTION_LABEL,
               }
             : null,
@@ -2414,6 +2586,32 @@ export class BackendService {
                 body: result.value.acknowledgmentLines.join('\n'),
               },
             });
+          } catch (error) {
+            throw new RollbackAppError({
+              kind: 'dependency',
+              port: 'notification-outbox',
+              cause: error instanceof Error ? error.message : String(error),
+            });
+          }
+          // ANNULATION de l'encaissement programmé (embargo L221-10, job J+7) DANS la même
+          // transaction que la rétractation : un consommateur rétracté ne doit JAMAIS recevoir
+          // l'invite de paiement planifiée (L221-25 : rien n'est dû — elle contredirait
+          // l'accusé D221-5 ci-dessus). Idempotent : false si aucun job actif. Le worker porte
+          // en plus une garde de livraison (revalidation par kind) en défense en profondeur.
+          try {
+            const cancelled = await this.p.notificationJobs.cancelByDedupeKey(
+              locator.value.companyId,
+              'embargo-scheduled-payment',
+              embargoScheduledPaymentDedupeKey(locator.value.quoteId),
+              this.clock.now(),
+            );
+            if (cancelled) {
+              this.logger.audit('payment.embargo_schedule_cancelled', {
+                quoteId: locator.value.quoteId,
+                companyId: locator.value.companyId,
+                reason: 'quote-retracted',
+              });
+            }
           } catch (error) {
             throw new RollbackAppError({
               kind: 'dependency',
@@ -3488,7 +3686,17 @@ export class BackendService {
             input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
-      issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      issueInvoice: async (input) =>
+        this.issueInvoice({
+          invoiceId: input.invoiceId,
+          // Override L221-10 : `true` strict uniquement (le safetyFloor du registre impose la
+          // confirmation dédiée ; le use case journalise payment.embargo_overridden).
+          ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+        }),
+      // Embargo L221-10 — le DÉFAUT légal est exécutable À LA VOIX (parité avec le bouton
+      // « Programmer l'encaissement ») : sans lui, seul le chemin RISQUÉ (override) serait
+      // exécutable vocalement — l'inverse exact de la hiérarchie voulue.
+      scheduleEmbargoPayment: async (input) => this.scheduleEmbargoPayment(input.quoteId),
       // M2 (C25 ②) — envoyer_relance : ENVOI RÉEL, MÊME service et mêmes gardes que le bouton
       // « Relancer » (POST /invoices/:id/relance → RelanceService.sendRelanceForInvoice) : ton
       // choisi par deriveRelancePlan (@bob/core), déduplication quotidienne, refus honnête si la
@@ -5276,17 +5484,35 @@ export class BackendService {
       // DÉTACHABLE (modèle type annexe R221-1, joint au contrat — art. L221-5/L221-9 c. conso).
       // Client professionnel : null, rien d'imprimé. A8 : figé dans l'original archivé à la
       // signature — jamais re-rendu ensuite.
-      retractation:
-        customer.type === 'b2c'
-          ? {
-              // A3 — l'avis mentionne l'existence et l'emplacement de la fonctionnalité de
-              // rétractation en ligne (L221-5, 7° ; annexe R221-3, instruction (3)).
-              noticeLines: retractationNoticeLines(this.retractationProfessional(company), {
-                onlineFunctionLocation: this.retractationOnlineFunctionLocation(),
-              }),
-              formLines: retractationFormLines(this.retractationProfessional(company)),
-            }
-          : null,
+      // Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) : le bloc ADAPTÉ (exception
+      // limitée au strict nécessaire) s'AJOUTE EN TÊTE de l'avis type COMPLET — jamais à sa
+      // place : le droit RÉSIDUEL que le bloc affirme lui-même exige l'information complète
+      // (modalités, effets L221-24, paiement proportionnel, fonctionnalité en ligne L221-5, 7° —
+      // un devis urgent reste signable par lien). Substituer ferait perdre la présomption
+      // R221-3 (délai porté à 12 mois, L221-20 ; amende L242-13 pour la fonctionnalité en
+      // ligne). Le formulaire R221-1 RESTE joint dans tous les cas.
+      retractation: customer.type === 'b2c' ? this.quoteRetractationBlock(q, company) : null,
+    };
+  }
+
+  /**
+   * A3 — avis d'information rétractation d'un devis B2C, SOURCE UNIQUE du PDF : avis type
+   * R221-3 complété (fonctionnalité en ligne incluse, L221-5, 7°), PRÉCÉDÉ du bloc adapté
+   * « intervention urgente » quand l'exception L221-10, al. 2 est tracée — ajouté, jamais
+   * substitué (le droit résiduel garde son information complète).
+   */
+  private quoteRetractationBlock(
+    q: Quote,
+    company: Company,
+  ): { noticeLines: string[]; formLines: string[] } {
+    const notice = retractationNoticeLines(this.retractationProfessional(company), {
+      onlineFunctionLocation: this.retractationOnlineFunctionLocation(),
+    });
+    return {
+      noticeLines: q.urgentRepair
+        ? [...urgentRepairRetractationLines(q.urgentRepair.requestedAt), ...notice]
+        : notice,
+      formLines: retractationFormLines(this.retractationProfessional(company)),
     };
   }
 
@@ -5331,7 +5557,7 @@ export class BackendService {
    * contrat ; c'est cet octet-là qui est servi ensuite, plus jamais ce calcul.
    */
   private quoteMentions(q: Quote, company: Company, customer: Customer): string[] {
-    return buildMentions({
+    const mentions = buildMentions({
       company,
       customer,
       kind: 'quote',
@@ -5342,6 +5568,11 @@ export class BackendService {
       establishedOn: q.issuedAt,
       validUntil: q.validUntil,
     });
+    // Exception dépannage urgent : la mention DATÉE « intervention urgente sollicitée par le
+    // client le … » matérialise le fait légal sur le devis lui-même (L221-10, al. 2) — c'est
+    // cette trace visible qui fonde l'absence d'embargo, jamais un état interne invisible.
+    if (q.urgentRepair) mentions.push(urgentRepairQuoteMention(q.urgentRepair.requestedAt));
+    return mentions;
   }
 
   /** XML Factur-X (CII BASIC) seul, pour transmission e-invoicing. Facture émise requise. */

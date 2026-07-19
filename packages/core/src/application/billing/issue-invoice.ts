@@ -6,6 +6,7 @@ import { buildMentions, operationNatureOf } from '../../domain/services/build-me
 import { type VatTreatment } from '../../domain/billing/invoice/invoice';
 import {
   deriveRetractation,
+  offPremisesEmbargoOverrideRisk,
   offPremisesPaymentEmbargo,
   offPremisesPaymentEmbargoMessage,
   retractationFreeze,
@@ -17,7 +18,12 @@ import {
   type CustomerRepository,
   type QuoteRepository,
 } from '../ports/repositories';
-import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
+import {
+  type SequenceCounterPort,
+  type ClockPort,
+  type EmbargoOverrideAuditPort,
+  type UnitOfWorkPort,
+} from '../ports/services';
 import { TxDomainError } from './tx-error';
 
 export interface IssueInvoiceInput {
@@ -31,6 +37,13 @@ export interface IssueInvoiceInput {
    *  Absent = adresse de facturation. Le client propose l'adresse du chantier lié quand elle
    *  existe — jamais un défaut serveur inventé. Validée et FIGÉE par Invoice.issue. */
   deliveryAddress?: string;
+  /**
+   * Override RESPONSABILISÉ de l'embargo L221-10 — flag EXPLICITE (`true` strict, jamais
+   * implicite) : risque concret vu et confirmé, événement payment.embargo_overridden journalisé
+   * AVANT l'émission. Sans effet sur le gel de rétractation de la finale ni sur un devis
+   * rétracté (protections du CLIENT, non contournables).
+   */
+  embargoOverride?: boolean;
 }
 
 export interface IssueInvoiceDeps {
@@ -44,6 +57,11 @@ export interface IssueInvoiceDeps {
   counters: SequenceCounterPort;
   uow: UnitOfWorkPort;
   clock: ClockPort;
+  /**
+   * Journal de l'override L221-10 — FAIL-CLOSED : sans port câblé, `embargoOverride` est
+   * refusé comme un embargo ordinaire (jamais d'override sans trace écrite).
+   */
+  audit?: EmbargoOverrideAuditPort;
 }
 
 /** Sentinelle applicative : force le rollback UoW tout en préservant le contrat AppError exact. */
@@ -153,20 +171,41 @@ export class IssueInvoice {
             });
           }
           // L221-10 — contrat hors établissement B2C : aucune pièce exigible pendant 7 jours.
+          // Exception al. 2 : intervention urgente tracée à la création → pas d'embargo.
           const embargo = offPremisesPaymentEmbargo(
-            { customerType: customer.type, signature: quote.signature },
+            {
+              customerType: customer.type,
+              signature: quote.signature,
+              urgentRepair: quote.urgentRepair,
+            },
             at,
           );
           if (embargo.active) {
-            throw new TxAppError(
-              appDomain({
-                code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+            if (input.embargoOverride === true && this.deps.audit !== undefined) {
+              // Override responsabilisé : journalisé DANS la transaction — si la trace échoue,
+              // l'émission est annulée (aucun numéro consommé, jamais d'override silencieux ;
+              // port absent → refus fail-closed dans la branche else).
+              await this.deps.audit.embargoOverridden({
+                type: 'payment.embargo_overridden',
                 quoteId: quote.id,
-                expiresAt: embargo.expiresAt,
-                availableFrom: embargo.availableFrom,
-                message: offPremisesPaymentEmbargoMessage(embargo.availableFrom),
-              }),
-            );
+                companyId: company.id,
+                invoiceKind: invoice.kind,
+                embargoExpiresAt: embargo.expiresAt,
+                occurredAt: at,
+              });
+            } else {
+              throw new TxAppError(
+                appDomain({
+                  code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+                  quoteId: quote.id,
+                  expiresAt: embargo.expiresAt,
+                  availableFrom: embargo.availableFrom,
+                  message: offPremisesPaymentEmbargoMessage(embargo.availableFrom),
+                  overridable: true,
+                  overrideRisk: offPremisesEmbargoOverrideRisk(embargo.availableFrom),
+                }),
+              );
+            }
           }
           // Gel de la FINALE pendant le délai de rétractation (sauf exécution anticipée L221-25).
           if (invoice.kind === 'final') {

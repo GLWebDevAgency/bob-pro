@@ -119,6 +119,9 @@ const CREATE_QUOTE_FIELDS = new Set([
   'depositPct',
   'validUntil',
   'context',
+  // Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — posée À LA CRÉATION (wizard
+  // B2C), jamais rétroactive : aucun endpoint de mutation ne l'accepte après coup.
+  'urgentRepairRequested',
 ]);
 const CREATE_QUOTE_LINE_FIELDS = new Set([
   'label',
@@ -129,7 +132,9 @@ const CREATE_QUOTE_LINE_FIELDS = new Set([
   'vatRate',
 ]);
 const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
-const INVOICE_GENERATION_FIELDS = new Set(['mode']);
+// `override` : override RESPONSABILISÉ de l'embargo L221-10 — le serveur refuse par défaut,
+// n'accepte que le flag EXPLICITE true (jamais implicite) et le journalise (payment.embargo_overridden).
+const INVOICE_GENERATION_FIELDS = new Set(['mode', 'override']);
 const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
 const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl', 'earlyExecutionRequested']);
 const CATALOGUE_ITEM_FIELDS = new Set(['label', 'category', 'unit', 'unitPriceHT', 'vatRate']);
@@ -151,7 +156,14 @@ const MEDIATEUR_CONSO_FIELDS = new Set(['nom', 'coordonnees']);
  * toujours l'input complet en corps (le serveur ne lisait pas le corps) — l'id fait foi par le
  * chemin (mismatch rejeté) et les conditions de paiement restent décidées par les réglages
  * serveur, jamais par le client. */
-const INVOICE_ISSUE_FIELDS = new Set(['servicePeriod', 'deliveryAddress', 'invoiceId', 'terms']);
+const INVOICE_ISSUE_FIELDS = new Set([
+  'servicePeriod',
+  'deliveryAddress',
+  'invoiceId',
+  'terms',
+  // Override RESPONSABILISÉ de l'embargo L221-10 (`true` strict, journalisé côté use case).
+  'override',
+]);
 const SERVICE_PERIOD_FIELDS = new Set(['start', 'end']);
 const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
   'expectedRevision',
@@ -662,7 +674,9 @@ function hasForbiddenSignerCharacter(value: string): boolean {
   });
 }
 
-function parseInvoiceGenerationBody(body: Record<string, unknown>): { mode: 'deposit' | 'final' } {
+function parseInvoiceGenerationBody(
+  body: Record<string, unknown>,
+): { mode: 'deposit' | 'final'; embargoOverride?: boolean } {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
     if (!INVOICE_GENERATION_FIELDS.has(field)) {
@@ -673,8 +687,17 @@ function parseInvoiceGenerationBody(body: Record<string, unknown>): { mode: 'dep
   if (mode !== 'deposit' && mode !== 'final') {
     issues.push({ field: 'mode', message: 'Mode de facture requis (deposit | final).' });
   }
+  // Override L221-10 : `true` strict uniquement — toute autre valeur est un refus explicite
+  // (jamais un contournement par truthiness) ; absent = comportement légal par défaut.
+  const override = body['override'];
+  if (override !== undefined && typeof override !== 'boolean') {
+    issues.push({ field: 'override', message: 'Booléen attendu.' });
+  }
   if (issues.length > 0) throwValidationIssues(issues);
-  return { mode: mode as 'deposit' | 'final' };
+  return {
+    mode: mode as 'deposit' | 'final',
+    ...(override === true ? { embargoOverride: true } : {}),
+  };
 }
 
 // ——— B8 : bon de commande (numéro d'engagement grands comptes) ———
@@ -1134,6 +1157,13 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     }
   }
 
+  // Exception dépannage urgent : booléen strict — `true` seul porte le fait (CreateQuote refuse
+  // ensuite tout client non-b2c ; l'horodatage est SERVEUR, jamais fourni par le client).
+  const urgentRepairRequested = body['urgentRepairRequested'];
+  if (urgentRepairRequested !== undefined && typeof urgentRepairRequested !== 'boolean') {
+    issues.push({ field: 'urgentRepairRequested', message: 'Booléen attendu.' });
+  }
+
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     customerId: customerId as string,
@@ -1142,6 +1172,7 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     ...(typeof depositPct === 'number' ? { depositPct } : {}),
     ...(typeof validUntil === 'string' ? { validUntil } : {}),
     ...(context !== undefined ? { context } : {}),
+    ...(urgentRepairRequested === true ? { urgentRepairRequested: true } : {}),
   };
 }
 
@@ -1993,6 +2024,13 @@ export class QuotesController {
       await this.backend.generateInvoice({ quoteId: id, ...parseInvoiceGenerationBody(body) }),
     );
   }
+  /** Embargo L221-10 — DÉFAUT légal du flow « encaisser » pendant la fenêtre : programme
+   * l'envoi du message de règlement au client à J+7 (outbox planifiée, dédupée par devis).
+   * Aucun corps : toute la décision (fenêtre, montant, message) est serveur. */
+  @Post(':id/embargo-scheduled-payment')
+  async scheduleEmbargoPayment(@Param('id') id: string) {
+    return unwrap(await this.backend.scheduleEmbargoPayment(id));
+  }
   /** R6 : édition d'une ligne de devis BROUILLON (le use case/l'agrégat gardent le statut). */
   @Patch(':id/lines/:lineId')
   async updateLine(
@@ -2088,6 +2126,7 @@ export class InvoicesController {
       invoiceId: string;
       servicePeriod?: { start: string; end: string | null };
       deliveryAddress?: string;
+      embargoOverride?: boolean;
     } = { invoiceId: id };
     if (body !== undefined && body !== null) {
       assertJsonObjectBody(body);
@@ -2136,6 +2175,14 @@ export class InvoicesController {
           });
         } else {
           input.deliveryAddress = deliveryAddress;
+        }
+      }
+      // Override L221-10 : `true` strict uniquement (jamais implicite, jamais par truthiness).
+      if ('override' in body) {
+        if (typeof body.override !== 'boolean') {
+          issues.push({ field: 'override', message: 'Booléen attendu.' });
+        } else if (body.override === true) {
+          input.embargoOverride = true;
         }
       }
       if (issues.length > 0) throwValidationIssues(issues);

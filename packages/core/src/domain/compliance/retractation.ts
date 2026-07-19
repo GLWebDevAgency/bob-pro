@@ -248,10 +248,29 @@ export type OffPremisesPaymentEmbargo =
       availableFrom: DateOnly;
     };
 
+/**
+ * Exception DÉPANNAGE URGENT — travaux d'entretien ou de réparation à réaliser EN URGENCE au
+ * domicile du consommateur et EXPRESSÉMENT sollicités par lui, dans la limite des pièces de
+ * rechange et travaux strictement nécessaires pour répondre à l'urgence (art. L221-10, al. 2 et
+ * art. L221-28, 8° du code de la consommation — textes vérifiés sur Légifrance, rédaction en
+ * vigueur). Fait posé À LA CRÉATION du devis (question du wizard, client B2C uniquement),
+ * horodaté SERVEUR, jamais rétroactif, jamais déduit : null = jamais sollicité.
+ */
+export interface UrgentRepairRequest {
+  /** Horodatage serveur de la déclaration (à la création du devis). */
+  requestedAt: Instant;
+}
+
 export interface OffPremisesPaymentEmbargoInput {
   /** Type COURANT du client (fiche) — fallback pour les signatures antérieures au figeage. */
   customerType: CustomerType;
   signature: Signature | null;
+  /**
+   * Exception L221-10, al. 2 : intervention urgente expressément sollicitée par le client,
+   * tracée à la création du devis. Présente → l'interdiction de paiement ne s'applique pas.
+   * Absente/null (défaut) → fail-closed, embargo plein.
+   */
+  urgentRepair?: UrgentRepairRequest | null;
 }
 
 /**
@@ -261,11 +280,17 @@ export interface OffPremisesPaymentEmbargoInput {
  *    → interdiction ACTIVE pendant 7 jours ;
  *  • `remote_link` = contrat À DISTANCE : l'art. L221-10 ne vise QUE le contrat hors
  *    établissement — aucune interdiction (l'app n'invente pas une interdiction que la loi ne
- *    généralise pas) ;
+ *    généralise pas). LIMITE CONNUE (art. L221-1, I, 2°, b) : un contrat conclu au moyen d'une
+ *    technique de communication à distance IMMÉDIATEMENT APRÈS une sollicitation en personne au
+ *    domicile du client est requalifié HORS ÉTABLISSEMENT — un lien signé « dans la foulée » de
+ *    la visite reste donc soumis à l'interdiction de 7 jours. Le domaine ne peut pas observer ce
+ *    délai entre visite et signature : le conseil de canal (legal.signatureChannel.*) porte cet
+ *    avertissement à l'artisan au moment du choix, jamais une exonération inconditionnelle ;
  *  • `legacy_declared` (méthode réelle inconnue, jamais réinventée) → fail-closed : présomption
  *    hors établissement, interdiction active.
- * L'exception des travaux d'entretien/réparation URGENTS expressément sollicités (art. L221-10)
- * n'est PAS modélisée : fail-closed, aucun contournement tant que le fait n'est pas tracé.
+ * EXCEPTION MODÉLISÉE (art. L221-10, al. 2) : les travaux d'entretien/réparation URGENTS
+ * expressément sollicités par le client — UNIQUEMENT quand le fait est tracé à la création du
+ * devis (`urgentRepair` non null, horodaté serveur). Sans trace : fail-closed, embargo plein.
  * La demande d'exécution anticipée (L221-25) est SANS EFFET ici : elle autorise l'exécution,
  * jamais la perception d'un paiement avant l'expiration du délai de sept jours.
  * Émettre une facture, c'est demander un paiement : le blocage porte donc sur l'émission des
@@ -280,6 +305,11 @@ export function offPremisesPaymentEmbargo(
   const concludedWith = signature.customerType ?? input.customerType;
   if (concludedWith !== 'b2c') return { active: false };
   if (signature.method === 'remote_link') return { active: false };
+  // L221-10, al. 2 — intervention urgente expressément sollicitée par le client et TRACÉE à la
+  // création du devis : l'interdiction de paiement ne s'applique pas. Le périmètre légal reste
+  // « dans la limite des pièces de rechange et travaux strictement nécessaires » — nuance portée
+  // par la mention adaptée du PDF (urgentRepairRetractationLines), jamais masquée.
+  if (input.urgentRepair) return { active: false };
   const expiresAt = legalDelayExpiresAt(signature.signedAt, OFF_PREMISES_PAYMENT_EMBARGO_DAYS);
   if (now >= expiresAt) return { active: false };
   return { active: true, expiresAt, availableFrom: parisDateOnly(expiresAt) };
@@ -294,6 +324,107 @@ export function offPremisesPaymentEmbargoMessage(availableFrom: DateOnly): strin
     `sera possible à partir du ${formatDateOnlyFr(availableFrom)}. Le devis signé reste ` +
     `pleinement valable.`
   );
+}
+
+/**
+ * Risque CONCRET de l'override d'encaissement pendant l'embargo L221-10 — source unique
+ * serveur/vocal de la reformulation (les clients UI portent la même substance ×3 tons via
+ * @bob/i18n). L'embargo protège L'ARTISAN (contrat annulable = chantier gratuit) : le chemin
+ * légal est le DÉFAUT, l'override existe mais il est averti, confirmé et TRACÉ
+ * (payment.embargo_overridden) — doctrine fondateur de l'override responsabilisé.
+ */
+export function offPremisesEmbargoOverrideRisk(availableFrom: DateOnly): string {
+  return (
+    `Encaisser avant le ${formatDateOnlyFr(availableFrom)} expose à la nullité du contrat ` +
+    `(art. L242-1 du code de la consommation) : le client pourra exiger le remboursement ` +
+    `intégral et faire annuler le devis signé, travaux compris. Confirmation explicite requise ` +
+    `— l'action est tracée sous la responsabilité de l'artisan.`
+  );
+}
+
+/**
+ * Message HONNÊTE au client de l'encaissement PROGRAMMÉ à l'expiration de l'embargo L221-10
+ * (défaut légal : le MESSAGE au client part seul le jour où la loi permet le paiement ; le lien
+ * de règlement est transmis par l'entreprise, prévenue ce jour-là). Source unique API (job
+ * planifié) / clients / vocal — jamais reformulé côté écran, jamais un lien fantôme promis.
+ */
+export function offPremisesScheduledPaymentMessage(availableFrom: DateOnly): string {
+  return (
+    `Votre devis signé à domicile est protégé par le délai légal de 7 jours ` +
+    `(art. L221-10 du code de la consommation) : aucun paiement ne peut vous être demandé ` +
+    `avant le ${formatDateOnlyFr(availableFrom)}. L'entreprise vous transmettra le lien de ` +
+    `règlement à partir de cette date.`
+  );
+}
+
+/**
+ * Courriel HONNÊTE au client, LIVRÉ à l'expiration de la fenêtre légale (job outbox planifié) :
+ * il explique la protection dont il a bénéficié, le montant attendu et la suite. HONNÊTETÉ du
+ * canal : aucun lien de paiement n'est joint à ce message — il annonce que l'entreprise le
+ * transmet séparément (l'artisan est notifié le même jour pour l'envoyer). `piece` adapte le
+ * libellé du montant : `deposit` = l'acompte prévu au devis ; `final` = le règlement du devis
+ * (sans acompte, netToPay = totalité TTC — dire « acompte » serait faux). Source unique
+ * API/outbox — l'écran ne le réécrit pas.
+ */
+export function offPremisesEmbargoLiftedClientLines(input: {
+  companyName: string;
+  quoteNumber: string;
+  /** Montant attendu déjà FORMATÉ (ex. « 488,40 € ») — jamais recalculé ici. */
+  amountLabel: string;
+  availableFrom: DateOnly;
+  /** Pièce attendue : acompte prévu au devis, ou règlement du devis (aucun acompte prévu). */
+  piece: 'deposit' | 'final';
+}): string[] {
+  const amountSentence =
+    input.piece === 'deposit'
+      ? `l'acompte prévu de ${input.amountLabel} peut désormais être réglé`
+      : `le règlement du devis, soit ${input.amountLabel}, peut désormais vous être demandé`;
+  return [
+    `Bonjour,`,
+    `Votre devis n° ${input.quoteNumber} a été signé à votre domicile : la loi vous protège en ` +
+      `interdisant tout paiement pendant 7 jours après la signature (art. L221-10 du code de la ` +
+      `consommation).`,
+    `Ce délai est écoulé depuis le ${formatDateOnlyFr(input.availableFrom)} : ${amountSentence}. ` +
+      `${input.companyName} vous transmettra le lien de règlement dans un envoi séparé.`,
+    `Votre devis signé reste pleinement valable.`,
+  ];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mention PORTÉE SUR LE DEVIS quand l'intervention urgente a été sollicitée : elle matérialise
+ * le fait légal (« expressément sollicités par lui », art. L221-10, al. 2 et L221-28, 8°) avec
+ * sa date — la trace visible qui fonde l'exception, jamais implicite.
+ */
+export function urgentRepairQuoteMention(requestedAt: Instant): string {
+  return (
+    `Intervention urgente sollicitée par le client le ${formatDateOnlyFr(parisDateOnly(requestedAt))} — ` +
+    `travaux d'entretien ou de réparation à réaliser en urgence à son domicile, expressément ` +
+    `sollicités par lui (art. L221-10, al. 2 et L221-28, 8° du code de la consommation).`
+  );
+}
+
+/**
+ * Bloc rétractation ADAPTÉ pour une intervention urgente sollicitée : l'exception de
+ * l'art. L221-28, 8° ne vaut que « dans la limite des pièces de rechange et travaux strictement
+ * nécessaires pour répondre à l'urgence » — LECTURE PRUDENTE : le bloc explique l'exception ET
+ * maintient le droit pour toute prestation au-delà du strict nécessaire. Ce bloc s'AJOUTE EN
+ * TÊTE de l'avis type complet (retractationNoticeLines), il ne le REMPLACE JAMAIS : le droit
+ * résiduel qu'il affirme lui-même exige l'information complète — modalités d'exercice, effets
+ * (remboursement L221-24), paiement proportionnel et fonctionnalité de rétractation en ligne
+ * (L221-5, 7° / L221-21 dern. al., un devis urgent restant signable par lien). Le formulaire
+ * R221-1 reste joint (retractationFormLines conservé par l'appelant).
+ */
+export function urgentRepairRetractationLines(requestedAt: Instant): string[] {
+  return [
+    'Droit de rétractation — intervention urgente',
+    urgentRepairQuoteMention(requestedAt),
+    "Pour ces travaux urgents expressément sollicités, le droit de rétractation ne peut pas être exercé, dans la limite des pièces de rechange et des travaux strictement nécessaires pour répondre à l'urgence (art. L221-28, 8° du code de la consommation).",
+    'Pour toute prestation allant au-delà de ce qui est strictement nécessaire pour répondre à l’urgence, vous conservez votre droit de vous rétracter sans motif dans un délai de quatorze jours à compter de la conclusion du contrat (art. L221-18 du code de la consommation) ; le formulaire de rétractation joint peut être utilisé à cette fin.',
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

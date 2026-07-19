@@ -44,6 +44,8 @@ function makeEnv(
     customerMissing?: boolean;
     /** A3 — « maintenant » injecté (défaut : bien APRÈS le délai du devis par défaut). */
     now?: string;
+    /** Override L221-10 — simule un câblage SANS journal d'audit (fail-closed attendu). */
+    withoutAudit?: boolean;
   } = {},
 ) {
   const quote = input.quote ?? signedQuote();
@@ -86,9 +88,17 @@ function makeEnv(
     },
   };
 
+  // Journal de l'override L221-10 : les événements payment.embargo_overridden observés.
+  const auditEvents: Parameters<
+    NonNullable<
+      ConstructorParameters<typeof GenerateInvoiceFromQuote>[0]['audit']
+    >['embargoOverridden']
+  >[0][] = [];
+
   return {
     quote,
     invoices: invoiceRepo,
+    auditEvents,
     usecase: new GenerateInvoiceFromQuote({
       quotes,
       invoices: invoiceRepo,
@@ -106,6 +116,15 @@ function makeEnv(
         now: () => input.now ?? '2026-07-15T09:00:00.000Z',
         today: () => (input.now ?? '2026-07-15T09:00:00.000Z').slice(0, 10),
       },
+      ...(input.withoutAudit === true
+        ? {}
+        : {
+            audit: {
+              embargoOverridden: async (event) => {
+                auditEvents.push(event);
+              },
+            },
+          }),
     }),
     counts: () => ({ saveCalls }),
   };
@@ -556,4 +575,98 @@ describe('GenerateInvoiceFromQuote — contrat rétracté (fonctionnalité en li
       expect(await env.invoices.listByCompany(quote.companyId)).toHaveLength(0);
     },
   );
+});
+
+describe('GenerateInvoiceFromQuote — exception dépannage urgent (art. L221-10, al. 2)', () => {
+  const duringEmbargo = '2026-06-03T09:00:00.000Z';
+
+  it("intervention urgente TRACÉE à la création → pas d'embargo : acompte immédiat", async () => {
+    const quote = signedQuote(30, { urgentRepair: { requestedAt: '2026-05-30T08:00:00.000Z' } });
+    const env = makeEnv({ quote, customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(true);
+    expect(env.auditEvents).toHaveLength(0); // exception légale, pas un override
+  });
+
+  it('urgence tracée : la FINALE reste gelée pendant le délai de rétractation (prudence — strict nécessaire seulement)', async () => {
+    const quote = signedQuote(30, { urgentRepair: { requestedAt: '2026-05-30T08:00:00.000Z' } });
+    const env = makeEnv({ quote, customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'final' });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('RETRACTATION_PERIOD_ACTIVE');
+  });
+});
+
+describe('GenerateInvoiceFromQuote — override responsabilisé de l’embargo L221-10', () => {
+  const duringEmbargo = '2026-06-03T09:00:00.000Z';
+
+  it("refus par défaut : l'erreur porte overridable + le risque concret (source unique)", async () => {
+    const env = makeEnv({ customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(false);
+    if (r.ok || r.error.kind !== 'domain') throw new Error('erreur domaine attendue');
+    expect(r.error.error).toMatchObject({ code: 'OFF_PREMISES_PAYMENT_EMBARGO', overridable: true });
+    if (r.error.error.code === 'OFF_PREMISES_PAYMENT_EMBARGO') {
+      expect(r.error.error.overrideRisk).toContain('L242-1');
+      expect(r.error.error.overrideRisk).toContain('09/06/2026');
+    }
+  });
+
+  it('embargoOverride: true EXPLICITE → la pièce est produite ET payment.embargo_overridden est journalisé', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({
+      quoteId: env.quote.id,
+      mode: 'deposit',
+      embargoOverride: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(env.auditEvents).toEqual([
+      {
+        type: 'payment.embargo_overridden',
+        quoteId: 'quote-1',
+        companyId: 'co-1',
+        invoiceKind: 'deposit',
+        embargoExpiresAt: '2026-06-08T22:00:00.000Z',
+        occurredAt: duringEmbargo,
+      },
+    ]);
+  });
+
+  it('journal indisponible → override REFUSÉ (fail-closed : jamais de contournement sans trace)', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: duringEmbargo, withoutAudit: true });
+    const r = await env.usecase.execute({
+      quoteId: env.quote.id,
+      mode: 'deposit',
+      embargoOverride: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('OFF_PREMISES_PAYMENT_EMBARGO');
+  });
+
+  it("l'override ne lève JAMAIS le gel de rétractation de la FINALE (protection du client, non contournable)", async () => {
+    const env = makeEnv({ customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({
+      quoteId: env.quote.id,
+      mode: 'final',
+      embargoOverride: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('RETRACTATION_PERIOD_ACTIVE');
+    // L'embargo, lui, a bien été contourné et TRACÉ — le refus vient du gel, pas de l'embargo.
+    expect(env.auditEvents).toHaveLength(1);
+  });
+
+  it('hors embargo, embargoOverride est inerte : aucun événement journalisé', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-20T09:00:00.000Z' });
+    const r = await env.usecase.execute({
+      quoteId: env.quote.id,
+      mode: 'deposit',
+      embargoOverride: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(env.auditEvents).toHaveLength(0);
+  });
 });

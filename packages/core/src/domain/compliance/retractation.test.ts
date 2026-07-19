@@ -9,8 +9,11 @@ import {
   formatDateOnlyFr,
   formatInstantFrParis,
   isFrenchPublicHoliday,
+  offPremisesEmbargoLiftedClientLines,
+  offPremisesEmbargoOverrideRisk,
   offPremisesPaymentEmbargo,
   offPremisesPaymentEmbargoMessage,
+  offPremisesScheduledPaymentMessage,
   onlineRetractationAvailability,
   retractationAcknowledgmentLines,
   retractationContactGaps,
@@ -20,6 +23,8 @@ import {
   retractationFreeze,
   retractationFreezeMessage,
   retractationNoticeLines,
+  urgentRepairQuoteMention,
+  urgentRepairRetractationLines,
 } from './retractation';
 import { type Signature } from '../billing/shared/signature';
 
@@ -477,5 +482,113 @@ describe('textes réglementaires', () => {
     expect(message).toContain('16/06/2026');
     expect(message).toContain('acompte');
     expect(formatDateOnlyFr('2026-06-16')).toBe('16/06/2026');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('exception dépannage urgent (L221-10, al. 2 / L221-28, 8°)', () => {
+  const requestedAt = '2026-05-30T08:15:00.000Z';
+
+  it('intervention urgente TRACÉE → aucun embargo, même signé sur place pendant la fenêtre', () => {
+    expect(
+      offPremisesPaymentEmbargo(
+        {
+          customerType: 'b2c',
+          signature: signature({ method: 'onsite_draw' }),
+          urgentRepair: { requestedAt },
+        },
+        '2026-06-02T09:00:00.000Z',
+      ),
+    ).toEqual({ active: false });
+  });
+
+  it('urgence non tracée (null/absent) → fail-closed : embargo plein', () => {
+    expect(
+      offPremisesPaymentEmbargo(
+        {
+          customerType: 'b2c',
+          signature: signature({ method: 'onsite_draw' }),
+          urgentRepair: null,
+        },
+        '2026-06-02T09:00:00.000Z',
+      ),
+    ).toMatchObject({ active: true });
+  });
+
+  it('legacy_declared + urgence tracée → exception applicable (le fait légal est tracé)', () => {
+    expect(
+      offPremisesPaymentEmbargo(
+        {
+          customerType: 'b2c',
+          signature: signature({ method: 'legacy_declared' }),
+          urgentRepair: { requestedAt },
+        },
+        '2026-06-02T09:00:00.000Z',
+      ),
+    ).toEqual({ active: false });
+  });
+
+  it('la mention du devis matérialise le fait : date FR + sollicitation expresse + sources', () => {
+    const mention = urgentRepairQuoteMention(requestedAt);
+    expect(mention).toContain('Intervention urgente sollicitée par le client le 30/05/2026');
+    expect(mention).toContain('expressément');
+    expect(mention).toContain('L221-10');
+    expect(mention).toContain('L221-28, 8°');
+  });
+
+  it('le bloc PDF adapté : exception LIMITÉE au strict nécessaire + droit maintenu au-delà', () => {
+    const lines = urgentRepairRetractationLines(requestedAt);
+    expect(lines[0]).toBe('Droit de rétractation — intervention urgente');
+    const text = lines.join(' ');
+    expect(text).toContain('strictement nécessaires');
+    expect(text).toContain('L221-28, 8°');
+    // Prudence : le droit reste entier pour les prestations au-delà du strict nécessaire.
+    expect(text).toContain('quatorze jours');
+    expect(text).toContain('formulaire');
+  });
+
+  it('le risque concret de l’override cite la nullité (L242-1) et la date de fin d’embargo', () => {
+    const risk = offPremisesEmbargoOverrideRisk('2026-06-09');
+    expect(risk).toContain('L242-1');
+    expect(risk).toContain('09/06/2026');
+    expect(risk).toContain('remboursement');
+  });
+
+  it('le message client de l’encaissement programmé est honnête : protection + date, jamais un lien fantôme', () => {
+    const msg = offPremisesScheduledPaymentMessage('2026-06-09');
+    expect(msg).toContain('L221-10');
+    expect(msg).toContain('09/06/2026');
+    // HONNÊTETÉ : le lien est transmis par l'entreprise — jamais promis « envoyé automatiquement ».
+    expect(msg).toContain('transmettra le lien');
+    expect(msg).not.toContain('automatiquement');
+  });
+
+  it('le courriel J+7 est honnête par pièce : acompte vs règlement du devis, lien annoncé séparé', () => {
+    const deposit = offPremisesEmbargoLiftedClientLines({
+      companyName: 'Mercier Plomberie',
+      quoteNumber: 'D-2026-0042',
+      amountLabel: '488,40 €',
+      availableFrom: '2026-06-09',
+      piece: 'deposit',
+    }).join(' ');
+    expect(deposit).toContain("l'acompte prévu de 488,40 €");
+    expect(deposit).toContain('09/06/2026');
+    // Aucun lien n'est joint au message : il est annoncé transmis SÉPARÉMENT (jamais « avec ce message »).
+    expect(deposit).toContain('dans un envoi séparé');
+    expect(deposit).not.toContain('avec ce message');
+
+    const final = offPremisesEmbargoLiftedClientLines({
+      companyName: 'Mercier Plomberie',
+      quoteNumber: 'D-2026-0042',
+      amountLabel: '4 880,00 €',
+      availableFrom: '2026-06-09',
+      piece: 'final',
+    }).join(' ');
+    // Sans acompte prévu, netToPay = totalité : dire « acompte » serait un libellé faux.
+    expect(final).toContain('le règlement du devis, soit 4 880,00 €');
+    expect(final).not.toContain('acompte');
   });
 });

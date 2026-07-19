@@ -324,6 +324,28 @@ export interface GenerateInvoiceActionInput {
   quoteId: string;
   /** Choix explicite obligatoire : une relance réseau ne doit jamais changer le type de facture. */
   mode: 'deposit' | 'final';
+  /**
+   * Override RESPONSABILISÉ de l'embargo L221-10 (contrat hors établissement B2C) — `true`
+   * strict UNIQUEMENT, jamais implicite : Bob reformule d'abord le risque concret (le refus
+   * serveur porte `overrideRisk`) et exige la même confirmation explicite que le bouton
+   * (safetyFloor du tool). L'événement payment.embargo_overridden est journalisé serveur.
+   */
+  embargoOverride?: boolean;
+}
+
+/** Outil programmer_encaissement_embargo — DÉFAUT légal du refus d'encaissement L221-10 :
+ * message client programmé au premier jour exigible (outbox serveur planifiée, annulable). */
+export interface ScheduleEmbargoPaymentActionInput {
+  quoteId: string;
+}
+
+export interface ScheduleEmbargoPaymentActionOutput {
+  /** Instant (ISO) de la livraison planifiée du message client. */
+  scheduledFor: string;
+  /** Premier jour calendaire (AAAA-MM-JJ) où le paiement peut être demandé. */
+  availableFrom: string;
+  jobId: string;
+  status: string;
 }
 
 /** Outil export_fec (parité C15 TODO ⑥) — mêmes entrées que ExportFec ; l'agent reçoit le RÉSUMÉ,
@@ -428,13 +450,24 @@ export interface BobActions {
       AppError
     >
   >;
-  issueInvoice(input: { invoiceId: string }): Promise<Result<{ number: string }, AppError>>;
+  issueInvoice(input: {
+    invoiceId: string;
+    /** Override RESPONSABILISÉ de l'embargo L221-10 (émission = demande de paiement) — `true`
+     * strict après confirmation dédiée (safetyFloor) ; journalisé serveur. Jamais implicite. */
+    embargoOverride?: boolean;
+  }): Promise<Result<{ number: string }, AppError>>;
   // —— Mutation, OPTIONNELLES (parité C15 TODO ③④⑤⑥, C20/C40) ——
   // Optionnelles pour rester rétro-compatibles avec les hôtes existants (apps/api) : le registre
   // n'expose l'outil que si l'hôte fournit l'action — même use case que l'UI, jamais un chemin parallèle.
   createQuote?(input: CreateQuoteActionInput): Promise<Result<{ quoteId: string }, AppError>>;
   recordExpense?(input: RecordExpenseActionInput): Promise<Result<{ id: string }, AppError>>;
   generateInvoice?(input: GenerateInvoiceActionInput): Promise<Result<{ invoiceId: string }, AppError>>;
+  /** Embargo L221-10 — DÉFAUT légal du refus d'encaissement, exécutable à la voix (hiérarchie
+   * doctrine fondateur : le chemin sûr d'ABORD ; l'override reste le second niveau). MÊME
+   * endpoint que le bouton « Programmer l'encaissement » (POST …/embargo-scheduled-payment). */
+  scheduleEmbargoPayment?(
+    input: ScheduleEmbargoPaymentActionInput,
+  ): Promise<Result<ScheduleEmbargoPaymentActionOutput, AppError>>;
   exportFec?(input: ExportFecActionInput): Promise<Result<FecExportSummary, AppError>>;
   createCustomer?(input: CreateCustomerActionInput): Promise<Result<{ id: string }, AppError>>;
   /** Envoi réel de relance (C25 ②) — même endpoint que le bouton « Relancer » de l'écran

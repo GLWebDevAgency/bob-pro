@@ -1233,3 +1233,53 @@ describe('i18n — seuils micro JAMAIS en dur (référentiel temporel @bob/core,
     expect(t('fiscal.tax_regime_choice.EURL.micro', { personality: 'pote' })).toContain('gérant');
   });
 });
+
+describe('catalogue legal (LegalHint — protections légales ×3 tons)', () => {
+  it('formule le BÉNÉFICE in-line de l’embargo avec la date, sur les 3 humeurs', () => {
+    expect(t('legal.embargo.inline', { params: { date: '09/06/2026' } })).toBe(
+      'Encaissement possible le 09/06/2026 — la loi anti-démarchage te protège d’un contrat annulable.',
+    );
+    expect(t('legal.embargo.inline', { personality: 'pro', params: { date: '09/06/2026' } })).toContain(
+      'vous protège',
+    );
+    expect(t('legal.embargo.inline', { personality: 'direct', params: { date: '09/06/2026' } })).toContain(
+      '09/06/2026',
+    );
+  });
+
+  it('le bloc « loi » de chaque hint reste simple et sans jargon inutile, décliné ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      for (const key of [
+        'legal.embargo.law',
+        'legal.urgentRepair.law',
+        'legal.signatureChannel.law',
+      ] as const) {
+        expect(t(key, { personality }).length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('la confirmation d’override reformule le risque CONCRET (remboursement + annulation + responsabilité)', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const risk = t('legal.embargoOverride.risk', { personality });
+      expect(risk).toContain('rembours');
+      expect(risk).toContain('annuler');
+      expect(risk.toLowerCase()).toContain('responsabilité');
+      expect(risk).toContain('L242-1');
+    }
+  });
+
+  it('la question du wizard dépannage urgent existe sur les 3 humeurs', () => {
+    expect(t('legal.urgentRepair.question')).toContain('urgent');
+    expect(t('legal.urgentRepair.question', { personality: 'pro' })).toContain('expressément');
+    expect(t('legal.urgentRepair.question', { personality: 'direct' }).length).toBeGreaterThan(0);
+  });
+
+  it('le conseil du canal de signature dit le bénéfice (acompte immédiat), jamais l’injonction', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const banner = t('legal.signatureChannel.banner', { personality });
+      expect(banner).toContain('lien');
+      expect(banner.toLowerCase()).toContain('acompte');
+    }
+  });
+});
