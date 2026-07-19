@@ -53,4 +53,35 @@ describe('computeFiscalFlowSteps', () => {
     expect(fiscalFlowRemainingCount(undefined)).toBe(0);
     expect(hasFiscalFlowPending(undefined)).toBe(false);
   });
+
+  // ── Dérivation ENRICHIE (vatRegime/dateCreation d'onboarding) : étapes réduites ──
+
+  it('EI avec TVA d’onboarding : l’étape TVA disparaît (confirme_utilisateur, plus « manquant »)', () => {
+    const profile = buildInitialFiscalProfile(
+      { id: 'c1', legalForm: 'EI', trade: 'plombier', vatRegime: 'reel_simpl' },
+      NOW,
+    ).toProps();
+    expect(computeFiscalFlowSteps(profile)).toEqual(['legal_regime', 'activity', 'acre']);
+    expect(fiscalFlowRemainingCount(profile)).toBe(3); // 4 sans le choix d'onboarding (test EI ci-dessus)
+  });
+
+  it('SASU récente (dateCreation < 12 mois) : l’ACRE dérivée reste une HYPOTHÈSE → étape maintenue', () => {
+    const profile = buildInitialFiscalProfile(
+      { id: 'c1', legalForm: 'SASU', trade: 'plombier', vatRegime: 'reel_normal', dateCreation: '2026-01-10' },
+      NOW,
+    ).toProps();
+    // L'hypothèse pré-remplit la réponse mais ne CONFIRME pas — l'utilisateur valide (statuts,
+    // amendement 6) : l'étape acre reste dans la file, TVA et VL (non applicable) n'y sont pas.
+    expect(profile.acre.status).toBe('hypothese');
+    expect(computeFiscalFlowSteps(profile)).toEqual(['legal_regime', 'activity', 'acre']);
+  });
+
+  it('micro ancienne (≥ 12 mois) : hypothèse « pas d’ACRE » posée, l’étape reste à confirmer', () => {
+    const profile = buildInitialFiscalProfile(
+      { id: 'c1', legalForm: 'micro', trade: 'plombier', dateCreation: '2020-03-01' },
+      NOW,
+    ).toProps();
+    expect(profile.acre.status).toBe('hypothese');
+    expect(computeFiscalFlowSteps(profile)).toEqual(['legal_regime', 'activity', 'acre', 'versement_liberatoire']);
+  });
 });

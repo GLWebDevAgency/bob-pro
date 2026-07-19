@@ -50,6 +50,7 @@ import {
   SCAN_PULSE_OPACITY_MIN,
   resolveScanReadingMotion,
 } from '../src/scan/scan-reading-motion';
+import { planScanChantierChoice } from '../src/scan/scan-chantier-destination';
 import {
   useAnalyzeDocument,
   useCreateDocumentFolder,
@@ -211,6 +212,10 @@ export default function ScanDocument() {
   const [capturePending, setCapturePending] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [exitBlocked, setExitBlocked] = useState(false);
+  // Destination CHANTIER choisie pour un document de DÉPENSE : la dépense naîtra IMPUTÉE
+  // (chantierId transmis à recordDocumentExpense — chantier PROUVÉ côté serveur, anti-IDOR,
+  // sinon RIEN n'est créé). L'original reste libre d'être lié 'expense' à la création.
+  const [expenseChantier, setExpenseChantier] = useState<{ id: string; name: string } | null>(null);
   const data = extract.data;
   const openChantiers = useMemo(
     () => (chantiers.data ?? []).filter((chantier) => chantier.status === 'open'),
@@ -359,7 +364,9 @@ export default function ScanDocument() {
             params: { label: t('scan.chantierOption', { personality, params: { name: chantier.name } }) },
           })
         : t('scan.chantierOption', { personality, params: { name: chantier.name } }),
-      description: t('scan.chantierOptionDesc', { personality }),
+      // Document de DÉPENSE : le coût remontera par la dépense créée imputée — description
+      // honnête, distincte du lien document↔chantier des autres originaux.
+      description: t(data !== undefined ? 'scan.chantierOptionDescExpense' : 'scan.chantierOptionDesc', { personality }),
     }));
     const recommendedValue = suggestedChantierId === null ? null : `${CHANTIER_OPTION_PREFIX}${suggestedChantierId}`;
     return [
@@ -376,7 +383,7 @@ export default function ScanDocument() {
           : 'Choisir toi-même le nom du nouveau dossier.',
       },
     ];
-  }, [foldersReady, openChantiers, personality, rootFolders.data, suggestedChantierId, suggestedFolder, suggestedNewFolderName]);
+  }, [data, foldersReady, openChantiers, personality, rootFolders.data, suggestedChantierId, suggestedFolder, suggestedNewFolderName]);
 
   // La machine suit le document archivé : tout changement remet la file de décisions à
   // zéro — l'invite de rangement consommée d'un document ne fuit jamais vers le suivant.
@@ -408,6 +415,7 @@ export default function ScanDocument() {
     setRecordTargetError(false);
     setReconcilePending(false);
     setRecordResolution(null);
+    setExpenseChantier(null);
     applyDestination.reset();
     setChosenCategory(null);
     setCategoryDismissed(false);
@@ -710,6 +718,9 @@ export default function ScanDocument() {
         vatCents: data.vatCents,
         vatRatePct: defaults.vatRatePct,
         category,
+        // Destination chantier choisie au scan : la dépense naît IMPUTÉE — le serveur PROUVE
+        // le chantier dans le tenant (anti-IDOR, not_found('chantier') sinon, RIEN n'est créé).
+        ...(expenseChantier !== null ? { chantierId: expenseChantier.id } : {}),
         // Ticket → dépense payée d'emblée (le scan devient la preuve, autorité serveur) ;
         // facture → à payer avec l'échéance lue si présente.
         ...settlementExpenseFields(
@@ -774,15 +785,38 @@ export default function ScanDocument() {
       });
   }
 
+  /**
+   * Destination chantier choisie — deux sens métier distincts (plan PUR testé) :
+   * · document de DÉPENSE (extraction présente) → la dépense naîtra IMPUTÉE au chantier
+   *   (chantierId transmis à la création) ; l'original est rangé dans « Chantiers » s'il
+   *   n'est pas encore rangé et reste LIBRE d'être lié 'expense' (justificatif) ;
+   * · autre document → lien métier document↔chantier (ClassifyDocument, historique).
+   */
+  function chooseChantierDestination(chantierId: string, name: string): void {
+    const plan = planScanChantierChoice({
+      hasExtraction: data !== undefined,
+      documentFolderId: archivedDocument?.folderId ?? null,
+      projectsFolderId: rootFolders.data?.find((folder) => folder.systemKey === 'projects')?.id ?? null,
+    });
+    if (plan.kind === 'impute_expense') {
+      setExpenseChantier({ id: chantierId, name });
+      if (plan.moveToFolderId !== null) classifyInFolder(plan.moveToFolderId);
+      // Déjà rangé (ou « Chantiers » absent du coffre) : aucun déplacement — invite consommée.
+      else dispatchDecision({ type: 'filing-classified' });
+      return;
+    }
+    void applyDestination.apply(
+      archivedDocument,
+      { kind: 'chantier', chantierId, label: name, motif: '' },
+      analysis.data?.suggestedDisplayName ?? null,
+    );
+  }
+
   /** Choix « Chantier · {name} » du rangement — cible réelle listée, jamais un id inventé. */
   function classifyToChantier(chantierId: string): void {
     const chantier = openChantiers.find((candidate) => candidate.id === chantierId);
     if (!chantier) return;
-    void applyDestination.apply(
-      archivedDocument,
-      { kind: 'chantier', chantierId: chantier.id, label: chantier.name, motif: '' },
-      analysis.data?.suggestedDisplayName ?? null,
-    );
+    chooseChantierDestination(chantier.id, chantier.name);
   }
 
   async function recoverFolderChoice(): Promise<void> {
@@ -1065,13 +1099,22 @@ export default function ScanDocument() {
                         disabled={applyDestination.pending || moveDocument.isPending}
                         onPress={() => {
                           const destination = analysis.data?.suggestedDestination;
-                          if (destination) {
-                            void applyDestination.apply(
-                              archivedDocument,
-                              destination,
-                              analysis.data?.suggestedDisplayName ?? null,
+                          if (!destination) return;
+                          if (destination.kind === 'chantier') {
+                            // Même décision que la feuille de rangement : dépense → imputation
+                            // par la dépense ; autre document → lien document↔chantier.
+                            chooseChantierDestination(
+                              destination.chantierId,
+                              openChantiers.find((chantier) => chantier.id === destination.chantierId)?.name
+                                ?? destination.label,
                             );
+                            return;
                           }
+                          void applyDestination.apply(
+                            archivedDocument,
+                            destination,
+                            analysis.data?.suggestedDisplayName ?? null,
+                          );
                         }}
                       />
                       <Button
@@ -1250,6 +1293,20 @@ export default function ScanDocument() {
                 </View>
                 {(defaults?.supplierSiren ?? data.supplierSiren) ? (
                   <Row label="SIREN" value={(defaults?.supplierSiren ?? data.supplierSiren)!} colors={colors} />
+                ) : null}
+                {/* Destination chantier choisie : la dépense naîtra imputée (ligne honnête,
+                    même préséance visuelle que la mémoire fournisseur). */}
+                {expenseChantier !== null ? (
+                  <View>
+                    <Row
+                      label={t('scan.expenseChantierLabel', { personality })}
+                      value={expenseChantier.name}
+                      colors={colors}
+                    />
+                    <Text style={[font('meta'), { color: semantic.ai, marginTop: 2, textAlign: 'right' }]}>
+                      ✨ {t('scan.expenseChantierNote', { personality })}
+                    </Text>
+                  </View>
                 ) : null}
                 {data.suggestedTags.length > 0 ? (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>

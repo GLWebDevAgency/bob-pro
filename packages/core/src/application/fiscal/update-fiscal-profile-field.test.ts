@@ -30,8 +30,8 @@ describe('UpdateFiscalProfileField — un champ à la fois, confirmé, invariant
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.vatRegime).toEqual({ status: 'confirme_utilisateur', value: 'reel_normal', updatedAt: NOW, source: 'user_voice' });
-    // Les autres hypothèses dérivées restent intactes.
-    expect(r.value.socialStatus).toMatchObject({ status: 'hypothese', value: 'tns' });
+    // Les autres champs dérivés restent intacts (TNS certain pour une EI : source_fiable).
+    expect(r.value.socialStatus).toMatchObject({ status: 'source_fiable', value: 'tns' });
   });
 
   it('présent en base : le patch s’applique sur la ligne existante, persistée', async () => {
@@ -67,7 +67,7 @@ describe('UpdateFiscalProfileField — un champ à la fois, confirmé, invariant
     if (r.ok) return;
     expect(r.error).toMatchObject({ kind: 'domain', error: { code: 'FISCAL_PROFILE_INCONSISTENT', rule: 'assimile_requires_sasu_or_sas' } });
     const persisted = await repo.findByCompanyId('co-3');
-    expect(persisted?.socialStatus).toMatchObject({ status: 'hypothese', value: 'assimile_salarie' }); // inchangé
+    expect(persisted?.socialStatus).toMatchObject({ status: 'source_fiable', value: 'assimile_salarie' }); // inchangé
   });
 
   it('source par défaut = user_form quand non précisée', async () => {

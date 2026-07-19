@@ -120,6 +120,8 @@ import type {
   DocumentFolderDeletionExecutionView,
   RecordDocumentExpenseClientInput,
   RecordDocumentExpenseClientOutput,
+  AssignExpenseChantierClientInput,
+  AssignExpenseChantierClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
   UpdateCustomerClientInput,
@@ -146,6 +148,7 @@ import {
   decodeDocumentListItemsForCompany,
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
+import { decodeExpenseChantierAssignment } from './expense-codecs';
 import {
   decodePurchaseOrderCarrierList,
   decodePurchaseOrderCarrierView,
@@ -2129,6 +2132,9 @@ export class HttpBobClient implements BobClient {
         ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
         : {}),
       ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+      // Destination chantier CHOISIE au scan : la dépense naît imputée (le serveur prouve le
+      // chantier dans le tenant — anti-IDOR fail-closed — avant toute persistance).
+      ...(input.expense.chantierId !== undefined ? { chantierId: input.expense.chantierId } : {}),
       // Ticket déjà réglé : date + moyen uniquement — la preuve reste l'original, côté serveur.
       ...(input.expense.payment !== undefined
         ? {
@@ -2199,6 +2205,9 @@ export class HttpBobClient implements BobClient {
         ? { supplierInvoiceNumber: input.supplierInvoiceNumber }
         : {}),
       ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
+      // Imputation chantier à la création — optionnelle : le serveur prouve le chantier dans
+      // le tenant (anti-IDOR fail-closed) avant toute persistance.
+      ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
     };
     return this.req<{ id: string }>('POST', '/expenses', body, undefined, decodeExpenseCreation);
   }
@@ -2231,6 +2240,16 @@ export class HttpBobClient implements BobClient {
   }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
+  }
+  /** Impute une dépense à un chantier — ou la délie (chantierId null) : même route PUT. */
+  assignExpenseChantier(input: AssignExpenseChantierClientInput) {
+    return this.req<AssignExpenseChantierClientOutput>(
+      'PUT',
+      `/expenses/${encodeURIComponent(input.expenseId)}/chantier`,
+      { chantierId: input.chantierId },
+      undefined,
+      decodeExpenseChantierAssignment,
+    );
   }
   listCatalogueItems() {
     return this.req<readonly CatalogueItemView[]>(

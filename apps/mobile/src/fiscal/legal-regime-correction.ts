@@ -29,6 +29,14 @@ export interface CurrentLegalRegimeState {
   readonly taxRegime: FiscalTaxRegime;
   /** `undefined` = statut social pas encore connu (profil 'manquant', ex. SARL jamais posée). */
   readonly socialStatus: FiscalSocialStatus | undefined;
+  /**
+   * Versement libératoire actuel (`undefined` = 'manquant'/inconnu). REQUIS pour quitter le
+   * régime micro quand il vaut `true` : le VL n'existe qu'au micro (art. 151-0 CGI, invariant
+   * versement_liberatoire_requires_micro) — sans le solder d'abord, TOUTE écriture posant un
+   * autre régime serait rejetée par le domaine. Optionnel (compat call-sites historiques),
+   * `| undefined` explicite : les appelants passent datumValue(...) sans détour.
+   */
+  readonly versementLiberatoire?: boolean | undefined;
 }
 
 export function planLegalRegimeCorrection(
@@ -55,6 +63,15 @@ export function planLegalRegimeCorrection(
     patches.push({ field: 'socialStatus', value });
     socialStatus = value;
   };
+
+  // 0) Solder le versement libératoire AVANT de quitter le régime micro : le VL n'existe qu'au
+  //    micro — le laisser à `true` ferait rejeter chaque écriture ultérieure d'un régime non
+  //    micro (invariant versement_liberatoire_requires_micro). `false` est toujours valide, et
+  //    ce n'est pas un choix fait à la place de l'utilisateur : c'est la CONSÉQUENCE LÉGALE du
+  //    changement de régime qu'il vient de demander (papa vocal : la loi le dit, Bob l'applique).
+  if (current.versementLiberatoire === true && target.taxRegime !== 'micro') {
+    patches.push({ field: 'versementLiberatoire', value: false });
+  }
 
   const targetRequiredSocial = requiredSocialStatusFor(target.legalForm);
   const crossingCategory =

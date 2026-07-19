@@ -6,6 +6,7 @@ import {
   ok,
   type AppError,
   type ClockPort,
+  type DocumentLinkTargetPort,
   type ExpenseProps,
   type IdGeneratorPort,
   type RecordExpenseAccountingEntriesOutput,
@@ -67,6 +68,12 @@ export interface ExpenseCreationCoordinatorDependencies {
   readonly persistence: ExpenseCreationCoordinatorPersistence;
   readonly ids: IdGeneratorPort;
   readonly clock: ClockPort;
+  /**
+   * Preuve d'existence tenant-scoped d'un chantier visé (anti-IDOR, même port que le coffre).
+   * REQUISE dès qu'une création porte un `chantierId` : sans port, RecordExpense (@bob/core)
+   * refuse la création en `dependency` (fail-closed — jamais un lien non vérifié en base).
+   */
+  readonly chantierTargets?: DocumentLinkTargetPort;
 }
 
 class ExpenseCreationTransactionAborted extends Error {
@@ -234,6 +241,7 @@ export class ExpenseCreationCoordinator {
       expenses: persistence.expenses,
       ids: this.deps.ids,
       clock: this.deps.clock,
+      ...(this.deps.chantierTargets ? { chantierTargets: this.deps.chantierTargets } : {}),
     }).execute({
       ...input.expense,
       // L'identité serveur gagne sur tout champ surnuméraire forgé à l'exécution.

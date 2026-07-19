@@ -560,6 +560,34 @@ describe('quote draft shared model', () => {
     expect(state.flow.step).toBe('recap');
   });
 
+  it("accepte l'acompte par défaut des Réglages dès l'étape client — le seed d'entrée du wizard ne doit jamais échouer (spinner infini, bug fondateur 2026-07-19)", () => {
+    const seeded = value(
+      applyQuoteDraftCommand(createQuoteDraft('draft-1'), {
+        type: 'set_deposit_pct',
+        depositPct: 20,
+      }),
+    );
+    expect(seeded.flow.step).toBe('client');
+    expect(seeded.flow.draft.depositPct).toBe(20);
+  });
+
+  it("fige l'acompte une fois l'engagement entamé : refusé à l'étape signature", () => {
+    let state = value(addLine(onLines(), { lineId: 'line-1', line: LABOR, interaction: 'manual' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
+    state = value(
+      applyQuoteDraftCommand(state, {
+        type: 'set_vat',
+        context: { housingOlderThan2y: true, energyRenovation: false },
+        vatRate: 10,
+      }),
+    );
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // acompte -> signature
+    expect(
+      applyQuoteDraftCommand(state, { type: 'set_deposit_pct', depositPct: 50 }),
+    ).toMatchObject({ ok: false, error: { code: 'invalid_transition', field: 'step' } });
+  });
+
   it('refuse le second geste calculé sur une révision déjà consommée', () => {
     const initial = onLines();
     const renderedRevision = initial.revision;

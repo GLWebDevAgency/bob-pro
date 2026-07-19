@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   SystemClock,
@@ -55,7 +55,9 @@ export class RelanceService {
     private readonly logger: AppLogger,
     // Autorité d'abonnement (subscriptionFor est LE point unique, backend.service.ts) — token
     // DI = la classe, type = le port étroit : le cron ne voit QUE l'entitlement.
-    @Inject(BackendService) private readonly backend: AutoDunningEntitlements,
+    // forwardRef : BackendService injecte désormais RelanceService (action Bob envoyer_relance,
+    // M2) — le cycle DI est déclaré et résolu des deux côtés.
+    @Inject(forwardRef(() => BackendService)) private readonly backend: AutoDunningEntitlements,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_6AM)

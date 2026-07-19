@@ -19,6 +19,8 @@ import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
   type AcknowledgeDocumentActionInput,
   type AcknowledgeDocumentActionOutput,
+  type AssignExpenseChantierActionInput,
+  type AssignExpenseChantierActionOutput,
   type AttachPurchaseOrderActionInput,
   type AttachPurchaseOrderActionOutput,
   type FileDocumentActionInput,
@@ -33,6 +35,7 @@ import {
   type SendRelanceActionOutput,
   type CreateQuoteActionInput,
   type RecordExpenseActionInput,
+  type RecordExpenseSettlementDeclaration,
   type GenerateInvoiceActionInput,
   type ExportFecActionInput,
   type FecExportSummary,
@@ -267,6 +270,8 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           category?: unknown;
           documentDate?: unknown;
           vatRatePct?: unknown;
+          chantierId?: unknown;
+          payment?: unknown;
         };
         if (typeof r?.supplierName !== 'string' || r.supplierName.trim().length === 0)
           return err(appValidation('supplierName', 'Fournisseur manquant.'));
@@ -278,12 +283,55 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           return err(appValidation('documentDate', 'Date (YYYY-MM-DD) invalide.'));
         if (r.vatRatePct !== undefined && r.vatRatePct !== null && typeof r.vatRatePct !== 'number')
           return err(appValidation('vatRatePct', 'Taux de TVA invalide.'));
+        // M4 (additif) — chantier d'imputation : id canonique (l'existence tenant est prouvée
+        // par l'hôte via le core, anti-IDOR — jamais validée ici).
+        if (r.chantierId !== undefined && r.chantierId !== null) {
+          if (
+            typeof r.chantierId !== 'string' ||
+            r.chantierId.length === 0 ||
+            r.chantierId.length > 200 ||
+            r.chantierId !== r.chantierId.trim() ||
+            /[\u0000-\u001f\u007f]/.test(r.chantierId)
+          )
+            return err(appValidation('chantierId', 'Chantier d’imputation invalide.'));
+        }
+        // M4 (additif) — règlement déjà effectué déclaré à la création : la dépense naît payée
+        // avec sa preuve (mêmes exigences que enregistrer_reglement_depense : date + moyen réels).
+        let payment: RecordExpenseSettlementDeclaration | null = null;
+        if (r.payment !== undefined && r.payment !== null) {
+          if (typeof r.payment !== 'object' || Array.isArray(r.payment))
+            return err(appValidation('payment', 'Règlement déclaré invalide.'));
+          const p = r.payment as Record<string, unknown>;
+          const allowed = new Set(['paidOn', 'method', 'reference']);
+          if (Object.keys(p).some((key) => !allowed.has(key)))
+            return err(appValidation('payment', 'Champ de règlement inconnu.'));
+          if (typeof p.paidOn !== 'string' || !isValidDateOnly(p.paidOn))
+            return err(appValidation('payment.paidOn', 'Date réelle du règlement requise.'));
+          if (p.method !== 'card' && p.method !== 'transfer' && p.method !== 'cash')
+            return err(appValidation('payment.method', 'Moyen de règlement requis.'));
+          if (p.reference !== undefined && p.reference !== null) {
+            if (
+              typeof p.reference !== 'string' ||
+              !p.reference.trim() ||
+              p.reference.length > EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH ||
+              /[\u0000-\u001f\u007f]/.test(p.reference)
+            )
+              return err(appValidation('payment.reference', 'Référence de règlement invalide.'));
+          }
+          payment = {
+            paidOn: p.paidOn,
+            method: p.method,
+            ...(typeof p.reference === 'string' ? { reference: p.reference.trim() } : {}),
+          };
+        }
         return ok({
           supplierName: r.supplierName.trim(),
           totalTtcCents: r.totalTtcCents,
           category: r.category as ExpenseCategory,
           ...(typeof r.documentDate === 'string' ? { documentDate: r.documentDate } : {}),
           ...(r.vatRatePct !== undefined ? { vatRatePct: r.vatRatePct as number | null } : {}),
+          ...(r.chantierId !== undefined ? { chantierId: r.chantierId as string | null } : {}),
+          ...(payment !== null ? { payment } : {}),
         });
       },
       run: (input) => recordExpenseAction(input),
@@ -427,6 +475,57 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => recordExpensePaymentAction(input),
     };
     tools.push(enregistrerReglement as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL lier_depense_chantier (M3) : « mets la dépense Aldi sur le chantier
+  // Durand » — MÊME use case AssignExpenseToChantier (@bob/core) que PUT /expenses/:id/chantier
+  // et l'écran Dépenses. Anti-IDOR fail-closed côté core (chantier PROUVÉ dans le tenant),
+  // idempotent (changed:false sans écriture). Aucune écriture comptable, aucune dépense créée.
+  const assignExpenseChantierAction = actions.assignExpenseChantier?.bind(actions);
+  if (assignExpenseChantierAction) {
+    const lierDepenseChantier: Tool<AssignExpenseChantierActionInput, AssignExpenseChantierActionOutput> = {
+      name: 'lier_depense_chantier',
+      description:
+        'Impute une dépense existante à un chantier ouvert du tenant (rentabilité par chantier) — ou la délie (chantierId null). Même use case que l’écran Dépenses. Ne crée aucune dépense, ne touche pas aux livres.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Imputation analytique remplaçable, MAIS sans vue d'annulation vocale et elle change la
+      // rentabilité affichée par chantier : plancher de consentement — jamais liée sans
+      // confirmation, même en autonomie 'auto' (décision M3).
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<AssignExpenseChantierActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('assignment', 'Imputation invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['expenseId', 'chantierId']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('assignment', 'Champ d’imputation inconnu.'));
+        if (typeof r.expenseId !== 'string' || r.expenseId.length === 0 || r.expenseId.length > 200)
+          return err(appValidation('expenseId', 'Dépense manquante.'));
+        // null EXPLICITE = délier ; clé absente ≠ null (même contrat que PUT /expenses/:id/chantier).
+        if (!('chantierId' in r))
+          return err(appValidation('chantierId', 'Chantier requis (ou null explicite pour délier).'));
+        if (r.chantierId !== null) {
+          if (
+            typeof r.chantierId !== 'string' ||
+            r.chantierId.length === 0 ||
+            r.chantierId.length > 200 ||
+            r.chantierId !== r.chantierId.trim() ||
+            /[\u0000-\u001f\u007f]/.test(r.chantierId)
+          )
+            return err(appValidation('chantierId', 'Chantier d’imputation invalide.'));
+        }
+        return ok({ expenseId: r.expenseId, chantierId: r.chantierId as string | null });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        chantierId: output.chantierId,
+        changed: output.changed,
+      }),
+      run: (input) => assignExpenseChantierAction(input),
+    };
+    tools.push(lierDepenseChantier as AnyTool);
   }
 
   // —— Outil OPTIONNEL marquer_notifications_lues : même commande atomique que l'écran.

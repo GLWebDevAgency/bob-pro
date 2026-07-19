@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
 import {
   SendQuote,
   SignQuote,
@@ -14,6 +14,7 @@ import {
   RegisterPayment,
   RecordExpensePayment,
   RegularizeLegacyExpensePayment,
+  AssignExpenseToChantier,
   validateCompanyBillingSettingsPatch,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
@@ -52,6 +53,8 @@ import {
   GetFiscalProfile,
   UpdateFiscalProfileField,
   parseFiscalProfileFieldPatch,
+  companyVatRegimeFromFiscal,
+  type FiscalProfileDerivationInput,
   type FiscalProfileView,
   deriveOwnerPayGuidance,
   runDiagnostic,
@@ -196,6 +199,7 @@ import {
   ModelRouter,
   parseAgentAskPayload,
   type BobActions,
+  type SendRelanceActionInput,
   type AgentAskPayload,
   type AgentRun,
   type AgentAutonomy,
@@ -251,6 +255,9 @@ import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } 
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
 import { clampAgentAutonomy } from './ai/autonomy-entitlements';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+// Import circulaire assumé (RelanceService ↔ BackendService) : résolu par forwardRef des deux
+// côtés — l'action Bob envoyer_relance délègue au MÊME service que POST /invoices/:id/relance.
+import { RelanceService } from './jobs/relance.service';
 import { notificationRoute } from './notifications/notification-route';
 import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 import { ExpenseCreationCoordinator } from './expenses/expense-creation-coordinator';
@@ -793,8 +800,12 @@ interface OwnedAgentProposal {
   readonly expiresAt: string;
 }
 // Fermé par défaut : n'ajouter un outil qu'après câblage serveur ET test agent → outbox.
-// La relance manuelle est outbox-safe, mais l'adapter agent serveur n'est pas encore câblé.
-const AGENT_OUTBOX_SAFE_TOOLS = new Set(['envoyer_devis']);
+// · envoyer_devis — sendQuote enfile dans l'outbox NotificationDelivery (worker idempotent).
+// · envoyer_relance — l'adapter agent serveur (buildBobActions.sendRelance) délègue au MÊME
+//   RelanceService.sendRelanceForInvoice que POST /invoices/:id/relance : enqueue transactionnel
+//   (dedupeKey quotidienne) puis livraison par le worker — aucun réseau tiers dans la transaction.
+//   Couvert par le test /ai/ask → /ai/confirm de pont-serveur.test.ts.
+const AGENT_OUTBOX_SAFE_TOOLS = new Set(['envoyer_devis', 'envoyer_relance']);
 const VOICE_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const VOICE_AUDIO_MAX_BASE64_CHARS = Math.ceil(VOICE_AUDIO_MAX_BYTES / 3) * 4;
 const VOICE_AUDIO_MIME_TYPES = new Set([
@@ -1000,6 +1011,14 @@ export class BackendService {
     private readonly documentStorage: DocumentStoragePort = new UnavailableDocumentStorage(),
     @Optional()
     private readonly stripeBilling: StripeBillingService | null = null,
+    // M2 — action hôte envoyer_relance : MÊME service (et mêmes gardes « facture relançable /
+    // email client ») que POST /invoices/:id/relance. forwardRef : RelanceService injecte déjà
+    // BackendService (entitlement auto_dunning) — cycle DI assumé et résolu des deux côtés.
+    // Optionnel : un harness sans relances n'expose simplement pas l'action (l'outil vocal
+    // n'apparaît pas au registre — jamais un stub silencieux).
+    @Optional()
+    @Inject(forwardRef(() => RelanceService))
+    private readonly relances: RelanceService | null = null,
   ) {}
 
   private mapQuote(q: Quote): QuoteView {
@@ -1097,19 +1116,30 @@ export class BackendService {
       freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
     }).execute({ companyId });
 
-    if (!balance.ok) {
-      // Une absence d'observation n'est pas un solde observé à zéro, même pour un tenant vierge.
-      // Le client transforme cet état attendu en demande de confirmation : aucun montant ne peut
-      // ainsi traverser l'API, alimenter Bob ou être mis en cache avant sa saisie réelle.
-      if (balance.error.kind === 'not_found') return err(appUnavailable('cashflow-banking-source'));
-
+    const invoices = await this.p.invoices.listByCompany(companyId);
+    let bankBalanceCents: number;
+    let bankingSource: 'qualified_snapshot' | 'none';
+    if (balance.ok) {
+      bankBalanceCents = balance.value.amountCents;
+      bankingSource = 'qualified_snapshot';
+    } else if (balance.error.kind === 'not_found') {
+      // Tenant VIERGE (aucune observation bancaire ET aucun document financier) : état NORMAL,
+      // pas une panne — projection vide honnête à zéro marquée `bankingSource: 'none'` (contrat
+      // CashflowProjection @bob/core). Bob vocal, lui, continue de refuser d'annoncer un montant
+      // sur cet état (garde `bankingSource === 'none'` des actions computePayout/ownerPay).
+      const expenses = await this.p.expenses.listByCompany(companyId);
+      if (invoices.length > 0 || expenses.length > 0) {
+        // Dès qu'un document financier existe, une projection posée sur un zéro inventé serait
+        // un mensonge : fail-closed inchangé, le client déclenche la confirmation du solde.
+        return err(appUnavailable('cashflow-banking-source'));
+      }
+      bankBalanceCents = 0;
+      bankingSource = 'none';
+    } else {
       // Observation périmée/qualification : fail-closed inchangé (bank-balance-stale & co) —
       // une vieille vérité n'est pas une vérité, le mobile déclenche la confirmation du solde.
       return balance;
     }
-
-    const invoices = await this.p.invoices.listByCompany(companyId);
-    const bankBalanceCents = balance.value.amountCents;
 
     const receivables = deriveKnownReceivables({
       companyId,
@@ -1142,7 +1172,7 @@ export class BackendService {
       clock: this.clock,
     }).execute({ companyId, scenario, horizon });
     if (!projected.ok) return projected;
-    return ok({ ...projected.value, bankingSource: 'qualified_snapshot' });
+    return ok({ ...projected.value, bankingSource });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new QuoteCreationCoordinator({
@@ -2948,6 +2978,53 @@ export class BackendService {
             }),
         );
       },
+      // M3 — dépenses RÉCENTES (payées ou à payer) avec leur imputation chantier : la matière
+      // du ciblage vocal de lier_depense_chantier. Bornées et triées côté hôte (plus récentes
+      // d'abord) — lecture pure du tenant, jamais une dépense inventée.
+      listRecentExpenses: async () => {
+        const list = await this.p.expenses.listByCompany(this.companyId());
+        return ok(
+          list
+            .map((e) => e.toProps())
+            .sort((a, b) => b.documentDate.localeCompare(a.documentDate))
+            .slice(0, 20)
+            .map((p) => ({
+              id: p.id,
+              supplierName: p.supplierName,
+              totalTtcCents: p.totalTtcCents,
+              documentDate: p.documentDate,
+              chantierId: p.chantierId ?? null,
+            })),
+        );
+      },
+      // M3 — outil vocal lier_depense_chantier : PURE délégation au MÊME chemin que
+      // PUT /expenses/:id/chantier (assignExpenseChantier : use case AssignExpenseToChantier
+      // @bob/core, transaction + verrou pessimiste, anti-IDOR fail-closed, audit). Le plancher
+      // de confirmation vit dans le registre d'outils (@bob/ai) — l'hôte n'ajoute AUCUNE logique.
+      assignExpenseChantier: async (input) => this.assignExpenseChantier(input),
+      // M4 — dépense dictée : MÊME chemin transactionnel que POST /expenses (coordinateur E1 +
+      // idempotence + apprentissage fournisseur + anti-IDOR chantier via RecordExpense @bob/core).
+      // Source 'manual' (dictée = saisie), jamais un chemin parallèle ; un règlement déclaré fait
+      // naître la dépense payée avec sa preuve (mêmes gardes domaine que l'écran).
+      recordExpense: async (input) =>
+        this.recordExpense({
+          supplierName: input.supplierName,
+          documentDate: input.documentDate ?? this.businessToday(),
+          totalTtcCents: input.totalTtcCents,
+          category: input.category,
+          vatRatePct: input.vatRatePct ?? null,
+          source: 'manual',
+          ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
+          ...(input.payment
+            ? {
+                payment: {
+                  paidOn: input.payment.paidOn,
+                  method: input.payment.method,
+                  reference: input.payment.reference ?? null,
+                },
+              }
+            : {}),
+        }),
       // Même snapshot/cutoff et même mutation atomique que l'écran Notifications. Le cutoff est
       // persisté dans la proposition opaque : une notification arrivée après ask() reste non lue.
       previewUnreadNotifications: async () =>
@@ -2991,6 +3068,17 @@ export class BackendService {
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      // M2 (C25 ②) — envoyer_relance : ENVOI RÉEL, MÊME service et mêmes gardes que le bouton
+      // « Relancer » (POST /invoices/:id/relance → RelanceService.sendRelanceForInvoice) : ton
+      // choisi par deriveRelancePlan (@bob/core), déduplication quotidienne, refus honnête si la
+      // facture n'est pas relançable ou si l'email client manque. Sortant vers un tiers : le
+      // plancher de confirmation vit dans le registre d'outils (@bob/ai).
+      ...(this.relances
+        ? {
+            sendRelance: (input: SendRelanceActionInput) =>
+              this.relances!.sendRelanceForInvoice(this.companyId(), input.invoiceId),
+          }
+        : {}),
       // S1 (LOT 5) : RESSUSCITE generer_facture_devis — l'outil était annoncé au LLM avec un
       // handler ASK-2 complet mais MORT en prod (action absente de l'hôte). Pur câblage vers le
       // MÊME use case GenerateInvoiceFromQuote que l'UI ; le safetyFloor fiscal du registre
@@ -3612,6 +3700,9 @@ export class BackendService {
       const purchaseOrderOutcome = record.outcomes.find(
         (outcome) => outcome.tool === 'lier_bon_commande' && outcome.status === 'executed',
       );
+      const relanceOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'envoyer_relance' && outcome.status === 'executed',
+      );
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
       if (!isBatch && purchaseOrderOutcome) {
         // B8 — MÊME enchaînement que BobAgent.confirm : après le lien confirmé, la carte
@@ -3650,6 +3741,18 @@ export class BackendService {
                 ? 'Aucune notification supplémentaire n’était encore non lue au moment de la confirmation.'
                 : `${count} notification${count > 1 ? 's ont' : ' a'} été marquée${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}.`,
           },
+        });
+      }
+      if (!isBatch && relanceOutcome) {
+        // M2 — MÊME carte que BobAgent.confirm local (parité humain↔voix) : l'envoi confirmé
+        // d'une relance mérite sa carte — l'e-mail part par l'outbox, sa livraison est visible
+        // dans l'activité.
+        return ok({
+          kind: 'done',
+          intent: 'relance',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: { title: 'Relance envoyée ✓', body: `${planned[0]!.label} — c’est parti.` },
         });
       }
       if (!isBatch && quoteDeliveryStatus === 'queued') {
@@ -3820,6 +3923,11 @@ export class BackendService {
   }
 
   async listSubscriptionInvoices() {
+    // Accès anticipé (aucune variable Stripe posée → DisabledPaymentGateway) : la VÉRITÉ est
+    // « aucune facture d'abonnement » — 200 liste vide, pas une panne. Aucun webhook ne peut
+    // être vérifié dans ce mode, donc aucune facture n'a jamais pu être persistée. Le 503
+    // reste réservé aux vraies pannes quand la facturation Stripe est ACTIVE.
+    if (!this.gateway.subscriptionBillingAvailable) return ok([]);
     if (this.stripeBilling === null) return err(appUnavailable('stripe-billing'));
     try {
       const invoices = await this.stripeBilling.listSubscriptionInvoices(this.companyId());
@@ -3867,9 +3975,27 @@ export class BackendService {
     const company = await this.p.companies.findById(companyId);
     if (!company) return { ok: false, error: appNotFound('company', companyId) };
     return new GetFiscalProfile({ fiscalProfiles: this.p.fiscalProfiles }).execute({
-      company: { id: company.id, legalForm: company.legalForm, trade: company.trade },
+      company: this.fiscalDerivationInput(company),
       now: this.clock.now(),
     });
+  }
+
+  /**
+   * Phase B fiscal : la dérivation initiale reçoit TOUTE la fiche société réelle — régime TVA
+   * choisi à l'onboarding (→ 'confirme_utilisateur'), NAF/APE (affine la nature d'activité),
+   * date de création (hypothèse ACRE), n° TVA intracom (corroboration). Champs optionnels du
+   * contrat FiscalProfileDerivationInput : jamais une valeur inventée quand la fiche est muette.
+   */
+  private fiscalDerivationInput(company: Company): FiscalProfileDerivationInput {
+    return {
+      id: company.id,
+      legalForm: company.legalForm,
+      trade: company.trade,
+      vatRegime: company.vatRegime,
+      ...(company.apeCode === undefined ? {} : { nafApe: company.apeCode }),
+      ...(company.dateCreation === undefined ? {} : { dateCreation: company.dateCreation }),
+      ...(company.tvaIntracom === undefined ? {} : { tvaIntracom: company.tvaIntracom }),
+    };
   }
 
   /**
@@ -3884,13 +4010,37 @@ export class BackendService {
     const parsed = parseFiscalProfileFieldPatch(field, value);
     if (!parsed.ok) return parsed;
     const companyId = this.companyId();
-    const company = await this.p.companies.findById(companyId);
-    if (!company) return { ok: false, error: appNotFound('company', companyId) };
-    return new UpdateFiscalProfileField({ fiscalProfiles: this.p.fiscalProfiles }).execute({
-      company: { id: company.id, legalForm: company.legalForm, trade: company.trade },
-      patch: parsed.value,
-      now: this.clock.now(),
-      source: 'user_form',
+    // Écriture profil + reflet éventuel sur la fiche société dans la MÊME transaction tenant
+    // (réentrant sous l'intercepteur HTTP : ces deux écritures committent ou échouent ensemble).
+    return this.p.runInTransaction(async (): Promise<Result<FiscalProfileView, AppError>> => {
+      const company = await this.p.companies.findById(companyId);
+      if (!company) return { ok: false, error: appNotFound('company', companyId) };
+      const updated = await new UpdateFiscalProfileField({
+        fiscalProfiles: this.p.fiscalProfiles,
+      }).execute({
+        company: this.fiscalDerivationInput(company),
+        patch: parsed.value,
+        now: this.clock.now(),
+        source: 'user_form',
+      });
+      if (!updated.ok) return updated;
+      // SYNC Phase B : Company.vatRegime pilote les échéances fiscales (deriveFiscalCalendar).
+      // La confirmation/correction du régime TVA sur le profil est reflétée sur la fiche société
+      // (conversion 'reel_simplifie' → 'reel_simpl') — une divergence durable entre les deux
+      // champs serait le bug « états dupliqués ». Les AUTRES champs du profil n'y touchent pas.
+      if (parsed.value.field === 'vatRegime') {
+        const nextVatRegime = companyVatRegimeFromFiscal(parsed.value.value);
+        if (company.vatRegime !== nextVatRegime) {
+          const synced = Company.of({ ...company.toProps(), vatRegime: nextVatRegime });
+          if (!synced.ok) return err(appDomain(synced.error));
+          await this.p.companies.save(synced.value);
+          this.logger.audit('company.vat_regime_synced_from_fiscal_profile', {
+            companyId,
+            vatRegime: nextVatRegime,
+          });
+        }
+      }
+      return updated;
     });
   }
 
@@ -5592,6 +5742,9 @@ export class BackendService {
       persistence: this.p,
       ids: this.ids,
       clock: this.clock,
+      // Une dépense peut NAÎTRE imputée à un chantier (destination choisie au scan) : le core
+      // exige alors la preuve tenant-scoped du chantier (anti-IDOR, fail-closed sans ce port).
+      chantierTargets: this.documentLinkTargets(),
     });
   }
 
@@ -5873,6 +6026,45 @@ export class BackendService {
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
     const list = await this.p.expenses.listByCompany(this.companyId());
     return ok(list.map((e) => e.toProps()));
+  }
+
+  /** Impute une dépense à un chantier — ou la délie (chantierId null EXPLICITE). MÊME use case
+   * AssignExpenseToChantier (@bob/core) pour l'écran Dépenses et pour Bob (parité d'actions) :
+   * tenant scoping strict (dépense d'un autre tenant = not_found), chantier PROUVÉ dans le
+   * tenant via documentLinkTargets (anti-IDOR, fail-closed), idempotent (retry sans écriture).
+   * Transaction : le verrou pessimiste lockById sérialise deux imputations concurrentes. */
+  async assignExpenseChantier(input: {
+    expenseId: string;
+    chantierId: string | null;
+  }): Promise<Result<{ chantierId: string | null; changed: boolean }, AppError>> {
+    const companyId = this.companyId();
+    let r: Result<{ chantierId: string | null; changed: boolean }, AppError>;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const assigned = await new AssignExpenseToChantier({
+          expenses: this.p.expenses,
+          chantierTargets: this.documentLinkTargets(),
+        }).execute({
+          companyId,
+          expenseId: input.expenseId,
+          chantierId: input.chantierId,
+        });
+        if (!assigned.ok) throw new RollbackAppError(assigned.error);
+        return assigned;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
+    if (r.ok) {
+      this.logger.audit('expense.chantier_assigned', {
+        companyId,
+        expenseId: input.expenseId,
+        chantierId: r.value.chantierId,
+        changed: r.value.changed,
+      });
+    }
+    return r;
   }
 
   /** Enregistre la preuve d'un règlement fournisseur déjà exécuté hors de Bob. Date et moyen sont

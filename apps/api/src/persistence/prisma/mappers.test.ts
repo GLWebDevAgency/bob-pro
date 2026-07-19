@@ -266,7 +266,17 @@ describe('expense payment mappers — preuve BDD ou historique explicite', () =>
     source: 'manual',
     supplierInvoiceNumber: 'F-2026-42',
     dueAt: '2026-07-31',
+    chantierId: null,
   };
+
+  it('imputation chantier : round-trip fidèle, projection toujours explicite (null = hors chantier)', () => {
+    expect(expenseRowToProps(row).chantierId).toBeNull();
+    expect(expensePropsToPersistence(expenseRowToProps(row))).toMatchObject({ chantierId: null });
+
+    const assigned = expenseRowToProps({ ...row, chantierId: 'chantier-durand' });
+    expect(assigned.chantierId).toBe('chantier-durand');
+    expect(expensePropsToPersistence(assigned)).toMatchObject({ chantierId: 'chantier-durand' });
+  });
 
   it('réhydrate exactement la preuve structurée persistée', () => {
     expect(expenseRowToProps(row).paymentEvidence).toEqual({

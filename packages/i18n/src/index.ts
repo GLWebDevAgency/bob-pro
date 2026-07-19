@@ -1138,6 +1138,23 @@ const legacyFr = {
     pro: '{count} photos',
     direct: '{count} photos',
   },
+  // ── Section « Dépenses » de la fiche (imputation chantier) — filtre CLIENT sur la liste
+  // de dépenses existante (aucun endpoint dédié), total TTC simple en pied de liste. ──
+  'chantierFiche.expensesTitle': {
+    pote: 'Dépenses',
+    pro: 'Dépenses',
+    direct: 'Dépenses',
+  },
+  'chantierFiche.expensesEmpty': {
+    pote: 'Aucune dépense liée pour l’instant. Scanne un ticket et choisis ce chantier : elle comptera ici.',
+    pro: 'Aucune dépense imputée à ce chantier pour le moment.',
+    direct: 'Aucune dépense liée.',
+  },
+  'chantierFiche.expensesTotal': {
+    pote: 'Total',
+    pro: 'Total',
+    direct: 'Total',
+  },
 
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
@@ -5852,6 +5869,44 @@ const legacyFr = {
     pro: 'Consulter le justificatif de règlement',
     direct: 'Preuve',
   },
+  // ── Imputation chantier d'une dépense (rentabilité par chantier) — carte dépense et
+  // écran document (dépense liée) : lier, état lecture, délier confirmé, toasts. ──
+  'dep.chantierQuestion': {
+    pote: 'À quel chantier je mets cette dépense ?',
+    pro: 'À quel chantier imputer cette dépense ?',
+    direct: 'Quel chantier ?',
+  },
+  'dep.chantierLinkToast': {
+    pote: 'Dépense liée au chantier « {name} » ✓',
+    pro: 'Dépense imputée au chantier « {name} ».',
+    direct: '→ {name}.',
+  },
+  'dep.chantierError': {
+    pote: 'Le lien avec le chantier a raté, là. On réessaie ?',
+    pro: 'L’imputation au chantier a échoué. Veuillez réessayer.',
+    direct: 'Imputation ratée. Réessaie.',
+  },
+  // Délier = geste LÉGITIME pour une dépense (contrairement au document) — confirmé, jamais sec.
+  'dep.chantierUnlink': {
+    pote: 'Délier',
+    pro: 'Délier',
+    direct: 'Délier',
+  },
+  'dep.chantierUnlinkConfirmTitle': {
+    pote: 'Délier cette dépense du chantier ?',
+    pro: 'Délier cette dépense du chantier ?',
+    direct: 'Délier du chantier ?',
+  },
+  'dep.chantierUnlinkConfirmBody': {
+    pote: 'La dépense {supplier} ne comptera plus dans ce chantier. Tu pourras la relier quand tu veux.',
+    pro: 'La dépense {supplier} ne sera plus imputée à ce chantier. Vous pourrez la relier à tout moment.',
+    direct: '{supplier} ne comptera plus dans ce chantier.',
+  },
+  'dep.chantierUnlinkedToast': {
+    pote: 'Dépense déliée du chantier ✓',
+    pro: 'Dépense déliée du chantier.',
+    direct: 'Déliée.',
+  },
 
   // ── SCAN — statut payé/à payer proposé après lecture (bug ticket ≠ facture) ──
   'scan.settlementLabel': {
@@ -5993,6 +6048,13 @@ const legacyFr = {
     pro: 'L’original est classé dans Chantiers et rattaché à ce chantier.',
     direct: 'Chantiers + lien chantier.',
   },
+  // Variante quand l'original est un document de DÉPENSE (extraction) : le coût remonte au
+  // chantier PAR LA DÉPENSE créée imputée — l'original reste libre d'en devenir le justificatif.
+  'scan.chantierOptionDescExpense': {
+    pote: 'Je range l’original dans Chantiers et la dépense comptera sur ce chantier.',
+    pro: 'L’original est classé dans Chantiers ; la dépense sera imputée à ce chantier.',
+    direct: 'Chantiers + dépense imputée.',
+  },
   'scan.destinationError': {
     pote: 'Le classement a raté — l’original reste bien au chaud dans « À classer ».',
     pro: 'Le classement a échoué. L’original reste conservé dans « À classer ».',
@@ -6012,6 +6074,18 @@ const legacyFr = {
     pote: 'Voir le document',
     pro: 'Voir le document',
     direct: 'Voir le document',
+  },
+  // Ligne « Chantier » de la carte extraction : destination chantier choisie — la dépense
+  // naîtra imputée (chantierId transmis à la création, chantier PROUVÉ côté serveur).
+  'scan.expenseChantierLabel': {
+    pote: 'Chantier',
+    pro: 'Chantier',
+    direct: 'Chantier',
+  },
+  'scan.expenseChantierNote': {
+    pote: 'La dépense sera créée directement sur ce chantier',
+    pro: 'La dépense sera imputée à ce chantier dès sa création.',
+    direct: 'Dépense imputée à ce chantier.',
   },
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────

@@ -230,6 +230,7 @@ export * from './application/fiscal/derive-urssaf-provision';
 
 // Profil fiscal & référentiel temporel (BOB EXPERT FISCAL, Phase 1A — SPEC_EXPERT_FISCAL.md §V2)
 export * from './domain/fiscal/fiscal-profile';
+export * from './domain/fiscal/fiscal-field-rules';
 export * from './domain/fiscal/referentiel';
 export * from './application/ports/fiscal-profile-repository';
 export * from './application/fiscal/get-fiscal-profile';

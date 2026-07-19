@@ -46,7 +46,7 @@ import {
 } from '../../src/documents/document-insight-card.logic';
 import { useApplyDestination } from '../../src/documents/use-apply-destination';
 import { linkChantierOptions, linkedChantierName } from '../../src/documents/link-chantier-options';
-import { useChantiers } from '../../src/data/hooks';
+import { useAssignExpenseChantier, useChantiers, useExpenses } from '../../src/data/hooks';
 import { useTheme } from '../../src/theme';
 import { Button, Card, SectionHeader, font } from '../../src/components/ui';
 import { ErrorRetry, IconTile, PressableScale, QuestionSheet, Sheet, Skeleton, SkeletonCard, SkeletonRow, Toast } from '@bob/ui';
@@ -128,11 +128,18 @@ export default function DocumentDetailScreen() {
   });
 
   // « Lier à un chantier » — chantiers réels chargés seulement quand le geste (ou l'état
-  // lecture « Chantier · {nom} ») peut exister : doc sans lien métier, ou déjà lié chantier.
+  // lecture « Chantier · {nom} ») peut exister : doc sans lien métier, lié chantier, ou lié
+  // à une DÉPENSE (le lien chantier se pose alors sur la dépense — le coût remonte par elle).
   const documentLinkedType = document.data?.linkedEntityType ?? null;
   const chantiers = useChantiers(
-    document.data !== undefined && (documentLinkedType === null || documentLinkedType === 'chantier'),
+    document.data !== undefined
+      && (documentLinkedType === null || documentLinkedType === 'chantier' || documentLinkedType === 'expense'),
   );
+  // Document lié à une DÉPENSE : la ligne « Lier à un chantier » impute LA DÉPENSE
+  // (AssignExpenseToChantier — le sens métier : le coût remonte au chantier par la dépense,
+  // jamais par un second lien document↔chantier qui écraserait la preuve 'expense').
+  const expenses = useExpenses(document.data !== undefined && documentLinkedType === 'expense');
+  const assignExpenseChantier = useAssignExpenseChantier();
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkToast, setLinkToast] = useState<string | null>(null);
   const [linkError, setLinkError] = useState(false);
@@ -410,6 +417,13 @@ export default function DocumentDetailScreen() {
   const linkedChantier = item.linkedEntityType === 'chantier'
     ? linkedChantierName(chantiers.data ?? [], item.linkedEntityId)
     : null;
+  // Dépense liée à ce document (justificatif) — introuvable tant que la liste n'est pas
+  // fraîche : l'affordance n'apparaît alors pas, jamais un id deviné.
+  const linkedExpense = item.linkedEntityType === 'expense' && item.linkedEntityId !== null
+    ? (expenses.data ?? []).find((expense) => expense.id === item.linkedEntityId) ?? null
+    : null;
+  const linkedExpenseChantierId = linkedExpense?.chantierId ?? null;
+  const linkedExpenseChantierName = linkedChantierName(chantiers.data ?? [], linkedExpenseChantierId);
 
   const confirmDocument = (): void => {
     if (acknowledge.isPending) return;
@@ -644,7 +658,9 @@ export default function DocumentDetailScreen() {
             · doc SANS lien → « Lier à un chantier » (feuille des chantiers ouverts réels) ;
             · doc déjà lié chantier → état LECTURE « Chantier · {nom} », ouvre le chantier —
               pas de changement ni de déliaison en V1 (aucun geste dédié côté domaine) ;
-            · doc lié à une autre entité (dépense, facture…) → rien : on n'écrase jamais. */}
+            · doc lié à une DÉPENSE → la même ligne impute LA DÉPENSE (AssignExpenseToChantier,
+              le coût remonte au chantier par elle — le lien 'expense' n'est jamais écrasé) ;
+            · doc lié à une autre entité (facture…) → rien : on n'écrase jamais. */}
         {item.linkedEntityType === null && linkOptions.length > 0 ? (
           <>
             <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
@@ -689,10 +705,72 @@ export default function DocumentDetailScreen() {
               <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
             </PressableScale>
           </>
+        ) : item.linkedEntityType === 'expense' ? (
+          // Document lié à une DÉPENSE : la ligne pose le lien SUR LA DÉPENSE (le coût
+          // remonte au chantier par elle) — état lecture quand la dépense est déjà imputée.
+          expenses.isLoading ? (
+            <>
+              <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+              <View
+                accessibilityRole="progressbar"
+                accessibilityLiveRegion="polite"
+                accessibilityLabel={t('docs.linkChantierCta', { personality })}
+                style={{ minHeight: 48, justifyContent: 'center', marginTop: 8 }}
+              >
+                <Skeleton width={156} height={14} radius={7} />
+              </View>
+            </>
+          ) : linkedExpense === null ? null : linkedExpenseChantierId !== null ? (
+            <>
+              <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+              <PressableScale
+                accessibilityRole="button"
+                accessibilityLabel={linkedExpenseChantierName !== null
+                  ? t('docs.linkChantierLinkedA11y', { personality, params: { name: linkedExpenseChantierName } })
+                  : t('docs.linkChantierLinkedUnknown', { personality })}
+                onPress={() => router.push(`/chantier/${linkedExpenseChantierId}`)}
+                style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
+              >
+                <IconTile tone="b2b" size={40} radius={12}>
+                  <FolderSmallIcon color={semantic.b2b} size={19} />
+                </IconTile>
+                <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]} numberOfLines={1}>
+                  {linkedExpenseChantierName !== null
+                    ? t('docs.linkChantierLinked', { personality, params: { name: linkedExpenseChantierName } })
+                    : t('docs.linkChantierLinkedUnknown', { personality })}
+                </Text>
+                <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+              </PressableScale>
+            </>
+          ) : linkOptions.length > 0 ? (
+            <>
+              <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+              <PressableScale
+                accessibilityRole="button"
+                accessibilityLabel={t('docs.linkChantierCta', { personality })}
+                disabled={assignExpenseChantier.isPending}
+                onPress={() => {
+                  setLinkError(false);
+                  setLinkOpen(true);
+                }}
+                style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
+              >
+                <IconTile tone="b2b" size={40} radius={12}>
+                  <FolderSmallIcon color={semantic.b2b} size={19} />
+                </IconTile>
+                <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]}>
+                  {t('docs.linkChantierCta', { personality })}
+                </Text>
+                <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+              </PressableScale>
+            </>
+          ) : null
         ) : null}
         {linkError ? (
           <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 10 }]}>
-            {t('docs.linkChantierError', { personality })}
+            {item.linkedEntityType === 'expense'
+              ? t('dep.chantierError', { personality })
+              : t('docs.linkChantierError', { personality })}
           </Text>
         ) : null}
       </Card>
@@ -922,11 +1000,15 @@ export default function DocumentDetailScreen() {
       </Sheet>
 
       {/* Sélection du chantier — chantiers OUVERTS réels, suggestion d'analyse en tête,
-          choix unique CONFIRMÉ (confirmSingle, pattern scan) : plus aucun lien au tap sec. */}
+          choix unique CONFIRMÉ (confirmSingle, pattern scan) : plus aucun lien au tap sec.
+          Deux cibles selon le lien du document : le DOCUMENT (ClassifyDocument) ou LA
+          DÉPENSE liée (AssignExpenseToChantier — le coût remonte au chantier par elle). */}
       <QuestionSheet
         visible={linkOpen}
         header={t('docs.linkChantierHeader', { personality })}
-        question={t('docs.linkChantierQuestion', { personality })}
+        question={item.linkedEntityType === 'expense'
+          ? t('dep.chantierQuestion', { personality })
+          : t('docs.linkChantierQuestion', { personality })}
         options={linkOptions.map((option) => ({
           value: option.chantierId,
           label: option.name,
@@ -940,10 +1022,24 @@ export default function DocumentDetailScreen() {
         onClose={() => setLinkOpen(false)}
         onSelect={(values) => {
           const picked = linkOptions.find((option) => option.chantierId === values[0]);
-          if (!picked || linkChantier.isPending) return;
-          // La feuille se ferme d'abord (pattern scan), puis le lien s'exécute — le CAS de
-          // révision du use case refuse tout écrasement si le document a changé entre-temps.
+          if (!picked) return;
+          // La feuille se ferme d'abord (pattern scan), puis le geste s'exécute.
+          if (item.linkedEntityType === 'expense') {
+            if (!linkedExpense || assignExpenseChantier.isPending) return;
+            setLinkOpen(false);
+            assignExpenseChantier.mutate(
+              { expenseId: linkedExpense.id, chantierId: picked.chantierId },
+              {
+                onSuccess: () =>
+                  setLinkToast(t('dep.chantierLinkToast', { personality, params: { name: picked.name } })),
+                onError: () => setLinkError(true),
+              },
+            );
+            return;
+          }
+          if (linkChantier.isPending) return;
           setLinkOpen(false);
+          // Le CAS de révision du use case refuse tout écrasement si le document a changé.
           linkChantier.mutate({
             documentId: item.id,
             chantierId: picked.chantierId,

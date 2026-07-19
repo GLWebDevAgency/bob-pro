@@ -33,6 +33,12 @@ export interface QuestionSheetProps {
    * Ignoré en `multiSelect` (qui confirme déjà).
    */
   readonly confirmSingle?: boolean;
+  /**
+   * Mutation en vol (opt-in) : le bouton de validation passe en chargement et les taps
+   * (options comme validation) sont ignorés — jamais deux séquences entrelacées depuis la
+   * même feuille. Compat ascendante : absent = comportement historique.
+   */
+  readonly busy?: boolean;
   /** Libellé du bouton de validation (multi ou choix unique confirmé) — i18n côté app. */
   readonly confirmLabel: string;
   /** Libellé du geste d'échappement « autre / préciser » — i18n côté app. */
@@ -53,6 +59,7 @@ export function QuestionSheet({
   options,
   multiSelect = false,
   confirmSingle = false,
+  busy = false,
   confirmLabel,
   otherLabel,
   onClose,
@@ -70,6 +77,7 @@ export function QuestionSheet({
   }, [visible, question]);
 
   const toggle = (value: string): void => {
+    if (busy) return; // mutation en vol : aucun nouveau plan depuis un état périmé.
     const result = toggleQuestionOption(picked, value, mode);
     setPicked(result.picked);
     if (result.committed) onSelect([...result.picked]);
@@ -175,7 +183,8 @@ export function QuestionSheet({
             title={confirmLabel}
             variant="ai"
             radius={14}
-            disabled={picked.size === 0}
+            disabled={picked.size === 0 || busy}
+            loading={busy}
             onPress={() => onSelect([...picked])}
           />
         </View>

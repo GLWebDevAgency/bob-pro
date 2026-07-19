@@ -438,13 +438,20 @@ export default function DevisNew() {
       setBillingDefaultsReady(true);
       return;
     }
+    // Chargement/erreur des Réglages : le gate d'écran ci-dessous affiche spinner OU ErrorRetry
+    // (la politique de retry bornée garantit qu'une query en échec finit toujours en isError).
     const prefs = billingPrefs.prefs;
     if (prefs === null) return;
     const applied = quoteDraft.applyAtRevision(
       { type: 'set_deposit_pct', depositPct: prefs.defaultDepositPercent },
       quoteDraft.state.revision,
     );
-    if (!applied.ok) return;
+    // SORTIE GARANTIE du spinner (bug fondateur 2026-07-19 : le seed échouait en
+    // invalid_transition — set_deposit_pct n'était accepté qu'à l'étape acompte — et l'écran
+    // restait en chargement À VIE, sans erreur ni contenu). Un conflit de révision se rejoue
+    // seul (la révision est une dépendance de cet effet) ; tout autre refus définitif dégrade
+    // honnêtement sur l'acompte par défaut de la machine plutôt que d'emmurer l'utilisateur.
+    if (!applied.ok && applied.error.code === 'revision_conflict') return;
     billingDefaultsApplied.current = true;
     setBillingDefaultsReady(true);
   }, [billingPrefs.prefs, freshnessReady, quoteDraft.state.revision, resumeRequested]);

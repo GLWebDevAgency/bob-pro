@@ -1,6 +1,7 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type Instant, type DateOnly } from '../../shared-kernel/time';
-import { type LegalForm, type Trade } from '../company/company';
+import { type LegalForm, type Trade, type VatRegime as CompanyVatRegime } from '../company/company';
+import { nafToTrade } from '../company/naf-to-trade';
 import { microCategoryFromTrade } from './micro-social';
 
 /**
@@ -30,13 +31,19 @@ import { microCategoryFromTrade } from './micro-social';
  */
 export type FiscalDatumStatus = 'source_fiable' | 'confirme_utilisateur' | 'hypothese' | 'manquant';
 
-/** D'où vient la valeur — traçabilité minimale (voix/formulaire/dérivation/source externe). */
+/**
+ * D'où vient la valeur — traçabilité minimale (voix/formulaire/dérivation/source externe).
+ * · derived_naf_ape — déduite du code NAF/APE INSEE (quand le métier Bob seul ne suffit pas).
+ * · derived_date_creation — déduite de la date de création d'entreprise (ex. hypothèse ACRE).
+ */
 export type FiscalDatumSource =
   | 'insee_siret'
   | 'user_voice'
   | 'user_form'
   | 'derived_legal_form'
   | 'derived_trade'
+  | 'derived_naf_ape'
+  | 'derived_date_creation'
   | 'system_default';
 
 /**
@@ -138,7 +145,10 @@ export type FiscalProfileFieldPatch =
   | { readonly field: 'versementLiberatoire'; readonly value: boolean }
   | { readonly field: 'fiscalYearEnd'; readonly value: FiscalYearEnd | null };
 
-export const FISCAL_PROFILE_FIELDS: readonly FiscalProfileFieldPatch['field'][] = [
+/** Nom d'un champ du profil fiscal (union stable, consommée par l'UI et fiscal-field-rules). */
+export type FiscalProfileField = FiscalProfileFieldPatch['field'];
+
+export const FISCAL_PROFILE_FIELDS: readonly FiscalProfileField[] = [
   'legalForm',
   'taxRegime',
   'socialStatus',
@@ -215,6 +225,31 @@ function validateFiscalProfileInvariants(p: FiscalProfileProps): DomainResult<vo
   return ok(undefined);
 }
 
+/**
+ * Invalidation du marqueur « versement libératoire non applicable » à l'ENTRÉE en contexte micro.
+ *
+ * La dérivation initiale pose, hors contexte micro, versementLiberatoire = false en
+ * 'source_fiable'/'derived_legal_form' : un simple marqueur « non applicable » (le VL n'existe
+ * qu'au régime micro, art. 151-0 CGI) qui permet à l'UI de MASQUER le champ. Si le profil entre
+ * ensuite en contexte micro (régime fiscal 'micro' ou forme 'micro'), ce marqueur devient un
+ * MENSONGE juridique : pour un micro-entrepreneur, le VL est une OPTION ouverte (il a pu
+ * l'exercer auprès de l'URSSAF), pas une interdiction légale — l'afficher « Non — imposé par la
+ * loi » serait faux et exclurait la question. Le marqueur repasse donc à 'manquant' : la question
+ * est posée, jamais une valeur présumée. Une valeur CONFIRMÉE par l'utilisateur n'est jamais
+ * touchée (seul le marqueur dérivé — statut 'source_fiable' + source 'derived_legal_form' +
+ * valeur false — est concerné). Idempotent, ne peut jamais rendre le profil invalide ('manquant'
+ * ne déclenche aucun invariant).
+ */
+function invalidateVlNonApplicableEnMicro(p: FiscalProfileProps): FiscalProfileProps {
+  const microContext = datumValue(p.legalForm) === 'micro' || datumValue(p.taxRegime) === 'micro';
+  if (!microContext) return p;
+  const vl = p.versementLiberatoire;
+  const estMarqueurNonApplicable =
+    vl.status === 'source_fiable' && vl.source === 'derived_legal_form' && vl.value === false;
+  if (!estMarqueurNonApplicable) return p;
+  return { ...p, versementLiberatoire: manquant() };
+}
+
 export class FiscalProfile {
   private constructor(private readonly p: FiscalProfileProps) {}
 
@@ -256,12 +291,14 @@ export class FiscalProfile {
    * Applique UN patch de champ : statut forcé à 'confirme_utilisateur' (c'est la définition même
    * d'une mise à jour explicite — dérivations/imports utilisent les constructeurs FiscalDatum
    * directement, pas ce chemin), re-valide les invariants, rejette avec l'erreur domaine si le
-   * profil devient incohérent (le champ n'est alors PAS modifié).
+   * profil devient incohérent (le champ n'est alors PAS modifié). Le marqueur « VL non
+   * applicable » est invalidé si le patch fait ENTRER le profil en contexte micro
+   * (invalidateVlNonApplicableEnMicro) — la question du versement libératoire redevient posée.
    */
   withField(patch: FiscalProfileFieldPatch, updatedAt: Instant, source?: FiscalDatumSource): DomainResult<FiscalProfile> {
     const datum = confirmeUtilisateur(patch.value, updatedAt, source);
     const next: FiscalProfileProps = { ...this.p, [patch.field]: datum };
-    return FiscalProfile.of(next);
+    return FiscalProfile.of(invalidateVlNonApplicableEnMicro(next));
   }
 
   /** Snapshot de persistance/API (réhydratation via FiscalProfile.of). */
@@ -274,11 +311,43 @@ export type FiscalProfileView = FiscalProfileProps;
 
 // ── Dérivation initiale (jamais 'confirme_utilisateur') ─────────────────────────
 
-/** Entrée minimale requise pour dériver un profil initial — pas un couplage à la classe Company. */
+/**
+ * Entrée requise pour dériver un profil initial — pas un couplage à la classe Company.
+ *
+ * COMPAT ASCENDANTE DE CONTRAT (typage + appel) : seuls `id`/`legalForm`/`trade` sont requis —
+ * tous les autres champs sont OPTIONNELS ; un appelant existant qui ne passe que le trio minimal
+ * compile et dérive sans modification. ATTENTION, ce n'est PAS une compat de VALEURS : cette
+ * version ENRICHIT volontairement la dérivation, y compris pour l'entrée minimale —
+ * · statut social des formes sans ambiguïté posé 'source_fiable' (certitude juridique, avant :
+ *   'hypothese') ;
+ * · nature d'activité dérivée du métier pour TOUTES les formes (avant : seulement micro,
+ *   'manquant' sinon) ;
+ * · versement libératoire posé « non applicable » (false, 'source_fiable') hors contexte micro
+ *   (avant : 'manquant').
+ * Les valeurs restées identiques (régime fiscal, exercice, activité micro, TVA, ACRE sans date)
+ * sont verrouillées par le bloc de test « compat ascendante » de fiscal-profile.test.ts ; les
+ * enrichissements ont leurs propres tests. Les profils déjà persistés ne sont jamais re-dérivés.
+ */
 export interface FiscalProfileDerivationInput {
   readonly id: string;
   readonly legalForm: LegalForm;
   readonly trade: Trade;
+  /**
+   * Régime TVA choisi à l'ONBOARDING (nomenclature Company — orthographe abrégée 'reel_simpl',
+   * convertie ici vers 'reel_simplifie'). Fourni → posé 'confirme_utilisateur' : c'est un CHOIX
+   * explicite de l'utilisateur, pas une déduction.
+   */
+  readonly vatRegime?: CompanyVatRegime;
+  /** Code NAF/APE INSEE (ex. '43.22A') — affine la nature d'activité quand le métier ne suffit pas. */
+  readonly nafApe?: string;
+  /** Date de création de l'entreprise (fiche annuaire) — pilote l'hypothèse ACRE (< 12 mois). */
+  readonly dateCreation?: DateOnly;
+  /**
+   * N° TVA intracommunautaire — signal de CORROBORATION seulement, AUCUNE dérivation v1 : une
+   * entreprise en franchise (art. 293 B CGI) peut détenir un n° intracom (acquisitions UE), en
+   * déduire un régime réel serait une déduction hasardeuse. Conservé au point d'extension.
+   */
+  readonly tvaIntracom?: string;
 }
 
 const MICRO_CATEGORY_TO_ACTIVITY_NATURE: Record<ReturnType<typeof microCategoryFromTrade>['category'], FiscalActivityNature> = {
@@ -288,78 +357,230 @@ const MICRO_CATEGORY_TO_ACTIVITY_NATURE: Record<ReturnType<typeof microCategoryF
   liberale_reglementee_cipav: 'bnc_cipav',
 };
 
+/** Conversion d'orthographe Company → profil fiscal (nomenclatures volontairement découplées). */
+const COMPANY_VAT_REGIME_TO_FISCAL: Record<CompanyVatRegime, FiscalVatRegime> = {
+  franchise: 'franchise',
+  reel_simpl: 'reel_simplifie',
+  reel_normal: 'reel_normal',
+};
+
 /**
- * Pose les HYPOTHÈSES initiales du profil fiscal à partir de la forme juridique (fiche INSEE/
- * SIRET, déjà 'source_fiable' sur Company) — JAMAIS 'confirme_utilisateur' : toute dérivation
- * reste une hypothèse à confirmer, sauf `legalForm` lui-même qui est recopié 'source_fiable'
- * (c'est une donnée DÉJÀ établie sur Company, pas une déduction propre au profil fiscal).
+ * Conversion inverse profil fiscal → Company ('reel_simplifie' → 'reel_simpl') — SYNC Phase B :
+ * Company.vatRegime pilote les échéances fiscales (deriveFiscalCalendar) ; quand l'utilisateur
+ * confirme/corrige le régime TVA sur son profil, la fiche société doit refléter la même vérité
+ * dans la même transaction tenant — une divergence durable entre les deux champs serait le bug
+ * « états dupliqués ».
+ */
+export function companyVatRegimeFromFiscal(regime: FiscalVatRegime): CompanyVatRegime {
+  const inverse: Record<FiscalVatRegime, CompanyVatRegime> = {
+    franchise: 'franchise',
+    reel_simplifie: 'reel_simpl',
+    reel_normal: 'reel_normal',
+  };
+  return inverse[regime];
+}
+
+/**
+ * Métier Bob → nature d'activité fiscale HORS régime micro (au réel/IS, la ventilation BIC/BNC
+ * ne pilote plus l'impôt de la société mais reste utile — toujours 'hypothese', jamais
+ * 'source_fiable'). Artisans du bâtiment : vente de matériaux + pose → 'mixte' PRUDENT (la
+ * dominante ventes/services est inconnaissable sans la comptabilité — on ne tranche pas à sa
+ * place). Métiers intellectuels (conseil, IT, photo, coaching) → BNC (l'hypothèse la plus
+ * fréquente en indépendant — un NAF 62.x/70.x reste BIC possible, d'où le statut hypothèse).
+ * 'autre' → null : aucune base prudente sans NAF (le repli BNC « taux le plus haut » du micro
+ * est un raisonnement de PROVISION, sans objet hors micro).
+ */
+const TRADE_TO_ACTIVITY_NATURE_HORS_MICRO: Record<Trade, FiscalActivityNature | null> = {
+  plombier: 'mixte',
+  electricien: 'mixte',
+  macon: 'mixte',
+  peintre: 'mixte',
+  paysagiste: 'mixte',
+  consultant: 'bnc',
+  freelance_it: 'bnc',
+  photographe: 'bnc',
+  coach: 'bnc',
+  autre: null,
+};
+
+/**
+ * Division NAF (2 premiers chiffres) → nature d'activité, REPLI quand ni le métier Bob ni
+ * nafToTrade ne concluent. Volontairement courte et prudente :
+ * · 41/42/43 (construction) → mixte (fournitures + pose) ;
+ * · 45/46/47 (commerce) → bic_vente ;
+ * · 62/63 (informatique) et 69/70/71/73/74 (activités spécialisées, conseil) → bnc — « souvent
+ *   BNC en EI, BIC possible » : c'est exactement pourquoi le statut reste 'hypothese'.
+ */
+const NAF_DIVISION_TO_ACTIVITY_NATURE: Readonly<Record<string, FiscalActivityNature>> = {
+  '41': 'mixte',
+  '42': 'mixte',
+  '43': 'mixte',
+  '45': 'bic_vente',
+  '46': 'bic_vente',
+  '47': 'bic_vente',
+  '62': 'bnc',
+  '63': 'bnc',
+  '69': 'bnc',
+  '70': 'bnc',
+  '71': 'bnc',
+  '73': 'bnc',
+  '74': 'bnc',
+};
+
+/**
+ * Métier EFFECTIF de la dérivation : le métier Bob déclaré s'il est spécifique, sinon celui que
+ * le code NAF permet de reconnaître (nafToTrade). La source tracée suit le chemin réellement
+ * emprunté ('derived_trade' vs 'derived_naf_ape') — traçabilité honnête, jamais décorative.
+ */
+function resolveEffectiveTrade(input: FiscalProfileDerivationInput): {
+  readonly trade: Trade;
+  readonly source: Extract<FiscalDatumSource, 'derived_trade' | 'derived_naf_ape'>;
+} {
+  if (input.trade !== 'autre') return { trade: input.trade, source: 'derived_trade' };
+  const fromNaf = nafToTrade(input.nafApe);
+  if (fromNaf !== null) return { trade: fromNaf, source: 'derived_naf_ape' };
+  return { trade: 'autre', source: 'derived_trade' };
+}
+
+/**
+ * Nature d'activité dérivée pour TOUTES les formes (plus seulement micro) :
+ * · micro → nomenclature URSSAF via microCategoryFromTrade (inchangé — la provision micro-social
+ *   en dépend), affinée par le NAF quand le métier est 'autre' ;
+ * · autres formes → TRADE_TO_ACTIVITY_NATURE_HORS_MICRO, puis repli division NAF, sinon
+ *   'manquant' (jamais une nature inventée).
+ * TOUJOURS 'hypothese' : même en société, la ventilation BIC/BNC reste à confirmer.
+ */
+function deriveActivityNature(input: FiscalProfileDerivationInput, now: Instant): FiscalDatum<FiscalActivityNature> {
+  const effective = resolveEffectiveTrade(input);
+  if (input.legalForm === 'micro') {
+    const guess = microCategoryFromTrade(effective.trade);
+    return hypothese(MICRO_CATEGORY_TO_ACTIVITY_NATURE[guess.category], now, effective.source);
+  }
+  const fromTrade = TRADE_TO_ACTIVITY_NATURE_HORS_MICRO[effective.trade];
+  if (fromTrade !== null) return hypothese(fromTrade, now, effective.source);
+  const division = input.nafApe?.replace(/\s/g, '').slice(0, 2);
+  const fromDivision = division === undefined ? undefined : NAF_DIVISION_TO_ACTIVITY_NATURE[division];
+  if (fromDivision !== undefined) return hypothese(fromDivision, now, 'derived_naf_ape');
+  return manquant();
+}
+
+/**
+ * Régime TVA du profil : le CHOIX d'onboarding (Company.vatRegime) prime — 'confirme_utilisateur'
+ * (l'utilisateur l'a explicitement sélectionné), orthographe convertie. À défaut : franchise en
+ * hypothèse pour le micro (inchangé — la plupart des créateurs micro démarrent sous le seuil,
+ * art. 293 B CGI), 'manquant' sinon.
+ */
+function deriveVatRegime(input: FiscalProfileDerivationInput, now: Instant): FiscalDatum<FiscalVatRegime> {
+  if (input.vatRegime !== undefined) {
+    return confirmeUtilisateur(COMPANY_VAT_REGIME_TO_FISCAL[input.vatRegime], now, 'user_form');
+  }
+  if (input.legalForm === 'micro') return hypothese('franchise', now, 'derived_legal_form');
+  return manquant();
+}
+
+/**
+ * « Moins de 12 mois » entre la date de création et maintenant — arithmétique calendaire pure
+ * sur chaînes ISO (la borne exacte des 12 mois est traitée comme ≥ 12 mois : prudence).
+ */
+function isUnderTwelveMonths(dateCreation: DateOnly, now: Instant): boolean {
+  const nowDate = now.slice(0, 10);
+  const oneYearBefore = `${Number(nowDate.slice(0, 4)) - 1}${nowDate.slice(4)}`;
+  return dateCreation > oneYearBefore;
+}
+
+/**
+ * Hypothèse ACRE depuis la date de création (art. L.131-6-4 CSS) — nuance clé :
+ * · l'ACRE est AUTOMATIQUE pour les créateurs hors micro (sociétés, EI au réel) éligibles depuis
+ *   2019 → création < 12 mois : hypothese({granted: true, startDate}) ;
+ * · elle est SUR DEMANDE pour les micro-entrepreneurs (formulaire dans les 45 jours) → jamais
+ *   présumée accordée : 'manquant', la question est posée à l'utilisateur ;
+ * · création ≥ 12 mois (toutes formes) : hypothese({granted: false}) — la fenêtre d'exonération
+ *   (acreWindow, ≈ 12 mois max) est de toute façon échue.
+ * Sans date de création : 'manquant' — jamais une hypothèse sans base.
+ */
+function deriveAcre(input: FiscalProfileDerivationInput, now: Instant): FiscalDatum<AcreInfo> {
+  if (input.dateCreation === undefined) return manquant();
+  if (isUnderTwelveMonths(input.dateCreation, now)) {
+    if (input.legalForm === 'micro') return manquant();
+    return hypothese({ granted: true, startDate: input.dateCreation }, now, 'derived_date_creation');
+  }
+  return hypothese({ granted: false }, now, 'derived_date_creation');
+}
+
+/**
+ * Pose le profil fiscal INITIAL à partir de la fiche entreprise — JAMAIS 'confirme_utilisateur'
+ * (sauf le régime TVA quand il vient du CHOIX d'onboarding : c'est une saisie utilisateur, pas
+ * une déduction). Trois niveaux de certitude, jamais confondus :
+ * · 'source_fiable' — recopie d'une donnée établie (legalForm, INSEE/SIRET) OU certitude
+ *   JURIDIQUE découlant mécaniquement de la forme (une règle de droit, pas une probabilité) ;
+ * · 'hypothese' — dérivation prudente à confirmer ;
+ * · 'manquant' — aucune base pour dériver : la question sera posée, jamais une valeur inventée.
  *
- * Correspondances (prudentes, l'utilisateur confirme) :
- * · micro → régime micro, statut TNS, TVA franchise (hypothèse basse — la plupart des créateurs
- *   micro démarrent sous le seuil), activité dérivée du métier (microCategoryFromTrade).
- * · EI (hors micro) → régime réel IR (par défaut, art. 50-0 CGI a contrario), statut TNS.
- * · EURL → régime réel IR (régime par défaut du gérant associé unique, option IS possible),
- *   statut TNS (gérant associé unique).
- * · SASU → IS (régime par défaut des sociétés par actions), assimilé salarié (art. L311-3 CSS).
- * · SAS → IS, assimilé salarié (le président, quelle que soit la répartition du capital).
- * · SARL → IS (régime par défaut) ; statut social du gérant AMBIGU (majoritaire=TNS,
+ * Correspondances par forme :
+ * · micro → régime micro (hypothèse — l'utilisateur confirme le couple forme+régime), TNS en
+ *   SOURCE_FIABLE (l'entrepreneur individuel est toujours travailleur indépendant, art. L611-1/
+ *   L613-1 CSS), TVA franchise (hypothèse basse) sauf choix d'onboarding fourni, activité
+ *   dérivée du métier (microCategoryFromTrade, affinée par le NAF si le métier est 'autre').
+ * · EI (au réel) → régime réel IR (hypothèse — par défaut, art. 50-0 CGI a contrario), TNS en
+ *   SOURCE_FIABLE (même certitude que micro).
+ * · EURL → régime réel IR (hypothèse — défaut du gérant associé unique, option IS possible),
+ *   TNS en SOURCE_FIABLE (gérant associé unique = travailleur indépendant, art. L611-1 CSS).
+ * · SASU/SAS → IS (hypothèse — régime par défaut, une option IR temporaire existe), assimilé
+ *   salarié en SOURCE_FIABLE : le président de SAS/SASU est TOUJOURS assimilé salarié quelle que
+ *   soit sa part au capital (art. L311-3, 11° CSS) — certitude juridique, pas une hypothèse.
+ * · SARL → IS (hypothèse) ; statut social du gérant réellement AMBIGU (majoritaire=TNS,
  *   minoritaire=assimilé) → 'manquant', jamais une hypothèse à 50/50.
- * `versementLiberatoire`/`acre`/`vatRegime`/`fiscalYearEnd` : jamais présumés positifs — 'manquant'
- * sauf quand une hypothèse prudente existe (micro : VL non présumé, franchise TVA présumée,
- * année civile présumée).
+ * Champs transverses :
+ * · vatRegime → deriveVatRegime (choix d'onboarding prioritaire, converti 'reel_simpl'→
+ *   'reel_simplifie') ; activityNature → deriveActivityNature (toutes formes) ;
+ * · acre → deriveAcre (date de création : automatique hors micro < 12 mois, SUR DEMANDE en
+ *   micro → question posée) ;
+ * · versementLiberatoire → hors forme micro : false en SOURCE_FIABLE ('derived_legal_form') —
+ *   le VL n'existe qu'au régime micro (art. 151-0 CGI), poser « non applicable » permet à l'UI
+ *   de MASQUER le champ (applicableFiscalFields) au lieu d'afficher « manquant ». Si le profil
+ *   entre plus tard en contexte micro, withField repasse ce marqueur à 'manquant'
+ *   (invalidateVlNonApplicableEnMicro) : le champ redevient une vraie question, jamais un
+ *   faux « Non — imposé par la loi » ;
+ * · fiscalYearEnd → année civile en hypothèse (inchangé).
  */
 export function buildInitialFiscalProfile(company: FiscalProfileDerivationInput, now: Instant): FiscalProfile {
-  const base: Omit<FiscalProfileProps, 'taxRegime' | 'socialStatus' | 'activityNature' | 'vatRegime' | 'fiscalYearEnd'> = {
+  const base: Omit<FiscalProfileProps, 'taxRegime' | 'socialStatus'> = {
     companyId: company.id,
     legalForm: sourceFiable(company.legalForm, now, 'insee_siret'),
-    acre: manquant(),
-    versementLiberatoire: manquant(),
+    activityNature: deriveActivityNature(company, now),
+    vatRegime: deriveVatRegime(company, now),
+    acre: deriveAcre(company, now),
+    versementLiberatoire:
+      company.legalForm === 'micro' ? manquant<boolean>() : sourceFiable(false, now, 'derived_legal_form'),
+    fiscalYearEnd: hypothese<FiscalYearEnd | null>(null, now, 'derived_legal_form'),
   };
 
-  const derived = ((): Pick<FiscalProfileProps, 'taxRegime' | 'socialStatus' | 'activityNature' | 'vatRegime' | 'fiscalYearEnd'> => {
-    const civilYearEnd = hypothese<FiscalYearEnd | null>(null, now, 'derived_legal_form');
+  const derived = ((): Pick<FiscalProfileProps, 'taxRegime' | 'socialStatus'> => {
     switch (company.legalForm) {
-      case 'micro': {
-        const guess = microCategoryFromTrade(company.trade);
+      case 'micro':
         return {
           taxRegime: hypothese('micro', now, 'derived_legal_form'),
-          socialStatus: hypothese('tns', now, 'derived_legal_form'),
-          activityNature: hypothese(MICRO_CATEGORY_TO_ACTIVITY_NATURE[guess.category], now, 'derived_trade'),
-          vatRegime: hypothese('franchise', now, 'derived_legal_form'),
-          fiscalYearEnd: civilYearEnd,
+          socialStatus: sourceFiable('tns', now, 'derived_legal_form'),
         };
-      }
       case 'EI':
         return {
           taxRegime: hypothese('reel_ir', now, 'derived_legal_form'),
-          socialStatus: hypothese('tns', now, 'derived_legal_form'),
-          activityNature: manquant(),
-          vatRegime: manquant(),
-          fiscalYearEnd: civilYearEnd,
+          socialStatus: sourceFiable('tns', now, 'derived_legal_form'),
         };
       case 'EURL':
         return {
           taxRegime: hypothese('reel_ir', now, 'derived_legal_form'),
-          socialStatus: hypothese('tns', now, 'derived_legal_form'),
-          activityNature: manquant(),
-          vatRegime: manquant(),
-          fiscalYearEnd: civilYearEnd,
+          socialStatus: sourceFiable('tns', now, 'derived_legal_form'),
         };
       case 'SASU':
         return {
           taxRegime: hypothese('is', now, 'derived_legal_form'),
-          socialStatus: hypothese('assimile_salarie', now, 'derived_legal_form'),
-          activityNature: manquant(),
-          vatRegime: manquant(),
-          fiscalYearEnd: civilYearEnd,
+          socialStatus: sourceFiable('assimile_salarie', now, 'derived_legal_form'),
         };
       case 'SAS':
         return {
           taxRegime: hypothese('is', now, 'derived_legal_form'),
-          socialStatus: hypothese('assimile_salarie', now, 'derived_legal_form'),
-          activityNature: manquant(),
-          vatRegime: manquant(),
-          fiscalYearEnd: civilYearEnd,
+          socialStatus: sourceFiable('assimile_salarie', now, 'derived_legal_form'),
         };
       case 'SARL':
         return {
@@ -367,9 +588,6 @@ export function buildInitialFiscalProfile(company: FiscalProfileDerivationInput,
           // Gérant majoritaire (TNS) vs minoritaire (assimilé salarié) : indérivable sans info
           // supplémentaire — jamais une hypothèse à 50/50, l'utilisateur confirme.
           socialStatus: manquant(),
-          activityNature: manquant(),
-          vatRegime: manquant(),
-          fiscalYearEnd: civilYearEnd,
         };
     }
   })();

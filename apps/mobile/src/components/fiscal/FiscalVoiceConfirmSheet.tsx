@@ -104,7 +104,14 @@ export function FiscalVoiceConfirmSheet({
             const taxRegime = datumValue(profile.taxRegime);
             if (legalForm === undefined || taxRegime === undefined) return Promise.resolve();
             const patches = planLegalRegimeCorrection(
-              { legalForm, taxRegime, socialStatus: datumValue(profile.socialStatus) },
+              {
+                legalForm,
+                taxRegime,
+                socialStatus: datumValue(profile.socialStatus),
+                // Solde un VL confirmé avant de quitter le micro (invariant domaine) — parité
+                // stricte avec le mini-flow manuel (amendement 7).
+                versementLiberatoire: datumValue(profile.versementLiberatoire),
+              },
               proposal.combo,
             );
             return confirmPatches(patches);

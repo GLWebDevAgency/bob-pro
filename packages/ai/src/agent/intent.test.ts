@@ -309,6 +309,53 @@ describe('detectIntent — lier_bon_commande (B8 : « la RATP m’a envoyé un b
   });
 });
 
+describe('detectIntent — depense_dictee (M4 : « j’ai dépensé 89 € chez Leroy Merlin en carte »)', () => {
+  it('reconnaît la dépense dictée, chantier compris', () => {
+    for (const m of [
+      'J’ai dépensé 89 € chez Leroy Merlin en carte',
+      '45 € de gasoil ce matin',
+      'Note une dépense de 32 € chez Aldi',
+      'J’ai dépensé 120 euros chez Point P pour le chantier Durand',
+      'J’ai dépensé 89 € chez Leroy Merlin par carte (catégorie matériel)', // commande canonique des followUps
+    ]) {
+      expect(detectIntent(m)).toBe('depense_dictee');
+    }
+  });
+
+  it('ne cannibalise ni le scanner, ni le règlement d’une dépense existante, ni la négation', () => {
+    // Le scanner reste le scanner (« papa vocal » : deux gestes distincts).
+    expect(detectIntent('Scanne ce ticket')).toBe('scan');
+    expect(detectIntent('Prends le reçu en photo')).toBe('scan');
+    // Le règlement d'une dépense DÉJÀ enregistrée reste payer_depense — et la phrase
+    // historique du catalogue (routée par le LLM en prod) n'est JAMAIS captée par M4.
+    expect(detectIntent('J’ai payé la dépense EDF')).toBe('payer_depense');
+    expect(detectIntent('Règle la dépense Leroy Merlin')).toBe('payer_depense');
+    expect(detectIntent('J’ai payé Leroy Merlin hier par carte')).not.toBe('depense_dictee');
+    // Négation : aucune action.
+    expect(detectIntent('N’enregistre pas de dépense')).not.toBe('depense_dictee');
+  });
+});
+
+describe('detectIntent — lier_depense_chantier (M3 : « mets la dépense Aldi sur le chantier Durand »)', () => {
+  it('reconnaît l’imputation dépense→chantier AVANT classer_document/voir_chantiers', () => {
+    for (const m of [
+      'Mets la dépense Aldi sur le chantier Durand',
+      'Impute la dépense gasoil au chantier Sèvres',
+      'Rattache la dépense Leroy Merlin au chantier Durand',
+      'Range la dépense Aldi dans le chantier Durand',
+      'Mets la dépense exp-12 sur le chantier chantier-3', // commande canonique des followUps
+    ]) {
+      expect(detectIntent(m)).toBe('lier_depense_chantier');
+    }
+  });
+
+  it('ne cannibalise ni le classement de documents, ni les chantiers, ni la négation', () => {
+    expect(detectIntent('Range le ticket Aldi dans le chantier Durand')).toBe('classer_document');
+    expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
+    expect(detectIntent('Ne mets pas la dépense Aldi sur le chantier Durand')).not.toBe('lier_depense_chantier');
+  });
+});
+
 describe('detectIntent — aide (découvrabilité S9 : catalogue des capacités)', () => {
   it('reconnaît les questions sur les capacités de Bob', () => {
     for (const m of [

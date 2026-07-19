@@ -132,6 +132,21 @@ Plan en 3 crans, chacun ne se justifiant que si le précédent plafonne :
 3. (si preuve du besoin) PROJECTION graphe/vecteurs DÉRIVÉE de Postgres (jamais source
    de vérité) : CTE récursives + pgvector d'abord, GraphRAG seulement si mesuré utile.
 
+### P9 — CONNECTEURS BOÎTE MAIL (vision fondateur 19/07 — V1.1, « plus-value énorme »)
+Bob devient le « Claude Code de la boîte mail » de l'artisan : connecteurs Gmail + Outlook
+(OAuth, lecture seule d'abord), l'agent comprend les mails entrants et crée les actions/alertes
+adéquates dans Aujourd'hui. Cas canoniques : client renvoie le devis signé en PJ → rapprocher
+du devis en cours + proposer l'archivage de la PJ au coffre + notification « Devis Durand
+signé reçu par mail » ; demande d'intervention (« pouvez-vous passer mardi ? ») → proposition
+de réponse + création client/devis ; facture fournisseur reçue par mail → même pipeline que
+le scan (intake → analyse → dépense) ; relance client reçue → rapprochement facture.
+ARCHITECTURE : mêmes disciplines que le scanner (2 étages coût, anti-hallucination : tout
+rapprochement validé contre les données réelles, confirm_all sur toute action), port
+MailboxPort (adapters Gmail API / Microsoft Graph), ingestion incrémentale (historyId/delta),
+JAMAIS d'envoi automatique en V1.1 (lecture + propositions ; l'envoi = geste confirmé).
+RGPD : consentement explicite, scopes minimaux, pas de stockage du corps complet (résumés +
+références), purge sur déconnexion. À spécifier complètement avant code (pattern SPEC_AVENANTS).
+
 ### P8.2 — Mémoire de l'agent (question fondateur 18/07, avis Claude)
 Redis REFUSÉ pour la mémoire : c'est un cache de latence/état éphémère, or la mémoire
 d'agent n'a ni problème de latence (quelques ms Postgres, invisibles dans un tour LLM

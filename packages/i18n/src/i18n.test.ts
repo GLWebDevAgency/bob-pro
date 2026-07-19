@@ -1189,3 +1189,47 @@ describe('i18n — B8 po.* (bon de commande grands comptes)', () => {
     );
   });
 });
+
+describe('i18n — seuils micro JAMAIS en dur (référentiel temporel @bob/core, doctrine « jamais un chiffre périmable »)', () => {
+  const personalities = ['pote', 'pro', 'direct'] as const;
+  const microThresholdKeys = [
+    'fiscal.tax_regime_choice.micro.micro',
+    'fiscal.tax_regime_choice.EI.micro',
+    'fiscal.tax_regime_choice.EURL.micro',
+  ] as const;
+
+  it('chaque explication micro porte {ventes} ET {services} — les montants viennent du référentiel, pas du catalogue', () => {
+    for (const key of microThresholdKeys) {
+      for (const personality of personalities) {
+        const template = t(key, { personality });
+        expect(template, `${key} (${personality})`).toContain('{ventes}');
+        expect(template, `${key} (${personality})`).toContain('{services}');
+      }
+    }
+  });
+
+  it('aucun seuil micro figé dans les templates (ni 188 700/77 700 périmés, ni 203 100/83 600 périmables)', () => {
+    for (const key of microThresholdKeys) {
+      for (const personality of personalities) {
+        const template = t(key, { personality });
+        expect(template, `${key} (${personality})`).not.toMatch(/188|77\s|203|83\s/u);
+      }
+    }
+  });
+
+  it('les params interpolent proprement (aucune accolade restante avec {ventes}/{services} fournis)', () => {
+    for (const key of microThresholdKeys) {
+      for (const personality of personalities) {
+        const text = t(key, { personality, params: { ventes: '203 100 €', services: '83 600 €' } });
+        expect(text, `${key} (${personality})`).not.toMatch(/\{|\}/u);
+        expect(text).toContain('203 100 €');
+        expect(text).toContain('83 600 €');
+      }
+    }
+  });
+
+  it("l'EURL au micro est expliquée avec sa double condition (associé unique gérant personne physique)", () => {
+    expect(t('fiscal.tax_regime_choice.EURL.micro', { personality: 'pro' })).toContain('associé unique');
+    expect(t('fiscal.tax_regime_choice.EURL.micro', { personality: 'pote' })).toContain('gérant');
+  });
+});

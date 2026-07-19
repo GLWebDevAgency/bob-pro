@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import type { AppError, OcrPort, PaymentGatewayPort, PdfRendererPort, Result } from '@bob/core';
 import { BackendService } from './backend.service';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -100,12 +100,31 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
     });
   });
 
-  it('tenant vierge : exige un solde confirmé et ne fabrique aucune projection à zéro', async () => {
+  it('tenant vierge (aucune observation NI document) : état vide honnête marqué none, jamais une panne', async () => {
     const { service } = harness();
 
     const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));
 
-    expect(projection).toEqual({
+    // Sans banque connectée ET sans document financier, l'état NORMAL est une projection vide
+    // à zéro explicitement marquée `bankingSource: 'none'` — plus jamais un 503 pour un compte
+    // fraîchement provisionné (bug fondateur diagnostiqué en prod).
+    expect(projection).toMatchObject({
+      ok: true,
+      value: { available: 0, payout: 0, risk: false, vatDue: 0, bankingSource: 'none' },
+    });
+  });
+
+  it('tenant vierge : Bob vocal refuse toujours d’annoncer un montant sur bankingSource none', async () => {
+    const { service } = harness();
+    const actions = (
+      service as unknown as {
+        buildBobActions(): { computePayout(): Promise<Result<unknown, AppError>> };
+      }
+    ).buildBobActions();
+
+    // La projection HTTP devient un état vide 200, mais la voix garde son refus : « 0 €
+    // mobilisable » resterait un chiffre inventé tant qu'aucun solde n'est confirmé.
+    await expect(asPrincipal(OWNER, () => actions.computePayout())).resolves.toEqual({
       ok: false,
       error: { kind: 'unavailable', service: 'cashflow-banking-source' },
     });

@@ -28,7 +28,8 @@ describe('GetFiscalProfile — dérive et persiste l’initial si absent', () =>
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.taxRegime).toMatchObject({ status: 'hypothese', value: 'is' });
-    expect(r.value.socialStatus).toMatchObject({ status: 'hypothese', value: 'assimile_salarie' });
+    // Certitude juridique (président de SASU, art. L311-3, 11° CSS) : source_fiable, pas hypothèse.
+    expect(r.value.socialStatus).toMatchObject({ status: 'source_fiable', value: 'assimile_salarie' });
     // Persisté : une seconde lecture ne re-dérive pas, elle relit la même ligne.
     expect(repo.seeded('co-1')).toBeDefined();
   });

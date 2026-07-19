@@ -100,6 +100,10 @@ export function registerInputFromLookup(
     address: lookup.address ?? { line1: '', zip: '', city: '' },
     ...(lookup.tvaIntracom ? { tvaIntracom: lookup.tvaIntracom } : {}),
     ...(lookup.dateCreation ? { dateCreation: lookup.dateCreation } : {}),
+    // Phase B fiscal : le code catégorie juridique INSEE et la qualification RGE remontés par
+    // l'annuaire sont persistés au provisioning (avant : jetés par registerCompany).
+    ...(lookup.natureJuridiqueCode ? { natureJuridiqueCode: lookup.natureJuridiqueCode } : {}),
+    estRge: lookup.rge,
   };
 }
 

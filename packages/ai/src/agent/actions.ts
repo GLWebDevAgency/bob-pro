@@ -28,6 +28,33 @@ export interface UnpaidExpense {
   documentDate: string;
 }
 
+/** Dépense RÉCENTE du tenant (M3 — ciblage vocal de lier_depense_chantier) : la SEULE matière
+ * de résolution par jetons fournisseur/montant/date — jamais un id inventé par le LLM. */
+export interface AgentExpense {
+  id: string;
+  supplierName: string;
+  totalTtcCents: number;
+  documentDate: string;
+  /** Imputation chantier courante — null : dépense hors chantier. */
+  chantierId: string | null;
+}
+
+/** Outil lier_depense_chantier (M3) : MÊME use case AssignExpenseToChantier (@bob/core) que
+ * PUT /expenses/:id/chantier et l'écran Dépenses — anti-IDOR fail-closed (chantier PROUVÉ dans
+ * le tenant), idempotent (ré-imputer le même chantier = changed:false, aucune écriture). */
+export interface AssignExpenseChantierActionInput {
+  expenseId: string;
+  /** Chantier cible — ou null EXPLICITE pour délier la dépense (geste légitime). */
+  chantierId: string | null;
+}
+
+export interface AssignExpenseChantierActionOutput {
+  /** Imputation effective après la commande (null = hors chantier). */
+  chantierId: string | null;
+  /** false = retry idempotent / imputation déjà en place — aucune écriture. */
+  changed: boolean;
+}
+
 /**
  * Enregistre un règlement fournisseur DEJA effectué. Bob ne déclenche aucun transfert bancaire.
  * Date et moyen sont obligatoires ; la référence et le justificatif restent des preuves optionnelles.
@@ -263,6 +290,16 @@ export interface CreateQuoteActionInput {
   depositPct?: number;
 }
 
+/** Règlement DÉJÀ effectué déclaré à la création (M4 — dépense dictée « j'ai dépensé 89 € chez
+ * Leroy Merlin en carte ») : la dépense naît PAYÉE avec sa preuve (RecordExpense.payment @bob/core),
+ * au lieu d'un « à payer » absurde qu'il faudrait re-régler. */
+export interface RecordExpenseSettlementDeclaration {
+  /** DateOnly (YYYY-MM-DD) du règlement réel — jamais devinée. */
+  paidOn: string;
+  method: PaymentMethod;
+  reference?: string | null;
+}
+
 /** Outil scan_depense (parité C15 TODO ③) — mêmes entrées que RecordExpense (l'OCR reste côté UI). */
 export interface RecordExpenseActionInput {
   supplierName: string;
@@ -271,6 +308,11 @@ export interface RecordExpenseActionInput {
   /** DateOnly (YYYY-MM-DD) — défaut : aujourd'hui, résolu par l'hôte (device/serveur). */
   documentDate?: string;
   vatRatePct?: number | null;
+  /** M4 (additif) — dépense née imputée : chantier PROUVÉ dans le tenant par l'hôte
+   * (RecordExpense.chantierId + deps.chantierTargets, anti-IDOR fail-closed du core). */
+  chantierId?: string | null;
+  /** M4 (additif) — dépense dictée déjà réglée : naît payée avec sa preuve ; absent → « à payer ». */
+  payment?: RecordExpenseSettlementDeclaration | null;
 }
 
 /** Outil generer_facture (parité C15 TODO ⑤) — même use case GenerateInvoiceFromQuote que l'UI. */
@@ -348,6 +390,9 @@ export interface BobActions {
   getAgedBalance?(): Promise<Result<AgedBalance, AppError>>;
   /** Dépenses fournisseurs à payer — la cible de payer_depense (résolution par nom). */
   listUnpaidExpenses?(): Promise<Result<UnpaidExpense[], AppError>>;
+  /** M3 — dépenses RÉCENTES du tenant (payées ou à payer), bornées par l'hôte, avec leur
+   * imputation chantier courante : la matière du ciblage de lier_depense_chantier. Lecture pure. */
+  listRecentExpenses?(): Promise<Result<AgentExpense[], AppError>>;
   /** Preview tenant-scoped du lot non lu. Le cutoff retourné doit être réutilisé tel quel lors
    * de la mutation afin de ne pas absorber les notifications arrivées pendant le consentement. */
   previewUnreadNotifications?(): Promise<Result<NotificationUnreadPreview, AppError>>;
@@ -395,6 +440,12 @@ export interface BobActions {
   recordExpensePayment?(input: RecordExpensePaymentActionInput): Promise<
     Result<{ status: string; alreadyRecorded: boolean; paymentEntryId: string }, AppError>
   >;
+  /** M3 — « mets la dépense Aldi sur le chantier Durand » : MÊME use case AssignExpenseToChantier
+   * (@bob/core) que PUT /expenses/:id/chantier et l'écran Dépenses (parité humain↔Bob). Tenant
+   * scoping strict + anti-IDOR fail-closed côté core ; idempotent (changed:false sans écriture). */
+  assignExpenseChantier?(
+    input: AssignExpenseChantierActionInput,
+  ): Promise<Result<AssignExpenseChantierActionOutput, AppError>>;
   /**
    * Compatibilité de compilation pendant la migration des hôtes. Le registre ne l'expose plus :
    * cette action sans date/moyen ne doit jamais être appelée.

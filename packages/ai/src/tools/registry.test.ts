@@ -286,6 +286,93 @@ describe('envoyer_relance — C25 ② (envoi réel, capacité optionnelle)', () 
   });
 });
 
+describe('lier_depense_chantier — M3 (imputation dépense→chantier, capacité optionnelle)', () => {
+  it("absent sans l'action hôte (pas de capacité fantôme)", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('lier_depense_chantier');
+  });
+
+  it('PLANCHER de consentement (jamais liée sans confirmation, même en auto), contrat strict', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      assignExpenseChantier: async (input) => {
+        calls.push(input);
+        return ok({ chantierId: input.chantierId, changed: true });
+      },
+    };
+    const t = tool(actions, 'lier_depense_chantier')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false);
+    expect(riskTierOf(t)).toBe('reversible');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    // Même contrat que PUT /expenses/:id/chantier : clé chantierId REQUISE (null explicite =
+    // délier), champ surnuméraire refusé, id canonique (bords/contrôle interdits).
+    expect(t.parse({}).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1' }).ok).toBe(false); // clé absente ≠ null
+    expect(t.parse({ expenseId: '', chantierId: 'ch-1' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', chantierId: ' ch-1' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', chantierId: '' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', chantierId: 'ch-1', extra: true }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', chantierId: null }).ok).toBe(true); // délier : geste légitime
+
+    const parsed = t.parse({ expenseId: 'exp-1', chantierId: 'ch-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ chantierId: 'ch-1', changed: true });
+    expect(calls).toEqual([{ expenseId: 'exp-1', chantierId: 'ch-1' }]);
+    // Projection publique : imputation + idempotence, jamais le payload métier brut.
+    expect(t.projectPublicResult?.({ chantierId: 'ch-1', changed: true })).toEqual({
+      chantierId: 'ch-1',
+      changed: true,
+    });
+  });
+});
+
+describe('scan_depense — extension M4 (chantierId + règlement déclaré, additive)', () => {
+  it('accepte chantierId et payment, refuse les formes non canoniques', () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(fullActions(calls), 'scan_depense')!;
+    // Rétro-compatibilité : l'appel historique sans les nouveaux champs reste valide tel quel.
+    const legacy = t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas' });
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) expect(legacy.value).not.toHaveProperty('chantierId');
+
+    expect(t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', chantierId: ' ch-1' }).ok).toBe(false);
+    expect(t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', chantierId: '' }).ok).toBe(false);
+    expect(
+      t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', payment: { paidOn: 'hier', method: 'card' } }).ok,
+    ).toBe(false); // date réelle exigée (YYYY-MM-DD)
+    expect(
+      t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', payment: { paidOn: '2026-07-18', method: 'cheque' } }).ok,
+    ).toBe(false); // moyen inconnu
+    expect(
+      t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', payment: { paidOn: '2026-07-18', method: 'card', extra: 1 } }).ok,
+    ).toBe(false); // champ de règlement inconnu
+
+    const full = t.parse({
+      supplierName: 'Leroy Merlin',
+      totalTtcCents: 8900,
+      category: 'materiel',
+      documentDate: '2026-07-18',
+      chantierId: 'ch-1',
+      payment: { paidOn: '2026-07-18', method: 'card' },
+    });
+    expect(full.ok).toBe(true);
+    if (!full.ok) return;
+    expect(full.value).toEqual({
+      supplierName: 'Leroy Merlin',
+      totalTtcCents: 8900,
+      category: 'materiel',
+      documentDate: '2026-07-18',
+      chantierId: 'ch-1',
+      payment: { paidOn: '2026-07-18', method: 'card' },
+    });
+  });
+});
+
 describe('marquer_notifications_lues — lot atomique figé avant consentement', () => {
   it("reste absent si l'hôte ne fournit pas la commande", () => {
     expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('marquer_notifications_lues');

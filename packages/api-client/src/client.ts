@@ -378,6 +378,21 @@ export interface RecordDocumentExpenseClientOutput {
   document: DocumentView;
 }
 
+/** PUT /expenses/:id/chantier — imputation chantier d'une dépense (rentabilité par chantier).
+ * `chantierId` string = imputer ; null EXPLICITE = délier (geste légitime, même route).
+ * Le serveur PROUVE le chantier dans le tenant avant toute écriture (anti-IDOR fail-closed). */
+export interface AssignExpenseChantierClientInput {
+  expenseId: string;
+  chantierId: string | null;
+}
+
+export interface AssignExpenseChantierClientOutput {
+  /** Imputation effective après la commande (null = dépense hors chantier). */
+  chantierId: string | null;
+  /** false = la commande n'a rien changé (retry / imputation déjà en place) — aucune écriture. */
+  changed: boolean;
+}
+
 export interface VoiceConfig {
   cloudAvailable: boolean;
   ttsCloudAvailable?: boolean;
@@ -1021,6 +1036,11 @@ export interface BobClient {
     input: RegularizeExpensePaymentClientInput,
   ): Promise<Result<RegularizeExpensePaymentClientOutput, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
+  /** Impute une dépense à un chantier — ou la délie ({ chantierId: null } explicite). MÊME use
+   * case AssignExpenseToChantier (@bob/core) que Bob (parité d'actions), idempotent au retry. */
+  assignExpenseChantier(
+    input: AssignExpenseChantierClientInput,
+  ): Promise<Result<AssignExpenseChantierClientOutput, AppError>>;
   listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>>;
   createCatalogueItem(input: CatalogueItemWriteInput): Promise<Result<CatalogueItemView, AppError>>;
   updateCatalogueItem(input: {

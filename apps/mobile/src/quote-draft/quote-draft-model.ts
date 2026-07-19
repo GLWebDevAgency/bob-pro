@@ -650,7 +650,16 @@ function applyRawCommand(
   }
 
   if (command.type === 'set_deposit_pct') {
-    const step = requireStep(state, ['acompte'], 'Le choix de l’acompte');
+    // L'acompte est une clause CHIFFRÉE du brouillon, décidée AVANT l'engagement : il reste
+    // modifiable jusqu'à l'étape acompte incluse. Le seed des Réglages facturation s'applique
+    // ainsi dès l'entrée du wizard (étape client) — l'exiger à la seule étape acompte faisait
+    // échouer ce seed en silence et bloquait l'écran en spinner infini (bug fondateur
+    // 2026-07-19, tenant vierge). Après l'engagement (signature, recap), il est figé.
+    const step = requireStep(
+      state,
+      ['client', 'lignes', 'tvaMentions', 'acompte'],
+      'Le choix de l’acompte',
+    );
     if (!step.ok) return step;
     if (
       !Number.isFinite(command.depositPct) ||

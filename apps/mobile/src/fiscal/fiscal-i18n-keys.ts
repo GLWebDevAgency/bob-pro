@@ -1,10 +1,12 @@
-import type {
-  FiscalActivityNature,
-  FiscalDatumStatus,
-  FiscalSocialStatus,
-  FiscalTaxRegime,
-  FiscalVatRegime,
-  LegalForm,
+import {
+  socialStatusExplanation,
+  type AllowedTaxRegime,
+  type FiscalActivityNature,
+  type FiscalDatumStatus,
+  type FiscalSocialStatus,
+  type FiscalTaxRegime,
+  type FiscalVatRegime,
+  type LegalForm,
 } from '@bob/core';
 import type { I18nKey } from '@bob/i18n';
 import { LEGAL_REGIME_COMBOS } from './legal-regime-combos';
@@ -64,6 +66,50 @@ export const LEGAL_FORM_LABEL_KEY: Readonly<Record<LegalForm, I18nKey>> = {
 export const SOCIAL_STATUS_LABEL_KEY: Readonly<Record<FiscalSocialStatus, I18nKey>> = {
   tns: 'fiscal.socialStatus.tns',
   assimile_salarie: 'fiscal.socialStatus.assimile_salarie',
+};
+
+// ── Modales d'édition EXPERTES (fiscal-field-rules @bob/core) ────────────────────
+
+/** Sélecteur de FORMES — libellé + pédagogie par forme ('micro' = « Micro-entrepreneur »,
+ * honnêtement décrit comme une EI au régime micro, pas une forme à part). */
+export const LEGAL_FORM_CHOICE_LABEL_KEY: Readonly<Record<LegalForm, I18nKey>> = {
+  micro: 'fiscal.legalFormChoice.micro.label',
+  EI: 'fiscal.legalFormChoice.EI.label',
+  EURL: 'fiscal.legalFormChoice.EURL.label',
+  SASU: 'fiscal.legalFormChoice.SASU.label',
+  SAS: 'fiscal.legalFormChoice.SAS.label',
+  SARL: 'fiscal.legalFormChoice.SARL.label',
+};
+export const LEGAL_FORM_CHOICE_DESC_KEY: Readonly<Record<LegalForm, I18nKey>> = {
+  micro: 'fiscal.legalFormChoice.micro.desc',
+  EI: 'fiscal.legalFormChoice.EI.desc',
+  EURL: 'fiscal.legalFormChoice.EURL.desc',
+  SASU: 'fiscal.legalFormChoice.SASU.desc',
+  SAS: 'fiscal.legalFormChoice.SAS.desc',
+  SARL: 'fiscal.legalFormChoice.SARL.desc',
+};
+
+/**
+ * Clé d'explication pédagogique d'un régime proposable — le CORE émet la clé (contrat stable
+ * `fiscal.tax_regime_choice.<forme>.<regime>`, allowedTaxRegimesFor), le catalogue @bob/i18n
+ * doit la porter. Le cast est VERROUILLÉ par fiscal-i18n-keys.test.ts (toutes les clés émises
+ * par le core résolvent réellement) — sans ce test, il serait un mensonge de typage.
+ */
+export function taxRegimeExplanationKey(choice: AllowedTaxRegime): I18nKey {
+  return choice.explanationKey as I18nKey;
+}
+
+/** Clé d'explication du statut social imposé par la forme (socialStatusExplanation @bob/core) —
+ * même contrat/même verrou de test que taxRegimeExplanationKey. */
+export function socialStatusExplanationKey(legalForm: LegalForm): I18nKey {
+  return socialStatusExplanation(legalForm) as I18nKey;
+}
+
+/** Descriptions des 2 choix de statut social (SARL, le seul vrai choix : gérance majoritaire
+ * = TNS, minoritaire/égalitaire = assimilé salarié). */
+export const SOCIAL_STATUS_CHOICE_DESC_KEY: Readonly<Record<FiscalSocialStatus, I18nKey>> = {
+  tns: 'fiscal.socialStatusChoice.tns.desc',
+  assimile_salarie: 'fiscal.socialStatusChoice.assimile_salarie.desc',
 };
 
 export const FIELD_NAME_KEY = {

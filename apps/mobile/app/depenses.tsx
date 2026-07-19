@@ -29,6 +29,8 @@ import {
   Card,
   ErrorRetry,
   IconTile,
+  PressableScale,
+  QuestionSheet,
   SectionHeader,
   Skeleton,
   StatusBadge,
@@ -37,14 +39,21 @@ import {
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useExpenses, usePayExpense, useRegularizeExpensePayment } from '../src/data/hooks';
+import {
+  useAssignExpenseChantier,
+  useChantiers,
+  useExpenses,
+  usePayExpense,
+  useRegularizeExpensePayment,
+} from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import {
   ExpensePaymentSheet,
   type ExpensePaymentSheetMode,
 } from '../src/components/ExpensePaymentSheet';
-import { CheckIcon, ChevronLeftIcon, WalletIcon } from '../src/components/icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, FolderSmallIcon, WalletIcon } from '../src/components/icons';
+import { linkChantierOptions, linkedChantierName } from '../src/documents/link-chantier-options';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { displayExpensePaymentDate } from '../src/finance/expense-payment-form';
 import { hasBlockingAuthoritativeDataError } from '../src/data/authoritative-query-state';
@@ -83,6 +92,11 @@ export default function Depenses() {
   const expenses = useExpenses();
   const pay = usePayExpense();
   const regularize = useRegularizeExpensePayment();
+  // Imputation chantier (rentabilité par chantier) — chantiers OUVERTS réels uniquement,
+  // même logique pure que l'écran document (linkChantierOptions, zéro duplication).
+  const chantiers = useChantiers();
+  const assignChantier = useAssignExpenseChantier();
+  const [chantierTarget, setChantierTarget] = useState<ExpenseProps | null>(null);
   const confirm = useConfirm();
   const [toast, setToast] = useState<string | null>(null);
   const [paymentSheetExpense, setPaymentSheetExpense] = useState<ExpenseProps | null>(null);
@@ -120,6 +134,13 @@ export default function Depenses() {
     );
   }, [expenses.data]);
 
+  // Chantiers OUVERTS réels proposés à l'imputation — aucune suggestion ici (pas d'analyse
+  // sur cette liste) : la logique pure partagée garantit « jamais un chantier clos/inventé ».
+  const chantierOptions = useMemo(
+    () => linkChantierOptions(chantiers.data ?? [], null),
+    [chantiers.data],
+  );
+
   // Bob voit les dépenses AFFICHÉES. Le runtime peut enregistrer un paiement déjà réalisé,
   // jamais prétendre initier un virement sans rail bancaire.
   const agentContext = useMemo<AgentContext>(
@@ -155,6 +176,8 @@ export default function Depenses() {
     setPaymentSheetExpense(null);
     setPaymentDraft(null);
     setPaymentFormError(null);
+    // Même politique pour la feuille chantier : jamais un geste sur des données périmées.
+    setChantierTarget(null);
   }, [dataFresh]);
 
   const paymentMethodLabel = (method: PaymentMethod): string =>
@@ -173,6 +196,42 @@ export default function Depenses() {
     setPaymentFormError(null);
     setPaymentSheetMode(mode);
     setPaymentSheetExpense(expense);
+  };
+
+  /** Délier une dépense de son chantier — geste LÉGITIME mais confirmé (jamais sec) :
+   * AssignExpenseToChantier avec { chantierId: null } EXPLICITE, idempotent côté serveur. */
+  const confirmUnlinkChantier = async (expense: ExpenseProps): Promise<void> => {
+    if (assignChantier.isPending) return;
+    const ok = await confirm({
+      title: t('dep.chantierUnlinkConfirmTitle', { personality }),
+      message: t('dep.chantierUnlinkConfirmBody', {
+        personality,
+        params: { supplier: expense.supplierName },
+      }),
+      challenge: { kind: 'tap' },
+    });
+    if (!ok) return;
+    assignChantier.mutate(
+      { expenseId: expense.id, chantierId: null },
+      {
+        onSuccess: () => setToast(t('dep.chantierUnlinkedToast', { personality })),
+        onError: () => setToast(t('dep.chantierError', { personality })),
+      },
+    );
+  };
+
+  /** Imputer la dépense au chantier choisi dans la feuille — sélection CONFIRMÉE (pattern
+   * document), toast honnête, erreurs remontées sans écraser l'état serveur. */
+  const linkChantier = (expense: ExpenseProps, chantierId: string, name: string): void => {
+    if (assignChantier.isPending) return;
+    assignChantier.mutate(
+      { expenseId: expense.id, chantierId },
+      {
+        onSuccess: () =>
+          setToast(t('dep.chantierLinkToast', { personality, params: { name } })),
+        onError: () => setToast(t('dep.chantierError', { personality })),
+      },
+    );
   };
 
   const submitPaymentEvidence = (
@@ -433,6 +492,9 @@ export default function Depenses() {
                     // distinct porteur de sens + action de régularisation — jamais le même
                     // « Payée » qu'une ligne justifiée.
                     const legacyUnverified = isLegacyUnverifiedExpensePayment(expense);
+                    // Imputation chantier (additif) : null/absent = dépense hors chantier.
+                    const expenseChantierId = expense.chantierId ?? null;
+                    const expenseChantierName = linkedChantierName(chantiers.data ?? [], expenseChantierId);
                     return (
                     <Card key={expense.id} padding={15}>
                       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
@@ -572,6 +634,67 @@ export default function Depenses() {
                           </Pressable>
                         </View>
                       ) : null}
+                      {/* Imputation chantier — MÊME pattern visuel que la ligne « Lier à un
+                          chantier » de l'écran document (séparateur + tuile + chevron) :
+                          · imputée → « Chantier · {nom} » ouvre la fiche + « Délier » confirmé
+                            (geste légitime pour une dépense, contrairement au document) ;
+                          · hors chantier → action discrète, chantiers OUVERTS réels only. */}
+                      {expenseChantierId !== null ? (
+                        <>
+                          <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 12 }} />
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
+                            <PressableScale
+                              accessibilityRole="button"
+                              accessibilityLabel={expenseChantierName !== null
+                                ? t('docs.linkChantierLinkedA11y', { personality, params: { name: expenseChantierName } })
+                                : t('docs.linkChantierLinkedUnknown', { personality })}
+                              onPress={() => router.push(`/chantier/${expenseChantierId}`)}
+                              style={{ minHeight: 48, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                            >
+                              <IconTile tone="b2b" size={40} radius={12}>
+                                <FolderSmallIcon color={semantic.b2b} size={19} />
+                              </IconTile>
+                              <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]} numberOfLines={1}>
+                                {expenseChantierName !== null
+                                  ? t('docs.linkChantierLinked', { personality, params: { name: expenseChantierName } })
+                                  : t('docs.linkChantierLinkedUnknown', { personality })}
+                              </Text>
+                              <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+                            </PressableScale>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`${t('dep.chantierUnlink', { personality })} — ${expense.supplierName}`}
+                              disabled={assignChantier.isPending || !dataFresh}
+                              onPress={() => void confirmUnlinkChantier(expense)}
+                              hitSlop={6}
+                              style={{ minHeight: 48, justifyContent: 'center', paddingLeft: 14 }}
+                            >
+                              <Text style={[font('sub', 600), { color: semantic.warning }]}>
+                                {t('dep.chantierUnlink', { personality })}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </>
+                      ) : chantierOptions.length > 0 ? (
+                        <>
+                          <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 12 }} />
+                          <PressableScale
+                            accessibilityRole="button"
+                            accessibilityLabel={`${t('docs.linkChantierCta', { personality })} — ${expense.supplierName}`}
+                            disabled={assignChantier.isPending || !dataFresh}
+                            onPress={() => setChantierTarget(expense)}
+                            style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
+                          >
+                            <IconTile tone="b2b" size={40} radius={12}>
+                              <FolderSmallIcon color={semantic.b2b} size={19} />
+                            </IconTile>
+                            <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]}>
+                              {t('docs.linkChantierCta', { personality })}
+                            </Text>
+                            <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+                          </PressableScale>
+                        </>
+                      ) : null}
                     </Card>
                     );
                   })}
@@ -602,6 +725,32 @@ export default function Depenses() {
           if (paymentSheetExpense && dataFresh)
             submitPaymentEvidence(paymentSheetExpense, evidence, paymentSheetMode);
         }}
+      />
+
+      {/* Sélection du chantier — chantiers OUVERTS réels, choix unique CONFIRMÉ
+          (confirmSingle, même pattern que l'écran document) : jamais de lien au tap sec. */}
+      <QuestionSheet
+        visible={chantierTarget !== null}
+        header={t('docs.linkChantierHeader', { personality })}
+        question={t('dep.chantierQuestion', { personality })}
+        options={chantierOptions.map((option) => ({
+          value: option.chantierId,
+          label: option.name,
+          description: t('docs.pickChantierMeta', { personality }),
+        }))}
+        confirmSingle
+        confirmLabel={t('docs.linkChantierConfirm', { personality })}
+        otherLabel={t('docs.linkChantierLater', { personality })}
+        onClose={() => setChantierTarget(null)}
+        onSelect={(values) => {
+          const target = chantierTarget;
+          const picked = chantierOptions.find((option) => option.chantierId === values[0]);
+          // La feuille se ferme d'abord (pattern document), puis l'imputation s'exécute.
+          setChantierTarget(null);
+          if (!target || !picked) return;
+          linkChantier(target, picked.chantierId, picked.name);
+        }}
+        onOther={() => setChantierTarget(null)}
       />
 
       <Toast

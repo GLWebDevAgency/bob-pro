@@ -131,13 +131,10 @@ export function LegalRegimeStep(
   props: StepBodyProps & {
     readonly onConfirmSame: () => void;
     readonly onCorrect: (patches: readonly FiscalProfileFieldPatch[]) => void;
-    /** Édition depuis « Mon profil fiscal » (déjà confirmé) : va directement à la liste, la
-     * question « c'est bien ça ? » n'a pas de sens sur une valeur déjà confirmée. */
-    readonly initialPhase?: 'confirm' | 'correct';
   },
 ) {
-  const { profile, personality, remainingCount, busy, error, onRetry, onLater, onConfirmSame, onCorrect, initialPhase } = props;
-  const [phase, setPhase] = useState<'confirm' | 'correct'>(initialPhase ?? 'confirm');
+  const { profile, personality, remainingCount, busy, error, onRetry, onLater, onConfirmSame, onCorrect } = props;
+  const [phase, setPhase] = useState<'confirm' | 'correct'>('confirm');
   const legalForm = datumValue(profile.legalForm);
   const taxRegime = datumValue(profile.taxRegime);
   const currentCombo = findLegalRegimeCombo(legalForm, taxRegime);
@@ -203,7 +200,14 @@ export function LegalRegimeStep(
         const target = LEGAL_REGIME_COMBOS.find((c) => c.id === id);
         if (!target || legalForm === undefined || taxRegime === undefined) return;
         const patches = planLegalRegimeCorrection(
-          { legalForm, taxRegime, socialStatus: datumValue(profile.socialStatus) },
+          {
+            legalForm,
+            taxRegime,
+            socialStatus: datumValue(profile.socialStatus),
+            // Requis pour SOLDER un VL confirmé avant de quitter le régime micro (invariant
+            // versement_liberatoire_requires_micro) — sinon la séquence serait rejetée.
+            versementLiberatoire: datumValue(profile.versementLiberatoire),
+          },
           target,
         );
         onCorrect(patches);
@@ -259,6 +263,11 @@ export function AcreStep(props: StepBodyProps & { readonly onConfirm: (value: Ac
         <StepHeader header={t('fiscal.step.acre.header', { personality })} question={t('fiscal.step.acre.question', { personality })} />
         <ProgressLine remainingCount={remainingCount} personality={personality} />
         {error ? <ErrorRetry message={error} onRetry={onRetry} /> : null}
+        {/* Aide contextuelle (papa vocal) : automatique pour les sociétés éligibles la 1re
+            année, SUR DEMANDE pour les micro — l'utilisateur sait quoi répondre. */}
+        <Text style={[font('sub'), { color: colors.slate500, marginBottom: 14, lineHeight: 19 }]}>
+          {t('fiscal.step.acre.helper', { personality })}
+        </Text>
         <View style={{ gap: 10 }}>
           <Button
             title={t('fiscal.step.acre.yes', { personality })}

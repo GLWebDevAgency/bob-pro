@@ -288,6 +288,10 @@ model Company {
   addrCity                String
   tvaIntracom             String?
   dateCreation            DateTime?                      @db.Date
+  /// Code catégorie juridique INSEE brut (fiche annuaire, ex. « 5710 ») — additif, NULL = jamais fourni.
+  natureJuridiqueCode     String?
+  /// Qualification RGE à l'annuaire au provisioning (Pack BTP) — NULL = jamais interrogée, aucun rétro-remplissage.
+  estRge                  Boolean?
   iban                    String?
   bic                     String?
   insurerName             String?
@@ -494,6 +498,7 @@ model Chantier {
   updatedAt     DateTime        @updatedAt @db.Timestamptz(6)
   chantierNotes ChantierNote[]
   photos        ChantierPhoto[]
+  expenses      Expense[]
 
   @@unique([id, companyId], name: "uniq_chantier_id_company", map: "uniq_chantier_id_company")
   @@index([companyId, status, openedAt(sort: Desc)], map: "chantiers_company_status_opened_idx")
@@ -737,12 +742,17 @@ model Expense {
   supplierInvoiceNumber           String?
   /// C-EXP6b — échéance fournisseur (Factur-X BT-9), même format DateOnly que documentDate.
   dueAt                           String?
+  /// Imputation chantier (rentabilité par chantier) — nullable : NULL = dépense hors chantier.
+  /// Aucun backfill : les lignes historiques restent honnêtement hors chantier.
+  chantierId                      String?
+  chantier                        Chantier?                @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   createdAt                       DateTime                 @default(now())
   creationRequests                ExpenseCreationRequest[]
 
   @@unique([id, companyId], name: "uniq_expense_id_company", map: "uniq_expense_id_company")
   @@index([companyId])
   @@index([companyId, paymentProofDocumentId])
+  @@index([companyId, chantierId], map: "expenses_company_chantier_idx")
   // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : index UNIQUE PARTIEL
   // (companyId, supplierSiren, supplierInvoiceNumber) WHERE supplierInvoiceNumber IS NOT NULL —
   // /// @unique partiel géré en SQL (Prisma ne l'exprime pas nativement), cf. migration

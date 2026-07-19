@@ -57,6 +57,12 @@ export interface CompanyRegistrationInput {
   tvaIntracom?: string;
   /** Date de création de l'entreprise (fiche annuaire, ISO yyyy-mm-dd). */
   dateCreation?: DateOnly;
+  /** Code catégorie juridique INSEE brut (fiche annuaire, ex. « 5710 ») — traçabilité de la
+   *  forme juridique déduite. Absent = jamais fourni par la source, aucune valeur inventée. */
+  natureJuridiqueCode?: string;
+  /** Qualification RGE à l'annuaire au moment du provisioning (Pack BTP). Absent = source
+   *  jamais interrogée (fiches antérieures à la colonne) — jamais rétro-rempli. */
+  estRge?: boolean;
   iban?: string;
   bic?: string;
   decennale?: InsurancePolicy;
@@ -125,6 +131,10 @@ export class Company {
   get vatRegime(): VatRegime {
     return this.p.vatRegime;
   }
+  /** Code NAF/APE INSEE (fiche annuaire) — affine la dérivation du profil fiscal. */
+  get apeCode(): string | undefined {
+    return this.p.apeCode;
+  }
   get customerPortfolio(): CustomerPortfolio | undefined {
     return this.p.customerPortfolio;
   }
@@ -139,6 +149,14 @@ export class Company {
   }
   get dateCreation(): DateOnly | undefined {
     return this.p.dateCreation;
+  }
+  /** Code catégorie juridique INSEE brut (fiche annuaire, ex. « 5710 »). */
+  get natureJuridiqueCode(): string | undefined {
+    return this.p.natureJuridiqueCode;
+  }
+  /** Qualification RGE à l'annuaire au provisioning — undefined = jamais interrogée. */
+  get estRge(): boolean | undefined {
+    return this.p.estRge;
   }
   get decennale(): InsurancePolicy | undefined {
     return this.p.decennale;

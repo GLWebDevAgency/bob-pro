@@ -77,6 +77,20 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
     });
   });
 
+  it('Phase B : natureJuridiqueCode + estRge (fiche annuaire) traversent le provisioning et sont persistés', async () => {
+    const { service, p } = makeService();
+
+    const r = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
+      service.registerCompany({ ...INPUT, natureJuridiqueCode: '1000', estRge: true }),
+    );
+
+    expect(r.ok).toBe(true);
+    const saved = await p.companies.findById(`company-${USER_ID}`);
+    // Avant cette vague, registerCompany jetait ces deux données fournies par le lookup SIRET.
+    expect(saved?.natureJuridiqueCode).toBe('1000');
+    expect(saved?.estRge).toBe(true);
+  });
+
   it('retry idempotent : deux appels → MÊME id, zéro company orpheline, accès anticipé jamais réinitialisé', async () => {
     const { service, p, admin } = makeService();
 

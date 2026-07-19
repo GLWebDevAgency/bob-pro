@@ -26,6 +26,7 @@ import type {
   DiagnosticAssessmentWriteRequest,
 } from '@bob/core';
 import type {
+  AssignExpenseChantierClientInput,
   CreateCustomerClientInput,
   UpdateCustomerClientInput,
   NotificationView,
@@ -603,15 +604,32 @@ export function useExtractDocument() {
   });
 }
 
-export function useExpenses() {
+export function useExpenses(enabled = true) {
   const client = useBobClient();
   return useQuery({
     queryKey: ['expenses'],
+    enabled,
     queryFn: async () => {
       const r = await client.listExpenses();
       if (!r.ok) throw r.error;
       return r.value;
     },
+  });
+}
+
+/** Impute une dépense à un chantier — ou la délie ({ chantierId: null } EXPLICITE) : même
+ * route PUT, use case AssignExpenseToChantier (@bob/core, anti-IDOR fail-closed, idempotent —
+ * changed=false : aucune écriture). Rafraîchit la liste des dépenses (cartes, fiche chantier). */
+export function useAssignExpenseChantier() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AssignExpenseChantierClientInput) => {
+      const r = await client.assignExpenseChantier(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['expenses'] }),
   });
 }
 

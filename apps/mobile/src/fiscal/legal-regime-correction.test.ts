@@ -44,6 +44,9 @@ describe('planLegalRegimeCorrection — exhaustif contre le VRAI agrégat Fiscal
           legalForm: datumValue(profile.legalForm)!,
           taxRegime: datumValue(profile.taxRegime)!,
           socialStatus: datumValue(profile.socialStatus),
+          // 'manquant' → undefined : le paramètre optionnel n'émet alors AUCUN patch VL
+          // (comportement historique préservé, vérifié par les attentes inchangées ci-dessous).
+          versementLiberatoire: datumValue(profile.versementLiberatoire),
         };
         const patches = planLegalRegimeCorrection(current, to);
 
@@ -78,5 +81,66 @@ describe('planLegalRegimeCorrection — exhaustif contre le VRAI agrégat Fiscal
       };
       expect(planLegalRegimeCorrection(current, combo)).toEqual([]);
     }
+  });
+});
+
+describe('planLegalRegimeCorrection — versement libératoire soldé avant de quitter le micro', () => {
+  /** Micro avec VL CONFIRMÉ true — l'état qui, sans solde préalable, fait rejeter toute écriture
+   * d'un régime non micro (invariant versement_liberatoire_requires_micro). */
+  function microProfileWithVl(): FiscalProfile {
+    const result = FiscalProfile.of({
+      companyId: 'test-company',
+      legalForm: confirmeUtilisateur('micro', NOW),
+      taxRegime: confirmeUtilisateur('micro', NOW),
+      socialStatus: confirmeUtilisateur('tns', NOW),
+      activityNature: manquant(),
+      vatRegime: manquant(),
+      acre: manquant(),
+      versementLiberatoire: confirmeUtilisateur(true, NOW),
+      fiscalYearEnd: manquant(),
+    });
+    if (!result.ok) throw new Error(`fixture micro+VL invalide : ${describeError(result.error)}`);
+    return result.value;
+  }
+
+  const nonMicroTargets = LEGAL_REGIME_COMBOS.filter((c) => c.taxRegime !== 'micro');
+
+  for (const to of nonMicroTargets) {
+    it(`micro (VL true) → ${to.id} : VL soldé EN PREMIER, chaque étape valide, cible atteinte`, () => {
+      let profile = microProfileWithVl();
+      const patches = planLegalRegimeCorrection(
+        {
+          legalForm: 'micro',
+          taxRegime: 'micro',
+          socialStatus: 'tns',
+          versementLiberatoire: true,
+        },
+        to,
+      );
+      expect(patches[0]).toEqual({ field: 'versementLiberatoire', value: false });
+
+      for (const patch of patches) {
+        const applied = profile.withField(patch, NOW, 'user_form');
+        expect(
+          applied.ok,
+          `micro+VL → ${to.id} : patch ${patch.field}=${JSON.stringify(patch.value)} rejeté (${
+            applied.ok ? '' : describeError(applied.error)
+          })`,
+        ).toBe(true);
+        if (applied.ok) profile = applied.value;
+      }
+
+      expect(datumValue(profile.legalForm)).toBe(to.legalForm);
+      expect(datumValue(profile.taxRegime)).toBe(to.taxRegime);
+      expect(datumValue(profile.versementLiberatoire)).toBe(false);
+    });
+  }
+
+  it('cible encore au régime micro : le VL est CONSERVÉ (aucun patch VL)', () => {
+    const patches = planLegalRegimeCorrection(
+      { legalForm: 'micro', taxRegime: 'micro', socialStatus: 'tns', versementLiberatoire: true },
+      LEGAL_REGIME_COMBOS.find((c) => c.id === 'micro')!,
+    );
+    expect(patches.some((p) => p.field === 'versementLiberatoire')).toBe(false);
   });
 });

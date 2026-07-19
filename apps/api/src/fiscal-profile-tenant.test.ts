@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import { Company, type OcrPort, type PaymentGatewayPort, type PdfRendererPort } from '@bob/core';
 import { seedCompany } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
@@ -34,7 +34,7 @@ function asPrincipal<T>(principal: Principal | null, fn: () => T): T {
 }
 
 describe('GET /fiscal-profile — dérivation ET persistance par tenant', () => {
-  it('absent en base : dérive par hypothèses depuis la company (EI/plombier → réel IR/TNS)', async () => {
+  it('absent en base : dérive depuis la company — EI/plombier → réel IR (hypothèse) + TNS (certitude juridique)', async () => {
     const { service, p } = makeService();
     const company = seedCompany();
     await p.companies.save(company);
@@ -46,7 +46,9 @@ describe('GET /fiscal-profile — dérivation ET persistance par tenant', () => 
     expect(r.value.companyId).toBe(company.id);
     expect(r.value.legalForm).toMatchObject({ status: 'source_fiable', value: 'EI', source: 'insee_siret' });
     expect(r.value.taxRegime).toMatchObject({ status: 'hypothese', value: 'reel_ir' });
-    expect(r.value.socialStatus).toMatchObject({ status: 'hypothese', value: 'tns' });
+    // TNS en SOURCE_FIABLE : l'entrepreneur individuel est TOUJOURS travailleur indépendant
+    // (art. L611-1/L613-1 CSS) — certitude juridique de buildInitialFiscalProfile (@bob/core).
+    expect(r.value.socialStatus).toMatchObject({ status: 'source_fiable', value: 'tns', source: 'derived_legal_form' });
   });
 
   it('deuxième lecture : relit la MÊME ligne persistée, ne re-dérive pas', async () => {
@@ -62,6 +64,28 @@ describe('GET /fiscal-profile — dérivation ET persistance par tenant', () => 
 
     const second = await asPrincipal({ userId: 'u-a', companyId: company.id }, () => service.getFiscalProfile());
     expect(second.ok && first.ok && second.value).toEqual(first.ok ? first.value : undefined);
+  });
+
+  it('Phase B : la dérivation reçoit la fiche société COMPLÈTE — régime TVA d’onboarding confirmé, ACRE depuis la date de création', async () => {
+    const { service, p } = makeService();
+    const enriched = Company.of({ ...seedCompany().toProps(), dateCreation: '2026-01-10' });
+    expect(enriched.ok).toBe(true);
+    if (!enriched.ok) return;
+    await p.companies.save(enriched.value);
+
+    const r = await asPrincipal({ userId: 'u-a', companyId: enriched.value.id }, () => service.getFiscalProfile());
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Le régime TVA vient du CHOIX d'onboarding (Company.vatRegime 'reel_simpl'), converti et posé
+    // 'confirme_utilisateur' / 'user_form' — plus jamais 'manquant' quand la fiche le porte.
+    expect(r.value.vatRegime).toMatchObject({ status: 'confirme_utilisateur', value: 'reel_simplifie', source: 'user_form' });
+    // EI (hors micro) créée < 12 mois : ACRE automatique en HYPOTHÈSE, datée de la création.
+    expect(r.value.acre).toMatchObject({
+      status: 'hypothese',
+      value: { granted: true, startDate: '2026-01-10' },
+      source: 'derived_date_creation',
+    });
   });
 
   it('company introuvable : not_found — jamais un profil dérivé sans company réelle', async () => {
@@ -91,6 +115,52 @@ describe('PATCH /fiscal-profile/:field — un champ à la fois, confirmé, invar
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.vatRegime).toMatchObject({ status: 'confirme_utilisateur', value: 'reel_normal', source: 'user_form' });
+  });
+
+  it('SYNC Phase B : confirmer vatRegime sur le profil reflète Company.vatRegime dans la même transaction', async () => {
+    const { service, p } = makeService();
+    const company = seedCompany(); // vatRegime 'reel_simpl'
+    await p.companies.save(company);
+
+    const r = await asPrincipal({ userId: 'u-a', companyId: company.id }, () =>
+      service.updateFiscalProfileField('vatRegime', 'reel_normal'),
+    );
+
+    expect(r.ok).toBe(true);
+    const synced = await p.companies.findById(company.id);
+    // Company.vatRegime pilote les échéances fiscales (deriveFiscalCalendar) : plus jamais deux
+    // vérités durables entre la fiche société et le profil (« états dupliqués »).
+    expect(synced?.vatRegime).toBe('reel_normal');
+  });
+
+  it('SYNC Phase B : conversion d’orthographe reel_simplifie (profil) → reel_simpl (Company)', async () => {
+    const { service, p } = makeService();
+    const franchised = Company.of({ ...seedCompany().toProps(), vatRegime: 'franchise' });
+    expect(franchised.ok).toBe(true);
+    if (!franchised.ok) return;
+    await p.companies.save(franchised.value);
+
+    const r = await asPrincipal({ userId: 'u-a', companyId: franchised.value.id }, () =>
+      service.updateFiscalProfileField('vatRegime', 'reel_simplifie'),
+    );
+
+    expect(r.ok).toBe(true);
+    const synced = await p.companies.findById(franchised.value.id);
+    expect(synced?.vatRegime).toBe('reel_simpl');
+  });
+
+  it('SYNC Phase B : les AUTRES champs du profil ne touchent jamais Company.vatRegime', async () => {
+    const { service, p } = makeService();
+    const company = seedCompany(); // vatRegime 'reel_simpl'
+    await p.companies.save(company);
+
+    const r = await asPrincipal({ userId: 'u-a', companyId: company.id }, () =>
+      service.updateFiscalProfileField('taxRegime', 'reel_ir'),
+    );
+
+    expect(r.ok).toBe(true);
+    const untouched = await p.companies.findById(company.id);
+    expect(untouched?.vatRegime).toBe('reel_simpl');
   });
 
   it('rejette une valeur invalide (validation) — aucune écriture', async () => {

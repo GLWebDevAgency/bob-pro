@@ -30,7 +30,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { tradeToWorksiteTerminology } from '@bob/core';
+import { formatEUR, tradeToWorksiteTerminology } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -50,11 +50,13 @@ import {
   useChantierNotes,
   useChantiers,
   useDeleteWorksitePhoto,
+  useExpenses,
   useProfile,
   useUploadWorksitePhoto,
   useWorksitePhotos,
   useWorksitePhotoUrl,
 } from '../../src/data/hooks';
+import { chantierExpensesTotalCents, expensesForChantier } from '../../src/expenses/chantier-expenses';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
 import { CameraIcon, ChevronLeftIcon, CloseIcon, TrashIcon } from '../../src/components/icons';
@@ -144,6 +146,13 @@ export default function ChantierDetail() {
 
   const notes = useChantierNotes(id);
   const addNote = useAddChantierNote(id);
+  // Dépenses imputées au chantier — filtre CLIENT sur la liste déjà servie par useExpenses
+  // (aucun endpoint dédié) : logique pure testée, total TTC simple.
+  const expenses = useExpenses();
+  const linkedExpenses = useMemo(
+    () => expensesForChantier(expenses.data ?? [], id),
+    [expenses.data, id],
+  );
   const photos = useWorksitePhotos(id);
   const uploadPhoto = useUploadWorksitePhoto(id);
   const deletePhoto = useDeleteWorksitePhoto(id);
@@ -258,7 +267,7 @@ export default function ChantierDetail() {
   };
 
   const refresh = (): void => {
-    void Promise.all([chantiers.refetch(), notes.refetch(), photos.refetch()]);
+    void Promise.all([chantiers.refetch(), notes.refetch(), photos.refetch(), expenses.refetch()]);
   };
 
   const booting = chantiers.isLoading;
@@ -317,7 +326,7 @@ export default function ChantierDetail() {
           scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
           refreshControl={
             <RefreshControl
-              refreshing={chantiers.isRefetching || notes.isRefetching || photos.isRefetching}
+              refreshing={chantiers.isRefetching || notes.isRefetching || photos.isRefetching || expenses.isRefetching}
               onRefresh={refresh}
               tintColor={colors.ink800}
               colors={[colors.ink800]}
@@ -488,6 +497,81 @@ export default function ChantierDetail() {
               <Skeleton height={13} width="50%" radius={6} />
             </View>
           ) : null}
+
+          {/* ── Dépenses imputées (rentabilité par chantier) — filtre CLIENT sur la liste
+               existante (useExpenses), les plus récentes en tête, total TTC en pied. ── */}
+          <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500, marginTop: 28, marginBottom: 10 }]}>
+            {t('chantierFiche.expensesTitle', { personality })}
+          </Text>
+          {expenses.isLoading ? (
+            <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
+          ) : expenses.isError ? (
+            <ErrorRetry
+              message={t('chantierFiche.dataError', { personality })}
+              onRetry={() => void expenses.refetch()}
+              retrying={expenses.isRefetching}
+            />
+          ) : linkedExpenses.length === 0 ? (
+            <Card>
+              <EmptyState body={t('chantierFiche.expensesEmpty', { personality })} />
+            </Card>
+          ) : (
+            <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
+              {linkedExpenses.map((expense) => (
+                <View
+                  key={expense.id}
+                  accessible
+                  accessibilityLabel={`${expense.supplierName} · ${formatEUR(expense.totalTtcCents)} · ${t(expense.status === 'paid' ? 'dep.statusPaid' : 'dep.statusToPay', { personality })}`}
+                  style={{
+                    minHeight: 48,
+                    paddingVertical: 11,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.lineSoft,
+                  }}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text accessible={false} style={[font('sub', 600), { color: colors.ink800 }]} numberOfLines={1}>
+                      {expense.supplierName}
+                    </Text>
+                    <Text accessible={false} style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                      {frDate(expense.documentDate)} · {t(expense.status === 'paid' ? 'dep.statusPaid' : 'dep.statusToPay', { personality })}
+                    </Text>
+                  </View>
+                  <Text
+                    accessible={false}
+                    style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}
+                  >
+                    {formatEUR(expense.totalTtcCents)}
+                  </Text>
+                </View>
+              ))}
+              <View
+                accessible
+                accessibilityLabel={`${t('chantierFiche.expensesTotal', { personality })} : ${formatEUR(chantierExpensesTotalCents(linkedExpenses))}`}
+                style={{
+                  minHeight: 44,
+                  paddingVertical: 11,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <Text accessible={false} style={[font('sub', 700), { color: colors.ink900 }]}>
+                  {t('chantierFiche.expensesTotal', { personality })}
+                </Text>
+                <Text
+                  accessible={false}
+                  style={{ ...font('sub', 700), color: colors.ink900, fontVariant: ['tabular-nums'] }}
+                >
+                  {formatEUR(chantierExpensesTotalCents(linkedExpenses))}
+                </Text>
+              </View>
+            </Card>
+          )}
         </ScrollView>
       )}
 

@@ -7,6 +7,7 @@ import {
   Customer,
   DocumentFolder,
   Expense,
+  Invoice,
   deriveVatPosition,
   makeDocumentAnalysis,
   type DocumentView,
@@ -24,6 +25,8 @@ import { requestContext, type AppLogger, type Principal } from './observability/
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { RelanceService } from './jobs/relance.service';
+import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import type { Metrics } from './observability/metrics';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 
@@ -81,6 +84,23 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
     aiDuration: { observe: vi.fn() },
     aiGuardViolations: { inc: vi.fn() },
   } as unknown as Metrics;
+  // M2 — RelanceService RÉEL, câblé comme en prod (le cycle DI forwardRef est résolu ici par
+  // late-binding sur l'autorité d'abonnement) : l'action agent envoyer_relance délègue au MÊME
+  // service que POST /invoices/:id/relance. L'outbox reste le stub « pending » ci-dessus —
+  // aucun réseau tiers dans la transaction de test.
+  let backendRef: BackendService | null = null;
+  const relances = new RelanceService(
+    p,
+    notificationDelivery,
+    new ScheduledTenantDirectory(p, logger),
+    logger,
+    {
+      autoDunningEntitlement: (companyId: string) => {
+        if (!backendRef) throw new Error('fixture: BackendService non construit');
+        return backendRef.autoDunningEntitlement(companyId);
+      },
+    },
+  );
   const service = new BackendService(
     p,
     {} as PaymentGatewayPort,
@@ -92,7 +112,10 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
     logger,
     options?.documentIntelligence,
     new InMemoryDocumentStorage(),
+    null,
+    relances,
   );
+  backendRef = service;
   return { service, p, notificationDelivery, metrics };
 }
 
@@ -1325,6 +1348,71 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
 
       expect(confirmation.ok && confirmation.value.card).toMatchObject({ title: 'Devis préparé' });
       expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
+  it("M2 — envoyer_relance traverse /ai/ask → /ai/confirm : l'envoi confirmé part par l'outbox", async () => {
+    const { service, p, notificationDelivery } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100_000,
+        vatRate: 20,
+      });
+      // Échéance RÉELLEMENT passée : la facture issue du flow d'émission est réhydratée émise à
+      // J-42 et échue à J-12 (palier « neutre » du plan @bob/core) — jamais un statut fabriqué,
+      // et l'invariant dueAt ≥ issuedAt des codecs défensifs reste respecté.
+      const issued = await p.invoices.findById(invoiceId);
+      if (!issued) throw new Error('fixture: facture émise introuvable');
+      const dateOnlyDaysAgo = (days: number): string => {
+        const d = new Date();
+        d.setUTCDate(d.getUTCDate() - days);
+        return d.toISOString().slice(0, 10);
+      };
+      await p.invoices.save(
+        Invoice.rehydrate({
+          ...issued.toSnapshot(),
+          issuedAt: dateOnlyDaysAgo(42),
+          dueAt: dateOnlyDaysAgo(12),
+        }),
+      );
+      // La fixture d'émission a déjà enfilé l'e-mail du devis : on repart d'une outbox vierge
+      // pour n'observer QUE le sortant de la relance.
+      vi.mocked(notificationDelivery.enqueue).mockClear();
+
+      const proposed = await service.askBob({
+        message: 'Relance Martin',
+        autonomy: 'confirm_all',
+      });
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      // Plancher sortant : TOUJOURS une proposition avec le texte réel du plan — jamais un
+      // envoi direct, et rien ne part pendant le dry-run.
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({
+        tool: 'envoyer_relance',
+        args: { invoiceId },
+      });
+      expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
+
+      const confirmed = await service.confirmBob({
+        proposalId: proposed.value.pending!.proposalId,
+      });
+
+      // C'était le P0 : envoyer_relance absent de AGENT_OUTBOX_SAFE_TOOLS → forbidden alors que
+      // l'adapter serveur délègue à l'outbox transactionnelle. La confirmation doit ENVOYER.
+      expect(confirmed.ok).toBe(true);
+      expect(confirmed.ok && confirmed.value.card.title).toBe('Relance envoyée ✓');
+      expect(notificationDelivery.enqueue).toHaveBeenCalledOnce();
+      const enqueued = vi.mocked(notificationDelivery.enqueue).mock.calls[0]![0] as {
+        kind: string;
+        dedupeKey: string;
+      };
+      expect(enqueued.kind).toBe('invoice-relance');
+      expect(enqueued.dedupeKey).toBe(`invoice:${invoiceId}:relance:manual:${todayUtc()}`);
+      // Outbox stricte : l'e-mail n'est jamais livré dans la transaction de confirmation.
+      expect(notificationDelivery.tryDeliver).not.toHaveBeenCalled();
     });
   });
 

@@ -142,7 +142,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     });
   });
 
-  it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile dérive par hypothèses (EI/plombier → réel IR/TNS)', async () => {
+  it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile dérive EI/plombier → réel IR (hypothèse) + TNS (certitude juridique)', async () => {
     const client = makeClient();
     const r = await client.getFiscalProfile();
     expect(r.ok).toBe(true);
@@ -150,7 +150,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(r.value.companyId).toBe(client.companyId);
     expect(r.value.legalForm).toMatchObject({ status: 'source_fiable', value: 'EI', source: 'insee_siret' });
     expect(r.value.taxRegime).toMatchObject({ status: 'hypothese', value: 'reel_ir' });
-    expect(r.value.socialStatus).toMatchObject({ status: 'hypothese', value: 'tns' });
+    // TNS en SOURCE_FIABLE, pas en hypothèse : l'entrepreneur individuel est TOUJOURS travailleur
+    // indépendant (art. L611-1/L613-1 CSS) — certitude juridique dérivée de la forme
+    // (buildInitialFiscalProfile, @bob/core), même statut que la dérivation testée côté core.
+    expect(r.value.socialStatus).toMatchObject({ status: 'source_fiable', value: 'tns', source: 'derived_legal_form' });
 
     // Une deuxième lecture relit la MÊME ligne persistée en mémoire, ne re-dérive pas.
     const second = await client.getFiscalProfile();
@@ -1478,6 +1481,83 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect(quotes.ok).toBe(true);
     if (!quotes.ok) return;
     expect(quotes.value.find((q) => q.id === created.value.quoteId)?.purchaseOrder?.number).toBe('4500123');
+  });
+
+  it('M3 : lier_depense_chantier à la voix — propose (plancher) puis confirmBob impute RÉELLEMENT via le MÊME use case (parité serveur)', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
+    const chantier = await client.createChantier({ name: 'Villa Durand' });
+    expect(chantier.ok).toBe(true);
+    if (!chantier.ok) return;
+    // Fournisseur DISTINCT des dépenses seedées (Leroy Merlin/Cedeo/Point P/Brico Dépôt).
+    const created = await client.recordExpense({
+      supplierName: 'Aldi',
+      documentDate: '2026-05-30',
+      totalTtcCents: 4500,
+      category: 'repas',
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    // Même en autonomie max : l'imputation est PROPOSÉE, jamais posée sans confirmation (M3).
+    const asked = await client.askBob({ message: 'Mets la dépense Aldi sur le chantier Villa Durand', autonomy: 'auto' });
+    expect(asked.ok).toBe(true);
+    if (!asked.ok) return;
+    expect(asked.value.intent).toBe('lier_depense_chantier');
+    expect(asked.value.kind).toBe('proposed');
+    expect(asked.value.pending?.tool).toBe('lier_depense_chantier');
+    expect(asked.value.pending?.args).toEqual({ expenseId: created.value.id, chantierId: chantier.value.id });
+
+    const confirmed = await client.confirmBob(asked.value.pending!);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.value.kind).toBe('done');
+    expect(confirmed.value.intent).toBe('lier_depense_chantier');
+
+    // Le lien est RÉEL (AssignExpenseToChantier @bob/core) : la dépense porte le chantier.
+    const expenses = await client.listExpenses();
+    expect(expenses.ok).toBe(true);
+    if (!expenses.ok) return;
+    expect(expenses.value.find((e) => e.id === created.value.id)?.chantierId).toBe(chantier.value.id);
+  });
+
+  it('M4 : dépense dictée — propose (plancher comptable) puis confirmBob crée la dépense NÉE PAYÉE, imputée au chantier dit', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
+    const chantier = await client.createChantier({ name: 'Villa Durand' });
+    expect(chantier.ok).toBe(true);
+    if (!chantier.ok) return;
+
+    const asked = await client.askBob({
+      message: 'J’ai dépensé 89 € chez Bricomarché par carte (catégorie matériel) pour le chantier Villa Durand',
+      autonomy: 'auto',
+    });
+    expect(asked.ok).toBe(true);
+    if (!asked.ok) return;
+    expect(asked.value.intent).toBe('depense_dictee');
+    expect(asked.value.kind).toBe('proposed');
+    expect(asked.value.pending?.tool).toBe('scan_depense');
+    expect(asked.value.pending?.args).toEqual({
+      supplierName: 'Bricomarché',
+      totalTtcCents: 8900,
+      category: 'materiel',
+      documentDate: '2026-06-01', // aujourd'hui (horloge fixture), jamais deviné ailleurs
+      chantierId: chantier.value.id,
+      payment: { paidOn: '2026-06-01', method: 'card' },
+    });
+
+    const confirmed = await client.confirmBob(asked.value.pending!);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.value.kind).toBe('done');
+
+    // La dépense est RÉELLE (RecordExpense @bob/core) : née payée avec sa preuve, liée au chantier.
+    const expenses = await client.listExpenses();
+    expect(expenses.ok).toBe(true);
+    if (!expenses.ok) return;
+    const dictated = expenses.value.find((e) => e.supplierName === 'Bricomarché');
+    expect(dictated).toBeDefined();
+    expect(dictated?.status).toBe('paid');
+    expect(dictated?.paymentEvidence).toMatchObject({ paidOn: '2026-06-01', method: 'card' });
+    expect(dictated?.chantierId).toBe(chantier.value.id);
   });
 
   it('getRunJournal d’un run inconnu rend une liste vide (parité serveur)', async () => {

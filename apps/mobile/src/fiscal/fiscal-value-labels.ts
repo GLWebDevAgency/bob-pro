@@ -1,7 +1,12 @@
 import { t, type Personality } from '@bob/i18n';
 import {
+  KEY_MICRO_CEILING_SERVICES,
+  KEY_MICRO_CEILING_VENTE,
   datumValue,
+  formatEURWhole,
+  resolveParameter,
   type AcreInfo,
+  type DateOnly,
   type FiscalActivityNature,
   type FiscalDatum,
   type FiscalProfileView,
@@ -62,11 +67,23 @@ function frShortDate(instant: string): string {
 
 /** Légende de SOURCE d'un champ (amendement 6 : « source + date + statut en texte »). Ne lit
  * jamais `.value` — accepte `FiscalDatum<unknown>` pour rester assignable depuis `profile[field]`
- * indexé par un champ dynamique (union de FiscalDatum<X> hétérogènes, pas de generic à inférer). */
+ * indexé par un champ dynamique (union de FiscalDatum<X> hétérogènes, pas de generic à inférer).
+ * Trois natures de 'source_fiable', distinguées par `datum.source` (papa vocal — dire d'où ça
+ * vient, honnêtement, jamais « INSEE » pour tout) :
+ * · 'derived_legal_form' → CERTITUDE JURIDIQUE (le statut social d'un président de SASU, le VL
+ *   inapplicable hors micro…) : « c'est la loi qui le dit », PAS une donnée INSEE ;
+ * · 'user_form' → donnée REPRISE de l'inscription (le choix d'onboarding), pas une fiche SIRET ;
+ * · autre (insee_siret, historique sans source) → donnée d'une fiche SIRET. */
 export function fieldSourceCaption(datum: FiscalDatum<unknown>, personality: Personality): string {
   if (datum.status === 'manquant') return t('fiscal.source.missingHint', { personality });
   if (datum.status === 'hypothese') return t('fiscal.source.hypothesis', { personality });
   if (datum.status === 'source_fiable') {
+    if (datum.source === 'derived_legal_form') {
+      return t('fiscal.source.lawDerived', { personality, params: { date: frShortDate(datum.updatedAt) } });
+    }
+    if (datum.source === 'user_form') {
+      return t('fiscal.source.fromRegistration', { personality, params: { date: frShortDate(datum.updatedAt) } });
+    }
     return t('fiscal.source.insee', { personality, params: { date: frShortDate(datum.updatedAt) } });
   }
   return t('fiscal.source.userConfirmed', { personality, params: { date: frShortDate(datum.updatedAt) } });
@@ -110,4 +127,21 @@ export function fieldValueDisplay(field: FiscalProfileFieldName, profile: Fiscal
       return fiscalYearEndLabel(datumValue(profile.fiscalYearEnd) ?? null, personality);
     }
   }
+}
+
+/**
+ * Plafonds micro EN VIGUEUR à une date donnée, formatés pour les clés pédagogiques
+ * `fiscal.tax_regime_choice.*.micro` ({ventes}/{services}) — JAMAIS un montant en dur dans le
+ * catalogue i18n (chiffre périmable) : la seule source est le référentiel temporel sourcé
+ * (@bob/core resolveParameter, art. 50-0/102 ter CGI). Fonction PURE (date injectée par
+ * l'appelant). Hors de toute fenêtre connue, resolveParameter renvoie la valeur la plus proche
+ * (jamais inventée) — le « ≈ » déjà présent dans la copy garde le ton honnête.
+ */
+export function microCeilingParams(today: DateOnly): { readonly ventes: string; readonly services: string } {
+  const ventes = resolveParameter(KEY_MICRO_CEILING_VENTE, today);
+  const services = resolveParameter(KEY_MICRO_CEILING_SERVICES, today);
+  return {
+    ventes: formatEURWhole(ventes.value * 100),
+    services: formatEURWhole(services.value * 100),
+  };
 }

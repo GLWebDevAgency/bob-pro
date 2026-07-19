@@ -19,6 +19,8 @@ export type BobIntent =
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
   | 'marquer_notifications_lues' // batch atomique borné par cutoff serveur — mutation confirmée
   | 'payer_depense' // enregistrer un règlement fournisseur déjà effectué — mutation comptable
+  | 'depense_dictee' // « j'ai dépensé 89 € chez Leroy Merlin en carte » — dépense créée à la voix (M4), DISTINCT du scanner
+  | 'lier_depense_chantier' // « mets la dépense Aldi sur le chantier Durand » — imputation dépense→chantier (M3)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -90,6 +92,39 @@ export function detectIntent(message: string): BobIntent {
     /^\s*(aide|aide[- ]moi|de l.{0,3}aide|help|au secours)\s*[!?.…]*\s*$/.test(normalizedMessage)
   )
     return 'aide';
+  // M3 — imputation d'une dépense EXISTANTE à un chantier (« mets la dépense Aldi sur le
+  // chantier Durand », « impute la dépense gasoil au chantier Sèvres ») : AVANT la dépense
+  // dictée (« mets » y collisionne), AVANT payer_depense/classer_document/voir_chantiers
+  // (« dépense », « range », « chantier » y collisionnent). Négation ⇒ rien.
+  if (
+    /\bdepenses?\b/.test(normalizedMessage) &&
+    /\bchantiers?\b/.test(normalizedMessage) &&
+    /\b(mets|met|mettre|impute|imputer|imputes|affecte|affecter|affectes|lie|lier|lies|rattache|rattacher|rattaches|attache|attacher|associe|associer|bascule|basculer|range|ranger|ranges|classe|classer|classes|deplace|deplacer|passe|passer)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(mets|met|impute|affecte|lie|rattache|attache|associe|bascule|range|classe|deplace|passe)\b|\b(mets|met|impute|affecte|lie|rattache|attache|associe|bascule|range|classe|deplace|passe)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'lier_depense_chantier';
+  // M4 — dépense DICTÉE (« j'ai dépensé 89 € chez Leroy Merlin en carte », « 45 € de gasoil ce
+  // matin ») : création vocale, DISTINCTE du scanner (« scanne ce ticket » reste scan) et du
+  // règlement d'une dépense EXISTANTE (« j'ai payé la dépense EDF » reste payer_depense).
+  // AVANT payer_depense (« dépense » y collisionne) et AVANT encaisser/scan. Négation ⇒ rien.
+  if (
+    (/\bj\W{0,3}ai depense\b/.test(normalizedMessage) ||
+      /\bdepense (?:de |d\W)?\d/.test(normalizedMessage) ||
+      /\b\d+(?:[.,]\d{1,2})?\s*(?:€|euros?)\s+(?:de|d\W|chez)\s*\S/.test(normalizedMessage) ||
+      /\b(note|ajoute|ajouter|enregistre|enregistrer|cree|creer|mets|mettre)\b.{0,24}\b(une |la )?depense\b/.test(
+        normalizedMessage,
+      )) &&
+    // Règlement d'une dépense EXISTANTE (« j'ai payé/réglé la dépense… ») ⇒ payer_depense.
+    !/\b(pay|pai|regl|sold)[a-z]*\b.{0,20}\b(la |cette |ma |une )?depense\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(note|ajoute|enregistre|cree|mets|depense)\b|\b(note|ajoute|enregistre|cree|mets)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'depense_dictee';
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pai|pay|regl|sold).*(depense|fournisseur)|(depense|fournisseur).*(pai|pay|regl|sold)/.test(normalizedMessage))
     return 'payer_depense';

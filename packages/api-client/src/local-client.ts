@@ -73,6 +73,8 @@ import {
   createFrenchOperationalChartOfAccounts,
   ExtractDocument,
   RecordExpense,
+  AssignExpenseToChantier,
+  type DocumentLinkTargetPort,
   importFacturXExpense as runFacturXReceptionControls,
   withSupplierCategory,
   facturXDraftToRecordExpenseInput,
@@ -92,7 +94,9 @@ import {
   GetFiscalProfile,
   UpdateFiscalProfileField,
   parseFiscalProfileFieldPatch,
+  companyVatRegimeFromFiscal,
   type FiscalProfile,
+  type FiscalProfileDerivationInput,
   type FiscalProfileRepository,
   type FiscalProfileView,
   SearchAddress,
@@ -256,6 +260,8 @@ import type {
   ClassifyDocumentClientInput,
   RecordDocumentExpenseClientInput,
   RecordDocumentExpenseClientOutput,
+  AssignExpenseChantierClientInput,
+  AssignExpenseChantierClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
   UpdateCustomerClientInput,
@@ -499,6 +505,16 @@ export class LocalBobClient implements BobClient {
   private quoteDraftSlot: QuoteDraftSlotView | null = null;
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly chantierNotes = new InMemoryChantierNoteRepository();
+  /** Preuve tenant-scoped d'un chantier visé (anti-IDOR) — MÊME contrat que l'adaptateur
+   * serveur (RepositoryDocumentLinkTargets) : absent et « autre tenant » répondent le même
+   * false, sans jamais distinguer les deux (pas d'oracle). */
+  private readonly chantierLinkTargets: DocumentLinkTargetPort = {
+    exists: async (input) => {
+      if (input.linkedEntityType !== 'chantier') return false;
+      const chantier = await this.chantiers.findById(input.linkedEntityId);
+      return chantier?.companyId === input.companyId;
+    },
+  };
   private readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
   private readonly worksitePhotoBytes = new InMemoryDocumentStorage();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
@@ -1093,12 +1109,28 @@ export class LocalBobClient implements BobClient {
     return ok(resolveTradeConfig(seedCompany().trade, 'business'));
   }
 
+  /** Phase B fiscal (parité serveur) : la dérivation reçoit la fiche société RÉELLE du repo
+   *  (régime TVA d'onboarding, NAF/APE, date de création, n° intracom) — jamais une fixture figée
+   *  quand le profil d'exploitation a été modifié depuis. */
+  private fiscalDerivationInput(company: Company): FiscalProfileDerivationInput {
+    return {
+      id: company.id,
+      legalForm: company.legalForm,
+      trade: company.trade,
+      vatRegime: company.vatRegime,
+      ...(company.apeCode === undefined ? {} : { nafApe: company.apeCode }),
+      ...(company.dateCreation === undefined ? {} : { dateCreation: company.dateCreation }),
+      ...(company.tvaIntracom === undefined ? {} : { tvaIntracom: company.tvaIntracom }),
+    };
+  }
+
   /** GET /fiscal-profile (BOB EXPERT FISCAL, Phase 1A) — MÊME use case @bob/core que le serveur :
    *  dérivé par hypothèses depuis la fiche société du seed si absent, puis persisté en mémoire. */
   async getFiscalProfile(): Promise<Result<FiscalProfileView, AppError>> {
-    const company = seedCompany();
+    const company = await this.companies.findById(this.companyId);
+    if (company === null) return err(appNotFound('company', this.companyId));
     return new GetFiscalProfile({ fiscalProfiles: this.fiscalProfileRepository }).execute({
-      company: { id: this.companyId, legalForm: company.legalForm, trade: company.trade },
+      company: this.fiscalDerivationInput(company),
       now: this.clock.now(),
     });
   }
@@ -1110,13 +1142,28 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<FiscalProfileView, AppError>> {
     const parsed = parseFiscalProfileFieldPatch(field, value);
     if (!parsed.ok) return parsed;
-    const company = seedCompany();
-    return new UpdateFiscalProfileField({ fiscalProfiles: this.fiscalProfileRepository }).execute({
-      company: { id: this.companyId, legalForm: company.legalForm, trade: company.trade },
+    const company = await this.companies.findById(this.companyId);
+    if (company === null) return err(appNotFound('company', this.companyId));
+    const updated = await new UpdateFiscalProfileField({
+      fiscalProfiles: this.fiscalProfileRepository,
+    }).execute({
+      company: this.fiscalDerivationInput(company),
       patch: parsed.value,
       now: this.clock.now(),
       source: 'user_form',
     });
+    if (!updated.ok) return updated;
+    // SYNC Phase B (parité serveur) : le régime TVA confirmé sur le profil est reflété sur la
+    // fiche société ('reel_simplifie' → 'reel_simpl') — jamais deux vérités durables.
+    if (parsed.value.field === 'vatRegime') {
+      const nextVatRegime = companyVatRegimeFromFiscal(parsed.value.value);
+      if (company.vatRegime !== nextVatRegime) {
+        const synced = Company.of({ ...company.toProps(), vatRegime: nextVatRegime });
+        if (!synced.ok) return err(appDomain(synced.error));
+        await this.companies.save(synced.value);
+      }
+    }
+    return updated;
   }
 
   /** GET /company/me (adaptateur de test) — relit le repository, jamais une nouvelle fixture. */
@@ -2368,6 +2415,9 @@ export class LocalBobClient implements BobClient {
         expenses: this.expenses,
         ids: this.ids,
         clock: this.clock,
+        // Parité serveur : un chantierId fourni est PROUVÉ dans le tenant avant persistance
+        // (anti-IDOR fail-closed du core — sans ce port, la création avec chantier échouerait).
+        chantierTargets: this.chantierLinkTargets,
       }).execute({
         ...input,
         // L'identité de l'adaptateur local gagne aussi sur un objet runtime élargi.
@@ -2443,6 +2493,11 @@ export class LocalBobClient implements BobClient {
           ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
           : {}),
         ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+        // Destination chantier CHOISIE au scan : la dépense naît imputée — même preuve
+        // tenant-scoped (chantierLinkTargets) que la création manuelle, parité serveur.
+        ...(input.expense.chantierId !== undefined
+          ? { chantierId: input.expense.chantierId }
+          : {}),
         // Miroir de l'autorité serveur : ticket déjà réglé → la dépense naît payée et
         // l'original archivé DEVIENT la preuve du règlement (jamais une pièce du client).
         ...(input.expense.payment
@@ -2773,6 +2828,22 @@ export class LocalBobClient implements BobClient {
     await this.ready;
     const list = await this.expenses.listByCompany(this.companyId);
     return ok(list.map((e) => e.toProps()));
+  }
+
+  /** Impute une dépense à un chantier — ou la délie (chantierId null) : MÊME use case
+   * AssignExpenseToChantier (@bob/core) que le serveur, preuve tenant-scoped locale. */
+  async assignExpenseChantier(
+    input: AssignExpenseChantierClientInput,
+  ): Promise<Result<AssignExpenseChantierClientOutput, AppError>> {
+    await this.ready;
+    return new AssignExpenseToChantier({
+      expenses: this.expenses,
+      chantierTargets: this.chantierLinkTargets,
+    }).execute({
+      companyId: this.companyId,
+      expenseId: input.expenseId,
+      chantierId: input.chantierId,
+    });
   }
 
   async listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>> {
@@ -3953,6 +4024,44 @@ export class LocalBobClient implements BobClient {
             }),
         );
       },
+      // LOT 5 / M3-M4 — destinations de classement RÉELLES du tenant (chantiers OUVERTS +
+      // dossiers racine actifs) : MÊMES cibles que le serveur (parité) — la seule autorité des
+      // résolutions vocales (classer_document, depense_dictee, lier_depense_chantier).
+      listFilingDestinations: async () => {
+        await this.ready;
+        const chantiers = await this.chantiers.listByCompany(this.companyId);
+        return ok({
+          chantiers: chantiers
+            .filter((chantier) => chantier.status === 'open')
+            .map((chantier) => ({ id: chantier.id, nom: chantier.name })),
+          dossiers: this.documentFolders
+            .filter((folder) => folder.status === 'active' && folder.parentId === null)
+            .map((folder) => ({ id: folder.id, nom: folder.name, systemKey: folder.systemKey ?? null })),
+        });
+      },
+      // M3 — dépenses RÉCENTES avec leur imputation chantier (ciblage vocal de
+      // lier_depense_chantier) : MÊME borne et MÊME tri que le serveur (parité stricte).
+      listRecentExpenses: async () => {
+        await this.ready;
+        const list = await this.expenses.listByCompany(this.companyId);
+        return ok(
+          list
+            .map((e) => e.toProps())
+            .sort((a, b) => b.documentDate.localeCompare(a.documentDate))
+            .slice(0, 20)
+            .map((p) => ({
+              id: p.id,
+              supplierName: p.supplierName,
+              totalTtcCents: p.totalTtcCents,
+              documentDate: p.documentDate,
+              chantierId: p.chantierId ?? null,
+            })),
+        );
+      },
+      // M3 — outil vocal lier_depense_chantier : PURE délégation au MÊME chemin que le miroir
+      // de PUT /expenses/:id/chantier (assignExpenseChantier : use case AssignExpenseToChantier
+      // @bob/core, preuve tenant-scoped locale) — parité serveur stricte, aucune logique ici.
+      assignExpenseChantier: async (input) => this.assignExpenseChantier(input),
       recordExpensePayment: async (input) => {
         const r = await this.payExpense(input);
         if (!r.ok) return r;
@@ -4116,6 +4225,9 @@ export class LocalBobClient implements BobClient {
         if (!r.ok) return r;
         return ok({ quoteId: r.value.quoteId });
       },
+      // M4 — dépense dictée : MÊME chemin que le POST /expenses local (RecordExpense + écritures
+      // E1 atomiques, anti-IDOR chantier via chantierTargets). Un règlement déclaré fait naître
+      // la dépense payée avec sa preuve — mêmes gardes domaine que l'écran (parité serveur).
       recordExpense: async (input) =>
         this.recordExpense({
           supplierName: input.supplierName,
@@ -4124,6 +4236,16 @@ export class LocalBobClient implements BobClient {
           category: input.category,
           vatRatePct: input.vatRatePct ?? null,
           source: 'manual',
+          ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
+          ...(input.payment
+            ? {
+                payment: {
+                  paidOn: input.payment.paidOn,
+                  method: input.payment.method,
+                  reference: input.payment.reference ?? null,
+                },
+              }
+            : {}),
         }),
       generateInvoice: async (input) =>
         this.generateInvoice({ quoteId: input.quoteId, mode: input.mode }),

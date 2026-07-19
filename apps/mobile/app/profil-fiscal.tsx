@@ -11,7 +11,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FISCAL_PROFILE_FIELDS, type FiscalProfileView } from '@bob/core';
+import { applicableFiscalFields, type FiscalProfileView } from '@bob/core';
 import { t, type Personality } from '@bob/i18n';
 import { Button, Card, ErrorRetry, SkeletonCard, font, useTheme } from '@bob/ui';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
@@ -164,8 +164,11 @@ export default function ProfilFiscal() {
               </Card>
             )}
 
+            {/* Seuls les champs APPLICABLES à ce profil (fiscal-field-rules @bob/core) : le
+                versement libératoire n'existe qu'au régime micro (art. 151-0 CGI) — hors micro,
+                l'afficher « Manquant » serait un bruit trompeur, il est masqué. */}
             <Card radius={18} padding={0} style={{ paddingHorizontal: 16 }}>
-              {FISCAL_PROFILE_FIELDS.map((field, index, all) => (
+              {applicableFiscalFields(profile).map((field, index, all) => (
                 <FiscalFieldRow
                   key={field}
                   field={field}

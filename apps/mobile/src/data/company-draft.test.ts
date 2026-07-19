@@ -23,4 +23,16 @@ describe('registerInputFromLookup', () => {
       expect(registerInputFromLookup(lookup, 'EI', vatRegime).vatRegime).toBe(vatRegime);
     },
   );
+
+  it('Phase B : le code catégorie juridique INSEE et la qualification RGE traversent l’inscription', () => {
+    const input = registerInputFromLookup({ ...lookup, rge: true }, 'EI', 'franchise');
+    expect(input.natureJuridiqueCode).toBe('1000');
+    expect(input.estRge).toBe(true);
+  });
+
+  it('annuaire sans code juridique : le champ reste absent (jamais une valeur inventée), le RGE réel est conservé', () => {
+    const input = registerInputFromLookup({ ...lookup, natureJuridiqueCode: null }, 'EI', 'franchise');
+    expect(input.natureJuridiqueCode).toBeUndefined();
+    expect(input.estRge).toBe(false);
+  });
 });

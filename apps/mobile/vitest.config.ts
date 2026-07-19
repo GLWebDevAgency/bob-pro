@@ -11,6 +11,7 @@ export default defineConfig({
       'src/auth-confirmation/**/*.test.ts',
       'src/data/**/*.test.ts',
       'src/documents/**/*.test.ts',
+      'src/expenses/**/*.test.ts',
       'src/assistant/**/*.test.ts',
       'src/voice-flow/**/*.test.ts',
       'src/fiscal/**/*.test.ts',

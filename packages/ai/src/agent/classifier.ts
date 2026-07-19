@@ -33,7 +33,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'relance_brouillon',
     description:
-      'Rédiger un brouillon de relance pour une facture impayée (sans envoyer). Ciblable : facture ou client précis ; sans référence, la plus urgente.',
+      'Relancer une facture impayée (« relance Durand », « relance la facture de la RATP ») : présente le texte réel de la relance, puis propose l’ENVOI au client — jamais envoyé sans confirmation explicite. Ciblable : facture ou client précis ; sans référence, la plus urgente.',
     parameters: {
       type: 'object',
       properties: {
@@ -140,8 +140,34 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'payer_depense',
     description:
-      'Enregistrer un règlement fournisseur déjà effectué : demande la date et le moyen réels, puis propose l’écriture comptable. Ne déclenche aucun virement (ex. « j’ai payé Leroy Merlin hier par carte »).',
+      'Enregistrer un règlement fournisseur déjà effectué sur une dépense DÉJÀ enregistrée : demande la date et le moyen réels, puis propose l’écriture comptable. Ne déclenche aucun virement (ex. « j’ai payé Leroy Merlin hier par carte »). PAS pour créer une nouvelle dépense dictée (depense_dictee).',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'depense_dictee',
+    description:
+      'Enregistrer une dépense DICTÉE, déjà réglée (« j’ai dépensé 89 € chez Leroy Merlin en carte », « 45 € de gasoil ce matin ») : fournisseur, montant TTC, moyen de paiement, catégorie, chantier éventuel — extraits du message, questions structurées pour ce qui manque. PAS pour ouvrir le scanner (ouvrir_scan_recu), PAS pour le règlement d’une dépense existante (payer_depense).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Ce qui a été dit : fournisseur, montant, moyen (ex. « 89 € chez Leroy Merlin en carte »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'lier_depense_chantier',
+    description:
+      'Imputer une dépense EXISTANTE à un chantier ouvert (« mets la dépense Aldi sur le chantier Durand ») : rentabilité par chantier. Ne crée aucune dépense, aucune écriture. PAS pour classer un document (classer_document), PAS pour créer une dépense (depense_dictee).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Dépense et chantier dits (ex. « dépense Aldi → chantier Durand »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
   },
   {
     name: 'valider_document',
@@ -280,6 +306,8 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   position_tva: 'tva',
   balance_agee: 'balance',
   payer_depense: 'payer_depense',
+  depense_dictee: 'depense_dictee',
+  lier_depense_chantier: 'lier_depense_chantier',
   valider_document: 'valider_document',
   classer_document: 'classer_document',
   renommer_document: 'renommer_document',

@@ -1618,3 +1618,369 @@ describe('BobAgent — découvrabilité (S9 : aide + catalogue par domaines)', (
     expect(generate).not.toHaveBeenCalled();
   });
 });
+
+// —— M2 — envoyer_relance : « relance Durand » = brouillon RÉEL présenté puis ENVOI confirmé ——
+describe('relance (M2) — envoi réel via sendRelance, confirmation TOUJOURS', () => {
+  const withSend = (over: Partial<BobActions> = {}) => {
+    const sent: unknown[] = [];
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: {
+        ...actions,
+        draftRelance: async (input) =>
+          ok({ subject: `Relance facture ${input?.invoiceId ?? 'urgente'}`, body: 'Bonjour, votre facture est en retard.' }),
+        sendRelance: async (input) => {
+          sent.push(input);
+          return ok({ jobId: 'job-1', status: 'done', tone: 'ferme' });
+        },
+        ...over,
+      },
+    });
+    return { agent, sent };
+  };
+
+  it('« relance Durand » : présente le TEXTE réel du service puis PROPOSE l’envoi (jamais envoyé sans confirmation)', async () => {
+    const { agent, sent } = withSend();
+    const r = await agent.ask('Relance Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('relance');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.tool).toBe('envoyer_relance');
+    expect(r.value.pending?.args).toEqual({ invoiceId: 'inv-1' });
+    // Le brouillon présenté est le texte RÉEL de l'hôte — verbatim dans la carte de consentement.
+    expect(r.value.card.body).toContain('Relance facture inv-1');
+    expect(r.value.card.body).toContain('votre facture est en retard');
+    expect(r.value.card.body).toContain('2026-014');
+    expect(sent).toEqual([]); // rien n'est parti avant confirm()
+  });
+
+  it('confirm() exécute l’envoi réel et rend la carte « Relance envoyée ✓ »', async () => {
+    const { agent, sent } = withSend();
+    const proposed = await agent.ask('Relance la facture 2026-021');
+    expect(proposed.ok && proposed.value.kind).toBe('proposed');
+    if (!proposed.ok || !proposed.value.pending) return;
+    const done = await agent.confirm(proposed.value.pending);
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect(done.value.intent).toBe('relance');
+    expect(done.value.card.title).toBe('Relance envoyée ✓');
+    expect(sent).toEqual([{ invoiceId: 'inv-2' }]);
+  });
+
+  it('ambiguïté → question avec les FACTURES RÉELLES (followUps verbatim), rien exécuté', async () => {
+    const { agent, sent } = withSend();
+    const r = await agent.ask('Relance les clients en retard');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.ask?.[0]?.options.map((o) => o.value)).toEqual(['2026-014', '2026-021']);
+    expect(r.value.ask?.[0]?.options[0]?.followUp).toBe('Relance la facture 2026-014');
+    expect(sent).toEqual([]);
+  });
+
+  it('zéro impayé → réponse honnête avec l’état réel de l’hôte, jamais une proposition', async () => {
+    const { agent, sent } = withSend({
+      listPayableInvoices: async () => ok([]),
+      draftRelance: async () => ok({ subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé. 🎉' }),
+    });
+    const r = await agent.ask('Relance Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Aucune facture en retard');
+    expect(sent).toEqual([]);
+  });
+
+  it('cible encaissable mais PAS en retard (plan muet) → réponse honnête, aucun envoi proposé', async () => {
+    const { agent, sent } = withSend({
+      draftRelance: async () =>
+        ok({ subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — pas encore échue.' }),
+    });
+    const r = await agent.ask('Relance Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Rien à relancer pour cette cible');
+    expect(sent).toEqual([]);
+  });
+
+  it('« prépare/montre » ou hôte SANS sendRelance → brouillon seul (comportement historique intact)', async () => {
+    const { agent, sent } = withSend();
+    const draft = await agent.ask('Prépare la relance de Durand');
+    expect(draft.ok && draft.value.kind).toBe('answer');
+    expect(sent).toEqual([]);
+    // Hôte legacy sans capacité d'envoi : brouillon, comme avant M2.
+    const legacy = await makeAgent().ask('Relance Durand');
+    expect(legacy.ok && legacy.value.kind).toBe('answer');
+  });
+});
+
+// —— M4 — dépense dictée : « j'ai dépensé 89 € chez Leroy Merlin en carte » ——
+describe('depense_dictee (M4) — création vocale via scan_depense, questions structurées', () => {
+  const makeDictated = (over: Partial<BobActions> = {}) => {
+    const recorded: unknown[] = [];
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: {
+        ...actions,
+        recordExpense: async (input) => {
+          recorded.push(input);
+          return ok({ id: 'exp-new' });
+        },
+        listFilingDestinations: async () =>
+          ok({ chantiers: [{ id: 'ch-1', nom: 'Durand' }, { id: 'ch-2', nom: 'Sèvres' }], dossiers: [] }),
+        ...over,
+      },
+      runtime: { clock: { now: () => '2026-07-19T10:00:00.000Z' }, ids: { newId: () => 'run-m4' } },
+    });
+    return { agent, recorded };
+  };
+
+  it('dictée complète → PROPOSE la dépense née payée (plancher comptable), rien créé avant confirmation', async () => {
+    const { agent, recorded } = makeDictated();
+    const r = await agent.ask('J’ai dépensé 89 € chez Leroy Merlin par carte (catégorie matériel)');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('depense_dictee');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.tool).toBe('scan_depense');
+    expect(r.value.pending?.args).toEqual({
+      supplierName: 'Leroy Merlin',
+      totalTtcCents: 8900,
+      category: 'materiel',
+      documentDate: '2026-07-19', // défaut : aujourd'hui (horloge runtime), jamais inventé ailleurs
+      payment: { paidOn: '2026-07-19', method: 'card' },
+    });
+    expect(recorded).toEqual([]);
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(recorded).toEqual([r.value.pending!.args]);
+  });
+
+  it('« 45 € de gasoil ce matin » : catégorie carburant déduite, fournisseur manquant → question (rien créé)', async () => {
+    const { agent, recorded } = makeDictated();
+    const r = await agent.ask('45 € de gasoil ce matin');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('depense_dictee');
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Chez quel fournisseur ?');
+    expect(recorded).toEqual([]);
+  });
+
+  it('continuité : la réponse « chez Total » complète la dictée, puis le moyen manquant → ASK structuré', async () => {
+    const { agent } = makeDictated();
+    const history = [
+      { role: 'user' as const, text: '45 € de gasoil ce matin' },
+      { role: 'bob' as const, text: 'Il me manque le fournisseur de cette dépense de 45 €.' },
+    ];
+    const r = await agent.ask('chez Total', { history });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('depense_dictee');
+    expect(r.value.ask?.[0]?.id).toBe('depense_dictee.moyen');
+    // Les followUps sont des commandes canoniques COMPLÈTES (l'UI ne reconstruit jamais).
+    const followUp = r.value.ask?.[0]?.options.find((o) => o.value === 'card')?.followUp ?? '';
+    expect(followUp).toContain('J’ai dépensé 45 € chez Total par carte');
+    expect(followUp).toContain('carburant');
+  });
+
+  it('chantier dit et RÉEL → dépense née imputée ; chantier INCONNU → refus honnête, rien créé', async () => {
+    const { agent, recorded } = makeDictated();
+    const linked = await agent.ask('J’ai dépensé 89 € chez Leroy Merlin par carte (catégorie matériel) pour le chantier Durand');
+    expect(linked.ok).toBe(true);
+    if (!linked.ok) return;
+    expect(linked.value.kind).toBe('proposed');
+    expect(linked.value.pending?.args).toMatchObject({ chantierId: 'ch-1' });
+
+    const unknown = await agent.ask('J’ai dépensé 89 € chez Leroy Merlin par carte (catégorie matériel) pour le chantier Zanzibar');
+    expect(unknown.ok).toBe(true);
+    if (!unknown.ok) return;
+    expect(unknown.value.kind).toBe('answer');
+    expect(unknown.value.card.title).toBe('Chantier introuvable');
+    expect(recorded).toEqual([]);
+  });
+
+  it('hôte sans recordExpense → réponse honnête ; « scanne ce ticket » reste la navigation scanner', async () => {
+    const agent = makeAgent(); // actions de base : pas de recordExpense
+    const r = await agent.ask('J’ai dépensé 89 € chez Leroy Merlin par carte');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été créé');
+
+    const scan = await makeAgent().ask('Scanne ce ticket');
+    expect(scan.ok && scan.value.navigate).toBe('/scan-document');
+  });
+});
+
+// —— M3 — lier_depense_chantier : « mets la dépense Aldi sur le chantier Durand » ——
+describe('lier_depense_chantier (M3) — imputation confirmée, résolution par jetons réels', () => {
+  const makeAssign = (over: Partial<BobActions> = {}) => {
+    const assigned: unknown[] = [];
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: {
+        ...actions,
+        listRecentExpenses: async () =>
+          ok([
+            { id: 'exp-1', supplierName: 'Aldi', totalTtcCents: 4500, documentDate: '2026-07-18', chantierId: null },
+            { id: 'exp-2', supplierName: 'Leroy Merlin', totalTtcCents: 8900, documentDate: '2026-07-15', chantierId: 'ch-2' },
+          ]),
+        listFilingDestinations: async () =>
+          ok({ chantiers: [{ id: 'ch-1', nom: 'Durand' }, { id: 'ch-2', nom: 'Sèvres' }], dossiers: [] }),
+        assignExpenseChantier: async (input) => {
+          assigned.push(input);
+          return ok({ chantierId: input.chantierId, changed: true });
+        },
+        ...over,
+      },
+    });
+    return { agent, assigned };
+  };
+
+  it('résolution dépense (fournisseur) + chantier (nom réel) → PROPOSE, exécute au confirm()', async () => {
+    const { agent, assigned } = makeAssign();
+    const r = await agent.ask('Mets la dépense Aldi sur le chantier Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('lier_depense_chantier');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.tool).toBe('lier_depense_chantier');
+    expect(r.value.pending?.args).toEqual({ expenseId: 'exp-1', chantierId: 'ch-1' });
+    expect(assigned).toEqual([]);
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(assigned).toEqual([{ expenseId: 'exp-1', chantierId: 'ch-1' }]);
+  });
+
+  it('ré-imputation vers un AUTRE chantier : la carte annonce le remplacement', async () => {
+    const { agent } = makeAssign();
+    const r = await agent.ask('Mets la dépense Leroy Merlin sur le chantier Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.card.body).toContain('Elle quitte le chantier Sèvres');
+  });
+
+  it('déjà imputée à CE chantier → réponse honnête, aucune proposition', async () => {
+    const { agent, assigned } = makeAssign();
+    const r = await agent.ask('Mets la dépense Leroy Merlin sur le chantier Sèvres');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Déjà imputée');
+    expect(assigned).toEqual([]);
+  });
+
+  it('dépense ambiguë → question avec les dépenses RÉELLES ; chantier inconnu → refus honnête', async () => {
+    const { agent, assigned } = makeAssign({
+      listRecentExpenses: async () =>
+        ok([
+          { id: 'exp-1', supplierName: 'Aldi', totalTtcCents: 4500, documentDate: '2026-07-18', chantierId: null },
+          { id: 'exp-3', supplierName: 'Aldi', totalTtcCents: 1200, documentDate: '2026-07-10', chantierId: null },
+        ]),
+    });
+    const ambiguous = await agent.ask('Mets la dépense Aldi sur le chantier Durand');
+    expect(ambiguous.ok).toBe(true);
+    if (!ambiguous.ok) return;
+    expect(ambiguous.value.kind).toBe('answer');
+    expect(ambiguous.value.ask?.[0]?.id).toBe('lier_depense_chantier.depense');
+    expect(ambiguous.value.ask?.[0]?.options[0]?.followUp).toBe('Mets la dépense exp-1 sur le chantier ch-1');
+
+    const unknown = await agent.ask('Mets la dépense Aldi de 45 € sur le chantier Zanzibar');
+    expect(unknown.ok).toBe(true);
+    if (!unknown.ok) return;
+    expect(unknown.value.card.title).toBe('Chantier introuvable');
+    expect(assigned).toEqual([]);
+  });
+
+  it('le montant dit raffine les homonymes (« la dépense Aldi de 12 € »)', async () => {
+    const { agent } = makeAssign({
+      listRecentExpenses: async () =>
+        ok([
+          { id: 'exp-1', supplierName: 'Aldi', totalTtcCents: 4500, documentDate: '2026-07-18', chantierId: null },
+          { id: 'exp-3', supplierName: 'Aldi', totalTtcCents: 1200, documentDate: '2026-07-10', chantierId: null },
+        ]),
+    });
+    const r = await agent.ask('Mets la dépense Aldi de 12 € sur le chantier Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).toEqual({ expenseId: 'exp-3', chantierId: 'ch-1' });
+  });
+
+  it('hôte sans la capacité → réponse honnête, rien modifié', async () => {
+    const r = await makeAgent().ask('Mets la dépense Aldi sur le chantier Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+});
+
+// —— Polissage classer_document : la garde domaine DOCUMENT_ALREADY_LINKED parle humain ——
+describe('classer_document — DOCUMENT_ALREADY_LINKED : réponse honnête, jamais le message technique', () => {
+  const alreadyLinkedError = {
+    kind: 'domain' as const,
+    error: {
+      code: 'DOCUMENT_ALREADY_LINKED' as const,
+      documentId: 'doc-9',
+      existing: { linkedEntityType: 'chantier', linkedEntityId: 'ch-2' },
+      requested: { linkedEntityType: 'chantier', linkedEntityId: 'ch-1' },
+      message: 'Ce document est déjà rattaché à chantier/ch-2 ; rattachement demandé : chantier/ch-1. Délier d’abord le lien existant.',
+    },
+  };
+  const docActions = (fileDocument: BobActions['fileDocument']): BobActions => ({
+    ...actions,
+    listDocuments: async () =>
+      ok([
+        {
+          id: 'doc-9',
+          filename: 'ticket-aldi.jpg',
+          kind: 'receipt',
+          linkedEntityType: 'chantier',
+          linkedEntityId: 'ch-2',
+          createdAt: '2026-07-01T10:00:00.000Z',
+          displayName: 'Ticket Aldi',
+          origin: 'ocr',
+          folderId: 'folder-1',
+          reviewedAt: null,
+        },
+      ]),
+    listFilingDestinations: async () =>
+      ok({ chantiers: [{ id: 'ch-1', nom: 'Durand' }, { id: 'ch-2', nom: 'Sèvres' }], dossiers: [] }),
+    fileDocument,
+  });
+
+  it('confirm() sur un document déjà lié → carte honnête (le lien existant nommé), pas d’erreur brute', async () => {
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: docActions(async () => ({ ok: false, error: alreadyLinkedError })),
+    });
+    const proposed = await agent.ask('Classe le ticket Aldi dans le chantier Durand');
+    expect(proposed.ok && proposed.value.kind).toBe('proposed');
+    if (!proposed.ok || !proposed.value.pending) return;
+    const r = await agent.confirm(proposed.value.pending);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Déjà lié — je ne touche à rien');
+    expect(r.value.card.body).toContain('déjà lié au chantier');
+    expect(r.value.card.body).toContain('je ne l’écrase pas');
+    expect(r.value.card.body).not.toContain('DOCUMENT_ALREADY_LINKED');
+  });
+
+  it('toute autre erreur de classement reste une erreur (pas de fausse douceur)', async () => {
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: docActions(async () => ({ ok: false, error: { kind: 'dependency', port: 'documents', cause: 'x' } })),
+    });
+    const proposed = await agent.ask('Classe le ticket Aldi dans le chantier Durand');
+    if (!proposed.ok || !proposed.value.pending) return;
+    const r = await agent.confirm(proposed.value.pending);
+    expect(r.ok).toBe(false);
+  });
+});

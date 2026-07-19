@@ -108,6 +108,9 @@ const RECORD_EXPENSE_FIELDS = new Set([
   'source',
   'supplierInvoiceNumber',
   'dueAt',
+  // Imputation chantier à la création (rentabilité par chantier) — optionnelle, additive ;
+  // le chantier est PROUVÉ dans le tenant côté core (RecordExpense, anti-IDOR fail-closed).
+  'chantierId',
 ]);
 const CREATE_QUOTE_FIELDS = new Set([
   'idempotencyKey',
@@ -175,6 +178,8 @@ const COMPANY_REGISTRATION_FIELDS = new Set([
   'address',
   'tvaIntracom',
   'dateCreation',
+  'natureJuridiqueCode',
+  'estRge',
   'iban',
   'bic',
   'decennale',
@@ -373,6 +378,17 @@ function parseCompanyRegistrationBody(body: Record<string, unknown>): CompanyReg
   if (dateCreation !== undefined && !isValidDateOnly(dateCreation)) {
     issues.push({ field: 'dateCreation', message: 'Date de création AAAA-MM-JJ invalide.' });
   }
+  // Fiche annuaire complète (Phase B fiscal) : code catégorie juridique INSEE + qualification RGE
+  // remontés par le lookup SIRET — optionnels, jamais inventés quand la source est muette.
+  const natureJuridiqueCode = optionalCompanyRegistrationString(body, 'natureJuridiqueCode', issues);
+  let estRge: boolean | undefined;
+  if (Object.hasOwn(body, 'estRge')) {
+    if (typeof body.estRge !== 'boolean') {
+      issues.push({ field: 'estRge', message: 'estRge doit être un booléen.' });
+    } else {
+      estRge = body.estRge;
+    }
+  }
 
   let iban: string | undefined;
   if (Object.hasOwn(body, 'iban')) {
@@ -445,6 +461,10 @@ function parseCompanyRegistrationBody(body: Record<string, unknown>): CompanyReg
     ...(rcsOrRm === undefined ? {} : { rcsOrRm }),
     ...(tvaIntracom === undefined ? {} : { tvaIntracom }),
     ...(dateCreation === undefined ? {} : { dateCreation }),
+    ...(natureJuridiqueCode === undefined || natureJuridiqueCode === ''
+      ? {}
+      : { natureJuridiqueCode }),
+    ...(estRge === undefined ? {} : { estRge }),
     ...(iban === undefined ? {} : { iban }),
     ...(bic === undefined ? {} : { bic }),
     ...(decennale === undefined ? {} : { decennale }),
@@ -1120,6 +1140,7 @@ function parseRecordExpenseBody(
   const supplierInvoiceNumber = optionalExpenseString(body, 'supplierInvoiceNumber', 120, issues);
   const dueAt = optionalExpenseString(body, 'dueAt', 10, issues);
   const idempotencyKey = optionalExpenseString(body, 'idempotencyKey', 200, issues);
+  const chantierId = optionalExpenseString(body, 'chantierId', 200, issues);
 
   const category = body.category;
   if (typeof category !== 'string' || !EXPENSE_CATEGORIES.has(category)) {
@@ -1182,8 +1203,39 @@ function parseRecordExpenseBody(
     ...(supplierInvoiceNumber !== undefined ? { supplierInvoiceNumber } : {}),
     ...(dueAt !== undefined ? { dueAt } : {}),
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+    ...(chantierId !== undefined ? { chantierId } : {}),
     ...(payment !== undefined ? { payment } : {}),
   };
+}
+
+/** PUT /expenses/:id/chantier — { chantierId } OBLIGATOIRE : un id canonique pour imputer,
+ * null EXPLICITE pour délier. Aucun autre champ n'est toléré (frontière HTTP stricte). */
+const ASSIGN_EXPENSE_CHANTIER_FIELDS = new Set(['chantierId']);
+function parseAssignExpenseChantierBody(body: Record<string, unknown>): string | null {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !ASSIGN_EXPENSE_CHANTIER_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+  if (!Object.hasOwn(body, 'chantierId')) {
+    issues.push({
+      field: 'chantierId',
+      message: 'chantierId requis : identifiant de chantier, ou null explicite pour délier.',
+    });
+  }
+  const chantierId = body.chantierId;
+  if (
+    chantierId !== null &&
+    Object.hasOwn(body, 'chantierId') &&
+    (typeof chantierId !== 'string' ||
+      chantierId.length === 0 ||
+      chantierId.length > 200 ||
+      chantierId !== chantierId.trim() ||
+      hasControlCharacter(chantierId))
+  ) {
+    issues.push({ field: 'chantierId', message: 'Identifiant de chantier canonique requis.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return chantierId as string | null;
 }
 
 type RecordDocumentExpenseBody = {
@@ -2492,6 +2544,15 @@ export class ExpensesController {
   async regularizePayment(@Param('id') id: string, @Body() body: unknown) {
     const evidence = parseExpensePaymentEvidenceBody(body);
     return unwrap(await this.backend.regularizeExpensePayment({ expenseId: id, ...evidence }));
+  }
+  /** Impute la dépense à un chantier (rentabilité par chantier) — ou la délie avec
+   * { chantierId: null } EXPLICITE. AssignExpenseToChantier (@bob/core) : tenant strict,
+   * chantier prouvé dans le tenant (anti-IDOR fail-closed), idempotent. */
+  @Put(':id/chantier')
+  async assignChantier(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const chantierId = parseAssignExpenseChantierBody(body);
+    return unwrap(await this.backend.assignExpenseChantier({ expenseId: id, chantierId }));
   }
 }
 

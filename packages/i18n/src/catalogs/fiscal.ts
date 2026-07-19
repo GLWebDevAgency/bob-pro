@@ -256,9 +256,9 @@ export const fiscalFr = {
     direct: 'Non',
   },
   'fiscal.step.vl.helper': {
-    pote: 'Optionnel : l’impôt est prélevé en même temps que tes cotisations, à taux fixe.',
-    pro: 'Optionnel : l’impôt est prélevé avec vos cotisations, à taux fixe.',
-    direct: 'Optionnel. Taux fixe, prélevé avec les cotisations.',
+    pote: 'Une option du régime micro : l’impôt est prélevé en même temps que tes cotisations, à taux fixe. Tu peux opter à la création, ou avant le 30 septembre pour l’année suivante — sous condition de revenu fiscal de référence.',
+    pro: 'Option du régime micro : l’impôt est prélevé avec vos cotisations, à taux fixe. Option possible à la création ou avant le 30 septembre pour l’année suivante, sous condition de revenu fiscal de référence.',
+    direct: 'Option micro : impôt à taux fixe, prélevé avec les cotisations. À la création ou avant le 30/09 pour l’an prochain, sous condition de revenu.',
   },
 
   // ── Étape « TVA » ─────────────────────────────────────────────────────────────
@@ -501,5 +501,191 @@ export const fiscalFr = {
     pote: '~{amount} mobilisable avant tes provisions personnelles (retraite, maladie) — on affine ça bientôt.',
     pro: '~{amount} mobilisable avant vos provisions personnelles (retraite, maladie) — nous affinerons cela bientôt.',
     direct: '~{amount} dispo, hors provisions personnelles à venir.',
+  },
+
+  // ═══ Modales d'édition EXPERTES du profil fiscal (Phase 1B bis — fiscal-field-rules @bob/core) ═══
+  // UN SEUL bloc contigu : sélecteur de FORMES, sélecteur des RÉGIMES VALIDES par forme
+  // (clés émises par allowedTaxRegimesFor — schéma stable `fiscal.tax_regime_choice.<forme>.<regime>`),
+  // explications du statut social imposé (socialStatusExplanation), aides ACRE, source « loi ».
+
+  // ── Sélecteur de FORME juridique (édition champ par champ) ───────────────────
+  'fiscal.edit.legalForm.question': {
+    pote: 'C’est quoi ta forme juridique ?',
+    pro: 'Quelle est votre forme juridique ?',
+    direct: 'Ta forme juridique ?',
+  },
+  // « Micro-entrepreneur » choisissable mais présenté HONNÊTEMENT : un régime de l'EI, pas une forme.
+  'fiscal.legalFormChoice.micro.label': { pote: 'Micro-entrepreneur', pro: 'Micro-entrepreneur', direct: 'Micro-entrepreneur' },
+  'fiscal.legalFormChoice.micro.desc': {
+    pote: 'En vrai, c’est une entreprise individuelle (EI) au régime micro — pas une forme à part. Cotisations sur ce que t’encaisses, compta simplifiée.',
+    pro: 'Juridiquement, une entreprise individuelle (EI) au régime micro — pas une forme distincte. Cotisations sur l’encaissé, comptabilité simplifiée.',
+    direct: '= EI au régime micro. Cotisations sur l’encaissé.',
+  },
+  'fiscal.legalFormChoice.EI.label': { pote: 'Entreprise individuelle (EI)', pro: 'Entreprise individuelle (EI)', direct: 'EI' },
+  'fiscal.legalFormChoice.EI.desc': {
+    pote: 'Tu entreprends en ton nom propre, sans société. Toujours indépendant (TNS) pour tes cotisations.',
+    pro: 'Vous entreprenez en nom propre, sans créer de société. Statut social toujours indépendant (TNS).',
+    direct: 'En nom propre, sans société. TNS.',
+  },
+  'fiscal.legalFormChoice.EURL.label': { pote: 'EURL', pro: 'EURL', direct: 'EURL' },
+  'fiscal.legalFormChoice.EURL.desc': {
+    pote: 'Une SARL à un seul associé : toi. Gérant associé unique = indépendant (TNS).',
+    pro: 'Une SARL à associé unique. Gérant associé unique = indépendant (TNS).',
+    direct: 'SARL à associé unique. Gérant TNS.',
+  },
+  'fiscal.legalFormChoice.SASU.label': { pote: 'SASU', pro: 'SASU', direct: 'SASU' },
+  'fiscal.legalFormChoice.SASU.desc': {
+    pote: 'Une SAS à un seul associé : toi. Président assimilé salarié — c’est la loi.',
+    pro: 'Une SAS à associé unique. Président assimilé salarié (imposé par la loi).',
+    direct: 'SAS à associé unique. Assimilé salarié.',
+  },
+  'fiscal.legalFormChoice.SAS.label': { pote: 'SAS', pro: 'SAS', direct: 'SAS' },
+  'fiscal.legalFormChoice.SAS.desc': {
+    pote: 'Société à plusieurs associés, président assimilé salarié — c’est la loi.',
+    pro: 'Société à plusieurs associés, président assimilé salarié (imposé par la loi).',
+    direct: 'Plusieurs associés. Assimilé salarié.',
+  },
+  'fiscal.legalFormChoice.SARL.label': { pote: 'SARL', pro: 'SARL', direct: 'SARL' },
+  'fiscal.legalFormChoice.SARL.desc': {
+    pote: 'Société à plusieurs associés. Le statut du gérant dépend de ses parts : majoritaire = indépendant (TNS), sinon assimilé salarié.',
+    pro: 'Société à plusieurs associés. Le statut du gérant dépend de la gérance : majoritaire = TNS, sinon assimilé salarié.',
+    direct: 'Plusieurs associés. Statut du gérant selon la gérance.',
+  },
+
+  // ── Sélecteur du RÉGIME fiscal (seuls les régimes VALIDES pour la forme) ─────
+  'fiscal.edit.taxRegime.question': {
+    pote: 'Ton régime fiscal — je te montre seulement ceux possibles en {label}.',
+    pro: 'Votre régime fiscal — seuls ceux possibles en {label} sont proposés.',
+    direct: 'Régime fiscal (possibles en {label}).',
+  },
+  // Explications par forme (allowedTaxRegimesFor, sources légales : art. 50-0, 239, 239 bis AA/AB,
+  // 1655 sexies CGI — pédagogie documentée dans fiscal-field-rules.ts @bob/core).
+  // Seuils micro : JAMAIS un montant en dur ici (chiffre périmable — doctrine référentiel
+  // temporel @bob/core). {ventes}/{services} sont interpolés par l'appelant depuis
+  // resolveParameter(KEY_MICRO_CEILING_*) à la date du jour (microCeilingParams, mobile).
+  'fiscal.tax_regime_choice.micro.micro': {
+    pote: 'En micro, c’est LE régime : impôt et cotisations calculés sur ce que t’encaisses, tant que tu restes sous les seuils (≈ {ventes} ventes / {services} services).',
+    pro: 'Le régime de la micro-entreprise : impôt et cotisations sur l’encaissé, sous les seuils (≈ {ventes} ventes / {services} services).',
+    direct: 'Impôt + cotisations sur l’encaissé. Seuils ≈ {ventes} / {services}.',
+  },
+  'fiscal.tax_regime_choice.EI.micro': {
+    pote: 'Possible si tu restes sous les seuils (≈ {ventes} ventes / {services} services) : tout est calculé sur l’encaissé, compta ultra simple.',
+    pro: 'Possible sous les seuils (≈ {ventes} ventes / {services} services) : calcul sur l’encaissé, comptabilité très simplifiée.',
+    direct: 'Si sous les seuils (≈ {ventes} / {services}). Calcul sur l’encaissé.',
+  },
+  'fiscal.tax_regime_choice.EI.reel_ir': {
+    pote: 'Le régime par défaut de l’EI : ton bénéfice réel est imposé à ton nom, charges déduites.',
+    pro: 'Le régime par défaut de l’EI : bénéfice réel imposé à votre nom, charges déduites.',
+    direct: 'Défaut EI. Bénéfice réel imposé à ton nom.',
+  },
+  'fiscal.tax_regime_choice.EI.is': {
+    pote: 'Possible depuis 2022 : ton EI est imposée comme une société — elle paie l’impôt, toi tu te rémunères.',
+    pro: 'Possible depuis 2022 : l’EI est assimilée à une société soumise à l’IS — la société paie l’impôt, vous vous rémunérez.',
+    direct: 'Depuis 2022. La société paie l’impôt.',
+  },
+  'fiscal.tax_regime_choice.EURL.micro': {
+    pote: 'Possible depuis 2017 si t’es l’associé unique ET le gérant (une personne, pas une société), sous les seuils (≈ {ventes} ventes / {services} services) : tout est calculé sur l’encaissé.',
+    pro: 'Possible depuis 2017 lorsque l’associé unique, personne physique, est aussi le gérant, sous les seuils (≈ {ventes} ventes / {services} services) : calcul sur l’encaissé.',
+    direct: 'Depuis 2017, si associé unique = gérant (personne physique), sous ≈ {ventes} / {services}. Calcul sur l’encaissé.',
+  },
+  'fiscal.tax_regime_choice.EURL.reel_ir': {
+    pote: 'Le défaut en EURL : le bénéfice est imposé directement à ton nom, charges déduites.',
+    pro: 'Le régime par défaut de l’EURL : bénéfice imposé directement à votre nom, charges déduites.',
+    direct: 'Défaut EURL. Bénéfice imposé à ton nom.',
+  },
+  'fiscal.tax_regime_choice.EURL.is': {
+    pote: 'Sur option : la société paie l’impôt, toi tu te verses une rémunération. L’option devient définitive après 5 exercices.',
+    pro: 'Sur option : la société paie l’impôt sur les sociétés, vous vous versez une rémunération. Option définitive après 5 exercices.',
+    direct: 'Sur option. La société paie l’IS. Définitif après 5 exercices.',
+  },
+  'fiscal.tax_regime_choice.SASU.is': {
+    pote: 'Le régime normal des sociétés : la société paie l’impôt sur ses bénéfices, toi t’es imposé sur ce que tu te verses.',
+    pro: 'Le régime par défaut des sociétés : la société paie l’impôt sur ses bénéfices, vous êtes imposé sur ce que vous vous versez.',
+    direct: 'Défaut sociétés. La société paie l’impôt.',
+  },
+  'fiscal.tax_regime_choice.SASU.option_ir': {
+    pote: 'Option pour les jeunes sociétés : le bénéfice est imposé à ton nom — 5 exercices max, société de moins de 5 ans.',
+    pro: 'Option réservée aux jeunes sociétés : bénéfice imposé à votre nom — 5 exercices maximum, société de moins de 5 ans.',
+    direct: 'Jeunes sociétés. 5 exercices max, < 5 ans.',
+  },
+  'fiscal.tax_regime_choice.SAS.is': {
+    pote: 'Le régime normal des sociétés : la société paie l’impôt sur ses bénéfices, toi t’es imposé sur ce que tu te verses.',
+    pro: 'Le régime par défaut des sociétés : la société paie l’impôt sur ses bénéfices, vous êtes imposé sur ce que vous vous versez.',
+    direct: 'Défaut sociétés. La société paie l’impôt.',
+  },
+  'fiscal.tax_regime_choice.SAS.option_ir': {
+    pote: 'Option pour les jeunes sociétés : le bénéfice est imposé au nom des associés — 5 exercices max, société de moins de 5 ans.',
+    pro: 'Option réservée aux jeunes sociétés : bénéfice imposé au nom des associés — 5 exercices maximum, société de moins de 5 ans.',
+    direct: 'Jeunes sociétés. 5 exercices max, < 5 ans.',
+  },
+  'fiscal.tax_regime_choice.SARL.is': {
+    pote: 'Le régime normal des sociétés : la société paie l’impôt sur ses bénéfices, toi t’es imposé sur ce que tu te verses.',
+    pro: 'Le régime par défaut des sociétés : la société paie l’impôt sur ses bénéfices, vous êtes imposé sur ce que vous vous versez.',
+    direct: 'Défaut sociétés. La société paie l’impôt.',
+  },
+  'fiscal.tax_regime_choice.SARL.option_ir': {
+    pote: 'Option pour les jeunes sociétés (5 exercices max, moins de 5 ans) — ou sans limite de durée pour une SARL de famille.',
+    pro: 'Option pour les jeunes sociétés (5 exercices maximum, moins de 5 ans) — ou sans limite pour une SARL de famille.',
+    direct: 'Jeunes sociétés (5 exercices max) ou SARL de famille.',
+  },
+
+  // ── Statut social : le POURQUOI (socialStatusExplanation — jamais un verrou muet) ──
+  'fiscal.social_status_explanation.sas_president_assimile': {
+    pote: 'Président de SAS ou SASU = assimilé salarié : c’est la loi (art. L311-3 du Code de la sécurité sociale), ça découle de ta forme juridique — même si t’es l’unique actionnaire. Cotisations comme un salarié, mais sans assurance chômage.',
+    pro: 'Le président de SAS/SASU est assimilé salarié : la loi l’impose (art. L311-3 CSS), quelle que soit sa part au capital. Cotisations du régime général, sans assurance chômage.',
+    direct: 'Assimilé salarié : imposé par la loi (art. L311-3 CSS). Cotisations salarié, pas de chômage.',
+  },
+  'fiscal.social_status_explanation.ei_tns': {
+    pote: 'En entreprise individuelle, t’es toujours travailleur indépendant (TNS) : c’est la loi, ça découle de ta forme juridique. Cotisations d’indépendant, pas d’assurance chômage.',
+    pro: 'En entreprise individuelle, vous êtes toujours travailleur non salarié (TNS) : la loi l’impose, cela découle de votre forme juridique. Cotisations d’indépendant, sans assurance chômage.',
+    direct: 'TNS : imposé par la loi (forme EI). Cotisations d’indépendant.',
+  },
+  'fiscal.social_status_explanation.micro_tns': {
+    pote: 'En micro, t’es toujours travailleur indépendant (TNS) : c’est la loi. Tes cotisations sont un simple pourcentage de ce que t’encaisses.',
+    pro: 'En micro-entreprise, vous êtes toujours travailleur non salarié (TNS) : la loi l’impose. Cotisations calculées en pourcentage de l’encaissé.',
+    direct: 'TNS : imposé par la loi (micro). Cotisations en % de l’encaissé.',
+  },
+  'fiscal.social_status_explanation.eurl_gerant_tns': {
+    pote: 'Gérant associé unique d’EURL = travailleur indépendant (TNS) : c’est la loi (art. L611-1 du Code de la sécurité sociale), ça découle de ta forme juridique.',
+    pro: 'Le gérant associé unique d’EURL est travailleur non salarié (TNS) : la loi l’impose (art. L611-1 CSS), cela découle de votre forme juridique.',
+    direct: 'TNS : imposé par la loi (art. L611-1 CSS, gérant associé unique).',
+  },
+  'fiscal.social_status_explanation.sarl_selon_gerance': {
+    pote: 'En SARL, ça dépend de ta gérance : majoritaire = indépendant (TNS), minoritaire ou égalitaire = assimilé salarié. T’es dans quel cas ?',
+    pro: 'En SARL, le statut dépend de la gérance : majoritaire = TNS, minoritaire ou égalitaire = assimilé salarié. Quel est votre cas ?',
+    direct: 'Gérance majoritaire = TNS ; minoritaire/égalitaire = assimilé. Ton cas ?',
+  },
+  // Descriptions des 2 choix SARL (le seul vrai choix de statut social).
+  'fiscal.socialStatusChoice.tns.desc': {
+    pote: 'Gérant majoritaire (plus de 50 % des parts, seul ou en famille) : cotisations d’indépendant, pas d’assurance chômage.',
+    pro: 'Gérant majoritaire (plus de 50 % des parts, seul ou avec le collège de gérance) : cotisations d’indépendant, sans assurance chômage.',
+    direct: 'Gérant majoritaire (> 50 % des parts). Cotisations d’indépendant.',
+  },
+  'fiscal.socialStatusChoice.assimile_salarie.desc': {
+    pote: 'Gérant minoritaire ou égalitaire : cotisations comme un salarié, sans assurance chômage.',
+    pro: 'Gérant minoritaire ou égalitaire : cotisations du régime général, sans assurance chômage.',
+    direct: 'Gérant minoritaire/égalitaire. Cotisations salarié.',
+  },
+
+  // ── Aide ACRE (étape du mini-flow ET édition) ────────────────────────────────
+  'fiscal.step.acre.helper': {
+    pote: 'L’ACRE réduit tes cotisations la 1re année. Automatique pour les sociétés éligibles ; en micro, il faut la demander (dans les 45 jours après la création).',
+    pro: 'L’ACRE réduit les cotisations la première année. Automatique pour les sociétés éligibles ; sur demande pour les micro-entrepreneurs (dans les 45 jours suivant la création).',
+    direct: 'Réduit les cotisations la 1re année. Auto (sociétés éligibles), sur demande (micro, 45 jours).',
+  },
+
+  // ── Légende de source « certitude juridique » (source_fiable dérivé de la forme, PAS l'INSEE) ──
+  'fiscal.source.lawDerived': {
+    pote: 'C’est la loi qui le dit — ça découle de ta forme juridique · {date}',
+    pro: 'Imposé par la loi — découle de votre forme juridique · {date}',
+    direct: 'Imposé par la loi · {date}',
+  },
+
+  // ── Légende de source « repris de l'inscription » (source 'user_form' : le choix d'onboarding,
+  //    PAS une fiche SIRET ni une confirmation faite dans cet écran) ──────────────────────────────
+  'fiscal.source.fromRegistration': {
+    pote: 'Repris de ton inscription · {date}',
+    pro: 'Repris de votre inscription · {date}',
+    direct: 'Repris de l’inscription · {date}',
   },
 } as const satisfies Record<string, Copy>;

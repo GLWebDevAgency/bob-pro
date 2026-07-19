@@ -80,6 +80,7 @@ interface CompanyRow {
   trade: string; vatRegime: string; rcsOrRm: string | null; addrLine1: string; addrZip: string; addrCity: string;
   customerPortfolio: string | null;
   tvaIntracom: string | null; dateCreation: Date | null;
+  natureJuridiqueCode: string | null; estRge: boolean | null;
   iban: string | null; bic: string | null; insurerName: string | null; policyNo: string | null;
   coverage: string | null; policyExpiresAt: Date | null;
   closedAt: Date | null; closureReason: string | null;
@@ -101,6 +102,9 @@ export function companyRowToProps(row: CompanyRow): CompanyProps {
   if (row.rcsOrRm) props.rcsOrRm = row.rcsOrRm;
   if (row.tvaIntracom) props.tvaIntracom = row.tvaIntracom;
   if (row.dateCreation) props.dateCreation = row.dateCreation.toISOString().slice(0, 10);
+  if (row.natureJuridiqueCode) props.natureJuridiqueCode = row.natureJuridiqueCode;
+  // `false` est une donnée réelle (« pas RGE à l'annuaire ») — seul NULL signifie « jamais fourni ».
+  if (row.estRge !== null) props.estRge = row.estRge;
   if (row.iban) props.iban = row.iban;
   if (row.bic) props.bic = row.bic;
   if (row.insurerName && row.policyNo && row.coverage && row.policyExpiresAt) {
@@ -133,6 +137,8 @@ export function companyPropsToCreate(p: CompanyProps) {
     addrCity: p.address.city,
     tvaIntracom: p.tvaIntracom ?? null,
     dateCreation: p.dateCreation ? new Date(p.dateCreation) : null,
+    natureJuridiqueCode: p.natureJuridiqueCode ?? null,
+    estRge: p.estRge ?? null,
     iban: p.iban ?? null,
     bic: p.bic ?? null,
     insurerName: p.decennale?.insurer ?? null,
@@ -208,6 +214,7 @@ interface ExpenseRow {
   source: string;
   supplierInvoiceNumber: string | null;
   dueAt: string | null;
+  chantierId: string | null;
 }
 
 /**
@@ -255,6 +262,8 @@ export function expenseRowToProps(row: ExpenseRow): ExpenseProps {
     source: row.source as ExpenseSource,
     supplierInvoiceNumber: row.supplierInvoiceNumber,
     dueAt: row.dueAt,
+    // Projection TOUJOURS explicite (parité domaine) : NULL = dépense hors chantier.
+    chantierId: row.chantierId,
   };
 }
 
@@ -284,6 +293,7 @@ export function expensePropsToPersistence(p: ExpenseProps) {
     source: p.source,
     supplierInvoiceNumber: p.supplierInvoiceNumber ?? null,
     dueAt: p.dueAt ?? null,
+    chantierId: p.chantierId ?? null,
   };
 }
 

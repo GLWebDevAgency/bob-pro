@@ -18,6 +18,7 @@ import type { StripeBillingService } from './payments/stripe-billing.service';
 import { AppModule } from './app.module';
 import { StripeBillingService as LiveStripeBillingService } from './payments/stripe-billing.service';
 import { StripeWebhookController } from './payments/stripe-webhook.controller';
+import { DisabledPaymentGateway } from './payments/payment-gateway';
 
 const PRINCIPAL: Principal = { userId: 'user-owner', companyId: 'company-mercier' };
 
@@ -69,16 +70,18 @@ function authoritativeBobLists(service: BackendService) {
 describe('frontières runtime live — aucune fixture silencieuse', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('getCashflow en live sans solde confirmé : indisponible, jamais une fixture ni un zéro', async () => {
+  it('getCashflow en live sans solde confirmé ni document : état vide marqué none, jamais un solde qualifié inventé', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
     const { service } = harness();
     vi.stubEnv('DEMO_MODE', 'false');
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    expect(result).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    // Tenant vierge : la projection vide à zéro est la vérité et se déclare comme telle
+    // (`bankingSource: 'none'`) — jamais un montant présenté comme une observation qualifiée.
+    expect(result).toMatchObject({
+      ok: true,
+      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
     });
   });
 
@@ -89,11 +92,11 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    // Le seed de test ne porte aucun solde confirmé : DEMO_MODE ne peut ni le réactiver ni
-    // transformer l'absence de donnée bancaire en montant affichable.
-    expect(result).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    // Le seed de test ne porte ni solde confirmé ni document financier : DEMO_MODE ne peut ni
+    // réactiver une fixture ni maquiller cet état vide en observation bancaire qualifiée.
+    expect(result).toMatchObject({
+      ok: true,
+      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
     });
   });
 
@@ -253,6 +256,51 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
     expect(JSON.stringify(result)).not.toContain('cus_secret1');
     expect(JSON.stringify(result)).not.toContain('sub_secret1');
     expect(JSON.stringify(result)).not.toContain('evt_internal_1');
+  });
+
+  it('factures d’abonnement en accès anticipé (DisabledPaymentGateway) : 200 liste vide, la vérité', async () => {
+    // Aucune variable Stripe posée → passerelle inerte par construction : aucun webhook n'a pu
+    // être vérifié, donc aucune facture n'a jamais pu être persistée — « [] » est la vérité,
+    // pas une panne (bug fondateur : 503 stripe-billing sur l'écran Compte en early-access).
+    const { service } = harness(new DisabledPaymentGateway(), null);
+
+    const result = await asPrincipal(() => service.listSubscriptionInvoices());
+
+    expect(result).toEqual({ ok: true, value: [] });
+  });
+
+  it('factures d’abonnement passerelle ACTIVE sans service Stripe : vraie panne, indisponible', async () => {
+    const { service } = harness({ subscriptionBillingAvailable: true } as PaymentGatewayPort, null);
+
+    const result = await asPrincipal(() => service.listSubscriptionInvoices());
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'stripe-billing' },
+    });
+  });
+
+  it('factures d’abonnement passerelle ACTIVE et lecture Stripe en échec : erreur de dépendance, jamais []', async () => {
+    const stripeBilling = {
+      listSubscriptionInvoices: vi.fn(async () => {
+        throw new Error('stripe repository down');
+      }),
+    } as unknown as StripeBillingService;
+    const { service } = harness(
+      { subscriptionBillingAvailable: true } as PaymentGatewayPort,
+      stripeBilling,
+    );
+
+    const result = await asPrincipal(() => service.listSubscriptionInvoices());
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'stripe-billing-invoices',
+        cause: 'stripe repository down',
+      },
+    });
   });
 
   it('la composition Nest live enregistre le webhook et son coordinateur Stripe durable', () => {

@@ -1,10 +1,10 @@
-import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR, parisDateOnly, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, formatEUR, parisDateOnly, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
 import { redactPII } from '../guardrails/pii-redaction';
 import { type LlmPort } from '../llm/port';
-import { type AgentDocument, type BobActions, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
+import { type AgentDocument, type AgentExpense, type BobActions, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
@@ -77,6 +77,158 @@ function legacyExpenseGuidanceCard(): ActionCard {
       + 'Rien n’a été modifié. Tu peux la régulariser depuis l’écran Dépenses (badge « Payée — à justifier ») : '
       + 'même formulaire, et j’enregistre l’écriture comptable qui manque.',
   };
+}
+
+/** Lien métier EXISTANT extrait d'une erreur domaine DOCUMENT_ALREADY_LINKED — null sinon.
+ * La garde anti-écrasement du core (Document.classify) refuse un lien DIFFÉRENT : Bob la
+ * traduit en réponse honnête, jamais en message technique brut. */
+function documentAlreadyLinkedTarget(
+  error: AppError,
+): { linkedEntityType: string; linkedEntityId: string } | null {
+  if (error.kind !== 'domain' || error.error.code !== 'DOCUMENT_ALREADY_LINKED') return null;
+  return error.error.existing;
+}
+
+/** Libellé parlé du type de lien métier d'un document (« déjà lié AU CHANTIER Durand »). */
+const LINKED_ENTITY_SPOKEN: Readonly<Record<string, string>> = {
+  chantier: 'au chantier',
+  invoice: 'à la facture',
+  quote: 'au devis',
+  expense: 'à la dépense',
+  customer: 'au client',
+};
+
+/** Carte honnête de la garde DOCUMENT_ALREADY_LINKED : rien n'est écrasé, rien n'est modifié. */
+function alreadyLinkedCard(
+  existing: { linkedEntityType: string; linkedEntityId: string },
+  targetLabel?: string | null,
+): ActionCard {
+  const typeLabel = LINKED_ENTITY_SPOKEN[existing.linkedEntityType] ?? `à ${existing.linkedEntityType}`;
+  return {
+    title: 'Déjà lié — je ne touche à rien',
+    body:
+      `Ce document est déjà lié ${typeLabel} ${targetLabel ?? existing.linkedEntityId} — je ne l’écrase pas. `
+      + 'Rien n’a été modifié : délie-le d’abord depuis sa fiche si tu veux le reclasser.',
+  };
+}
+
+/** Montant TTC dit (« 89 € », « 89,90 euros ») → centimes ; null si absent ou invalide. */
+function extractSpokenAmountCents(text: string): number | null {
+  const m = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?\b|eur\b)/i.exec(text);
+  if (m?.[1] === undefined) return null;
+  const cents = Math.round(Number(m[1].replace(',', '.')) * 100);
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+/** Fournisseur dit (« chez Leroy Merlin ») — extrait du texte BRUT (casse/accents conservés :
+ * c'est un libellé), borné au premier délimiteur (moyen, date, chantier, ponctuation). */
+function extractSpokenSupplier(text: string): string | null {
+  const m =
+    /\b(?:chez|aupr[eè]s de|fournisseur)\s+([^,;.!?]+?)(?=\s+(?:en|par|pour|avec|ce|cette|hier|aujourd\S*|le\s+\d|d[ée]pens\S*|cat[ée]gorie)\b|\s*[,;.!?]|$)/iu.exec(
+      text,
+    );
+  const name = m?.[1]?.replace(/\s+/g, ' ').trim() ?? '';
+  return name.length >= 2 ? name : null;
+}
+
+/** Libellé parlé des catégories de dépense (mêmes valeurs que le domaine ExpenseCategory). */
+const EXPENSE_CATEGORY_SPOKEN: Readonly<Record<ExpenseCategory, string>> = {
+  fournitures: 'fournitures',
+  materiel: 'matériel',
+  carburant: 'carburant',
+  repas: 'repas',
+  sous_traitance: 'sous-traitance',
+  autre: 'autre',
+};
+
+/** Catégorie dite ou déduite de mots-clés SÛRS (gasoil→carburant…) — null : à demander,
+ * jamais devinée au hasard. Le marqueur explicite « catégorie X » (followUps ASK) prime. */
+function extractSpokenExpenseCategory(normalizedText: string): ExpenseCategory | null {
+  const explicit = /categorie\s+(fournitures?|materiel|carburant|repas|sous[ -]?traitance|autres?)/.exec(normalizedText);
+  if (explicit?.[1] !== undefined) {
+    const raw = explicit[1];
+    if (raw.startsWith('fourniture')) return 'fournitures';
+    if (raw.startsWith('sous')) return 'sous_traitance';
+    if (raw.startsWith('autre')) return 'autre';
+    return raw as ExpenseCategory;
+  }
+  if (/\b(gasoil|gazole|essence|diesel|carburant|adblue|gpl|sp95|sp98|e85)\b/.test(normalizedText)) return 'carburant';
+  if (/\b(repas|restaurant|resto|dejeuner|diner|sandwich|cantine)\b/.test(normalizedText)) return 'repas';
+  if (/\bsous[ -]?trait/.test(normalizedText)) return 'sous_traitance';
+  if (/\b(materiel|outillage)\b/.test(normalizedText)) return 'materiel';
+  if (/\b(fournitures?|visserie|consommables?|quincaillerie)\b/.test(normalizedText)) return 'fournitures';
+  return null;
+}
+
+/** Rendu parlé d'un montant en centimes SANS séparateur de milliers (re-parsable par
+ * extractSpokenAmountCents dans les commandes de suivi — formatEUR insère des espaces). */
+function spokenAmountLabel(cents: number): string {
+  return cents % 100 === 0 ? `${cents / 100} €` : `${(cents / 100).toFixed(2).replace('.', ',')} €`;
+}
+
+/** « par carte » / « par virement » / « en espèces » — phrase du moyen dans une commande. */
+function spokenMethodPhrase(method: PaymentMethod): string {
+  return method === 'cash' ? 'en espèces' : `par ${expensePaymentMethodLabel(method)}`;
+}
+
+/** Commande CANONIQUE de la dépense dictée (M4) — les followUps ASK la renvoient VERBATIM :
+ * chaque tour reparse la commande complète, garantie de re-classification depense_dictee. */
+function dictatedExpenseCommand(parts: {
+  amountCents: number;
+  supplier: string;
+  method?: PaymentMethod | null;
+  category?: ExpenseCategory | null;
+  dateFr?: string | null;
+  chantierName?: string | null;
+}): string {
+  return (
+    `J’ai dépensé ${spokenAmountLabel(parts.amountCents)} chez ${parts.supplier}`
+    + (parts.method ? ` ${spokenMethodPhrase(parts.method)}` : '')
+    + (parts.dateFr ? ` le ${parts.dateFr}` : '')
+    + (parts.category ? ` (catégorie ${EXPENSE_CATEGORY_SPOKEN[parts.category]})` : '')
+    + (parts.chantierName ? ` pour le chantier ${parts.chantierName}` : '')
+  );
+}
+
+/** Date FR (JJ/MM/AAAA) d'un DateOnly — affichage uniquement. */
+function frDate(dateOnly: string): string {
+  return `${dateOnly.slice(8, 10)}/${dateOnly.slice(5, 7)}/${dateOnly.slice(0, 4)}`;
+}
+
+/** Mots du GESTE d'imputation dépense→chantier (M3) — neutralisés avant le ciblage par jetons :
+ * « mets la dépense Aldi sur le chantier Durand » ne cible que par « aldi », jamais par « depense ». */
+const EXPENSE_ASSIGN_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'mets', 'met', 'mettre', 'impute', 'imputer', 'imputes', 'affecte', 'affecter', 'affectes',
+  'lie', 'lier', 'lies', 'rattache', 'rattacher', 'rattaches', 'attache', 'attacher', 'associe',
+  'associer', 'bascule', 'basculer', 'range', 'ranger', 'ranges', 'classe', 'classer', 'classes',
+  'deplace', 'deplacer', 'passe', 'passer', 'depense', 'depenses', 'chantier', 'chantiers',
+  'facture', 'ticket', 'recu', 'celle', 'celui', 'cette', 'cet', 'mon', 'mes', 'les', 'des',
+  'pour', 'sur', 'dans', 'vers', 'aux', 'euros', 'euro', 'hier', 'aujourd', 'aujourdhui', 'stp',
+  'peux', 'veux', 'plait', 'merci',
+]);
+
+/** Ciblage par jetons SIGNIFICATIFS d'une dépense (fournisseur / id / montant) — même doctrine
+ * que matchDocumentsByTokens : toute ambiguïté redevient une question, jamais un choix deviné. */
+function matchExpensesByTokens(conversation: string, expenses: readonly AgentExpense[]): AgentExpense[] {
+  const normalizedConversation = normalized(conversation);
+  const conversationTokens = normalizedConversation
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3 && !EXPENSE_ASSIGN_GESTURE_WORDS.has(word));
+  const byName = expenses.filter((expense) => {
+    const id = normalized(expense.id);
+    if (id.length >= 3 && containsExactTokens(normalizedConversation, id)) return true;
+    const supplierTokens = new Set(
+      normalized(expense.supplierName).split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+    );
+    return conversationTokens.some((word) => supplierTokens.has(word));
+  });
+  // Le montant dit RAFFINE (« la dépense Aldi de 89 € ») — il ne crée jamais un match seul.
+  const amountCents = extractSpokenAmountCents(conversation);
+  if (amountCents !== null && byName.length > 1) {
+    const byAmount = byName.filter((expense) => expense.totalTtcCents === amountCents);
+    if (byAmount.length > 0) return byAmount;
+  }
+  return byName;
 }
 
 export interface PendingAction {
@@ -699,6 +851,9 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'position_tva') return 'tva';
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'enregistrer_reglement_depense') return 'payer_depense';
+  if (tool === 'envoyer_relance') return 'relance';
+  if (tool === 'scan_depense') return 'depense_dictee';
+  if (tool === 'lier_depense_chantier') return 'lier_depense_chantier';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -826,6 +981,12 @@ export class BobAgent {
     const isPurchaseOrderContinuation = lastBobTurn !== undefined
       && /num[ée]ro du bon de commande/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /bon de commande|purchase order|num[ée]ro d.engagement|\bbc[- ]?\d/i.test(turn.text));
+    // M4 — continuité de la dépense dictée : après une question Bob (fournisseur/montant/moyen/
+    // catégorie « … de cette dépense »), la réponse courte (« chez Total », « 89 € ») poursuit
+    // LE parcours en cours au lieu de ressusciter un autre intent.
+    const isDictatedExpenseContinuation = lastBobTurn !== undefined
+      && /(fournisseur|montant|moyen|cat[ée]gorie|date).{0,50}d[ée]pense|d[ée]pense.{0,50}(fournisseur|montant|moyen|cat[ée]gorie|date)/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /j\W{0,3}ai d[ée]pens[ée]|\d\s*(?:€|euros?)|d[ée]pense/i.test(turn.text));
     // B8 — passerelle d'enchaînement : après « Bon de commande lié ✓ », un OUI franc délègue au
     // flow generer_facture_devis EXISTANT via sa commande canonique VERBATIM ; un NON franc clôt
     // proprement (le lien, lui, est déjà fait). Jamais d'action sur une réponse ambiguë.
@@ -849,7 +1010,7 @@ export class BobAgent {
       ? `Fais la facture du devis ${invoiceChainRef}`
       : null;
     const classificationMessage = chainCommand
-      ?? (isExpensePaymentContinuation || isPurchaseOrderContinuation
+      ?? (isExpensePaymentContinuation || isPurchaseOrderContinuation || isDictatedExpenseContinuation
         ? `${recentUserTurns.map((turn) => turn.text).join(' ')} ${userMessage}`
         : userMessage);
     // Le message des handlers : la commande canonique quand l'enchaînement a été accepté,
@@ -1357,17 +1518,117 @@ export class BobAgent {
           },
         });
       }
-      const r = await this.deps.actions.draftRelance(target ? { invoiceId: target.id } : undefined);
-      if (!r.ok) return err(r.error);
+      // M2 — envoi RÉEL (envoyer_relance) quand l'hôte le fournit : « relance Durand » présente
+      // le BROUILLON réel du service puis propose l'envoi — jamais envoyé sans confirmation
+      // (plancher sortant, mise en demeure possible). Le brouillon seul reste accessible
+      // (« prépare/montre la relance », « sans envoyer ») et reste le comportement des hôtes
+      // sans capacité d'envoi (rétro-compatibilité stricte).
+      const sendTool = this.tool('envoyer_relance');
+      const normalizedRelanceMessage = normalized(message);
+      const draftOnly =
+        sendTool === undefined ||
+        !payable.ok ||
+        /\b(brouillon|prepare|preparer|prepares|redige|rediger|rediges|montre|montrer|montres|ecris|ecrire|relis|lis)\b/.test(
+          normalizedRelanceMessage,
+        ) ||
+        /\bsans (l\W{0,3})?envoyer\b/.test(normalizedRelanceMessage);
+      if (draftOnly) {
+        const r = await this.deps.actions.draftRelance(target ? { invoiceId: target.id } : undefined);
+        if (!r.ok) return err(r.error);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [
+            target ? `Cibler la facture ${target.number} (${target.customerName})` : 'Repérer la facture en retard',
+            'Rédiger la relance',
+          ],
+          card: { title: r.value.subject, body: r.value.body },
+        });
+      }
+      // Zéro impayé : l'état RÉEL, honnête — le message par défaut du plan de relances de l'hôte.
+      if (payable.value.length === 0) {
+        const r = await this.deps.actions.draftRelance(undefined);
+        if (!r.ok) return err(r.error);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier les factures à relancer'],
+          card: { title: r.value.subject, body: r.value.body },
+        });
+      }
+      // Ambiguïté → question avec les FACTURES RÉELLES : jamais un envoi sur une cible devinée.
+      if (!target) {
+        const options = payable.value.slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les factures à encaisser', 'Lever l’ambiguïté de la cible'],
+          card: { title: 'Quelle facture ?', body: 'Dis-moi quelle facture relancer :' },
+          choices: options.map((i) => ({
+            label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`,
+            value: `Relance la facture ${i.number}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'relance.cible',
+              question: 'Quelle facture veux-tu relancer ?',
+              header: 'Relance',
+              items: options.map((i) => ({
+                value: i.number,
+                label: i.number,
+                description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                followUp: `Relance la facture ${i.number}`,
+              })),
+            }),
+          ],
+        });
+      }
+      // Le TEXTE RÉEL du service (deriveRelancePlan côté hôte) — jamais un message improvisé.
+      const draft = await this.deps.actions.draftRelance({ invoiceId: target.id });
+      if (!draft.ok) return err(draft.error);
+      // Facture encaissable mais PAS en retard : le plan ne la relance pas — réponse honnête.
+      if (/^rien a relancer/.test(normalized(draft.value.subject))) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [`Cibler la facture ${target.number} (${target.customerName})`, 'Vérifier le plan de relances'],
+          card: { title: draft.value.subject, body: draft.value.body },
+        });
+      }
+      const args = { invoiceId: target.id };
+      const parsed = sendTool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Envoyer la relance de la facture ${target.number} à ${target.customerName} (reste dû ${formatEUR(target.remainingCents)})`;
+      if (requiresConfirmation(sendTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: [
+            `Cibler la facture ${target.number} (${target.customerName})`,
+            'Rédiger la relance (texte réel du plan de relances)',
+            'Attendre ta confirmation',
+          ],
+          card: {
+            title: 'Relance à confirmer — voici le message',
+            body: `Objet : ${draft.value.subject}\n${draft.value.body}\n—\n${label}. J’envoie ce message au client ?`,
+          },
+          pending: { tool: sendTool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await sendTool.run(parsed.value);
+      if (!run.ok) return err(run.error);
       return ok({
-        kind: 'answer',
+        kind: 'done',
         intent,
         model,
-        plan: [
-          target ? `Cibler la facture ${target.number} (${target.customerName})` : 'Repérer la facture en retard',
-          'Rédiger la relance',
-        ],
-        card: { title: r.value.subject, body: r.value.body },
+        plan: ['Envoyer la relance'],
+        card: { title: 'Relance envoyée ✓', body: `${label} — c’est parti.` },
       });
     }
 
@@ -1729,7 +1990,25 @@ export class BobAgent {
         });
       }
       const run = await tool.run(args);
-      if (!run.ok) return err(run.error);
+      if (!run.ok) {
+        // Garde anti-écrasement du domaine (DOCUMENT_ALREADY_LINKED) : réponse honnête —
+        // le lien existant est nommé (chantier réel si connu), rien n'est écrasé ni modifié.
+        const existing = documentAlreadyLinkedTarget(run.error);
+        if (existing) {
+          const existingChantier =
+            existing.linkedEntityType === 'chantier'
+              ? destinationsResult.value.chantiers.find((c) => c.id === existing.linkedEntityId)?.nom ?? null
+              : null;
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Classer le document', 'Détecter un lien métier existant'],
+            card: alreadyLinkedCard(existing, existingChantier),
+          });
+        }
+        return err(run.error);
+      }
       return ok({
         kind: 'done',
         intent,
@@ -2521,6 +2800,490 @@ export class BobAgent {
         model,
         plan: ['Enregistrer la preuve du règlement'],
         card: { title: 'Règlement enregistré ✓', body: `${label} — la preuve et l’écriture sont enregistrées.` },
+      });
+    }
+
+    if (intent === 'depense_dictee') {
+      // M4 — dépense DICTÉE (« j'ai dépensé 89 € chez Leroy Merlin en carte ») : MÊME use case
+      // RecordExpense (@bob/core, source manuelle) que le scan — via l'outil scan_depense du
+      // registre (plancher comptable). Fournisseur/montant/moyen/catégorie extraits du message ;
+      // tout champ manquant redevient une QUESTION structurée — jamais un défaut inventé.
+      const record = this.deps.actions.recordExpense?.bind(this.deps.actions);
+      const tool = this.tool('scan_depense');
+      if (!record || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Enregistrer une dépense',
+            body: 'Je ne peux pas enregistrer de dépense dictée sur cet appareil pour le moment. Rien n’a été créé — tu peux passer par l’écran Dépenses ou scanner le ticket.',
+          },
+        });
+      }
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+      ].join(' ');
+      const normalizedConversation = normalized(conversation);
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const amountCents = extractSpokenAmountCents(conversation);
+      const supplier = extractSpokenSupplier(conversation);
+      const category = extractSpokenExpenseCategory(normalizedConversation);
+      const details = parseExpensePaymentDetails(conversation, today);
+      // « ce matin », « à l'instant » = aujourd'hui ; sans date dite : aujourd'hui (jour métier).
+      const date = details.paidOn ?? today;
+
+      // Chantier OPTIONNEL (« …pour le chantier Durand ») : résolu contre les chantiers OUVERTS
+      // réels du tenant (listFilingDestinations) — introuvable = refus honnête, rien n'est créé.
+      const chantierSaid = /\bchantiers?\b/.test(normalizedConversation);
+      let chantier: { id: string; nom: string } | null = null;
+      if (chantierSaid) {
+        const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+        if (!listDestinations) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier la capacité de l’hôte'],
+            card: {
+              title: 'Chantier invérifiable',
+              body: 'Je ne peux pas vérifier ce chantier sur cet appareil. Rien n’a été créé — redis-moi la dépense sans chantier, ou passe par l’écran Dépenses.',
+            },
+          });
+        }
+        const destinations = await listDestinations();
+        if (!destinations.ok) return err(destinations.error);
+        const chantiers = destinations.value.chantiers;
+        // Dernière mention « chantier … » de la conversation (les followUps l'ajoutent en fin).
+        let tail = '';
+        const scanChantier = /\bchantiers?\b([^,;.!?]{0,60})/g;
+        let chantierMention: RegExpExecArray | null;
+        while ((chantierMention = scanChantier.exec(normalizedConversation)) !== null) tail = chantierMention[1] ?? '';
+        const scopeTokens = new Set(tail.split(/[^a-z0-9]+/).filter((word) => word.length >= 3));
+        const strong = chantiers.filter((c) => {
+          const tokens = destinationNameTokens(c.nom);
+          return tokens.length > 0 && tokens.every((word) => scopeTokens.has(word));
+        });
+        const loose = chantiers.filter((c) => destinationNameTokens(c.nom).some((word) => scopeTokens.has(word)));
+        chantier = strong.length === 1 ? strong[0]! : strong.length === 0 && loose.length === 1 ? loose[0]! : null;
+        if (chantier === null) {
+          const options = (strong.length > 1 ? strong : loose).slice(0, 4);
+          if (options.length === 0) {
+            const saidName = tail.replace(/\s+/g, ' ').trim();
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier le chantier contre la liste réelle'],
+              card: {
+                title: 'Chantier introuvable',
+                body: `Je ne trouve aucun chantier ouvert correspondant à « ${saidName.length > 0 ? saidName : 'ce chantier'} ». Rien n’a été créé — donne-moi un chantier ouvert, ou redis la dépense sans chantier.`,
+              },
+            });
+          }
+          if (supplier !== null && amountCents !== null) {
+            const followUpFor = (c: { id: string; nom: string }): string =>
+              dictatedExpenseCommand({
+                amountCents,
+                supplier,
+                method: details.method,
+                category,
+                dateFr: details.paidOn !== null ? frDate(details.paidOn) : null,
+                chantierName: c.nom,
+              });
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Extraire la dépense dictée', 'Lever l’ambiguïté du chantier'],
+              card: {
+                title: 'Quel chantier ?',
+                body: `Sur quel chantier mettre la dépense ${supplier} (${spokenAmountLabel(amountCents)}) ?`,
+              },
+              choices: options.map((c) => ({ label: `Chantier ${c.nom}`, value: followUpFor(c) })),
+              ask: [
+                askToPick({
+                  id: 'depense_dictee.chantier',
+                  question: 'Sur quel chantier mettre cette dépense ?',
+                  header: 'Chantier',
+                  items: options.map((c) => ({ value: c.id, label: c.nom, followUp: followUpFor(c) })),
+                }),
+              ],
+            });
+          }
+          // Fournisseur/montant manquants : on les demande d'abord — le chantier, re-résolu au
+          // tour suivant (continuité), sera tranché ensuite.
+        }
+      }
+
+      if (supplier === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Demander le fournisseur'],
+          card: {
+            title: 'Chez quel fournisseur ?',
+            body: `Il me manque le fournisseur de cette dépense${amountCents !== null ? ` de ${spokenAmountLabel(amountCents)}` : ''}. Dis-le-moi (« chez Leroy Merlin ») — rien n’a été créé.`,
+          },
+        });
+      }
+      if (amountCents === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Demander le montant TTC'],
+          card: {
+            title: 'Quel montant ?',
+            body: `Il me manque le montant TTC de cette dépense chez ${supplier}. Dis-le-moi (« 89 € ») — rien n’a été créé.`,
+          },
+        });
+      }
+      if (date === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Demander la date réelle'],
+          card: {
+            title: 'Quelle date ?',
+            body: `À quelle date cette dépense chez ${supplier} ? Dis-la au format JJ/MM/AAAA — je ne la devine pas. Rien n’a été créé.`,
+          },
+        });
+      }
+      if (today !== null && date > today) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Contrôler la date déclarée'],
+          card: {
+            title: 'Date future impossible',
+            body: `Le ${frDate(date)} est dans le futur. Donne-moi la date d’une dépense déjà réglée ; rien n’a été créé.`,
+          },
+        });
+      }
+      if (details.method === null) {
+        const methods: { method: PaymentMethod; label: string }[] = [
+          { method: 'card', label: 'Carte' },
+          { method: 'transfer', label: 'Virement' },
+          { method: 'cash', label: 'Espèces' },
+        ];
+        const followUpFor = (m: PaymentMethod): string =>
+          dictatedExpenseCommand({
+            amountCents,
+            supplier,
+            method: m,
+            category,
+            dateFr: details.paidOn !== null ? frDate(details.paidOn) : null,
+            chantierName: chantier?.nom ?? null,
+          });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Demander le moyen de paiement'],
+          card: {
+            title: 'Quel moyen de paiement ?',
+            body: `${supplier} · ${spokenAmountLabel(amountCents)} — avec quel moyen as-tu réglé cette dépense ?`,
+          },
+          choices: methods.map((m) => ({ label: m.label, value: followUpFor(m.method) })),
+          ask: [
+            askToPick({
+              id: 'depense_dictee.moyen',
+              question: 'Comment as-tu réglé cette dépense ?',
+              header: 'Moyen',
+              items: methods.map((m) => ({ value: m.method, label: m.label, followUp: followUpFor(m.method) })),
+            }),
+          ],
+        });
+      }
+      if (category === null) {
+        const categories: ExpenseCategory[] = ['materiel', 'fournitures', 'repas', 'autre'];
+        const followUpFor = (c: ExpenseCategory): string =>
+          dictatedExpenseCommand({
+            amountCents,
+            supplier,
+            method: details.method,
+            category: c,
+            dateFr: details.paidOn !== null ? frDate(details.paidOn) : null,
+            chantierName: chantier?.nom ?? null,
+          });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Demander la catégorie'],
+          card: {
+            title: 'Quelle catégorie ?',
+            body: `${supplier} · ${spokenAmountLabel(amountCents)} — dans quelle catégorie ranger cette dépense ?`,
+          },
+          choices: categories.map((c) => ({ label: EXPENSE_CATEGORY_SPOKEN[c], value: followUpFor(c) })),
+          ask: [
+            askToPick({
+              id: 'depense_dictee.categorie',
+              question: 'Dans quelle catégorie ranger cette dépense ?',
+              header: 'Catégorie',
+              items: categories.map((c) => ({ value: c, label: EXPENSE_CATEGORY_SPOKEN[c], followUp: followUpFor(c) })),
+            }),
+          ],
+        });
+      }
+      const args = {
+        supplierName: supplier,
+        totalTtcCents: amountCents,
+        category,
+        documentDate: date,
+        ...(chantier !== null ? { chantierId: chantier.id } : {}),
+        payment: {
+          paidOn: date,
+          method: details.method,
+          ...(details.reference !== null ? { reference: details.reference } : {}),
+        },
+      };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Enregistrer la dépense ${supplier} · ${formatEUR(amountCents)} (${EXPENSE_CATEGORY_SPOKEN[category]}), réglée le ${frDate(date)} ${spokenMethodPhrase(details.method)}${chantier !== null ? ` · chantier ${chantier.nom}` : ''}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Extraire la dépense dictée', 'Contrôler fournisseur, montant, moyen et catégorie', 'Attendre ta confirmation'],
+          card: {
+            title: 'Dépense à confirmer',
+            body: `${label}.\nElle naît payée avec sa preuve — Bob n’initie aucun paiement, il enregistre ce que tu déclares. Je l’écris dans tes livres ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Enregistrer la dépense'],
+        card: { title: 'Dépense enregistrée ✓', body: `${label} — c’est dans tes livres.` },
+      });
+    }
+
+    if (intent === 'lier_depense_chantier') {
+      // M3 — « mets la dépense Aldi sur le chantier Durand » : MÊME use case
+      // AssignExpenseToChantier (@bob/core) que PUT /expenses/:id/chantier et l'écran Dépenses
+      // (parité humain↔Bob). Résolution contre les listes RÉELLES (dépenses récentes +
+      // chantiers ouverts) — toute ambiguïté redevient une question, l'introuvable un refus
+      // honnête ; l'imputation n'est JAMAIS posée sans confirmation (plancher M3).
+      const assign = this.deps.actions.assignExpenseChantier?.bind(this.deps.actions);
+      const listExpenses = this.deps.actions.listRecentExpenses?.bind(this.deps.actions);
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      const tool = this.tool('lier_depense_chantier');
+      if (!assign || !listExpenses || !listDestinations || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Imputer une dépense',
+            body: 'Je ne peux pas imputer de dépense à un chantier sur cet appareil pour le moment. Rien n’a été modifié — tu peux le faire depuis l’écran Dépenses.',
+          },
+        });
+      }
+      const [expensesResult, destinationsResult] = await Promise.all([listExpenses(), listDestinations()]);
+      if (!expensesResult.ok) return err(expensesResult.error);
+      if (!destinationsResult.ok) return err(destinationsResult.error);
+      // Les plus récentes d'abord : « la dépense Aldi » désigne la dernière en cas d'homonymes.
+      const expenses = [...expensesResult.value].sort((a, b) => b.documentDate.localeCompare(a.documentDate));
+      const chantiers = destinationsResult.value.chantiers;
+      if (expenses.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les dépenses récentes'],
+          card: { title: 'Aucune dépense', body: 'Aucune dépense enregistrée pour le moment — rien à imputer.' },
+        });
+      }
+      if (chantiers.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les chantiers ouverts'],
+          card: {
+            title: 'Aucun chantier ouvert',
+            body: 'Je ne vois aucun chantier ouvert où imputer cette dépense. Rien n’a été modifié.',
+          },
+        });
+      }
+      // « la dépense X sur le chantier Y » : le marqueur sépare la dépense (avant) du chantier (après).
+      const splitMatch = /\b(sur|vers|au|aux|pour|dans)\b/i.exec(message);
+      const expensePartRaw = splitMatch ? message.slice(0, splitMatch.index) : message;
+      const chantierPartRaw = splitMatch ? message.slice(splitMatch.index + splitMatch[0].length) : message;
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        expensePartRaw,
+      ].join(' ');
+      const matches = matchExpensesByTokens(conversation, expenses);
+      const target = matches.length === 1 ? matches[0]! : null;
+      // Chantier : id exact (followUps) > nom entier > mot significatif — listes RÉELLES only.
+      const chantierScope = normalized(chantierPartRaw);
+      let tail = '';
+      const scanChantier = /\bchantiers?\b([^,;.!?]{0,60})/g;
+      let chantierMention: RegExpExecArray | null;
+      while ((chantierMention = scanChantier.exec(chantierScope)) !== null) tail = chantierMention[1] ?? '';
+      if (tail.trim().length === 0) tail = chantierScope;
+      const scopeTokens = new Set(
+        tail.split(/[^a-z0-9]+/).filter((word) => word.length >= 3 && !EXPENSE_ASSIGN_GESTURE_WORDS.has(word)),
+      );
+      const byId = chantiers.filter(
+        (c) => normalized(c.id).length >= 3 && containsExactTokens(chantierScope, normalized(c.id)),
+      );
+      const strong = chantiers.filter((c) => {
+        const tokens = destinationNameTokens(c.nom);
+        return tokens.length > 0 && tokens.every((word) => scopeTokens.has(word));
+      });
+      const loose = chantiers.filter((c) => destinationNameTokens(c.nom).some((word) => scopeTokens.has(word)));
+      const chantier =
+        byId.length === 1
+          ? byId[0]!
+          : strong.length === 1
+            ? strong[0]!
+            : strong.length === 0 && loose.length === 1
+              ? loose[0]!
+              : null;
+
+      if (!target) {
+        // Suffixe chantier des followUps : la cible résolue (id), sinon les mots dits — la
+        // commande de suivi reste complète, l'UI ne reconstruit jamais une phrase.
+        const chantierSuffix = chantier
+          ? `sur le chantier ${chantier.id}`
+          : splitMatch
+            ? message.slice(splitMatch.index).replace(/\s+/g, ' ').trim()
+            : 'sur le chantier';
+        const options = (matches.length > 1 ? matches : expenses).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les dépenses récentes', 'Lever l’ambiguïté de la dépense'],
+          card: { title: 'Quelle dépense ?', body: 'Dis-moi quelle dépense imputer :' },
+          choices: options.map((e) => ({
+            label: `${e.supplierName} — ${formatEUR(e.totalTtcCents)} · ${frDate(e.documentDate)}`,
+            value: `Mets la dépense ${e.id} ${chantierSuffix}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'lier_depense_chantier.depense',
+              question: 'Quelle dépense veux-tu imputer ?',
+              header: 'Dépense',
+              items: options.map((e) => ({
+                value: e.id,
+                label: e.supplierName,
+                description: `${formatEUR(e.totalTtcCents)} · du ${frDate(e.documentDate)}`,
+                followUp: `Mets la dépense ${e.id} ${chantierSuffix}`,
+              })),
+            }),
+          ],
+        });
+      }
+
+      if (!chantier) {
+        // Chantier NOMMÉ mais introuvable dans la liste réelle : refus honnête — Bob n'invente
+        // jamais un chantier (anti-hallucination).
+        const saidName = tail.replace(/\s+/g, ' ').trim();
+        if (scopeTokens.size > 0 && strong.length === 0 && loose.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier le chantier contre la liste réelle'],
+            card: {
+              title: 'Chantier introuvable',
+              body: `Je ne trouve aucun chantier ouvert correspondant à « ${saidName.length > 0 ? saidName : 'ce chantier'} ». Rien n’a été modifié — donne-moi un chantier ouvert.`,
+            },
+          });
+        }
+        const options = (strong.length > 1 ? strong : loose.length > 0 ? loose : chantiers).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier la dépense', 'Lever l’ambiguïté du chantier'],
+          card: {
+            title: 'Quel chantier ?',
+            body: `Sur quel chantier mettre la dépense ${target.supplierName} (${formatEUR(target.totalTtcCents)}) ?`,
+          },
+          choices: options.map((c) => ({
+            label: `Chantier ${c.nom}`,
+            value: `Mets la dépense ${target.id} sur le chantier ${c.id}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'lier_depense_chantier.chantier',
+              question: `Sur quel chantier mettre la dépense ${target.supplierName} ?`,
+              header: 'Chantier',
+              items: options.map((c) => ({
+                value: c.id,
+                label: c.nom,
+                followUp: `Mets la dépense ${target.id} sur le chantier ${c.id}`,
+              })),
+            }),
+          ],
+        });
+      }
+
+      // Idempotence honnête : déjà imputée à CE chantier — rien à écrire, pas de proposition.
+      if (target.chantierId === chantier.id) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier l’imputation actuelle'],
+          card: {
+            title: 'Déjà imputée',
+            body: `La dépense ${target.supplierName} (${formatEUR(target.totalTtcCents)}) est déjà sur le chantier ${chantier.nom} — rien à changer.`,
+          },
+        });
+      }
+      const previousName =
+        target.chantierId !== null ? chantiers.find((c) => c.id === target.chantierId)?.nom ?? null : null;
+      const replaceNote =
+        target.chantierId !== null
+          ? ` Elle quitte ${previousName !== null ? `le chantier ${previousName}` : 'son chantier actuel'}.`
+          : '';
+      const args = { expenseId: target.id, chantierId: chantier.id };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Imputer la dépense ${target.supplierName} (${formatEUR(target.totalTtcCents)}, du ${frDate(target.documentDate)}) au chantier ${chantier.nom}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Trouver la dépense', 'Vérifier le chantier ouvert', 'Attendre ta confirmation'],
+          card: {
+            title: 'Imputation à confirmer',
+            body: `${label}.${replaceNote} La rentabilité du chantier la comptera — aucune écriture comptable, juste le lien. Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Imputer la dépense au chantier'],
+        card: { title: 'Dépense imputée ✓', body: `${label} — c’est noté.` },
       });
     }
 
@@ -3466,6 +4229,21 @@ export class BobAgent {
           card: legacyExpenseGuidanceCard(),
         });
       }
+      // Garde anti-écrasement du domaine (DOCUMENT_ALREADY_LINKED) : l'état a pu changer entre
+      // la proposition et la confirmation — même réponse honnête que le flux direct, jamais le
+      // message technique brut.
+      if (pending.tool === 'classer_document') {
+        const existing = documentAlreadyLinkedTarget(run.error);
+        if (existing) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Détecter un lien métier existant'],
+            card: alreadyLinkedCard(existing),
+          });
+        }
+      }
       return err(run.error);
     }
     if (pending.tool === 'marquer_notifications_lues') {
@@ -3489,6 +4267,16 @@ export class BobAgent {
               ? 'Aucune notification supplémentaire n’était encore non lue au moment de la confirmation.'
               : `${updatedCount} notification${updatedCount > 1 ? 's ont' : ' a'} été marquée${updatedCount > 1 ? 's' : ''} comme lue${updatedCount > 1 ? 's' : ''}.`,
         },
+      });
+    }
+    // M2 — l'envoi confirmé d'une relance mérite sa carte : l'artisan sait que c'est PARTI.
+    if (pending.tool === 'envoyer_relance') {
+      return ok({
+        kind: 'done',
+        intent: 'relance',
+        model,
+        plan: ['Envoyer la relance confirmée'],
+        card: { title: 'Relance envoyée ✓', body: `${pending.label} — c’est parti.` },
       });
     }
     // B8 — après le lien confirmé, l'ENCHAÎNEMENT NATUREL : Bob propose la facture du devis
