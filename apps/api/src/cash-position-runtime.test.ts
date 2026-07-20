@@ -18,7 +18,6 @@ import { InMemoryPersistence } from './persistence/persistence.testing';
 const OWNER_COMPANY = 'company-owner';
 const INTRUDER_COMPANY = 'company-intruder';
 const OWNER: Principal = { userId: 'owner-user', companyId: OWNER_COMPANY };
-const INTRUDER: Principal = { userId: 'intruder-user', companyId: INTRUDER_COMPANY };
 
 function asPrincipal<T>(principal: Principal, fn: () => T): T {
   return requestContext.run({ correlationId: 'cash-position-test', principal }, fn);

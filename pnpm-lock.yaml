@@ -341,6 +341,12 @@ importers:
       '@bob/tokens':
         specifier: workspace:*
         version: link:../../packages/tokens
+      '@expo-google-fonts/hanken-grotesk':
+        specifier: ^0.4.1
+        version: 0.4.3
+      '@expo-google-fonts/schibsted-grotesk':
+        specifier: ^0.4.1
+        version: 0.4.2
       '@supabase/ssr':
         specifier: ^0.12.0
         version: 0.12.0(@supabase/supabase-js@2.108.2)

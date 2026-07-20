@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const DEMO_DAY = '2026-06-30';
 const DEMO_PERIOD = { from: '2026-01-01', to: '2026-12-31' };
 const DEFAULT_OUTPUT_DIRECTORY = fileURLToPath(new URL('../.tmp/', import.meta.url));
-const API_CLIENT_DIST = new URL('../../../packages/api-client/dist/index.js', import.meta.url);
+const API_CLIENT_DIST = new URL('../../../packages/api-client/dist/testing.js', import.meta.url);
 const CORE_DIST = new URL('../../../packages/core/dist/index.js', import.meta.url);
 const BUILD_PREREQUISITE =
   'pnpm --filter @bob/core build && pnpm --filter @bob/ai build && pnpm --filter @bob/api-client build';

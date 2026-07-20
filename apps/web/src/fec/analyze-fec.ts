@@ -56,7 +56,8 @@ export interface FecAnalysis {
 
 /**
  * Rejoue la revue de clôture officielle sur les écritures groupées du FEC. Les détails
- * restent en mémoire ; seul leur résumé agrégé est ensuite autorisé dans localStorage.
+ * restent en mémoire ; seule l’analyse structurée validée peut ensuite être envoyée à l’API
+ * authentifiée et persistée sous la RLS du cabinet.
  */
 export function deriveFecClosingReview(
   fec: ParsedFec,

@@ -128,6 +128,36 @@ describe('B2 — generateInvoice mode situation', () => {
     expect(JSON.stringify(s2.error)).toContain('reste facturable');
   });
 
+  it('aperçu de finale couverte à 100 % : aucune écriture artificielle, comme sur le serveur', async () => {
+    const client = makeClient();
+    const quoteId = await signedB2bQuote(client);
+    const situation = await client.generateInvoice({
+      quoteId,
+      mode: 'situation',
+      situation: { percent: 100 },
+    });
+    expect(situation.ok).toBe(true);
+    if (!situation.ok) return;
+    const issued = await client.issueInvoice({ invoiceId: situation.value.invoiceId });
+    expect(issued.ok).toBe(true);
+
+    const final = await client.generateInvoice({ quoteId, mode: 'final' });
+    expect(final.ok).toBe(true);
+    if (!final.ok) return;
+    const preview = await client.invoiceAccountingPreview(final.value.invoiceId);
+
+    expect(preview).toEqual({
+      ok: true,
+      value: {
+        invoiceId: final.value.invoiceId,
+        available: false,
+        reason:
+          'Aucune écriture à passer : le solde est entièrement couvert par les situations émises ' +
+          '(chiffre d’affaires et TVA déjà constatés à chaque situation).',
+      },
+    });
+  });
+
   it('montant de situation exigé avec son mode, refusé hors de son mode', async () => {
     const client = makeClient();
     const quoteId = await signedB2bQuote(client);

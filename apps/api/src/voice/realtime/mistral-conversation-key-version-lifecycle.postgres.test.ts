@@ -366,6 +366,7 @@ describe.skipIf(!RUN_MUTATION_CERT)(
       }>>`
         SELECT "minimumVersion", "highestVersion"
           FROM realtime_mistral_conversation_key_version_floors
+         WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
       `;
       if (CERT_BASE_VERSION === 1) {
         if (ranges.length !== 0) {
@@ -440,9 +441,10 @@ describe.skipIf(!RUN_MUTATION_CERT)(
           // toujours annulés avec la transaction. Le mode replica permet de simuler les ledgers
           // legacy tels qu'ils existaient avant l'installation des nouveaux guards.
           await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
-          await tx.$executeRawUnsafe(
-            'DELETE FROM realtime_mistral_conversation_key_version_floors',
-          );
+          await tx.$executeRaw`
+            DELETE FROM realtime_mistral_conversation_key_version_floors
+             WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
+          `;
           await tx.$executeRaw`
             INSERT INTO realtime_mistral_conversation_outbox (
               "companyId", "missionId", "sessionHandle", "serverSequence", "eventType",
@@ -639,12 +641,16 @@ describe.skipIf(!RUN_MUTATION_CERT)(
         admins[0].$executeRaw`
           UPDATE realtime_mistral_conversation_key_version_floors
              SET "minimumVersion" = 1
+           WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
         `,
         '23514',
         'MISTRAL_CONVERSATION_KEY_VERSION_ROLLBACK',
       );
       await expectPostgresError(
-        admins[0].$executeRaw`DELETE FROM realtime_mistral_conversation_key_version_floors`,
+        admins[0].$executeRaw`
+          DELETE FROM realtime_mistral_conversation_key_version_floors
+           WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
+        `,
         '23514',
         'MISTRAL_CONVERSATION_KEY_VERSION_FLOOR_APPEND_ONLY',
       );
@@ -657,12 +663,16 @@ describe.skipIf(!RUN_MUTATION_CERT)(
         admins[0].$executeRaw`
           UPDATE realtime_mistral_conversation_key_bindings
              SET "keyFingerprint" = ${'f'.repeat(64)}
+           WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
         `,
         '23514',
         'MISTRAL_CONVERSATION_KEY_BINDING_APPEND_ONLY',
       );
       await expectPostgresError(
-        admins[0].$executeRaw`DELETE FROM realtime_mistral_conversation_key_bindings`,
+        admins[0].$executeRaw`
+          DELETE FROM realtime_mistral_conversation_key_bindings
+           WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
+        `,
         '23514',
         'MISTRAL_CONVERSATION_KEY_BINDING_APPEND_ONLY',
       );

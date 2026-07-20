@@ -148,9 +148,14 @@ describe('buildMissionLetter', () => {
   });
 
   it('rend les limitations de médiation et RGPD visibles quand les informations manquent', () => {
-    const document = buildMissionLetter(
-      input({ mediation: undefined, dataProtection: undefined, workingArrangements: undefined }),
-    );
+    const complete = input();
+    const {
+      mediation: _mediation,
+      dataProtection: _dataProtection,
+      workingArrangements: _workingArrangements,
+      ...withoutOptionalDetails
+    } = complete;
+    const document = buildMissionLetter(withoutOptionalDetails);
     const text = renderMissionLetterPlainText(document);
 
     expect(text).toContain('à compléter et vérifier avant signature');

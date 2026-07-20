@@ -88,10 +88,13 @@ jobs:
 
   swift-contract:
     name: Swift bridge + Expo iOS build + VAD contract
-    runs-on: macos-14
+    # React Native 0.85 exige Xcode >= 16.1. L'image macOS 14 expose encore Xcode 15.4 ;
+    # macOS 15 fournit Xcode 16.4, figé ci-dessous pour garder un toolchain reproductible.
+    runs-on: macos-15
     timeout-minutes: 35
     env:
       CI: "true"
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
       # Les contrats natifs passent par `expo prebuild`, qui ÉVALUE app.config.ts. Celui-ci
       # refuse fail-closed un build sans EXPO_PUBLIC_API_URL — garde SAINE (elle empêche un
       # binaire distribué de pointer des fixtures) qu'il ne faut surtout pas affaiblir. On

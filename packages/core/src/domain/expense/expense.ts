@@ -1,6 +1,7 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type DateOnly, isValidDateOnly } from '../../shared-kernel/time';
 import { Siren } from '../../shared-kernel/identifiers';
+import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 import { type PaymentMethod } from '../payment/payment';
 
 export type ExpenseCategory =
@@ -97,7 +98,7 @@ function normalizeOptionalEvidenceText(
   if (!normalized) return ok(null);
   if (normalized.length > maxLength)
     return err({ code: 'VALIDATION', field, message: `Valeur limitée à ${maxLength} caractères.` });
-  if (/[\u0000-\u001f\u007f]/.test(normalized))
+  if (hasAsciiControlCharacter(normalized))
     return err({ code: 'VALIDATION', field, message: 'Caractères de contrôle interdits.' });
   return ok(normalized);
 }

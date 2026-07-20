@@ -3982,6 +3982,18 @@ export class LocalBobClient implements BobClient {
         reason: detail || 'Aperçu comptable indisponible.',
       });
     }
+    // Parité serveur : une finale entièrement soldée par des situations déjà émises ne crée
+    // aucun nouveau fait comptable. `ok(null)` est donc un aperçu honnêtement indisponible,
+    // jamais une erreur ni une écriture artificielle à zéro.
+    if (entry.value === null) {
+      return ok({
+        invoiceId,
+        available: false,
+        reason:
+          'Aucune écriture à passer : le solde est entièrement couvert par les situations émises ' +
+          '(chiffre d’affaires et TVA déjà constatés à chaque situation).',
+      });
+    }
     const props = entry.value.toProps();
     return ok({
       invoiceId,

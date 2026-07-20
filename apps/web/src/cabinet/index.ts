@@ -1,4 +1,4 @@
 export * from './types';
-export * from './storage';
+export * from './dossier-validation';
 export * from './fiscal-calendar';
 export * from './mission-letter';

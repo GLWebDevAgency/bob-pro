@@ -39,7 +39,7 @@ describe('sanitizeForSpeech — gabarits réels pour l’oreille, affichage inta
     const body = [
       `1. Durand SARL — ${formatEUR(1200000)} (34 %)`,
       `2. Camping Les Pins — ${formatEUR(640000)} (18 %)`,
-      '⚠ Durand SARL pèse 34 % de ton activité — une dépendance à surveiller.',
+      '⚠️ Durand SARL pèse 34 % de ton activité — une dépendance à surveiller.',
     ].join('\n');
     expect(sanitizeForSpeech(body)).toBe(
       [

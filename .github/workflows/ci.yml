@@ -102,19 +102,31 @@ jobs:
         run: |
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           sh apps/api/scripts/release.sh
+      - name: Clone a dedicated database for destructive Mistral key-rotation certification
+        run: >-
+          psql postgresql://postgres:postgres@localhost:5432/postgres
+          -v ON_ERROR_STOP=1
+          -c 'CREATE DATABASE bobpro_mistral_key_rotation TEMPLATE bobpro'
+      - name: Certify Mistral key rotation on the dedicated database
+        env:
+          DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro_mistral_key_rotation
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro_mistral_key_rotation
+          RUN_POSTGRES_MISTRAL_IDENTITY_KEY_ROTATION_CERT: "true"
+          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
+          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-identity-key-version-lifecycle.postgres.test.ts
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
       - name: Certify Mistral durable authority on the ephemeral mixed-key range
         run: |
           BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
             node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
           RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=true \
             sh apps/api/scripts/certify-mistral-conversation-authority.sh
-      - name: Certify Mistral key rotation and an observed retire-versus-writer race
-        env:
-          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
-          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
-        run: >-
-          pnpm --filter @bob/api exec vitest run
-          src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
       - name: Certify notification outbox concurrency and fencing on PostgreSQL
         env:
           RUN_POSTGRES_OUTBOX_CERT: "true"
@@ -155,8 +167,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @bob/core build
-      - run: pnpm --filter @bob/api build
+      # L'API importe @bob/ai en plus de @bob/core. Construire le graphe workspace complet
+      # évite qu'un package non émis soit résolu depuis des artefacts locaux absents en CI.
+      - run: pnpm --filter "@bob/api..." run build
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
       - name: Télécharger le validateur Mustang

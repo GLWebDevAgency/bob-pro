@@ -18,6 +18,7 @@ import {
   makePurchaseOrderRef,
   validateDiscount,
   validateDocumentDisplayName,
+  hasAsciiControlCharacter,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
@@ -350,7 +351,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
             r.chantierId.length === 0 ||
             r.chantierId.length > 200 ||
             r.chantierId !== r.chantierId.trim() ||
-            /[\u0000-\u001f\u007f]/.test(r.chantierId)
+            hasAsciiControlCharacter(r.chantierId)
           )
             return err(appValidation('chantierId', 'Chantier d’imputation invalide.'));
         }
@@ -373,7 +374,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
               typeof p.reference !== 'string' ||
               !p.reference.trim() ||
               p.reference.length > EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH ||
-              /[\u0000-\u001f\u007f]/.test(p.reference)
+              hasAsciiControlCharacter(p.reference)
             )
               return err(appValidation('payment.reference', 'Référence de règlement invalide.'));
           }
@@ -756,7 +757,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           max: number,
         ): Result<string | null, AppError> => {
           if (value === undefined || value === null) return ok(null);
-          if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value))
+          if (typeof value !== 'string' || !value.trim() || value.length > max || hasAsciiControlCharacter(value))
             return err(appValidation(field, `Valeur invalide (${max} caractères maximum).`));
           return ok(value.trim());
         };
@@ -817,7 +818,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
             r.chantierId.length === 0 ||
             r.chantierId.length > 200 ||
             r.chantierId !== r.chantierId.trim() ||
-            /[\u0000-\u001f\u007f]/.test(r.chantierId)
+            hasAsciiControlCharacter(r.chantierId)
           )
             return err(appValidation('chantierId', 'Chantier d’imputation invalide.'));
         }

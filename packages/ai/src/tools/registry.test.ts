@@ -199,6 +199,12 @@ describe('enregistrer_reglement_depense — preuve explicite, jamais un rail ban
       method: 'transfer',
       reference: 'x'.repeat(141),
     }).ok).toBe(false);
+    expect(t.parse({
+      expenseId: 'exp-1',
+      paidOn: '2026-07-03',
+      method: 'transfer',
+      reference: 'VIR\u0000-42',
+    }).ok).toBe(false);
 
     const parsed = t.parse({
       expenseId: 'exp-1',
@@ -366,6 +372,7 @@ describe('lier_depense_chantier — M3 (imputation dépense→chantier, capacit�
     expect(t.parse({ expenseId: '', chantierId: 'ch-1' }).ok).toBe(false);
     expect(t.parse({ expenseId: 'exp-1', chantierId: ' ch-1' }).ok).toBe(false);
     expect(t.parse({ expenseId: 'exp-1', chantierId: '' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', chantierId: 'ch-1\u007f' }).ok).toBe(false);
     expect(t.parse({ expenseId: 'exp-1', chantierId: 'ch-1', extra: true }).ok).toBe(false);
     expect(t.parse({ expenseId: 'exp-1', chantierId: null }).ok).toBe(true); // délier : geste légitime
 
@@ -394,6 +401,7 @@ describe('scan_depense — extension M4 (chantierId + règlement déclaré, addi
 
     expect(t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', chantierId: ' ch-1' }).ok).toBe(false);
     expect(t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', chantierId: '' }).ok).toBe(false);
+    expect(t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', chantierId: 'ch\n1' }).ok).toBe(false);
     expect(
       t.parse({ supplierName: 'Aldi', totalTtcCents: 4500, category: 'repas', payment: { paidOn: 'hier', method: 'card' } }).ok,
     ).toBe(false); // date réelle exigée (YYYY-MM-DD)

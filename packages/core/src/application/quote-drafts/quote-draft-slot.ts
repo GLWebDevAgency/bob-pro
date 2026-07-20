@@ -1,5 +1,6 @@
 import { isVatRate, type VatRate } from '../../domain/billing/shared/vat-rate';
 import { type LineCategory } from '../../domain/billing/shared/line-item';
+import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 
 /**
  * Contrat durable du brouillon de devis.
@@ -151,7 +152,7 @@ function canonicalIdentifier(value: unknown): value is string {
     && value.length > 0
     && value.length <= MAX_ID_LENGTH
     && value === value.trim()
-    && !/[\u0000-\u001f\u007f]/u.test(value)
+    && !hasAsciiControlCharacter(value)
   );
 }
 
@@ -161,7 +162,7 @@ function canonicalSingleLine(value: unknown, max: number, allowEmpty = false): v
     && value.length <= max
     && (allowEmpty || value.length > 0)
     && value === value.trim().replace(/\s+/gu, ' ')
-    && !/[\r\n\u0000-\u001f\u007f]/u.test(value)
+    && !hasAsciiControlCharacter(value)
   );
 }
 

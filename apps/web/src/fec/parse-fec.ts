@@ -90,7 +90,7 @@ export interface ParsedFec {
 type BinaryFec = ArrayBuffer | Uint8Array;
 
 function fail(line: number, field: FecParseIssue['field'], detail: string): never {
-  throw new FecParseError({ line, field, detail });
+  throw new FecParseError(field === undefined ? { line, detail } : { line, field, detail });
 }
 
 function bytesOf(input: BinaryFec): Uint8Array {
