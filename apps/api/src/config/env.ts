@@ -211,6 +211,12 @@ const schema = z.object({
   // mono-thread) : évite qu'une rafale de requêtes ne monopolise la boucle d'événements en continu
   // (dont /voice/realtime, sur le même process).
   FISCAL_PUBLICODES_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+  // TRAÇAGE DU COMPORTEMENT VOCAL (bêta-test fondateur). Dormant par défaut, et c'est le point :
+  // une trace vocale transporte le texte prononcé et la réponse de Bob, soit les données les plus
+  // sensibles de l'app. Sans ce flag, AUCUNE ligne n'est écrite — zéro coût, zéro donnée. Le
+  // consommateur (VoiceTraceRecorder) relit `process.env` à chaque tour : couper le flag arrête
+  // l'écriture au tour suivant, sans redéploiement.
+  VOICE_TRACE_ENABLED: z.enum(['true', 'false']).default('false'),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -897,6 +903,11 @@ export const hasDeepseekKey = (): boolean => !!process.env.DEEPSEEK_API_KEY;
 export const hasMistralKey = (): boolean => !!process.env.MISTRAL_API_KEY;
 export const hasOpenaiKey = (): boolean => !!process.env.OPENAI_API_KEY;
 export const isDemoMode = (): boolean => process.env.DEMO_MODE === 'true';
+/**
+ * Fail-closed : tout ce qui n'est pas exactement 'true' laisse le traçage vocal éteint. Lu à
+ * CHAQUE tour (pas capturé au boot) pour qu'une coupure d'urgence prenne effet immédiatement.
+ */
+export const isVoiceTraceEnabled = (): boolean => process.env.VOICE_TRACE_ENABLED === 'true';
 export const isFiscalPublicodesSimulationsEnabled = (): boolean =>
   process.env.FISCAL_PUBLICODES_SIMULATIONS_ENABLED === 'true';
 export const fiscalPublicodesMaxConcurrency = (): number => {

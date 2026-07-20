@@ -61,6 +61,7 @@ BEGIN
     'realtime_control_consumptions',
     'realtime_voice_usage_events',
     'realtime_voice_usage_daily',
+    'voice_traces',
     'cabinets',
     'cabinet_members',
     'cabinet_admin_guards',
@@ -1073,6 +1074,16 @@ CREATE POLICY push_installation_close_account_update ON push_installations FOR U
 
 DROP POLICY IF EXISTS tenant_isolation ON agent_journal_entries;
 CREATE POLICY tenant_isolation ON agent_journal_entries
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Traces de comportement vocal (bêta-test). Le tour s'écrit en DEUX temps (transcription puis
+-- planification/synthèse) : l'UPDATE est donc nécessaire, contrairement aux journaux append-only
+-- voisins. Le DELETE l'est aussi — c'est la purge de rétention 30 jours, exécutée par tenant
+-- sous le MÊME rôle applicatif (VoiceTracePurgeService) : sans policy DELETE, la rétention
+-- resterait une colonne décorative et le stock de transcripts en clair serait permanent.
+DROP POLICY IF EXISTS tenant_isolation ON voice_traces;
+CREATE POLICY tenant_isolation ON voice_traces
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

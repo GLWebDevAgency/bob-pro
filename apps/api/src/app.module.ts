@@ -22,6 +22,8 @@ import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
+import { VoiceTracePurgeService } from './jobs/voice-trace-purge.service';
+import { VoiceTraceRecorder, voiceTraceRecorderProvider } from './voice/voice-trace.recorder';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import { supabaseAdminProvider } from './auth/supabase-admin';
 import { TenantPersistenceInterceptor } from './persistence/tenant-persistence.interceptor';
@@ -127,6 +129,13 @@ import {
     DocumentArchiveService,
     NotificationDeliveryService,
     ScheduledTenantDirectory,
+    // Traçage du comportement vocal (bêta-test) : l'enregistreur est injecté dans
+    // BackendService (chemin vocal réel) et la purge honore la rétention de 30 jours.
+    // Les deux sont enregistrés inconditionnellement — c'est VOICE_TRACE_ENABLED, et lui seul,
+    // qui décide si une ligne est écrite.
+    VoiceTraceRecorder,
+    voiceTraceRecorderProvider,
+    VoiceTracePurgeService,
     paymentGatewayProvider,
     ocrProvider,
     documentIntelligenceProvider,

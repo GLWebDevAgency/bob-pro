@@ -21,6 +21,7 @@ import {
   PrismaFiscalProfileRepository,
   PrismaSequenceCounter,
 } from './repositories';
+import { PrismaVoiceTraceRepository } from '../voice-traces';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
@@ -108,6 +109,7 @@ export class PrismaPersistence implements Persistence {
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
+  readonly voiceTraces: PrismaVoiceTraceRepository;
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly subscriptions: PrismaSubscriptionRepository;
   readonly bankBalances: PrismaBankBalanceSnapshotRepository;
@@ -243,6 +245,7 @@ export class PrismaPersistence implements Persistence {
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
+    this.voiceTraces = new PrismaVoiceTraceRepository(prisma);
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.subscriptions = new PrismaSubscriptionRepository(prisma);
     this.bankBalances = new PrismaBankBalanceSnapshotRepository(prisma);
@@ -259,6 +262,10 @@ export class PrismaPersistence implements Persistence {
 
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
     return this.prisma.withTenant(companyId, () => fn());
+  }
+
+  runDetachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+    return this.prisma.detachedWithTenant(companyId, () => fn());
   }
 
   runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T> {

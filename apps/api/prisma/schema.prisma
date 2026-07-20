@@ -287,37 +287,37 @@ model Company {
   trade                                       String
   vatRegime                                   VatRegime
   /// Clientèle principale confirmée par le propriétaire. NULL tant que la question n'a pas été répondue.
-  customerPortfolio       CustomerPortfolio?
-  rcsOrRm                 String?
-  addrLine1               String
-  addrZip                 String
-  addrCity                String
-  tvaIntracom             String?
-  dateCreation            DateTime?                      @db.Date
+  customerPortfolio                           CustomerPortfolio?
+  rcsOrRm                                     String?
+  addrLine1                                   String
+  addrZip                                     String
+  addrCity                                    String
+  tvaIntracom                                 String?
+  dateCreation                                DateTime?                                    @db.Date
   /// Code catégorie juridique INSEE brut (fiche annuaire, ex. « 5710 ») — additif, NULL = jamais fourni.
-  natureJuridiqueCode     String?
+  natureJuridiqueCode                         String?
   /// Qualification RGE à l'annuaire au provisioning (Pack BTP) — NULL = jamais interrogée, aucun rétro-remplissage.
-  estRge                  Boolean?
+  estRge                                      Boolean?
   /// A6 — Capital social en CENTIMES (art. R123-238 code de commerce : forme + capital sur les
   /// documents des sociétés). Additif, NULL = jamais saisi — sociétés uniquement (garde domaine
   /// Company.of + CHECK > 0) ; aucun backfill inventé.
-  capitalSocialCents      BigInt?
+  capitalSocialCents                          BigInt?
   /// A2 — Médiateur de la consommation (art. L612-1 et L616-1 code de la consommation).
   /// Les deux colonnes vont ensemble (CHECK both-or-neither) ; NULL = jamais saisi.
-  mediateurConsoNom       String?
-  mediateurConsoCoordonnees String?
+  mediateurConsoNom                           String?
+  mediateurConsoCoordonnees                   String?
   /// A3 — coordonnées DE L'ENTREPRISE requises par les modèles types de rétractation en vigueur
   /// (formulaire annexe R221-1 : adresse électronique ; avis annexe R221-3, instruction (2) :
   /// téléphone ET adresse électronique — décret n° 2022-424 du 25/03/2022). Additives, NULL =
   /// jamais saisies (réglages entreprise) — aucun backfill inventé.
-  email                   String?
-  phone                   String?
-  iban                    String?
-  bic                     String?
-  insurerName             String?
-  policyNo                String?
-  coverage                String?
-  policyExpiresAt         DateTime?
+  email                                       String?
+  phone                                       String?
+  iban                                        String?
+  bic                                         String?
+  insurerName                                 String?
+  policyNo                                    String?
+  coverage                                    String?
+  policyExpiresAt                             DateTime?
   // Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — additif, JAMAIS un cascade
   // delete : présent = tenant clôturé (guard API : 403 « compte clôturé »). TOUS les autres
   // champs de ce modèle restent INTACTS après clôture — ce sont la source live relue à chaque
@@ -363,6 +363,7 @@ model Company {
   realtimeControlUses                         RealtimeControlConsumption[]
   realtimeVoiceUsage                          RealtimeVoiceUsageEvent[]
   realtimeVoiceUsageDaily                     RealtimeVoiceUsageDaily[]
+  voiceTraces                                 VoiceTrace[]
   subscription                                Subscription?
   fiscalProfile                               FiscalProfile?
   billingSettings                             CompanyBillingSettings?
@@ -449,28 +450,28 @@ model QuoteDraftSlot {
 }
 
 model Customer {
-  id                  String       @id
-  companyId           String
-  company             Company      @relation(fields: [companyId], references: [id])
-  type                CustomerType
-  name                String
-  siren               String?      @db.Char(9)
-  isInternational     Boolean      @default(false)
-  addrLine1           String
-  addrZip             String
-  addrCity            String
-  email               String?
-  phone               String?
+  id                       String       @id
+  companyId                String
+  company                  Company      @relation(fields: [companyId], references: [id])
+  type                     CustomerType
+  name                     String
+  siren                    String?      @db.Char(9)
+  isInternational          Boolean      @default(false)
+  addrLine1                String
+  addrZip                  String
+  addrCity                 String
+  email                    String?
+  phone                    String?
   /// Nom du contact chez le client entreprise/public (raison sociale ≠ personne physique jointe).
-  contactName         String?
-  ptLabel             String?
+  contactName              String?
+  ptLabel                  String?
   /// B4 — conditions de paiement PROPRES au client (jours + fin de mois + libellé imprimable),
   /// pilotant l'échéance dérivée à l'émission (IssueInvoice, priorité 2 après le choix explicite).
   /// Les TROIS colonnes vont ensemble (CHECK SQL) ; NULL = défaut société. `ptLabel` historique
   /// reste purement décoratif.
-  paymentTermsDays       Int?
-  paymentTermsEndOfMonth Boolean?
-  paymentTermsLabel      String?
+  paymentTermsDays         Int?
+  paymentTermsEndOfMonth   Boolean?
+  paymentTermsLabel        String?
   /// Canal de FACTURATION du client (email | chorus | portail) — NULL = email (défaut honnête).
   /// Champs annexes liés à LEUR type par CHECK SQL (un code service hors Chorus est un état
   /// sans sens). Le guide de transmission de la facture émise en dérive (deriveTransmissionGuide).
@@ -478,10 +479,10 @@ model Customer {
   billingChorusServiceCode String?
   billingPortailNom        String?
   billingPortailUrl        String?
-  isSubcontractingBtp Boolean      @default(false)
-  chantiers           Chantier[]
-  quotes              Quote[]
-  invoices            Invoice[]
+  isSubcontractingBtp      Boolean      @default(false)
+  chantiers                Chantier[]
+  quotes                   Quote[]
+  invoices                 Invoice[]
 
   @@unique([id, companyId], name: "uniq_customer_id_company", map: "uniq_customer_id_company")
   @@index([companyId])
@@ -578,70 +579,70 @@ model ChantierPhoto {
 }
 
 model Quote {
-  id                      String                 @id
-  companyId               String
-  company                 Company                @relation(fields: [companyId], references: [id])
-  customerId              String
-  customer                Customer               @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  status                  QuoteStatus            @default(draft)
-  number                  String?
+  id                        String                 @id
+  companyId                 String
+  company                   Company                @relation(fields: [companyId], references: [id])
+  customerId                String
+  customer                  Customer               @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  status                    QuoteStatus            @default(draft)
+  number                    String?
   // B9 — un devis n'a pas de date métier propre (contrairement à Invoice.issuedAt) : createdAt
   // tient lieu de date de référence pour la recherche/le tri par période ("le mois dernier").
   // Lecture seule côté domaine (non threadé dans l'agrégat Quote, hors invariants métier).
-  createdAt        DateTime               @default(now())
-  validUntil       DateTime?
+  createdAt                 DateTime               @default(now())
+  validUntil                DateTime?
   /// A1 — date d'établissement du devis (arrêté du 24/01/2017), dérivée à l'envoi au jour métier
   /// Paris par l'agrégat Quote. NULL = brouillon, ou devis legacy envoyé avant l'ajout du champ
   /// (jamais rétro-daté depuis createdAt).
-  issuedAt         DateTime?              @db.Date
-  depositPct       Int?
-  signerName       String?
-  signedAt         DateTime?
+  issuedAt                  DateTime?              @db.Date
+  depositPct                Int?
+  signerName                String?
+  signedAt                  DateTime?
   // R4 : preuve de signature honnête — JSON { method: 'onsite_draw'|'remote_link', sha256?, capturedAt? }.
   // NULL = ligne historique (méthode réelle inconnue, réhydratée 'legacy_declared', jamais réinventée).
   // V1 : hash + méta uniquement ; l'archivage de l'image du tracé est l'évolution suivante.
-  signatureProof   Json?
+  signatureProof            Json?
   /// A3 — demande EXPRESSE d'exécution anticipée des travaux (art. L221-25 code conso), cochée
   /// par le client CONSOMMATEUR au moment de signer et horodatée SERVEUR : elle lève le gel de
   /// rétractation de la facture finale. NULL = jamais demandée (B2B, case non cochée, ou ligne
   /// historique antérieure au champ — jamais rétro-remplie).
-  earlyExecutionRequestedAt DateTime? @db.Timestamptz(6)
+  earlyExecutionRequestedAt DateTime?              @db.Timestamptz(6)
   /// A3 — qualité du client FIGÉE à la CONCLUSION du contrat (SignQuote, même transaction que
   /// la signature) : décide du droit de rétractation et de l'embargo L221-10 même si la fiche
   /// client change ensuite. NULL = signature antérieure au figeage (fallback : type courant).
-  signatureCustomerType CustomerType?
+  signatureCustomerType     CustomerType?
   /// A3 — rétractation du consommateur exercée via la fonctionnalité en ligne (art. L221-21
   /// dernier al. c. conso). NULL = jamais exercée ; horodatée SERVEUR, jamais réécrite.
-  retractedAt      DateTime?              @db.Timestamptz(6)
+  retractedAt               DateTime?              @db.Timestamptz(6)
   /// Exception dépannage urgent (art. L221-10, al. 2 et L221-28, 8° c. conso) : intervention
   /// urgente EXPRESSÉMENT sollicitée par le client B2C, posée À LA CRÉATION du devis (wizard),
   /// horodatée SERVEUR, immuable. NULL = jamais sollicitée (fail-closed : embargo L221-10 plein).
-  urgentRepairRequestedAt DateTime?       @db.Timestamptz(6)
-  totalsHt         Int                    @default(0)
-  totalsVat        Int                    @default(0)
-  totalsTtc        Int                    @default(0)
-  totalsNetToPay   Int                    @default(0)
-  vatByRate        Json                   @default("{}")
+  urgentRepairRequestedAt   DateTime?              @db.Timestamptz(6)
+  totalsHt                  Int                    @default(0)
+  totalsVat                 Int                    @default(0)
+  totalsTtc                 Int                    @default(0)
+  totalsNetToPay            Int                    @default(0)
+  vatByRate                 Json                   @default("{}")
   // B8 — bon de commande client (numéro d'engagement grands comptes/Chorus Pro), saisi UNE FOIS
   // sur le devis puis repris sur la facture dérivée. Anti-IDOR : le document du coffre lié est
   // contraint au MÊME tenant par la FK composite (companyId, purchaseOrderDocumentId).
-  purchaseOrderNumber     String?
-  purchaseOrderReceivedAt DateTime?              @db.Timestamptz(6)
-  purchaseOrderDocumentId String?
-  purchaseOrderDocument   StoredDocument? @relation("QuotePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  purchaseOrderNumber       String?
+  purchaseOrderReceivedAt   DateTime?              @db.Timestamptz(6)
+  purchaseOrderDocumentId   String?
+  purchaseOrderDocument     StoredDocument?        @relation("QuotePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // B3 — remise GLOBALE du devis (négociée UNE FOIS, reprise sur les pièces dérivées) :
   // pourcentage OU montant HT centimes, exclusifs (CHECK SQL). NULL/NULL = aucune remise.
-  globalDiscountPercent     Decimal? @db.Decimal(5, 2)
+  globalDiscountPercent     Decimal?               @db.Decimal(5, 2)
   globalDiscountAmountCents Int?
   // B5 — retenue de garantie stipulée au devis (loi n° 71-584, ≤ 5 %) : s'applique aux
   // situations et à la finale dérivées. NULL = aucune retenue.
-  retenueGarantiePct        Decimal? @db.Decimal(5, 2)
+  retenueGarantiePct        Decimal?               @db.Decimal(5, 2)
   // Révision optimiste (B8) : incrémentée par les mutations de bon de commande — le CAS final
   // en base est porté par le verrou de ligne (lockById) dans la transaction tenant.
-  revision                Int                    @default(1)
-  lines                   LineItem[]             @relation("QuoteLines")
-  creationRequests        QuoteCreationRequest[]
-  generatedInvoices       Invoice[]              @relation("QuoteGeneratedInvoices")
+  revision                  Int                    @default(1)
+  lines                     LineItem[]             @relation("QuoteLines")
+  creationRequests          QuoteCreationRequest[]
+  generatedInvoices         Invoice[]              @relation("QuoteGeneratedInvoices")
 
   @@unique([companyId, number], name: "uniq_quote_number")
   @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
@@ -661,45 +662,45 @@ model Quote {
 }
 
 model Invoice {
-  id                    String        @id
-  companyId             String
-  company               Company       @relation(fields: [companyId], references: [id])
-  customerId            String
-  customer              Customer      @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  kind                  DocKind
-  status                InvoiceStatus @default(draft)
-  number                String?
-  issuedAt              DateTime?
-  dueAt                 DateTime?
+  id                         String          @id
+  companyId                  String
+  company                    Company         @relation(fields: [companyId], references: [id])
+  customerId                 String
+  customer                   Customer        @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  kind                       DocKind
+  status                     InvoiceStatus   @default(draft)
+  number                     String?
+  issuedAt                   DateTime?
+  dueAt                      DateTime?
   /// A7 — date/période de la prestation si distincte de l'émission (art. 242 nonies A CGI,
   /// L441-9 c. com.) — FIGÉE à l'émission (trigger invoices_legal_traceability). NULL = non
   /// renseignée ; servicePeriodEnd NULL = prestation ponctuelle d'un seul jour.
-  servicePeriodStart    DateTime?     @db.Date
-  servicePeriodEnd      DateTime?     @db.Date
+  servicePeriodStart         DateTime?       @db.Date
+  servicePeriodEnd           DateTime?       @db.Date
   /// A7 — adresse de chantier/livraison si distincte de la facturation — FIGÉE à l'émission.
-  deliveryAddress       String?
-  parentQuoteId         String?
-  parentQuote           Quote?        @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  deliveryAddress            String?
+  parentQuoteId              String?
+  parentQuote                Quote?          @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   // Trace légale immuable de la facture exacte annulée par un avoir total.
   // Les quatre champs sont tous NULL hors avoir et tous renseignés pour tout nouvel avoir.
-  sourceInvoiceId         String?
-  sourceInvoiceKind       DocKind?
-  sourceInvoiceNumber     String?
-  sourceInvoiceIssuedAt   DateTime?
-  sourceInvoice           Invoice?        @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  creditNotes             Invoice[]       @relation("InvoiceCreditNotes")
-  depositPct              Int?
+  sourceInvoiceId            String?
+  sourceInvoiceKind          DocKind?
+  sourceInvoiceNumber        String?
+  sourceInvoiceIssuedAt      DateTime?
+  sourceInvoice              Invoice?        @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  creditNotes                Invoice[]       @relation("InvoiceCreditNotes")
+  depositPct                 Int?
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
-  depositDeductionCents Int           @default(0)
-  depositInvoiceId      String?
-  depositInvoice        Invoice?      @relation("InvoiceDepositDeductions", fields: [depositInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  deductedByInvoices    Invoice[]     @relation("InvoiceDepositDeductions")
-  paidCents             Int           @default(0)
-  totalsHt              Int           @default(0)
-  totalsVat             Int           @default(0)
-  totalsTtc             Int           @default(0)
-  totalsNetToPay        Int           @default(0)
-  vatByRate             Json          @default("{}")
+  depositDeductionCents      Int             @default(0)
+  depositInvoiceId           String?
+  depositInvoice             Invoice?        @relation("InvoiceDepositDeductions", fields: [depositInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  deductedByInvoices         Invoice[]       @relation("InvoiceDepositDeductions")
+  paidCents                  Int             @default(0)
+  totalsHt                   Int             @default(0)
+  totalsVat                  Int             @default(0)
+  totalsTtc                  Int             @default(0)
+  totalsNetToPay             Int             @default(0)
+  vatByRate                  Json            @default("{}")
   /// B3/B5 — compléments de totaux PRÉSENTS UNIQUEMENT quand le fait existe (Totals.grossHt?/
   /// discountCents?/retenueGarantieCents?) : les pièces antérieures restent identiques au centime.
   totalsGrossHt              Int?
@@ -707,39 +708,39 @@ model Invoice {
   totalsRetenueGarantieCents Int?
   /// B2 — situation de travaux : n° d'ordre sur SON devis (1, 2, 3…) ; part de la déduction de
   /// la finale provenant des situations émises (compta : CA jamais compté deux fois).
-  situationOrder          Int?
-  situationDeductionCents Int           @default(0)
+  situationOrder             Int?
+  situationDeductionCents    Int             @default(0)
   /// B3 — remise globale de la pièce (reprise du devis à la dérivation, ou saisie sur facture
   /// directe) : % OU montant HT centimes, exclusifs (CHECK SQL).
-  globalDiscountPercent     Decimal? @db.Decimal(5, 2)
-  globalDiscountAmountCents Int?
+  globalDiscountPercent      Decimal?        @db.Decimal(5, 2)
+  globalDiscountAmountCents  Int?
   /// B5 — taux de retenue de garantie applicable à la pièce (situations + finale). NULL = aucune.
-  retenueGarantiePct        Decimal? @db.Decimal(5, 2)
+  retenueGarantiePct         Decimal?        @db.Decimal(5, 2)
   /// B1/A3bis — facture DIRECTE B2C : intervention urgente à domicile expressément sollicitée
   /// (art. L221-10, al. 2 et L221-28, 8° c. conso), horodatée SERVEUR à la composition,
   /// IMMUABLE. NULL = jamais sollicitée (fail-closed).
-  urgentRepairRequestedAt DateTime?     @db.Timestamptz(6)
+  urgentRepairRequestedAt    DateTime?       @db.Timestamptz(6)
   /// Suivi MANUEL de transmission (canal de facturation du client) : dates DÉCLARÉES par
   /// l'artisan (dépôt Chorus/portail puis acceptation) — mutables APRÈS émission (suivi
   /// opérationnel, pas un fait légal de la pièce). NULL = jamais suivi.
-  transmissionDepositedAt DateTime?     @db.Date
-  transmissionAcceptedAt  DateTime?     @db.Date
-  legalMentions         String[]      @default([])
+  transmissionDepositedAt    DateTime?       @db.Date
+  transmissionAcceptedAt     DateTime?       @db.Date
+  legalMentions              String[]        @default([])
   /// A4 — régime de TVA de la pièce, CONSTATÉ par IssueInvoice et FIGÉ à l'émission (franchise
   /// 293 B / autoliquidation 283, 2 nonies / standard) — le XML Factur-X régénéré le lit en
   /// priorité, plus jamais l'état mutable de la fiche client. NULL = pièce émise avant le
   /// figeage (dérivation dynamique honnête, jamais rétro-déduite).
-  vatTreatmentAtIssuance String?
+  vatTreatmentAtIssuance     String?
   // B8 — bon de commande repris du devis à la dérivation (ou attaché en brouillon), FIGÉ à
   // l'émission (trigger invoices_legal_traceability). FK composite anti-IDOR comme sur quotes.
-  purchaseOrderNumber     String?
-  purchaseOrderReceivedAt DateTime?       @db.Timestamptz(6)
-  purchaseOrderDocumentId String?
-  purchaseOrderDocument   StoredDocument? @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  purchaseOrderNumber        String?
+  purchaseOrderReceivedAt    DateTime?       @db.Timestamptz(6)
+  purchaseOrderDocumentId    String?
+  purchaseOrderDocument      StoredDocument? @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
-  revision                Int             @default(1)
-  lines                   LineItem[]      @relation("InvoiceLines")
-  payments                Payment[]
+  revision                   Int             @default(1)
+  lines                      LineItem[]      @relation("InvoiceLines")
+  payments                   Payment[]
 
   @@unique([companyId, number], name: "uniq_invoice_number")
   @@unique([id, companyId], name: "uniq_invoice_id_company", map: "uniq_invoice_id_company")
@@ -761,22 +762,22 @@ model Invoice {
 }
 
 model LineItem {
-  id          String       @id @default(uuid())
-  quoteId     String?
-  quote       Quote?       @relation("QuoteLines", fields: [quoteId], references: [id])
-  invoiceId   String?
-  invoice     Invoice?     @relation("InvoiceLines", fields: [invoiceId], references: [id], onDelete: Restrict)
-  position    Int
-  label       String
-  category    LineCategory
-  qty         Decimal      @db.Decimal(12, 3)
-  unit        String?
-  unitPriceHt Int
-  vatRate     Decimal      @db.Decimal(4, 2)
+  id                  String       @id @default(uuid())
+  quoteId             String?
+  quote               Quote?       @relation("QuoteLines", fields: [quoteId], references: [id])
+  invoiceId           String?
+  invoice             Invoice?     @relation("InvoiceLines", fields: [invoiceId], references: [id], onDelete: Restrict)
+  position            Int
+  label               String
+  category            LineCategory
+  qty                 Decimal      @db.Decimal(12, 3)
+  unit                String?
+  unitPriceHt         Int
+  vatRate             Decimal      @db.Decimal(4, 2)
   /// B3 — remise DE LIGNE, EXCLUSIVE : pourcentage (0 < % ≤ 100, 2 déc.) OU montant HT en
   /// centimes (> 0, plafonné par la base de la ligne côté domaine). CHECK SQL d'exclusivité.
   /// NULL/NULL = aucune remise (lignes antérieures inchangées au centime).
-  discountPercent     Decimal? @db.Decimal(5, 2)
+  discountPercent     Decimal?     @db.Decimal(5, 2)
   discountAmountCents Int?
 
   @@index([quoteId])
@@ -2077,4 +2078,65 @@ model FiscalProfile {
   updatedAt            DateTime @updatedAt
 
   @@map("fiscal_profiles")
+}
+
+/// TRACE DE COMPORTEMENT VOCAL — une ligne par TOUR de conversation (bêta-test fondateur).
+///
+/// Objet : comprendre et REPRODUIRE ce que fait Bob à la voix. Une ligne raconte le fil complet
+/// d'un tour : ce qui a été dit → ce que Bob a compris → l'outil qu'il a choisi et avec quels
+/// paramètres → l'issue → ce qu'il a répondu → le temps de chaque étape.
+///
+/// SOUVERAINETÉ. `transcript` et `reply` portent les données les plus sensibles de l'app (noms de
+/// clients, montants, SIRET). Elles restent ICI, dans notre PostgreSQL, sous RLS FORCE : jamais
+/// chez un observateur tiers — ce sont exactement les données déjà exclues de la télémétrie de
+/// plantage pour motif RGPD (packages/core/src/observability/telemetry-scrubbing.ts).
+///
+/// RÉTENTION BORNÉE. Debug de bêta-test, pas archive légale : `retentionExpiresAt` (30 jours)
+/// est purgé par VoiceTracePurgeService. Aucune obligation de conservation ne s'y attache.
+///
+/// DORMANT PAR DÉFAUT : aucune ligne n'est écrite sans VOICE_TRACE_ENABLED=true.
+model VoiceTrace {
+  id                 String   @id @db.Text
+  companyId          String   @db.Text
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  /// Session vocale reconstruite côté serveur (le tour traverse 3 requêtes HTTP distinctes).
+  sessionId          String   @db.Text
+  turnIndex          Int
+  /// Identité du testeur : suivi du comportement des testeurs, sans jointure vers un profil.
+  userId             String?  @db.Text
+  /// correlationId HTTP de la requête qui a OUVERT le tour (transcription) — recolle les logs.
+  correlationId      String   @db.Text
+  /// correlationId de la requête de planification (/ai/ask), différent du précédent.
+  planCorrelationId  String?  @db.Text
+  startedAt          DateTime @db.Timestamptz(6)
+  /// Ce qui a été prononcé, tel que transcrit. Borné, jamais rédigé (cf. SOUVERAINETÉ).
+  transcript         String?  @db.Text
+  sttModel           String?  @db.Text
+  /// Ce que Bob a compris : intention résolue par le routeur, puis outil retenu et paramètres.
+  intent             String?  @db.Text
+  tool               String?  @db.Text
+  toolArgs           Json?
+  autonomy           String?  @db.Text
+  llmModel           String?  @db.Text
+  /// heard | success | refused | error (VoiceTurnOutcome, @bob/core).
+  outcome            String   @db.Text
+  /// info | warn | error (VoiceTraceLevel). `error` seul remonte au canal d'incident.
+  level              String   @db.Text
+  /// Raison LISIBLE d'un refus métier ou d'une anomalie. Null quand le tour a abouti.
+  reason             String?  @db.Text
+  /// Ce que Bob a répondu, tel qu'il l'aurait prononcé.
+  reply              String?  @db.Text
+  ttsModel           String?  @db.Text
+  transcriptionMs    Int?
+  planificationMs    Int?
+  executionMs        Int?
+  syntheseMs         Int?
+  updatedAt          DateTime @db.Timestamptz(6)
+  retentionExpiresAt DateTime @db.Timestamptz(6)
+
+  @@unique([companyId, sessionId, turnIndex], name: "voice_trace_turn")
+  @@index([companyId, startedAt], map: "voice_traces_tenant_time_idx")
+  @@index([companyId, level, startedAt], map: "voice_traces_level_idx")
+  @@index([companyId, retentionExpiresAt], map: "voice_traces_retention_idx")
+  @@map("voice_traces")
 }

@@ -312,6 +312,11 @@ import { SituationOrderConflictError } from './persistence/situation-order-confl
 // Import circulaire assumé (RelanceService ↔ BackendService) : résolu par forwardRef des deux
 // côtés — l'action Bob envoyer_relance délègue au MÊME service que POST /invoices/:id/relance.
 import { RelanceService } from './jobs/relance.service';
+import {
+  VOICE_TRACE_RECORDER,
+  voiceTraceErrorFacts,
+  type VoiceTraceRecorderPort,
+} from './voice/voice-trace.port';
 import { notificationRoute } from './notifications/notification-route';
 import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 import { ExpenseCreationCoordinator } from './expenses/expense-creation-coordinator';
@@ -1124,6 +1129,13 @@ export class BackendService {
     @Optional()
     @Inject(forwardRef(() => RelanceService))
     private readonly relances: RelanceService | null = null,
+    // TRAÇAGE VOCAL (bêta-test). Injecté par TOKEN : le chemin vocal ne doit connaître que le
+    // port (voice-trace.port.ts), jamais l'implémentation ni ses dépendances d'infrastructure.
+    // Optionnel — un harness sans enregistreur reste identique à l'existant, et l'enregistreur
+    // lui-même est dormant sans VOICE_TRACE_ENABLED.
+    @Optional()
+    @Inject(VOICE_TRACE_RECORDER)
+    private readonly voiceTrace: VoiceTraceRecorderPort | null = null,
   ) {}
 
   private mapQuote(q: Quote): QuoteView {
@@ -4065,6 +4077,11 @@ export class BackendService {
       return err(appUnavailable('bob-llm'));
     }
     const agent = bobRuntime.agent;
+    // Deux mesures distinctes : la PLANIFICATION (Bob comprend et agit) puis l'EXÉCUTION du
+    // dry-run de proposition. Les confondre masquerait laquelle des deux traîne.
+    const planStartedMs = Date.now();
+    let planificationMs: number | null = null;
+    let executionMs: number | null = null;
     let r = await agent.ask(input.message, {
       autonomy: effectiveAutonomy,
       ...(input.history !== undefined ? { history: input.history } : {}),
@@ -4073,10 +4090,12 @@ export class BackendService {
       ...(execution?.signal === undefined ? {} : { signal: execution.signal }),
     });
     execution?.signal?.throwIfAborted();
+    planificationMs = Date.now() - planStartedMs;
 
     // Une proposition HTTP devient une ressource serveur opaque. Le client conserve args/label
     // uniquement pour l'aperçu, mais /ai/confirm les ignore et recharge ce dry-run tenant-scoped.
     if (r.ok && r.value.kind === 'proposed' && r.value.pending) {
+      const executionStartedMs = Date.now();
       try {
         execution?.signal?.throwIfAborted();
         const proposal = await agent.dryRun(
@@ -4144,7 +4163,9 @@ export class BackendService {
             expiresAt,
           },
         });
+        executionMs = Date.now() - executionStartedMs;
       } catch (error) {
+        executionMs = Date.now() - executionStartedMs;
         execution?.signal?.throwIfAborted();
         return {
           ok: false,
@@ -4173,6 +4194,25 @@ export class BackendService {
       requestedAutonomy: input.autonomy ?? null,
       effectiveAutonomy,
       contextual: input.context !== undefined,
+    });
+    // TRAÇAGE VOCAL — moitié « ce que Bob a compris / a fait / répond ». L'enregistreur ne
+    // retient ce tour QUE si le message correspond à une transcription récente du même
+    // utilisateur : une conversation au clavier passe ici sans laisser de trace vocale.
+    const pending = r.ok ? r.value.pending : undefined;
+    this.voiceTrace?.notePlanning({
+      companyId: this.companyId(),
+      userId: getPrincipal()?.userId ?? null,
+      message: input.message,
+      intent,
+      tool: pending?.tool ?? null,
+      toolArgs: pending?.args ?? null,
+      autonomy: effectiveAutonomy,
+      llmModel: model,
+      // Ce que Bob dit — la formulation vocale d'abord, à défaut le corps de la carte d'action.
+      reply: r.ok ? (r.value.naturalBody ?? r.value.spokenPrompt ?? r.value.card.body) : null,
+      planificationMs: planificationMs ?? ms,
+      executionMs,
+      error: r.ok ? null : voiceTraceErrorFacts(r.error),
     });
     return r;
   }
@@ -4233,10 +4273,33 @@ export class BackendService {
     );
   }
 
+  /**
+   * TRAÇAGE VOCAL — point d'ouverture du tour. L'enveloppe est délibérément un WRAPPER : le
+   * corps de la transcription a une dizaine de sorties (offre insuffisante, MIME refusé, audio
+   * hors bornes, fournisseur absent, panne STT) et instrumenter chacune reviendrait tôt ou tard
+   * à en oublier une. Ici, AUCUN chemin ne peut sortir sans être tracé.
+   */
   async transcribe(input: {
     audioBase64: string;
     mimeType: string;
   }): Promise<Result<{ text: string }, AppError>> {
+    const startedAtMs = Date.now();
+    const result = await this.runTranscription(input);
+    this.voiceTrace?.noteTranscription({
+      companyId: this.companyId(),
+      userId: getPrincipal()?.userId ?? null,
+      transcript: result.ok ? result.value.text : null,
+      sttModel: result.ok ? result.value.model : null,
+      transcriptionMs: Date.now() - startedAtMs,
+      error: result.ok ? null : voiceTraceErrorFacts(result.error),
+    });
+    return result.ok ? ok({ text: result.value.text }) : result;
+  }
+
+  private async runTranscription(input: {
+    audioBase64: string;
+    mimeType: string;
+  }): Promise<Result<{ text: string; model: string }, AppError>> {
     const subscription = await this.subscriptionFor(this.companyId());
     if (!subscription.ok) return subscription;
     if (!subscription.value.can('ai_assistant'))
@@ -4291,7 +4354,7 @@ export class BackendService {
     try {
       const r = await this.stt.transcribe(input.audioBase64, mimeType);
       this.logger.audit('voice.transcribe', { model: r.model, chars: r.text.length });
-      return ok({ text: r.text });
+      return ok({ text: r.text, model: r.model });
     } catch (e) {
       return {
         ok: false,
@@ -4304,7 +4367,25 @@ export class BackendService {
     }
   }
 
+  /**
+   * TRAÇAGE VOCAL — clôture du tour (« ce que Bob a répondu »). Même raison qu'à la
+   * transcription pour l'enveloppe : toutes les sorties passent par ici, sans exception.
+   */
   async synthesizeSpeech(input: { text: string }): Promise<Result<TtsResult, AppError>> {
+    const startedAtMs = Date.now();
+    const result = await this.runSynthesis(input);
+    this.voiceTrace?.noteSynthesis({
+      companyId: this.companyId(),
+      userId: getPrincipal()?.userId ?? null,
+      text: input.text,
+      ttsModel: result.ok ? result.value.model : null,
+      syntheseMs: Date.now() - startedAtMs,
+      error: result.ok ? null : voiceTraceErrorFacts(result.error),
+    });
+    return result;
+  }
+
+  private async runSynthesis(input: { text: string }): Promise<Result<TtsResult, AppError>> {
     const subscriptionResult = await this.subscriptionFor(this.companyId());
     if (!subscriptionResult.ok) return subscriptionResult;
     const subscription = subscriptionResult.value;

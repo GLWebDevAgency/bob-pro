@@ -4,6 +4,7 @@ import { seedCompany, seedCustomers } from '@bob/core/testing';
 import type { Persistence } from './persistence';
 import { InMemorySalesDocumentSearchRepository } from './sales-document-search.in-memory';
 import { InMemoryAgentJournalRepository } from './agent-journal.testing';
+import { InMemoryVoiceTraceRepository } from './voice-traces.testing';
 import { InMemorySupplierMemoryRepository } from './supplier-memory.testing';
 import { InMemorySubscriptionRepository } from './subscriptions.testing';
 import { InMemoryBankBalanceSnapshotRepository } from './bank-balance-snapshots.testing';
@@ -102,6 +103,7 @@ export class InMemoryPersistence implements Persistence {
   readonly accountingEntries = new InMemoryAccountingEntryRepository();
   readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
+  readonly voiceTraces = new InMemoryVoiceTraceRepository();
   readonly supplierMemory = new InMemorySupplierMemoryRepository();
   readonly subscriptions = new InMemorySubscriptionRepository();
   readonly bankBalances = new InMemoryBankBalanceSnapshotRepository();
@@ -214,6 +216,9 @@ export class InMemoryPersistence implements Persistence {
   }
 
   async runWithTenant<T>(_companyId: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+  async runDetachedWithTenant<T>(_companyId: string, fn: () => Promise<T>): Promise<T> {
     return fn();
   }
   async runWithIdentity<T>(_userId: string, fn: () => Promise<T>): Promise<T> {
