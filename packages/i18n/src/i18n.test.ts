@@ -1435,3 +1435,20 @@ describe('catalogue legal (LegalHint — protections légales ×3 tons)', () => 
     }
   });
 });
+
+describe('devis — confirmation honnête quand le client n’a pas d’e-mail', () => {
+  it('ne promet JAMAIS un envoi e-mail dans la copie « préparé »', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const titre = t('devis.recapPreparedTitle', { personality });
+      const corps = t('devis.recapPreparedBody', {
+        personality,
+        params: { number: 'D-2026-0042', name: 'Jean de la Croix', amount: '1 200,00 €' },
+      });
+      expect(titre.length).toBeGreaterThan(0);
+      // Le mot « e-mail » peut apparaître pour dire qu'il MANQUE, jamais pour dire qu'il est parti.
+      expect(corps).not.toMatch(/a reçu|envoyé par e-mail|reçu le devis/iu);
+      expect(corps).toContain('D-2026-0042');
+      expect(corps).toContain('Jean de la Croix');
+    }
+  });
+});

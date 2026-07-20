@@ -1485,7 +1485,14 @@ export default function DevisNew() {
             )}
           </View>
           <Text style={[font('screenH1'), { color: colors.surface, textAlign: 'center', marginBottom: 8 }]}>
-            {t(signed ? 'devis.recapSignedTitle' : 'devis.recapSentTitle', { personality })}
+            {t(
+              signed
+                ? 'devis.recapSignedTitle'
+                : quoteResult.emailSkipped
+                  ? 'devis.recapPreparedTitle'
+                  : 'devis.recapSentTitle',
+              { personality },
+            )}
           </Text>
           <Text
             style={[
@@ -1500,7 +1507,16 @@ export default function DevisNew() {
               },
             ]}
           >
-            {t(signed ? 'devis.recapSignedBody' : 'devis.recapSentBody', {
+            {/* Jamais « a reçu par e-mail » quand le serveur a répondu 'skipped' : le client
+                n'a aucune adresse, rien n'est parti. Un faux succès ferait attendre une
+                signature qui ne viendrait jamais (bug terrain 20/07). */}
+            {t(
+              signed
+                ? 'devis.recapSignedBody'
+                : quoteResult.emailSkipped
+                  ? 'devis.recapPreparedBody'
+                  : 'devis.recapSentBody',
+              {
               personality,
               params: {
                 number: quoteResult.number,

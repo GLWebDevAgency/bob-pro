@@ -3907,6 +3907,20 @@ const legacyFr = {
     pro: '{name} a reçu le devis {number} par e-mail — en attente de sa signature.',
     direct: '{number} envoyé à {name}. En attente de signature.',
   },
+  // Bug terrain 20/07 : quand le client n'a AUCUNE adresse e-mail, le serveur répond
+  // deliveryStatus 'skipped' et n'envoie rien — l'écran affirmait pourtant « a reçu le devis
+  // par e-mail ». Un faux succès fait attendre à l'artisan une signature qui ne viendra jamais.
+  // La pièce EXISTE et son numéro légal est alloué : on le dit, sans inventer un envoi.
+  'devis.recapPreparedTitle': {
+    pote: 'Devis prêt !',
+    pro: 'Devis prêt',
+    direct: 'Devis prêt.',
+  },
+  'devis.recapPreparedBody': {
+    pote: 'Le devis {number} est prêt pour {name}, mais aucun e-mail n’est enregistré pour lui — partage-lui le lien de signature juste en dessous.',
+    pro: 'Le devis {number} est prêt pour {name}. Aucune adresse e-mail n’est enregistrée : partagez le lien de signature ci-dessous.',
+    direct: '{number} prêt. Pas d’e-mail pour {name} — partagez le lien ci-dessous.',
+  },
   'devis.recapProposalTitle': {
     pote: 'La suite, quand tu veux',
     pro: 'La suite, à votre rythme',
