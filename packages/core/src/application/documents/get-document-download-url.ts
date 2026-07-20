@@ -23,7 +23,7 @@ function dependencyError(port: string, e: unknown): AppError {
 }
 
 export class GetDocumentDownloadUrl {
-  constructor(private readonly deps: { documents: DocumentRepository; storage: DocumentStoragePort }) {}
+  constructor(private readonly deps: { documents: Pick<DocumentRepository, 'findById'>; storage: DocumentStoragePort }) {}
 
   async execute(input: GetDocumentDownloadUrlInput): Promise<Result<DocumentDownloadUrl, AppError>> {
     const ttlSeconds = input.ttlSeconds ?? 300;

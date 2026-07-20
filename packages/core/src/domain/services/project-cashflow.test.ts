@@ -11,4 +11,16 @@ describe('projectCashflow', () => {
   it('expose un payout positif quand la dispo est saine', () => {
     expect(projectCashflow(base, 'realiste', 30).payout).toBeGreaterThan(0);
   });
+  it('expose la TVA a provisionner telle quelle (le KPI briefing lit le MEME chiffre que la dispo)', () => {
+    expect(projectCashflow(base, 'realiste', 30).vatDue).toBe(124000);
+  });
+  it('rend explicites le modèle, le scénario et le taux de recouvrement appliqué', () => {
+    expect(projectCashflow(base, 'realiste', 30).basis).toEqual({
+      modelVersion: 'cashflow-projection/2',
+      kind: 'aggregate_legacy',
+      scenario: 'realiste',
+      horizonDays: 30,
+      receivableCollectionRatePct: 90,
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { ActionJournal, InMemoryJournalStore, digestResult, type JournalEntry } from './journal';
+import { ActionJournal, digestResult, type JournalEntry } from './journal';
+import { InMemoryJournalStore } from './journal.testing';
 
 const base = { at: 't', tool: 'x', label: 'X', args: {}, mutating: true, outbound: false, compliance: 'low' as const };
 

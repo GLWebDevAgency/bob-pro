@@ -48,13 +48,182 @@ describe('Expense.record', () => {
     expect(e.documentDate).toBe('2030-01-01');
   });
 
-  it('accepte et conserve un SIREN valide ; markPaid bascule le statut', () => {
+  it('accepte et conserve un SIREN valide', () => {
     const r = Expense.record({ ...base, supplierSiren: '732829320' });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      r.value.markPaid();
-      expect(r.value.status).toBe('paid');
       expect(r.value.toProps().supplierSiren).toBe('732829320');
     }
+  });
+
+  it('enregistre une preuve de règlement explicite, normalisée et non future', () => {
+    const r = Expense.record(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const paid = r.value.recordPayment(
+      {
+        paidOn: '2026-06-14',
+        method: 'transfer',
+        reference: '  VIR-2026-0042  ',
+        proofDocumentId: '  document-1  ',
+      },
+      { today: '2026-06-15' },
+    );
+    expect(paid).toEqual({ ok: true, value: { alreadyRecorded: false } });
+    expect(r.value.toProps()).toMatchObject({
+      status: 'paid',
+      paymentEvidence: {
+        paidOn: '2026-06-14',
+        method: 'transfer',
+        reference: 'VIR-2026-0042',
+        proofDocumentId: 'document-1',
+      },
+    });
+  });
+
+  it('refuse date future, moyen inconnu et références non bornées sans changer le statut', () => {
+    const cases = [
+      { paidOn: '2026-06-16', method: 'transfer' as const },
+      { paidOn: '2026-06-14', method: 'cheque' as unknown as 'transfer' },
+      { paidOn: '2026-06-14', method: 'card' as const, reference: 'x'.repeat(141) },
+      { paidOn: '2026-06-14', method: 'cash' as const, proofDocumentId: 'x'.repeat(201) },
+    ];
+    for (const evidence of cases) {
+      const r = Expense.record(base);
+      expect(r.ok).toBe(true);
+      if (!r.ok) continue;
+      expect(r.value.recordPayment(evidence, { today: '2026-06-15' }).ok).toBe(false);
+      expect(r.value.status).toBe('to_pay');
+      expect(r.value.paymentEvidence).toBeNull();
+    }
+  });
+
+  it('un retry identique est idempotent ; une preuve différente échoue sans réécriture', () => {
+    const r = Expense.record(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const evidence = { paidOn: '2026-06-14', method: 'card' as const, reference: 'CB-42' };
+    expect(r.value.recordPayment(evidence, { today: '2026-06-15' })).toEqual({
+      ok: true,
+      value: { alreadyRecorded: false },
+    });
+    expect(r.value.recordPayment(evidence, { today: '2026-06-15' })).toEqual({
+      ok: true,
+      value: { alreadyRecorded: true },
+    });
+    expect(r.value.recordPayment({ ...evidence, paidOn: '2026-06-13' }, { today: '2026-06-15' }).ok).toBe(false);
+    expect(r.value.paymentEvidence?.paidOn).toBe('2026-06-14');
+  });
+
+  it('interdit de créer un statut payé sans preuve ou une preuve sur un statut à payer', () => {
+    expect(Expense.record({ ...base, status: 'paid' }).ok).toBe(false);
+    expect(Expense.record({
+      ...base,
+      paymentEvidence: { paidOn: '2026-06-14', method: 'cash', reference: null, proofDocumentId: null },
+    }).ok).toBe(false);
+  });
+
+  // C-EXP6b — extension ADDITIVE : n° de facture fournisseur (BT-1) + échéance (BT-9).
+  it('champs Factur-X optionnels : absents → null (rien ne casse), normalisés quand présents', () => {
+    const legacy = Expense.record(base); // sans les nouveaux champs — call-sites historiques intacts
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.supplierInvoiceNumber).toBeNull();
+      expect(legacy.value.dueAt).toBeNull();
+    }
+    const full = Expense.record({
+      ...base,
+      source: 'facturx',
+      supplierInvoiceNumber: '  FC-2026-118  ',
+      dueAt: '2026-07-20',
+    });
+    expect(full.ok).toBe(true);
+    if (full.ok) {
+      expect(full.value.supplierInvoiceNumber).toBe('FC-2026-118');
+      expect(full.value.dueAt).toBe('2026-07-20');
+      expect(full.value.toProps().source).toBe('facturx');
+    }
+    const blankNumber = Expense.record({ ...base, supplierInvoiceNumber: '   ' });
+    expect(blankNumber.ok).toBe(true);
+    if (blankNumber.ok) expect(blankNumber.value.supplierInvoiceNumber).toBeNull(); // vide → null
+    expect(Expense.record({ ...base, dueAt: '2026-02-30' }).ok).toBe(false); // échéance impossible
+  });
+
+  // Rentabilité par chantier — extension ADDITIVE : chantierId optionnel, défaut null.
+  it('chantierId optionnel : absent/null → null (lignes historiques intactes), normalisé quand présent, blanc refusé', () => {
+    const legacy = Expense.record(base); // sans le champ — call-sites historiques intacts
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.chantierId).toBeNull();
+      expect(legacy.value.toProps().chantierId).toBeNull(); // projection TOUJOURS explicite
+    }
+
+    const explicitNull = Expense.record({ ...base, chantierId: null });
+    expect(explicitNull.ok && explicitNull.value.chantierId).toBeNull();
+
+    const assigned = Expense.record({ ...base, chantierId: '  chantier-durand  ' });
+    expect(assigned.ok).toBe(true);
+    if (assigned.ok) {
+      expect(assigned.value.chantierId).toBe('chantier-durand');
+      expect(assigned.value.toProps().chantierId).toBe('chantier-durand');
+    }
+
+    const blank = Expense.record({ ...base, chantierId: '   ' });
+    expect(blank.ok).toBe(false);
+    if (!blank.ok) expect(blank.error).toMatchObject({ code: 'VALIDATION', field: 'chantierId' });
+  });
+
+  it('rehydrate une ligne historique sans chantierId : null partout, jamais de crash', () => {
+    const historical = Expense.rehydrate(base);
+    expect(historical.chantierId).toBeNull();
+    expect(historical.toProps().chantierId).toBeNull();
+  });
+});
+
+describe('Expense.assignToChantier (imputation rentabilité par chantier)', () => {
+  it('pose le lien (normalisé), idempotent sur la même cible, refuse un id blanc', () => {
+    const e = Expense.rehydrate(base);
+
+    const assigned = e.assignToChantier('  chantier-durand  ');
+    expect(assigned.ok && assigned.value.changed).toBe(true);
+    expect(e.chantierId).toBe('chantier-durand');
+
+    // Ré-imputer le MÊME chantier : aucun changement (retry sûr, pas d'écriture fantôme).
+    const replay = e.assignToChantier('chantier-durand');
+    expect(replay.ok && replay.value.changed).toBe(false);
+    expect(e.chantierId).toBe('chantier-durand');
+
+    const blank = e.assignToChantier('   ');
+    expect(blank.ok).toBe(false);
+    if (!blank.ok) expect(blank.error).toMatchObject({ code: 'VALIDATION', field: 'chantierId' });
+    expect(e.chantierId).toBe('chantier-durand'); // le lien en place n'a pas bougé
+  });
+
+  it('ré-impute vers un AUTRE chantier (geste explicite, pas d’écrasement silencieux côté dépense)', () => {
+    const e = Expense.rehydrate({ ...base, chantierId: 'chantier-durand' });
+    const moved = e.assignToChantier('chantier-martin');
+    expect(moved.ok && moved.value.changed).toBe(true);
+    expect(e.chantierId).toBe('chantier-martin');
+  });
+
+  it('délie avec null EXPLICITE ; délier une dépense déjà hors chantier ne change rien', () => {
+    const e = Expense.rehydrate({ ...base, chantierId: 'chantier-durand' });
+
+    const unlinked = e.assignToChantier(null);
+    expect(unlinked.ok && unlinked.value.changed).toBe(true);
+    expect(e.chantierId).toBeNull();
+    expect(e.toProps().chantierId).toBeNull();
+
+    const replay = e.assignToChantier(null);
+    expect(replay.ok && replay.value.changed).toBe(false);
+  });
+
+  it('fonctionne aussi sur une ligne HISTORIQUE réhydratée sans le champ (undefined ≡ null)', () => {
+    const historical = Expense.rehydrate(base); // chantierId absent
+    const noop = historical.assignToChantier(null);
+    expect(noop.ok && noop.value.changed).toBe(false); // undefined ≡ null : rien à délier
+    const assigned = historical.assignToChantier('chantier-durand');
+    expect(assigned.ok && assigned.value.changed).toBe(true);
+    expect(historical.chantierId).toBe('chantier-durand');
   });
 });

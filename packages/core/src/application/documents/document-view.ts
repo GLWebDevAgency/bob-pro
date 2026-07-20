@@ -8,10 +8,14 @@ export interface DocumentView {
   origin: DocumentOrigin;
   status: DocumentStatus;
   filename: string;
+  /** Libellé d'affichage (renommable) — jamais vide, défaut dérivé du filename. */
+  displayName: string;
   mimeType: string;
   byteSize: number;
   sha256: string;
   storageKey: string;
+  folderId: string | null;
+  revision: number;
   version: number;
   linkedEntityType: DocumentLinkedEntityType | null;
   linkedEntityId: string | null;
@@ -20,6 +24,9 @@ export interface DocumentView {
   createdAt: Instant;
   createdBy: string | null;
   retentionUntil: DateOnly;
+  tags: string[];
+  /** Confirmation humaine du document scanné — null : jamais validé (dont lignes historiques). */
+  reviewedAt: Instant | null;
 }
 
 export function documentToView(document: Document): DocumentView {
@@ -32,10 +39,13 @@ export function documentToView(document: Document): DocumentView {
     origin: p.origin,
     status: p.status,
     filename: p.filename,
+    displayName: document.displayName,
     mimeType: p.mimeType,
     byteSize: p.byteSize,
     sha256: p.sha256,
     storageKey: p.storageKey,
+    folderId: p.folderId ?? null,
+    revision: p.revision ?? 1,
     version: latest.version,
     linkedEntityType: p.linkedEntityType,
     linkedEntityId: p.linkedEntityId,
@@ -44,5 +54,7 @@ export function documentToView(document: Document): DocumentView {
     createdAt: p.createdAt,
     createdBy: p.createdBy,
     retentionUntil: p.retentionUntil,
+    tags: [...p.tags],
+    reviewedAt: p.reviewedAt ?? null,
   };
 }

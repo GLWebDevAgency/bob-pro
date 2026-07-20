@@ -48,6 +48,7 @@ function makeDeps(quote: Quote | null, lockedQuote: Quote | null = quote) {
     revokeActiveFor: async (input) => {
       revocations.push(input);
     },
+    revokeAllForCompany: async () => undefined,
   };
   return { deps: { quotes, publicAccessTokens, uow, clock }, counts: () => ({ saves, transactions, revocations }) };
 }

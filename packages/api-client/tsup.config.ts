@@ -5,5 +5,5 @@ export default defineConfig({
   format: ['esm'],
   dts: true,
   clean: true,
-  external: ['@bob/core'],
+  external: ['@bob/core', '@bob/ai'],
 });

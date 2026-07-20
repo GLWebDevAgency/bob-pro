@@ -1,0 +1,60 @@
+name: Railway Topology Drift
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  schedule:
+    # Le throttler public reste process-local jusqu'au passage à un storage partagé atomique.
+    - cron: '17 * * * *'
+
+concurrency:
+  group: railway-topology-drift
+  cancel-in-progress: true
+
+jobs:
+  certify-single-replica:
+    name: ${{ matrix.environment }} remains single-replica
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ matrix.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - staging
+          - production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+      - name: Install pinned Railway CLI
+        run: sh apps/api/scripts/install-railway-cli.sh
+      - name: Reject topology drift
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ENV: ${{ matrix.environment }}
+          RAILWAY_SERVICE: bob-pro-api
+        run: |
+          railway status --environment "$RAILWAY_ENV" --json \
+            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
+      - name: Open an owned incident on drift
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INCIDENT_TITLE: Railway topology drift (${{ matrix.environment }})
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          existing="$(gh issue list --state open --search "\"$INCIDENT_TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            gh issue create \
+              --title "$INCIDENT_TITLE" \
+              --body "Le contrôle mono-process a échoué. Tant que le throttler public reste local au processus, traiter cette alerte avant toute promotion : $RUN_URL"
+          else
+            gh issue comment "$existing" --body "Le contrôle échoue encore : $RUN_URL"
+          fi

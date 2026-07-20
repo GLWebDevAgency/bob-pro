@@ -1,116 +1,44 @@
-import {
-  BobAgent,
-  ModelRouter,
-  type BobActions,
-  type PayableInvoice,
-  type SendableQuote,
-  type IssuableInvoice,
-  type AgentDocument,
+import type {
+  AgentRun,
+  AskOptions,
+  PendingAction,
 } from '@bob/ai';
-import { ok, buildRelance } from '@bob/core';
+import type { AppError, Result } from '@bob/core';
 import type { BobClient } from '@bob/api-client';
 
-const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
-const SENDABLE_QUOTE = new Set(['draft', 'sent', 'viewed']); // devis qu'on peut (r)envoyer au client
+/**
+ * Surface consommée par l'assistant et par l'overlay global.
+ *
+ * Le binaire Bob est exclusivement distant : le cerveau, les outils, le journal et les
+ * relectures tenant-scoped vivent sur l'API. Il n'existe donc aucun second agent local capable
+ * de répondre depuis des fixtures ou d'appliquer des valeurs par défaut différentes du serveur.
+ */
+export interface BobAssistant {
+  ask(message: string, opts?: AskOptions): Promise<Result<AgentRun, AppError>>;
+  confirm(pending: PendingAction): Promise<Result<AgentRun, AppError>>;
+}
 
 /**
- * Construit l'agent Bob pour l'app : ses ACTIONS s'appuient sur le BobClient (donc les mêmes use cases
- * que l'UI manuelle) — parité totale. Les clés LLM vivent côté backend ; sur le device, le routeur
- * tombe en mode démo déterministe.
+ * Adaptateur serveur unique. Les callbacks de phase restent honnêtes : sans flux de progression
+ * intermédiaire du endpoint HTTP, seul « comprends » est publié avant la réponse finale.
  */
-export function makeBobAgent(client: BobClient): BobAgent {
-  const actions: BobActions = {
-    async computePayout() {
-      const r = await client.getCashflow({ scenario: 'realiste', horizon: 30 });
-      if (!r.ok) return r;
-      return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
-    },
-    async draftRelance() {
-      const r = await client.listCustomers();
-      if (!r.ok) return r;
-      const overdue = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
-      const message = buildRelance({
-        customerName: overdue?.name ?? 'le client',
-        docNumber: 'dernière facture',
-        amountCents: overdue?.outstanding ?? 0,
-        daysLate: 7,
-        tone: 'cordial',
-        personality: 'Pote',
+export function makeBobAgent(client: BobClient): BobAssistant {
+  return {
+    async ask(message, opts = {}) {
+      opts.signal?.throwIfAborted();
+      opts.onPhase?.('comprends');
+      const result = await client.askBob({
+        message,
+        ...(opts.autonomy !== undefined ? { autonomy: opts.autonomy } : {}),
+        ...(opts.history !== undefined ? { history: opts.history } : {}),
+        ...(opts.tone !== undefined ? { tone: opts.tone } : {}),
+        ...(opts.context !== undefined ? { context: opts.context } : {}),
       });
-      return ok({ subject: message.subject, body: message.body });
+      opts.signal?.throwIfAborted();
+      return result;
     },
-    async listPayableInvoices() {
-      const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);
-      if (!inv.ok) return inv;
-      const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
-      const payable: PayableInvoice[] = inv.value
-        .filter((i) => PAYABLE.has(i.status) && i.number)
-        .map((i) => ({
-          id: i.id,
-          number: i.number ?? i.id,
-          remainingCents: Math.max(0, i.totals.netToPay - i.paid),
-          customerName: names.get(i.customerId) ?? 'Client',
-        }))
-        .filter((i) => i.remainingCents > 0);
-      return ok(payable);
-    },
-    async listSendableQuotes() {
-      const [q, cust] = await Promise.all([client.listQuotes(), client.listCustomers()]);
-      if (!q.ok) return q;
-      const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
-      const quotes: SendableQuote[] = q.value
-        .filter((x) => SENDABLE_QUOTE.has(x.status))
-        .map((x) => ({
-          id: x.id,
-          number: x.number,
-          customerName: names.get(x.customerId) ?? 'Client',
-          totalTtcCents: x.totals.ttc,
-          status: x.status,
-        }));
-      return ok(quotes);
-    },
-    async listIssuableInvoices() {
-      const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);
-      if (!inv.ok) return inv;
-      const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
-      const invoices: IssuableInvoice[] = inv.value
-        .filter((x) => x.status === 'draft') // seule une facture brouillon peut être émise
-        .map((x) => ({
-          id: x.id,
-          number: x.number,
-          customerName: names.get(x.customerId) ?? 'Client',
-          totalTtcCents: x.totals.ttc,
-          status: x.status,
-        }));
-      return ok(invoices);
-    },
-    async listDocuments() {
-      const r = await client.listDocuments();
-      if (!r.ok) return r;
-      const docs: AgentDocument[] = r.value.map((d) => ({
-        id: d.id,
-        filename: d.filename,
-        kind: d.kind,
-        linkedEntityType: d.linkedEntityType,
-        linkedEntityId: d.linkedEntityId,
-        createdAt: d.createdAt,
-      }));
-      return ok(docs);
-    },
-    async registerPayment(input) {
-      return client.registerPayment({
-        invoiceId: input.invoiceId,
-        amount: input.amountCents,
-        method: 'transfer',
-        idempotencyKey: input.idempotencyKey ?? `mobile-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
-      });
-    },
-    async sendQuote(input) {
-      return client.sendQuote(input.quoteId);
-    },
-    async issueInvoice(input) {
-      return client.issueInvoice({ invoiceId: input.invoiceId });
+    async confirm(pending) {
+      return client.confirmBob(pending);
     },
   };
-  return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 }

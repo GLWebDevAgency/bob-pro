@@ -30,6 +30,12 @@ describe('requiresConfirmation', () => {
     const t = tool({ safetyFloor: true });
     for (const m of MODES) expect(requiresConfirmation(t, m)).toBe(true);
   });
+
+  it('le verrou safetyFloor explicite prime aussi avec un palier descriptif interne', () => {
+    const t = { ...tool({ safetyFloor: true }), riskTier: 'reversible' as const };
+    expect(riskTierOf(t)).toBe('reversible');
+    for (const m of MODES) expect(requiresConfirmation(t, m)).toBe(true);
+  });
 });
 
 describe('isSafetyFloor', () => {

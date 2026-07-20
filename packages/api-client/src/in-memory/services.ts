@@ -16,7 +16,8 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
     const key = `${input.companyId}:${input.counterKey}:${input.fiscalYear}`;
     const next = (this.counters.get(key) ?? 0) + 1;
     this.counters.set(key, next);
-    const prefix = input.counterKey === 'quote' ? 'D' : 'F';
+    // D = devis · F = facture · A = avoir (A6) — chaque famille tient SA séquence sans trou.
+    const prefix = input.counterKey === 'quote' ? 'D' : input.counterKey === 'credit' ? 'A' : 'F';
     return { sequence: next, formatted: DocNumber.format(prefix, input.fiscalYear, next) };
   }
   snapshot(): Map<string, number> {

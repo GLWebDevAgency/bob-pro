@@ -3,7 +3,8 @@ import { ok } from '@bob/core';
 import { BobAgent, pendingToInvocations, type PendingAction } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { type BobActions } from './actions';
-import { InMemoryJournalStore, ActionPolicy } from '../runtime';
+import { ActionPolicy } from '../runtime';
+import { InMemoryJournalStore } from '../runtime/journal.testing';
 
 function makeActions() {
   let payments = 0;

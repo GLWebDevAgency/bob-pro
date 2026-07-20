@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { ok, err } from '@bob/core';
 import { AgentRuntime, type RuntimeInvocation } from './runtime';
 import { ActionPolicy } from './permissions';
-import { InMemoryJournalStore, type ComplianceLevel } from './journal';
+import { type ComplianceLevel } from './journal';
+import { InMemoryJournalStore } from './journal.testing';
 import { type AnyTool } from '../tools/tool';
 
 const clock = { now: () => '2026-07-01T00:00:00.000Z' };
@@ -70,6 +71,30 @@ describe('AgentRuntime — live', () => {
     expect(rec.entries.map((e) => e.phase)).toEqual(['planned', 'executed']);
     expect(rec.entries[1]!.resultDigest).toContain('status=paid');
     expect(rec.ok).toBe(true);
+  });
+
+  it('ne propage et ne journalise que la projection publique déclarée par l’outil', async () => {
+    const base = fakeTool({
+      name: 'envoyer_devis',
+      runResult: ok({
+        number: 'D-1',
+        deliveryStatus: 'queued',
+        signatureToken: 'secret-qui-ne-doit-jamais-sortir',
+      }),
+    });
+    const tool = {
+      ...base,
+      projectPublicResult: (output: unknown) => ({
+        deliveryStatus: (output as { deliveryStatus: string }).deliveryStatus,
+      }),
+    } as unknown as AnyTool;
+    const rt = new AgentRuntime({ tools: [tool], clock, ids });
+
+    const rec = await rt.run([inv('envoyer_devis')]);
+
+    expect(rec.outcomes[0]?.result).toEqual({ deliveryStatus: 'queued' });
+    expect(rec.entries[1]?.resultDigest).toBe('deliveryStatus=queued');
+    expect(JSON.stringify(rec)).not.toContain('secret-qui-ne-doit-jamais-sortir');
   });
 
   it('policy denied : rien exécuté, fail-fast (2e action non atteinte)', async () => {

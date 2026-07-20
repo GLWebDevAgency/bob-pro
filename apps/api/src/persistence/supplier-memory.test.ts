@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { InMemorySupplierMemoryRepository } from './supplier-memory';
+import { InMemorySupplierMemoryRepository } from './supplier-memory.testing';
 
 describe('InMemorySupplierMemoryRepository', () => {
   it('apprend un fournisseur par tenant et conserve les infos connues', async () => {

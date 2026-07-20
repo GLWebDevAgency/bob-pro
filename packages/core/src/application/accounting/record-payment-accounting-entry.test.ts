@@ -32,7 +32,7 @@ function signedQuote(): Quote {
   for (const line of lines) q.value.addLine(line);
   q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
   q.value.send(AT);
-  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
   return q.value;
 }
 
@@ -73,11 +73,19 @@ class MemoryInvoices implements InvoiceRepository {
     return null;
   }
 
+  async findCreditNoteBySourceInvoiceId(): Promise<Invoice | null> {
+    return null;
+  }
+
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return this.row?.companyId === companyId ? [Invoice.rehydrate(this.row.toSnapshot())] : [];
   }
 
   async save(_invoice: Invoice): Promise<void> {
+    throw new Error('not used');
+  }
+
+  async deleteById(_id: string): Promise<void> {
     throw new Error('not used');
   }
 }
@@ -95,6 +103,10 @@ class MemoryPayments implements PaymentRepository {
 
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     return this.row.invoiceId === invoiceId ? [this.row] : [];
+  }
+
+  async listByCompany(companyId: string): Promise<Payment[]> {
+    return this.row.companyId === companyId ? [this.row] : [];
   }
 
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {

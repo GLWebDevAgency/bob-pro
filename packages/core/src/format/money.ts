@@ -10,3 +10,15 @@ export function formatEUR(cents: number): string {
   const intStr = String(euros).replace(/\B(?=(\d{3})+(?!\d))/g, NBSP_FINE);
   return `${negative ? '-' : ''}${intStr},${dec}${NBSP_FINE}${EUR}`;
 }
+
+/**
+ * Formate des centimes en EUR fr-FR arrondi à l'euro : "4<NBSP>950<NBSP>EUR".
+ * Pour les AGRÉGATS (briefing, tuiles KPI, héros tréso) — le proto n'affiche jamais
+ * les centimes sur ces surfaces. Les documents (devis, factures) gardent formatEUR.
+ */
+export function formatEURWhole(cents: number): string {
+  const negative = cents < 0;
+  const euros = Math.round(Math.abs(cents) / 100);
+  const intStr = String(euros).replace(/\B(?=(\d{3})+(?!\d))/g, NBSP_FINE);
+  return `${negative && euros !== 0 ? '-' : ''}${intStr}${NBSP_FINE}${EUR}`;
+}

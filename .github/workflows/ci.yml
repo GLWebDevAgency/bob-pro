@@ -1,17 +1,27 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
+  # Pas de filtre de branche sur push : le job api-artifact (plus bas) doit builder + démarrer
+  # l'artefact API sur TOUTE branche (leçon 2 du postmortem — cf. api-artifact). Les trois jobs
+  # historiques ci-dessous restent bornés à main + PR via leur `if:` pour ne pas changer leur coût.
   push:
-    branches: [main]
   pull_request:
 
 jobs:
   verify:
+    # Portée inchangée malgré l'élargissement du déclencheur push ci-dessus.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9.12.0
@@ -20,13 +30,20 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Certifier la lignée append-only des migrations
+        env:
+          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: node apps/api/scripts/assert-migration-lineage.mjs
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm --filter @bob/core test:cabinet:coverage
       - run: pnpm build
       - run: pnpm lint
 
   rls-certification:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -41,9 +58,21 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
-      APP_DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: "false"
+      RUN_RLS_CERT: "true"
+      RLS_CERT_CLEANUP: "true"
+      # Clés déterministes réservées à la base PostgreSQL éphémère de CI. Elles arment le même
+      # protocole prepare/retire que la production sans dépendre d'un secret externe.
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: "true"
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: "1"
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: "1"
+      BOB_LIVE_SUBJECT_HMAC_SECRET: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -55,10 +84,9 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @bob/api migrate
       - name: Create non-superuser app role
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bob_app') THEN
@@ -67,17 +95,59 @@ jobs:
               ALTER ROLE bob_app WITH LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
             END IF;
           END $$;
-          GRANT USAGE ON SCHEMA public TO bob_app;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO bob_app;
-          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO bob_app;
           SQL
-      - name: Apply RLS policies
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
-      - name: Certify tenant isolation as app role
-        run: psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
+      - name: Expand schema, spool outbox and certify the mixed-version phase
+        run: sh apps/api/scripts/release.sh
+      - name: Activate outbox v2 and certify the post-deploy contract
+        run: |
+          sh apps/api/scripts/activate-notification-outbox-v2.sh
+          sh apps/api/scripts/release.sh
+      - name: Clone a dedicated database for destructive Mistral key-rotation certification
+        run: >-
+          psql postgresql://postgres:postgres@localhost:5432/postgres
+          -v ON_ERROR_STOP=1
+          -c 'CREATE DATABASE bobpro_mistral_key_rotation TEMPLATE bobpro'
+      - name: Certify Mistral key rotation on the dedicated database
+        env:
+          DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro_mistral_key_rotation
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro_mistral_key_rotation
+          RUN_POSTGRES_MISTRAL_IDENTITY_KEY_ROTATION_CERT: "true"
+          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
+          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-identity-key-version-lifecycle.postgres.test.ts
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
+      - name: Certify Mistral durable authority on the ephemeral mixed-key range
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=true \
+            sh apps/api/scripts/certify-mistral-conversation-authority.sh
+      - name: Certify notification outbox concurrency and fencing on PostgreSQL
+        env:
+          RUN_POSTGRES_OUTBOX_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/notification-jobs.postgres.test.ts
+      - name: Certify expense creation idempotency on PostgreSQL
+        env:
+          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-creation-requests.postgres.test.ts
+      - name: Certify quote creation idempotency on PostgreSQL
+        env:
+          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-creation-requests.postgres.test.ts
+      - name: Certify global push-token rebind and revocation under FORCE RLS
+        env:
+          RUN_POSTGRES_DEVICE_REBIND_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
 
   facturx-conformance:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
       # Validateur Factur-X officiel (Schematron EN 16931 + PDF/A via veraPDF embarqué).
@@ -97,8 +167,9 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @bob/core build
-      - run: pnpm --filter @bob/api build
+      # L'API importe @bob/ai en plus de @bob/core. Construire le graphe workspace complet
+      # évite qu'un package non émis soit résolu depuis des artefacts locaux absents en CI.
+      - run: pnpm --filter "@bob/api..." run build
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
       - name: Télécharger le validateur Mustang
@@ -108,3 +179,81 @@ jobs:
       - name: veraPDF PDF/A-3 sur le PDF (informatif — embarquage polices = post-traitement prod)
         continue-on-error: true
         run: java -jar mustang-cli.jar --action validate --source facturx-sample/facture-x.pdf --no-notices
+
+  api-artifact:
+    # Leçon 2 du postmortem (design_handoff_bob_pro/POSTMORTEM_DEPLOY_20260717.md) : construit
+    # l'artefact API complet et le fait DÉMARRER (comme Railway le ferait) sur CHAQUE push, sur
+    # TOUTE branche — pas seulement main —, afin d'attraper avant tout déploiement : un commit de
+    # lane croisée qui casse le build (causes 3-5), une config live cassée au boot (cause 6), et
+    # un point d'entrée Docker invalide (cause 7). Volontairement SANS `if:` : contrairement aux
+    # trois jobs ci-dessus, celui-ci doit tourner sur toute branche, pas seulement main/PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Construit @bob/api ET ses dépendances workspace (@bob/core, @bob/ai) dans l'ordre
+      # topologique. Le script build inclut déjà le garde d'artefact
+      # (scripts/assert-production-artifact.mjs).
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Vérifier que le point d'entrée du Dockerfile existe (cause 7 du postmortem)
+        run: test -f apps/api/dist/main.js
+      - name: Boot smoke — config live minimale, accès anticipé (sans Stripe)
+        # Reproduit le mode production Railway : NODE_ENV=production active toutes les
+        # validations « live » de loadEnv() (apps/api/src/config/env.ts), y compris le refus des
+        # URLs localhost/demo. Cet ensemble minimal est dérivé du fixture déjà certifié par
+        # apps/api/src/config/production-capabilities-env.test.ts (variante « accès anticipé » :
+        # les 7 variables Stripe restent ABSENTES, comme en V1 — aucun paiement câblé — et Bob
+        # Live reste désactivé, ce qui dispense des secrets realtime dédiés). Aucune de ces
+        # valeurs n'a besoin d'être joignable : loadEnv() ne fait que les analyser (regex/URL),
+        # et le process n'ouvre pas de connexion Postgres réelle avant d'atteindre /health.
+        env:
+          NODE_ENV: production
+          DEMO_MODE: "false"
+          BOB_LIVE_ENABLED: "false"
+          OPENAI_REALTIME_ENABLED: "false"
+          CABINET_RELEASE_ENV: staging
+          DATABASE_URL: "postgresql://bob_app:secret@db.example.test:5432/bob"
+          SUPABASE_JWKS_URL: "https://project.supabase.co/auth/v1/.well-known/jwks.json"
+          SUPABASE_URL: "https://project.supabase.co"
+          SUPABASE_SERVICE_ROLE_KEY: "service-role-key-for-ci-boot-smoke"
+          CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
+          BREVO_API_KEY: "brevo-ci-boot-smoke-key"
+          BREVO_SENDER_EMAIL: "bob@example.test"
+          METRICS_TOKEN: "fedcba9876543210fedcba9876543210"
+          ERROR_REPORTER_WEBHOOK_URL: "https://errors.example.test/hook"
+          SIGN_WEB_BASE_URL: "https://signature.bobpro.fr"
+          CABINET_INVITATION_WEB_BASE_URL: "https://cabinet.bobpro.fr"
+          MISTRAL_API_KEY: "mistral-ci-boot-smoke-key"
+        run: |
+          set -euo pipefail
+          node apps/api/dist/main.js > api-boot-smoke.log 2>&1 &
+          pid=$!
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:3000/health >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "Le process API s'est arrêté avant de répondre sur /health." >&2
+              break
+            fi
+            sleep 1
+          done
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          echo "---- Journal de démarrage ----"
+          cat api-boot-smoke.log
+          if [ "$ready" != true ]; then
+            echo "Boot smoke échoué : /health n'a jamais répondu en moins de 30 s." >&2
+            exit 1
+          fi
+          echo "Boot smoke OK : l'API a démarré et répondu sur /health en moins de 30 s."

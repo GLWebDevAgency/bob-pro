@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { jobCompanyIds } from '../config/env';
 import { AppLogger } from '../observability/logger';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
 
 @Injectable()
 export class ScheduledTenantDirectory {

@@ -4,14 +4,20 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./testing": { "types": "./dist-testing/testing.d.ts", "import": "./dist-testing/testing.js" }
+  },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --external @bob/core",
+    "build": "tsup src/index.ts --format esm --dts --external @bob/core --external @bob/ai --clean && node scripts/assert-production-artifact.mjs",
+    "build:testing": "tsup src/testing.ts --format esm --dts --external @bob/core --external @bob/ai --out-dir dist-testing --clean",
+    "artifact:verify": "node scripts/assert-production-artifact.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
   },
   "dependencies": {
+    "@bob/ai": "workspace:*",
     "@bob/core": "workspace:*"
   },
   "devDependencies": {

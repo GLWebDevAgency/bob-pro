@@ -1,7 +1,6 @@
-import { View, Text } from 'react-native';
+import { Text, View } from 'react-native';
 import { formatEUR } from '@bob/core';
-import { useTheme } from '../theme';
-import { font } from './ui';
+import { font, useTheme } from '@bob/ui';
 
 /** Ligne d'écriture (forme structurelle commune à ActionDiff.AccountingLine et AccountingPreviewLine). */
 export interface LedgerLine {
@@ -11,51 +10,110 @@ export interface LedgerLine {
   readonly creditCents: number;
 }
 
+interface AccountingLinesViewProps {
+  readonly lines: readonly LedgerLine[];
+  readonly totalDebitCents?: number;
+  readonly totalCreditCents?: number;
+}
+
 /**
- * Rend une écriture comptable en partie double : « compte · libellé  →  D montant / C montant », avec un
- * total débit/crédit optionnel. Partagé par l'aperçu d'action (ActionDiffView) et le détail facture émise.
+ * Rend une écriture en partie double. Les lignes se replient au lieu de tronquer le compte ou le
+ * libellé ; les abréviations visuelles D/C sont annoncées « Débit/Crédit » par les lecteurs d'écran.
  */
 export function AccountingLinesView({
   lines,
   totalDebitCents,
   totalCreditCents,
-}: {
-  lines: readonly LedgerLine[];
-  totalDebitCents?: number;
-  totalCreditCents?: number;
-}) {
+}: AccountingLinesViewProps) {
   const { colors } = useTheme();
-  if (!lines.length) return null;
-  const showTotals = typeof totalDebitCents === 'number' && typeof totalCreditCents === 'number';
+  if (lines.length === 0) return null;
+
+  const totals =
+    typeof totalDebitCents === 'number' && typeof totalCreditCents === 'number'
+      ? { debitCents: totalDebitCents, creditCents: totalCreditCents }
+      : null;
+
   return (
-    <View style={{ gap: 4 }}>
-      {lines.map((l, i) => {
-        const debit = l.debitCents > 0;
+    <View style={{ gap: 7 }}>
+      {lines.map((line, index) => {
+        const debit = line.debitCents > 0;
+        const amountCents = debit ? line.debitCents : line.creditCents;
+        const side = debit ? 'Débit' : 'Crédit';
+        const shortSide = debit ? 'D' : 'C';
         return (
-          <View key={`${l.account}-${i}`} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={[font('sub'), { color: colors.ink800, flex: 1, paddingRight: 8 }]} numberOfLines={1}>
-              {l.account} · {l.label}
+          <View
+            key={`${line.account}-${index}`}
+            accessible
+            accessibilityLabel={`${line.account}, ${line.label}. ${side} : ${formatEUR(amountCents)}.`}
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              columnGap: 10,
+              rowGap: 2,
+            }}
+          >
+            <Text
+              accessible={false}
+              style={[
+                font('sub'),
+                {
+                  color: colors.ink800,
+                  flexGrow: 1,
+                  flexShrink: 1,
+                  minWidth: 150,
+                  lineHeight: 20,
+                },
+              ]}
+            >
+              {line.account} · {line.label}
             </Text>
-            <Text style={[font('sub'), { color: debit ? colors.ink900 : colors.slate500 }]}>
-              {debit ? `D ${formatEUR(l.debitCents)}` : `C ${formatEUR(l.creditCents)}`}
+            <Text
+              accessible={false}
+              style={[
+                font('sub', 600),
+                {
+                  color: debit ? colors.ink900 : colors.slate500,
+                  lineHeight: 20,
+                  fontVariant: ['tabular-nums'],
+                },
+              ]}
+            >
+              {shortSide} {formatEUR(amountCents)}
             </Text>
           </View>
         );
       })}
-      {showTotals ? (
+
+      {totals !== null ? (
         <View
+          accessible
+          accessibilityLabel={`Total. Débit : ${formatEUR(totals.debitCents)}. Crédit : ${formatEUR(totals.creditCents)}.`}
           style={{
             flexDirection: 'row',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
-            marginTop: 4,
-            paddingTop: 6,
+            alignItems: 'baseline',
+            columnGap: 10,
+            rowGap: 2,
+            marginTop: 3,
+            paddingTop: 8,
             borderTopWidth: 1,
-            borderTopColor: colors.lineSoft,
+            borderTopColor: colors.line,
           }}
         >
-          <Text style={[font('meta'), { color: colors.slate400 }]}>Total</Text>
-          <Text style={[font('meta'), { color: colors.slate500 }]}>
-            D {formatEUR(totalDebitCents!)} · C {formatEUR(totalCreditCents!)}
+          <Text accessible={false} style={[font('meta'), { color: colors.ink800, lineHeight: 18 }]}>
+            Total
+          </Text>
+          <Text
+            accessible={false}
+            style={[
+              font('meta'),
+              { color: colors.slate500, lineHeight: 18, fontVariant: ['tabular-nums'] },
+            ]}
+          >
+            D {formatEUR(totals.debitCents)} · C {formatEUR(totals.creditCents)}
           </Text>
         </View>
       ) : null}

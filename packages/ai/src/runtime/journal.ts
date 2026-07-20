@@ -35,6 +35,8 @@ export interface ActionOutcome {
   readonly label: string;
   readonly status: 'executed' | 'planned' | 'denied' | 'failed';
   readonly reason?: string;
+  /** Projection allowlistée par l'outil ; jamais le résultat métier brut. */
+  readonly result?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 export interface AgentRunRecord {
@@ -77,21 +79,6 @@ export class ActionJournal {
 export interface JournalStore {
   append(entry: JournalEntry): Promise<void>;
   load(runId: string): Promise<JournalEntry[]>;
-}
-
-/** Adapter mémoire (tests/démo) : jamais d'update ni de delete. */
-export class InMemoryJournalStore implements JournalStore {
-  private readonly byRun = new Map<string, JournalEntry[]>();
-
-  async append(entry: JournalEntry): Promise<void> {
-    const list = this.byRun.get(entry.runId) ?? [];
-    list.push(entry);
-    this.byRun.set(entry.runId, list);
-  }
-
-  async load(runId: string): Promise<JournalEntry[]> {
-    return [...(this.byRun.get(runId) ?? [])];
-  }
 }
 
 /**

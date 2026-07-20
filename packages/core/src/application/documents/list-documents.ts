@@ -9,6 +9,7 @@ export interface ListDocumentsInput {
   kind?: DocumentKind;
   linkedEntityType?: DocumentLinkedEntityType;
   linkedEntityId?: string;
+  folderId?: string | null;
   includeDeleted?: boolean;
 }
 
@@ -26,7 +27,8 @@ export class ListDocuments {
         .map(documentToView)
         .filter((d) => (input.kind ? d.kind === input.kind : true))
         .filter((d) => (input.linkedEntityType ? d.linkedEntityType === input.linkedEntityType : true))
-        .filter((d) => (input.linkedEntityId ? d.linkedEntityId === input.linkedEntityId : true)),
+        .filter((d) => (input.linkedEntityId ? d.linkedEntityId === input.linkedEntityId : true))
+        .filter((d) => (input.folderId !== undefined ? d.folderId === input.folderId : true)),
     );
   }
 }

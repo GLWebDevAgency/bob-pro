@@ -1,0 +1,323 @@
+import { createHash } from 'node:crypto';
+import { parseAgentContext, type AgentContext } from '@bob/ai';
+import { resolveBobLiveEnv, type Env } from '../../config/env';
+
+const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TENANT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
+
+export const REALTIME_CONTEXT_SCHEMA_VERSION = 1 as const;
+const REALTIME_CONTEXT_MAX_BYTES = 16_384;
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+
+export type RealtimeAdmissionDenial =
+  | 'user_minute'
+  | 'user_hour'
+  | 'tenant_minute'
+  | 'tenant_hour'
+  | 'active_lease'
+  | 'session_reaping'
+  | 'unavailable';
+
+export type RealtimeLeaseState = 'reserved' | 'bound' | 'active' | 'reaping';
+export type RealtimeProviderId = (typeof REALTIME_PROVIDER_IDS)[number];
+
+/**
+ * Preuve serveur qu'un bail a dépassé son hard cap selon l'horloge PostgreSQL autoritative.
+ * Elle est liée à toute l'identité distante et ne peut jamais être remplacée par un booléen issu
+ * d'un controller ou par l'horloge d'un pod.
+ */
+export interface RealtimeDatabaseHardExpiryProof {
+  readonly source: 'database_hard_expiry';
+  readonly companyId: string;
+  readonly subjectHash: string;
+  readonly sessionId: string;
+  readonly providerId: RealtimeProviderId;
+  readonly providerCallId: string;
+  readonly hardExpiresAt: string;
+  readonly databaseObservedAt: string;
+  readonly leaseVersion: number;
+}
+
+export interface RealtimeAdmissionPolicy {
+  userLimitPerMinute: number;
+  userLimitPerHour: number;
+  tenantLimitPerMinute: number;
+  tenantLimitPerHour: number;
+  reservationTtlSeconds: number;
+  activeLeaseSeconds: number;
+  heartbeatSeconds: number;
+  reaperLeaseSeconds: number;
+}
+
+export function realtimeAdmissionPolicyFromEnv(env: Env): RealtimeAdmissionPolicy {
+  const live = resolveBobLiveEnv(env);
+  return {
+    userLimitPerMinute: live.maxCallsPerMinute,
+    userLimitPerHour: live.maxCallsPerHour,
+    tenantLimitPerMinute: live.maxTenantCallsPerMinute,
+    tenantLimitPerHour: live.maxTenantCallsPerHour,
+    reservationTtlSeconds: live.reservationTtlSeconds,
+    activeLeaseSeconds: live.activeLeaseSeconds,
+    heartbeatSeconds: live.heartbeatSeconds,
+    reaperLeaseSeconds: live.reaperLeaseSeconds,
+  };
+}
+
+export function validateRealtimeAdmissionPolicy(policy: RealtimeAdmissionPolicy): void {
+  const positiveIntegers = Object.entries(policy).filter(([, value]) => !Number.isInteger(value) || value <= 0);
+  if (positiveIntegers.length > 0) {
+    throw new Error(`Invalid realtime admission policy: ${positiveIntegers.map(([key]) => key).join(', ')}`);
+  }
+  if (policy.userLimitPerHour < policy.userLimitPerMinute) {
+    throw new Error('Realtime user hourly quota must be greater than or equal to the minute quota.');
+  }
+  if (policy.tenantLimitPerMinute < policy.userLimitPerMinute) {
+    throw new Error('Realtime tenant minute quota must be greater than or equal to the user minute quota.');
+  }
+  if (policy.tenantLimitPerHour < policy.userLimitPerHour) {
+    throw new Error('Realtime tenant hourly quota must be greater than or equal to the user hourly quota.');
+  }
+  if (policy.heartbeatSeconds >= policy.activeLeaseSeconds) {
+    throw new Error('Realtime heartbeat must be shorter than the active lease.');
+  }
+}
+
+export interface RealtimeLeaseCredential {
+  companyId: string;
+  subjectHash: string;
+  sessionId: string;
+  leaseToken: string;
+}
+
+export interface RealtimeAdmissionLease extends RealtimeLeaseCredential {
+  state: 'reserved';
+  leaseExpiresAt: string;
+  hardExpiresAt: string;
+}
+
+export interface RealtimeReapingClaim {
+  companyId: string;
+  subjectHash: string;
+  sessionId: string;
+  providerId: RealtimeProviderId;
+  providerCallId: string;
+  reaperToken: string;
+  reaperLeaseExpiresAt: string;
+  /** Null avant le hard cap, y compris lorsque le lease heartbeat a expiré. */
+  hardExpiryProof: RealtimeDatabaseHardExpiryProof | null;
+}
+
+export type RealtimeReapingBatchResult =
+  | { ok: true; claims: RealtimeReapingClaim[] }
+  | { ok: false; reason: 'unavailable' };
+
+export type RealtimeTerminationClaimResult =
+  | { ok: true; claim: RealtimeReapingClaim | null; pending: boolean }
+  | { ok: false; reason: 'unavailable' };
+
+export type RealtimeAdmissionResult =
+  | { allowed: true; denial: null; lease: RealtimeAdmissionLease }
+  | {
+      allowed: false;
+      denial: RealtimeAdmissionDenial;
+      retryAt: string | null;
+      reapingClaim?: RealtimeReapingClaim;
+    };
+
+export interface RealtimeAdmissionReserveInput {
+  companyId: string;
+  /** HMAC-SHA-256 hex calculé avant le port. Le subject utilisateur brut ne doit jamais être fourni. */
+  subjectHash: string;
+  /** Handle opaque UUID choisi par le mobile pour pouvoir annuler pendant le bootstrap. */
+  sessionId?: string;
+  /** Borne absolue de coût/confidentialité de la session, au plus 900 secondes. */
+  maxSessionSeconds: number;
+}
+
+export interface RealtimeAdmissionMutationResult {
+  ok: boolean;
+  reason: 'rejected' | 'expired' | 'unavailable' | null;
+  leaseExpiresAt?: string;
+}
+
+export interface RealtimeReleaseInput extends RealtimeLeaseCredential {
+  /** `confirmed` seulement après succès/idempotence du hangup provider. */
+  providerTermination: 'confirmed' | 'not_created';
+}
+
+/** Identité opaque d'un contexte Bob Live. Aucun subject utilisateur brut ne traverse ce port. */
+export interface RealtimeContextIdentity {
+  companyId: string;
+  subjectHash: string;
+  sessionId: string;
+}
+
+/** Snapshot canonique stocké : schéma figé, révision client monotone et contexte déjà assaini. */
+export interface RealtimeContextSnapshot {
+  version: typeof REALTIME_CONTEXT_SCHEMA_VERSION;
+  revision: number;
+  context: AgentContext;
+}
+
+export interface RealtimeContextUpdateInput extends RealtimeContextIdentity {
+  version: number;
+  revision: number;
+  /** Donnée non fiable : l'implémentation repasse toujours par `parseAgentContext`. */
+  context: unknown;
+}
+
+export type RealtimeContextUpdateResult =
+  | { ok: true; status: 'updated' | 'idempotent'; revision: number }
+  | { ok: false; reason: 'rejected' | 'expired' | 'stale' | 'conflict' | 'unavailable' };
+
+export type RealtimeContextReadResult =
+  | { ok: true; snapshot: RealtimeContextSnapshot | null }
+  | { ok: false; reason: 'rejected' | 'expired' | 'unavailable' };
+
+export interface RealtimeAdmissionPort {
+  reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult>;
+  bindProvider(input: RealtimeLeaseCredential & {
+    providerId: RealtimeProviderId;
+    providerCallId: string;
+  }): Promise<RealtimeAdmissionMutationResult>;
+  activate(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
+  renew(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
+  release(input: RealtimeReleaseInput): Promise<RealtimeAdmissionMutationResult>;
+  claimExpired(input: { companyId: string; limit?: number }): Promise<RealtimeReapingBatchResult>;
+  /** Réclame une terminaison explicite par identité opaque, y compris depuis une autre réplique. */
+  claimTermination(input: {
+    companyId: string;
+    subjectHash: string;
+    sessionId: string;
+  }): Promise<RealtimeTerminationClaimResult>;
+  completeReaping(input: Omit<
+  RealtimeReapingClaim,
+    'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
+  >): Promise<RealtimeAdmissionMutationResult>;
+  /** Publie le dernier écran sur un bail vivant déjà lié au provider. */
+  updateContext(input: RealtimeContextUpdateInput): Promise<RealtimeContextUpdateResult>;
+  /** Le cerveau ne lit le contexte qu'après activation complète de la session. */
+  readContext(input: RealtimeContextIdentity): Promise<RealtimeContextReadResult>;
+  /**
+   * Compatibilité fail-closed pendant l'atterrissage du service appelant. Aucune implémentation
+   * durable ne doit accepter l'ancien contrat qui transportait le userId brut.
+   */
+  acquire(input: { userId: string; companyId: string }): RealtimeAdmissionResult;
+}
+
+export interface RealtimeAdmissionEntropy {
+  sessionId(): string;
+  token(): string;
+}
+
+export function hashRealtimeLeaseToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+export function isRealtimeSubjectHash(value: string): boolean {
+  return SUBJECT_HASH_PATTERN.test(value);
+}
+
+export function isRealtimeCompanyId(value: string): boolean {
+  return TENANT_ID_PATTERN.test(value);
+}
+
+export function isRealtimeSessionId(value: string): boolean {
+  return SESSION_ID_PATTERN.test(value);
+}
+
+export function isRealtimeProviderCallId(value: string): boolean {
+  return PROVIDER_CALL_ID_PATTERN.test(value);
+}
+
+export function isRealtimeProviderId(value: string): value is RealtimeProviderId {
+  return (REALTIME_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+export function isRealtimeDatabaseHardExpiryProof(
+  value: unknown,
+): value is RealtimeDatabaseHardExpiryProof {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proof = value as Record<string, unknown>;
+  if (
+    Object.keys(proof).length !== 9
+    || proof.source !== 'database_hard_expiry'
+    || typeof proof.companyId !== 'string'
+    || !isRealtimeCompanyId(proof.companyId)
+    || typeof proof.subjectHash !== 'string'
+    || !isRealtimeSubjectHash(proof.subjectHash)
+    || typeof proof.sessionId !== 'string'
+    || !isRealtimeSessionId(proof.sessionId)
+    || typeof proof.providerId !== 'string'
+    || !isRealtimeProviderId(proof.providerId)
+    || typeof proof.providerCallId !== 'string'
+    || !isRealtimeProviderCallId(proof.providerCallId)
+    || typeof proof.hardExpiresAt !== 'string'
+    || typeof proof.databaseObservedAt !== 'string'
+    || !Number.isSafeInteger(proof.leaseVersion)
+    || (proof.leaseVersion as number) < 1
+    || (proof.leaseVersion as number) > POSTGRES_INTEGER_MAX
+  ) return false;
+  const hardExpiresAt = Date.parse(proof.hardExpiresAt);
+  const databaseObservedAt = Date.parse(proof.databaseObservedAt);
+  return Number.isFinite(hardExpiresAt)
+    && Number.isFinite(databaseObservedAt)
+    && new Date(hardExpiresAt).toISOString() === proof.hardExpiresAt
+    && new Date(databaseObservedAt).toISOString() === proof.databaseObservedAt
+    && databaseObservedAt >= hardExpiresAt;
+}
+
+export function isRealtimeLeaseCredential(input: RealtimeLeaseCredential): boolean {
+  return validCredential(input);
+}
+
+function validIdentity(input: { companyId: string; subjectHash: string }): boolean {
+  return TENANT_ID_PATTERN.test(input.companyId) && SUBJECT_HASH_PATTERN.test(input.subjectHash);
+}
+
+function validCredential(input: RealtimeLeaseCredential): boolean {
+  return validIdentity(input)
+    && SESSION_ID_PATTERN.test(input.sessionId)
+    && input.leaseToken.length >= 32
+    && input.leaseToken.length <= 128;
+}
+
+export interface PreparedRealtimeContext {
+  snapshot: RealtimeContextSnapshot;
+  serialized: string;
+  digest: string;
+}
+
+/**
+ * Produit l'unique représentation persistable. Deux retries de même révision ne sont
+ * idempotents que si les octets de cette représentation canonique sont identiques.
+ */
+export function prepareRealtimeContext(input: {
+  version: number;
+  revision: number;
+  context: unknown;
+}): PreparedRealtimeContext | null {
+  if (
+    input.version !== REALTIME_CONTEXT_SCHEMA_VERSION
+    || !Number.isSafeInteger(input.revision)
+    || input.revision < 1
+    || input.revision > POSTGRES_INTEGER_MAX
+  ) return null;
+  const parsed = parseAgentContext(input.context);
+  if (!parsed.ok) return null;
+  const snapshot: RealtimeContextSnapshot = {
+    version: REALTIME_CONTEXT_SCHEMA_VERSION,
+    revision: input.revision,
+    context: parsed.value,
+  };
+  const serialized = JSON.stringify(snapshot.context);
+  if (Buffer.byteLength(serialized, 'utf8') > REALTIME_CONTEXT_MAX_BYTES) return null;
+  return {
+    snapshot,
+    serialized,
+    digest: createHash('sha256').update(serialized, 'utf8').digest('hex'),
+  };
+}

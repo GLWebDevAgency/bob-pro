@@ -128,8 +128,21 @@ export class AgentRuntime {
         stopped = true;
         continue;
       }
-      await record({ ...base, ...meta, phase: 'executed', resultDigest: digestResult(res.value) });
-      outcomes.push({ tool: inv.tool, label: inv.label, status: 'executed' });
+      const publicResult = tool.projectPublicResult?.(res.value);
+      await record({
+        ...base,
+        ...meta,
+        phase: 'executed',
+        // Pour un outil qui déclare une projection, le payload brut (token, URL, PII) ne
+        // traverse jamais le journal. Sinon on conserve le digest historique borné.
+        resultDigest: digestResult(publicResult ?? res.value),
+      });
+      outcomes.push({
+        tool: inv.tool,
+        label: inv.label,
+        status: 'executed',
+        ...(publicResult !== undefined ? { result: publicResult } : {}),
+      });
     }
 
     const entries = journal.snapshot();

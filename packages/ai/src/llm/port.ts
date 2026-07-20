@@ -37,6 +37,13 @@ export interface LlmCompleteOptions {
   toolChoice?: 'auto' | 'required' | 'none';
   temperature?: number;
   maxTokens?: number;
+  /** Annule physiquement l'appel fournisseur quand un tour vocal est interrompu/supplanté. */
+  signal?: AbortSignal;
+}
+
+export interface LlmGenerateOptions {
+  /** Même contrat que `complete` : aucun appel de naturalisation orphelin après barge-in. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -47,6 +54,6 @@ export interface LlmCompleteOptions {
 export interface LlmPort {
   readonly id: string;
   complete(messages: LlmMessage[], opts?: LlmCompleteOptions): Promise<LlmCompletion>;
-  generate(messages: LlmMessage[]): Promise<LlmResult>;
+  generate(messages: LlmMessage[], opts?: LlmGenerateOptions): Promise<LlmResult>;
   health(): Promise<{ healthy: boolean }>;
 }

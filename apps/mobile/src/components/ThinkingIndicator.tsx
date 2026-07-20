@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { View, Text, Animated, Easing } from 'react-native';
+import { useReduceMotion } from '@bob/ui';
 import { useTheme } from '../theme';
 import { font } from './ui';
 
@@ -13,11 +14,18 @@ const PHASES = ['Bob réfléchit', 'Je prépare', "J'analyse", 'Presque prêt'];
  */
 export function ThinkingIndicator({ label }: { label?: string }) {
   const { semantic } = useTheme();
+  const reduceMotion = useReduceMotion();
   const [phase, setPhase] = useState(0);
   const spin = useRef(new Animated.Value(0)).current;
   const dots = useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
 
   useEffect(() => {
+    if (reduceMotion) {
+      spin.stopAnimation();
+      spin.setValue(0);
+      dots.forEach((dot) => dot.setValue(0.55));
+      return;
+    }
     const spinLoop = Animated.loop(
       Animated.timing(spin, { toValue: 1, duration: 2600, easing: Easing.linear, useNativeDriver: true }),
     );
@@ -38,7 +46,7 @@ export function ThinkingIndicator({ label }: { label?: string }) {
       spinLoop.stop();
       dotLoops.forEach((l) => l.stop());
     };
-  }, [spin, dots]);
+  }, [spin, dots, reduceMotion]);
 
   useEffect(() => {
     if (label) return; // une phase RÉELLE est fournie -> pas de cycle décoratif

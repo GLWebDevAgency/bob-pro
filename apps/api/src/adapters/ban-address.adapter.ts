@@ -4,8 +4,16 @@ import { type AddressAutocompletePort, type AddressSuggestion } from '@bob/core'
  * Adapter réel de l'AddressAutocompletePort sur la Base Adresse Nationale (gratuite, sans clé).
  * GET /search/?q=...&limit=5 -> features[].properties { label, name, postcode, city }.
  * URL env-driven (BAN_URL) : migration DINUM -> IGN/Geoplateforme (api-adresse maintenu jusqu'à janv. 2026).
- * GRACEFUL : ne lève jamais ; toute panne/timeout -> [].
+ * `[]` est réservé à une réponse valide sans suggestion. Une panne/timeout lève afin que
+ * le domaine remonte un état indisponible distinct d'un vrai résultat vide.
  */
+export class AddressLookupUnavailableError extends Error {
+  constructor(cause: string) {
+    super(cause);
+    this.name = 'AddressLookupUnavailableError';
+  }
+}
+
 export class BanAddressAdapter implements AddressAutocompletePort {
   constructor(
     private readonly baseUrl = process.env.BAN_URL ?? 'https://api-adresse.data.gouv.fr',
@@ -26,8 +34,16 @@ export class BanAddressAdapter implements AddressAutocompletePort {
         headers: { accept: 'application/json' },
         signal: controller.signal,
       });
-      if (!res.ok) return [];
-      const d = (await res.json()) as { features?: Array<{ properties?: BanProps }> };
+      if (!res.ok) throw new AddressLookupUnavailableError(`BAN HTTP ${res.status}`);
+      let d: { features?: Array<{ properties?: BanProps }> };
+      try {
+        d = (await res.json()) as { features?: Array<{ properties?: BanProps }> };
+      } catch {
+        throw new AddressLookupUnavailableError('Réponse BAN illisible.');
+      }
+      if (d.features !== undefined && !Array.isArray(d.features)) {
+        throw new AddressLookupUnavailableError('Réponse BAN invalide.');
+      }
       return (d.features ?? [])
         .map((f) => {
           const p = f.properties ?? {};
@@ -39,8 +55,11 @@ export class BanAddressAdapter implements AddressAutocompletePort {
           };
         })
         .filter((s) => s.zip !== '' && s.city !== '');
-    } catch {
-      return [];
+    } catch (error: unknown) {
+      if (error instanceof AddressLookupUnavailableError) throw error;
+      throw new AddressLookupUnavailableError(
+        error instanceof Error ? error.message : 'BAN indisponible.',
+      );
     } finally {
       clearTimeout(timer);
     }

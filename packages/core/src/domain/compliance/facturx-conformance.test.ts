@@ -8,7 +8,22 @@ import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { type LineInput } from '../billing/shared/line-item';
 import { seedCompany, MERCIER_PROPS } from '../../application/fixtures/index';
 
-const BUYER = { name: 'Client Conformité', address: { line1: '10 rue de Rivoli', zip: '75004', city: 'Paris' } };
+const BUYER = {
+  name: 'Client Conformité',
+  // A4 — faits fiscaux du preneur requis : particulier ici, jamais d'autoliquidation.
+  type: 'b2c',
+  isSubcontractingBtp: false,
+  address: { line1: '10 rue de Rivoli', zip: '75004', city: 'Paris' },
+} as const;
+
+/** A4 — donneur d'ordre b2b en sous-traitance BTP : pièce autoliquidée (art. 283, 2 nonies CGI). */
+const DONNEUR_ORDRE = {
+  name: 'BTP Grand Œuvre',
+  siren: '821503642',
+  type: 'b2b',
+  isSubcontractingBtp: true,
+  address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
+} as const;
 
 /** Émet une vraie facture (numéro + totaux figés) à partir d'une société et de lignes. */
 function issuedInvoice(company: Company, lines: Omit<LineInput, 'unit'>[], seq: number): Invoice {
@@ -61,6 +76,43 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     const res = validateFacturXBasic(data);
     expect(res.violations).toEqual([]);
     expect(data.taxTotalCents).toBe(0);
+  });
+
+  it('A4 — autoliquidation sous-traitance BTP : conforme, catégorie AE unique, TVA 0, mention portée', () => {
+    const inv = issuedInvoice(
+      seedCompany(),
+      [{ label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 300000, vatRate: 0 }],
+      7,
+    );
+    const data = facturXDataFromInvoice(inv, seedCompany(), DONNEUR_ORDRE);
+    const res = validateFacturXBasic(data);
+    expect(res.violations).toEqual([]);
+    expect(res.valid).toBe(true);
+    expect(data.vatBreakdown).toEqual([
+      {
+        category: 'AE',
+        ratePct: 0,
+        basisCents: 300000,
+        vatCents: 0,
+        exemptionReason: 'Autoliquidation — art. 283, 2 nonies du CGI',
+      },
+    ]);
+    expect(data.taxTotalCents).toBe(0);
+  });
+
+  it('A4 — détecte une pièce AE sans identification fiscale du preneur (BR-AE-02)', () => {
+    const inv = issuedInvoice(
+      seedCompany(),
+      [{ label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 300000, vatRate: 0 }],
+      8,
+    );
+    // Donneur d'ordre SANS SIREN : le BT-48 ne peut pas être dérivé — jamais inventé,
+    // la violation est SIGNALÉE (fail-closed) au lieu d'émettre un XML rejetable en silence.
+    const { siren: _sirenOmis, ...donneurOrdreSansSiren } = DONNEUR_ORDRE;
+    const data = facturXDataFromInvoice(inv, seedCompany(), donneurOrdreSansSiren);
+    const res = validateFacturXBasic(data);
+    expect(res.valid).toBe(false);
+    expect(res.violations.some((v) => v.rule === 'BR-AE-02')).toBe(true);
   });
 
   it('détecte une incohérence arithmétique (BR-CO-15)', () => {

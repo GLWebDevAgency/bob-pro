@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 export const metadata = {
   title: 'Bob Pro — Signature de devis',
   description: 'Signez votre devis en ligne, en toute simplicité.',
+  robots: { index: false, follow: false, nocache: true },
+  referrer: 'no-referrer',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -17,6 +17,11 @@ const sample: OcrExtraction = {
   categoryGuess: 'fournitures',
   confidence: 0.9,
   rawText: 'ticket',
+  suggestedTags: ['fournitures', 'leroy-merlin'],
+  suggestedFilename: '2026-06-12_leroy-merlin_120.00eur',
+  kind: 'ticket_caisse',
+  paymentMethodSeen: 'card',
+  dueDate: null,
 };
 
 class StubOcr implements OcrPort {

@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type QuoteRepository } from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
@@ -26,7 +27,9 @@ export class ExpireQuote {
   async execute(input: { quoteId: string }): Promise<Result<{ status: string }, AppError>> {
     const pre = await this.deps.quotes.findById(input.quoteId);
     if (!pre) return err(appNotFound('quote', input.quoteId));
-    if (pre.status !== 'expired' && !isPastValidity(pre.validUntil, this.deps.clock.today())) return err(notExpiredError());
+    // `validUntil` est une date de validité du calendrier FRANÇAIS : la borne d'expiration se
+    // compare au jour métier Europe/Paris, pas à l'UTC brut (qui retarde d'1-2 h après minuit).
+    if (pre.status !== 'expired' && !isPastValidity(pre.validUntil, parisDateOnly(this.deps.clock.now()))) return err(notExpiredError());
 
     try {
       const status = await this.deps.uow.runInTransaction(async () => {
@@ -35,7 +38,7 @@ export class ExpireQuote {
 
         const at = this.deps.clock.now();
         if (quote.status !== 'expired') {
-          if (!isPastValidity(quote.validUntil, this.deps.clock.today())) {
+          if (!isPastValidity(quote.validUntil, parisDateOnly(this.deps.clock.now()))) {
             throw new TxDomainError({ code: 'VALIDATION', field: 'validUntil', message: 'Devis non expiré.' });
           }
           const expired = quote.markExpired(at);

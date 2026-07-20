@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ChantierRepository, type CustomerRepository } from '../ports/repositories';
@@ -9,6 +10,7 @@ export interface CreateChantierInput {
   name: string;
   customerId?: string | null;
   address?: string | null;
+  notes?: string | null;
 }
 
 export interface CreateChantierDeps {
@@ -34,8 +36,11 @@ export class CreateChantier {
       name: input.name,
       customerId: input.customerId ?? null,
       address: input.address ?? null,
+      notes: input.notes ?? null,
       status: 'open',
-      openedAt: this.deps.clock.today(),
+      // Date d'ouverture = jour MÉTIER Europe/Paris : un chantier ouvert juste après minuit
+      // (Paris) ne doit pas être daté de la veille parce que l'UTC n'a pas encore basculé.
+      openedAt: parisDateOnly(this.deps.clock.now()),
     });
     if (!r.ok) return err(appDomain(r.error));
     await this.deps.chantiers.save(r.value);

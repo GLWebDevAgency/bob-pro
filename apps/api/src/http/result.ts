@@ -8,6 +8,12 @@ export function unwrap<T>(r: Result<T, AppError>): T {
   const status =
     e.kind === 'not_found'
       ? HttpStatus.NOT_FOUND
+      : e.kind === 'conflict'
+        ? HttpStatus.CONFLICT
+      : e.kind === 'rate_limited'
+        ? HttpStatus.TOO_MANY_REQUESTS
+      : e.kind === 'unavailable'
+        ? HttpStatus.SERVICE_UNAVAILABLE
       : e.kind === 'forbidden'
         ? HttpStatus.FORBIDDEN
         : e.kind === 'validation' || e.kind === 'domain'

@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #E7ECF2; font-family: 'Hanken Grotesk', sans-serif; -webkit-font-smoothing: antialiased; }
+  .bpw-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+  .bpw-scroll::-webkit-scrollbar-thumb { background: #CFD8E3; border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
+  @keyframes bpwFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes bpwIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes bpwPop { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes bpwSlideR { from { transform: translateX(100%); } to { transform: none; } }
+  @keyframes bpwPulse { 0%,100% { transform: scale(1); opacity:.5; } 50% { transform: scale(1.35); opacity:0; } }
+  @keyframes bpwScan { 0% { top: 8%; } 100% { top: 88%; } }
+  @media (max-width: 1040px) {
+    .bpw-sidebar { width: 78px !important; }
+    .bpw-navlabel, .bpw-side-extra { display: none !important; }
+    .bpw-logo-text { display: none !important; }
+    .bpw-grid2 { grid-template-columns: 1fr !important; }
+    .bpw-md { grid-template-columns: 1fr !important; }
+  }
+  @media (max-width: 720px) {
+    .bpw-kpi { grid-template-columns: 1fr 1fr !important; }
+  }
+</style>
+</helmet>
+
+<div style="display:flex; width:100%; height:900px; background:#E7ECF2; color:#0F2235; overflow:hidden;">
+
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="bpw-sidebar" style="width:248px; flex-shrink:0; background:linear-gradient(177deg,#0C2340 0%,#122E52 60%,#163763 100%); display:flex; flex-direction:column; padding:22px 16px; position:relative; overflow:hidden;">
+    <div style="position:absolute; top:-60px; right:-50px; width:200px; height:200px; border-radius:50%; background:radial-gradient(circle, rgba(67,56,202,.45), rgba(67,56,202,0) 70%); pointer-events:none;"></div>
+
+    <div style="position:relative; display:flex; align-items:center; gap:11px; padding:6px 8px 0; margin-bottom:26px;">
+      <span style="width:38px; height:38px; border-radius:11px; background:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5 11 11l-1.5 3.5L13 13z"/></svg></span>
+      <span class="bpw-logo-text"><span style="display:block; font-family:'Schibsted Grotesk'; font-weight:800; font-size:18px; color:#fff; line-height:1;">Bob Pro</span><span style="display:block; font-size:11px; color:rgba(255,255,255,.5); margin-top:2px;">Ton bureau pro</span></span>
+    </div>
+
+    <nav style="position:relative; display:flex; flex-direction:column; gap:4px;">
+      <button onClick="{{ goToday }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navToday }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg><span class="bpw-navlabel">Aujourd'hui</span>
+      </button>
+      <button onClick="{{ goClients }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navClients }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="9" cy="8" r="3.4"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5.5"/><path d="M18.5 20a6 6 0 0 0-3-5.2"/></svg><span class="bpw-navlabel">Clients</span>
+      </button>
+      <button onClick="{{ goMoney }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navMoney }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M3 6h18v12H3z"/><path d="M3 10h18"/><circle cx="17" cy="14" r="1.4"/></svg><span class="bpw-navlabel">Argent</span>
+      </button>
+      <button onClick="{{ goDocuments }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navDocuments }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M4 4h6l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg><span class="bpw-navlabel">Documents</span>
+      </button>
+      <button onClick="{{ goAssistant }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navAssistant }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg><span class="bpw-navlabel">Assistant</span>
+      </button>
+      <button onClick="{{ goSettings }}" style="display:flex; align-items:center; gap:13px; border:none; border-radius:12px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14.5px; text-align:left; {{ navSettings }}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.7-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg><span class="bpw-navlabel">Réglages</span>
+      </button>
+    </nav>
+
+    <div style="position:relative; margin-top:auto;">
+      <div class="bpw-side-extra" style="background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:15px; margin-bottom:14px;">
+        <div style="font-weight:700; font-size:14px; color:#fff;">Passe à Business</div>
+        <div style="font-size:12px; color:rgba(255,255,255,.6); margin-top:3px; line-height:1.45;">Multi-utilisateurs, plusieurs banques, conformité avancée.</div>
+        <button onClick="{{ openPaywall }}" style="margin-top:11px; width:100%; background:#6EE7B7; color:#0A3A2B; border:none; border-radius:10px; padding:9px; font-size:13px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Découvrir</button>
+      </div>
+      <button onClick="{{ goSettings }}" style="width:100%; display:flex; align-items:center; gap:11px; background:none; border:none; cursor:pointer; padding:6px 4px; text-align:left;">
+        <span style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#3B82F6,#4338CA); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:14px; font-family:'Schibsted Grotesk'; flex-shrink:0;">JM</span>
+        <span class="bpw-navlabel" style="flex:1;"><span style="display:block; color:#fff; font-weight:600; font-size:13.5px;">Julien Mercier</span><span style="display:block; color:rgba(255,255,255,.5); font-size:11.5px;">Mercier Plomberie</span></span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===================== MAIN ===================== -->
+  <main style="flex:1; display:flex; flex-direction:column; min-width:0; background:#EFF2F7;">
+    <!-- topbar -->
+    <header style="flex-shrink:0; display:flex; align-items:center; gap:18px; padding:20px 30px; border-bottom:1px solid #E2E8F1; background:rgba(239,242,247,.86); backdrop-filter:blur(8px);">
+      <div style="flex:1; min-width:0;">
+        <h1 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:23px; letter-spacing:-.4px;">{{ pageTitle }}</h1>
+        <p style="margin:2px 0 0; color:#5B6B7B; font-size:13.5px;">{{ pageSub }}</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:9px; background:#fff; border:1px solid #E2E8F1; border-radius:12px; padding:9px 13px; width:260px; max-width:32vw;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8A99A8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        <span style="color:#A9B4C0; font-size:13.5px;">Rechercher…</span>
+      </div>
+      <button onClick="{{ openNotifs }}" style="position:relative; width:42px; height:42px; border-radius:12px; background:#fff; border:1px solid #E2E8F1; cursor:pointer; display:flex; align-items:center; justify-content:center;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span style="position:absolute; top:9px; right:10px; width:8px; height:8px; border-radius:50%; background:#E5544B; border:2px solid #fff;"></span>
+      </button>
+      <button onClick="{{ openCreate }}" style="display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:12px; padding:11px 17px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; box-shadow:0 8px 18px rgba(12,35,64,.2); white-space:nowrap;">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>Créer
+      </button>
+    </header>
+
+    <div class="bpw-scroll" style="flex:1; overflow-y:auto; padding:26px 30px 40px;">
+
+      <!-- ===================== AUJOURD'HUI ===================== -->
+      <sc-if value="{{ isToday }}" hint-placeholder-val="{{ true }}">
+      <div style="">
+        <div class="bpw-kpi" style="display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:16px; margin-bottom:16px;">
+          <div style="position:relative; overflow:hidden; background:linear-gradient(150deg,#0C2340,#163763); border-radius:20px; padding:22px 24px; box-shadow:0 12px 28px rgba(12,35,64,.18);">
+            <div style="position:absolute; top:-50px; right:-30px; width:170px; height:170px; border-radius:50%; background:radial-gradient(circle, rgba(110,231,183,.34), rgba(110,231,183,0) 70%);"></div>
+            <div style="position:relative;">
+              <div style="color:rgba(255,255,255,.6); font-size:12.5px; font-weight:600; letter-spacing:.3px; text-transform:uppercase;">Dispo réel aujourd'hui</div>
+              <div style="color:#fff; font-family:'Schibsted Grotesk'; font-weight:800; font-size:42px; letter-spacing:-1px; margin:6px 0 12px; font-variant-numeric:tabular-nums;">4 950 €</div>
+              <button onClick="{{ goMoney }}" style="display:inline-flex; align-items:center; gap:8px; background:rgba(110,231,183,.16); border:1px solid rgba(110,231,183,.32); color:#6EE7B7; border-radius:11px; padding:9px 15px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Te verser ~2 000 € <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+            </div>
+          </div>
+          <div style="background:#fff; border-radius:20px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05); display:flex; flex-direction:column; justify-content:center;">
+            <div style="display:flex; align-items:center; gap:8px; color:#C8463C;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C8463C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span style="font-size:12.5px; font-weight:700; letter-spacing:.3px; text-transform:uppercase;">En retard</span></div>
+            <div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:30px; color:#C8463C; margin-top:8px; font-variant-numeric:tabular-nums;">2 480 €</div>
+            <div style="font-size:12.5px; color:#8A99A8; margin-top:2px;">2 factures · Bob relance</div>
+          </div>
+          <div style="background:#fff; border-radius:20px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05); display:flex; flex-direction:column; justify-content:center;">
+            <div style="display:flex; align-items:center; gap:8px; color:#0E7C5A;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M21 7v5h-5"/></svg><span style="font-size:12.5px; font-weight:700; letter-spacing:.3px; text-transform:uppercase;">Encaissé en juin</span></div>
+            <div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:30px; color:#0F2235; margin-top:8px; font-variant-numeric:tabular-nums;">8 120 €</div>
+            <div style="font-size:12.5px; color:#0E7C5A; margin-top:2px;">+18 % vs mai</div>
+          </div>
+        </div>
+
+        <div class="bpw-grid2" style="display:grid; grid-template-columns:1.6fr 1fr; gap:16px;">
+          <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">À régler aujourd'hui</h2><span style="font-size:12.5px; color:#8A99A8;">3 priorités</span></div>
+
+            <div style="display:flex; align-items:center; gap:15px; padding:15px; border-radius:15px; background:#FCFCFD; border:1px solid #F0F3F7; border-left:4px solid #E5544B; margin-bottom:11px;">
+              <div style="flex:1;"><div style="display:inline-block; background:#FBEAE8; color:#C8463C; font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px; margin-bottom:6px;">EN RETARD 9 J</div><div style="font-weight:700; font-size:15.5px;">Martin te doit 1 240 €</div><div style="font-size:13px; color:#5B6B7B; margin-top:2px;">Toujours pas payé. On le relance gentiment ?</div></div>
+              <button onClick="{{ goAssistant }}" style="display:flex; align-items:center; gap:7px; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:10px 16px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; white-space:nowrap;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Relancer</button>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:15px; padding:15px; border-radius:15px; background:#FCFCFD; border:1px solid #F0F3F7; border-left:4px solid #0E7C5A; margin-bottom:11px;">
+              <div style="flex:1;"><div style="display:inline-block; background:#EAF2EC; color:#0E7C5A; font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px; margin-bottom:6px;">ACOMPTE ENCAISSÉ</div><div style="font-weight:700; font-size:15.5px;">Facture finale — chantier Durand</div><div style="font-size:13px; color:#5B6B7B; margin-top:2px;">Acompte déjà encaissé. Reste 1 880 €. Y'a plus qu'à.</div></div>
+              <button onClick="{{ openCreate }}" style="display:flex; align-items:center; gap:7px; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:10px 16px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; white-space:nowrap;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>Créer</button>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:15px; padding:15px; border-radius:15px; background:#FCFCFD; border:1px solid #F0F3F7; border-left:4px solid #4338CA;">
+              <div style="flex:1;"><div style="display:inline-block; background:#EDEAFE; color:#4338CA; font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px; margin-bottom:6px;">CONFORMITÉ 2026</div><div style="font-weight:700; font-size:15.5px;">Réception e-facture à configurer</div><div style="font-size:13px; color:#5B6B7B; margin-top:2px;">À configurer avant le 1ᵉʳ sept. 2026. Je t'explique en 2 min.</div></div>
+              <button onClick="{{ openDiag }}" style="background:#fff; color:#4338CA; border:1px solid #DAD5FB; border-radius:11px; padding:10px 16px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; white-space:nowrap;">Diagnostic</button>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <div style="background:#fff; border-radius:20px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Trésorerie 90 j</h2><span style="font-size:12px; color:#0E7C5A; font-weight:700;">Ça repart</span></div>
+              <div style="display:flex; align-items:flex-end; gap:10px; height:96px;">
+                <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;"><div style="width:100%; height:62px; border-radius:8px 8px 4px 4px; background:#D6E0EC;"></div><span style="font-size:11px; color:#8A99A8;">7 j</span></div>
+                <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;"><div style="width:100%; height:54px; border-radius:8px 8px 4px 4px; background:#D6E0EC;"></div><span style="font-size:11px; color:#8A99A8;">30 j</span></div>
+                <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;"><div style="width:100%; height:30px; border-radius:8px 8px 4px 4px; background:#F2C98A;"></div><span style="font-size:11px; color:#C77A12; font-weight:700;">60 j</span></div>
+                <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;"><div style="width:100%; height:80px; border-radius:8px 8px 4px 4px; background:linear-gradient(180deg,#1B3A63,#0C2340);"></div><span style="font-size:11px; color:#8A99A8;">90 j</span></div>
+              </div>
+              <div style="margin-top:12px; font-size:12.5px; color:#5B6B7B; line-height:1.5;">Creux léger vers le 28. Bob a déjà mis la TVA de côté.</div>
+            </div>
+            <div style="position:relative; overflow:hidden; background:linear-gradient(135deg,#F3F1FE,#FBFAFF); border:1px solid #E3DEFB; border-radius:20px; padding:20px;">
+              <div style="display:flex; align-items:center; gap:11px; margin-bottom:10px;"><span style="width:40px; height:40px; border-radius:12px; background:#4338CA; display:flex; align-items:center; justify-content:center;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span><div><div style="font-weight:700; font-size:15px; color:#312C8A;">Bob a bossé pour toi</div><div style="font-size:12px; color:#7C72C9;">cette nuit</div></div></div>
+              <div style="font-size:13px; color:#4B2A86; line-height:1.6;">2 relances envoyées · 1 reçu classé · trésorerie recalculée. <b style="font-weight:700;">Tu peux te verser 2 000 €.</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== CLIENTS (master-detail) ===================== -->
+      <sc-if value="{{ isClients }}" hint-placeholder-val="{{ false }}">
+      <div class="bpw-md" style="display:grid; grid-template-columns:340px 1fr; gap:16px; ">
+        <div style="background:#fff; border-radius:20px; padding:16px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05); align-self:start;">
+          <div style="display:flex; align-items:center; gap:9px; background:#F4F6FA; border-radius:11px; padding:10px 13px; margin-bottom:12px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A99A8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span style="color:#A9B4C0; font-size:13px;">Chercher un client…</span></div>
+          <sc-for list="{{ clientList }}" as="c" hint-placeholder-count="6">
+          <button onClick="{{ c.select }}" style="width:100%; display:flex; align-items:center; gap:12px; text-align:left; border:none; border-radius:13px; padding:11px; margin-bottom:4px; cursor:pointer; {{ c.rowStyle }}">
+            <span style="width:40px; height:40px; border-radius:12px; background:{{ c.bg }}; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:13px; font-family:'Schibsted Grotesk'; flex-shrink:0;">{{ c.initials }}</span>
+            <span style="flex:1; min-width:0;"><span style="display:block; font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ c.name }}</span><span style="display:block; font-size:12px; color:#8A99A8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ c.sub }}</span></span>
+            <span style="font-size:13px; font-weight:700; color:{{ c.amountColor }}; white-space:nowrap;">{{ c.amount }}</span>
+          </button>
+          </sc-for>
+        </div>
+
+        <div style="background:#fff; border-radius:20px; padding:26px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05); align-self:start;">
+          <div style="display:flex; align-items:center; gap:16px; margin-bottom:20px;">
+            <span style="width:60px; height:60px; border-radius:17px; background:{{ ac.bg }}; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:20px; font-family:'Schibsted Grotesk';">{{ ac.initials }}</span>
+            <div style="flex:1;"><div style="display:flex; align-items:center; gap:10px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:22px;">{{ ac.name }}</h2><span style="font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px; {{ ac.badgeStyle }}">{{ ac.typeLabel }}</span></div><div style="font-size:13.5px; color:#8A99A8; margin-top:3px;">{{ ac.sirenLine }}</div></div>
+            <button onClick="{{ ac.action }}" style="display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:12px; padding:12px 18px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">{{ ac.cta }}</button>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:20px;">
+            <div style="background:#F7F9FC; border-radius:14px; padding:15px;"><div style="font-size:12px; color:#8A99A8; font-weight:600;">Encours</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:21px; color:{{ ac.encoursColor }}; margin-top:4px; font-variant-numeric:tabular-nums;">{{ ac.encours }}</div></div>
+            <div style="background:#F7F9FC; border-radius:14px; padding:15px;"><div style="font-size:12px; color:#8A99A8; font-weight:600;">Délai moyen</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:21px; margin-top:4px;">{{ ac.delai }}</div></div>
+            <div style="background:#F7F9FC; border-radius:14px; padding:15px;"><div style="font-size:12px; color:#8A99A8; font-weight:600;">CA 2026</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:21px; margin-top:4px; font-variant-numeric:tabular-nums;">{{ ac.ca }}</div></div>
+          </div>
+
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:8px;"><span style="font-size:13px; font-weight:700; color:#5B6B7B;">Score de paiement</span><span style="font-size:13px; font-weight:700; color:{{ ac.scoreColor }};">{{ ac.score }}/100 · {{ ac.scoreLabel }}</span></div>
+          <div style="height:9px; border-radius:5px; background:#EDF1F6; overflow:hidden; margin-bottom:18px;"><div style="height:100%; border-radius:5px; width:{{ ac.scoreW }}; background:{{ ac.scoreColor }};"></div></div>
+
+          <div style="display:flex; align-items:flex-start; gap:11px; background:{{ ac.einvBg }}; border-radius:14px; padding:14px 16px; margin-bottom:20px;"><span style="flex-shrink:0; width:24px; height:24px; border-radius:7px; background:{{ ac.einvColor }}; display:flex; align-items:center; justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/></svg></span><div><div style="font-weight:700; font-size:13.5px; color:{{ ac.einvColor }};">{{ ac.einvLabel }}</div><div style="font-size:12.5px; color:#5B6B7B; margin-top:2px; line-height:1.45;">{{ ac.einvDetail }}</div></div></div>
+
+          <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:10px;">Activité récente</div>
+          <sc-for list="{{ ac.activity }}" as="a" hint-placeholder-count="3">
+          <div style="display:flex; align-items:center; gap:13px; padding:12px 0; border-bottom:1px solid #F1F4F7;">
+            <span style="width:34px; height:34px; border-radius:10px; background:{{ a.tintBg }}; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><span style="width:9px; height:9px; border-radius:50%; background:{{ a.tint }};"></span></span>
+            <div style="flex:1;"><div style="font-weight:600; font-size:14px;">{{ a.label }}</div><div style="font-size:12px; color:#8A99A8; margin-top:1px;">{{ a.date }} · {{ a.note }}</div></div>
+            <span style="font-weight:700; font-size:14px; color:{{ a.amountColor }}; font-variant-numeric:tabular-nums;">{{ a.amount }}</span>
+          </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== ARGENT ===================== -->
+      <sc-if value="{{ isMoney }}" hint-placeholder-val="{{ false }}">
+      <div class="bpw-grid2" style="display:grid; grid-template-columns:1fr 1.2fr; gap:16px; ">
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div style="position:relative; overflow:hidden; background:linear-gradient(150deg,#0C2340,#163763); border-radius:20px; padding:24px; box-shadow:0 12px 28px rgba(12,35,64,.18);">
+            <div style="position:absolute; top:-50px; right:-30px; width:180px; height:180px; border-radius:50%; background:radial-gradient(circle, rgba(110,231,183,.32), rgba(110,231,183,0) 70%);"></div>
+            <div style="position:relative;"><div style="color:rgba(255,255,255,.6); font-size:13px;">Ce mois, tu peux te verser</div><div style="display:flex; align-items:baseline; gap:12px; margin-top:6px;"><span style="color:#fff; font-family:'Schibsted Grotesk'; font-weight:800; font-size:44px; letter-spacing:-1px; font-variant-numeric:tabular-nums;">~2 000 €</span><span style="background:rgba(110,231,183,.18); border:1px solid rgba(110,231,183,.32); color:#6EE7B7; font-size:12px; font-weight:700; padding:4px 10px; border-radius:9px;">sans risque</span></div><div style="color:rgba(255,255,255,.7); font-size:13.5px; margin-top:12px; line-height:1.5;">Tu peux monter à <b style="color:#fff;">3 400 €</b> si Martin règle cette semaine. Je te préviens dès qu'il paie.</div></div>
+          </div>
+          <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Argent disponible réel</h2><span style="background:#FBF0DF; color:#C77A12; font-size:10.5px; font-weight:700; padding:3px 9px; border-radius:7px;">LE SOLDE MENT</span></div>
+            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Solde bancaire</span><b style="font-variant-numeric:tabular-nums;">6 820 €</b></div>
+            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Factures clients attendues</span><b style="color:#0E7C5A; font-variant-numeric:tabular-nums;">+ 5 700 €</b></div>
+            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Charges &amp; achats prévus</span><b style="color:#C8463C; font-variant-numeric:tabular-nums;">− 2 900 €</b></div>
+            <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">TVA à reverser</span><b style="color:#C8463C; font-variant-numeric:tabular-nums;">− 1 240 €</b></div>
+            <div style="display:flex; justify-content:space-between; align-items:center; padding-top:13px;"><span style="font-weight:700; font-size:15px;">Vraiment disponible</span><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:24px; color:#0E7C5A; font-variant-numeric:tabular-nums;">4 950 €</span></div>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:16px;">
+          <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Prévision de trésorerie</h2><div style="display:flex; gap:4px; background:#EFF2F6; border-radius:10px; padding:3px;"><span style="background:#fff; box-shadow:0 1px 3px rgba(13,38,68,.12); color:#0C2340; font-size:12px; font-weight:700; padding:6px 11px; border-radius:8px;">Réaliste</span><span style="color:#94A3B0; font-size:12px; font-weight:700; padding:6px 11px;">Prudent</span></div></div>
+            <div style="display:flex; align-items:flex-end; gap:16px; height:150px; padding:0 6px;">
+              <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:8px;"><span style="font-size:12px; font-weight:700; color:#0E7C5A; font-variant-numeric:tabular-nums;">5 400</span><div style="width:100%; height:104px; border-radius:9px 9px 4px 4px; background:#D6E0EC;"></div><span style="font-size:12px; color:#8A99A8;">7 j</span></div>
+              <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:8px;"><span style="font-size:12px; font-weight:700; color:#0E7C5A; font-variant-numeric:tabular-nums;">4 950</span><div style="width:100%; height:92px; border-radius:9px 9px 4px 4px; background:#D6E0EC;"></div><span style="font-size:12px; color:#8A99A8;">30 j</span></div>
+              <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:8px;"><span style="font-size:12px; font-weight:700; color:#C77A12; font-variant-numeric:tabular-nums;">3 100</span><div style="width:100%; height:50px; border-radius:9px 9px 4px 4px; background:#F2C98A;"></div><span style="font-size:12px; color:#C77A12; font-weight:700;">60 j</span></div>
+              <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:8px;"><span style="font-size:12px; font-weight:700; color:#0E7C5A; font-variant-numeric:tabular-nums;">7 200</span><div style="width:100%; height:128px; border-radius:9px 9px 4px 4px; background:linear-gradient(180deg,#1B3A63,#0C2340);"></div><span style="font-size:12px; color:#8A99A8;">90 j</span></div>
+            </div>
+          </div>
+          <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <h2 style="margin:0 0 14px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">À surveiller</h2>
+            <div style="display:flex; align-items:center; gap:13px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#475569,#334155); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:12px; font-family:'Schibsted Grotesk';">SM</span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">SARL Martin Rénovation</div><div style="font-size:12px; color:#C8463C; font-weight:600;">Score 62 · paie à 22 j</div></div><span style="font-weight:700; font-variant-numeric:tabular-nums; color:#C8463C;">2 480 €</span></div>
+            <div style="display:flex; align-items:center; gap:13px; padding:12px 0;"><span style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#4338CA,#3730A3); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:12px; font-family:'Schibsted Grotesk';">CP</span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Camping Les Pins</div><div style="font-size:12px; color:#C77A12; font-weight:600;">Score 50 · à configurer</div></div><span style="font-weight:700; font-variant-numeric:tabular-nums; color:#8A99A8;">0 €</span></div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== DOCUMENTS ===================== -->
+      <sc-if value="{{ isDocuments }}" hint-placeholder-val="{{ false }}">
+      <div style="">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; margin-bottom:22px;">
+          <sc-for list="{{ folders }}" as="f" hint-placeholder-count="6">
+          <button onClick="{{ toast }}" style="text-align:left; background:#fff; border:none; border-radius:18px; padding:18px; cursor:pointer; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <span style="display:inline-flex; width:44px; height:44px; border-radius:13px; background:{{ f.tintBg }}; align-items:center; justify-content:center; margin-bottom:12px;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{ f.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg></span>
+            <div style="font-weight:700; font-size:15px;">{{ f.name }}</div>
+            <div style="font-size:12.5px; color:#8A99A8; margin-top:2px;">{{ f.count }}</div>
+          </button>
+          </sc-for>
+        </div>
+        <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;"><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Récemment classés par Bob</h2><button onClick="{{ cmScan }}" style="display:flex; align-items:center; gap:7px; background:#F1EBFA; color:#4338CA; border:none; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Scanner</button></div>
+          <sc-for list="{{ recentDocs }}" as="d" hint-placeholder-count="4">
+          <div onClick="{{ d.open }}" style="cursor:pointer; display:flex; align-items:center; gap:14px; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="width:36px; height:36px; border-radius:10px; background:{{ d.tintBg }}; display:flex; align-items:center; justify-content:center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="{{ d.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">{{ d.name }}</div><div style="font-size:12px; color:#8A99A8;">{{ d.folder }} · {{ d.date }}</div></div><span style="font-weight:700; font-size:14px; font-variant-numeric:tabular-nums;">{{ d.amount }}</span></div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== ASSISTANT ===================== -->
+      <sc-if value="{{ isAssistant }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:760px; margin:0 auto; ">
+        <div style="display:flex; align-items:center; gap:13px; background:#fff; border-radius:18px; padding:16px 18px; margin-bottom:16px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+          <span style="width:46px; height:46px; border-radius:14px; background:linear-gradient(135deg,#4F46E5,#4338CA); display:flex; align-items:center; justify-content:center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span>
+          <div style="flex:1;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Bob</span><span style="display:inline-flex; align-items:center; gap:5px; color:#0E7C5A; font-size:12px; font-weight:700;"><span style="width:7px; height:7px; border-radius:50%; background:#0E7C5A;"></span>en ligne</span></div><div style="font-size:13px; color:#5B6B7B; margin-top:1px;">Demande. Je fais — pas juste je réponds.</div></div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:18px;">
+          <div style="align-self:flex-start; max-width:78%; background:#fff; border-radius:18px 18px 18px 5px; padding:14px 16px; box-shadow:0 2px 10px rgba(13,38,68,.06); font-size:14.5px; line-height:1.5;">Salut, moi c'est Bob 👋 Dis-moi quoi faire — créer, relancer, classer, t'expliquer ta tréso. Je m'en occupe pour de vrai.</div>
+          <div style="align-self:flex-end; max-width:78%; background:#0C2340; color:#fff; border-radius:18px 18px 5px 18px; padding:13px 16px; font-size:14.5px;">Relance les clients en retard</div>
+          <div style="align-self:flex-start; max-width:88%; background:#fff; border-radius:18px 18px 18px 5px; padding:14px 16px; box-shadow:0 2px 10px rgba(13,38,68,.06);">
+            <div style="font-size:14.5px; line-height:1.5; margin-bottom:11px;">C'est parti. J'ai préparé 2 relances : <b>Martin</b> (9 j) et la <b>Mairie</b>. Ton cordial, lien de paiement inclus.</div>
+            <div style="display:flex; gap:9px;"><button onClick="{{ toast }}" style="flex:1; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:11px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Envoyer les 2</button><button onClick="{{ toast }}" style="background:#EFF2F6; color:#1B3A63; border:none; border-radius:11px; padding:11px 15px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Relire</button></div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:9px; flex-wrap:wrap; margin-bottom:16px;">
+          <button onClick="{{ toast }}" style="background:#fff; color:#1B3A63; border:1px solid #E2E8F1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">Combien je peux me payer ?</button>
+          <button onClick="{{ toast }}" style="background:#fff; color:#1B3A63; border:1px solid #E2E8F1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">Prépare mon mois pour le comptable</button>
+          <button onClick="{{ toast }}" style="background:#fff; color:#1B3A63; border:1px solid #E2E8F1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">Je suis prêt pour 2026 ?</button>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:11px; background:#fff; border:1px solid #E2E8F1; border-radius:15px; padding:13px 16px; box-shadow:0 1px 2px rgba(13,38,68,.04);">
+          <span style="flex:1; color:#A9B4C0; font-size:14.5px;">Demander à Bob…</span>
+          <button onClick="{{ toast }}" style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#0C2340,#1B3A63); border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== RÉGLAGES ===================== -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+      <div class="bpw-md" style="display:grid; grid-template-columns:230px 1fr; gap:16px;">
+        <div style="background:#fff; border-radius:18px; padding:12px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05); align-self:start; display:flex; flex-direction:column; gap:3px;">
+          <button onClick="{{ setTabFact }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabFact }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>Facturation</button>
+          <button onClick="{{ setTabCat }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabCat }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>Catalogue</button>
+          <button onClick="{{ setTabRel }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabRel }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/><path d="M3 3v5h5"/></svg>Relances auto</button>
+          <button onClick="{{ setTabCompte }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabCompte }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Compte</button>
+          <button onClick="{{ setTabAbo }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabAbo }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>Abonnement</button>
+          <button onClick="{{ setTabEquipe }}" style="display:flex; align-items:center; gap:11px; border:none; border-radius:11px; padding:11px 13px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; text-align:left; {{ stabEquipe }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.4"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5.5"/></svg>Équipe</button>
+        </div>
+
+        <div style="min-width:0;">
+          <!-- Facturation -->
+          <sc-if value="{{ tabFact }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <h2 style="margin:0 0 4px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Facturation &amp; modèles</h2>
+            <p style="margin:0 0 18px; color:#5B6B7B; font-size:13.5px;">Ce que Bob met sur tes devis et factures.</p>
+            <div style="border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; margin-bottom:20px;">
+              <div style="height:6px; background:{{ billAccentColor }};"></div>
+              <div style="padding:18px;">
+                <div style="display:flex; align-items:center; justify-content:space-between;"><div style="display:flex; align-items:center; gap:12px;"><span style="width:42px; height:42px; border-radius:11px; background:linear-gradient(135deg,#3B82F6,#4338CA); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-family:'Schibsted Grotesk';">JM</span><div><div style="font-weight:700; font-size:15px;">Mercier Plomberie</div><div style="font-size:12px; color:#8A99A8;">Plombier-chauffagiste</div></div></div><div style="text-align:right;"><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:16px; color:{{ billAccentColor }};">FACTURE</div><div style="font-size:12px; color:#8A99A8;">F-2026-119</div></div></div>
+                <div style="margin-top:14px; padding-top:12px; border-top:1px solid #F1F4F7; font-size:11.5px; color:#8A99A8;">SIRET 853 109 274 00018 · RM 92 · {{ billMention }}</div>
+              </div>
+            </div>
+            <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:10px;">Régime de TVA</div>
+            <div style="display:flex; gap:10px; margin-bottom:20px;">
+              <button onClick="{{ setReel }}" style="flex:1; border-radius:12px; padding:13px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; border:none; {{ regReelStyle }}">Réel · TVA 20 %</button>
+              <button onClick="{{ setFranchise }}" style="flex:1; border-radius:12px; padding:13px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; border:none; {{ regFranchiseStyle }}">Franchise en base</button>
+            </div>
+            <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:10px;">Couleur du PDF</div>
+            <div style="display:flex; gap:14px; margin-bottom:20px;">
+              <sc-for list="{{ accents }}" as="a" hint-placeholder-count="4">
+              <button onClick="{{ a.set }}" style="width:38px; height:38px; border-radius:50%; border:none; cursor:pointer; background:{{ a.color }}; {{ a.ring }}"></button>
+              </sc-for>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; background:#F7F9FC; border-radius:13px;">
+              <div><div style="font-weight:600; font-size:14px;">Assurance décennale</div><div style="font-size:12px; color:#8A99A8;">Affichée sur les devis &amp; factures (bâtiment).</div></div>
+              <button onClick="{{ toggleDecennale }}" style="flex-shrink:0; width:48px; height:28px; border-radius:15px; padding:3px; box-sizing:border-box; border:none; cursor:pointer; {{ decTrack }} transition:background .2s;"><span style="display:block; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); {{ decKnob }} transition:transform .2s;"></span></button>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Catalogue -->
+          <sc-if value="{{ tabCat }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;"><div><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Catalogue de prestations</h2><p style="margin:2px 0 0; color:#5B6B7B; font-size:13.5px;">Tes lignes prêtes à l'emploi pour devis &amp; factures.</p></div><button onClick="{{ toast }}" style="display:flex; align-items:center; gap:7px; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>Ajouter</button></div>
+            <sc-for list="{{ catalogManage }}" as="g" hint-placeholder-count="3">
+            <div style="margin-bottom:16px;">
+              <div style="display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:7px; margin-bottom:8px; background:{{ g.tintBg }}; color:{{ g.tint }};">{{ g.cat }}</div>
+              <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+              <div style="display:flex; align-items:center; justify-content:space-between; padding:11px 0; border-bottom:1px solid #F1F4F7;"><span style="font-size:14px; font-weight:500;">{{ it.name }}</span><span style="font-weight:700; font-size:14px; font-variant-numeric:tabular-nums;">{{ it.price }}</span></div>
+              </sc-for>
+            </div>
+            </sc-for>
+          </div>
+          </sc-if>
+
+          <!-- Relances auto -->
+          <sc-if value="{{ tabRel }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <h2 style="margin:0 0 4px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Relances automatiques</h2>
+            <p style="margin:0 0 16px; color:#5B6B7B; font-size:13.5px;">Bob relance les retards tout seul, au bon moment.</p>
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:15px 16px; background:#F7F9FC; border-radius:14px; margin-bottom:18px;">
+              <div><div style="font-weight:700; font-size:15px;">Relances activées</div><div style="font-size:12.5px; color:#8A99A8;">2 clients en file d'attente</div></div>
+              <button onClick="{{ toggleRelAuto }}" style="flex-shrink:0; width:48px; height:28px; border-radius:15px; padding:3px; box-sizing:border-box; border:none; cursor:pointer; {{ relAutoTrack }} transition:background .2s;"><span style="display:block; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); {{ relAutoKnob }} transition:transform .2s;"></span></button>
+            </div>
+            <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:10px;">Cadence &amp; ton</div>
+            <sc-for list="{{ cadSteps }}" as="step" hint-placeholder-count="4">
+            <div style="display:flex; gap:13px; align-items:center; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:48px; text-align:center; font-family:'Schibsted Grotesk'; font-weight:800; font-size:14px; color:#1B3A63;">{{ step.when }}</span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">{{ step.tone }}</div><div style="font-size:12px; color:#8A99A8;">{{ step.desc }}</div></div><button onClick="{{ step.toggle }}" style="flex-shrink:0; width:44px; height:26px; border-radius:14px; padding:3px; box-sizing:border-box; border:none; cursor:pointer; {{ step.track }} transition:background .2s;"><span style="display:block; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); {{ step.knob }} transition:transform .2s;"></span></button></div>
+            </sc-for>
+            <div style="margin-top:14px; display:flex; gap:8px; align-items:flex-start; background:#FBEAE8; border-radius:12px; padding:11px 13px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C8463C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px; flex-shrink:0;"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg><span style="font-size:12.5px; color:#9B2F27; line-height:1.5;">La mise en demeure (L441-10 + indemnité 40 €) n'est jamais envoyée sans ta validation.</span></div>
+          </div>
+          </sc-if>
+
+          <!-- Compte -->
+          <sc-if value="{{ tabCompte }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <h2 style="margin:0 0 18px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Mon compte</h2>
+            <div style="display:flex; justify-content:space-between; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Raison sociale</span><b style="font-size:14px;">Mercier Plomberie</b></div>
+            <div style="display:flex; justify-content:space-between; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">SIRET</span><b style="font-size:14px; font-variant-numeric:tabular-nums;">853 109 274 00018</b></div>
+            <div style="display:flex; justify-content:space-between; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Email</span><b style="font-size:14px;">julien@mercier-plomberie.fr</b></div>
+            <div style="display:flex; justify-content:space-between; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#5B6B7B; font-size:14px;">Téléphone</span><b style="font-size:14px;">06 12 34 56 78</b></div>
+            <div style="display:flex; gap:10px; margin-top:20px;">
+              <button onClick="{{ replayOnboarding }}" style="flex:1; background:#EFF2F6; color:#1B3A63; border:none; border-radius:12px; padding:13px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Revoir l'onboarding</button>
+              <button onClick="{{ logout }}" style="flex:1; background:#FBEAE8; color:#C8463C; border:none; border-radius:12px; padding:13px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Se déconnecter</button>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Abonnement -->
+          <sc-if value="{{ tabAbo }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex; flex-direction:column; gap:16px;">
+            <div style="position:relative; overflow:hidden; background:linear-gradient(135deg,#0C2340,#1B3A63); border-radius:20px; padding:22px 24px; box-shadow:0 10px 26px rgba(12,35,64,.2);">
+              <div style="position:absolute; top:-40px; right:-30px; width:160px; height:160px; border-radius:50%; background:radial-gradient(circle, rgba(110,231,183,.3), rgba(110,231,183,0) 70%);"></div>
+              <div style="position:relative; display:flex; align-items:center; justify-content:space-between;">
+                <div><div style="color:rgba(255,255,255,.6); font-size:12.5px; font-weight:600;">Ton offre</div><div style="color:#fff; font-family:'Schibsted Grotesk'; font-weight:800; font-size:26px; margin-top:2px;">Pro · 39 €<span style="font-size:15px; font-weight:600; color:rgba(255,255,255,.6);">/mois</span></div><div style="color:rgba(255,255,255,.6); font-size:12.5px; margin-top:6px;">Prochaine facture le 1ᵉʳ juil. · résiliable à tout moment</div></div>
+                <span style="background:rgba(110,231,183,.18); border:1px solid rgba(110,231,183,.35); color:#6EE7B7; font-size:11px; font-weight:700; padding:5px 11px; border-radius:9px;">ACTIVE</span>
+              </div>
+            </div>
+            <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+              <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:14px;">Changer d'offre</div>
+              <div class="bpw-kpi" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;">
+                <div style="border:1px solid #ECEFF4; border-radius:16px; padding:18px; display:flex; flex-direction:column;"><div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Solo</span><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; white-space:nowrap;">19 €<span style="font-size:12px; color:#A9B4C0; font-weight:600;">/mois</span></span></div><div style="font-size:12.5px; color:#5B6B7B; line-height:1.6; margin:10px 0 14px; flex:1;">Devis &amp; factures illimités · Relances · Prépa facturation élec.</div><button onClick="{{ toast }}" style="width:100%; background:#fff; color:#1B3A63; border:1px solid #D9E0E8; border-radius:11px; padding:10px; font-size:13px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Passer à Solo</button></div>
+                <div style="border:2px solid #1B3A63; border-radius:16px; padding:18px; display:flex; flex-direction:column; box-shadow:0 7px 18px rgba(13,38,68,.08);"><div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="display:flex; align-items:center; gap:7px;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Pro</span><span style="background:#E6EDF6; color:#1B3A63; font-size:10px; font-weight:700; padding:2px 7px; border-radius:6px;">ACTUELLE</span></span><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; white-space:nowrap;">39 €<span style="font-size:12px; color:#A9B4C0; font-weight:600;">/mois</span></span></div><div style="font-size:12.5px; color:#5B6B7B; line-height:1.6; margin:10px 0 14px; flex:1;">Tout Solo + Paiement en ligne · Tréso 90 j + assistant IA · Plateforme élec. connectée</div><button disabled style="width:100%; background:#EFF2F6; color:#A9B4C0; border:none; border-radius:11px; padding:10px; font-size:13px; font-weight:700; font-family:'Hanken Grotesk';">Ton offre actuelle</button></div>
+                <div style="border:1px solid #ECEFF4; border-radius:16px; padding:18px; display:flex; flex-direction:column;"><div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Business</span><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; white-space:nowrap;">79 €<span style="font-size:12px; color:#A9B4C0; font-weight:600;">/mois</span></span></div><div style="font-size:12.5px; color:#5B6B7B; line-height:1.6; margin:10px 0 14px; flex:1;">Tout Pro + Multi-utilisateurs · Plusieurs banques · Conformité avancée · Support prioritaire</div><button onClick="{{ openPaywall }}" style="width:100%; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:10px; font-size:13px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Passer à Business</button></div>
+              </div>
+            </div>
+            <div class="bpw-grid2" style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+              <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+                <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:6px;">Mes factures d'abonnement</div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Offre Pro · juin 2026</div><div style="font-size:12px; color:#A9B4C0;">Payée le 1ᵉʳ juin</div></div><span style="font-weight:700; font-size:13px; font-variant-numeric:tabular-nums;">39,00 €</span></div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Offre Pro · mai 2026</div><div style="font-size:12px; color:#A9B4C0;">Payée le 1ᵉʳ mai</div></div><span style="font-weight:700; font-size:13px; font-variant-numeric:tabular-nums;">39,00 €</span></div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0;"><span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Offre Pro · avr. 2026</div><div style="font-size:12px; color:#A9B4C0;">Payée le 1ᵉʳ avr.</div></div><span style="font-weight:700; font-size:13px; font-variant-numeric:tabular-nums;">39,00 €</span></div>
+              </div>
+              <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+                <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:6px;">Services en plus</div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Paiement en ligne</div><div style="font-size:12px; color:#A9B4C0;">CB · 1,2 % par encaissement</div></div><span style="color:#0E7C5A; font-size:12px; font-weight:700;">Actif</span></div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:34px; height:34px; border-radius:10px; background:#E6EDF6; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5-5"/><path d="M5 7h5v5"/><path d="M5 17h14"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Avance sur facture</div><div style="font-size:12px; color:#A9B4C0;">Reçois 3 800 € sans attendre</div></div><button onClick="{{ toast }}" style="background:none; border:none; cursor:pointer; color:#1B3A63; font-size:12px; font-weight:700; font-family:'Hanken Grotesk';">Activer</button></div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #F1F4F7;"><span style="width:34px; height:34px; border-radius:10px; background:#FBF0DF; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C77A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Assurance déce. &amp; RC Pro</div><div style="font-size:12px; color:#A9B4C0;">Devis en 2 min</div></div><button onClick="{{ toast }}" style="background:none; border:none; cursor:pointer; color:#1B3A63; font-size:12px; font-weight:700; font-family:'Hanken Grotesk';">Activer</button></div>
+                <div style="display:flex; align-items:center; gap:12px; padding:12px 0;"><span style="width:34px; height:34px; border-radius:10px; background:#F1EBFA; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D28D9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">Comptable partenaire</div><div style="font-size:12px; color:#A9B4C0;">À partir de 49 €/mois</div></div><button onClick="{{ toast }}" style="background:none; border:none; cursor:pointer; color:#1B3A63; font-size:12px; font-weight:700; font-family:'Hanken Grotesk';">Trouver</button></div>
+              </div>
+            </div>
+          </div>
+          </sc-if>
+
+          <!-- Équipe -->
+          <sc-if value="{{ tabEquipe }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff; border-radius:20px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;"><div><h2 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Équipe &amp; rôles</h2><p style="margin:2px 0 0; color:#5B6B7B; font-size:13.5px;">Qui accède à quoi.</p></div><button onClick="{{ toast }}" style="display:flex; align-items:center; gap:7px; background:#0C2340; color:#fff; border:none; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>Inviter</button></div>
+            <sc-for list="{{ team }}" as="m" hint-placeholder-count="3">
+            <div style="display:flex; align-items:center; gap:13px; padding:13px 0; border-bottom:1px solid #F1F4F7;"><span style="width:40px; height:40px; border-radius:12px; background:{{ m.bg }}; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:13px; font-family:'Schibsted Grotesk';">{{ m.initials }}</span><div style="flex:1;"><div style="font-weight:600; font-size:14px;">{{ m.name }}</div></div><span style="font-size:11px; font-weight:700; padding:4px 10px; border-radius:7px; {{ m.roleBg }}">{{ m.role }}</span></div>
+            </sc-for>
+          </div>
+          </sc-if>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===================== DEVIS COMPOSER ===================== -->
+      <sc-if value="{{ isDevis }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <sc-if value="{{ devisSigned }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex; align-items:center; gap:12px; background:linear-gradient(135deg,#EAF2EC,#F4FAF6); border:1px solid #C9E6D4; border-radius:16px; padding:15px 18px; margin-bottom:16px;"><span style="width:34px; height:34px; border-radius:10px; background:#0E7C5A; display:flex; align-items:center; justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div style="flex:1;"><div style="font-weight:700; font-size:15px; color:#0A5C43;">Devis signé par M. Bernard</div><div style="font-size:12.5px; color:#3C7A5E;">Bon pour accord · 1 628,00 €. Plus qu'à le transformer en facture.</div></div></div>
+        </sc-if>
+        <div class="bpw-grid2" style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start;">
+          <!-- FORM -->
+          <div style="background:#fff; border-radius:20px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:center; gap:12px; padding-bottom:16px; border-bottom:1px solid #F1F4F7; margin-bottom:16px;">
+              <span style="width:44px; height:44px; border-radius:13px; background:linear-gradient(135deg,#F59E0B,#D97706); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-family:'Schibsted Grotesk';">PB</span>
+              <div style="flex:1;"><div style="font-weight:700; font-size:15px;">M. Bernard</div><div style="font-size:12.5px; color:#8A99A8;">Particulier · chauffe-eau 200 L</div></div>
+              <span style="background:#FBF0DF; color:#C77A12; font-size:11px; font-weight:700; padding:4px 10px; border-radius:7px;">TVA 10 %</span>
+            </div>
+            <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin-bottom:10px;">Lignes</div>
+            <sc-for list="{{ dlines }}" as="l" hint-placeholder-count="4">
+            <div style="display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid #F4F6FA;">
+              <div style="flex:1;"><div style="font-weight:600; font-size:14px;">{{ l.label }}</div><div style="margin-top:3px;"><span style="font-size:10.5px; font-weight:700; padding:2px 8px; border-radius:6px; {{ l.tagStyle }}">{{ l.cat }}</span> <span style="font-size:12px; color:#8A99A8;">{{ l.unit }}</span></div></div>
+              <span style="font-weight:700; font-size:14px; font-variant-numeric:tabular-nums;">{{ l.total }}</span>
+              <button onClick="{{ l.remove }}" style="width:28px; height:28px; border-radius:8px; background:#F4F6FA; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94A3B0" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+            </div>
+            </sc-for>
+            <button onClick="{{ openCatalog }}" style="margin-top:14px; width:100%; display:flex; align-items:center; justify-content:center; gap:8px; background:#F1EBFA; color:#4338CA; border:1px dashed #C9BEF5; border-radius:12px; padding:13px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>Ajouter depuis le catalogue</button>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px; padding:14px 16px; background:#F7F9FC; border-radius:13px;">
+              <div><div style="font-weight:600; font-size:14px;">Demander un acompte</div><div style="font-size:12px; color:#8A99A8;">30 % à la signature · {{ devAcompte }}</div></div>
+              <button onClick="{{ toggleAcompte }}" style="flex-shrink:0; width:48px; height:28px; border-radius:15px; padding:3px; box-sizing:border-box; border:none; cursor:pointer; {{ devAccTrack }} transition:background .2s;"><span style="display:block; width:22px; height:22px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); {{ devAccKnob }} transition:transform .2s;"></span></button>
+            </div>
+          </div>
+          <!-- PREVIEW -->
+          <div style="background:#fff; border-radius:20px; padding:26px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 20px rgba(13,38,68,.05);">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:22px;"><div style="display:flex; align-items:center; gap:11px;"><span style="width:42px; height:42px; border-radius:11px; background:linear-gradient(135deg,#3B82F6,#4338CA); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-family:'Schibsted Grotesk';">JM</span><div><div style="font-weight:700; font-size:14px;">Mercier Plomberie</div><div style="font-size:11.5px; color:#8A99A8;">Plombier-chauffagiste</div></div></div><div style="text-align:right;"><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:18px; color:#0C2340;">DEVIS</div><div style="font-size:12px; color:#8A99A8;">D-2026-014</div></div></div>
+            <div style="font-size:12px; color:#8A99A8; margin-bottom:4px;">Adressé à</div>
+            <div style="font-weight:700; font-size:14px; margin-bottom:18px;">M. Bernard · 8 allée des Roses, 92190 Meudon</div>
+            <sc-for list="{{ dlines }}" as="l" hint-placeholder-count="4">
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px solid #F4F6FA;"><span style="font-size:13.5px;">{{ l.label }}</span><span style="font-weight:600; font-size:13.5px; font-variant-numeric:tabular-nums;">{{ l.total }}</span></div>
+            </sc-for>
+            <div style="margin-top:14px; padding-top:12px; border-top:1px solid #ECEFF4;">
+              <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:13.5px; color:#5B6B7B;"><span>Total HT</span><b style="color:#0F2235; font-variant-numeric:tabular-nums;">{{ devHt }}</b></div>
+              <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:13.5px; color:#5B6B7B;"><span>TVA 10 %</span><b style="color:#0F2235; font-variant-numeric:tabular-nums;">{{ devTva }}</b></div>
+              <div style="display:flex; justify-content:space-between; padding:8px 0 0; font-size:16px; font-weight:800; font-family:'Schibsted Grotesk';"><span>Total TTC</span><span style="font-variant-numeric:tabular-nums;">{{ devTtc }}</span></div>
+              <sc-if value="{{ devAcompteOn }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex; justify-content:space-between; padding:10px 0 0; font-size:12.5px; color:#0E7C5A; font-weight:700;"><span>Acompte 30 % à la signature</span><span style="font-variant-numeric:tabular-nums;">{{ devAcompte }}</span></div>
+              </sc-if>
+            </div>
+            <div style="margin-top:18px; font-size:10.5px; color:#A9B4C0; line-height:1.5;">TVA 10 % — travaux d'amélioration (logement +2 ans). Assurance décennale n° DC-2026-4471. Devis gratuit, valable 30 jours.</div>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:11px; margin-top:18px;">
+          <button onClick="{{ backFromDevis }}" style="background:#fff; color:#5B6B7B; border:1px solid #E2E8F1; border-radius:13px; padding:13px 20px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Annuler</button>
+          <sc-if value="{{ devisNotSigned }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ sendSign }}" style="display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:13px 22px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; box-shadow:0 8px 18px rgba(12,35,64,.2);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>Envoyer pour signature</button>
+          </sc-if>
+          <sc-if value="{{ devisSigned }}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{ transformInvoice }}" style="display:flex; align-items:center; gap:8px; background:linear-gradient(135deg,#0E7C5A,#0A5C43); color:#fff; border:none; border-radius:13px; padding:13px 22px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; box-shadow:0 8px 18px rgba(14,124,90,.25);">Transformer en facture</button>
+          </sc-if>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+  </main>
+
+  <!-- ===================== CREATE MENU ===================== -->
+  <sc-if value="{{ showCreate }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:120; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.55); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:540px; max-width:94vw; background:#fff; border-radius:24px; padding:26px; box-shadow:0 30px 70px rgba(8,18,34,.4); animation:bpwPop .26s both;">
+      <h3 style="margin:0 0 3px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:22px;">On crée quoi ?</h3>
+      <p style="margin:0 0 18px; color:#5B6B7B; font-size:14px;">Le plus rapide : tu parles, Bob remplit.</p>
+      <button onClick="{{ cmVoice }}" style="width:100%; display:flex; align-items:center; gap:14px; text-align:left; background:linear-gradient(135deg,#0C2340,#1B3A63); border:none; border-radius:18px; padding:18px; margin-bottom:12px; cursor:pointer; box-shadow:0 10px 24px rgba(12,35,64,.22);">
+        <span style="width:46px; height:46px; border-radius:14px; background:rgba(110,231,183,.16); border:1px solid rgba(110,231,183,.3); display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span style="flex:1;"><span style="display:block; color:#fff; font-weight:700; font-size:16px;">Facture à la voix</span><span style="display:block; color:rgba(255,255,255,.6); font-size:13px; margin-top:1px;">De la mission au paiement en 60 s</span></span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.5)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:11px;">
+        <button onClick="{{ cmDevis }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:10px; text-align:left; background:#F7F9FC; border:none; border-radius:16px; padding:16px; cursor:pointer;"><span style="width:38px; height:38px; border-radius:12px; background:#E6EDF6; display:flex; align-items:center; justify-content:center;"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><span style="font-weight:600; font-size:13.5px;">Nouveau devis</span></button>
+        <button onClick="{{ cmScan }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:10px; text-align:left; background:#F7F9FC; border:none; border-radius:16px; padding:16px; cursor:pointer;"><span style="width:38px; height:38px; border-radius:12px; background:#F1EBFA; display:flex; align-items:center; justify-content:center;"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#6D28D9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span><span style="font-weight:600; font-size:13.5px;">Scanner un doc</span></button>
+        <button onClick="{{ cmEncaisser }}" style="display:flex; flex-direction:column; align-items:flex-start; gap:10px; text-align:left; background:#F7F9FC; border:none; border-radius:16px; padding:16px; cursor:pointer;"><span style="width:38px; height:38px; border-radius:12px; background:#FBF0DF; display:flex; align-items:center; justify-content:center;"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#C77A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg></span><span style="font-weight:600; font-size:13.5px;">Encaisser</span></button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== VOICE ===================== -->
+  <sc-if value="{{ showVoice }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:121; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.6); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:560px; max-width:94vw; border-radius:24px; overflow:hidden; box-shadow:0 30px 70px rgba(8,18,34,.45); animation:bpwPop .26s both;">
+      <!-- listening -->
+      <sc-if value="{{ voiceListening }}" hint-placeholder-val="{{ true }}">
+      <div style="background:linear-gradient(170deg,#0C2340,#0A1A30); padding:42px 36px 48px; text-align:center;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;"><span style="color:rgba(255,255,255,.6); font-size:14px; font-weight:600;">Facture à la voix</span><button onClick="{{ closeModal }}" style="width:34px; height:34px; border-radius:50%; background:rgba(255,255,255,.1); border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+        <div style="position:relative; width:120px; height:120px; margin:10px auto 22px;">
+          <span style="position:absolute; inset:0; border-radius:50%; background:#0E7C5A; opacity:.4; animation:bpwPulse 1.8s ease-out infinite;"></span>
+          <span style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; border-radius:50%; background:linear-gradient(135deg,#10B981,#0E7C5A);"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        </div>
+        <div style="min-height:54px; color:#fff; font-size:17px; line-height:1.5; font-weight:500; max-width:420px; margin:0 auto 22px;">{{ voiceTranscript }}<span style="color:#6EE7B7;">{{ voiceCaret }}</span></div>
+        <button onClick="{{ voiceToReview }}" style="background:#fff; color:#0C2340; border:none; border-radius:13px; padding:13px 26px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">{{ voiceReadyLabel }}</button>
+      </div>
+      </sc-if>
+      <!-- review -->
+      <sc-if value="{{ voiceReview }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#fff; padding:26px;">
+        <div style="display:flex; align-items:center; gap:8px; background:#EDEAFE; color:#4338CA; border-radius:10px; padding:9px 13px; font-size:13px; font-weight:700; width:fit-content; margin-bottom:16px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg>Bob a tout rempli pour toi</div>
+        <h3 style="margin:0 0 16px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:21px;">Facture prête</h3>
+        <div style="border:1px solid #ECEFF4; border-radius:16px; padding:18px; margin-bottom:18px;">
+          <div style="display:flex; align-items:center; gap:11px; padding-bottom:13px; border-bottom:1px solid #F1F4F7; margin-bottom:13px;"><span style="width:40px; height:40px; border-radius:11px; background:linear-gradient(135deg,#F59E0B,#D97706); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-family:'Schibsted Grotesk';">MD</span><div style="flex:1;"><div style="font-weight:700; font-size:14.5px;">Mme Durand</div><div style="font-size:12px; color:#8A99A8;">Particulier · Sèvres</div></div><span style="background:#FBF0DF; color:#C77A12; font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px;">TVA 20 %</span></div>
+          <div style="display:flex; justify-content:space-between; padding:6px 0; font-size:13.5px;"><span>Main-d'œuvre · 1h30</span><b style="font-variant-numeric:tabular-nums;">90,00 €</b></div>
+          <div style="display:flex; justify-content:space-between; padding:6px 0; font-size:13.5px;"><span>Mitigeur cuisine</span><b style="font-variant-numeric:tabular-nums;">85,00 €</b></div>
+          <div style="display:flex; justify-content:space-between; padding:8px 0 0; margin-top:6px; border-top:1px solid #ECEFF4; font-size:15px; font-weight:800; font-family:'Schibsted Grotesk';"><span>Total TTC</span><span style="font-variant-numeric:tabular-nums;">245,00 €</span></div>
+        </div>
+        <div style="display:flex; gap:11px;"><button onClick="{{ voiceEncaisser }}" style="flex:1; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:14px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Encaisser maintenant</button><button onClick="{{ voiceEncaisser }}" style="background:#EFF2F6; color:#1B3A63; border:none; border-radius:13px; padding:14px 18px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Envoyer le lien</button></div>
+      </div>
+      </sc-if>
+      <!-- done -->
+      <sc-if value="{{ voiceDone }}" hint-placeholder-val="{{ false }}">
+      <div style="background:linear-gradient(160deg,#0E7C5A,#0A5C43); padding:48px 36px; text-align:center;">
+        <div style="width:78px; height:78px; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; margin:0 auto 22px;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></div>
+        <h3 style="margin:0 0 8px; font-family:'Schibsted Grotesk'; font-weight:800; font-size:26px; color:#fff;">Payé ! 💸</h3>
+        <p style="margin:0 0 24px; color:rgba(255,255,255,.85); font-size:14.5px; line-height:1.5; max-width:380px; margin-left:auto; margin-right:auto;">245 € encaissés par carte. La facture est envoyée, classée et ta tréso est à jour.</p>
+        <button onClick="{{ voiceFinish }}" style="background:#fff; color:#0A5C43; border:none; border-radius:13px; padding:13px 28px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Nickel, on continue</button>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== SCAN ===================== -->
+  <sc-if value="{{ showScan }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:121; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.55); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:500px; max-width:94vw; background:#fff; border-radius:24px; padding:26px; box-shadow:0 30px 70px rgba(8,18,34,.4); animation:bpwPop .26s both;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;"><h3 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px;">Scanner un document</h3><button onClick="{{ closeModal }}" style="width:32px; height:32px; border-radius:50%; background:#F4F6FA; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5B6B7B" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <sc-if value="{{ scanScanning }}" hint-placeholder-val="{{ true }}">
+      <div style="text-align:center; padding:10px 0 8px;">
+        <div style="position:relative; width:150px; height:190px; margin:0 auto 20px; background:#fff; border:1px solid #E2E8F1; border-radius:10px; box-shadow:0 8px 22px rgba(13,38,68,.12); overflow:hidden;">
+          <div style="padding:16px 14px;"><div style="height:8px; width:60%; background:#E2E8F1; border-radius:3px; margin-bottom:9px;"></div><div style="height:6px; width:90%; background:#EDF1F6; border-radius:3px; margin-bottom:6px;"></div><div style="height:6px; width:80%; background:#EDF1F6; border-radius:3px; margin-bottom:6px;"></div><div style="height:6px; width:85%; background:#EDF1F6; border-radius:3px; margin-bottom:18px;"></div><div style="height:8px; width:50%; background:#E2E8F1; border-radius:3px; margin-left:auto;"></div></div>
+          <div style="position:absolute; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,#4338CA,transparent); box-shadow:0 0 12px #4338CA; animation:bpwScan 1.4s ease-in-out infinite alternate;"></div>
+        </div>
+        <div style="font-weight:600; font-size:15px;">Bob lit le document…</div>
+        <div style="font-size:13px; color:#8A99A8; margin-top:3px;">Extraction du fournisseur, du montant et de la TVA.</div>
+      </div>
+      </sc-if>
+      <sc-if value="{{ scanDone }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="display:flex; align-items:center; gap:8px; background:#EAF2EC; color:#0E7C5A; border-radius:10px; padding:9px 13px; font-size:13px; font-weight:700; width:fit-content; margin-bottom:16px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg>Lu et compris</div>
+        <div style="border:1px solid #ECEFF4; border-radius:14px; padding:16px; margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#8A99A8; font-size:13px;">Fournisseur</span><b style="font-size:13.5px;">Leroy Merlin</b></div>
+          <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#8A99A8; font-size:13px;">Montant TTC</span><b style="font-size:13.5px; font-variant-numeric:tabular-nums;">184,90 €</b></div>
+          <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid #F1F4F7;"><span style="color:#8A99A8; font-size:13px;">TVA 20 %</span><b style="font-size:13.5px; font-variant-numeric:tabular-nums;">30,82 €</b></div>
+          <div style="display:flex; justify-content:space-between; padding:7px 0;"><span style="color:#8A99A8; font-size:13px;">Classé dans</span><b style="font-size:13.5px; color:#0E7C5A;">Achats · chantier Durand</b></div>
+        </div>
+        <button onClick="{{ scanFinish }}" style="width:100%; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:14px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Ranger et c'est plié</button>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== CATALOGUE PICKER ===================== -->
+  <sc-if value="{{ showCatalog }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:122; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.55); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:520px; max-width:94vw; max-height:84vh; overflow-y:auto; background:#fff; border-radius:24px; padding:26px; box-shadow:0 30px 70px rgba(8,18,34,.4); animation:bpwPop .26s both;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;"><h3 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px;">Catalogue</h3><button onClick="{{ closeModal }}" style="width:32px; height:32px; border-radius:50%; background:#F4F6FA; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5B6B7B" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <p style="margin:0 0 18px; color:#5B6B7B; font-size:13.5px;">Clique pour ajouter une ligne au devis.</p>
+      <sc-for list="{{ catalog }}" as="g" hint-placeholder-count="3">
+      <div style="margin-bottom:16px;">
+        <div style="display:inline-block; font-size:11px; font-weight:700; padding:4px 10px; border-radius:7px; margin-bottom:8px; background:{{ g.tintBg }}; color:{{ g.tint }};">{{ g.cat }}</div>
+        <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+        <button onClick="{{ it.pick }}" style="width:100%; display:flex; align-items:center; justify-content:space-between; background:#F7F9FC; border:none; border-radius:12px; padding:13px 15px; margin-bottom:7px; cursor:pointer; text-align:left;"><span style="font-size:14px; font-weight:500;">{{ it.name }}</span><span style="display:flex; align-items:center; gap:10px;"><b style="font-size:14px; font-variant-numeric:tabular-nums;">{{ it.price }}</b><span style="width:24px; height:24px; border-radius:7px; background:#0C2340; display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span></span></button>
+        </sc-for>
+      </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== SIGNATURE ===================== -->
+  <sc-if value="{{ showSign }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:122; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.55); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:500px; max-width:94vw; background:#fff; border-radius:24px; padding:26px; box-shadow:0 30px 70px rgba(8,18,34,.4); animation:bpwPop .26s both;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;"><h3 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px;">Signature du client</h3><button onClick="{{ closeModal }}" style="width:32px; height:32px; border-radius:50%; background:#F4F6FA; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5B6B7B" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <p style="margin:0 0 16px; color:#5B6B7B; font-size:13.5px;">Devis D-2026-014 · M. Bernard · <b style="color:#0F2235;">1 628,00 €</b></p>
+      <div style="border:2px dashed #D2DAE3; border-radius:14px; height:150px; display:flex; align-items:center; justify-content:center; margin-bottom:8px; background:#FCFCFD;">
+        <svg width="200" height="80" viewBox="0 0 200 80" fill="none"><path d="M12 56 C28 20, 40 20, 48 48 S70 70, 84 40 S104 14, 118 48 S140 64, 158 36 C168 22, 180 30, 190 44" stroke="#0C2340" stroke-width="2.5" stroke-linecap="round" fill="none"/></svg>
+      </div>
+      <div style="display:flex; align-items:center; gap:9px; margin-bottom:18px;"><span style="width:20px; height:20px; border-radius:6px; background:#0E7C5A; display:flex; align-items:center; justify-content:center;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span style="font-size:13.5px; color:#5B6B7B;">« Bon pour accord » — lu et approuvé le 28 juin 2026.</span></div>
+      <button onClick="{{ signDevis }}" style="width:100%; background:linear-gradient(135deg,#0E7C5A,#0A5C43); color:#fff; border:none; border-radius:13px; padding:14px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Signer le devis</button>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== DOC DETAIL ===================== -->
+  <sc-if value="{{ showDoc }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:122; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.55); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:480px; max-width:94vw; background:#fff; border-radius:24px; padding:26px; box-shadow:0 30px 70px rgba(8,18,34,.4); animation:bpwPop .26s both;">
+      <div style="display:flex; align-items:center; gap:13px; margin-bottom:18px;"><span style="width:46px; height:46px; border-radius:13px; background:{{ dc.tintBg }}; display:flex; align-items:center; justify-content:center;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="{{ dc.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><div style="flex:1;"><div style="font-weight:700; font-size:16px;">{{ dc.name }}</div><div style="font-size:12.5px; color:#8A99A8;">{{ dc.folder }} · {{ dc.date }}</div></div><button onClick="{{ closeModal }}" style="width:32px; height:32px; border-radius:50%; background:#F4F6FA; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5B6B7B" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div style="background:#F7F9FC; border-radius:14px; height:200px; display:flex; align-items:center; justify-content:center; margin-bottom:16px;"><svg width="54" height="54" viewBox="0 0 24 24" fill="none" stroke="#C4CDD8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg></div>
+      <sc-if value="{{ dc.hasAmount }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex; justify-content:space-between; padding:11px 14px; background:#F7F9FC; border-radius:12px; margin-bottom:16px;"><span style="color:#5B6B7B; font-size:14px;">Montant</span><b style="font-variant-numeric:tabular-nums;">{{ dc.amount }}</b></div>
+      </sc-if>
+      <div style="display:flex; gap:10px;"><button onClick="{{ toast }}" style="flex:1; background:#EFF2F6; color:#1B3A63; border:none; border-radius:12px; padding:12px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Télécharger</button><button onClick="{{ toast }}" style="flex:1; background:#0C2340; color:#fff; border:none; border-radius:12px; padding:12px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Envoyer au comptable</button></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== NOTIFICATIONS DRAWER ===================== -->
+  <sc-if value="{{ showNotifs }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:123;">
+    <div onClick="{{ closeDrawer }}" style="position:absolute; inset:0; background:rgba(8,18,34,.4); animation:bpwIn .18s both;"></div>
+    <div class="bpw-scroll" style="position:absolute; top:0; right:0; bottom:0; width:400px; max-width:92vw; background:#EFF2F7; box-shadow:-12px 0 40px rgba(8,18,34,.18); overflow-y:auto; animation:bpwSlideR .28s cubic-bezier(.2,.8,.2,1) both;">
+      <div style="position:sticky; top:0; background:rgba(239,242,247,.94); backdrop-filter:blur(8px); padding:22px 22px 12px; display:flex; align-items:center; justify-content:space-between;"><h3 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px;">Notifications</h3><button onClick="{{ closeDrawer }}" style="width:32px; height:32px; border-radius:50%; background:#fff; border:1px solid #E2E8F1; cursor:pointer; display:flex; align-items:center; justify-content:center;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5B6B7B" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+      <div style="padding:6px 18px 22px;">
+        <div style="font-size:11.5px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin:6px 4px 9px;">Aujourd'hui</div>
+        <div style="display:flex; gap:11px; background:#fff; border-radius:14px; padding:13px 14px; margin-bottom:9px; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:36px; height:36px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:13.5px;">Paiement reçu · 190 €</div><div style="font-size:12px; color:#8A99A8; margin-top:1px; line-height:1.4;">Boulangerie Lefèvre a réglé F-2026-077.</div></div><span style="font-size:11px; color:#A9B4C0;">2 h</span></div>
+        <div style="display:flex; gap:11px; background:#fff; border-radius:14px; padding:13px 14px; margin-bottom:9px; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:36px; height:36px; border-radius:10px; background:#F1EBFA; display:flex; align-items:center; justify-content:center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:13.5px;">Bob a relancé SARL Martin</div><div style="font-size:12px; color:#8A99A8; margin-top:1px; line-height:1.4;">Relance auto · ton ferme · 1 240 €.</div></div><span style="font-size:11px; color:#A9B4C0;">4 h</span></div>
+        <div style="display:flex; gap:11px; background:#fff; border-radius:14px; padding:13px 14px; margin-bottom:9px; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:36px; height:36px; border-radius:10px; background:#FBF0DF; display:flex; align-items:center; justify-content:center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C77A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:13.5px;">Devis signé · 1 628 €</div><div style="font-size:12px; color:#8A99A8; margin-top:1px; line-height:1.4;">M. Bernard a signé D-2026-014.</div></div><span style="font-size:11px; color:#A9B4C0;">9:12</span></div>
+        <div style="font-size:11.5px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin:16px 4px 9px;">Cette semaine</div>
+        <div style="display:flex; gap:11px; background:#fff; border-radius:14px; padding:13px 14px; margin-bottom:9px; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:36px; height:36px; border-radius:10px; background:#FBF0DF; display:flex; align-items:center; justify-content:center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C77A12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:13.5px;">Échéance TVA · 12 juil.</div><div style="font-size:12px; color:#8A99A8; margin-top:1px; line-height:1.4;">Bob a mis 1 240 € de côté.</div></div><span style="font-size:11px; color:#A9B4C0;">2 j</span></div>
+        <div style="display:flex; gap:11px; background:#fff; border-radius:14px; padding:13px 14px; margin-bottom:9px; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:36px; height:36px; border-radius:10px; background:#EDEAFE; display:flex; align-items:center; justify-content:center;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/></svg></span><div style="flex:1;"><div style="font-weight:600; font-size:13.5px;">Conformité 2026</div><div style="font-size:12px; color:#8A99A8; margin-top:1px; line-height:1.4;">Réception e-facture à configurer.</div></div><span style="font-size:11px; color:#A9B4C0;">5 j</span></div>
+        <button onClick="{{ notifRelances }}" style="width:100%; display:flex; align-items:center; gap:11px; text-align:left; background:#fff; border:none; border-radius:14px; padding:13px 15px; margin-top:7px; cursor:pointer; box-shadow:0 1px 2px rgba(13,38,68,.05);"><span style="flex-shrink:0; width:32px; height:32px; border-radius:9px; background:#F1EBFA; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/><path d="M3 3v5h5"/></svg></span><span style="flex:1; font-weight:600; font-size:13.5px;">Réglages des relances auto</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C4CDD8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== DIAGNOSTIC ===================== -->
+  <sc-if value="{{ showDiag }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:124; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.6); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:560px; max-width:94vw; background:#fff; border-radius:24px; padding:28px; box-shadow:0 30px 70px rgba(8,18,34,.45); animation:bpwPop .26s both;">
+      <sc-if value="{{ diagIntro }}" hint-placeholder-val="{{ true }}">
+      <div style="text-align:center; padding:8px 0;">
+        <div style="width:64px; height:64px; border-radius:18px; background:#EDEAFE; display:flex; align-items:center; justify-content:center; margin:0 auto 18px;"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h3 style="margin:0 0 8px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:23px;">Es-tu prêt pour 2026 ?</h3>
+        <p style="margin:0 auto 22px; color:#5B6B7B; font-size:14.5px; line-height:1.55; max-width:400px;">3 questions, 1 minute. Bob calcule ton score de conformité à la facturation électronique et te dit quoi faire.</p>
+        <button onClick="{{ diagStartBtn }}" style="background:linear-gradient(135deg,#4F46E5,#4338CA); color:#fff; border:none; border-radius:13px; padding:14px 30px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Lancer le diagnostic</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ diagQ }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="height:6px; border-radius:3px; background:#EDF1F6; overflow:hidden; margin-bottom:20px;"><div style="height:100%; border-radius:3px; background:#4338CA; width:{{ diagProgressW }}; transition:width .3s;"></div></div>
+        <div style="font-size:12px; font-weight:700; color:#4338CA; margin-bottom:8px;">Question {{ diagQNum }} / 3</div>
+        <h3 style="margin:0 0 18px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px;">Tes clients sont-ils plutôt des entreprises ou des particuliers ?</h3>
+        <button onClick="{{ diagNextBtn }}" style="width:100%; text-align:left; background:#F7F9FC; border:1.5px solid #ECEFF4; border-radius:13px; padding:15px; margin-bottom:10px; cursor:pointer; font-size:14.5px; font-weight:600; font-family:'Hanken Grotesk';">Surtout des entreprises (B2B)</button>
+        <button onClick="{{ diagNextBtn }}" style="width:100%; text-align:left; background:#F7F9FC; border:1.5px solid #ECEFF4; border-radius:13px; padding:15px; margin-bottom:10px; cursor:pointer; font-size:14.5px; font-weight:600; font-family:'Hanken Grotesk';">Surtout des particuliers (B2C)</button>
+        <button onClick="{{ diagNextBtn }}" style="width:100%; text-align:left; background:#F7F9FC; border:1.5px solid #ECEFF4; border-radius:13px; padding:15px; cursor:pointer; font-size:14.5px; font-weight:600; font-family:'Hanken Grotesk';">Un mix des deux</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ diagResult }}" hint-placeholder-val="{{ false }}">
+      <div style="text-align:center; padding:4px 0;">
+        <div style="position:relative; width:140px; height:140px; margin:0 auto 18px;">
+          <svg width="140" height="140" viewBox="0 0 140 140" style="transform:rotate(-90deg);"><circle cx="70" cy="70" r="60" fill="none" stroke="#EDF1F6" stroke-width="12"/><circle cx="70" cy="70" r="60" fill="none" stroke="#C77A12" stroke-width="12" stroke-linecap="round" stroke-dasharray="377" stroke-dashoffset="{{ diagRingOffset }}"/></svg>
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;"><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:38px; color:#C77A12;">{{ diagScore }}</span><span style="font-size:12px; color:#8A99A8;">sur 100</span></div>
+        </div>
+        <h3 style="margin:0 0 8px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:21px;">Tu y es presque</h3>
+        <p style="margin:0 auto 22px; color:#5B6B7B; font-size:14px; line-height:1.55; max-width:400px;">Le plus urgent : choisir ta plateforme de réception (PDP) avant le 1ᵉʳ septembre 2026. Bob s'en occupe avec toi.</p>
+        <div style="display:flex; gap:10px;"><button onClick="{{ closeModal }}" style="flex:1; background:#EFF2F6; color:#1B3A63; border:none; border-radius:13px; padding:14px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Plus tard</button><button onClick="{{ closeModal }}" style="flex:1; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:14px; font-size:14.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Configurer ma PDP</button></div>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== PAYWALL ===================== -->
+  <sc-if value="{{ showPaywall }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:124; display:flex; align-items:center; justify-content:center; padding:24px;">
+    <div onClick="{{ closeModal }}" style="position:absolute; inset:0; background:rgba(8,18,34,.6); backdrop-filter:blur(3px); animation:bpwIn .18s both;"></div>
+    <div style="position:relative; width:480px; max-width:94vw; background:#fff; border-radius:24px; overflow:hidden; box-shadow:0 30px 70px rgba(8,18,34,.45); animation:bpwPop .26s both;">
+      <div style="position:relative; overflow:hidden; background:linear-gradient(150deg,#0C2340,#163763); padding:28px; text-align:center;">
+        <div style="position:absolute; top:-40px; right:-30px; width:160px; height:160px; border-radius:50%; background:radial-gradient(circle, rgba(110,231,183,.35), rgba(110,231,183,0) 70%);"></div>
+        <div style="position:relative;"><div style="display:inline-block; background:rgba(110,231,183,.16); border:1px solid rgba(110,231,183,.3); color:#6EE7B7; font-size:11px; font-weight:700; padding:4px 12px; border-radius:9px; margin-bottom:12px;">BUSINESS</div><div style="color:#fff; font-family:'Schibsted Grotesk'; font-weight:800; font-size:28px;">Passe à la vitesse sup'</div><div style="color:rgba(255,255,255,.7); font-size:14px; margin-top:6px;">79 €/mois · annule quand tu veux</div></div>
+      </div>
+      <div style="padding:24px;">
+        <div style="display:flex; align-items:center; gap:11px; padding:9px 0;"><span style="width:24px; height:24px; border-radius:7px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span style="font-size:14.5px;">Équipe &amp; rôles (compta, salariés)</span></div>
+        <div style="display:flex; align-items:center; gap:11px; padding:9px 0;"><span style="width:24px; height:24px; border-radius:7px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span style="font-size:14.5px;">Plusieurs comptes bancaires</span></div>
+        <div style="display:flex; align-items:center; gap:11px; padding:9px 0;"><span style="width:24px; height:24px; border-radius:7px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><span style="font-size:14.5px;">Conformité avancée &amp; export FEC</span></div>
+        <button onClick="{{ upgradeBusiness }}" style="margin-top:18px; width:100%; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:15px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Passer à Business</button>
+        <button onClick="{{ closeModal }}" style="margin-top:9px; width:100%; background:none; color:#8A99A8; border:none; padding:6px; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">Plus tard</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== AUTH (fullscreen) ===================== -->
+  <sc-if value="{{ showAuth }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:130; display:flex; background:#fff;">
+    <div class="bpw-side-extra" style="flex:1; min-width:0; background:linear-gradient(160deg,#0C2340 0%,#122E52 60%,#163763 100%); padding:52px 48px; display:flex; flex-direction:column; justify-content:space-between; position:relative; overflow:hidden;">
+      <div style="position:absolute; top:-70px; right:-50px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle, rgba(67,56,202,.5), rgba(67,56,202,0) 70%);"></div>
+      <div style="position:relative; display:flex; align-items:center; gap:12px;"><span style="width:42px; height:42px; border-radius:12px; background:#fff; display:flex; align-items:center; justify-content:center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5 11 11l-1.5 3.5L13 13z"/></svg></span><span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; color:#fff;">Bob Pro</span></div>
+      <div style="position:relative;"><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:34px; line-height:1.15; color:#fff; letter-spacing:-.5px;">Ton bureau pro,<br>dans la poche.</div><p style="color:rgba(255,255,255,.66); font-size:16px; line-height:1.6; margin:16px 0 0; max-width:420px;">Devis, factures, paiements, documents, trésorerie et conformité 2026 — pilotés par Bob.</p></div>
+      <div style="position:relative; display:flex; align-items:center; gap:12px; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:16px;"><span style="width:40px; height:40px; border-radius:11px; background:linear-gradient(135deg,#F59E0B,#D97706); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-family:'Schibsted Grotesk';">SP</span><div><div style="color:#fff; font-size:13.5px; line-height:1.5;">« J'ai arrêté de bosser mes devis le soir. Bob le fait en parlant. »</div><div style="color:rgba(255,255,255,.5); font-size:12px; margin-top:4px;">Sophie P. · plombière</div></div></div>
+    </div>
+    <div style="width:480px; max-width:100%; padding:52px 44px; display:flex; flex-direction:column; justify-content:center;">
+      <h2 style="margin:0 0 4px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:26px;">{{ authTitle }}</h2>
+      <p style="margin:0 0 24px; color:#5B6B7B; font-size:14.5px;">{{ authSub }}</p>
+      <div style="display:flex; gap:10px; margin-bottom:18px;">
+        <button onClick="{{ ssoToast }}" style="flex:1; display:flex; align-items:center; justify-content:center; gap:9px; background:#fff; border:1px solid #E2E8F1; border-radius:12px; padding:12px; font-size:14px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.9a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-1.9 3.2-4.8 3.2-7.9z"/><path fill="#34A853" d="M12 23c2.9 0 5.4-1 7.2-2.6l-3.6-2.7c-1 .7-2.3 1.1-3.6 1.1-2.8 0-5.1-1.9-6-4.4H2.3v2.8A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M6 14.3a6.6 6.6 0 0 1 0-4.2V7.3H2.3a11 11 0 0 0 0 9.8z"/><path fill="#EA4335" d="M12 5.4c1.6 0 3 .5 4.1 1.6l3.1-3.1A11 11 0 0 0 2.3 7.3L6 10.1c.9-2.6 3.2-4.7 6-4.7z"/></svg>Google</button>
+        <button onClick="{{ ssoToast }}" style="flex:1; display:flex; align-items:center; justify-content:center; gap:9px; background:#fff; border:1px solid #E2E8F1; border-radius:12px; padding:12px; font-size:14px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="17" height="17" viewBox="0 0 24 24" fill="#0F2235"><path d="M16.4 12.7c0-2 1.6-3 1.7-3-1-1.3-2.4-1.5-2.9-1.5-1.2-.1-2.4.7-3 .7s-1.6-.7-2.6-.7c-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7.9 1.4 2 2.5 1.9 1-.04 1.4-.6 2.6-.6s1.5.6 2.6.6 1.7-.9 2.4-1.8c.7-1 1-2 1-2.1 0 0-1.9-.7-2-2.7zM14.6 6.3c.5-.7.9-1.6.8-2.6-.8 0-1.8.5-2.4 1.2-.5.6-1 1.5-.8 2.4.9.1 1.8-.4 2.4-1z"/></svg>Apple</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:18px;"><span style="flex:1; height:1px; background:#ECEFF4;"></span><span style="font-size:12px; color:#A9B4C0;">ou par email</span><span style="flex:1; height:1px; background:#ECEFF4;"></span></div>
+      <div style="border:1px solid #E2E8F1; border-radius:12px; padding:13px 15px; margin-bottom:11px; color:#A9B4C0; font-size:14.5px;">julien@mercier-plomberie.fr</div>
+      <div style="display:flex; align-items:center; justify-content:space-between; border:1px solid #E2E8F1; border-radius:12px; padding:13px 15px; margin-bottom:16px;"><span style="color:#A9B4C0; font-size:14.5px; letter-spacing:3px;">••••••••</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#A9B4C0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></div>
+      <button onClick="{{ authEnter }}" style="width:100%; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:13px; padding:15px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; box-shadow:0 8px 18px rgba(12,35,64,.2);">{{ authTitle }}</button>
+      <button onClick="{{ authEnter }}" style="margin-top:11px; width:100%; display:flex; align-items:center; justify-content:center; gap:9px; background:#F4F6FA; color:#1B3A63; border:none; border-radius:13px; padding:13px; font-size:14px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Continuer avec Face ID</button>
+      <button onClick="{{ setAuthMode }}" style="margin-top:18px; background:none; border:none; color:#4338CA; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">{{ authSwitch }}</button>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ===================== ONBOARDING (fullscreen) ===================== -->
+  <sc-if value="{{ showOnboarding }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; inset:0; z-index:131; background:linear-gradient(165deg,#0C2340 0%,#122E52 60%,#163763 100%); display:flex; align-items:center; justify-content:center; padding:32px; overflow-y:auto;">
+    <div style="width:600px; max-width:94vw; color:#fff; text-align:center;">
+      <sc-if value="{{ onb0 }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="width:80px; height:80px; border-radius:24px; background:#fff; display:flex; align-items:center; justify-content:center; margin:0 auto 24px;"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5 11 11l-1.5 3.5L13 13z"/></svg></div>
+        <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:800; font-size:32px;">Salut, moi c'est Bob 👋</h2>
+        <p style="margin:0 auto 28px; color:rgba(255,255,255,.7); font-size:16px; line-height:1.6; max-width:440px;">Je vais m'occuper de toute ta paperasse. Réponds à 2-3 questions et je configure ton bureau sur mesure.</p>
+        <button onClick="{{ onbNext }}" style="background:#fff; color:#0C2340; border:none; border-radius:14px; padding:15px 32px; font-size:16px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">C'est parti</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ onb1 }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="color:rgba(255,255,255,.5); font-size:13px; font-weight:600; margin-bottom:10px;">{{ onbStepLabel }}</div>
+        <h2 style="margin:0 0 22px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:26px;">Tu fais quoi comme métier ?</h2>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:24px;">
+          <sc-for list="{{ metiers }}" as="m" hint-placeholder-count="6">
+          <button onClick="{{ m.set }}" style="display:flex; flex-direction:column; align-items:center; gap:9px; border-radius:16px; padding:20px 12px; cursor:pointer; font-family:'Hanken Grotesk'; font-weight:600; font-size:14px; {{ m.style }}"><span style="font-size:28px;">{{ m.icon }}</span>{{ m.label }}</button>
+          </sc-for>
+        </div>
+        <sc-if value="{{ onbHasMetier }}" hint-placeholder-val="{{ true }}">
+        <button onClick="{{ onbNext }}" style="background:#fff; color:#0C2340; border:none; border-radius:14px; padding:15px 32px; font-size:16px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Continuer</button>
+        </sc-if>
+      </div>
+      </sc-if>
+      <sc-if value="{{ onb2 }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="color:rgba(255,255,255,.5); font-size:13px; font-weight:600; margin-bottom:10px;">{{ onbStepLabel }}</div>
+        <h2 style="margin:0 0 22px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:26px;">Tu factures plutôt qui ?</h2>
+        <div style="display:flex; flex-direction:column; gap:11px; max-width:420px; margin:0 auto 24px;">
+          <div style="display:flex; align-items:center; gap:13px; background:rgba(255,255,255,.07); border:1.5px solid rgba(255,255,255,.18); border-radius:14px; padding:16px; text-align:left;"><span style="font-size:22px;">🏠</span><div style="flex:1;"><div style="font-weight:600; font-size:15px;">Des particuliers</div><div style="font-size:12.5px; color:rgba(255,255,255,.55);">e-reporting · pas de e-facture obligatoire</div></div><span style="width:22px; height:22px; border-radius:7px; background:#6EE7B7; display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0A3A2B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span></div>
+          <div style="display:flex; align-items:center; gap:13px; background:rgba(255,255,255,.07); border:1.5px solid rgba(255,255,255,.18); border-radius:14px; padding:16px; text-align:left;"><span style="font-size:22px;">🏢</span><div style="flex:1;"><div style="font-weight:600; font-size:15px;">Des entreprises (B2B)</div><div style="font-size:12.5px; color:rgba(255,255,255,.55);">facture électronique requise dès 2026</div></div><span style="width:22px; height:22px; border-radius:7px; background:#6EE7B7; display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0A3A2B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span></div>
+        </div>
+        <button onClick="{{ onbNext }}" style="background:#fff; color:#0C2340; border:none; border-radius:14px; padding:15px 32px; font-size:16px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Continuer</button>
+      </div>
+      </sc-if>
+      <sc-if value="{{ onb3 }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="width:78px; height:78px; border-radius:50%; background:#6EE7B7; display:flex; align-items:center; justify-content:center; margin:0 auto 22px;"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#0A3A2B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></div>
+        <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:800; font-size:30px;">Ton bureau est prêt</h2>
+        <p style="margin:0 auto 28px; color:rgba(255,255,255,.7); font-size:16px; line-height:1.6; max-width:440px;">J'ai configuré tes mentions, ta TVA et ton catalogue. Tu n'as plus qu'à facturer — je gère le reste.</p>
+        <button onClick="{{ onbFinish }}" style="background:#fff; color:#0C2340; border:none; border-radius:14px; padding:15px 36px; font-size:16px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Entrer dans Bob</button>
+      </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- toast -->
+  <sc-if value="{{ toastMsg }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed; bottom:26px; left:50%; transform:translateX(-50%); background:#0C2340; color:#fff; padding:13px 20px; border-radius:13px; font-size:14px; font-weight:600; box-shadow:0 12px 30px rgba(12,35,64,.3); z-index:200; animation:bpwFade .2s both;">{{ toastMsg }}</div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1440, &quot;height&quot;: 900}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'today', clientId: 'martin', toastMsg: null,
+    modal: null, drawer: null, full: null,
+    settingsTab: 'facturation',
+    voiceStep: 0, tLen: 0, tReady: false,
+    scanStep: 0,
+    devisLines: [
+      { label: 'Chauffe-eau 200 L', cat: 'Fourniture', qty: 1, price: 890 },
+      { label: 'Main-d’œuvre pose', cat: 'Main d’œuvre', qty: 1, price: 420 },
+      { label: 'Déplacement & mise en service', cat: 'Déplacement', qty: 1, price: 90 },
+      { label: 'Évacuation ancien matériel', cat: 'Forfait', qty: 1, price: 80 },
+    ],
+    devisAcompte: true, devisSigned: false,
+    diagStep: 0, diagScore: 0,
+    authStep: 0, authMode: 'login',
+    onbStep: 0, onbMetier: null,
+    billRegime: 'reel', billAccent: 0, billDecennale: true,
+    relAuto: true, cad: { j7: true, j15: true, j30: true, med: false },
+    activeDoc: null,
+  };
+
+  go(screen) { this.setState({ screen, modal: null, drawer: null }); }
+  openModal(m) { this.setState({ modal: m }); }
+  closeModal() { clearInterval(this._iv); clearTimeout(this._st); this.setState({ modal: null }); }
+  closeDrawer() { this.setState({ drawer: null }); }
+  openSettings(tab) { this.setState({ screen: 'settings', settingsTab: tab || 'facturation', modal: null, drawer: null }); }
+  componentWillUnmount() { clearInterval(this._iv); clearInterval(this._sv); clearTimeout(this._st); clearTimeout(this._t); }
+
+  startVoice() { clearInterval(this._iv); this.setState({ modal: 'voice', voiceStep: 0, tLen: 0, tReady: false });
+    this._iv = setInterval(() => { this.setState(st => { const n = st.tLen + 2; if (n >= this.TRANSCRIPT.length) { clearInterval(this._iv); return { tLen: this.TRANSCRIPT.length, tReady: true }; } return { tLen: n }; }); }, 34); }
+  startScan() { clearTimeout(this._st); this.setState({ modal: 'scan', scanStep: 1 }); this._st = setTimeout(() => this.setState({ scanStep: 2 }), 1500); }
+  startDiag() { this.setState({ modal: 'diag', diagStep: 0, diagScore: 0 }); }
+  diagNext() { this.setState(st => { const ns = st.diagStep + 1; if (ns === 4) this.startScore(); return { diagStep: ns }; }); }
+  startScore() { clearInterval(this._sv); let v = 0; this.setState({ diagScore: 0 }); this._sv = setInterval(() => { v += 2; if (v >= 62) { v = 62; clearInterval(this._sv); } this.setState({ diagScore: v }); }, 24); }
+  newDevis() { this.setState({ screen: 'devis', modal: null, devisSigned: false }); }
+  removeLine(i) { this.setState(st => ({ devisLines: st.devisLines.filter((_, k) => k !== i) })); }
+  pickItem(it) { this.setState(st => ({ devisLines: [...st.devisLines, { label: it.name, cat: it.cat, qty: 1, price: it.price }], modal: null })); this.showToast('Ligne ajoutée · ' + it.name); }
+  signDevis() { this.setState({ modal: null, devisSigned: true }); this.showToast('Devis signé ✓'); }
+  transformInvoice() { this.setState({ screen: 'today', devisSigned: false }); this.showToast('Facture d’acompte 488,40 € créée'); }
+  lineTag(cat) { const m = { 'Main d’œuvre': 'background:#E6EDF6; color:#1B3A63;', 'Fourniture': 'background:#EAF2EC; color:#0E7C5A;', 'Déplacement': 'background:#FBF0DF; color:#C77A12;', 'Forfait': 'background:#EEF1F5; color:#64748B;' }; return m[cat] || 'background:#EEF1F5; color:#64748B;'; }
+  fmt(n) { return n.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' }); }
+  showToast(m) { clearTimeout(this._t); this.setState({ toastMsg: m }); this._t = setTimeout(() => this.setState({ toastMsg: null }), 2200); }
+
+  TYPE = {
+    b2c: { label: 'Particulier', badge: 'background:#FBF0DF; color:#C77A12;' },
+    b2b: { label: 'Entreprise', badge: 'background:#E6EDF6; color:#1B3A63;' },
+    b2g: { label: 'Public', badge: 'background:#EDEAFE; color:#4338CA;' },
+  };
+
+  CLIENTS = [
+    { id:'martin', initials:'SM', bg:'linear-gradient(135deg,#475569,#334155)', name:'SARL Martin Rénovation', sub:'Paie à 22 j · SIREN vérifié', type:'b2b',
+      amount:'2 480 €', amountColor:'#C8463C', siren:'821 503 642', score:62, encours:'2 480 €', encoursColor:'#C8463C', delai:'22 j', ca:'9 120 €',
+      einvLabel:'Facture électronique requise', einvDetail:'Plateforme (PDP) détectée · SIREN vérifié ✓ Tout est prêt.', einvBg:'#EAF2EC', einvColor:'#0E7C5A',
+      cta:'Relancer', action:'relance',
+      activity:[ {label:'Facture F-2026-088', date:'15 mai', note:'En retard 9 j', amount:'1 240 €', amountColor:'#C8463C', tint:'#1B3A63', tintBg:'#E6EDF6'},
+                 {label:'Facture F-2026-061', date:'2 avr.', note:'Réglée', amount:'1 240 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'},
+                 {label:'Règlement reçu', date:'12 mars', note:'Virement', amount:'2 100 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'} ] },
+    { id:'durand', initials:'MD', bg:'linear-gradient(135deg,#F59E0B,#D97706)', name:'Mme Durand', sub:'Chantier SDB · Sèvres', type:'b2c',
+      amount:'À jour', amountColor:'#0E7C5A', siren:null, score:96, encours:'0 €', encoursColor:'#0E7C5A', delai:'6 j', ca:'3 240 €',
+      einvLabel:'Vente à un particulier', einvDetail:'Pas de facture électronique : relève du e-reporting (déclaration).', einvBg:'#EEF1F5', einvColor:'#64748B',
+      cta:'Créer la facture', action:'new',
+      activity:[ {label:'Facture F-2026-104', date:'12 juin', note:'Payée', amount:'1 180 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'},
+                 {label:'Acompte reçu', date:'2 juin', note:'Carte', amount:'590 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'},
+                 {label:'Devis signé', date:'28 mai', note:'Accepté', amount:'1 770 €', amountColor:'#5B6B7B', tint:'#C77A12', tintBg:'#FBF0DF'} ] },
+    { id:'sevres', initials:'MS', bg:'linear-gradient(135deg,#1B3A63,#0C2340)', name:'Mairie de Sèvres', sub:'Chorus Pro · marché entretien', type:'b2g',
+      amount:'1 850 €', amountColor:'#C77A12', siren:'217 504 028', score:78, encours:'1 850 €', encoursColor:'#C77A12', delai:'34 j', ca:'6 400 €',
+      einvLabel:'Client public · Chorus Pro', einvDetail:'Transmission et suivi des statuts via Chorus Pro.', einvBg:'#EDEAFE', einvColor:'#4338CA',
+      cta:'Suivre sur Chorus', action:'nothing',
+      activity:[ {label:'Facture Chorus F-2026-090', date:'10 juin', note:'Transmise', amount:'1 850 €', amountColor:'#C77A12', tint:'#1B3A63', tintBg:'#E6EDF6'},
+                 {label:'Bon de commande', date:'1 juin', note:'Reçu', amount:'1 850 €', amountColor:'#5B6B7B', tint:'#C77A12', tintBg:'#FBF0DF'} ] },
+    { id:'lefevre', initials:'BL', bg:'linear-gradient(135deg,#0E7C5A,#0A5C43)', name:'Boulangerie Lefèvre', sub:'Contrat entretien annuel', type:'b2b',
+      amount:'À jour', amountColor:'#0E7C5A', siren:'402 118 553', score:99, encours:'0 €', encoursColor:'#0E7C5A', delai:'11 j', ca:'2 280 €',
+      einvLabel:'Facture électronique requise', einvDetail:'Plateforme (PDP) détectée · SIREN vérifié ✓ Tout est prêt.', einvBg:'#EAF2EC', einvColor:'#0E7C5A',
+      cta:'Programmer visite', action:'nothing',
+      activity:[ {label:'Facture F-2026-077', date:'20 mai', note:'Payée', amount:'190 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'},
+                 {label:'Facture F-2026-055', date:'20 avr.', note:'Payée', amount:'190 €', amountColor:'#0E7C5A', tint:'#0E7C5A', tintBg:'#EAF2EC'} ] },
+    { id:'bernard', initials:'PB', bg:'linear-gradient(135deg,#F59E0B,#D97706)', name:'M. Bernard', sub:'Devis chauffe-eau en attente', type:'b2c',
+      amount:'Devis', amountColor:'#C77A12', siren:null, score:88, encours:'0 €', encoursColor:'#5B6B7B', delai:'—', ca:'0 €',
+      einvLabel:'Vente à un particulier', einvDetail:'Pas de facture électronique : relève du e-reporting (déclaration).', einvBg:'#EEF1F5', einvColor:'#64748B',
+      cta:'Voir le devis', action:'new',
+      activity:[ {label:'Devis chauffe-eau 200 L', date:'24 juin', note:'En attente', amount:'1 628 €', amountColor:'#C77A12', tint:'#C77A12', tintBg:'#FBF0DF'} ] },
+    { id:'camping', initials:'CP', bg:'linear-gradient(135deg,#4338CA,#3730A3)', name:'Camping Les Pins', sub:'Facturation élec. à configurer', type:'b2b',
+      amount:'0 €', amountColor:'#5B6B7B', siren:'789 220 117', score:50, encours:'0 €', encoursColor:'#5B6B7B', delai:'—', ca:'0 €',
+      einvLabel:'Facturation élec. à configurer', einvDetail:"La plateforme de ce client est inconnue — Bob s'en occupe avant septembre.", einvBg:'#FBF0DF', einvColor:'#C77A12',
+      cta:'Configurer', action:'nothing',
+      activity:[ {label:'Fiche client créée', date:'26 juin', note:'Nouveau', amount:'—', amountColor:'#A9B4C0', tint:'#64748B', tintBg:'#EEF1F5'} ] },
+  ];
+
+  FOLDERS = [
+    { name:'Chantiers', count:'38 documents', tint:'#1B3A63', tintBg:'#E6EDF6' },
+    { name:'Achats', count:'24 factures', tint:'#0E7C5A', tintBg:'#EAF2EC' },
+    { name:'Assurances', count:'4 contrats', tint:'#C77A12', tintBg:'#FBF0DF' },
+    { name:'Fiscal & social', count:'9 documents', tint:'#6D28D9', tintBg:'#F1EBFA' },
+    { name:'Banque', count:'52 relevés', tint:'#1B3A63', tintBg:'#E6EDF6' },
+    { name:'Comptable', count:'12 exports', tint:'#0E7C5A', tintBg:'#EAF2EC' },
+  ];
+
+  RECENT = [
+    { name:'Reçu Leroy Merlin', folder:'Achats', date:'27 juin', amount:'184,90 €', tint:'#C77A12', tintBg:'#FBF0DF' },
+    { name:'Facture finale Durand', folder:'Chantiers', date:'15 juin', amount:'1 180 €', tint:'#1B3A63', tintBg:'#E6EDF6' },
+    { name:'Attestation décennale', folder:'Assurances', date:'20 juin', amount:'—', tint:'#C77A12', tintBg:'#FBF0DF' },
+    { name:'Export comptable juin', folder:'Comptable', date:'30 juin', amount:'—', tint:'#0E7C5A', tintBg:'#EAF2EC' },
+  ];
+
+  scoreColor(v) { return v >= 85 ? '#0E7C5A' : v >= 65 ? '#C77A12' : '#C8463C'; }
+  scoreLabel(v) { return v >= 85 ? 'Bon payeur' : v >= 65 ? 'Payeur correct' : 'À surveiller'; }
+
+  TRANSCRIPT = "Facture pour Mme Durand — remplacement du mitigeur de cuisine. Main-d'œuvre 1h30, matériel 85 €. Total 245 € TTC, paiement par carte.";
+  CATALOGUE = [
+    { cat:'Main d’œuvre', tint:'#1B3A63', tintBg:'#E6EDF6', items:[ {name:'Heure de main-d’œuvre', price:60}, {name:'Journée chantier', price:420}, {name:'Forfait déplacement', price:45} ] },
+    { cat:'Fourniture', tint:'#0E7C5A', tintBg:'#EAF2EC', items:[ {name:'Mitigeur cuisine', price:85}, {name:'Chauffe-eau 200 L', price:890}, {name:'WC suspendu complet', price:320} ] },
+    { cat:'Forfait', tint:'#C77A12', tintBg:'#FBF0DF', items:[ {name:'Recherche de fuite', price:150}, {name:'Débouchage canalisation', price:120}, {name:'Mise en service', price:90} ] },
+  ];
+  METIERS = [ {id:'plombier',icon:'🔧',label:'Plombier'},{id:'electricien',icon:'⚡',label:'Électricien'},{id:'macon',icon:'🧱',label:'Maçon'},{id:'peintre',icon:'🎨',label:'Peintre'},{id:'paysagiste',icon:'🌿',label:'Paysagiste'},{id:'consultant',icon:'💼',label:'Consultant'} ];
+  TEAM = [ {initials:'JM',name:'Julien Mercier',role:'Propriétaire',bg:'linear-gradient(135deg,#3B82F6,#4338CA)',roleBg:'background:#E6EDF6; color:#1B3A63;'},{initials:'CL',name:'Camille Lefort',role:'Compta (lecture)',bg:'linear-gradient(135deg,#0E7C5A,#0A5C43)',roleBg:'background:#EAF2EC; color:#0E7C5A;'},{initials:'EC',name:'Expert-comptable',role:'Invité · export',bg:'linear-gradient(135deg,#64748B,#475569)',roleBg:'background:#EEF1F5; color:#64748B;'} ];
+
+  renderVals() {
+    const s = this.state;
+    const NAV_ON = 'background:#fff; color:#0C2340;';
+    const NAV_OFF = 'background:transparent; color:rgba(255,255,255,.72);';
+    const titles = {
+      settings: ['Réglages', 'Ton entreprise, ta facturation, ton équipe.'],
+      devis: ['Nouveau devis', 'Compose, prévisualise, envoie pour signature.'],
+      today: ['Aujourd\u2019hui', 'Lundi 28 juin \u2014 voici ta journée, Julien.'],
+      clients: ['Clients', 'Ton carnet \u00b7 6 clients actifs'],
+      money: ['Argent', 'Le vrai état des comptes, sans te mentir.'],
+      documents: ['Documents', 'Ton coffre-fort \u00b7 Bob classe, tu retrouves.'],
+      assistant: ['Assistant', 'Bob \u2014 ton copilote qui agit.'],
+    };
+    const t = titles[s.screen] || titles.today;
+
+    const clientList = this.CLIENTS.map(c => ({
+      initials: c.initials, bg: c.bg, name: c.name, sub: c.sub, amount: c.amount, amountColor: c.amountColor,
+      rowStyle: c.id === s.clientId ? 'background:#F4F6FA; box-shadow:inset 0 0 0 1.5px #0C2340;' : 'background:transparent;',
+      select: () => this.setState({ clientId: c.id }),
+    }));
+
+    const found = this.CLIENTS.find(c => c.id === s.clientId) || this.CLIENTS[0];
+    const ty = this.TYPE[found.type];
+    const actionFn = () => {
+      if (found.action === 'relance') { this.go('assistant'); }
+      else { this.showToast(found.cta + ' \u2014 ' + found.name); }
+    };
+    const ac = {
+      initials: found.initials, bg: found.bg, name: found.name, typeLabel: ty.label, badgeStyle: ty.badge,
+      sirenLine: found.siren ? ('SIREN ' + found.siren) : 'Particulier \u00b7 sans SIREN',
+      encours: found.encours, encoursColor: found.encoursColor, delai: found.delai, ca: found.ca,
+      score: found.score, scoreColor: this.scoreColor(found.score), scoreLabel: this.scoreLabel(found.score), scoreW: found.score + '%',
+      einvLabel: found.einvLabel, einvDetail: found.einvDetail, einvBg: found.einvBg, einvColor: found.einvColor,
+      cta: found.cta, action: actionFn, activity: found.activity,
+    };
+
+    const catalog = this.CATALOGUE.map(g => ({ cat: g.cat, tint: g.tint, tintBg: g.tintBg,
+      items: g.items.map(it => ({ name: it.name, price: this.fmt(it.price), pick: () => this.pickItem({ name: it.name, cat: g.cat, price: it.price }) })) }));
+    const dl = s.devisLines;
+    const dlines = dl.map((l, i) => ({ label: l.label, cat: l.cat, unit: this.fmt(l.price), total: this.fmt(l.qty * l.price), tagStyle: this.lineTag(l.cat), remove: () => this.removeLine(i) }));
+    const ht = dl.reduce((a, l) => a + l.qty * l.price, 0); const tva = ht * 0.10; const ttc = ht + tva; const acompte = ttc * 0.3;
+    const cadSteps = [ { key:'j7', when:'J+7', tone:'Cordial', desc:'Rappel sympa + lien de paiement', on:s.cad.j7 },
+      { key:'j15', when:'J+15', tone:'Neutre', desc:'Relance polie, demande de date', on:s.cad.j15 },
+      { key:'j30', when:'J+30', tone:'Ferme', desc:'Dernier rappel avant procédure', on:s.cad.j30 },
+      { key:'med', when:'J+45', tone:'Mise en demeure', desc:'Bob te demande toujours avant', on:s.cad.med } ]
+      .map(cs => ({ when:cs.when, tone:cs.tone, desc:cs.desc, track: cs.on?'background:#0E7C5A;':'background:#D6DEE6;', knob: cs.on?'transform:translateX(18px);':'transform:translateX(0);', toggle:()=>this.setState(p=>({ cad:{ ...p.cad, [cs.key]:!p.cad[cs.key] } })) }));
+    const ACCENTS = ['#0C2340','#0E5A43','#36404E','#4338CA'];
+    const accents = ACCENTS.map((c, i) => ({ color: c, ring: i === s.billAccent ? 'box-shadow:0 0 0 2px #fff, 0 0 0 4px ' + c + ';' : '', set: () => this.setState({ billAccent: i }) }));
+    const billAccentColor = ACCENTS[s.billAccent];
+    const billMention = s.billRegime === 'reel' ? 'TVA FR47 853 109 274 · TVA sur les débits' : 'TVA non applicable, art. 293 B du CGI';
+    const metiers = this.METIERS.map(m => ({ icon: m.icon, label: m.label, set: () => this.setState({ onbMetier: m.id }), style: s.onbMetier === m.id ? 'background:rgba(124,108,246,.22); border:1.5px solid #7C6CF6; color:#fff;' : 'background:rgba(255,255,255,.06); border:1.5px solid rgba(255,255,255,.12); color:#fff;' }));
+    const stab = (k) => s.settingsTab === k ? 'background:#0C2340; color:#fff;' : 'background:transparent; color:#5B6B7B;';
+    const adoc = s.activeDoc || {};
+    const dc = { name: adoc.name || '', folder: adoc.folder || '', date: adoc.date || '', amount: adoc.amount || '', hasAmount: !!(adoc.amount && adoc.amount !== '—'), tint: adoc.tint || '#64748B', tintBg: adoc.tintBg || '#EEF1F5' };
+    const recentDocs = this.RECENT.map(d => ({ ...d, open: () => this.setState({ modal: 'doc', activeDoc: d }) }));
+    const tShown = this.TRANSCRIPT.slice(0, s.tLen);
+
+    return {
+      pageTitle: t[0], pageSub: t[1],
+      isToday: s.screen === 'today', isClients: s.screen === 'clients', isMoney: s.screen === 'money',
+      isDocuments: s.screen === 'documents', isAssistant: s.screen === 'assistant',
+      isSettings: s.screen === 'settings', isDevis: s.screen === 'devis',
+      navToday: s.screen === 'today' ? NAV_ON : NAV_OFF,
+      navClients: s.screen === 'clients' ? NAV_ON : NAV_OFF,
+      navMoney: s.screen === 'money' ? NAV_ON : NAV_OFF,
+      navDocuments: s.screen === 'documents' ? NAV_ON : NAV_OFF,
+      navAssistant: s.screen === 'assistant' ? NAV_ON : NAV_OFF,
+      navSettings: s.screen === 'settings' ? NAV_ON : NAV_OFF,
+      goToday: () => this.go('today'), goClients: () => this.go('clients'), goMoney: () => this.go('money'),
+      goDocuments: () => this.go('documents'), goAssistant: () => this.go('assistant'),
+      goSettings: () => this.openSettings('facturation'),
+      goNew: () => this.showToast('Nouveau \u2014 devis, facture ou scan'),
+      toast: () => this.showToast('Action \u2014 démo'),
+      clientList, ac,
+      folders: this.FOLDERS, recentDocs,
+      toastMsg: s.toastMsg,
+
+      openCreate: () => this.openModal('create'),
+      showCreate: s.modal === 'create', closeModal: () => this.closeModal(),
+      cmDevis: () => this.newDevis(), cmVoice: () => this.startVoice(), cmScan: () => this.startScan(),
+      cmEncaisser: () => { this.closeModal(); this.showToast('Encaissement — démo'); },
+      showVoice: s.modal === 'voice',
+      voiceListening: s.modal === 'voice' && s.voiceStep === 0,
+      voiceReview: s.modal === 'voice' && s.voiceStep === 1,
+      voiceDone: s.modal === 'voice' && s.voiceStep === 2,
+      voiceTranscript: tShown, voiceCaret: s.tReady ? '' : '▍',
+      voiceReadyLabel: s.tReady ? "C'est tout bon" : 'J’écoute…',
+      voiceToReview: () => this.setState({ voiceStep: 1 }),
+      voiceEncaisser: () => this.setState({ voiceStep: 2 }),
+      voiceFinish: () => { this.closeModal(); this.showToast('Payé · 245 € encaissés'); },
+      showScan: s.modal === 'scan', scanScanning: s.modal === 'scan' && s.scanStep === 1, scanDone: s.modal === 'scan' && s.scanStep === 2,
+      scanFinish: () => { this.closeModal(); this.showToast('Rangé dans Achats · TVA extraite'); },
+      dlines, devHt: this.fmt(ht), devTva: this.fmt(tva), devTtc: this.fmt(ttc), devAcompte: this.fmt(acompte),
+      devAcompteOn: s.devisAcompte, toggleAcompte: () => this.setState(st => ({ devisAcompte: !st.devisAcompte })),
+      devAccTrack: s.devisAcompte ? 'background:#0E7C5A;' : 'background:#D6DEE6;', devAccKnob: s.devisAcompte ? 'transform:translateX(18px);' : 'transform:translateX(0);',
+      openCatalog: () => this.openModal('catalog'), sendSign: () => this.openModal('sign'),
+      devisSigned: s.devisSigned, devisNotSigned: !s.devisSigned, transformInvoice: () => this.transformInvoice(),
+      backFromDevis: () => this.setState({ screen: 'today' }),
+      showCatalog: s.modal === 'catalog', catalog,
+      showSign: s.modal === 'sign', signDevis: () => this.signDevis(),
+      showDoc: s.modal === 'doc', dc,
+      showNotifs: s.drawer === 'notifs', openNotifs: () => this.setState({ drawer: 'notifs' }), closeDrawer: () => this.closeDrawer(),
+      notifRelances: () => this.openSettings('relances'),
+      openDiag: () => this.startDiag(),
+      showDiag: s.modal === 'diag', diagIntro: s.modal === 'diag' && s.diagStep === 0,
+      diagQ: s.modal === 'diag' && s.diagStep >= 1 && s.diagStep <= 3, diagResult: s.modal === 'diag' && s.diagStep === 4,
+      diagQNum: s.diagStep, diagProgressW: (Math.min(s.diagStep, 3) / 3 * 100) + '%',
+      diagStartBtn: () => this.setState({ diagStep: 1 }), diagNextBtn: () => this.diagNext(),
+      diagScore: s.diagScore, diagRingOffset: (377 * (1 - s.diagScore / 100)).toFixed(1),
+      showPaywall: s.modal === 'paywall', openPaywall: () => this.openModal('paywall'),
+      upgradeBusiness: () => { this.closeModal(); this.showToast('Bienvenue sur Business 🚀'); },
+      stabFact: stab('facturation'), stabCat: stab('catalogue'), stabRel: stab('relances'), stabCompte: stab('compte'), stabAbo: stab('abo'), stabEquipe: stab('equipe'),
+      setTabFact: () => this.setState({ settingsTab: 'facturation' }), setTabCat: () => this.setState({ settingsTab: 'catalogue' }),
+      setTabRel: () => this.setState({ settingsTab: 'relances' }), setTabCompte: () => this.setState({ settingsTab: 'compte' }),
+      setTabAbo: () => this.setState({ settingsTab: 'abo' }), setTabEquipe: () => this.setState({ settingsTab: 'equipe' }),
+      tabFact: s.settingsTab === 'facturation', tabCat: s.settingsTab === 'catalogue', tabRel: s.settingsTab === 'relances',
+      tabCompte: s.settingsTab === 'compte', tabAbo: s.settingsTab === 'abo', tabEquipe: s.settingsTab === 'equipe',
+      accents, billAccentColor, billMention,
+      billReel: s.billRegime === 'reel', billFranchise: s.billRegime === 'franchise',
+      setReel: () => this.setState({ billRegime: 'reel' }), setFranchise: () => this.setState({ billRegime: 'franchise' }),
+      regReelStyle: s.billRegime === 'reel' ? 'background:#0C2340; color:#fff;' : 'background:#fff; color:#5B6B7B; border:1px solid #E2E8F1;',
+      regFranchiseStyle: s.billRegime === 'franchise' ? 'background:#0C2340; color:#fff;' : 'background:#fff; color:#5B6B7B; border:1px solid #E2E8F1;',
+      billDecennale: s.billDecennale, toggleDecennale: () => this.setState(st => ({ billDecennale: !st.billDecennale })),
+      decTrack: s.billDecennale ? 'background:#0E7C5A;' : 'background:#D6DEE6;', decKnob: s.billDecennale ? 'transform:translateX(18px);' : 'transform:translateX(0);',
+      cadSteps, catalogManage: catalog, team: this.TEAM,
+      relAuto: s.relAuto, toggleRelAuto: () => this.setState(st => ({ relAuto: !st.relAuto })),
+      relAutoTrack: s.relAuto ? 'background:#0E7C5A;' : 'background:#D6DEE6;', relAutoKnob: s.relAuto ? 'transform:translateX(18px);' : 'transform:translateX(0);',
+      logout: () => this.setState({ full: 'auth', authStep: 0 }),
+      showAuth: s.full === 'auth',
+      authIsLogin: s.authMode !== 'signup', authIsSignup: s.authMode === 'signup',
+      authTitle: s.authMode === 'signup' ? 'Crée ton compte' : 'Bon retour 👋',
+      authSub: s.authMode === 'signup' ? 'Ton bureau pro, prêt en 2 minutes.' : 'Connecte-toi pour reprendre où tu en étais.',
+      authSwitch: s.authMode === 'signup' ? 'Déjà un compte ? Se connecter' : 'Pas encore de compte ? Créer',
+      setAuthMode: () => this.setState({ authMode: s.authMode === 'signup' ? 'login' : 'signup' }),
+      authEnter: () => this.setState({ full: null, screen: 'today' }), ssoToast: () => this.showToast('Connexion — démo'),
+      showOnboarding: s.full === 'onboarding', replayOnboarding: () => this.setState({ full: 'onboarding', onbStep: 0, onbMetier: null }),
+      onb0: s.full === 'onboarding' && s.onbStep === 0, onb1: s.full === 'onboarding' && s.onbStep === 1,
+      onb2: s.full === 'onboarding' && s.onbStep === 2, onb3: s.full === 'onboarding' && s.onbStep === 3,
+      onbStepLabel: s.onbStep === 0 ? '' : (s.onbStep + ' / 3'),
+      onbNext: () => this.setState(st => ({ onbStep: st.onbStep + 1 })), onbHasMetier: !!s.onbMetier, metiers,
+      onbFinish: () => this.setState({ full: null, screen: 'today' }),
+    };
+  }
+}
+</script>
+</body>
+</html>

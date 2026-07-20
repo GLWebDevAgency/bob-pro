@@ -1,4 +1,10 @@
-import { frenchVatNumber, nafToTrade, type CompanyLookupPort, type CompanyLookupResult } from '@bob/core';
+import {
+  frenchVatNumber,
+  nafToTrade,
+  natureJuridiqueToLegalForm,
+  type CompanyLookupPort,
+  type CompanyLookupResult,
+} from '@bob/core';
 
 /** Erreur de dépendance amont (API indisponible/throttlée) — distincte d'un « non trouvé » (null). */
 export class CompanyLookupUnavailableError extends Error {
@@ -37,6 +43,19 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
       throw new Error(`RECHERCHE_ENTREPRISES_URL invalide: ${this.baseUrl}`);
     }
     if (u.protocol !== 'https:') throw new Error(`RECHERCHE_ENTREPRISES_URL doit être en https: ${this.baseUrl}`);
+  }
+
+  /** #6 : le même endpoint /search accepte un SIREN — on confirme l'existence sans bloquer. */
+  async verifySiren(siren: string): Promise<boolean | null> {
+    const v = siren.replace(/\s/g, '');
+    if (!/^\d{9}$/.test(v)) return false;
+    try {
+      const result = await this.lookupBySiret(v);
+      if (result === null) return false;
+      return result.siren === v || result.siret.startsWith(v);
+    } catch {
+      return null; // annuaire indisponible : on ne décide rien (le SIREN Luhn-valide reste)
+    }
   }
 
   async lookupBySiret(siret: string): Promise<CompanyLookupResult | null> {
@@ -80,19 +99,41 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
     if (!r) return null; // 200 + 0 résultat = réellement introuvable
 
     const siege = r.siege ?? {};
+    const officialSiren = r.siren?.replace(/\s/gu, '') ?? '';
+    const officialSiret = siege.siret?.replace(/\s/gu, '') ?? '';
+    const exactIdentity = v.length === 9 ? officialSiren === v : officialSiret === v;
+    if (!exactIdentity) return null;
+    if (!/^\d{9}$/u.test(officialSiren) || !/^\d{14}$/u.test(officialSiret)) {
+      throw new CompanyLookupUnavailableError('Réponse amont incomplète : identité officielle absente.');
+    }
+    const denomination = (r.nom_complet ?? r.nom_raison_sociale ?? '').trim();
+    if (!denomination) {
+      throw new CompanyLookupUnavailableError('Réponse amont incomplète : raison sociale absente.');
+    }
     const naf = r.activite_principale ?? null;
     const line1 =
       [siege.numero_voie, siege.type_voie, siege.libelle_voie].filter(Boolean).join(' ').trim() || (siege.adresse ?? '');
     const address =
       siege.code_postal && siege.libelle_commune ? { line1, zip: siege.code_postal, city: siege.libelle_commune } : null;
-    const siren = r.siren ?? v.slice(0, 9);
+    const siren = officialSiren;
     const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
+    // Fiche société COMPLÈTE (C24b) : nature_juridique (code INSEE, ex. 5710) + date_creation
+    // (ISO) sont renvoyés par l'API réelle — on les remonte, mappés prudemment (code inconnu →
+    // null, l'utilisateur choisit). PAS de dirigeants : minimisation RGPD, inutile pour facturer.
+    const natureJuridique = typeof r.nature_juridique === 'string' && r.nature_juridique ? r.nature_juridique : null;
+    const dateCreation =
+      typeof r.date_creation === 'string' && /^\d{4}-\d{2}-\d{2}/.test(r.date_creation)
+        ? r.date_creation.slice(0, 10)
+        : null;
     const result: CompanyLookupResult = {
       siren,
-      siret: siege.siret ?? v,
-      denomination: r.nom_complet ?? r.nom_raison_sociale ?? `Entreprise ${siren}`,
+      siret: officialSiret,
+      denomination,
       nafApe: naf,
       trade: nafToTrade(naf),
+      natureJuridiqueCode: natureJuridique,
+      legalForm: natureJuridiqueToLegalForm(natureJuridique),
+      dateCreation,
       address,
       tvaIntracom: tva ?? (/^\d{9}$/.test(siren) ? frenchVatNumber(siren) : null),
       rge: Boolean(r.complements?.est_rge),
@@ -115,6 +156,8 @@ interface RechercheEntreprisesResponse {
     nom_complet?: string;
     nom_raison_sociale?: string;
     activite_principale?: string;
+    nature_juridique?: string;
+    date_creation?: string;
     tva?: string[] | string | null;
     complements?: { est_rge?: boolean };
     siege?: {

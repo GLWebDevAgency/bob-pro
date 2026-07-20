@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmitOnError": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "paths": {}
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts",
+    "src/**/*.testing.ts",
+    "src/persistence/in-memory.ts",
+    "src/persistence/sales-document-search.in-memory.ts",
+    "src/cabinet/memory-cabinet-infrastructure.ts",
+    "src/voice/realtime/evaluation/**"
+  ]
+}

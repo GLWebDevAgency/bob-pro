@@ -22,10 +22,12 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     findById: async () => invoice,
     lockById: async () => invoice,
     findByParentQuoteId: async () => null,
+    findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [],
     save: async () => {
       invoiceSaves++;
     },
+    deleteById: async () => {},
   };
   const payments: PaymentRepository = {
     save: async () => {
@@ -33,6 +35,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     },
     findById: async () => null,
     listByInvoice: async () => [],
+    listByCompany: async () => [],
     findByIdempotencyKey: async (_c, key) =>
       opts.existingKey && key === opts.existingKey
         ? ({

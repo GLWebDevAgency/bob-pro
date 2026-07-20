@@ -1,12 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../observability/logger';
 import { BrevoEmailNotifier } from './notifier';
 
-const logger = {
-  audit: vi.fn(),
-} as unknown as AppLogger;
+const audit = vi.fn();
+const logger = { audit } as unknown as AppLogger;
 
 describe('BrevoEmailNotifier', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('envoie un email transactionnel via Brevo sans exposer la clé dans le body', async () => {
     const fetchFn = vi.fn(async (_input: string, _init: RequestInit) => new Response(JSON.stringify({ messageId: 'm-1' }), { status: 201 }));
     const notifier = new BrevoEmailNotifier(
@@ -25,6 +28,7 @@ describe('BrevoEmailNotifier', () => {
       to: 'client@example.com',
       subject: 'Devis D2026-001',
       body: 'Bonjour,\nVoici votre lien.',
+      idempotencyKey: '79e27b85-d458-445e-a759-e8b1a49e1641',
     });
 
     expect(fetchFn).toHaveBeenCalledOnce();
@@ -37,7 +41,90 @@ describe('BrevoEmailNotifier', () => {
       to: [{ email: 'client@example.com' }],
       subject: 'Devis D2026-001',
       textContent: 'Bonjour,\nVoici votre lien.',
+      headers: { idempotencyKey: '79e27b85-d458-445e-a759-e8b1a49e1641' },
     });
+    expect(logger.audit).toHaveBeenCalledWith('notification.sent', {
+      provider: 'brevo',
+      channel: 'email',
+    });
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('client@example.com');
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('Devis D2026-001');
+  });
+
+  it('considère le duplicate_parameter d’une même clé comme un accusé provider', async () => {
+    const duplicate = vi.fn(async () => new Response(
+      JSON.stringify({ code: 'duplicate_parameter', message: 'Key already used' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    ));
+    const notifier = new BrevoEmailNotifier(
+      logger,
+      {
+        apiKey: 'secret-key',
+        senderEmail: 'hello@bobpro.fr',
+        senderName: 'Bob Pro',
+        baseUrl: 'https://api.brevo.com/v3',
+      },
+      duplicate,
+    );
+
+    await expect(notifier.send({
+      channel: 'email',
+      to: 'client@example.com',
+      subject: 'Invitation',
+      body: 'Reprise du même envoi.',
+      idempotencyKey: 'f74608cd-0c6e-4aae-a008-a0a116266e1e',
+    })).resolves.toBeUndefined();
+    expect(logger.audit).toHaveBeenCalledWith('notification.deduplicated', {
+      provider: 'brevo',
+      channel: 'email',
+    });
+  });
+
+  it('ne masque pas une erreur duplicate_parameter sans clé d’idempotence', async () => {
+    const duplicate = vi.fn(async () => new Response(
+      JSON.stringify({ code: 'duplicate_parameter' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    ));
+    const notifier = new BrevoEmailNotifier(
+      logger,
+      {
+        apiKey: 'secret-key',
+        senderEmail: 'hello@bobpro.fr',
+        senderName: 'Bob Pro',
+        baseUrl: 'https://api.brevo.com/v3',
+      },
+      duplicate,
+    );
+
+    await expect(notifier.send({
+      channel: 'email',
+      to: 'client@example.com',
+      subject: 'Invitation',
+      body: 'Envoi sans clé.',
+    })).rejects.toThrow('Brevo HTTP 400');
+  });
+
+  it('refuse une clé non UUID avant tout appel provider', async () => {
+    const fetchFn = vi.fn();
+    const notifier = new BrevoEmailNotifier(
+      logger,
+      {
+        apiKey: 'secret-key',
+        senderEmail: 'hello@bobpro.fr',
+        senderName: 'Bob Pro',
+        baseUrl: 'https://api.brevo.com/v3',
+      },
+      fetchFn,
+    );
+
+    await expect(notifier.send({
+      channel: 'email',
+      to: 'client@example.com',
+      subject: 'Invitation',
+      body: 'Envoi invalide.',
+      idempotencyKey: 'invitation-1',
+    })).rejects.toThrow(/UUID/);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('échoue explicitement sur les canaux non email', async () => {

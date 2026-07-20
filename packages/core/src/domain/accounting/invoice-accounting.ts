@@ -1,7 +1,8 @@
-import { type DomainResult, err } from '../../shared-kernel/result';
+import { type DomainResult, err, ok } from '../../shared-kernel/result';
 import { type DateOnly } from '../../shared-kernel/time';
 import { type LineCategory } from '../billing/shared/line-item';
 import { type Invoice } from '../billing/invoice/invoice';
+import { computeLineBases } from '../services/compute-totals';
 import { AccountingEntry, type AccountingEntryLineProps, type AccountingEntryProps } from './accounting-entry';
 import { type ChartOfAccounts } from './chart-of-accounts';
 
@@ -11,6 +12,8 @@ export interface InvoiceAccountingAccounts {
   receivable: string;
   vatCollected: string;
   customerAdvances: string;
+  /** B5 — clients, retenues de garantie (PCG 4117) : créance différée jusqu'à réception + 1 an. */
+  receivableRetention: string;
   revenueByCategory: InvoiceRevenueAccountMap;
 }
 
@@ -18,6 +21,7 @@ export const DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS: InvoiceAccountingAccounts = {
   receivable: '411',
   vatCollected: '44571',
   customerAdvances: '4191',
+  receivableRetention: '4117',
   revenueByCategory: {
     labor: '706',
     supply: '707',
@@ -52,6 +56,7 @@ function mergeAccounts(overrides: Partial<InvoiceAccountingAccounts> | undefined
     receivable: overrides?.receivable ?? DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS.receivable,
     vatCollected: overrides?.vatCollected ?? DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS.vatCollected,
     customerAdvances: overrides?.customerAdvances ?? DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS.customerAdvances,
+    receivableRetention: overrides?.receivableRetention ?? DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS.receivableRetention,
     revenueByCategory: { ...DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS.revenueByCategory, ...(overrides?.revenueByCategory ?? {}) },
   };
 }
@@ -78,8 +83,13 @@ function allocateAmounts(fullAmounts: number[], targetTotal: number): number[] {
   return raw.sort((a, b) => a.index - b.index).map((item) => item.floor);
 }
 
-function lineBaseCents(line: Invoice['lines'][number]): number {
-  return Math.round(line.qty * line.unitPriceHT);
+/**
+ * B3 — bases HT NETTES par ligne (remises de ligne + quote-part de remise globale déduites,
+ * même politique d'allocation que computeTotals) : le CA crédité au 70x est le CA réellement
+ * facturé — sans quoi l'écriture serait déséquilibrée du montant de la remise.
+ */
+function effectiveLineBases(invoice: Invoice): number[] {
+  return computeLineBases(invoice.lines, { globalDiscount: invoice.globalDiscount }).netLineBases;
 }
 
 function entryLinesFromSides(debits: Map<string, number>, credits: Map<string, number>, label: string): AccountingEntryLineProps[] {
@@ -96,22 +106,46 @@ function buildInvoiceAccountingEntry(input: {
   reference: string;
   chart?: ChartOfAccounts;
   accounts?: Partial<InvoiceAccountingAccounts>;
-}): DomainResult<AccountingEntry> {
+}): DomainResult<AccountingEntry | null> {
   const invoice = input.invoice;
   const totals = invoice.totals();
-  if (!Number.isSafeInteger(totals.netToPay) || totals.netToPay <= 0)
+  const isCreditNote = invoice.kind === 'credit_note';
+  const creditedKind = isCreditNote ? (invoice.creditNoteSource?.kind ?? null) : null;
+  if (isCreditNote && creditedKind === null)
+    return err(appValidation('invoice.sourceInvoiceId', 'La facture source de l’avoir est requise.'));
+  const accountingKind = creditedKind ?? invoice.kind;
+  // B2 — part de la deduction de la finale provenant des SITUATIONS emises : leur CA a DEJA ete
+  // constate a chaque situation (70x). La finale ne re-credite que le CA restant, et la reprise
+  // miroir 4191 ne porte que sur la part ACOMPTE (jamais un CA compte deux fois).
+  const situationDeductionCents = accountingKind === 'final' ? invoice.situationDeductionCents : 0;
+  // Reprise d'avances : une finale deduit l'acompte deja facture (4191). Elle peut etre
+  // entierement couverte (acompte + situations = 100 %) : netToPay = 0 y est legitime —
+  // c'est precisement l'ecriture qui constate le CA (70x) et solde les avances.
+  const advanceRepriseCents =
+    accountingKind === 'final' && invoice.depositDeductionCents > 0
+      ? invoice.depositDeductionCents - situationDeductionCents
+      : 0;
+  // B5 — retenue de garantie (loi 71-584) : creance client DIFFEREE (4117), figee aux totaux.
+  const retentionCents = totals.retenueGarantieCents ?? 0;
+  if (
+    !Number.isSafeInteger(totals.netToPay) ||
+    totals.netToPay < 0 ||
+    (totals.netToPay === 0 && advanceRepriseCents === 0 && situationDeductionCents === 0 && retentionCents === 0)
+  )
     return err(appValidation('invoice.netToPay', 'Net a payer invalide.'));
 
   const accounts = mergeAccounts(input.accounts);
   const fullComponents: { account: string; amount: number; kind: 'base' | 'vat' }[] = [];
 
-  if (invoice.kind === 'deposit') {
+  if (accountingKind === 'deposit') {
     fullComponents.push({ account: accounts.customerAdvances, amount: totals.ht, kind: 'base' });
   } else {
-    for (const line of invoice.lines) {
+    // B3 — bases NETTES apres remises : le 70x porte le CA reellement facture.
+    const bases = effectiveLineBases(invoice);
+    for (const [index, line] of invoice.lines.entries()) {
       fullComponents.push({
         account: accounts.revenueByCategory[line.category],
-        amount: lineBaseCents(line),
+        amount: bases[index] ?? 0,
         kind: 'base',
       });
     }
@@ -120,17 +154,31 @@ function buildInvoiceAccountingEntry(input: {
     fullComponents.push({ account: accounts.vatCollected, amount: vat, kind: 'vat' });
   }
 
-  const allocated = invoice.kind === 'deposit'
+  // Acompte : composants alloues au prorata du netToPay. Finale apres situations : composants
+  // alloues au prorata de (ttc − part situations) — le CA/TVA des situations est deja constate.
+  const allocated = accountingKind === 'deposit'
     ? allocateAmounts(fullComponents.map((component) => component.amount), totals.netToPay)
-    : fullComponents.map((component) => component.amount);
+    : situationDeductionCents > 0
+      ? allocateAmounts(
+          fullComponents.map((component) => component.amount),
+          Math.max(0, totals.ttc - situationDeductionCents),
+        )
+      : fullComponents.map((component) => component.amount);
 
   const debit = new Map<string, number>();
   const credit = new Map<string, number>();
-  const isCreditNote = invoice.kind === 'credit_note';
-  const label = `Facture ${input.reference}`;
+  // E7 : un avoir se lit « Avoir A-… » au journal — jamais « Facture » (libellé probant).
+  const label = `${invoice.kind === 'credit_note' ? 'Avoir' : 'Facture'} ${input.reference}`;
 
   if (isCreditNote) addAmount(credit, accounts.receivable, totals.netToPay);
   else addAmount(debit, accounts.receivable, totals.netToPay);
+
+  // B5 — la retenue est une creance client differee : 4117 au debit (au credit pour l'avoir),
+  // en complement du 411 — le CA et la TVA restent constates PLEINS sur la piece.
+  if (retentionCents > 0) {
+    if (isCreditNote) addAmount(credit, accounts.receivableRetention, retentionCents);
+    else addAmount(debit, accounts.receivableRetention, retentionCents);
+  }
 
   for (const [index, component] of fullComponents.entries()) {
     const amount = allocated[index] ?? 0;
@@ -138,6 +186,37 @@ function buildInvoiceAccountingEntry(input: {
     else addAmount(credit, component.account, amount);
   }
 
+  if (advanceRepriseCents > 0) {
+    // Finale apres acompte : le 411 ne porte que le solde (netToPay = ttc − acompte), le CA
+    // et la TVA sont credites PLEINS — sans reprise, l'ecriture serait desequilibree du
+    // montant de l'acompte et rejetee. Schema PCG : D 4191 (part HT des avances) +
+    // D 44571 (part TVA d'acompte) en MIROIR de l'ecriture d'acompte — memes composants
+    // [HT, TVA par taux] et meme allocateAmounts, donc solde 4191 = 0 au centime,
+    // multi-taux inclus, et la reprise reste lisible au journal (trace d'audit).
+    const vatAmounts = Object.values(totals.vatByRate);
+    const reprise = allocateAmounts([totals.ht, ...vatAmounts], advanceRepriseCents);
+    addAmount(isCreditNote ? credit : debit, accounts.customerAdvances, reprise[0] ?? 0);
+    for (let i = 0; i < vatAmounts.length; i += 1)
+      addAmount(isCreditNote ? credit : debit, accounts.vatCollected, reprise[i + 1] ?? 0);
+  }
+
+  const entryLines = entryLinesFromSides(debit, credit, label);
+  // B2 — finale (ou son avoir miroir) SOLDÉE PAR LES SITUATIONS SEULES : netToPay = 0, aucune
+  // reprise 4191 (pas d'acompte), aucune retenue → TOUT le CA et TOUTE la TVA ont déjà été
+  // constatés situation par situation (70x/44571 à chaque émission). Il n'existe AUCUN fait
+  // comptable à enregistrer : l'écriture est LÉGITIMEMENT vide (null), et l'émission du solde
+  // ne doit jamais échouer pour une écriture qui n'a pas lieu d'exister — la garde de cumul de
+  // GenerateInvoiceFromQuote autorise explicitement situations = 100 % du marché, et le cas
+  // symétrique « acompte 100 % » passe, lui, par la reprise 4191 (écriture non vide).
+  if (
+    entryLines.length === 0 &&
+    accountingKind === 'final' &&
+    situationDeductionCents > 0 &&
+    totals.netToPay === 0 &&
+    advanceRepriseCents === 0 &&
+    retentionCents === 0
+  )
+    return ok(null);
   const props: AccountingEntryProps = {
     id: input.entryId,
     companyId: invoice.companyId,
@@ -147,7 +226,7 @@ function buildInvoiceAccountingEntry(input: {
     entryDate: input.entryDate,
     reference: input.reference,
     label,
-    lines: entryLinesFromSides(debit, credit, label),
+    lines: entryLines,
   };
   return AccountingEntry.create(props, input.chart ? { chart: input.chart } : {});
 }
@@ -157,12 +236,19 @@ function buildInvoiceAccountingEntry(input: {
  *
  * - Facture finale/situation : 411 debit ; 70x + 44571 credit.
  * - Facture d'acompte : 411 debit ; 4191 avances clients + 44571 credit.
+ * - Finale APRES acompte : 411 debit (solde) + 4191/44571 debit (reprise des avances,
+ *   miroir de l'ecriture d'acompte) ; 70x + 44571 credit PLEINS — le CA se constate a la
+ *   finale, une seule fois, et le 4191 ressort a zero.
  * - Avoir : ecriture inverse.
  *
  * Pour les acomptes, l'ecriture porte seulement sur `netToPay` : HT/TVA sont alloues au prorata
  * des composants de la facture, afin de ne pas comptabiliser 100% du CA sur un appel de 30%.
+ *
+ * Retourne `ok(null)` — AUCUNE ecriture a poster — pour la facture FINALE de solde entierement
+ * couverte par des SITUATIONS seules (B2) : son CA et sa TVA ont deja ete constates a chaque
+ * situation, il n'existe aucun fait comptable (l'emission ne doit pas echouer pour autant).
  */
-export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingEntryInput): DomainResult<AccountingEntry> {
+export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingEntryInput): DomainResult<AccountingEntry | null> {
   const invoice = input.invoice;
   if (!['issued', 'partially_paid', 'late', 'paid'].includes(invoice.status))
     return err(appValidation('invoice', 'La facture doit etre emise avant comptabilisation.'));
@@ -184,8 +270,9 @@ export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingE
  *
  * Contrairement au mapper d'ecriture definitive, celui-ci n'exige pas que la facture soit emise :
  * il sert l'ActionDiff avant confirmation d'emission, sans allouer de numero et sans effet de bord.
+ * `ok(null)` = aucune ecriture a passer (finale soldee par les situations seules, cf. ci-dessus).
  */
-export function buildInvoiceAccountingPreviewEntry(input: BuildInvoiceAccountingPreviewEntryInput): DomainResult<AccountingEntry> {
+export function buildInvoiceAccountingPreviewEntry(input: BuildInvoiceAccountingPreviewEntryInput): DomainResult<AccountingEntry | null> {
   const reference = input.invoice.number ?? input.reference?.trim() ?? 'a-emettre';
   const entryDate = input.invoice.issuedAt ?? input.entryDate;
   return buildInvoiceAccountingEntry({

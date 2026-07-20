@@ -28,7 +28,7 @@ function signedQuote(companyId = 'co-1'): Quote {
   for (const line of lines) q.value.addLine(line);
   q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
   q.value.send(AT);
-  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
   return q.value;
 }
 

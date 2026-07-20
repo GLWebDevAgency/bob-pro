@@ -1,4 +1,4 @@
-import { Injectable, type NestInterceptor, type ExecutionContext, type CallHandler } from '@nestjs/common';
+import { HttpException, Injectable, type NestInterceptor, type ExecutionContext, type CallHandler } from '@nestjs/common';
 import { type Observable, tap } from 'rxjs';
 import { Metrics } from './metrics';
 import { rootLogger, getCorrelationId } from './logger';
@@ -21,7 +21,14 @@ export class LoggingInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap({
         next: () => finalize(http.getResponse<{ statusCode: number }>().statusCode),
-        error: () => finalize(500),
+        error: (error: unknown) => {
+          const status = error instanceof HttpException
+            ? error.getStatus()
+            : typeof (error as { status?: unknown } | null)?.status === 'number'
+              ? (error as { status: number }).status
+              : 500;
+          finalize(status);
+        },
       }),
     );
   }

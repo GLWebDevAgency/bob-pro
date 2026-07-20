@@ -30,7 +30,9 @@ describe('BobAgent — confirmation vocale', () => {
     const { actions } = makeActions();
     const r = await propose(new BobAgent({ router: router(), actions }));
     expect(r.ok && r.value.kind).toBe('proposed');
-    expect(r.ok && r.value.spokenPrompt).toContain('je confirme');
+    expect(r.ok && r.value.spokenPrompt).not.toContain('je confirme');
+    expect(r.ok && r.value.spokenPrompt).toContain('Tu veux que je le fasse ?');
+    expect(r.ok && r.value.spokenPrompt).not.toMatch(/annul/i);
   });
 
   it('« oui je confirme » -> exécute', async () => {

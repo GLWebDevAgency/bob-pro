@@ -1,0 +1,105 @@
+:root {
+  color-scheme: light;
+  --canvas: var(--bob-color-bg);
+  --surface: var(--bob-color-surface);
+  --surface-soft: color-mix(in srgb, var(--bob-color-surface) 68%, var(--bob-color-bg));
+  --ink: var(--bob-color-ink-800);
+  --navy: var(--brand-d1);
+  --navy-soft: var(--brand-ink2);
+  --muted: var(--bob-color-slate-500);
+  --muted-strong: color-mix(in srgb, var(--bob-color-ink-600) 72%, var(--bob-color-slate-500));
+  --line: var(--bob-color-line);
+  --line-strong: color-mix(in srgb, var(--bob-color-line) 72%, var(--bob-color-slate-500));
+  --success: var(--bob-color-success);
+  --success-soft: var(--bob-color-success-bg);
+  --warning: var(--bob-color-warning);
+  --warning-soft: var(--bob-color-warning-bg);
+  --danger: var(--bob-color-danger);
+  --danger-soft: var(--bob-color-danger-bg);
+  --indigo: var(--bob-color-ai);
+  --indigo-soft: var(--bob-color-ai-bg);
+  --shadow: var(--bob-shadow-e2);
+  --font-display: var(--font-schibsted), var(--bob-font-family-display), sans-serif;
+  --font-body: var(--font-hanken), var(--bob-font-family-text), sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-body);
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-width: 320px;
+}
+
+button,
+input,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+
+button,
+label,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  border: 0;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: var(--bob-color-b2b-bg);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--bob-color-ai) 74%, transparent);
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  min-height: 44px;
+  padding: 11px 16px;
+  border-radius: var(--bob-radius-chip);
+  background: var(--surface);
+  box-shadow: var(--bob-shadow-e3);
+  color: var(--navy);
+  font-weight: 700;
+  transform: translateY(calc(-100% - 24px));
+  transition: transform 140ms ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

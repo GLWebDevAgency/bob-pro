@@ -3,22 +3,98 @@ export type Horizon = 7 | 30 | 60 | 90;
 
 export interface CashflowProjection {
   available: number; // dispo previsionnel (centimes)
-  payout: number; // "te verser" sans risque (centimes)
+  payout: number; // trésorerie mobilisable sans risque (centimes) — PAS une rémunération (dépend du statut/régime, non modélisé ici)
   risk: boolean; // true si la dispo passe sous zero
+  /** TVA a provisionner (centimes) — deja deduite de `available` ; exposee pour le KPI
+   *  du briefing (A3-C10) : le meme chiffre que celui qui ampute la dispo, jamais un autre. */
+  vatDue: number;
+  /** Hypothèses auditables : l'UI peut distinguer une projection datée d'un agrégat legacy. */
+  basis: CashflowProjectionBasis;
+  /** Provenance du solde bancaire de la projection (posée par l'adapter serveur) :
+   *  'qualified_snapshot' = observation fraîche du tenant ; 'none' = tenant VIERGE (aucune
+   *  observation ET aucun document financier) — état vide honnête à zéro, jamais un solde
+   *  inventé présenté comme une vérité. Absent sur les implémentations qui ne la posent pas. */
+  bankingSource?: 'qualified_snapshot' | 'none';
 }
 
-const RECEIVABLE_FACTOR: Record<Scenario, number> = { optimiste: 1, realiste: 0.9, prudent: 0.8 };
+export interface DatedCashflowBasisInput {
+  readonly kind: 'dated_documents';
+  readonly asOf: string;
+  readonly horizonEnd: string;
+  readonly receivablesIncludedCents: number;
+  readonly receivablesAfterHorizonCents: number;
+  readonly receivablesUndatedCents: number;
+  readonly chargesIncludedCents: number;
+  readonly chargesAfterHorizonCents: number;
+  readonly chargesUndatedIncludedCents: number;
+}
+
+export type CashflowProjectionBasis =
+  | {
+      readonly modelVersion: 'cashflow-projection/2';
+      readonly kind: 'dated_documents';
+      readonly scenario: Scenario;
+      readonly horizonDays: Horizon;
+      readonly receivableCollectionRatePct: 100 | 90 | 80;
+      readonly asOf: string;
+      readonly horizonEnd: string;
+      readonly receivablesIncludedCents: number;
+      readonly receivablesAfterHorizonCents: number;
+      readonly receivablesUndatedCents: number;
+      readonly chargesIncludedCents: number;
+      readonly chargesAfterHorizonCents: number;
+      readonly chargesUndatedIncludedCents: number;
+    }
+  | {
+      readonly modelVersion: 'cashflow-projection/2';
+      readonly kind: 'aggregate_legacy';
+      readonly scenario: Scenario;
+      readonly horizonDays: Horizon;
+      readonly receivableCollectionRatePct: 100 | 90 | 80;
+    };
+
+const RECEIVABLE_RATE_PCT: Record<Scenario, 100 | 90 | 80> = {
+  optimiste: 100,
+  realiste: 90,
+  prudent: 80,
+};
 
 export function projectCashflow(
-  input: { bankBalance: number; receivables: number; charges: number; vatDue: number },
+  input: {
+    bankBalance: number;
+    receivables: number;
+    charges: number;
+    vatDue: number;
+    datedBasis?: DatedCashflowBasisInput;
+  },
   scenario: Scenario,
   horizon: Horizon,
 ): CashflowProjection {
-  const horizonFactor = Math.min(1, horizon / 90); // plus l'horizon est long, plus d'encours rentrent
-  const probableReceipts = Math.round(input.receivables * RECEIVABLE_FACTOR[scenario] * horizonFactor);
+  const receiptRatePct = RECEIVABLE_RATE_PCT[scenario];
+  // En production, les pièces ont déjà été bornées par leur échéance : appliquer une
+  // seconde règle horizon/90 inventerait une dilution supplémentaire. Le facteur historique ne
+  // subsiste que pour les adapters de test qui ne fournissent aucun échéancier.
+  const horizonFactor = input.datedBasis ? 1 : Math.min(1, horizon / 90);
+  const probableReceipts = Math.round(input.receivables * (receiptRatePct / 100) * horizonFactor);
   const available = input.bankBalance + probableReceipts - input.charges - input.vatDue;
-  // "Te verser" = ce qu'on peut sortir en gardant une reserve TVA + marge de securite.
+  // "Payout" = trésorerie mobilisable en gardant une reserve TVA + marge de securite —
+  // PAS une rémunération distribuable (forme juridique/regime fiscal hors scope ici).
   const safetyReserve = Math.round(input.vatDue * 0.5);
   const payout = Math.max(0, available - safetyReserve);
-  return { available, payout, risk: available < 0 };
+  const basis: CashflowProjectionBasis = input.datedBasis
+    ? {
+        modelVersion: 'cashflow-projection/2',
+        ...input.datedBasis,
+        scenario,
+        horizonDays: horizon,
+        receivableCollectionRatePct: receiptRatePct,
+      }
+    : {
+        modelVersion: 'cashflow-projection/2',
+        kind: 'aggregate_legacy',
+        scenario,
+        horizonDays: horizon,
+        receivableCollectionRatePct: receiptRatePct,
+      };
+  return { available, payout, risk: available < 0, vatDue: input.vatDue, basis };
 }

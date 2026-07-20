@@ -5,90 +5,7 @@ import { SignQuote } from './sign-quote';
 import { GenerateInvoiceFromQuote } from './generate-invoice-from-quote';
 import { IssueInvoice } from './issue-invoice';
 import { RegisterPayment } from './register-payment';
-import { type Quote } from '../../domain/billing/quote/quote';
-import { type Invoice } from '../../domain/billing/invoice/invoice';
-import { type Payment } from '../../domain/payment/payment';
-import { DocNumber } from '../../domain/billing/shared/doc-number';
-import { seedCompany, seedCustomers } from '../fixtures';
-import {
-  type CompanyRepository,
-  type CustomerRepository,
-  type QuoteRepository,
-  type InvoiceRepository,
-  type PaymentRepository,
-} from '../ports/repositories';
-import { type SequenceCounterPort, type ClockPort, type IdGeneratorPort, type CounterKey } from '../ports/services';
-
-function makeEnv() {
-  const company = seedCompany();
-  const customers = seedCustomers();
-  const customer = customers[1]!; // M. Martin (b2c)
-
-  const quotesMap = new Map<string, Quote>();
-  const invoicesMap = new Map<string, Invoice>();
-  const paymentsArr: Payment[] = [];
-
-  const companyRepo: CompanyRepository = {
-    findById: async (id) => (id === company.id ? company : null),
-    list: async () => [company],
-    save: async () => {},
-  };
-  const customerRepo: CustomerRepository = {
-    findById: async (id) => customers.find((c) => c.id === id) ?? null,
-    listByCompany: async () => customers,
-    save: async () => {},
-  };
-  const quoteRepo: QuoteRepository = {
-    findById: async (id) => quotesMap.get(id) ?? null,
-    lockById: async (id) => quotesMap.get(id) ?? null,
-    listByCompany: async (companyId) => [...quotesMap.values()].filter((q) => q.companyId === companyId),
-    save: async (q) => {
-      quotesMap.set(q.id, q);
-    },
-  };
-  const invoiceRepo: InvoiceRepository = {
-    findById: async (id) => invoicesMap.get(id) ?? null,
-    lockById: async (id) => invoicesMap.get(id) ?? null,
-    findByParentQuoteId: async (companyId, parentQuoteId, kind) =>
-      [...invoicesMap.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null,
-    listByCompany: async (companyId) => [...invoicesMap.values()].filter((i) => i.companyId === companyId),
-    save: async (i) => {
-      invoicesMap.set(i.id, i);
-    },
-  };
-  const paymentRepo: PaymentRepository = {
-    save: async (p) => {
-      paymentsArr.push(p);
-    },
-    findById: async (companyId, id) => paymentsArr.find((p) => p.companyId === companyId && p.id === id) ?? null,
-    listByInvoice: async (invoiceId) => paymentsArr.filter((p) => p.invoiceId === invoiceId),
-    findByIdempotencyKey: async (companyId, key) =>
-      paymentsArr.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null,
-  };
-  const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
-
-  let idCounter = 0;
-  const ids: IdGeneratorPort = {
-    newId: () => {
-      idCounter += 1;
-      return `id-${idCounter}`;
-    },
-  };
-  const clock: ClockPort = {
-    now: () => '2026-06-01T09:00:00.000Z',
-    today: () => '2026-06-01',
-  };
-  const sequences: Record<CounterKey, number> = { quote: 0, invoice: 0, credit: 0 };
-  const counters: SequenceCounterPort = {
-    allocate: async ({ counterKey, fiscalYear }) => {
-      sequences[counterKey] += 1;
-      const prefix = counterKey === 'quote' ? 'D' : 'F';
-      return { sequence: sequences[counterKey], formatted: DocNumber.format(prefix, fiscalYear, sequences[counterKey]) };
-    },
-  };
-
-  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, uow, ids, clock, counters };
-}
+import { makeEnv } from './in-memory-env';
 
 describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => {
   it('déroule le flux complet avec numéros séquentiels et acompte 488,40 €', async () => {
@@ -115,14 +32,53 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(created.value.totals.ttc).toBe(162800);
     const quoteId = created.value.quoteId;
 
-    const sent = await new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock }).execute({ quoteId });
+    const sent = await new SendQuote({
+      companies: env.companyRepo,
+      quotes: env.quoteRepo,
+      counters: env.counters,
+      uow: env.uow,
+      clock: env.clock,
+    }).execute({ quoteId });
     expect(sent.ok).toBe(true);
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
-    const signed = await new SignQuote({ quotes: env.quoteRepo, uow: env.uow, clock: env.clock }).execute({ quoteId, signerName: 'M. Martin' });
+    // Signature À DISTANCE (lien public → contrat à distance, art. L221-1, I-1°) : l'acompte
+    // est immédiatement facturable — l'interdiction de paiement de 7 jours (art. L221-10
+    // c. conso) ne vise que le contrat HORS ÉTABLISSEMENT (signature sur place, cf.
+    // generate-invoice-from-quote.test.ts pour ce régime).
+    const grant = await env.publicAccessTokens.create({
+      companyId: env.company.id,
+      resourceType: 'quote',
+      resourceId: quoteId,
+      scope: 'quote_signature',
+      expiresAt: '2026-06-02T09:00:00.000Z',
+    });
+    const signed = await new SignQuote({
+      companies: env.companyRepo,
+      customers: env.customerRepo,
+      quotes: env.quoteRepo,
+      publicAccessTokens: env.publicAccessTokens,
+      uow: env.uow,
+      clock: env.clock,
+    }).execute({
+      quoteId,
+      signerName: 'M. Bernard',
+      remoteGrant: { token: grant.token, grantId: grant.id },
+    });
     expect(signed.ok).toBe(true);
+    // A3/L221-21 : la signature B2C ouvre la fonctionnalité de rétractation en ligne (jeton
+    // dédié, valable toute la durée du délai) — le contrat à distance y est strictement tenu.
+    if (signed.ok) expect(signed.value.retractation?.token).toBeTruthy();
 
-    const gen = await new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids }).execute({ quoteId });
+    // A3 : M. Bernard est un consommateur (b2c) — l'ACOMPTE reste facturable pendant le délai
+    // de rétractation d'un contrat à distance (seule la FINALE est gelée).
+    const gen = await new GenerateInvoiceFromQuote({
+      quotes: env.quoteRepo,
+      invoices: env.invoiceRepo,
+      customers: env.customerRepo,
+      ids: env.ids,
+      clock: env.clock,
+    }).execute({ quoteId, mode: 'deposit' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
     const invoiceId = gen.value.invoiceId;
@@ -131,10 +87,14 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       invoices: env.invoiceRepo,
       companies: env.companyRepo,
       customers: env.customerRepo,
+      quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,
       clock: env.clock,
-    }).execute({ invoiceId });
+    }).execute({
+      invoiceId,
+      terms: { days: 30, endOfMonth: false, label: 'Paiement à 30 jours' },
+    });
     expect(issued.ok).toBe(true);
     if (issued.ok) expect(issued.value.number).toBe('F-2026-0001');
 
@@ -155,7 +115,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(invoice?.status).toBe('paid');
     expect(invoice?.number).toBe('F-2026-0001');
     expect(invoice?.dueAt).toBe('2026-07-01');
-    expect((invoice?.mentions.length ?? 0)).toBeGreaterThan(0);
+    expect(invoice?.mentions.length ?? 0).toBeGreaterThan(0);
   });
 
   it('numérotation séquentielle sans trou sur deux devis', async () => {
@@ -167,11 +127,31 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       ids: env.ids,
       clock: env.clock,
     });
-    const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock });
-    const line = { label: 'Intervention', category: 'labor' as const, qty: 1, unitPriceHT: 50000, vatRate: 20 as const };
+    const send = new SendQuote({
+      companies: env.companyRepo,
+      quotes: env.quoteRepo,
+      counters: env.counters,
+      uow: env.uow,
+      clock: env.clock,
+    });
+    const line = {
+      label: 'Intervention',
+      category: 'labor' as const,
+      qty: 1,
+      unitPriceHT: 50000,
+      vatRate: 20 as const,
+    };
 
-    const q1 = await create.execute({ companyId: env.company.id, customerId: env.customer.id, lines: [line] });
-    const q2 = await create.execute({ companyId: env.company.id, customerId: env.customer.id, lines: [line] });
+    const q1 = await create.execute({
+      companyId: env.company.id,
+      customerId: env.customer.id,
+      lines: [line],
+    });
+    const q2 = await create.execute({
+      companyId: env.company.id,
+      customerId: env.customer.id,
+      lines: [line],
+    });
     expect(q1.ok && q2.ok).toBe(true);
     if (!q1.ok || !q2.ok) return;
 

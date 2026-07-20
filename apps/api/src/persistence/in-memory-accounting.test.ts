@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFrenchOperationalChartOfAccounts, RecordAccountingEntry } from '@bob/core';
-import { InMemoryPersistence } from './persistence';
+import { InMemoryPersistence } from './persistence.testing';
 
 describe('InMemoryPersistence accounting repositories', () => {
   it('records an accounting entry through the application ports with chart validation and tenant isolation', async () => {

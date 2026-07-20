@@ -1,15 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { ADDON_CATALOG, PLAN_CATALOG, planCan, resolveAutonomyEntitlement } from './plan';
+import { ADDON_CATALOG, PAID_TIERS, PLAN_CATALOG, PLAN_PRICING, planCan, resolveAutonomyEntitlement } from './plan';
 import { Subscription } from './subscription';
 
 describe('Offres & entitlements', () => {
-  it('catalogue : Gratuit 0 € / Solo 14 € / Pro 39 € / Business 69 €', () => {
+  it('catalogue : Gratuit 0 € / Solo 19 € / Pro 39 € / Business 79 € (constante produit C26 v2)', () => {
     expect(PLAN_CATALOG.free.priceCents).toBe(0);
-    expect(PLAN_CATALOG.solo.priceCents).toBe(1400);
+    expect(PLAN_CATALOG.solo.priceCents).toBe(1900);
     expect(PLAN_CATALOG.pro.priceCents).toBe(3900);
-    expect(PLAN_CATALOG.business.priceCents).toBe(6900);
+    expect(PLAN_CATALOG.business.priceCents).toBe(7900);
     // Annuel ~ -20 %.
     expect(PLAN_CATALOG.pro.annualMonthlyCents).toBe(3100);
+    expect(PLAN_CATALOG.solo.annualMonthlyCents).toBe(1500);
+    expect(PLAN_CATALOG.business.annualMonthlyCents).toBe(6300);
+  });
+
+  it('grille publique C26 : paliers payants, prix LUS dans PLAN_CATALOG (source unique)', () => {
+    expect(PAID_TIERS).toEqual(['solo', 'pro', 'business']);
+    for (const tier of PAID_TIERS) {
+      expect(PLAN_PRICING[tier].tier).toBe(tier);
+      expect(PLAN_PRICING[tier].label).toBe(PLAN_CATALOG[tier].label);
+      expect(PLAN_PRICING[tier].monthlyCents).toBe(PLAN_CATALOG[tier].priceCents);
+      expect(PLAN_PRICING[tier].blurb.length).toBeGreaterThan(0);
+    }
   });
   it('feature-gating : Solo = Essentials, Pro = Operations + paiement, Business = Control', () => {
     expect(planCan('free', 'ai_quota')).toBe(true);

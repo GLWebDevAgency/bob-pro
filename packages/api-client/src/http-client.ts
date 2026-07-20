@@ -1,9 +1,19 @@
+import {
+  isAllowedAgentNavigationRoute,
+  type AgentRun,
+  type JournalEntry,
+  type MistralConversationSessionEndReason,
+  type PendingAction,
+} from '@bob/ai';
+import { isCustomPrestationId, parseCustomPrestation } from '@bob/core';
 import type {
   Result,
   AppError,
   CreateQuoteInput,
   CreateQuoteOutput,
   IssueInvoiceInput,
+  UpdateQuoteLineInput,
+  RemoveQuoteLineInput,
   CustomerListItem,
   CashflowProjection,
   Scenario,
@@ -11,44 +21,1652 @@ import type {
   PaymentMethod,
   PlanTier,
   DiagnosticResult,
+  DiagnosticAssessmentView,
+  DiagnosticAssessmentWriteRequest,
+  FiscalDeadline,
   OcrExtraction,
   ExpenseProps,
   RecordExpenseInput,
   TradeConfig,
-  ChantierProps,
+  Trade,
+  VatRegime,
+  ChantierListItem,
+  ChantierNoteProps,
+  WorksiteMediaItem,
   CreateChantierInput,
+  CompanyProps,
+  CompanyRegistrationInput,
+  CompanyBillingSettings,
+  CompanyBillingSettingsPatch,
+  CustomerPortfolio,
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
   DocumentView,
   DocumentDownloadUrl,
+  DocumentFolderView,
+  DeleteDocumentFolderStrategy,
+  DocumentAnalysis,
+  FiscalProfileView,
+  SearchSalesDocumentsResult,
+  SuggestSalesDocumentsResult,
+  CatalogueItemView,
+  CatalogueItemWriteInput,
+  CatalogueDeletionView,
+  QualifiedBankBalanceWithPosition,
+  Totals,
+  Discount,
+  LineInput,
+  SituationAmountInput,
+  InvoiceTransmissionStatus,
+  CustomerPaymentTerms,
+  CustomerBillingChannel,
 } from '@bob/core';
 import type {
   BobClient,
   QuoteView,
   InvoiceView,
+  PaymentView,
   SubscriptionView,
+  SubscriptionBillingInvoiceView,
+  ValueDigestView,
+  TrialReportView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
+  RecordExpensePaymentClientInput,
+  RecordExpensePaymentClientOutput,
+  RegularizeExpensePaymentClientInput,
+  RegularizeExpensePaymentClientOutput,
   SendQuoteOutput,
+  CreateQuoteSignatureLinkOutput,
+  CreateDocumentViewLinkOutput,
+  SendRelanceClientOutput,
+  NotificationView,
+  NotificationUnreadPreview,
+  NotificationReadThroughInput,
+  NotificationReadThroughOutput,
+  RegisterDeviceClientInput,
+  RevokeDeviceBindingClientInput,
+  UnregisterDeviceClientInput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
+  FacturXImportReview,
+  FacturXImportDecision,
+  FacturXImportOutcome,
   ListDocumentsClientInput,
+  DocumentListItemView,
+  RenameDocumentClientInput,
+  AcknowledgeDocumentClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
+  RealtimeVoiceConfig,
+  RealtimeVoiceCall,
+  RealtimeVoiceCallInput,
+  RealtimeVoiceBootstrapReconciliationInput,
+  RealtimeVoiceBootstrapReconciliationResult,
+  RealtimeVoiceResumeTicketInput,
+  RealtimeVoiceResumeTicketResult,
+  RealtimeVoiceContextUpdate,
+  RealtimeVoiceControlAcknowledgement,
+  RealtimeVoiceControlReference,
+  RealtimeVoiceSpeechCancellationInput,
+  RealtimeVoiceSpeechCancellationReason,
+  RealtimeVoiceSpeechDeliveryAcknowledgement,
+  RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceSpeechFeed,
+  RealtimeVoiceSpeechFeedInput,
+  RealtimeVoiceSpeechMimeType,
+  AccountingPreviewLine,
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
   ExportFecMetadata,
   ExportFecClientInput,
   ExportFecClientOutput,
+  ClassifyDocumentClientInput,
+  CreateDocumentIntakeClientInput,
+  ListDocumentFoldersClientInput,
+  DocumentFolderPageView,
+  DocumentFolderDeletionPlanView,
+  DocumentFolderDeletionExecutionView,
+  RecordDocumentExpenseClientInput,
+  RecordDocumentExpenseClientOutput,
+  AssignExpenseChantierClientInput,
+  AssignExpenseChantierClientOutput,
+  AskBobClientInput,
+  CreateCustomerClientInput,
+  UpdateCustomerClientInput,
+  SearchSalesDocumentsClientInput,
+  QuoteDraftSlotView,
+  SaveQuoteDraftClientInput,
+  AttachQuotePurchaseOrderClientInput,
+  DetachQuotePurchaseOrderClientInput,
+  AttachInvoicePurchaseOrderClientInput,
+  DetachInvoicePurchaseOrderClientInput,
+  PurchaseOrderMutationView,
 } from './client';
+import {
+  decodeDocumentAnalysisForDocument,
+  decodeDocumentExpenseCreationForContext,
+  decodeDocumentDownloadUrl,
+  decodeDocumentFolderDeletionExecution,
+  decodeDocumentFolderDeletionPlanForFolder,
+  decodeDocumentFolderPageForContext,
+  decodeDocumentFolderViewForContext,
+  decodeDocumentMoveForContext,
+  decodeDocumentViewForContext,
+  decodeDocumentListItemForContext,
+  decodeDocumentListItemsForCompany,
+} from './document-codecs';
+import { decodeExpenseCreation } from './expense-idempotency';
+import { decodeExpenseChantierAssignment } from './expense-codecs';
+import {
+  decodePurchaseOrderCarrierList,
+  decodePurchaseOrderCarrierView,
+  decodePurchaseOrderMutation,
+} from './purchase-order-codec';
+import { decodeInvoiceView, decodeInvoiceViewList } from './credit-note-source-codec';
+import { decodeTransmission } from './billing-terrain-codec';
+import { decodeQuoteCreation } from './quote-idempotency';
+import {
+  decodeQuoteDraftDeletion,
+  decodeQuoteDraftEnvelope,
+  decodeQuoteDraftSlot,
+  type QuoteDraftEnvelopeWire,
+} from './quote-draft-codec';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
   companyId: string;
   getToken?: () => Promise<string | null>;
+}
+
+const DOCUMENT_READ_TIMEOUT_MS = 20_000;
+const DOCUMENT_MUTATION_TIMEOUT_MS = 20_000;
+const DOCUMENT_UPLOAD_TIMEOUT_MS = 45_000;
+const DOCUMENT_ANALYSIS_TIMEOUT_MS = 75_000;
+const TEXT_EXPORT_TIMEOUT_MS = 45_000;
+const QUOTE_CREATION_TIMEOUT_MS = 20_000;
+// Tour d'agent Bob (classification LLM + action + naturalisation) : long mais jamais infini.
+// À l'expiration, `req` rend un AppError kind 'dependency' — l'Assistant mobile retombe alors
+// sur ses circuits hors-ligne existants (assistant.offline / live.error + ré-écoute).
+const AGENT_TURN_TIMEOUT_MS = 50_000;
+// Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
+const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
+const REALTIME_SPEECH_REQUEST_TIMEOUT_MS = 5_000;
+const REALTIME_SPEECH_RESPONSE_MAX_BYTES = 16 * 1024;
+const REALTIME_SPEECH_MAX_AUDIO_BYTES = 2 * 1024 * 1024;
+const REALTIME_SPEECH_MIN_AUDIO_BYTES = 256;
+const REALTIME_SPEECH_MIN_DURATION_MS = 100;
+const REALTIME_SPEECH_MAX_DURATION_MS = 45_000;
+const REALTIME_SPEECH_MAX_SEQUENCE = 2_147_483_647;
+const REALTIME_SPEECH_MAX_WAIT_MS = 2_500;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
+const MISTRAL_REALTIME_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN = /^b2_[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN = /^r2_[A-Za-z0-9_-]{43}$/;
+const MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+const MISTRAL_CONVERSATION_BOOTSTRAP_RECONCILIATION_MAX_ATTEMPTS = 8;
+const MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH = 0x7fff_ffff;
+const MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR = 0x1_0000_0000;
+const MISTRAL_CONVERSATION_SESSION_END_REASONS = new Set<MistralConversationSessionEndReason>([
+  'user',
+  'background',
+  'context_changed',
+  'client_handoff',
+  'expired',
+  'service_shutdown',
+  'fatal_error',
+]);
+const BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const REALTIME_SPEECH_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
+  'audio/mpeg',
+  'audio/wav',
+]);
+const REALTIME_SPEECH_CANCELLATION_REASONS = new Set<RealtimeVoiceSpeechCancellationReason>([
+  'barge_in',
+  'user_cancel',
+  'context_changed',
+  'session_end',
+  'superseded',
+  'playback_error',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCanonicalBase64Url256Ticket(value: unknown, prefix: 'b2_' | 'r2_'): value is string {
+  if (typeof value !== 'string' || value.length !== prefix.length + 43 || !value.startsWith(prefix)) {
+    return false;
+  }
+  const payload = value.slice(prefix.length);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(payload)) return false;
+  const lastIndex = BASE64URL_ALPHABET.indexOf(payload.at(-1) ?? '');
+  // 32 octets produisent 43 caractères : les deux bits bas du dernier sextet sont nuls.
+  return lastIndex >= 0 && lastIndex % 4 === 0;
+}
+
+function assertSecureApiBaseUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('API base URL invalide.');
+  }
+  const loopback =
+    url.protocol === 'http:' &&
+    (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  if (
+    (url.protocol !== 'https:' && !loopback) ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  )
+    throw new Error('API base URL non sûre : HTTPS requis hors développement local.');
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function decodePushRegistrationResponse(value: unknown): { status: 'bound' | 'superseded' } | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['status']) ||
+    (value.status !== 'bound' && value.status !== 'superseded')
+  )
+    return null;
+  return { status: value.status };
+}
+
+function decodePushRevocationResponse(value: unknown): { accepted: true } | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['accepted']) || value.accepted !== true)
+    return null;
+  return { accepted: true };
+}
+
+const COMPANY_BILLING_SETTINGS_FIELDS = [
+  'companyId',
+  'revision',
+  'showRibOnInvoices',
+  'showInsuranceOnInvoices',
+  'pdfAccentColor',
+  'defaultQuoteValidityDays',
+  'defaultDepositPercent',
+  'defaultInvoicePaymentTermsDays',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | null {
+  if (!isRecord(value) || !hasExactKeys(value, COMPANY_BILLING_SETTINGS_FIELDS)) return null;
+  if (
+    typeof value.companyId !== 'string' ||
+    value.companyId.length === 0 ||
+    !isBoundedInteger(value.revision, 1, Number.MAX_SAFE_INTEGER) ||
+    typeof value.showRibOnInvoices !== 'boolean' ||
+    typeof value.showInsuranceOnInvoices !== 'boolean' ||
+    !['navy', 'green', 'purple', 'orange'].includes(String(value.pdfAccentColor)) ||
+    !isBoundedInteger(value.defaultQuoteValidityDays, 1, 365) ||
+    !isBoundedInteger(value.defaultDepositPercent, 0, 100) ||
+    (value.defaultInvoicePaymentTermsDays !== null &&
+      !isBoundedInteger(value.defaultInvoicePaymentTermsDays, 1, 60)) ||
+    !isCanonicalIsoTimestamp(value.createdAt) ||
+    !isCanonicalIsoTimestamp(value.updatedAt) ||
+    value.updatedAt < value.createdAt
+  ) {
+    return null;
+  }
+  return value as unknown as CompanyBillingSettings;
+}
+
+function isBoundedInteger(value: unknown, min: number, max: number): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+}
+
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isMistralConversationSessionEndReason(
+  value: unknown,
+): value is MistralConversationSessionEndReason {
+  return (
+    typeof value === 'string' &&
+    MISTRAL_CONVERSATION_SESSION_END_REASONS.has(
+      value as MistralConversationSessionEndReason,
+    )
+  );
+}
+
+const CUSTOMER_LIST_ITEM_FIELDS = [
+  'id',
+  'name',
+  'type',
+  'address',
+  'contactName',
+  'score',
+  'scoreBand',
+  'scoreStatus',
+  'grossReceivableCents',
+  'issuedCreditCents',
+  'outstandingCents',
+  'customerCreditCents',
+  'siren',
+  'avgDelayDays',
+  'paidOnTimeRatio',
+  'paymentHistoryStatus',
+  'settledInvoiceCount',
+  'email',
+  'phone',
+] as const;
+
+/** B4/B6/B7 — champs ADDITIFS de la fiche (serveurs antérieurs : absents ⇒ normalisés). */
+const CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS = [
+  'paymentTerms',
+  'billingChannel',
+  'isInternational',
+  'paymentTermsLabel',
+  'isSubcontractingBtp',
+] as const;
+
+/** Clés de base toutes présentes + uniquement des clés connues (base ∪ optionnelles). */
+function hasBaseKeysWithOptional(
+  value: Record<string, unknown>,
+  base: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    base.every((key) => keys.includes(key)) &&
+    keys.every((key) => base.includes(key) || optional.includes(key))
+  );
+}
+
+/** B4 — { days, endOfMonth, label } strict ; null difforme (fail-closed, jamais casté). */
+function decodeCustomerPaymentTerms(value: unknown): CustomerPaymentTerms | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['days', 'endOfMonth', 'label']) ||
+    !Number.isSafeInteger(value.days) ||
+    (value.days as number) < 0 ||
+    typeof value.endOfMonth !== 'boolean' ||
+    typeof value.label !== 'string'
+  )
+    return null;
+  return { days: value.days as number, endOfMonth: value.endOfMonth, label: value.label };
+}
+
+/** Canal de facturation — champs annexes liés à LEUR type uniquement ; null difforme. */
+function decodeCustomerBillingChannel(value: unknown): CustomerBillingChannel | null {
+  if (!isRecord(value)) return null;
+  if (value.type !== 'email' && value.type !== 'chorus' && value.type !== 'portail') return null;
+  const allowed =
+    value.type === 'chorus'
+      ? ['type', 'chorusServiceCode']
+      : value.type === 'portail'
+        ? ['type', 'portailNom', 'portailUrl']
+        : ['type'];
+  if (!Object.keys(value).every((key) => allowed.includes(key))) return null;
+  if (value.chorusServiceCode !== undefined && typeof value.chorusServiceCode !== 'string')
+    return null;
+  if (value.portailNom !== undefined && typeof value.portailNom !== 'string') return null;
+  if (value.portailUrl !== undefined && typeof value.portailUrl !== 'string') return null;
+  return {
+    type: value.type,
+    ...(value.chorusServiceCode !== undefined
+      ? { chorusServiceCode: value.chorusServiceCode }
+      : {}),
+    ...(value.portailNom !== undefined ? { portailNom: value.portailNom } : {}),
+    ...(value.portailUrl !== undefined ? { portailUrl: value.portailUrl } : {}),
+  };
+}
+
+function isCustomerAddress(value: unknown): value is { line1: string; zip: string; city: string } {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['line1', 'zip', 'city']) &&
+    typeof value.line1 === 'string' &&
+    typeof value.zip === 'string' &&
+    typeof value.city === 'string'
+  );
+}
+
+function decodeCustomerListItem(value: unknown): CustomerListItem | null {
+  if (
+    !isRecord(value) ||
+    !hasBaseKeysWithOptional(value, CUSTOMER_LIST_ITEM_FIELDS, CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS)
+  )
+    return null;
+  if (
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    typeof value.name !== 'string' ||
+    value.name.length === 0 ||
+    (value.type !== 'b2c' && value.type !== 'b2b' && value.type !== 'b2g') ||
+    !isCustomerAddress(value.address) ||
+    (value.contactName !== null && typeof value.contactName !== 'string') ||
+    value.score !== null ||
+    value.scoreBand !== null ||
+    value.scoreStatus !== 'model_not_ratified' ||
+    !isBoundedInteger(value.grossReceivableCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.issuedCreditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.outstandingCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.customerCreditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    (value.siren !== null && typeof value.siren !== 'string') ||
+    (value.avgDelayDays !== null &&
+      !isBoundedInteger(value.avgDelayDays, 0, Number.MAX_SAFE_INTEGER)) ||
+    (value.paidOnTimeRatio !== null &&
+      (typeof value.paidOnTimeRatio !== 'number' ||
+        !Number.isFinite(value.paidOnTimeRatio) ||
+        value.paidOnTimeRatio < 0 ||
+        value.paidOnTimeRatio > 1)) ||
+    (value.paymentHistoryStatus !== 'known' &&
+      value.paymentHistoryStatus !== 'insufficient_history' &&
+      value.paymentHistoryStatus !== 'incomplete') ||
+    !isBoundedInteger(value.settledInvoiceCount, 0, Number.MAX_SAFE_INTEGER) ||
+    (value.email !== null && typeof value.email !== 'string') ||
+    (value.phone !== null && typeof value.phone !== 'string')
+  )
+    return null;
+
+  const net = value.grossReceivableCents - value.issuedCreditCents;
+  if (
+    value.outstandingCents !== Math.max(0, net) ||
+    value.customerCreditCents !== Math.max(0, -net) ||
+    (value.paymentHistoryStatus === 'known'
+      ? value.avgDelayDays === null ||
+        value.paidOnTimeRatio === null ||
+        value.settledInvoiceCount < 3
+      : value.avgDelayDays !== null || value.paidOnTimeRatio !== null)
+  )
+    return null;
+
+  // B4/B6/B7 — normalisation ADDITIVE : absent ⇒ null/false ; présent difforme ⇒ échec fermé
+  // (jamais une condition de paiement ou un canal castés en aveugle).
+  let paymentTerms: CustomerPaymentTerms | null = null;
+  if (value.paymentTerms !== undefined && value.paymentTerms !== null) {
+    paymentTerms = decodeCustomerPaymentTerms(value.paymentTerms);
+    if (paymentTerms === null) return null;
+  }
+  let billingChannel: CustomerBillingChannel | null = null;
+  if (value.billingChannel !== undefined && value.billingChannel !== null) {
+    billingChannel = decodeCustomerBillingChannel(value.billingChannel);
+    if (billingChannel === null) return null;
+  }
+  if (value.isInternational !== undefined && typeof value.isInternational !== 'boolean')
+    return null;
+  if (
+    value.paymentTermsLabel !== undefined &&
+    value.paymentTermsLabel !== null &&
+    typeof value.paymentTermsLabel !== 'string'
+  )
+    return null;
+  if (value.isSubcontractingBtp !== undefined && typeof value.isSubcontractingBtp !== 'boolean')
+    return null;
+
+  return {
+    ...(value as unknown as CustomerListItem),
+    paymentTerms,
+    billingChannel,
+    isInternational: value.isInternational === true,
+    paymentTermsLabel: (value.paymentTermsLabel as string | null | undefined) ?? null,
+    isSubcontractingBtp: value.isSubcontractingBtp === true,
+  };
+}
+
+function decodeCustomerList(value: unknown): CustomerListItem[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: CustomerListItem[] = [];
+  for (const candidate of value) {
+    const item = decodeCustomerListItem(candidate);
+    if (item === null) return null;
+    items.push(item);
+  }
+  return items;
+}
+
+/** Allowlist réseau explicite (création ET édition — même forme, cf. CustomersController) : un
+ * objet élargi à l'exécution ne fait jamais fuiter un champ non prévu vers l'API. */
+function customerClientBody(
+  input: CreateCustomerClientInput | UpdateCustomerClientInput,
+): CreateCustomerClientInput {
+  return {
+    type: input.type,
+    name: input.name,
+    address: { ...input.address },
+    ...(input.siren !== undefined ? { siren: input.siren } : {}),
+    ...(input.email !== undefined ? { email: input.email } : {}),
+    ...(input.phone !== undefined ? { phone: input.phone } : {}),
+    ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
+    ...(input.paymentTermsLabel !== undefined
+      ? { paymentTermsLabel: input.paymentTermsLabel }
+      : {}),
+    // B4/B6 — allowlist EXPLICITE (copies profondes) : sans elle, les conditions de paiement et
+    // le canal déclarés depuis la fiche mobile n'atteignaient jamais l'API (champ silencieusement
+    // perdu à chaque remplacement complet).
+    ...(input.paymentTerms !== undefined
+      ? { paymentTerms: { ...input.paymentTerms } }
+      : {}),
+    ...(input.billingChannel !== undefined
+      ? { billingChannel: { ...input.billingChannel } }
+      : {}),
+    ...(input.isInternational !== undefined ? { isInternational: input.isInternational } : {}),
+    ...(input.isSubcontractingBtp !== undefined
+      ? { isSubcontractingBtp: input.isSubcontractingBtp }
+      : {}),
+  };
+}
+
+function decodeCatalogueItem(value: unknown): CatalogueItemView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'id',
+      'label',
+      'category',
+      'unit',
+      'unitPriceHT',
+      'vatRate',
+      'revision',
+      'createdAt',
+      'updatedAt',
+    ]) ||
+    !isBoundedInteger(value.revision, 1, Number.MAX_SAFE_INTEGER) ||
+    !isCanonicalIsoTimestamp(value.createdAt) ||
+    !isCanonicalIsoTimestamp(value.updatedAt)
+  )
+    return null;
+  const item = parseCustomPrestation({
+    id: value.id,
+    label: value.label,
+    category: value.category,
+    unit: value.unit,
+    unitPriceHT: value.unitPriceHT,
+    vatRate: value.vatRate,
+  });
+  return item === null
+    ? null
+    : {
+        ...item,
+        revision: value.revision,
+        createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
+      };
+}
+
+function decodeCatalogueItems(value: unknown): readonly CatalogueItemView[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: CatalogueItemView[] = [];
+  for (const candidate of value) {
+    const item = decodeCatalogueItem(candidate);
+    if (item === null) return null;
+    items.push(item);
+  }
+  return items;
+}
+
+function decodeCatalogueDeletion(value: unknown): CatalogueDeletionView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['id', 'deleted']) ||
+    !isCustomPrestationId(value.id) ||
+    value.deleted !== true
+  )
+    return null;
+  return { id: value.id, deleted: true };
+}
+
+const ACCOUNTING_PREVIEW_LINE_FIELDS = ['account', 'label', 'debitCents', 'creditCents'] as const;
+
+function decodeAccountingPreviewLine(value: unknown): AccountingPreviewLine | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ACCOUNTING_PREVIEW_LINE_FIELDS) ||
+    typeof value.account !== 'string' ||
+    value.account.trim() !== value.account ||
+    value.account.length === 0 ||
+    typeof value.label !== 'string' ||
+    value.label.trim() !== value.label ||
+    value.label.length === 0 ||
+    !isBoundedInteger(value.debitCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.creditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    value.debitCents > 0 === value.creditCents > 0
+  )
+    return null;
+  return {
+    account: value.account,
+    label: value.label,
+    debitCents: value.debitCents,
+    creditCents: value.creditCents,
+  };
+}
+
+function decodeAccountingPreviewLines(value: unknown): AccountingPreviewLine[] | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const lines: AccountingPreviewLine[] = [];
+  for (const candidate of value) {
+    const line = decodeAccountingPreviewLine(candidate);
+    if (line === null) return null;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function sumAccountingSide(
+  lines: readonly AccountingPreviewLine[],
+  side: 'debitCents' | 'creditCents',
+): number | null {
+  let total = 0;
+  for (const line of lines) {
+    if (total > Number.MAX_SAFE_INTEGER - line[side]) return null;
+    total += line[side];
+  }
+  return total;
+}
+
+function isCanonicalDateOnly(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const instant = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(instant) && new Date(instant).toISOString().slice(0, 10) === value;
+}
+
+function isNonEmptyCanonicalString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+/** Réponse de PATCH /invoices/:id/transmission — fail-closed sur toute forme inattendue. */
+function decodeTransmissionEnvelope(
+  value: unknown,
+): { transmission: InvoiceTransmissionStatus | null } | null {
+  if (!isRecord(value)) return null;
+  if (value.transmission === null || value.transmission === undefined) {
+    return { transmission: null };
+  }
+  const transmission = decodeTransmission(value.transmission);
+  if (transmission === null) return null;
+  return { transmission };
+}
+
+function decodeInvoiceAccountingPreview(
+  value: unknown,
+  expectedInvoiceId: string,
+): InvoiceAccountingPreview | null {
+  if (!isRecord(value) || value.invoiceId !== expectedInvoiceId) return null;
+  if (value.available === false) {
+    if (
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason']) ||
+      !isNonEmptyCanonicalString(value.reason)
+    )
+      return null;
+    return { invoiceId: expectedInvoiceId, available: false, reason: value.reason };
+  }
+  if (
+    value.available !== true ||
+    !hasExactKeys(value, [
+      'invoiceId',
+      'available',
+      'entryId',
+      'reference',
+      'entryDate',
+      'label',
+      'totalDebitCents',
+      'totalCreditCents',
+      'lines',
+    ]) ||
+    !isNonEmptyCanonicalString(value.entryId) ||
+    !isNonEmptyCanonicalString(value.reference) ||
+    !isCanonicalDateOnly(value.entryDate) ||
+    !isNonEmptyCanonicalString(value.label) ||
+    !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+  )
+    return null;
+  const lines = decodeAccountingPreviewLines(value.lines);
+  if (lines === null) return null;
+  const totalDebitCents = sumAccountingSide(lines, 'debitCents');
+  const totalCreditCents = sumAccountingSide(lines, 'creditCents');
+  if (
+    totalDebitCents === null ||
+    totalCreditCents === null ||
+    totalDebitCents !== value.totalDebitCents ||
+    totalCreditCents !== value.totalCreditCents ||
+    totalDebitCents !== totalCreditCents
+  )
+    return null;
+  return {
+    invoiceId: expectedInvoiceId,
+    available: true,
+    entryId: value.entryId,
+    reference: value.reference,
+    entryDate: value.entryDate,
+    label: value.label,
+    totalDebitCents,
+    totalCreditCents,
+    lines,
+  };
+}
+
+function decodePaymentAccountingPreview(
+  value: unknown,
+  expected: { invoiceId: string; amountCents: number; method: PaymentMethod },
+): PaymentAccountingPreview | null {
+  if (!isRecord(value) || value.invoiceId !== expected.invoiceId) return null;
+  if (value.available === false) {
+    if (
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason']) ||
+      !isNonEmptyCanonicalString(value.reason)
+    )
+      return null;
+    return { invoiceId: expected.invoiceId, available: false, reason: value.reason };
+  }
+  if (
+    value.available !== true ||
+    !hasExactKeys(value, [
+      'invoiceId',
+      'available',
+      'reference',
+      'amountCents',
+      'remainingCents',
+      'method',
+      'totalDebitCents',
+      'totalCreditCents',
+      'lines',
+    ]) ||
+    value.amountCents !== expected.amountCents ||
+    value.method !== expected.method ||
+    !isNonEmptyCanonicalString(value.reference) ||
+    !isBoundedInteger(value.amountCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.remainingCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+  )
+    return null;
+  const lines = decodeAccountingPreviewLines(value.lines);
+  if (lines === null) return null;
+  const totalDebitCents = sumAccountingSide(lines, 'debitCents');
+  const totalCreditCents = sumAccountingSide(lines, 'creditCents');
+  if (
+    totalDebitCents === null ||
+    totalCreditCents === null ||
+    totalDebitCents !== value.totalDebitCents ||
+    totalCreditCents !== value.totalCreditCents ||
+    totalDebitCents !== totalCreditCents ||
+    totalDebitCents !== expected.amountCents
+  )
+    return null;
+  return {
+    invoiceId: expected.invoiceId,
+    available: true,
+    reference: value.reference,
+    amountCents: value.amountCents,
+    remainingCents: value.remainingCents,
+    method: expected.method,
+    totalDebitCents,
+    totalCreditCents,
+    lines,
+  };
+}
+
+function isMistralRealtimeWebsocketUrl(
+  value: unknown,
+  expectedApiBaseUrl: string,
+): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    const api = new URL(expectedApiBaseUrl);
+    if (
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== '' ||
+      url.pathname !== '/v1/voice/realtime/mistral'
+    )
+      return false;
+    const sameAuthority = url.hostname === api.hostname && url.port === api.port;
+    if (!sameAuthority) return false;
+    if (api.protocol === 'https:') return url.protocol === 'wss:';
+    const loopback =
+      api.protocol === 'http:' &&
+      (api.hostname === 'localhost' || api.hostname === '127.0.0.1' || api.hostname === '[::1]');
+    return loopback && url.protocol === 'ws:';
+  } catch {
+    return false;
+  }
+}
+
+function isRealtimeSpeechAudioUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4_096) return false;
+  try {
+    const url = new URL(value);
+    if (url.username !== '' || url.password !== '' || url.hash !== '') return false;
+    if (url.protocol === 'https:') return true;
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function decodeRealtimeVoiceControlReference(value: unknown): RealtimeVoiceControlReference | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest']) ||
+    typeof value.turnId !== 'string' ||
+    !UUID_PATTERN.test(value.turnId) ||
+    typeof value.acknowledgementId !== 'string' ||
+    !UUID_PATTERN.test(value.acknowledgementId) ||
+    !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+    typeof value.contextDigest !== 'string' ||
+    !SHA_256_PATTERN.test(value.contextDigest)
+  )
+    return null;
+  return {
+    turnId: value.turnId,
+    acknowledgementId: value.acknowledgementId,
+    contextRevision: value.contextRevision,
+    contextDigest: value.contextDigest,
+  };
+}
+
+function decodeRealtimeVoiceSpeechBinding(value: Record<string, unknown>): {
+  artifactId: string;
+  turnId: string;
+  sequence: number;
+  contextRevision: number;
+  contextDigest: string;
+} | null {
+  if (
+    typeof value.artifactId !== 'string' ||
+    !UUID_PATTERN.test(value.artifactId) ||
+    typeof value.turnId !== 'string' ||
+    !UUID_PATTERN.test(value.turnId) ||
+    !isBoundedInteger(value.sequence, 1, REALTIME_SPEECH_MAX_SEQUENCE) ||
+    !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+    typeof value.contextDigest !== 'string' ||
+    !SHA_256_PATTERN.test(value.contextDigest)
+  )
+    return null;
+  return {
+    artifactId: value.artifactId,
+    turnId: value.turnId,
+    sequence: value.sequence,
+    contextRevision: value.contextRevision,
+    contextDigest: value.contextDigest,
+  };
+}
+
+function decodeRealtimeVoiceSpeechFeed(
+  status: number,
+  value: unknown,
+): RealtimeVoiceSpeechFeed | null {
+  if (status === 204) return value === undefined ? { status: 'none' } : null;
+  if (!isRecord(value)) return null;
+  const binding = decodeRealtimeVoiceSpeechBinding(value);
+  if (!binding) return null;
+  if (
+    status === 202 &&
+    value.status === 'rendering' &&
+    hasExactKeys(value, [
+      'status',
+      'artifactId',
+      'turnId',
+      'sequence',
+      'contextRevision',
+      'contextDigest',
+    ])
+  )
+    return { status: 'rendering', ...binding };
+  if (
+    status === 200 &&
+    hasExactKeys(value, [
+      'artifactId',
+      'turnId',
+      'audioUrl',
+      'audioSha256',
+      'mimeType',
+      'byteSize',
+      'durationMs',
+      'sequence',
+      'contextRevision',
+      'contextDigest',
+    ]) &&
+    isRealtimeSpeechAudioUrl(value.audioUrl) &&
+    typeof value.audioSha256 === 'string' &&
+    SHA_256_PATTERN.test(value.audioSha256) &&
+    typeof value.mimeType === 'string' &&
+    REALTIME_SPEECH_MIME_TYPES.has(value.mimeType as RealtimeVoiceSpeechMimeType) &&
+    isBoundedInteger(
+      value.byteSize,
+      REALTIME_SPEECH_MIN_AUDIO_BYTES,
+      REALTIME_SPEECH_MAX_AUDIO_BYTES,
+    ) &&
+    isBoundedInteger(
+      value.durationMs,
+      REALTIME_SPEECH_MIN_DURATION_MS,
+      REALTIME_SPEECH_MAX_DURATION_MS,
+    )
+  ) {
+    return {
+      status: 'ready',
+      ...binding,
+      audioUrl: value.audioUrl,
+      audioSha256: value.audioSha256,
+      mimeType: value.mimeType as RealtimeVoiceSpeechMimeType,
+      byteSize: value.byteSize,
+      durationMs: value.durationMs,
+    };
+  }
+  if (
+    status === 410 &&
+    value.status === 'terminal' &&
+    (value.reason === 'cancelled' ||
+      value.reason === 'failed' ||
+      value.reason === 'expired' ||
+      value.reason === 'delivered') &&
+    hasExactKeys(value, [
+      'status',
+      'artifactId',
+      'turnId',
+      'sequence',
+      'reason',
+      'contextRevision',
+      'contextDigest',
+    ])
+  )
+    return { status: 'terminal', ...binding, reason: value.reason };
+  return null;
+}
+
+function decodeRealtimeVoiceSpeechDelivery(
+  status: number,
+  value: unknown,
+  expectedTurnId: string,
+): RealtimeVoiceSpeechDeliveryAcknowledgement | null {
+  if (status !== 200) return null;
+  if (value === undefined) return {};
+  if (!isRecord(value)) return null;
+  if (hasExactKeys(value, [])) return {};
+  if (!hasExactKeys(value, ['controlReference'])) return null;
+  const controlReference = decodeRealtimeVoiceControlReference(value.controlReference);
+  return controlReference?.turnId === expectedTurnId ? { controlReference } : null;
+}
+
+function isBoundedString(value: unknown, maxLength = 1_000): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength;
+}
+
+function decodeHttpAppError(value: unknown): AppError | null {
+  if (!isRecord(value) || !isRecord(value.error)) return null;
+  const error = value.error;
+  if (
+    error.kind === 'not_found' &&
+    hasExactKeys(error, ['kind', 'entity', 'id']) &&
+    isBoundedString(error.entity, 120) &&
+    isBoundedString(error.id, 200)
+  )
+    return { kind: 'not_found', entity: error.entity, id: error.id };
+  if (
+    error.kind === 'conflict' &&
+    hasExactKeys(error, ['kind', 'entity', 'reason']) &&
+    isBoundedString(error.entity, 120) &&
+    isBoundedString(error.reason)
+  )
+    return { kind: 'conflict', entity: error.entity, reason: error.reason };
+  if (
+    error.kind === 'forbidden' &&
+    hasExactKeys(error, ['kind', 'reason']) &&
+    isBoundedString(error.reason)
+  )
+    return { kind: 'forbidden', reason: error.reason };
+  if (
+    error.kind === 'rate_limited' &&
+    hasExactKeys(error, ['kind', 'reason', 'retryAfterSeconds']) &&
+    isBoundedString(error.reason) &&
+    isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
+  ) {
+    return {
+      kind: 'rate_limited',
+      reason: error.reason,
+      retryAfterSeconds: error.retryAfterSeconds,
+    };
+  }
+  if (
+    error.kind === 'unavailable' &&
+    (hasExactKeys(error, ['kind', 'service']) ||
+      hasExactKeys(error, ['kind', 'service', 'retryAfterSeconds'])) &&
+    isBoundedString(error.service, 120) &&
+    (error.retryAfterSeconds === undefined || isBoundedInteger(error.retryAfterSeconds, 0, 86_400))
+  ) {
+    return {
+      kind: 'unavailable',
+      service: error.service,
+      ...(typeof error.retryAfterSeconds === 'number'
+        ? { retryAfterSeconds: error.retryAfterSeconds }
+        : {}),
+    };
+  }
+  if (
+    error.kind === 'dependency' &&
+    hasExactKeys(error, ['kind', 'port', 'cause']) &&
+    isBoundedString(error.port, 120) &&
+    isBoundedString(error.cause)
+  )
+    return { kind: 'dependency', port: error.port, cause: error.cause };
+  if (
+    error.kind === 'validation' &&
+    hasExactKeys(error, ['kind', 'issues']) &&
+    Array.isArray(error.issues) &&
+    error.issues.length > 0 &&
+    error.issues.length <= 20
+  ) {
+    const issues = error.issues.map((issue) => {
+      if (
+        !isRecord(issue) ||
+        !hasExactKeys(issue, ['field', 'message']) ||
+        !isBoundedString(issue.field, 160) ||
+        !isBoundedString(issue.message)
+      )
+        return null;
+      return { field: issue.field, message: issue.message };
+    });
+    if (issues.every((issue): issue is { field: string; message: string } => issue !== null)) {
+      return { kind: 'validation', issues };
+    }
+  }
+  return null;
+}
+
+async function readBoundedJsonBody(response: Response, maxBytes: number): Promise<unknown> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
+      await response.body?.cancel();
+      throw new Error('Corps HTTP Bob Live trop volumineux.');
+    }
+  }
+
+  let raw: string;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let byteLength = 0;
+    let text = '';
+    try {
+      let reading = true;
+      while (reading) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          reading = false;
+          continue;
+        }
+        byteLength += chunk.value.byteLength;
+        if (byteLength > maxBytes) {
+          await reader.cancel();
+          throw new Error('Corps HTTP Bob Live trop volumineux.');
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      raw = text + decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    raw = await response.text();
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+      throw new Error('Corps HTTP Bob Live trop volumineux.');
+    }
+  }
+
+  if (raw.length === 0) return undefined;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  const mediaType = contentType.split(';', 1)[0]?.trim();
+  if (mediaType !== 'application/json') {
+    throw new Error('Type de réponse HTTP Bob Live invalide.');
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error('JSON Bob Live invalide.');
+  }
+}
+
+function invalidRealtimeSpeechInput<T>(
+  field: string,
+  message: string,
+): Promise<Result<T, AppError>> {
+  return Promise.resolve({
+    ok: false,
+    error: { kind: 'validation', issues: [{ field, message }] },
+  });
+}
+
+function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.available !== 'boolean' ||
+    (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm') ||
+    typeof value.model !== 'string' ||
+    value.model.length === 0 ||
+    value.model.length > 100 ||
+    (value.voice !== 'marin' && value.voice !== 'cedar') ||
+    typeof value.configVersion !== 'string' ||
+    !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    value.requiresDevelopmentBuild !== true ||
+    typeof value.maxSessionSeconds !== 'number' ||
+    !Number.isInteger(value.maxSessionSeconds) ||
+    value.maxSessionSeconds < 60 ||
+    value.maxSessionSeconds > 900 ||
+    value.speechDelivery !== 'audited-signed-url-v1' ||
+    (value.transport === 'webrtc' && value.protocol !== undefined) ||
+    (value.transport === 'mistral-pcm' &&
+      value.protocol !== undefined &&
+      value.protocol !== 'bob.mistral-pcm.v1' &&
+      value.protocol !== 'bob.mistral-pcm.v2') ||
+    (value.availabilityReason !== undefined &&
+      value.availabilityReason !== 'disabled' &&
+      value.availabilityReason !== 'not_entitled' &&
+      value.availabilityReason !== 'entitlement_unavailable')
+  )
+    return null;
+  const availabilityReason =
+    value.availabilityReason === 'disabled' ||
+    value.availabilityReason === 'not_entitled' ||
+    value.availabilityReason === 'entitlement_unavailable'
+      ? value.availabilityReason
+      : null;
+  return {
+    available: value.available,
+    ...(availabilityReason === null ? {} : { availabilityReason }),
+    transport: value.transport,
+    model: value.model,
+    voice: value.voice,
+    configVersion: value.configVersion,
+    requiresDevelopmentBuild: true,
+    maxSessionSeconds: value.maxSessionSeconds,
+    speechDelivery: 'audited-signed-url-v1',
+    ...(value.transport === 'mistral-pcm' &&
+      (value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
+      ? { protocol: value.protocol }
+      : {}),
+  };
+}
+
+function decodeRealtimeSpeechSourcePolicy(
+  value: unknown,
+  expectedCompanyId: string,
+  expectedSessionHandle: string,
+): import('./client').RealtimeVoiceSpeechSourcePolicy | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['mode', 'allowedOrigin', 'allowedPathPrefix'])) {
+    return null;
+  }
+  if (
+    value.mode !== 'signed-url-v1' ||
+    typeof value.allowedOrigin !== 'string' ||
+    typeof value.allowedPathPrefix !== 'string' ||
+    value.allowedOrigin.length > 2_048 ||
+    value.allowedPathPrefix.length > 2_048
+  )
+    return null;
+  let origin: URL;
+  let fullPrefix: URL;
+  try {
+    origin = new URL(value.allowedOrigin);
+    fullPrefix = new URL(value.allowedPathPrefix, value.allowedOrigin);
+  } catch {
+    return null;
+  }
+  const loopback =
+    origin.protocol === 'http:' &&
+    (origin.hostname === 'localhost' ||
+      origin.hostname === '127.0.0.1' ||
+      origin.hostname === '[::1]');
+  if (
+    (origin.protocol !== 'https:' && !loopback) ||
+    origin.origin !== value.allowedOrigin ||
+    origin.pathname !== '/' ||
+    origin.username !== '' ||
+    origin.password !== '' ||
+    origin.search !== '' ||
+    origin.hash !== '' ||
+    fullPrefix.origin !== value.allowedOrigin ||
+    fullPrefix.pathname !== value.allowedPathPrefix ||
+    fullPrefix.search !== '' ||
+    fullPrefix.hash !== '' ||
+    !value.allowedPathPrefix.startsWith('/') ||
+    !value.allowedPathPrefix.endsWith('/') ||
+    value.allowedPathPrefix.includes('%')
+  )
+    return null;
+  const segments = value.allowedPathPrefix.split('/');
+  if (segments[0] !== '' || segments.at(-1) !== '') return null;
+  const body = segments.slice(1, -1);
+  if (body.some((segment) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u.test(segment))) return null;
+  const tail = body.slice(-9);
+  if (
+    tail.length !== 9 ||
+    tail[0] !== 'storage' ||
+    tail[1] !== 'v1' ||
+    tail[2] !== 'object' ||
+    tail[3] !== 'sign' ||
+    !/^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/u.test(tail[4] ?? '') ||
+    tail[5] !== 'companies' ||
+    tail[6] !== expectedCompanyId ||
+    tail[7] !== 'bob-live' ||
+    tail[8] !== expectedSessionHandle
+  )
+    return null;
+  return {
+    mode: 'signed-url-v1',
+    allowedOrigin: value.allowedOrigin,
+    allowedPathPrefix: value.allowedPathPrefix,
+  };
+}
+
+function decodeRealtimeVoiceCall(
+  value: unknown,
+  expectedCompanyId: string,
+  expectedApiBaseUrl: string,
+): RealtimeVoiceCall | null {
+  if (!isRecord(value)) return null;
+  const commonKeys = [
+    'transport',
+    'sessionHandle',
+    'hardExpiresAt',
+    'model',
+    'voice',
+    'configVersion',
+    'maxSessionSeconds',
+    'speechSourcePolicy',
+  ] as const;
+  if (
+    typeof value.sessionHandle !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.sessionHandle,
+    ) ||
+    !isCanonicalIsoTimestamp(value.hardExpiresAt) ||
+    typeof value.model !== 'string' ||
+    value.model.length === 0 ||
+    value.model.length > 100 ||
+    (value.voice !== 'marin' && value.voice !== 'cedar') ||
+    typeof value.configVersion !== 'string' ||
+    !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    typeof value.maxSessionSeconds !== 'number' ||
+    !Number.isInteger(value.maxSessionSeconds) ||
+    value.maxSessionSeconds < 60 ||
+    value.maxSessionSeconds > 900
+  )
+    return null;
+
+  const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+    value.speechSourcePolicy,
+    expectedCompanyId,
+    value.sessionHandle,
+  );
+  if (!speechSourcePolicy) return null;
+
+  const common = {
+    sessionHandle: value.sessionHandle,
+    hardExpiresAt: value.hardExpiresAt,
+    model: value.model,
+    voice: value.voice,
+    configVersion: value.configVersion,
+    maxSessionSeconds: value.maxSessionSeconds,
+    speechSourcePolicy,
+  } as const;
+
+  if (value.transport === 'webrtc') {
+    if (
+      !hasExactKeys(value, [...commonKeys, 'answerSdp']) ||
+      typeof value.answerSdp !== 'string' ||
+      value.answerSdp.length < 16 ||
+      value.answerSdp.length > 256 * 1024 ||
+      !value.answerSdp.startsWith('v=0')
+    )
+      return null;
+    return { transport: 'webrtc', answerSdp: value.answerSdp, ...common };
+  }
+
+  if (value.transport === 'mistral-pcm') {
+    if (value.protocol === 'bob.mistral-pcm.v2') {
+      if (
+        !hasExactKeys(value, [
+          ...commonKeys,
+          'websocketUrl',
+          'companyId',
+          'ticket',
+          'protocol',
+          'ticketExpiresAt',
+          'maxMissionAudioBytes',
+          'contextRevision',
+          'contextDigest',
+          'routeMode',
+          'fullDuplexCertified',
+        ])
+        || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl)
+        || typeof value.companyId !== 'string'
+        || !COMPANY_ID_PATTERN.test(value.companyId)
+        || value.companyId !== expectedCompanyId
+        || typeof value.ticket !== 'string'
+        || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(value.ticket)
+        || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
+        || Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt)
+        || !isBoundedInteger(value.maxMissionAudioBytes, 320, 28_800_000)
+        || value.maxMissionAudioBytes % 320 !== 0
+        || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
+        || typeof value.contextDigest !== 'string'
+        || !SHA_256_PATTERN.test(value.contextDigest)
+        || value.routeMode !== 'push_to_talk'
+        || value.fullDuplexCertified !== false
+      ) return null;
+      return {
+        transport: 'mistral-pcm',
+        websocketUrl: value.websocketUrl,
+        companyId: value.companyId,
+        ticket: value.ticket,
+        protocol: value.protocol,
+        ticketExpiresAt: value.ticketExpiresAt,
+        maxMissionAudioBytes: value.maxMissionAudioBytes,
+        contextRevision: value.contextRevision,
+        contextDigest: value.contextDigest,
+        routeMode: value.routeMode,
+        fullDuplexCertified: value.fullDuplexCertified,
+        ...common,
+      };
+    }
+    if (
+      !hasExactKeys(value, [
+        ...commonKeys,
+        'websocketUrl',
+        'companyId',
+        'ticket',
+        'protocol',
+        'ticketExpiresAt',
+        'maxAudioBytes',
+        'contextRevision',
+        'contextDigest',
+      ]) ||
+      !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl) ||
+      typeof value.companyId !== 'string' ||
+      !COMPANY_ID_PATTERN.test(value.companyId) ||
+      value.companyId !== expectedCompanyId ||
+      typeof value.ticket !== 'string' ||
+      !MISTRAL_REALTIME_TICKET_PATTERN.test(value.ticket) ||
+      value.protocol !== 'bob.mistral-pcm.v1' ||
+      !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+      Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt) ||
+      !isBoundedInteger(value.maxAudioBytes, 32_000, 28_800_000) ||
+      value.maxAudioBytes % 2 !== 0 ||
+      !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+      typeof value.contextDigest !== 'string' ||
+      !SHA_256_PATTERN.test(value.contextDigest)
+    )
+      return null;
+    return {
+      transport: 'mistral-pcm',
+      websocketUrl: value.websocketUrl,
+      companyId: value.companyId,
+      ticket: value.ticket,
+      protocol: value.protocol,
+      ticketExpiresAt: value.ticketExpiresAt,
+      maxAudioBytes: value.maxAudioBytes,
+      contextRevision: value.contextRevision,
+      contextDigest: value.contextDigest,
+      ...common,
+    };
+  }
+  return null;
+}
+
+function decodeRealtimeVoiceResumeTicket(
+  value: unknown,
+  expected: {
+    readonly apiBaseUrl: string;
+    readonly companyId: string;
+    readonly sessionHandle: string;
+    readonly input: RealtimeVoiceResumeTicketInput;
+  },
+): RealtimeVoiceResumeTicketResult | null {
+  if (!isRecord(value)) return null;
+  if (value.status === 'terminal_complete') {
+    if (
+      !hasExactKeys(value, [
+        'status',
+        'companyId',
+        'sessionHandle',
+        'protocol',
+        'missionConnectionEpoch',
+        'nextServerSequence',
+        'reason',
+        'closedAt',
+      ]) ||
+      value.companyId !== expected.companyId ||
+      value.sessionHandle !== expected.sessionHandle ||
+      value.protocol !== 'bob.mistral-pcm.v2' ||
+      !isBoundedInteger(
+        value.missionConnectionEpoch,
+        1,
+        MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+      ) ||
+      value.missionConnectionEpoch < expected.input.missionConnectionEpoch ||
+      !isBoundedInteger(
+        value.nextServerSequence,
+        3,
+        MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+      ) ||
+      value.nextServerSequence < expected.input.nextServerSequence ||
+      (
+        value.missionConnectionEpoch > expected.input.missionConnectionEpoch &&
+        value.nextServerSequence <= expected.input.nextServerSequence
+      ) ||
+      !isMistralConversationSessionEndReason(value.reason) ||
+      !isCanonicalIsoTimestamp(value.closedAt)
+    ) {
+      return null;
+    }
+    return {
+      status: value.status,
+      companyId: value.companyId,
+      sessionHandle: value.sessionHandle,
+      protocol: value.protocol,
+      missionConnectionEpoch: value.missionConnectionEpoch,
+      nextServerSequence: value.nextServerSequence,
+      reason: value.reason,
+      closedAt: value.closedAt,
+    };
+  }
+  if (
+    value.status !== 'issued' ||
+    !hasExactKeys(value, [
+      'status',
+      'websocketUrl',
+      'companyId',
+      'sessionHandle',
+      'ticket',
+      'protocol',
+      'scope',
+      'ticketExpiresAt',
+      'expectedMissionConnectionEpoch',
+      'clientAcceptedMissionConnectionEpoch',
+      'resumeNextServerSequence',
+    ]) ||
+    !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl) ||
+    typeof value.companyId !== 'string' ||
+    !COMPANY_ID_PATTERN.test(value.companyId) ||
+    value.companyId !== expected.companyId ||
+    typeof value.sessionHandle !== 'string' ||
+    value.sessionHandle !== expected.sessionHandle ||
+    typeof value.ticket !== 'string' ||
+    !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket) ||
+    value.protocol !== 'bob.mistral-pcm.v2' ||
+    value.scope !== 'terminal_replay' ||
+    !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+    !isBoundedInteger(
+      value.expectedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    ) ||
+    !isBoundedInteger(
+      value.clientAcceptedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    ) ||
+    value.clientAcceptedMissionConnectionEpoch !== expected.input.missionConnectionEpoch ||
+    value.expectedMissionConnectionEpoch < value.clientAcceptedMissionConnectionEpoch ||
+    !isBoundedInteger(
+      value.resumeNextServerSequence,
+      0,
+      MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+    ) ||
+    Object.is(value.resumeNextServerSequence, -0) ||
+    value.resumeNextServerSequence !== expected.input.nextServerSequence
+  ) {
+    return null;
+  }
+  return {
+    status: 'issued',
+    websocketUrl: value.websocketUrl,
+    companyId: value.companyId,
+    sessionHandle: value.sessionHandle,
+    ticket: value.ticket,
+    protocol: value.protocol,
+    scope: value.scope,
+    ticketExpiresAt: value.ticketExpiresAt,
+    expectedMissionConnectionEpoch: value.expectedMissionConnectionEpoch,
+    clientAcceptedMissionConnectionEpoch: value.clientAcceptedMissionConnectionEpoch,
+    resumeNextServerSequence: value.resumeNextServerSequence,
+  };
+}
+
+function decodeRealtimeVoiceBootstrapReconciliation(
+  value: unknown,
+  expected: {
+    readonly apiBaseUrl: string;
+    readonly companyId: string;
+    readonly sessionHandle: string;
+  },
+): RealtimeVoiceBootstrapReconciliationResult | null {
+  if (!isRecord(value)) return null;
+  if (value.status === 'retry_initial' || value.status === 'attempt_consumed') {
+    return hasExactKeys(value, ['status']) ? { status: value.status } : null;
+  }
+  if (
+    value.status !== 'issued'
+    || !hasExactKeys(value, [
+      'status',
+      'websocketUrl',
+      'companyId',
+      'sessionHandle',
+      'ticket',
+      'protocol',
+      'scope',
+      'ticketExpiresAt',
+      'expectedMissionConnectionEpoch',
+      'clientAcceptedMissionConnectionEpoch',
+      'resumeNextServerSequence',
+    ])
+    || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expected.apiBaseUrl)
+    || typeof value.companyId !== 'string'
+    || !COMPANY_ID_PATTERN.test(value.companyId)
+    || value.companyId !== expected.companyId
+    || value.sessionHandle !== expected.sessionHandle
+    || typeof value.ticket !== 'string'
+    || !MISTRAL_CONVERSATION_RESUME_TICKET_PATTERN.test(value.ticket)
+    || !isCanonicalBase64Url256Ticket(value.ticket, 'r2_')
+    || value.protocol !== 'bob.mistral-pcm.v2'
+    || (value.scope !== 'live_takeover' && value.scope !== 'terminal_replay')
+    || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
+    || !isBoundedInteger(
+      value.expectedMissionConnectionEpoch,
+      1,
+      MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+    )
+    || value.clientAcceptedMissionConnectionEpoch !== 0
+    || value.resumeNextServerSequence !== 0
+  ) return null;
+  return {
+    status: 'issued',
+    websocketUrl: value.websocketUrl,
+    companyId: value.companyId,
+    sessionHandle: expected.sessionHandle,
+    ticket: value.ticket,
+    protocol: 'bob.mistral-pcm.v2',
+    scope: value.scope,
+    ticketExpiresAt: value.ticketExpiresAt,
+    expectedMissionConnectionEpoch: value.expectedMissionConnectionEpoch,
+    clientAcceptedMissionConnectionEpoch: 0,
+    resumeNextServerSequence: 0,
+  };
+}
+
+function decodeRealtimeVoiceControlAcknowledgement(
+  value: unknown,
+): RealtimeVoiceControlAcknowledgement | null {
+  if (!isRecord(value)) return null;
+  const allowed = new Set([
+    'turnId',
+    'acknowledgementId',
+    'kind',
+    'contextRevision',
+    'contextDigest',
+    'navigate',
+    'proposalId',
+    'proposalExpiresAt',
+  ]);
+  const required = ['turnId', 'acknowledgementId', 'kind', 'contextRevision', 'contextDigest'];
+  if (
+    required.some((key) => !(key in value)) ||
+    Object.keys(value).some((key) => !allowed.has(key)) ||
+    typeof value.turnId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.turnId,
+    ) ||
+    typeof value.acknowledgementId !== 'string' ||
+    !UUID_PATTERN.test(value.acknowledgementId) ||
+    (value.kind !== 'answer' && value.kind !== 'proposed' && value.kind !== 'done') ||
+    !Number.isSafeInteger(value.contextRevision) ||
+    (value.contextRevision as number) < 1 ||
+    (value.contextRevision as number) > 2_147_483_647 ||
+    typeof value.contextDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(value.contextDigest) ||
+    (value.navigate !== undefined && !isAllowedAgentNavigationRoute(value.navigate)) ||
+    (value.proposalId !== undefined &&
+      (typeof value.proposalId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          value.proposalId,
+        ))) ||
+    (value.proposalExpiresAt !== undefined &&
+      (typeof value.proposalExpiresAt !== 'string' ||
+        value.proposalExpiresAt.length > 40 ||
+        !Number.isFinite(Date.parse(value.proposalExpiresAt)) ||
+        value.proposalId === undefined))
+  )
+    return null;
+  return {
+    turnId: value.turnId,
+    acknowledgementId: value.acknowledgementId,
+    kind: value.kind,
+    contextRevision: value.contextRevision as number,
+    contextDigest: value.contextDigest,
+    ...(typeof value.navigate === 'string' ? { navigate: value.navigate } : {}),
+    ...(typeof value.proposalId === 'string' ? { proposalId: value.proposalId } : {}),
+    ...(typeof value.proposalExpiresAt === 'string'
+      ? { proposalExpiresAt: value.proposalExpiresAt }
+      : {}),
+  };
 }
 
 /**
@@ -59,6 +1677,7 @@ export class HttpBobClient implements BobClient {
   readonly companyId: string;
 
   constructor(private readonly opts: HttpBobClientOptions) {
+    assertSecureApiBaseUrl(opts.baseUrl);
     this.companyId = opts.companyId;
   }
 
@@ -67,21 +1686,70 @@ export class HttpBobClient implements BobClient {
     path: string,
     body?: unknown,
     headers?: Record<string, string>,
+    decode?: (value: unknown) => T | null,
+    timeoutMs?: number,
+    externalSignal?: AbortSignal,
   ): Promise<Result<T, AppError>> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeExternalAbort: (() => void) | undefined;
     try {
-      const token = this.opts.getToken ? await this.opts.getToken() : null;
+      if (externalSignal?.aborted) throw new Error('Requête annulée.');
+      const controller =
+        timeoutMs === undefined && externalSignal === undefined ? null : new AbortController();
+      const externalDeadline =
+        externalSignal === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              const abort = (): void => {
+                controller?.abort();
+                reject(new Error('Requête annulée.'));
+              };
+              externalSignal.addEventListener('abort', abort, { once: true });
+              removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
+            });
+      const deadline =
+        timeoutMs === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => {
+                controller?.abort();
+                reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
+              }, timeoutMs);
+            });
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> => {
+        const boundaries = [operation];
+        if (deadline) boundaries.push(deadline);
+        if (externalDeadline) boundaries.push(externalDeadline);
+        return boundaries.length === 1 ? operation : Promise.race(boundaries);
+      };
+      // Le budget couvre aussi la récupération du jeton : une auth locale bloquée ne doit pas
+      // laisser l'interface attendre indéfiniment avant même que `fetch` puisse être annulé.
+      const token = await withinDeadline(
+        this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
+      );
+      if (externalSignal?.aborted) throw new Error('Requête annulée.');
       const init: RequestInit = {
         method,
+        // Un 307/308 ne doit jamais rejouer token/secret de binding vers une autre origine.
+        redirect: 'error',
+        ...(controller ? { signal: controller.signal } : {}),
         headers: {
           'content-type': 'application/json',
-          'x-company-id': this.companyId,
           ...headers,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
       };
       if (body !== undefined) init.body = JSON.stringify(body);
-      const res = await fetch(`${this.opts.baseUrl}${path}`, init);
-      const data: unknown = await res.json();
+      const requestUrl = `${this.opts.baseUrl}${path}`;
+      const res = await withinDeadline(fetch(requestUrl, init));
+      if (
+        typeof res.url === 'string' &&
+        res.url !== '' &&
+        new URL(res.url).origin !== new URL(requestUrl).origin
+      ) {
+        throw new Error('Redirection API cross-origin refusée.');
+      }
+      const data: unknown = await withinDeadline(res.json());
       if (!res.ok) {
         const error: AppError =
           data && typeof data === 'object' && 'error' in data
@@ -89,24 +1757,156 @@ export class HttpBobClient implements BobClient {
             : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
         return { ok: false, error };
       }
+      if (decode) {
+        const decoded = decode(data);
+        if (decoded === null) {
+          return {
+            ok: false,
+            error: {
+              kind: 'dependency',
+              port: 'api-contract',
+              cause: `Réponse API invalide pour ${method} ${path}.`,
+            },
+          };
+        }
+        return { ok: true, value: decoded };
+      }
       return { ok: true, value: data as T };
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: e instanceof Error ? e.message : 'réseau',
+        },
+      };
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeExternalAbort?.();
     }
   }
 
-  private async reqText(path: string): Promise<Result<{ content: string; headers: Headers; contentType: string | null }, AppError>> {
+  /**
+   * Requête dédiée au feed acoustique : elle préserve les états HTTP 204/410, borne réellement
+   * le corps et propage l'annulation jusque dans la lecture du stream. Le helper générique `req`
+   * suppose à l'inverse un JSON 2xx et ne peut donc pas porter ce protocole.
+   */
+  private async reqRealtimeSpeech<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body: unknown,
+    decode: (status: number, value: unknown) => T | null,
+    signal?: AbortSignal,
+  ): Promise<Result<T, AppError>> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeExternalAbort: (() => void) | undefined;
     try {
-      const token = this.opts.getToken ? await this.opts.getToken() : null;
-      const res = await fetch(`${this.opts.baseUrl}${path}`, {
-        method: 'GET',
+      if (signal?.aborted) throw new Error('Requête annulée.');
+      const controller = new AbortController();
+      const externalDeadline =
+        signal === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              const abort = (): void => {
+                controller.abort();
+                reject(new Error('Requête annulée.'));
+              };
+              signal.addEventListener('abort', abort, { once: true });
+              removeExternalAbort = () => signal.removeEventListener('abort', abort);
+            });
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Délai réseau dépassé après ${REALTIME_SPEECH_REQUEST_TIMEOUT_MS} ms.`));
+        }, REALTIME_SPEECH_REQUEST_TIMEOUT_MS);
+      });
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
+        Promise.race([operation, deadline, ...(externalDeadline ? [externalDeadline] : [])]);
+      const token = await withinDeadline(
+        this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
+      );
+      if (signal?.aborted) throw new Error('Requête annulée.');
+      const init: RequestInit = {
+        method,
+        signal: controller.signal,
+        cache: 'no-store',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
         headers: {
-          'x-company-id': this.companyId,
+          accept: 'application/json',
+          'cache-control': 'no-store',
+          'content-type': 'application/json',
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      };
+      const response = await withinDeadline(fetch(`${this.opts.baseUrl}${path}`, init));
+      const data = await withinDeadline(
+        readBoundedJsonBody(response, REALTIME_SPEECH_RESPONSE_MAX_BYTES),
+      );
+      const decoded = decode(response.status, data);
+      if (decoded !== null) return { ok: true, value: decoded };
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: decodeHttpAppError(data) ?? {
+            kind: 'dependency',
+            port: 'api',
+            cause: `HTTP ${response.status}`,
+          },
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api-contract',
+          cause: `Réponse API invalide pour ${method} ${path}.`,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: error instanceof Error ? error.message : 'réseau',
+        },
+      };
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeExternalAbort?.();
+    }
+  }
+
+  private async reqText(
+    path: string,
+    timeoutMs = TEXT_EXPORT_TIMEOUT_MS,
+  ): Promise<Result<{ content: string; headers: Headers; contentType: string | null }, AppError>> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const controller = new AbortController();
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
+        }, timeoutMs);
       });
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
+        Promise.race([operation, deadline]);
+      const token = this.opts.getToken ? await withinDeadline(this.opts.getToken()) : null;
+      const res = await withinDeadline(
+        fetch(`${this.opts.baseUrl}${path}`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+        }),
+      );
       const contentType = res.headers.get('content-type');
-      const content = await res.text();
+      const content = await withinDeadline(res.text());
       if (!res.ok) {
         try {
           const data = JSON.parse(content) as unknown;
@@ -116,17 +1916,51 @@ export class HttpBobClient implements BobClient {
               : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
           return { ok: false, error };
         } catch {
-          return { ok: false, error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` } };
+          return {
+            ok: false,
+            error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` },
+          };
         }
       }
       return { ok: true, value: { content, headers: res.headers, contentType } };
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: e instanceof Error ? e.message : 'réseau',
+        },
+      };
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  listSubscriptionInvoices() {
+    return this.req<SubscriptionBillingInvoiceView[]>('GET', '/subscription/invoices');
+  }
+  getFiscalProfile() {
+    return this.req<FiscalProfileView>('GET', '/fiscal-profile');
+  }
+  updateFiscalProfileField(field: string, value: unknown) {
+    return this.req<FiscalProfileView>('PATCH', `/fiscal-profile/${encodeURIComponent(field)}`, {
+      value,
+    });
+  }
+  latestValueDigest() {
+    return this.req<ValueDigestView>('GET', '/engagement/digest/latest');
+  }
+  /** Pilier 2 : bilan de fin d'essai — agrégats du digest CUMULÉS sur la période d'essai. */
+  trialReport() {
+    return this.req<TrialReportView>('GET', '/engagement/trial-report');
+  }
+  /** Pilier 2 : value_digest_opened — l'utilisateur a OUVERT le détail du digest (tap carte). */
+  recordValueDigestOpened(highlightKind: 'money' | 'time' | 'volume') {
+    return this.req<{ recorded: boolean }>('POST', '/engagement/digest/opened', { highlightKind });
   }
   startCheckout(tier: PlanTier) {
     return this.req<{ url: string }>('POST', '/subscription/checkout', { tier });
@@ -134,17 +1968,88 @@ export class HttpBobClient implements BobClient {
   billingPortal() {
     return this.req<{ url: string }>('POST', '/subscription/portal');
   }
+  closeAccount(input: { confirmationText: string; reason?: string }) {
+    return this.req<{ closedAt: string }>('DELETE', '/account', input);
+  }
   invoicePaymentLink(invoiceId: string) {
     return this.req<{ url: string }>('POST', `/invoices/${invoiceId}/payment-link`);
   }
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
   }
+  getDiagnosticAssessment() {
+    return this.req<DiagnosticAssessmentView>('GET', '/diagnostic/assessment');
+  }
+  saveDiagnosticAssessment(input: DiagnosticAssessmentWriteRequest) {
+    return this.req<DiagnosticAssessmentView>('PUT', '/diagnostic/assessment', input);
+  }
+  /** C-EXP5b : échéancier fiscal du tenant, servi par le serveur (deriveFiscalCalendar). */
+  getFiscalCalendar() {
+    return this.req<FiscalDeadline[]>('GET', '/fiscal-calendar');
+  }
   getProfile() {
     return this.req<TradeConfig>('GET', '/profile');
   }
+  /** PONT-SERVEUR v1 : la fiche société du tenant (CompanyProps complet) — l'identité connectée lit la BDD. */
+  getCompanyMe() {
+    return this.req<CompanyProps>('GET', '/company/me');
+  }
+  updateCompanyProfile(input: {
+    trade: Trade;
+    vatRegime: VatRegime;
+    customerPortfolio?: CustomerPortfolio;
+  }) {
+    return this.req<CompanyProps>('PATCH', '/company/profile', input);
+  }
+  updateCompanyBilling(input: { iban?: string | null; bic?: string | null }) {
+    return this.req<CompanyProps>('PATCH', '/company/billing', input);
+  }
+  /** A6/A2 — identité légale imprimable (capital social, médiateur conso, coordonnées A3) et
+   * identité BLOQUANTE pour l'émission (n° RCS/RM art. R123-237, adresse du siège) : PATCH
+   * partiel, `null` = effacement explicite, champ omis = inchangé (jamais réinjecté par accident). */
+  updateCompanyLegal(input: {
+    capitalSocialCents?: number | null;
+    mediateurConso?: { nom: string; coordonnees: string } | null;
+    email?: string | null;
+    phone?: string | null;
+    rcsOrRm?: string | null;
+    address?: { line1: string; zip: string; city: string };
+  }) {
+    return this.req<CompanyProps>('PATCH', '/company/legal', input);
+  }
+  getCompanyBillingSettings() {
+    return this.req<CompanyBillingSettings>(
+      'GET',
+      '/company/billing-settings',
+      undefined,
+      undefined,
+      decodeCompanyBillingSettings,
+    );
+  }
+  updateCompanyBillingSettings(input: {
+    expectedRevision: number;
+    patch: CompanyBillingSettingsPatch;
+  }) {
+    return this.req<CompanyBillingSettings>(
+      'PATCH',
+      '/company/billing-settings',
+      {
+        expectedRevision: input.expectedRevision,
+        ...input.patch,
+      },
+      undefined,
+      decodeCompanyBillingSettings,
+    );
+  }
   lookupCompany(siret: string) {
-    return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
+    return this.req<CompanyLookupResult>(
+      'GET',
+      `/company/lookup?siret=${encodeURIComponent(siret)}`,
+    );
+  }
+  /** C24b : le serveur décide l'id (provisioning déterministe company-<userId>) — jamais d'id envoyé. */
+  registerCompany(input: CompanyRegistrationInput) {
+    return this.req<{ companyId: string }>('POST', '/onboarding/company', input);
   }
   checkVat(vatNumber: string) {
     return this.req<VatCheckResult>('GET', `/vat/check?vat=${encodeURIComponent(vatNumber)}`);
@@ -161,42 +2066,859 @@ export class HttpBobClient implements BobClient {
   voiceConfig() {
     return this.req<VoiceConfig>('GET', '/voice/config');
   }
+  realtimeVoiceConfig() {
+    return this.req<RealtimeVoiceConfig>(
+      'GET',
+      '/voice/realtime/config',
+      undefined,
+      undefined,
+      decodeRealtimeVoiceConfig,
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+    );
+  }
+  createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
+    const body =
+      input.transport === 'mistral-pcm'
+        ? {
+            context: input.context,
+            ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
+            ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+          }
+        : {
+            sdp: input.sdp,
+            ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+          };
+    return this.req<RealtimeVoiceCall>(
+      'POST',
+      '/voice/realtime/calls',
+      body,
+      undefined,
+      (value) => decodeRealtimeVoiceCall(value, this.companyId, this.opts.baseUrl),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  requestRealtimeVoiceResumeTicket(
+    sessionHandle: string,
+    input: RealtimeVoiceResumeTicketInput,
+    signal?: AbortSignal,
+  ) {
+    if (!MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'sessionHandle',
+        'La session de reprise Bob Live est invalide.',
+      );
+    }
+    if (!isRecord(input) || !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'resumeTicket',
+        'La preuve de reprise Bob Live doit contenir exactement l’epoch et la prochaine séquence.',
+      );
+    }
+    if (
+      !isBoundedInteger(
+        input.missionConnectionEpoch,
+        1,
+        MISTRAL_CONVERSATION_MAX_MISSION_CONNECTION_EPOCH,
+      )
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'missionConnectionEpoch',
+        'L’epoch de connexion Bob Live doit être un entier compris entre 1 et 2147483647.',
+      );
+    }
+    if (
+      !isBoundedInteger(
+        input.nextServerSequence,
+        0,
+        MISTRAL_CONVERSATION_MAX_SERVER_SEQUENCE_CURSOR,
+      ) ||
+      Object.is(input.nextServerSequence, -0)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'nextServerSequence',
+        'La prochaine séquence Bob Live doit être un entier compris entre 0 et 4294967296.',
+      );
+    }
+    const body: RealtimeVoiceResumeTicketInput = {
+      missionConnectionEpoch: input.missionConnectionEpoch,
+      nextServerSequence: input.nextServerSequence,
+    };
+    return this.req<RealtimeVoiceResumeTicketResult>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/resume-tickets`,
+      body,
+      undefined,
+      (value) =>
+        decodeRealtimeVoiceResumeTicket(value, {
+          apiBaseUrl: this.opts.baseUrl,
+          companyId: this.companyId,
+          sessionHandle,
+          input: body,
+        }),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  reconcileRealtimeVoiceBootstrap(
+    sessionHandle: string,
+    input: RealtimeVoiceBootstrapReconciliationInput,
+    signal?: AbortSignal,
+  ) {
+    if (!MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceBootstrapReconciliationResult>(
+        'sessionHandle',
+        'La session de réconciliation Bob Live est invalide.',
+      );
+    }
+    if (
+      !isRecord(input)
+      || !hasExactKeys(input, ['protocol', 'bootstrapTicket', 'attempt'])
+      || input.protocol !== 'bob.mistral-pcm.v2'
+      || typeof input.bootstrapTicket !== 'string'
+      || !MISTRAL_CONVERSATION_BOOTSTRAP_TICKET_PATTERN.test(input.bootstrapTicket)
+      || !isCanonicalBase64Url256Ticket(input.bootstrapTicket, 'b2_')
+      || !isBoundedInteger(
+        input.attempt,
+        1,
+        MISTRAL_CONVERSATION_BOOTSTRAP_RECONCILIATION_MAX_ATTEMPTS,
+      )
+      || Object.is(input.attempt, -0)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceBootstrapReconciliationResult>(
+        'reconciliation',
+        'La preuve de réconciliation Bob Live est invalide.',
+      );
+    }
+    const body: RealtimeVoiceBootstrapReconciliationInput = {
+      protocol: 'bob.mistral-pcm.v2',
+      bootstrapTicket: input.bootstrapTicket,
+      attempt: input.attempt,
+    };
+    return this.req<RealtimeVoiceBootstrapReconciliationResult>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/bootstrap-reconciliations`,
+      body,
+      undefined,
+      (value) => decodeRealtimeVoiceBootstrapReconciliation(value, {
+        apiBaseUrl: this.opts.baseUrl,
+        companyId: this.companyId,
+        sessionHandle,
+      }),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  hangupRealtimeVoiceCall(sessionHandle: string, signal?: AbortSignal) {
+    return this.req<{ ended: true }>(
+      'DELETE',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
+      undefined,
+      undefined,
+      (value) => (isRecord(value) && value.ended === true ? { ended: true } : null),
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  updateRealtimeVoiceContext(
+    sessionHandle: string,
+    input: RealtimeVoiceContextUpdate,
+    signal?: AbortSignal,
+  ) {
+    return this.req<{ revision: number; contextDigest: string }>(
+      'PUT',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/context`,
+      input,
+      undefined,
+      (value) =>
+        isRecord(value) &&
+        Number.isSafeInteger(value.revision) &&
+        (value.revision as number) >= 1 &&
+        typeof value.contextDigest === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.contextDigest)
+          ? { revision: value.revision as number, contextDigest: value.contextDigest }
+          : null,
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceControl(
+    sessionHandle: string,
+    input: RealtimeVoiceControlReference,
+    signal?: AbortSignal,
+  ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceControlAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    const reference = decodeRealtimeVoiceControlReference(input);
+    if (!reference) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceControlAcknowledgement>(
+        'controlReference',
+        'La référence de contrôle Bob Live doit être liée à un acquittement audio valide.',
+      );
+    }
+    return this.req<RealtimeVoiceControlAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/control-acknowledgements`,
+      reference,
+      undefined,
+      decodeRealtimeVoiceControlAcknowledgement,
+      REALTIME_CONTROL_ACK_TIMEOUT_MS,
+      signal,
+    );
+  }
+  getNextRealtimeVoiceSpeech(
+    sessionHandle: string,
+    input: RealtimeVoiceSpeechFeedInput,
+    signal?: AbortSignal,
+  ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (
+      !isRecord(input) ||
+      !isBoundedInteger(input.afterSequence, 0, REALTIME_SPEECH_MAX_SEQUENCE)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'afterSequence',
+        'La séquence Bob Live doit être un entier compris entre 0 et 2147483647.',
+      );
+    }
+    const waitMs = input.waitMs ?? REALTIME_SPEECH_MAX_WAIT_MS;
+    if (!isBoundedInteger(waitMs, 0, REALTIME_SPEECH_MAX_WAIT_MS)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'waitMs',
+        'Le long-poll Bob Live doit être compris entre 0 et 2500 ms.',
+      );
+    }
+    const query = new URLSearchParams({
+      afterSequence: String(input.afterSequence),
+      waitMs: String(waitMs),
+    });
+    return this.reqRealtimeSpeech<RealtimeVoiceSpeechFeed>(
+      'GET',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/speech?${query.toString()}`,
+      undefined,
+      decodeRealtimeVoiceSpeechFeed,
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'turnId',
+        'Le tour Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(artifactId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'artifactId',
+        'L’artefact vocal Bob Live doit être un UUID.',
+      );
+    }
+    if (
+      !isRecord(input) ||
+      typeof input.deliveryId !== 'string' ||
+      !UUID_PATTERN.test(input.deliveryId)
+    ) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'deliveryId',
+        'L’identifiant de livraison Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof input.audioSha256 !== 'string' || !SHA_256_PATTERN.test(input.audioSha256)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'audioSha256',
+        'L’empreinte audio Bob Live doit être un SHA-256 hexadécimal canonique.',
+      );
+    }
+    return this.reqRealtimeSpeech<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/deliveries`,
+      { deliveryId: input.deliveryId, audioSha256: input.audioSha256 },
+      (status, value) => decodeRealtimeVoiceSpeechDelivery(status, value, turnId),
+      signal,
+    );
+  }
+  async cancelRealtimeVoiceSpeech(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechCancellationInput,
+    signal?: AbortSignal,
+  ): Promise<Result<void, AppError>> {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<void>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<void>('turnId', 'Le tour Bob Live doit être un UUID.');
+    }
+    if (!UUID_PATTERN.test(artifactId)) {
+      return invalidRealtimeSpeechInput<void>(
+        'artifactId',
+        'L’artefact vocal Bob Live doit être un UUID.',
+      );
+    }
+    if (
+      !isRecord(input) ||
+      typeof input.cancellationId !== 'string' ||
+      !UUID_PATTERN.test(input.cancellationId)
+    ) {
+      return invalidRealtimeSpeechInput<void>(
+        'cancellationId',
+        'L’identifiant d’annulation Bob Live doit être un UUID.',
+      );
+    }
+    if (
+      typeof input.reason !== 'string' ||
+      !REALTIME_SPEECH_CANCELLATION_REASONS.has(
+        input.reason as RealtimeVoiceSpeechCancellationReason,
+      )
+    ) {
+      return invalidRealtimeSpeechInput<void>(
+        'reason',
+        'Le motif d’annulation Bob Live n’appartient pas à l’allowlist.',
+      );
+    }
+    const result = await this.reqRealtimeSpeech<true>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/cancellations`,
+      { cancellationId: input.cancellationId, reason: input.reason },
+      (status, value) => (status === 204 && value === undefined ? true : null),
+      signal,
+    );
+    return result.ok ? { ok: true, value: undefined } : result;
+  }
   listDocuments(input: ListDocumentsClientInput = {}) {
     const params = new URLSearchParams();
     if (input.kind !== undefined) params.set('kind', input.kind);
-    if (input.linkedEntityType !== undefined) params.set('linkedEntityType', input.linkedEntityType);
+    if (input.linkedEntityType !== undefined)
+      params.set('linkedEntityType', input.linkedEntityType);
     if (input.linkedEntityId !== undefined) params.set('linkedEntityId', input.linkedEntityId);
-    if (input.includeDeleted !== undefined) params.set('includeDeleted', String(input.includeDeleted));
+    if (input.folderId !== undefined) params.set('folderId', input.folderId ?? 'null');
+    if (input.includeDeleted !== undefined)
+      params.set('includeDeleted', String(input.includeDeleted));
     const qs = params.toString();
-    return this.req<DocumentView[]>('GET', `/documents${qs ? `?${qs}` : ''}`);
+    return this.req<DocumentListItemView[]>(
+      'GET',
+      `/documents${qs ? `?${qs}` : ''}`,
+      undefined,
+      undefined,
+      (value) => decodeDocumentListItemsForCompany(value, this.companyId),
+      DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  /** PUT /documents/:id/name — renomme le libellé d'affichage ; la vue retournée est liée au tenant et à la révision. */
+  renameDocument(input: RenameDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>(
+      'PUT',
+      `/documents/${encodeURIComponent(documentId)}/name`,
+      body,
+      undefined,
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          // Renommage effectif : révision N→N+1 ; libellé inchangé (idempotence) : révision N.
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+        }),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  /** GET /documents/:id — même shape enrichi que la liste ; les résumés d'analyse restent
+   * tolérants (absents/hors contrat ⇒ null « pas encore analysé », jamais un crash). */
+  getDocument(documentId: string) {
+    return this.req<DocumentListItemView>(
+      'GET',
+      `/documents/${encodeURIComponent(documentId)}`,
+      undefined,
+      undefined,
+      (value) => decodeDocumentListItemForContext(value, { companyId: this.companyId, documentId }),
+      DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  /** POST /documents/:id/acknowledge — pose reviewedAt (latch) sans déplacer ni lier. */
+  acknowledgeDocument(input: AcknowledgeDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>(
+      'POST',
+      `/documents/${encodeURIComponent(documentId)}/acknowledge`,
+      body,
+      undefined,
+      (value) => {
+        const document = decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          // Validation effective : révision N→N+1 ; déjà validé (idempotence latch) : révision N.
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+        });
+        // Une réponse 2xx sans confirmation posée est une rupture de contrat.
+        return document && document.reviewedAt !== null ? document : null;
+      },
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
   }
   uploadDocument(input: UploadDocumentClientInput) {
-    return this.req<DocumentView>('POST', '/documents/upload', input);
+    return this.req<DocumentView>(
+      'POST',
+      '/documents/upload',
+      input,
+      undefined,
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
+        }),
+      DOCUMENT_UPLOAD_TIMEOUT_MS,
+    );
+  }
+  createDocumentIntake(input: CreateDocumentIntakeClientInput) {
+    return this.req<DocumentView>(
+      'POST',
+      '/documents/intakes',
+      input,
+      undefined,
+      (value) => decodeDocumentViewForContext(value, { companyId: this.companyId }),
+      DOCUMENT_UPLOAD_TIMEOUT_MS,
+    );
+  }
+  listDocumentFolders(input: ListDocumentFoldersClientInput = {}) {
+    const params = new URLSearchParams();
+    if (input.parentId !== undefined) params.set('parentId', input.parentId ?? 'root');
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    if (input.cursor) params.set('cursor', input.cursor);
+    const query = params.toString();
+    return this.req<DocumentFolderPageView>(
+      'GET',
+      `/document-folders${query ? `?${query}` : ''}`,
+      undefined,
+      undefined,
+      (value) =>
+        decodeDocumentFolderPageForContext(value, {
+          companyId: this.companyId,
+          parentId: input.parentId ?? null,
+        }),
+      DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  getDocumentFolder(folderId: string) {
+    return this.req<DocumentFolderView>(
+      'GET',
+      `/document-folders/${encodeURIComponent(folderId)}`,
+      undefined,
+      undefined,
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          folderId,
+        }),
+      DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  createDocumentFolder(input: { name: string; parentId?: string | null }) {
+    return this.req<DocumentFolderView>(
+      'POST',
+      '/document-folders',
+      input,
+      undefined,
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          parentId: input.parentId ?? null,
+        }),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  updateDocumentFolder(input: {
+    folderId: string;
+    expectedRevision: number;
+    name?: string;
+    parentId?: string | null;
+  }) {
+    const { folderId, ...body } = input;
+    return this.req<DocumentFolderView>(
+      'PATCH',
+      `/document-folders/${encodeURIComponent(folderId)}`,
+      body,
+      undefined,
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          folderId,
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+          ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+        }),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  previewDocumentFolderDeletion(folderId: string) {
+    return this.req<DocumentFolderDeletionPlanView>(
+      'POST',
+      `/document-folders/${encodeURIComponent(folderId)}/deletion-plans`,
+      undefined,
+      undefined,
+      (value) => decodeDocumentFolderDeletionPlanForFolder(value, folderId),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  executeDocumentFolderDeletion(input: { planId: string; strategy: DeleteDocumentFolderStrategy }) {
+    return this.req<DocumentFolderDeletionExecutionView>(
+      'POST',
+      `/document-folder-deletion-plans/${encodeURIComponent(input.planId)}/executions`,
+      { strategy: input.strategy },
+      undefined,
+      decodeDocumentFolderDeletionExecution,
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  moveDocumentToFolder(input: {
+    documentId: string;
+    folderId: string | null;
+    expectedRevision: number;
+  }) {
+    const { documentId, ...body } = input;
+    return this.req<{ documentId: string; folderId: string | null; revision: number }>(
+      'PUT',
+      `/documents/${encodeURIComponent(documentId)}/folder`,
+      body,
+      undefined,
+      (value) => decodeDocumentMoveForContext(value, input),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  analyzeDocument(documentId: string) {
+    return this.req<DocumentAnalysis>(
+      'POST',
+      `/documents/${encodeURIComponent(documentId)}/analysis`,
+      undefined,
+      undefined,
+      (value) => decodeDocumentAnalysisForDocument(value, documentId),
+      DOCUMENT_ANALYSIS_TIMEOUT_MS,
+    );
+  }
+  classifyDocument(input: ClassifyDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>(
+      'POST',
+      `/documents/${encodeURIComponent(documentId)}/classify`,
+      body,
+      undefined,
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          linkedEntityType: input.linkedEntityType,
+          linkedEntityId: input.linkedEntityId,
+          // ClassifyDocument (@bob/core) = classement + validation humaine atomiques :
+          // N (replay idempotent — déjà lié ET validé), N+1 (doc déjà validé : classement
+          // seul), N+2 (doc jamais validé : classement + reviewedAt). Même bande que le
+          // serveur et que les clients local/in-memory (parité).
+          allowedRevisions: [
+            input.expectedRevision,
+            input.expectedRevision + 1,
+            input.expectedRevision + 2,
+          ],
+        }),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
+    );
+  }
+  recordDocumentExpense(input: RecordDocumentExpenseClientInput) {
+    const expense = {
+      supplierName: input.expense.supplierName,
+      documentDate: input.expense.documentDate,
+      totalTtcCents: input.expense.totalTtcCents,
+      category: input.expense.category,
+      ...(input.expense.supplierSiren !== undefined
+        ? { supplierSiren: input.expense.supplierSiren }
+        : {}),
+      ...(input.expense.totalHtCents !== undefined
+        ? { totalHtCents: input.expense.totalHtCents }
+        : {}),
+      ...(input.expense.vatCents !== undefined ? { vatCents: input.expense.vatCents } : {}),
+      ...(input.expense.vatRatePct !== undefined ? { vatRatePct: input.expense.vatRatePct } : {}),
+      ...(input.expense.supplierInvoiceNumber !== undefined
+        ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
+        : {}),
+      ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+      // Destination chantier CHOISIE au scan : la dépense naît imputée (le serveur prouve le
+      // chantier dans le tenant — anti-IDOR fail-closed — avant toute persistance).
+      ...(input.expense.chantierId !== undefined ? { chantierId: input.expense.chantierId } : {}),
+      // Ticket déjà réglé : date + moyen uniquement — la preuve reste l'original, côté serveur.
+      ...(input.expense.payment !== undefined
+        ? {
+            payment: input.expense.payment
+              ? { paidOn: input.expense.payment.paidOn, method: input.expense.payment.method }
+              : null,
+          }
+        : {}),
+    };
+    return this.req<RecordDocumentExpenseClientOutput>(
+      'PUT',
+      `/documents/${encodeURIComponent(input.documentId)}/expense`,
+      {
+        expectedRevision: input.expectedRevision,
+        targetFolderId: input.targetFolderId,
+        expense,
+      },
+      undefined,
+      (value) =>
+        decodeDocumentExpenseCreationForContext(value, {
+          companyId: this.companyId,
+          documentId: input.documentId,
+          targetFolderId: input.targetFolderId,
+          expectedRevision: input.expectedRevision,
+        }),
+      // Transaction DB courte. Une coupure libère l'UI ; la même commande est ensuite rejouée
+      // grâce au registre SHA, sans présumer si le serveur avait déjà commité.
+      15_000,
+    );
   }
   documentDownloadUrl(documentId: string, ttlSeconds?: number) {
     const qs = ttlSeconds !== undefined ? `?ttl=${encodeURIComponent(String(ttlSeconds))}` : '';
-    return this.req<DocumentDownloadUrl>('GET', `/documents/${documentId}/download-url${qs}`);
+    return this.req<DocumentDownloadUrl>(
+      'GET',
+      `/documents/${encodeURIComponent(documentId)}/download-url${qs}`,
+      undefined,
+      undefined,
+      decodeDocumentDownloadUrl,
+      DOCUMENT_READ_TIMEOUT_MS,
+    );
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
-    return this.req<OcrExtraction>('POST', '/documents/ocr', input);
+    return this.req<OcrExtraction>(
+      'POST',
+      '/documents/ocr',
+      input,
+      undefined,
+      undefined,
+      DOCUMENT_ANALYSIS_TIMEOUT_MS,
+    );
   }
   suggestExpenseDefaults(input: SuggestExpenseDefaultsInput) {
     return this.req<ExpenseDefaultsView>('POST', '/expenses/defaults', input);
   }
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>) {
-    return this.req<{ id: string }>('POST', '/expenses', input);
+    const body: Omit<RecordExpenseInput, 'companyId'> = {
+      supplierName: input.supplierName,
+      documentDate: input.documentDate,
+      totalTtcCents: input.totalTtcCents,
+      category: input.category,
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.supplierSiren !== undefined ? { supplierSiren: input.supplierSiren } : {}),
+      ...(input.totalHtCents !== undefined ? { totalHtCents: input.totalHtCents } : {}),
+      ...(input.vatCents !== undefined ? { vatCents: input.vatCents } : {}),
+      ...(input.vatRatePct !== undefined ? { vatRatePct: input.vatRatePct } : {}),
+      ...(input.source !== undefined ? { source: input.source } : {}),
+      ...(input.supplierInvoiceNumber !== undefined
+        ? { supplierInvoiceNumber: input.supplierInvoiceNumber }
+        : {}),
+      ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
+      // Imputation chantier à la création — optionnelle : le serveur prouve le chantier dans
+      // le tenant (anti-IDOR fail-closed) avant toute persistance.
+      ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
+    };
+    return this.req<{ id: string }>('POST', '/expenses', body, undefined, decodeExpenseCreation);
+  }
+  /** C-EXP6b ① : contrôle de réception (destinataire, EN 16931, doublon) + brouillon expert. */
+  importFacturXExpense(input: { xml: string }) {
+    return this.req<FacturXImportReview>('POST', '/expenses/import-facturx', input);
+  }
+  /** C-EXP6b ② : décision AFNOR explicite — approve (Expense + écritures E1 + XML archivé)
+   * ou refuse (motif obligatoire, 210/213). Le XML est resoumis : serveur sans état. */
+  confirmFacturXExpense(input: { xml: string; decision: FacturXImportDecision }) {
+    return this.req<FacturXImportOutcome>('POST', '/expenses/import-facturx/confirm', input);
+  }
+  /** Preuve explicite d'un règlement fournisseur déjà réalisé ; aucun rail bancaire. */
+  payExpense(input: RecordExpensePaymentClientInput) {
+    const { expenseId, ...evidence } = input;
+    return this.req<RecordExpensePaymentClientOutput>(
+      'POST',
+      `/expenses/${expenseId}/pay`,
+      evidence,
+    );
+  }
+  /** Régularise une dépense historique payée sans preuve : même preuve explicite, écriture 401/512-530. */
+  regularizeExpensePayment(input: RegularizeExpensePaymentClientInput) {
+    const { expenseId, ...evidence } = input;
+    return this.req<RegularizeExpensePaymentClientOutput>(
+      'POST',
+      `/expenses/${expenseId}/regularize-payment`,
+      evidence,
+    );
   }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
+  }
+  /** Impute une dépense à un chantier — ou la délie (chantierId null) : même route PUT. */
+  assignExpenseChantier(input: AssignExpenseChantierClientInput) {
+    return this.req<AssignExpenseChantierClientOutput>(
+      'PUT',
+      `/expenses/${encodeURIComponent(input.expenseId)}/chantier`,
+      { chantierId: input.chantierId },
+      undefined,
+      decodeExpenseChantierAssignment,
+    );
+  }
+  listCatalogueItems() {
+    return this.req<readonly CatalogueItemView[]>(
+      'GET',
+      '/catalogue/prestations',
+      undefined,
+      undefined,
+      decodeCatalogueItems,
+    );
+  }
+  createCatalogueItem(input: CatalogueItemWriteInput) {
+    return this.req<CatalogueItemView>(
+      'POST',
+      '/catalogue/prestations',
+      input,
+      undefined,
+      decodeCatalogueItem,
+    );
+  }
+  updateCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+    item: CatalogueItemWriteInput;
+  }) {
+    return this.req<CatalogueItemView>(
+      'PATCH',
+      `/catalogue/prestations/${encodeURIComponent(input.itemId)}`,
+      { ...input.item, expectedRevision: input.expectedRevision },
+      undefined,
+      decodeCatalogueItem,
+    );
+  }
+  deleteCatalogueItem(input: { itemId: string; expectedRevision: number }) {
+    return this.req<CatalogueDeletionView>(
+      'DELETE',
+      `/catalogue/prestations/${encodeURIComponent(input.itemId)}`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      decodeCatalogueDeletion,
+    );
   }
   createChantier(input: Omit<CreateChantierInput, 'companyId'>) {
     return this.req<{ id: string }>('POST', '/chantiers', input);
   }
   listChantiers() {
-    return this.req<ChantierProps[]>('GET', '/chantiers');
+    return this.req<ChantierListItem[]>('GET', '/chantiers');
+  }
+  listChantierNotes(chantierId: string) {
+    return this.req<ChantierNoteProps[]>(
+      'GET',
+      `/chantiers/${encodeURIComponent(chantierId)}/notes`,
+    );
+  }
+  addChantierNote(chantierId: string, input: { text: string }) {
+    return this.req<{ id: string }>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/notes`,
+      input,
+    );
+  }
+  listWorksitePhotos(chantierId: string) {
+    return this.req<WorksiteMediaItem[]>(
+      'GET',
+      `/chantiers/${encodeURIComponent(chantierId)}/photos`,
+    );
+  }
+  uploadWorksitePhoto(
+    chantierId: string,
+    input: { contentBase64: string; mimeType: string; filename: string },
+  ) {
+    return this.req<WorksiteMediaItem>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/photos`,
+      input,
+    );
+  }
+  worksitePhotoViewUrl(photoId: string) {
+    return this.req<{ url: string; expiresInSeconds: number }>(
+      'GET',
+      `/chantiers/photos/${encodeURIComponent(photoId)}/view-url`,
+    );
+  }
+  deleteWorksitePhoto(photoId: string) {
+    return this.req<void>('DELETE', `/chantiers/photos/${encodeURIComponent(photoId)}`);
   }
   listCustomers() {
-    return this.req<CustomerListItem[]>('GET', '/customers');
+    return this.req<CustomerListItem[]>(
+      'GET',
+      '/customers',
+      undefined,
+      undefined,
+      decodeCustomerList,
+    );
+  }
+  createCustomer(input: CreateCustomerClientInput) {
+    return this.req<{ id: string }>('POST', '/customers', customerClientBody(input));
+  }
+  /** Édition post-création (C13/C40 TODO partagé) — même allowlist que la création. */
+  updateCustomer(id: string, input: UpdateCustomerClientInput) {
+    return this.req<{ id: string }>(
+      'PATCH',
+      `/customers/${encodeURIComponent(id)}`,
+      customerClientBody(input),
+    );
+  }
+  // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
+  askBob(input: AskBobClientInput) {
+    // Frontière explicite : un objet élargi à l'exécution ne doit jamais faire fuiter un callback
+    // UI (`onPhase`) ou une future option non auditée dans le DTO réseau.
+    const body: AskBobClientInput = {
+      message: input.message,
+      ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
+      ...(input.history !== undefined ? { history: input.history } : {}),
+      ...(input.tone !== undefined ? { tone: input.tone } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+    };
+    return this.req<AgentRun>('POST', '/ai/ask', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+  }
+  previewBobProposal(proposalId: string) {
+    return this.req<PendingAction>(
+      'GET',
+      `/ai/proposals/${encodeURIComponent(proposalId)}`,
+      undefined,
+      undefined,
+      undefined,
+      AGENT_TURN_TIMEOUT_MS,
+    );
+  }
+  confirmBob(pending: PendingAction) {
+    // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
+    // tool/args/label restent utiles à l'aperçu UI, mais ne retraversent jamais la frontière.
+    // TRANSITION version-skew : un serveur déployé AVANT les propositions opaques ne fournit
+    // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
+    // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
+    const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
+    return this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+  }
+  getRunJournal(runId: string) {
+    return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);
   }
   getCashflow(input: { scenario: Scenario; horizon: Horizon }) {
     return this.req<CashflowProjection>(
@@ -204,47 +2926,417 @@ export class HttpBobClient implements BobClient {
       `/cashflow?scenario=${encodeURIComponent(input.scenario)}&horizon=${encodeURIComponent(String(input.horizon))}`,
     );
   }
+  getLatestBankBalance() {
+    return this.req<QualifiedBankBalanceWithPosition>('GET', '/bank-balance');
+  }
+  recordManualBankBalance(input: { amountCents: number; observedAt: string }) {
+    return this.req<QualifiedBankBalanceWithPosition>('POST', '/bank-balance/manual', input);
+  }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
-    return this.req<CreateQuoteOutput>('POST', '/quotes', input);
+    const body: Omit<CreateQuoteInput, 'companyId'> = {
+      customerId: input.customerId,
+      lines: input.lines.map((line) => ({
+        label: line.label,
+        category: line.category,
+        qty: line.qty,
+        ...(line.unit !== undefined ? { unit: line.unit } : {}),
+        unitPriceHT: line.unitPriceHT,
+        vatRate: line.vatRate,
+        // B3 — remise DE LIGNE (copie défensive) : sans elle, la remise négociée n'atteindrait
+        // jamais le serveur (perte silencieuse d'un fait commercial de la pièce).
+        ...(line.discount !== undefined ? { discount: { ...line.discount } } : {}),
+      })),
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
+      // B3/B5 — remise globale et retenue de garantie du devis-chantier (loi 71-584).
+      ...(input.globalDiscount !== undefined && input.globalDiscount !== null
+        ? { globalDiscount: { ...input.globalDiscount } }
+        : {}),
+      ...(input.retenueGarantiePct !== undefined && input.retenueGarantiePct !== null
+        ? { retenueGarantiePct: input.retenueGarantiePct }
+        : {}),
+      ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+      // Exception dépannage urgent (L221-10, al. 2) : le fait légal fonde l'absence d'embargo
+      // ET la mention datée du PDF — il DOIT atteindre le serveur (`true` strict uniquement,
+      // même contrat que le contrôleur ; parité LocalClient).
+      ...(input.urgentRepairRequested === true ? { urgentRepairRequested: true } : {}),
+      ...(input.context !== undefined
+        ? {
+            context: {
+              ...(input.context.housingOlderThan2y !== undefined
+                ? { housingOlderThan2y: input.context.housingOlderThan2y }
+                : {}),
+              ...(input.context.energyRenovation !== undefined
+                ? { energyRenovation: input.context.energyRenovation }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    return this.req<CreateQuoteOutput>(
+      'POST',
+      '/quotes',
+      body,
+      undefined,
+      decodeQuoteCreation,
+      QUOTE_CREATION_TIMEOUT_MS,
+    );
+  }
+  async getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>> {
+    const result = await this.req<QuoteDraftEnvelopeWire>(
+      'GET',
+      '/quote-drafts/current',
+      undefined,
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+      decodeQuoteDraftEnvelope,
+    );
+    return result.ok ? { ok: true, value: result.value.slot } : result;
+  }
+  saveQuoteDraft(input: SaveQuoteDraftClientInput) {
+    return this.req<QuoteDraftSlotView>(
+      'PUT',
+      '/quote-drafts/current',
+      {
+        expectedRevision: input.expectedRevision,
+        payload: input.payload,
+      },
+      { 'cache-control': 'no-store' },
+      decodeQuoteDraftSlot,
+    );
+  }
+  deleteQuoteDraft(expectedRevision: number) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      '/quote-drafts/current',
+      { expectedRevision },
+      { 'cache-control': 'no-store' },
+      decodeQuoteDraftDeletion,
+    );
   }
   sendQuote(quoteId: string) {
     return this.req<SendQuoteOutput>('POST', `/quotes/${quoteId}/send`);
   }
-  signQuote(input: { quoteId: string; signerName: string }) {
-    return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, { signerName: input.signerName });
+  /** P0 R4 : préparer le lien ≠ envoyer un e-mail — cette route ne déclenche AUCUN sortant. */
+  createQuoteSignatureLink(quoteId: string) {
+    return this.req<CreateQuoteSignatureLinkOutput>(
+      'POST',
+      `/quotes/${encodeURIComponent(quoteId)}/signature-link`,
+    );
+  }
+  /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant. */
+  createQuoteViewLink(quoteId: string) {
+    return this.req<CreateDocumentViewLinkOutput>(
+      'POST',
+      `/quotes/${encodeURIComponent(quoteId)}/view-link`,
+    );
+  }
+  signQuote(input: {
+    quoteId: string;
+    signerName: string;
+    proofDataUrl?: string;
+    earlyExecutionRequested?: boolean;
+  }) {
+    return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, {
+      signerName: input.signerName,
+      ...(input.proofDataUrl !== undefined ? { proofDataUrl: input.proofDataUrl } : {}),
+      // A3 — la demande d'exécution anticipée (L221-25) ne part que réellement cochée.
+      ...(input.earlyExecutionRequested === true ? { earlyExecutionRequested: true } : {}),
+    });
   }
   refuseQuote(quoteId: string) {
     return this.req<{ status: string }>('POST', `/quotes/${quoteId}/refuse`);
   }
-  generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
-    return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });
+  /** Embargo L221-10 — programme l'encaissement à J+7 (défaut légal, outbox serveur planifiée). */
+  scheduleEmbargoPayment(quoteId: string) {
+    return this.req<{
+      scheduledFor: string;
+      availableFrom: string;
+      jobId: string;
+      status: string;
+    }>('POST', `/quotes/${encodeURIComponent(quoteId)}/embargo-scheduled-payment`);
+  }
+  generateInvoice(input: {
+    quoteId: string;
+    mode: 'deposit' | 'final' | 'situation';
+    situation?: SituationAmountInput;
+    embargoOverride?: boolean;
+  }) {
+    return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, {
+      mode: input.mode,
+      // B2 — le montant de situation n'accompagne QUE son mode (cohérence gardée serveur).
+      ...(input.situation !== undefined ? { situation: input.situation } : {}),
+      // Override L221-10 : contrat HTTP `override: true` EXPLICITE — jamais envoyé sinon.
+      ...(input.embargoOverride === true ? { override: true } : {}),
+    });
+  }
+  /** B1 : POST /invoices — facture DIRECTE sans devis signé (brouillon composé librement). */
+  composeStandaloneInvoice(input: {
+    customerId: string;
+    lines: LineInput[];
+    globalDiscount?: Discount | null;
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    urgentOnSiteRepair?: boolean;
+  }) {
+    return this.req<{ invoiceId: string; totals: Totals }>('POST', '/invoices', {
+      customerId: input.customerId,
+      lines: input.lines,
+      ...(input.globalDiscount !== undefined ? { globalDiscount: input.globalDiscount } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      // A3bis — booléen STRICT : seul `true` voyage (jamais un flag implicite).
+      ...(input.urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+    });
+  }
+  /** Suivi MANUEL de transmission (PATCH /invoices/:id/transmission) — réponse décodée fail-closed. */
+  recordInvoiceTransmission(input: {
+    invoiceId: string;
+    depositedAt?: string | null;
+    acceptedAt?: string | null;
+  }) {
+    return this.req<{ transmission: InvoiceTransmissionStatus | null }>(
+      'PATCH',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/transmission`,
+      {
+        ...(input.depositedAt !== undefined ? { depositedAt: input.depositedAt } : {}),
+        ...(input.acceptedAt !== undefined ? { acceptedAt: input.acceptedAt } : {}),
+      },
+      undefined,
+      decodeTransmissionEnvelope,
+    );
+  }
+  updateQuoteLine(input: UpdateQuoteLineInput) {
+    return this.req<{ status: string }>(
+      'PATCH',
+      `/quotes/${encodeURIComponent(input.quoteId)}/lines/${encodeURIComponent(input.lineId)}`,
+      input.patch,
+    );
+  }
+  removeQuoteLine(input: RemoveQuoteLineInput) {
+    return this.req<{ status: string }>(
+      'DELETE',
+      `/quotes/${encodeURIComponent(input.quoteId)}/lines/${encodeURIComponent(input.lineId)}`,
+    );
+  }
+  /** B8 : PUT /quotes/:id/purchase-order — corps plat {number, receivedAt?, documentId?,
+   * expectedRevision}, réponse PurchaseOrderMutationView décodée fail-closed. */
+  attachQuotePurchaseOrder(input: AttachQuotePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'PUT',
+      `/quotes/${encodeURIComponent(input.quoteId)}/purchase-order`,
+      {
+        number: input.purchaseOrder.number,
+        ...(input.purchaseOrder.receivedAt !== undefined
+          ? { receivedAt: input.purchaseOrder.receivedAt }
+          : {}),
+        ...(input.purchaseOrder.documentId !== undefined
+          ? { documentId: input.purchaseOrder.documentId }
+          : {}),
+        expectedRevision: input.expectedRevision,
+      },
+      undefined,
+      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+    );
+  }
+  /** B8 : DELETE /quotes/:id/purchase-order — seule la révision optimiste voyage. */
+  detachQuotePurchaseOrder(input: DetachQuotePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'DELETE',
+      `/quotes/${encodeURIComponent(input.quoteId)}/purchase-order`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+    );
+  }
+  /** B8 : PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
+  attachInvoicePurchaseOrder(input: AttachInvoicePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'PUT',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/purchase-order`,
+      {
+        number: input.purchaseOrder.number,
+        ...(input.purchaseOrder.receivedAt !== undefined
+          ? { receivedAt: input.purchaseOrder.receivedAt }
+          : {}),
+        ...(input.purchaseOrder.documentId !== undefined
+          ? { documentId: input.purchaseOrder.documentId }
+          : {}),
+        expectedRevision: input.expectedRevision,
+      },
+      undefined,
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'invoice', targetId: input.invoiceId }),
+    );
+  }
+  /** B8 : DELETE /invoices/:id/purchase-order. */
+  detachInvoicePurchaseOrder(input: DetachInvoicePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'DELETE',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/purchase-order`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'invoice', targetId: input.invoiceId }),
+    );
+  }
+  /** A6 — endpoint serveur à poser (suivi CLAIMS, même précédent que classifyDocument). */
+  createCreditNote(input: { invoiceId: string }) {
+    return this.req<{ creditNoteId: string }>('POST', `/invoices/${input.invoiceId}/credit-note`);
+  }
+  /** E3 — endpoint serveur à poser (suivi CLAIMS) : encaissements datés du tenant. */
+  listPayments() {
+    return this.req<PaymentView[]>('GET', '/payments');
   }
   issueInvoice(input: IssueInvoiceInput) {
-    return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
+    // Override L221-10 : le contrat HTTP porte `override: true` (jamais le nom interne du use
+    // case) — strictement explicite, retiré du corps sinon.
+    const { embargoOverride, ...rest } = input;
+    return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, {
+      ...rest,
+      ...(embargoOverride === true ? { override: true } : {}),
+    });
+  }
+  deleteDraftInvoice(invoiceId: string) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      `/invoices/${encodeURIComponent(invoiceId)}/draft`,
+    );
+  }
+  /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant que createQuoteViewLink. */
+  createInvoiceViewLink(invoiceId: string) {
+    return this.req<CreateDocumentViewLinkOutput>(
+      'POST',
+      `/invoices/${encodeURIComponent(invoiceId)}/view-link`,
+    );
+  }
+  /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */
+  sendRelance(invoiceId: string) {
+    return this.req<SendRelanceClientOutput>('POST', `/invoices/${invoiceId}/relance`);
+  }
+  listNotifications() {
+    return this.req<NotificationView[]>('GET', '/notifications');
+  }
+  markNotificationRead(id: string) {
+    return this.req<NotificationView>('POST', `/notifications/${id}/read`);
+  }
+  previewUnreadNotifications() {
+    return this.req<NotificationUnreadPreview>('GET', '/notifications/unread-preview');
+  }
+  markNotificationsReadThrough(input: NotificationReadThroughInput) {
+    return this.req<NotificationReadThroughOutput>('POST', '/notifications/read-through', input);
+  }
+  registerDevice(input: RegisterDeviceClientInput) {
+    return this.req<{ status: 'bound' | 'superseded' }>(
+      'POST',
+      '/devices',
+      input,
+      undefined,
+      decodePushRegistrationResponse,
+      12_000,
+    );
+  }
+  unregisterDevice(input: UnregisterDeviceClientInput) {
+    return this.req<{ unregistered: true }>(
+      'DELETE',
+      '/devices',
+      input,
+      undefined,
+      undefined,
+      10_000,
+    );
+  }
+  revokeDeviceBinding(input: RevokeDeviceBindingClientInput) {
+    return this.req<{ accepted: true }>(
+      'POST',
+      '/devices/revocations',
+      input,
+      undefined,
+      decodePushRevocationResponse,
+      10_000,
+    );
+  }
+  replayPushRevocation(input: RevokeDeviceBindingClientInput) {
+    return this.req<{ accepted: true }>(
+      'POST',
+      '/public/push-revocations',
+      input,
+      undefined,
+      decodePushRevocationResponse,
+      10_000,
+    );
   }
   registerPayment(input: RegisterPaymentClientInput) {
-    const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };
+    const body = {
+      amount: input.amount,
+      method: input.method,
+      idempotencyKey: input.idempotencyKey ?? undefined,
+    };
     const headers = input.idempotencyKey ? { 'idempotency-key': input.idempotencyKey } : undefined;
-    return this.req<RegisterPaymentClientOutput>('POST', `/invoices/${input.invoiceId}/pay`, body, headers);
+    return this.req<RegisterPaymentClientOutput>(
+      'POST',
+      `/invoices/${input.invoiceId}/pay`,
+      body,
+      headers,
+    );
   }
   getQuote(id: string) {
-    return this.req<QuoteView>('GET', `/quotes/${id}`);
+    // B8 : codec défensif — purchaseOrder absent ⇒ null, revision absente ⇒ 1 (serveur antérieur).
+    return this.req<QuoteView>('GET', `/quotes/${id}`, undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierView<QuoteView>(value),
+    );
   }
   listQuotes() {
-    return this.req<QuoteView[]>('GET', '/quotes');
+    return this.req<QuoteView[]>('GET', '/quotes', undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierList<QuoteView>(value),
+    );
   }
   getInvoice(id: string) {
-    return this.req<InvoiceView>('GET', `/invoices/${id}`);
+    // B8 + E3 : codec défensif — purchaseOrder/creditNoteSource absents ⇒ null (serveur
+    // antérieur), présents mais difformes ⇒ échec fermé (rupture de contrat).
+    return this.req<InvoiceView>('GET', `/invoices/${id}`, undefined, undefined, decodeInvoiceView);
   }
   invoiceAccountingPreview(invoiceId: string) {
-    return this.req<InvoiceAccountingPreview>('GET', `/invoices/${invoiceId}/accounting-preview`);
+    return this.req<InvoiceAccountingPreview>(
+      'GET',
+      `/invoices/${invoiceId}/accounting-preview`,
+      undefined,
+      undefined,
+      (value) => decodeInvoiceAccountingPreview(value, invoiceId),
+    );
   }
-  paymentAccountingPreview(input: { invoiceId: string; amountCents: number; method: PaymentMethod }) {
-    const qs = new URLSearchParams({ amount: String(input.amountCents), method: input.method }).toString();
-    return this.req<PaymentAccountingPreview>('GET', `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`);
+  paymentAccountingPreview(input: {
+    invoiceId: string;
+    amountCents: number;
+    method: PaymentMethod;
+  }) {
+    const qs = new URLSearchParams({
+      amount: String(input.amountCents),
+      method: input.method,
+    }).toString();
+    return this.req<PaymentAccountingPreview>(
+      'GET',
+      `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`,
+      undefined,
+      undefined,
+      (value) => decodePaymentAccountingPreview(value, input),
+    );
   }
   listInvoices() {
-    return this.req<InvoiceView[]>('GET', '/invoices');
+    return this.req<InvoiceView[]>('GET', '/invoices', undefined, undefined, decodeInvoiceViewList);
+  }
+  searchSalesDocuments(input: SearchSalesDocumentsClientInput) {
+    const params = new URLSearchParams();
+    if (input.query) params.set('q', input.query);
+    params.set('type', input.scope ?? 'all');
+    if (input.from !== undefined) params.set('from', input.from);
+    if (input.to !== undefined) params.set('to', input.to);
+    if (input.customerId !== undefined) params.set('customerId', input.customerId);
+    if (input.status !== undefined) params.set('status', input.status);
+    if (input.cursor !== undefined) params.set('cursor', input.cursor);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.req<SearchSalesDocumentsResult>('GET', `/documents/search?${params.toString()}`);
+  }
+  suggestSalesDocuments(query: string) {
+    const qs = new URLSearchParams({ q: query }).toString();
+    return this.req<SuggestSalesDocumentsResult>('GET', `/documents/suggest?${qs}`);
   }
   listAccountingEntries() {
     return this.req<AccountingEntryView[]>('GET', '/accounting/entries');

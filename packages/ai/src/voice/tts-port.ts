@@ -15,6 +15,6 @@ export interface TtsResult {
  */
 export interface TtsPort {
   readonly id: string;
-  synthesize(text: string): Promise<TtsResult>;
+  synthesize(text: string, options?: { readonly signal?: AbortSignal }): Promise<TtsResult>;
   health(): Promise<{ healthy: boolean }>;
 }

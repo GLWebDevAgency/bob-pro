@@ -30,7 +30,7 @@ function signedQuote(): Quote {
   for (const line of lines) q.value.addLine(line);
   q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
   q.value.send(AT);
-  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
   return q.value;
 }
 
@@ -59,11 +59,19 @@ class MemoryInvoices implements InvoiceRepository {
     return null;
   }
 
+  async findCreditNoteBySourceInvoiceId(): Promise<Invoice | null> {
+    return null;
+  }
+
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return this.row?.companyId === companyId ? [Invoice.rehydrate(this.row.toSnapshot())] : [];
   }
 
   async save(_invoice: Invoice): Promise<void> {
+    throw new Error('not used');
+  }
+
+  async deleteById(_id: string): Promise<void> {
     throw new Error('not used');
   }
 }
@@ -148,6 +156,37 @@ describe('RecordIssuedInvoiceAccountingEntry', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatchObject({ kind: 'domain' });
+    expect(entries.saved).toHaveLength(0);
+  });
+
+  it('B2 — finale SOLDÉE par les situations seules : ok sans écriture (jamais un rollback d’émission)', async () => {
+    // Scénario du finding : devis 148 000 HT / 162 800 TTC, situation 100 % émise, finale à 0.
+    const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-1', {
+      depositDeduction: { amountCents: 162800, invoiceId: null },
+      situationDeductionCents: 162800,
+    });
+    if (!final.ok) throw new Error('final');
+    final.value.assignNumber(DocNumber.format('F', 2026, 9), AT);
+    const issued = final.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    if (!issued.ok) throw new Error('issue');
+
+    const entries = new MemoryEntries();
+    const useCase = new RecordIssuedInvoiceAccountingEntry({
+      invoices: new MemoryInvoices(final.value),
+      entries,
+    });
+    const r = await useCase.execute({ invoiceId: 'inv-1' });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        id: issuedInvoiceAccountingEntryId('inv-1'),
+        created: false,
+        totalDebitCents: 0,
+        totalCreditCents: 0,
+      });
+    }
+    // Aucune écriture fantôme : le journal des ventes reste vierge pour cette pièce.
     expect(entries.saved).toHaveLength(0);
   });
 });

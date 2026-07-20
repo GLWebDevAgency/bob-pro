@@ -1,15 +1,16 @@
 import { Module, type Provider } from '@nestjs/common';
-import { PERSISTENCE, type Persistence, InMemoryPersistence } from './persistence';
+import type { Persistence } from './persistence';
+import { PERSISTENCE } from './persistence-token';
 import { PrismaService } from './prisma/prisma.service';
 import { PrismaPersistence } from './prisma/prisma-persistence';
 
 const persistenceProvider: Provider = {
   provide: PERSISTENCE,
-  useFactory: async (): Promise<Persistence> => {
-    const useDb = !!process.env.DATABASE_URL && process.env.DEMO_MODE === 'false';
-    const persistence: Persistence = useDb ? new PrismaPersistence(new PrismaService()) : new InMemoryPersistence();
-    await persistence.seed();
-    return persistence;
+  useFactory: (): Persistence => {
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL is required; the API has no in-memory business-data runtime.');
+    }
+    return new PrismaPersistence(new PrismaService());
   },
 };
 
