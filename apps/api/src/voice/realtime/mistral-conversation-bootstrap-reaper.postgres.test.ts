@@ -423,6 +423,22 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       ]);
     });
 
+    it('refuse une Mission closed avant les deux événements terminaux canoniques', async () => {
+      try {
+        await setup.$transaction((tx) => insertFixture(tx, 'closed-before-terminal-events', {
+          phase: 'closed',
+          withChildren: false,
+        }));
+        throw new Error('expected_terminal_mission_cursor_rejection');
+      } catch (error) {
+        expectPostgresError(
+          error,
+          '23514',
+          'realtime_mistral_conversation_missions_terminal_cursor_check_v2',
+        );
+      }
+    });
+
     it('n’expose au runtime que les fonctions SECURITY DEFINER, sans SET ROLE ni DELETE direct', async () => {
       const [runtimeAuthority] = await runtime.$queryRaw<Array<{
         roleName: string;
@@ -564,7 +580,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
          )
          ORDER BY function.proname, grantee.rolname
       `;
-      expect(functionAcls).toEqual([
+      expect(functionAcls).toHaveLength(4);
+      expect(functionAcls).toEqual(expect.arrayContaining([
         {
           functionName: 'purge_realtime_mistral_conversation_bootstrap_tickets',
           granteeName: runtimeAuthority.roleName,
@@ -593,7 +610,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           privilegeType: 'EXECUTE',
           isGrantable: false,
         },
-      ]);
+      ]));
 
       const [reaperSchema] = await admin.$queryRaw<Array<{
         canUseSchema: boolean;

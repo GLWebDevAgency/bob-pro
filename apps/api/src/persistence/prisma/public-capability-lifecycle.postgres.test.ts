@@ -851,7 +851,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const [signed, closed] = await Promise.all([signPromise, closePromise]);
       if (blockingError) throw blockingError;
-      expect(signed).toEqual({ ok: true, value: { status: 'signed' } });
+      expect(signed).toEqual({
+        ok: true,
+        value: { status: 'signed', retractation: null },
+      });
       expect(closed.ok).toBe(true);
       const quote = await admin.quote.findUniqueOrThrow({
         where: { id: fixture.quoteId },

@@ -2103,6 +2103,12 @@ export class HttpBobClient implements BobClient {
     input: RealtimeVoiceResumeTicketInput,
     signal?: AbortSignal,
   ) {
+    if (!MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'sessionHandle',
+        'La session de reprise Bob Live est invalide.',
+      );
+    }
     if (!isRecord(input) || !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])) {
       return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
         'resumeTicket',

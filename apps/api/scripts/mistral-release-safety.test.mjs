@@ -99,6 +99,20 @@ test('le runtime ne peut ni supprimer les preuves bootstrap ni omettre leur cert
     release,
     /membership\.roleid = 'bob_mistral_bootstrap_reaper'::regrole[\s\S]*member_role\.rolname <> current_user/u,
   );
+  assert.doesNotMatch(
+    release,
+    /current_user::regrole/u,
+    'un rôle de migration contenant un point doit être résolu par pg_roles.oid, sans parse regrole',
+  );
+  assert.doesNotMatch(
+    certification,
+    /current_user::regrole/u,
+    'la certification doit accepter le même rôle de migration qualifié que la release',
+  );
+  assert.match(
+    release,
+    /SELECT role\.oid FROM pg_catalog\.pg_roles AS role WHERE role\.rolname = current_user/u,
+  );
   assert.match(
     release,
     /pg_shdepend AS ownership[\s\S]*ownership\.deptype = 'o'[\s\S]*ownership\.dbid = database_oid[\s\S]*ownership\.objid IN \(legacy_oid, ordered_oid\)/u,
