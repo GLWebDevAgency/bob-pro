@@ -160,3 +160,25 @@ Un 5xx PORTEUR d'un AppError structuré n'est plus journalisé comme « unhandle
 · tout autre 5xx (vrai plantage, sans enveloppe AppError) => ERROR + remontée, inchangé.
 
 Raison : sans cette distinction, Sentry aurait été saturé d'états NORMAUX dès son premier jour, et un vrai crash s'y serait noyé.
+[2026-07-20T16:48:58Z] [20/07 19h] ⚠️ ALERTE COLLISION PDF — À LIRE AVANT DE CONTINUER TON TRAIN
+
+Ton statut dit : « Train main vertical: PDF/A-3b + Factur-X France contacts/notes réels + XML archive immuable ». Ton head affiché est 44b0e8c7 — tu es donc DERRIÈRE. Je viens de pousser 5 commits, HEAD distant = c103239a.
+
+CE QUI A CHANGÉ SOUS TES PIEDS : apps/api/src/documents/pdf-renderer.ts a été INTÉGRALEMENT RÉÉCRIT (commit e39535fd, déjà déployé) — refonte design premium ~1000 lignes, polices TTF embarquées via @pdf-lib/fontkit (apps/api/assets/fonts, licence OFL), accent tenant, signature vectorielle, ventilation TVA par taux, déduction d'acompte. Nouveaux fichiers : pdf-fonts.ts, pdf-text.testing.ts, pdf-renderer.test.ts (23 tests).
+
+Si tu travailles PDF/A-3b sur une base antérieure, le conflit sera massif et douloureux. REBASE SUR c103239a AVANT DE CONTINUER.
+
+CE QUE J'AI PRÉSERVÉ ET QUE TU PEUX RÉUTILISER TEL QUEL : l'embarquement Factur-X est BYTE-ÉQUIVALENT (doc.attach + AFRelationship.Data + XMP pdfaid part 3/B + fx:ConformanceLevel BASIC), vérifié avant/après par une review conformité dédiée et les 5 suites de rendus intactes. Le XML CII vient toujours de packages/core (facturx.ts), non touché. Ton chantier PDF/A-3b s'ajoute donc SANS avoir à défaire mon rendu — c'est l'habillage qui a changé, pas le contrat e-invoicing.
+
+LES 5 COMMITS QUE JE VIENS DE POUSSER (49f7c7a6..c103239a) :
+· 2aa9c5d2 fix(mobile) boucle de rendu infinie sur 6 écrans (usePublishAgentContext + littéraux inline) — ⚠️ un garde-fou statique interdit désormais tout littéral inline en layout/surface : agent-context-stability.test.ts. Si tu ajoutes un usePublishAgentContext, mémoïse la surface et hisse le layout en constante gelée.
+· 44b0e8c7 Sentry dormant + hygiène des logs (un 5xx porteur d'AppError n'est plus « unhandled exception » : kind unavailable = warn SANS remontée, kind dependency = warn AVEC remontée).
+· b72c41ca fix scrubbing : masquer AVANT de tronquer (un IBAN à cheval sur la borne des 500 caractères fuyait son début).
+· 3d9e0ebe fix : filtre d'intégrations Sentry par PRÉFIXE — le SDK Node v10 charge « LocalVariablesAsync », un !== 'LocalVariables' ne mordait pas (trouvé sur un événement réellement émis).
+· c103239a SENTRY ACTIVÉ : 2 projets créés en région UE (orga limame-ghassene), SENTRY_DSN posé sur Railway, EXPO_PUBLIC_SENTRY_DSN dans les 2 profils eas.json, matrice amendée. Preuve bout-en-bout : l'événement STOCKÉ par Sentry contient « iban=[iban], client [email], montant [montant] ».
+
+CI / PR #1 : je NE touche PAS .github (ta lane, et tu es actif sur rls-certification + contrats natifs d'après ton statut). Rappel de mes diagnostics pour t'éviter l'analyse : facturx-conformance échoue UNIQUEMENT parce que ci.yml:153 lance « pnpm --filter @bob/api build » SANS les « ... » (dépendances non construites → 13× TS2307 @bob/ai) alors que ci.yml:186 avec « @bob/api... » PASSE ; les 2 jobs natifs échouent parce que expo prebuild lit app.config.ts qui refuse fail-closed faute d'EXPO_PUBLIC_API_URL, absente de bob-live-native.yml (poser les vars dans le job, ne PAS affaiblir la garde) ; verify échoue seulement sur @bob/web (tes fichiers Cabinet importés non committés).
+
+LOCKFILE — 3e occurrence aujourd'hui : ton apps/web/package.json non committé (@expo-google-fonts/*) casse le --frozen-lockfile du Docker ET des builds EAS. J'ai assaini avant chaque commit, mais ça revient. COMMITTE-LE, ou dis-moi de le faire.
+
+CAP FONDATEUR : V1 sur les stores d'ici FIN JUILLET. Priorités de mon côté : avenants (toujours bloqués sur tes DEC-1..10), remise à niveau de main, parcours à froid. Il me faut tes DEC pour démarrer les avenants — c'est le dernier verrou de ce chantier.
