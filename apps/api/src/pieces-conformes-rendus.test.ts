@@ -1,4 +1,3 @@
-import { inflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   InvoicePdfData,
@@ -10,6 +9,7 @@ import type {
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { PdfRenderer } from './documents/pdf-renderer';
+import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
@@ -90,34 +90,8 @@ function makeService() {
   return { persistence, rendered, renderedQuotes, service };
 }
 
-/**
- * Concatène le texte VISIBLE du PDF : flux Flate décompressés + chaînes hexadécimales
- * décodées (pdf-lib encode chaque `Tj` en hex WinAnsi dans le content stream).
- * Même helper que purchase-order-flow.test.ts.
- */
-function pdfVisibleText(bytes: Uint8Array): string {
-  const raw = Buffer.from(bytes);
-  const chunks: string[] = [raw.toString('latin1')];
-  let cursor = 0;
-  for (;;) {
-    const start = raw.indexOf('stream', cursor);
-    if (start === -1) break;
-    const dataStart = raw.indexOf('\n', start) + 1;
-    const end = raw.indexOf('endstream', dataStart);
-    if (dataStart === 0 || end === -1) break;
-    try {
-      chunks.push(inflateSync(raw.subarray(dataStart, end)).toString('latin1'));
-    } catch {
-      // Flux non compressé ou binaire — déjà couvert par le texte brut.
-    }
-    cursor = end + 'endstream'.length;
-  }
-  const joined = chunks.join('\n');
-  const hexStrings = [...joined.matchAll(/<([0-9A-Fa-f\s]+)>/g)]
-    .map((match) => Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'))
-    .join('\n');
-  return `${joined}\n${hexStrings}`;
-}
+// Texte visible du PDF : helper d'extraction PARTAGÉ (ToUnicode-aware depuis l'embarquement
+// des polices TTF) — ./documents/pdf-text.testing.
 
 const baseInvoiceData: InvoicePdfData = {
   number: 'F-2026-0042',
@@ -148,7 +122,7 @@ describe('A5 — PDF d’avoir conforme (PdfRenderer réel)', () => {
         issuedAt: '2026-07-01',
       },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Avoir A-2026-0007');
     expect(text).not.toContain('Facture A-2026-0007');
     // 242 nonies A annexe II CGI : la pièce rectificative référence la facture initiale (n° + date).
@@ -167,7 +141,7 @@ describe('A5 — PDF d’avoir conforme (PdfRenderer réel)', () => {
 
   it('facture ordinaire : titre « Facture » et libellés débiteurs inchangés (aucune régression)', async () => {
     const bytes = await new PdfRenderer().renderInvoice(baseInvoiceData);
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Facture F-2026-0042');
     expect(text).toContain('Net a payer');
     expect(text).toContain('Echeance : 2026-08-18');
@@ -182,7 +156,7 @@ describe('A7 — date de prestation + adresse de chantier imprimées (PdfRendere
       ...baseInvoiceData,
       servicePeriod: { start: '2026-06-02', end: null },
     });
-    expect(pdfVisibleText(bytes)).toContain('Prestation realisee le 2026-06-02');
+    expect(await pdfVisibleText(bytes)).toContain('Prestation realisee le 2026-06-02');
   });
 
   it('période : « Prestation du … au … » + adresse de chantier imprimée', async () => {
@@ -191,7 +165,7 @@ describe('A7 — date de prestation + adresse de chantier imprimées (PdfRendere
       servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
       deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Prestation du 2026-06-02 au 2026-06-13');
     expect(text).toContain('Adresse de chantier / livraison : Chantier - 8 all');
   });
@@ -202,7 +176,7 @@ describe('A7 — date de prestation + adresse de chantier imprimées (PdfRendere
       servicePeriod: null,
       deliveryAddress: null,
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).not.toContain('Prestation');
     expect(text).not.toContain('Adresse de chantier');
   });
@@ -234,7 +208,7 @@ describe('A1 — mentions légales sur le PDF du devis (PdfRenderer réel)', () 
         'Bon pour accord (date + signature) :',
       ],
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Mentions legales');
     expect(text).toContain('Assurance decennale : AXA');
     expect(text).toContain('2026-07-19');
@@ -244,7 +218,7 @@ describe('A1 — mentions légales sur le PDF du devis (PdfRenderer réel)', () 
 
   it('sans mention : pas de bloc vide', async () => {
     const bytes = await new PdfRenderer().renderQuote(baseQuoteData);
-    expect(pdfVisibleText(bytes)).not.toContain('Mentions legales');
+    expect(await pdfVisibleText(bytes)).not.toContain('Mentions legales');
   });
 });
 

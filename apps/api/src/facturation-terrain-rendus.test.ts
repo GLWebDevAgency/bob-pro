@@ -1,7 +1,7 @@
-import { inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import type { InvoicePdfData, QuotePdfData } from '@bob/core';
 import { PdfRenderer } from './documents/pdf-renderer';
+import { pdfVisibleText } from './documents/pdf-text.testing';
 
 /**
  * ÉPIC « facturation terrain » — RENDUS PDF (PdfRenderer réel) :
@@ -11,30 +11,7 @@ import { PdfRenderer } from './documents/pdf-renderer';
  *  • B5 : ligne DÉDIÉE de retenue de garantie déduite du net à payer.
  */
 
-/** Même helper que pieces-conformes-rendus.test.ts / purchase-order-flow.test.ts. */
-function pdfVisibleText(bytes: Uint8Array): string {
-  const raw = Buffer.from(bytes);
-  const chunks: string[] = [raw.toString('latin1')];
-  let cursor = 0;
-  for (;;) {
-    const start = raw.indexOf('stream', cursor);
-    if (start === -1) break;
-    const dataStart = raw.indexOf('\n', start) + 1;
-    const end = raw.indexOf('endstream', dataStart);
-    if (dataStart === 0 || end === -1) break;
-    try {
-      chunks.push(inflateSync(raw.subarray(dataStart, end)).toString('latin1'));
-    } catch {
-      // Flux non compressé ou binaire — déjà couvert par le texte brut.
-    }
-    cursor = end + 'endstream'.length;
-  }
-  const joined = chunks.join('\n');
-  const hexStrings = [...joined.matchAll(/<([0-9A-Fa-f\s]+)>/g)]
-    .map((match) => Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'))
-    .join('\n');
-  return `${joined}\n${hexStrings}`;
-}
+// Helper d'extraction partagé (ToUnicode-aware, polices embarquées) : ./documents/pdf-text.testing.
 
 const baseInvoiceData: InvoicePdfData = {
   number: 'F-2026-0042',
@@ -74,7 +51,7 @@ describe('B3 — remises visibles (facture)', () => {
         discountCents: 25_000,
       },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('remise 10 %');
     expect(text).toContain('Total HT brut');
     expect(text).toContain('Rabais, remises et ristournes');
@@ -83,7 +60,7 @@ describe('B3 — remises visibles (facture)', () => {
 
   it('sans remise : AUCUN récapitulatif ni libellé « net » parasite (pièces antérieures intactes)', async () => {
     const bytes = await new PdfRenderer().renderInvoice(baseInvoiceData);
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).not.toContain('Total HT brut');
     expect(text).not.toContain('Rabais');
     expect(text).not.toContain('remise');
@@ -98,7 +75,7 @@ describe('B2 — situation de travaux (facture)', () => {
       kind: 'situation',
       situation: { order: 2, advancementPct: 30 },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Situation n');
     expect(text).toContain('avancement 30 % du march');
   });
@@ -109,7 +86,7 @@ describe('B2 — situation de travaux (facture)', () => {
       kind: 'situation',
       situation: { order: 1, advancementPct: null },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Situation n');
     expect(text).not.toContain('avancement');
   });
@@ -130,14 +107,14 @@ describe('B5 — retenue de garantie (facture)', () => {
         retenueGarantieCents: 18_000,
       },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Retenue de garantie (5 %)');
     expect(text).toContain('Net a payer');
   });
 
   it('sans retenue : aucune ligne de retenue', async () => {
     const bytes = await new PdfRenderer().renderInvoice(baseInvoiceData);
-    expect(pdfVisibleText(bytes)).not.toContain('Retenue de garantie');
+    expect(await pdfVisibleText(bytes)).not.toContain('Retenue de garantie');
   });
 });
 
@@ -172,7 +149,7 @@ describe('B3 — remises visibles (devis)', () => {
       signedBy: null,
       mentions: [],
     };
-    const text = pdfVisibleText(await new PdfRenderer().renderQuote(data));
+    const text = await pdfVisibleText(await new PdfRenderer().renderQuote(data));
     expect(text).toContain('remise 250,00');
     expect(text).toContain('Total HT brut');
     expect(text).toContain('Rabais, remises et ristournes');

@@ -1,4 +1,3 @@
-import { inflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   InvoicePdfData,
@@ -11,6 +10,7 @@ import { RETRACTATION_EARLY_EXECUTION_LABEL } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { PdfRenderer } from './documents/pdf-renderer';
+import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
@@ -272,30 +272,7 @@ describe('A3 — PDF du devis B2C : bloc d’information + formulaire détachabl
   });
 });
 
-/** Texte visible du PDF (flux Flate + chaînes hex WinAnsi) — même helper que les tests A1/A5. */
-function pdfVisibleText(bytes: Uint8Array): string {
-  const raw = Buffer.from(bytes);
-  const chunks: string[] = [raw.toString('latin1')];
-  let cursor = 0;
-  for (;;) {
-    const start = raw.indexOf('stream', cursor);
-    if (start === -1) break;
-    const dataStart = raw.indexOf('\n', start) + 1;
-    const end = raw.indexOf('endstream', dataStart);
-    if (dataStart === 0 || end === -1) break;
-    try {
-      chunks.push(inflateSync(raw.subarray(dataStart, end)).toString('latin1'));
-    } catch {
-      // Flux non compressé ou binaire — déjà couvert par le texte brut.
-    }
-    cursor = end + 'endstream'.length;
-  }
-  const joined = chunks.join('\n');
-  const hexStrings = [...joined.matchAll(/<([0-9A-Fa-f\s]+)>/g)]
-    .map((match) => Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'))
-    .join('\n');
-  return `${joined}\n${hexStrings}`;
-}
+// Texte visible du PDF : helper d'extraction partagé (ToUnicode-aware) — ./documents/pdf-text.testing.
 
 describe('A3 — rendu pdf-lib réel du bloc rétractation', () => {
   const baseQuoteData: QuotePdfData = {
@@ -331,7 +308,7 @@ describe('A3 — rendu pdf-lib réel du bloc rétractation', () => {
         ],
       },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Droit de r');
     expect(text).toContain('quatorze jours');
     expect(text).toContain('Effets de r');
@@ -341,7 +318,7 @@ describe('A3 — rendu pdf-lib réel du bloc rétractation', () => {
 
   it('sans bloc (pro ou legacy) : rien d’imprimé, aucune page ajoutée', async () => {
     const bytes = await new PdfRenderer().renderQuote({ ...baseQuoteData, retractation: null });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).not.toContain('Formulaire de r');
     expect(text).not.toContain('quatorze jours');
   });

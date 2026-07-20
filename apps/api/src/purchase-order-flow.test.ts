@@ -1,10 +1,10 @@
-import { inflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InvoicePdfData, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { QuotesController, InvoicesController } from './api.controllers';
 import { PdfRenderer } from './documents/pdf-renderer';
+import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { RelanceService } from './jobs/relance.service';
@@ -342,40 +342,14 @@ describe('B8 — PdfRenderer : mention sobre dans la zone références', () => {
     billingPresentation: { accentColor: 'navy', rib: null, insurance: null },
   };
 
-  /**
-   * Concatène le texte VISIBLE du PDF : flux Flate décompressés + chaînes hexadécimales
-   * décodées (pdf-lib encode chaque `Tj` en hex WinAnsi dans le content stream).
-   */
-  function pdfVisibleText(bytes: Uint8Array): string {
-    const raw = Buffer.from(bytes);
-    const chunks: string[] = [raw.toString('latin1')];
-    let cursor = 0;
-    for (;;) {
-      const start = raw.indexOf('stream', cursor);
-      if (start === -1) break;
-      const dataStart = raw.indexOf('\n', start) + 1;
-      const end = raw.indexOf('endstream', dataStart);
-      if (dataStart === 0 || end === -1) break;
-      try {
-        chunks.push(inflateSync(raw.subarray(dataStart, end)).toString('latin1'));
-      } catch {
-        // Flux non compressé ou binaire — déjà couvert par le texte brut.
-      }
-      cursor = end + 'endstream'.length;
-    }
-    const joined = chunks.join('\n');
-    const hexStrings = [...joined.matchAll(/<([0-9A-Fa-f\s]+)>/g)]
-      .map((match) => Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'))
-      .join('\n');
-    return `${joined}\n${hexStrings}`;
-  }
+  // Texte visible du PDF : helper d'extraction partagé (ToUnicode-aware) — ./documents/pdf-text.testing.
 
   it('imprime « Bon de commande n° … du … » quand la référence est présente', async () => {
     const bytes = await new PdfRenderer().renderInvoice({
       ...baseData,
       purchaseOrder: { number: 'BC-RATP-4712', receivedAt: '2026-07-10T00:00:00.000Z' },
     });
-    const text = pdfVisibleText(bytes);
+    const text = await pdfVisibleText(bytes);
     expect(text).toContain('Bon de commande n');
     expect(text).toContain('BC-RATP-4712');
     expect(text).toContain('du 2026-07-10');
@@ -383,6 +357,6 @@ describe('B8 — PdfRenderer : mention sobre dans la zone références', () => {
 
   it('n’imprime AUCUNE mention sans bon de commande (compat pièces existantes)', async () => {
     const bytes = await new PdfRenderer().renderInvoice({ ...baseData, purchaseOrder: null });
-    expect(pdfVisibleText(bytes)).not.toContain('Bon de commande');
+    expect(await pdfVisibleText(bytes)).not.toContain('Bon de commande');
   });
 });

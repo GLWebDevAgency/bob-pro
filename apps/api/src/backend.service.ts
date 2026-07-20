@@ -2982,7 +2982,7 @@ export class BackendService {
             if (archiveOrder !== null) return err(appUnavailable('signed-quote-archive'));
           }
           await this.p.publicAccessTokens.markUsed(grant.id, at);
-          return ok({ kind: 'quote', data: this.quotePdfData(q, company, customer) });
+          return ok({ kind: 'quote', data: await this.quotePdfData(q, company, customer) });
         }
         const inv = document as Invoice;
         if (inv.number === null || inv.issuedAt === null) {
@@ -5291,6 +5291,13 @@ export class BackendService {
         const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
         if (!archiveReady.ok) return archiveReady;
       }
+      // A8 — l'accent est désormais RELU au rendu du devis (quotePdfData) : tant qu'un ordre
+      // d'archivage de devis signé n'est pas abouti, le changer fabriquerait une archive
+      // différente du document signé par le client (même doctrine que le régime de TVA).
+      if (validated.value.pdfAccentColor !== undefined) {
+        const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+        if (!quoteArchiveReady.ok) return quoteArchiveReady;
+      }
       const result = await this.p.billingSettings.update({
         companyId,
         expectedRevision: input.expectedRevision,
@@ -5786,13 +5793,18 @@ export class BackendService {
     const customer = await this.p.customers.findById(q.customerId);
     if (!company || !customer || customer.companyId !== company.id)
       return { ok: false, error: appNotFound('company-or-customer', q.id) };
-    const bytes = await this.pdf.renderQuote(this.quotePdfData(q, company, customer));
+    const bytes = await this.pdf.renderQuote(await this.quotePdfData(q, company, customer));
     return ok(bytes);
   }
 
-  private quotePdfData(q: Quote, company: Company, customer: Customer): QuotePdfData {
+  private async quotePdfData(q: Quote, company: Company, customer: Customer): Promise<QuotePdfData> {
     const addr = customer.toProps().address;
     const totals = q.totals();
+    // L'accent tenant du devis vient des MÊMES billing settings que la facture. Réglages absents
+    // (société jamais configurée) : null honnête — le renderer retombe sur navy, jamais un repli
+    // inventé côté data. Un devis SIGNÉ est servi depuis l'archive A8 : un changement de couleur
+    // ne re-rend jamais un contrat (garde signed_quote_archive_missing côté settings).
+    const billingSettings = await this.p.billingSettings.findByCompanyId(q.companyId);
     return {
       number: q.number ?? '(brouillon)',
       companyName: company.name,
@@ -5820,6 +5832,10 @@ export class BackendService {
       },
       depositPct: q.depositPct,
       signedBy: q.signature?.signerName ?? null,
+      // Date de signature imprimée à côté de « Signe par … » (additif) ; le TRACÉ n'est pas
+      // transmis : V1 n'en persiste que le hash (signatureSvg reste absent — fail-closed).
+      signedAt: q.signature?.signedAt ?? null,
+      accentColor: billingSettings?.pdfAccentColor ?? null,
       mentions: this.quoteMentions(q, company, customer),
       // A3 — devis B2C : bloc d'information rétractation (avis type R221-3) + FORMULAIRE
       // DÉTACHABLE (modèle type annexe R221-1, joint au contrat — art. L221-5/L221-9 c. conso).

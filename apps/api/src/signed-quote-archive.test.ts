@@ -355,6 +355,67 @@ describe('A8 — barrière de complétude', () => {
       expect(unlocked.ok).toBe(true);
     });
   });
+
+  it('accent PDF (relu au rendu du devis depuis la refonte) : bloqué pendant la fenêtre, précis, puis débloqué', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const quoteId = await createSentQuote(service);
+      vi.mocked(renderer.renderQuote).mockRejectedValueOnce(new Error('renderer down'));
+      const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
+      expect(signed.ok).toBe(true);
+      expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(0);
+
+      const settings = await service.getCompanyBillingSettings();
+      expect(settings.ok).toBe(true);
+      if (!settings.ok) return;
+
+      // pdfAccentColor est désormais imprimé sur le DEVIS (quotePdfData) : le changer pendant
+      // la fenêtre signature→archive fabriquerait une archive ≠ du contrat signé — 409.
+      await expect(
+        service.updateCompanyBillingSettings({
+          expectedRevision: settings.value.revision,
+          patch: { pdfAccentColor: 'green' },
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'company_billing_settings',
+          reason: 'signed_quote_archive_missing',
+        },
+      });
+
+      // Barrière PRÉCISE : un réglage qui n'est relu par AUCUNE pièce archivée passe.
+      const neutral = await service.updateCompanyBillingSettings({
+        expectedRevision: settings.value.revision,
+        patch: { defaultQuoteValidityDays: 45 },
+      });
+      expect(neutral.ok).toBe(true);
+      if (!neutral.ok) return;
+
+      // Réparation de l'archive : la barrière tombe, la couleur peut changer (forward-only —
+      // le contrat archivé reste servi octet à octet, cf. test « le contrat est figé »).
+      await persistence.documentArchiveJobs.enqueue({
+        id: 'job-repair-accent',
+        companyId: MERCIER_PROPS.id,
+        pieceId: quoteId,
+        reason: 'quote-signed',
+        now: new Date().toISOString(),
+      });
+      const run = await service.runDocumentArchiveJobs();
+      expect(run.ok).toBe(true);
+      expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
+
+      const unlocked = await service.updateCompanyBillingSettings({
+        expectedRevision: neutral.value.revision,
+        patch: { pdfAccentColor: 'green' },
+      });
+      expect(unlocked.ok).toBe(true);
+    });
+  });
 });
 
 describe('A8 — fail-closed : archive corrompue, ambiguë ou absente', () => {
