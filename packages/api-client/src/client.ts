@@ -1019,10 +1019,18 @@ export interface BobClient {
   /** PATCH /company/legal (Réglages entreprise §Identité légale) : capital social en CENTIMES
    * (A6, art. R123-238 c. com. — sociétés uniquement, le domaine rejette EI/micro) et médiateur
    * de la consommation (A2, art. L612-1/L616-1 c. conso). MÊME sémantique partielle que
-   * /company/billing : champ omis = inchangé, `null` = effacé explicitement. */
+   * /company/billing : champ omis = inchangé, `null` = effacé explicitement.
+   * Porte AUSSI les deux données qu'exige `Company.assertCanIssue()` — n° d'immatriculation
+   * RCS/RM (art. R123-237 c. com.) et adresse du siège : sans elles, aucune facture ne peut
+   * être émise, et c'est le SEUL endpoint qui les écrit après l'onboarding. */
   updateCompanyLegal(input: {
     capitalSocialCents?: number | null;
     mediateurConso?: { nom: string; coordonnees: string } | null;
+    email?: string | null;
+    phone?: string | null;
+    rcsOrRm?: string | null;
+    /** Objet COMPLET (jamais un patch par sous-champ : une adresse partielle est incohérente). */
+    address?: { line1: string; zip: string; city: string };
   }): Promise<Result<CompanyProps, AppError>>;
   /** Réglages PostgreSQL du tenant. Aucune valeur de repli n'est autorisée côté client. */
   getCompanyBillingSettings(): Promise<Result<CompanyBillingSettings, AppError>>;

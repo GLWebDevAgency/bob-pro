@@ -173,8 +173,20 @@ const COMPANY_BILLING_FIELDS = new Set(['iban', 'bic']);
 // A3 : email/phone = coordonnées DE L'ENTREPRISE exigées par les modèles types de rétractation
 // en vigueur (formulaire annexe R221-1 : adresse électronique ; avis annexe R221-3, instruction
 // (2) : téléphone + adresse électronique — décret n° 2022-424 du 25/03/2022).
-const COMPANY_LEGAL_FIELDS = new Set(['capitalSocialCents', 'mediateurConso', 'email', 'phone']);
+// `rcsOrRm` et `address` : ajoutés au chantier « cul-de-sac d'émission » — ce sont les DEUX
+// seules données qu'exige `Company.assertCanIssue()` (art. R123-237 c. com.) et elles n'avaient
+// AUCUN endpoint d'écriture après l'onboarding (COMPANY_REGISTRATION_FIELDS ne sert qu'à
+// POST /onboarding/company) : une société provisionnée sans RCS ne pouvait jamais émettre.
+const COMPANY_LEGAL_FIELDS = new Set([
+  'capitalSocialCents',
+  'mediateurConso',
+  'email',
+  'phone',
+  'rcsOrRm',
+  'address',
+]);
 const MEDIATEUR_CONSO_FIELDS = new Set(['nom', 'coordonnees']);
+const COMPANY_LEGAL_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
 /** A7 — inputs d'émission de facture (POST /invoices/:id/issue) : période de prestation et
  * adresse de chantier/livraison, validés puis FIGÉS par le domaine (Invoice.issue).
  * `invoiceId` et `terms` sont TOLÉRÉS mais ignorés : les clients déployés envoient depuis
@@ -2236,9 +2248,66 @@ export class CompanyLookupController {
         issues.push({ field: 'phone', message: 'Téléphone invalide (chaîne non vide ou null).' });
       }
     }
+    // R123-237 — n° d'immatriculation (RCS société / RM artisan) : mention OBLIGATOIRE sur les
+    // factures, exigée par Company.assertCanIssue(). Chaîne non vide ou `null` (effacement
+    // explicite). Le FORMAT n'est pas contraint : les libellés de greffe et de chambre de métiers
+    // sont trop variés pour un motif — imposer une regex rejetterait des mentions légitimes.
+    let rcsOrRm: string | null | undefined;
+    if ('rcsOrRm' in body) {
+      if (body.rcsOrRm === null) rcsOrRm = null;
+      else if (
+        typeof body.rcsOrRm === 'string' &&
+        body.rcsOrRm.trim().length > 0 &&
+        body.rcsOrRm.trim().length <= 100
+      ) {
+        rcsOrRm = body.rcsOrRm.trim();
+      } else {
+        issues.push({
+          field: 'rcsOrRm',
+          message: 'N° d’immatriculation invalide (chaîne non vide ≤ 100 caractères, ou null).',
+        });
+      }
+    }
+    // Adresse du siège : objet COMPLET uniquement (pas de patch par sous-champ — une adresse
+    // partielle serait un état incohérent sur une pièce comptable). Non nullable : `address`
+    // est requis sur CompanyProps, l'effacer n'a aucun sens légal.
+    let address: { line1: string; zip: string; city: string } | undefined;
+    if ('address' in body) {
+      if (!isJsonRecord(body.address)) {
+        issues.push({ field: 'address', message: 'Adresse objet { line1, zip, city } requise.' });
+      } else {
+        const unknownAddressField = Object.keys(body.address).find(
+          (field) => !COMPANY_LEGAL_ADDRESS_FIELDS.has(field),
+        );
+        const line1 = typeof body.address.line1 === 'string' ? body.address.line1.trim() : '';
+        const zip = typeof body.address.zip === 'string' ? body.address.zip.trim() : '';
+        const city = typeof body.address.city === 'string' ? body.address.city.trim() : '';
+        if (unknownAddressField !== undefined) {
+          issues.push({ field: `address.${unknownAddressField}`, message: 'Champ non autorisé.' });
+        } else if (line1.length === 0 || city.length === 0) {
+          // `assertCanIssue` exige line1 ET city : les accepter vides ICI ne ferait que
+          // reconduire le cul-de-sac que cet endpoint est censé ouvrir.
+          issues.push({
+            field: 'address',
+            message: 'Adresse incomplète : rue et ville requises.',
+          });
+        } else if (line1.length > 200 || zip.length > 20 || city.length > 100) {
+          issues.push({ field: 'address', message: 'Adresse trop longue.' });
+        } else {
+          address = { line1, zip, city };
+        }
+      }
+    }
     if (issues.length > 0) throwValidationIssues(issues);
     return unwrap(
-      await this.backend.updateCompanyLegal({ capitalSocialCents, mediateurConso, email, phone }),
+      await this.backend.updateCompanyLegal({
+        capitalSocialCents,
+        mediateurConso,
+        email,
+        phone,
+        rcsOrRm,
+        address,
+      }),
     );
   }
 

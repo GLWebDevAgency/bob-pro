@@ -940,12 +940,20 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
     expect(t('catalogue.back', { personality: 'pro' })).toBe('Facturation');
   });
 
-  it('aperçu en direct + identité (lecture réelle, non éditable ici)', () => {
+  it('aperçu en direct + identité (RCS/RM et adresse ÉDITABLES, raison sociale/SIRET non)', () => {
     expect(t('reglages.previewLive')).toBe('Aperçu en direct');
     expect(t('reglages.sectionIdentity', { personality: 'direct' })).toBe('Identité');
     expect(t('reglages.identityRm')).toBe('N° RM / RCS');
+    // La note ne peut plus dire « non modifiable » de TOUT le bloc : depuis le correctif du
+    // cul-de-sac d'émission, le n° RCS/RM et l'adresse s'éditent ici (les deux exigences
+    // d'assertCanIssue). Seuls raison sociale et SIRET restent verrouillés.
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const note = t('reglages.identityNotEditableNote', { personality });
+      expect(note).toContain('SIRET');
+      expect(note).toContain('RCS/RM');
+    }
     expect(t('reglages.identityNotEditableNote', { personality: 'pro' })).toBe(
-      'Ces informations proviennent de votre inscription — contactez-nous pour les corriger.',
+      'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
     );
   });
 
@@ -1351,6 +1359,64 @@ describe('catalogue legal (LegalHint — protections légales ×3 tons)', () => 
       expect(law.toLowerCase()).toContain('réception');
       expect(t('retenue.toggleHint', { personality, params: { pct: 5 } })).toContain('5');
       expect(t('retenue.suiviTitle', { personality }).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('n° d’immatriculation : la loi R123-237 est expliquée (RCS/RM, greffe) ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const law = t('legal.rcs.law', { personality });
+      expect(law).toContain('RCS');
+      expect(law).toContain('RM');
+      expect(t('legal.rcs.inline', { personality }).length).toBeGreaterThan(0);
+      expect(t('legal.rcs.why', { personality }).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('identité légale éditable : la feuille et ses erreurs sont déclinées ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      for (const key of [
+        'reglages.legalSheetTitle',
+        'reglages.legalSheetBody',
+        'reglages.legalSheetRcsLabel',
+        'reglages.legalSheetRcsInvalid',
+        'reglages.legalSheetAddressLabel',
+        'reglages.legalSheetLine1Invalid',
+        'reglages.legalSheetCityInvalid',
+        'reglages.legalSheetError',
+        'reglages.legalSheetSave',
+        'reglages.legalSheetCancel',
+        'reglages.identityEmpty',
+        'reglages.identityBlockingTitle',
+        'reglages.identityBlockingBody',
+        'reglages.identityFixCta',
+      ] as const) {
+        const copy = t(key, { personality });
+        expect(copy.length).toBeGreaterThan(0);
+        // Une clé absente serait renvoyée telle quelle : jamais « reglages.xxx » à l'écran.
+        expect(copy.startsWith('reglages.')).toBe(false);
+      }
+    }
+  });
+
+  it('hypothèse RCS : la valeur proposée et l’avertissement Kbis s’interpolent ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(
+        t('reglages.legalSuggestRcsLabel', {
+          personality,
+          params: { value: '732 829 320 RCS Paris' },
+        }),
+      ).toContain('732 829 320 RCS Paris');
+      // La confirmation obligatoire est PORTÉE PAR LE TEXTE : le greffe n'est pas toujours
+      // la ville du siège — l'utilisateur doit vérifier son Kbis.
+      expect(t('reglages.legalSuggestRcsHint', { personality })).toContain('Kbis');
+      expect(t('reglages.legalSuggestApply', { personality }).length).toBeGreaterThan(0);
+      // Artisan RM : le format est rappelé, aucune valeur n'est proposée.
+      expect(
+        t('reglages.legalSuggestRmHint', {
+          personality,
+          params: { placeholder: '812 345 676 RM 75' },
+        }),
+      ).toContain('812 345 676 RM 75');
     }
   });
 

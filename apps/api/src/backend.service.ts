@@ -5403,6 +5403,17 @@ export class BackendService {
      *  n° 2022-424). Même sémantique partielle : undefined = inchangé, null = effacé. */
     email?: string | null;
     phone?: string | null;
+    /**
+     * N° d'immatriculation RCS/RM (art. R123-237 c. com.) — mention obligatoire sur les factures,
+     * exigée par `Company.assertCanIssue()`. C'était LE cul-de-sac de production : provisionné
+     * vide par le lookup SIRET, il n'avait aucun chemin d'écriture post-onboarding, donc toute
+     * société sans RCS était définitivement empêchée d'émettre. Même sémantique partielle :
+     * undefined = inchangé, null = effacé.
+     */
+    rcsOrRm?: string | null;
+    /** Adresse du siège — l'AUTRE exigence d'`assertCanIssue` (line1 + city). Objet complet
+     *  uniquement (une adresse partiellement patchée serait incohérente sur une pièce). */
+    address?: { line1: string; zip: string; city: string };
   }): Promise<Result<CompanyProps, AppError>> {
     const companyId = this.companyId();
     const persisted = await this.p.runInTransaction(async (): Promise<Result<CompanyProps, AppError>> => {
@@ -5413,6 +5424,7 @@ export class BackendService {
       if (!archiveReady.ok) return archiveReady;
       // A8 — capital (A6) et médiateur (A2) s'impriment AUSSI sur le devis, relus au rendu
       // (quoteMentions) : un contrat signé dont l'original n'est pas encore archivé bloque.
+      // Idem rcsOrRm/address : le bloc émetteur est relu à chaque rendu.
       const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
       if (!quoteArchiveReady.ok) return quoteArchiveReady;
       const props = current.toProps();
@@ -5428,6 +5440,8 @@ export class BackendService {
             : (input.mediateurConso ?? undefined),
         email: input.email === undefined ? props.email : (input.email ?? undefined),
         phone: input.phone === undefined ? props.phone : (input.phone ?? undefined),
+        rcsOrRm: input.rcsOrRm === undefined ? props.rcsOrRm : (input.rcsOrRm ?? undefined),
+        address: input.address === undefined ? props.address : { ...input.address },
       });
       if (!updated.ok) return err(appDomain(updated.error));
       await this.p.companies.save(updated.value);
@@ -5440,6 +5454,8 @@ export class BackendService {
       mediateurChanged: input.mediateurConso !== undefined,
       emailChanged: input.email !== undefined,
       phoneChanged: input.phone !== undefined,
+      rcsOrRmChanged: input.rcsOrRm !== undefined,
+      addressChanged: input.address !== undefined,
     });
     return persisted;
   }

@@ -6977,7 +6977,9 @@ const legacyFr = {
     direct: 'Aperçu seulement pour l’instant. PDF à venir.',
   },
 
-  // ── Identité sur les factures (lecture réelle — édition post-inscription pas encore possible) ─
+  // ── Identité sur les factures — n° RCS/RM et adresse du siège ÉDITABLES (PATCH /company/legal) :
+  // ce sont les 2 exigences de Company.assertCanIssue(), sans écran pour les saisir le gate
+  // « entreprise incomplète » était un cul-de-sac (aucune facture émissible). ─────────────────
   'reglages.sectionIdentity': {
     pote: 'Identité sur les factures',
     pro: 'Identité sur les factures',
@@ -6991,10 +6993,107 @@ const legacyFr = {
   'reglages.identitySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
   'reglages.identityRm': { pote: 'N° RM / RCS', pro: 'N° RM / RCS', direct: 'RM / RCS' },
   'reglages.identityAddress': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  // Raison sociale et SIRET restent non éditables (identité posée à l'inscription, elle
+  // engage les pièces déjà émises) — mais le n° RCS/RM et l'adresse, eux, se corrigent ici.
   'reglages.identityNotEditableNote': {
-    pote: 'Ces informations viennent de ton inscription — écris-nous pour les corriger, ça arrive vite.',
-    pro: 'Ces informations proviennent de votre inscription — contactez-nous pour les corriger.',
-    direct: 'Non modifiable ici. Contacte-nous.',
+    pote: 'Ta raison sociale et ton SIRET viennent de ton inscription — écris-nous pour les corriger. Le n° RCS/RM et l’adresse, tu peux les modifier toi-même juste au-dessus.',
+    pro: 'La raison sociale et le SIRET proviennent de votre inscription — contactez-nous pour les corriger. Le n° RCS/RM et l’adresse sont modifiables ci-dessus.',
+    direct: 'Raison sociale et SIRET : nous écrire. N° RCS/RM et adresse : modifiables au-dessus.',
+  },
+  'reglages.identityEmpty': { pote: 'À compléter', pro: 'À compléter', direct: 'À compléter' },
+  /** Bandeau d'alerte affiché quand l'émission est RÉELLEMENT bloquée (assertCanIssue KO). */
+  'reglages.identityBlockingTitle': {
+    pote: 'Il te manque une info pour facturer',
+    pro: 'Une information manque pour facturer',
+    direct: 'Info manquante pour facturer',
+  },
+  'reglages.identityBlockingBody': {
+    pote: 'Sans ton n° d’immatriculation et ton adresse, je ne peux pas te laisser émettre une facture : elle serait attaquable. Deux minutes et c’est réglé.',
+    pro: 'Sans numéro d’immatriculation ni adresse complète, aucune facture ne peut être émise : elle serait contestable. Le complément prend deux minutes.',
+    direct: 'N° d’immatriculation + adresse requis pour émettre. À compléter.',
+  },
+  'reglages.identityFixCta': {
+    pote: 'Compléter maintenant',
+    pro: 'Compléter maintenant',
+    direct: 'Compléter',
+  },
+
+  // ── Feuille d'édition de l'identité légale (n° RCS/RM + adresse du siège) ──────────────────
+  'reglages.legalSheetTitle': {
+    pote: 'Ton identité légale',
+    pro: 'Votre identité légale',
+    direct: 'Identité légale',
+  },
+  'reglages.legalSheetBody': {
+    pote: 'Ces infos s’impriment sur tous tes devis et toutes tes factures.',
+    pro: 'Ces informations figurent sur l’ensemble de vos devis et factures.',
+    direct: 'Imprimé sur tes devis et factures.',
+  },
+  'reglages.legalSheetRcsLabel': {
+    pote: 'N° d’immatriculation (RCS / RM)',
+    pro: 'N° d’immatriculation (RCS / RM)',
+    direct: 'N° RCS / RM',
+  },
+  'reglages.legalSheetRcsInvalid': {
+    pote: 'J’ai besoin de ce numéro pour que ta facture soit valable.',
+    pro: 'Ce numéro est requis pour la validité de vos factures.',
+    direct: 'Numéro requis.',
+  },
+  'reglages.legalSheetAddressLabel': {
+    pote: 'Adresse du siège',
+    pro: 'Adresse du siège',
+    direct: 'Adresse du siège',
+  },
+  'reglages.legalSheetLine1Label': { pote: 'Rue', pro: 'Rue', direct: 'Rue' },
+  'reglages.legalSheetLine1Placeholder': {
+    pote: '19 quai de la Seine',
+    pro: '19 quai de la Seine',
+    direct: '19 quai de la Seine',
+  },
+  'reglages.legalSheetLine1Invalid': {
+    pote: 'Il me faut la rue de ton siège.',
+    pro: 'La rue du siège est requise.',
+    direct: 'Rue requise.',
+  },
+  'reglages.legalSheetZipLabel': { pote: 'Code postal', pro: 'Code postal', direct: 'CP' },
+  'reglages.legalSheetZipPlaceholder': { pote: '75019', pro: '75019', direct: '75019' },
+  'reglages.legalSheetCityLabel': { pote: 'Ville', pro: 'Ville', direct: 'Ville' },
+  'reglages.legalSheetCityPlaceholder': { pote: 'Paris', pro: 'Paris', direct: 'Paris' },
+  'reglages.legalSheetCityInvalid': {
+    pote: 'Il me faut la ville de ton siège.',
+    pro: 'La ville du siège est requise.',
+    direct: 'Ville requise.',
+  },
+  'reglages.legalSheetError': {
+    pote: 'Je n’arrive pas à enregistrer, là. Réessaie.',
+    pro: 'Impossible d’enregistrer pour le moment. Veuillez réessayer.',
+    direct: 'Échec de l’enregistrement.',
+  },
+  'reglages.legalSheetSave': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'reglages.legalSheetCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+
+  // ── Suggestion dérivée du SIREN (doctrine « hypothèse de Bob, à confirmer ») ───────────────
+  // JAMAIS posée en silence : Bob propose, l'utilisateur tape pour accepter, puis corrige s'il
+  // le faut. La ville du GREFFE n'est pas toujours celle du siège — le libellé le dit.
+  'reglages.legalSuggestRcsLabel': {
+    pote: 'Mon hypothèse : {value}',
+    pro: 'Hypothèse : {value}',
+    direct: 'Hypothèse : {value}',
+  },
+  'reglages.legalSuggestRcsHint': {
+    pote: 'Je l’ai déduit de ton SIREN et de la ville de ton siège. Le greffe n’est pas toujours dans ta ville — vérifie sur ton extrait Kbis avant de valider.',
+    pro: 'Déduit de votre SIREN et de la ville de votre siège. Le greffe d’immatriculation n’est pas toujours celui de votre commune — vérifiez sur votre extrait Kbis avant de valider.',
+    direct: 'Déduit du SIREN + ville du siège. Greffe ≠ ville parfois : vérifie ton Kbis.',
+  },
+  'reglages.legalSuggestApply': {
+    pote: 'Utiliser cette valeur',
+    pro: 'Utiliser cette valeur',
+    direct: 'Utiliser',
+  },
+  'reglages.legalSuggestRmHint': {
+    pote: 'Ton numéro au répertoire des métiers est sur ton extrait D1 — je ne peux pas le deviner, il dépend de ta chambre de métiers. Format attendu : {placeholder}.',
+    pro: 'Votre numéro au répertoire des métiers figure sur votre extrait D1 — il dépend de votre chambre de métiers et ne peut être déduit. Format attendu : {placeholder}.',
+    direct: 'N° RM sur ton extrait D1 — non déductible. Format : {placeholder}.',
   },
 
   // ── Coordonnées bancaires (RIB) — SEUL champ d'identité réellement éditable ici (PATCH

@@ -65,6 +65,7 @@ export * from './domain/compliance/retractation';
 export * from './domain/company/trade-profile';
 export * from './domain/company/naf-to-trade';
 export * from './domain/company/nature-juridique';
+export * from './domain/company/registration-number';
 export * from './domain/ocr/ocr-extraction';
 export * from './domain/banking/bank-balance-snapshot';
 export * from './domain/banking/bank-balance-freshness';

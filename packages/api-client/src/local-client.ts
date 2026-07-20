@@ -1275,10 +1275,14 @@ export class LocalBobClient implements BobClient {
   }
 
   /** Adaptateur local (démo) — mêmes règles que le serveur (PATCH /company/legal) : capital
-   * social (A6) et médiateur conso (A2), partiel, `null` = effacement, validation Company.of. */
+   * social (A6), médiateur conso (A2), et l'identité BLOQUANTE pour l'émission — n° RCS/RM
+   * (art. R123-237 c. com.) + adresse du siège, les deux exigences d'`assertCanIssue`.
+   * Partiel, `null` = effacement, validation Company.of. */
   async updateCompanyLegal(input: {
     capitalSocialCents?: number | null;
     mediateurConso?: { nom: string; coordonnees: string } | null;
+    rcsOrRm?: string | null;
+    address?: { line1: string; zip: string; city: string };
   }): Promise<Result<CompanyProps, AppError>> {
     const current = await this.companies.findById(this.companyId);
     if (current === null) return err(appNotFound('company', this.companyId));
@@ -1287,10 +1291,14 @@ export class LocalBobClient implements BobClient {
     const {
       capitalSocialCents: currentCapital,
       mediateurConso: currentMediateur,
+      rcsOrRm: currentRcsOrRm,
       ...requiredProps
     } = props;
     const updated = Company.of({
       ...requiredProps,
+      // `address` est REQUIS sur CompanyProps : il reste dans requiredProps et n'est remplacé
+      // que par un objet complet (jamais de patch par sous-champ).
+      ...(input.address === undefined ? {} : { address: { ...input.address } }),
       ...(input.capitalSocialCents === undefined
         ? currentCapital === undefined
           ? {}
@@ -1305,6 +1313,13 @@ export class LocalBobClient implements BobClient {
         : input.mediateurConso === null
           ? {}
           : { mediateurConso: input.mediateurConso }),
+      ...(input.rcsOrRm === undefined
+        ? currentRcsOrRm === undefined
+          ? {}
+          : { rcsOrRm: currentRcsOrRm }
+        : input.rcsOrRm === null
+          ? {}
+          : { rcsOrRm: input.rcsOrRm }),
     });
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);

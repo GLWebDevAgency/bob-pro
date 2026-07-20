@@ -5,7 +5,7 @@ import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
 import { formatDateOnlyFr } from '@bob/core';
 import { challengeFor, buildActionDiff } from '@bob/ai';
-import { t, type Personality } from '@bob/i18n';
+import { t } from '@bob/i18n';
 import { DeleteIconButton, LegalHint, QuestionSheet, Sheet, font, useTheme } from '@bob/ui';
 import {
   useCompanyMe,
@@ -34,6 +34,11 @@ import { useErrorSheet, type ErrorSheetHandle } from './ErrorSheet';
 import { useBobClient } from '../data/client';
 import { companyCanIssue } from '../data/company-completeness';
 import {
+  companyIncompleteGateSpec,
+  paymentTermsMissingGateSpec,
+  type GateSpec,
+} from './document-gates.logic';
+import {
   deriveQuoteInvoiceCtaState,
   mergeLinkedInvoices,
   reconcileLinkedInvoicesEcho,
@@ -45,47 +50,19 @@ import { resolveCollectAccountingPreview } from './collect-accounting-preview';
 import { isPaymentLinkEligible } from '../lib/payment-link-affordance';
 
 /**
- * Gate « entreprise complète » (RÈGLE PRODUIT, compte.tsx §Entreprise) : l'app reste utilisable
- * sans fiche entreprise complète (brouillons…), le gate n'apparaît qu'à l'ACTE qui l'exige
- * légalement — ici, la toute première émission (devis « Envoyer » depuis l'état brouillon,
- * facture « Émettre » depuis l'état brouillon : c'est précisément à ce moment que le numéro légal
- * est alloué). Les renvois/partages d'un devis DÉJÀ envoyé ne sont pas re-gatés : la complétude a
- * déjà été vérifiée à son premier envoi. CTA → /compte (fiche entreprise, §3 du chantier).
+ * Gate « entreprise complète » (RÈGLE PRODUIT) : l'app reste utilisable sans fiche entreprise
+ * complète (brouillons…), le gate n'apparaît qu'à l'ACTE qui l'exige légalement — ici, la toute
+ * première émission (devis « Envoyer » depuis l'état brouillon, facture « Émettre » depuis
+ * l'état brouillon : c'est précisément à ce moment que le numéro légal est alloué). Les
+ * renvois/partages d'un devis DÉJÀ envoyé ne sont pas re-gatés : la complétude a déjà été
+ * vérifiée à son premier envoi.
  * Feuille @bob/ui (plus JAMAIS d'Alert système gris dans le flow) : CTA vers l'écran qui règle
  * le manque en premier plan, « Plus tard » referme — mêmes textes i18n qu'avant.
+ *
+ * Les SPÉCIFICATIONS des gates (textes + destination) vivent dans `document-gates.logic.ts` :
+ * logique pure et TESTÉE, après le cul-de-sac de production du 20/07 où ce gate routait vers
+ * `/compte`, écran qui ne porte ni `rcsOrRm` ni l'adresse. Ce fichier ne fait plus que rendre.
  */
-interface GateSpec {
-  readonly title: string;
-  readonly body: string;
-  readonly ctaLabel: string;
-  readonly cancelLabel: string;
-  readonly route: '/compte' | '/reglages-facturation';
-}
-
-function companyIncompleteGateSpec(kind: 'quote' | 'invoice', personality: Personality): GateSpec {
-  return {
-    title: t('gate.companyIncompleteTitle', { personality }),
-    body: t(
-      kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice',
-      { personality },
-    ),
-    ctaLabel: t('gate.companyIncompleteCta', { personality }),
-    cancelLabel: t('gate.companyIncompleteCancel', { personality }),
-    route: '/compte',
-  };
-}
-
-/** Émission sans conditions de paiement réglées : même invite deux boutons, CTA → réglages. */
-function paymentTermsMissingGateSpec(personality: Personality): GateSpec {
-  return {
-    title: t('invoice.paymentTermsMissingTitle', { personality }),
-    body: t('invoice.paymentTermsMissingBody', { personality }),
-    ctaLabel: t('invoice.paymentTermsMissingCta', { personality }),
-    cancelLabel: t('common.cancel', { personality }),
-    route: '/reglages-facturation',
-  };
-}
-
 function GateSheet({
   gate,
   onClose,

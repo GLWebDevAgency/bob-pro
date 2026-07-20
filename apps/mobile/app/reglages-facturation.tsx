@@ -40,11 +40,13 @@ import { Company, formatSiret, tradeProfile, type InvoicePdfAccentColor } from '
 import type { InvoiceView } from '@bob/api-client';
 import { useCompanyMe, useInvoices, useUpdateCompanyProfile } from '../src/data/hooks';
 import { useBillingPrefs } from '../src/data/billing-prefs';
+import { companyCanIssue } from '../src/data/company-completeness';
 import { ChevronRightIcon, FileTextIcon } from '../src/components/icons';
 import { ScreenHeader } from '../src/components/screen-header';
 import { PressableRow } from '../src/components/pressable-row';
 import { SettingsToggle } from '../src/components/settings-toggle';
 import { IbanEditSheet } from '../src/components/billing/iban-edit-sheet';
+import { LegalIdentityEditSheet } from '../src/components/billing/legal-identity-edit-sheet';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 /** Dernière facture ÉMISE (numéro légal posé) — max lexicographique des F-AAAA-nnn (année en tête). */
@@ -89,6 +91,7 @@ export default function ReglagesFacturation() {
   const updateProfile = useUpdateCompanyProfile();
   const billingPrefs = useBillingPrefs();
   const [ibanSheetOpen, setIbanSheetOpen] = useState(false);
+  const [legalSheetOpen, setLegalSheetOpen] = useState(false);
 
   const lastInvoice = useMemo(() => lastIssuedInvoice(invoices.data ?? []), [invoices.data]);
   const loading = company.isLoading || invoices.isLoading || billingPrefs.isLoading;
@@ -100,6 +103,9 @@ export default function ReglagesFacturation() {
   // isBtp() SANS dupliquer BTP_TRADES ici (source unique : packages/core/src/domain/company/company.ts).
   const companyEntity = useMemo(() => (data ? Company.of(data) : null), [data]);
   const isBtp = companyEntity?.ok ? companyEntity.value.isBtp() : null;
+  // MÊME prédicat que le gate d'émission (DocumentActions → companyIncompleteGateSpec) : cet
+  // écran est désormais la DESTINATION de ce gate, il doit donc dire exactement la même vérité.
+  const canIssue = companyCanIssue(data);
 
   // Swatches FIXES (indépendants du thème d'app actif — themes.* est une palette statique,
   // pas useTheme().theme qui suit le thème choisi par l'utilisateur) : la couleur d'accent du
@@ -281,8 +287,49 @@ export default function ReglagesFacturation() {
               </Text>
             </View>
 
-            {/* ── Identité sur les factures — lecture réelle, non éditable depuis cet écran ── */}
+            {/* ── Identité sur les factures — n° RCS/RM et adresse ÉDITABLES (PATCH
+                /company/legal) : ce sont les 2 exigences de Company.assertCanIssue(). Sans elles
+                l'émission est bloquée, et sans CET écran le gate était un cul-de-sac. ── */}
             <SectionHeader title={t('reglages.sectionIdentity', { personality })} />
+            {/* Bandeau d'alerte UNIQUEMENT quand l'émission est réellement bloquée — même
+                prédicat que le gate (companyCanIssue), jamais une alarme décorative. */}
+            {!canIssue ? (
+              <View
+                accessible
+                accessibilityRole="alert"
+                style={{
+                  backgroundColor: semantic.warningBg,
+                  borderRadius: 14,
+                  padding: 13,
+                  marginBottom: 10,
+                  gap: 6,
+                }}
+              >
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  <Feather name="alert-triangle" size={14} color={semantic.warning} />
+                  <Text style={[font('sub', 700), { fontSize: 13.5, color: semantic.warning }]}>
+                    {t('reglages.identityBlockingTitle', { personality })}
+                  </Text>
+                </View>
+                <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
+                  {t('reglages.identityBlockingBody', { personality })}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('reglages.identityFixCta', { personality })}
+                  onPress={() => setLegalSheetOpen(true)}
+                  style={({ pressed }) => ({
+                    minHeight: 44,
+                    justifyContent: 'center',
+                    opacity: pressed ? 0.6 : 1,
+                  })}
+                >
+                  <Text style={[font('label', 700), { fontSize: 13.5, color: semantic.warning }]}>
+                    {t('reglages.identityFixCta', { personality })}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
             <Card padding={4} style={{ paddingHorizontal: 15, marginBottom: 18 }}>
               {(
                 [
@@ -300,40 +347,98 @@ export default function ReglagesFacturation() {
                   {
                     key: 'rm',
                     label: t('reglages.identityRm', { personality }),
-                    value: data.rcsOrRm ?? '—',
+                    value: data.rcsOrRm ?? t('reglages.identityEmpty', { personality }),
+                    missing: !data.rcsOrRm,
+                    editable: true,
                   },
                   {
                     key: 'address',
                     label: t('reglages.identityAddress', { personality }),
-                    value: `${data.address.line1}, ${data.address.zip} ${data.address.city}`,
+                    value:
+                      data.address.line1 && data.address.city
+                        ? `${data.address.line1}, ${data.address.zip} ${data.address.city}`
+                        : t('reglages.identityEmpty', { personality }),
+                    missing: !data.address.line1 || !data.address.city,
+                    editable: true,
                   },
                 ] as const
-              ).map((row, index, rows) => (
-                <View
-                  key={row.key}
-                  style={{
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 12,
-                    paddingVertical: 12,
-                    borderBottomWidth: index === rows.length - 1 ? 0 : 1,
-                    borderBottomColor: colors.lineSoft,
-                  }}
-                >
+              ).map((row, index, rows) => {
+                const missing = 'missing' in row && row.missing;
+                const separator = {
+                  borderBottomWidth: index === rows.length - 1 ? 0 : 1,
+                  borderBottomColor: colors.lineSoft,
+                };
+                const label = (
                   <Text style={[font('sub'), { color: colors.slate400 }]}>{row.label}</Text>
+                );
+                const value = (
                   <Text
                     numberOfLines={2}
                     style={[
                       font('sub', 700),
-                      { fontSize: 14, color: colors.ink800, flexShrink: 1, textAlign: 'right' },
+                      {
+                        fontSize: 14,
+                        color: missing ? semantic.warning : colors.ink800,
+                        flexShrink: 1,
+                        textAlign: 'right',
+                      },
                       'tabular' in row && row.tabular ? { fontVariant: ['tabular-nums'] } : null,
                     ]}
                   >
                     {row.value}
                   </Text>
-                </View>
-              ))}
+                );
+                // Raison sociale et SIRET restent en lecture (identité posée à l'inscription,
+                // elle engage les pièces déjà émises) — seuls RCS/RM et adresse s'éditent ici.
+                if (!('editable' in row && row.editable)) {
+                  return (
+                    <View
+                      key={row.key}
+                      style={{
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 12,
+                        paddingVertical: 12,
+                        ...separator,
+                      }}
+                    >
+                      {label}
+                      {value}
+                    </View>
+                  );
+                }
+                return (
+                  <Pressable
+                    key={row.key}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${row.label}. ${row.value}`}
+                    onPress={() => setLegalSheetOpen(true)}
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 12,
+                      minHeight: 44,
+                      paddingVertical: 12,
+                      ...separator,
+                    }}
+                  >
+                    {label}
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 7,
+                        flexShrink: 1,
+                      }}
+                    >
+                      {value}
+                      <ChevronRightIcon color={colors.slate300} size={15} />
+                    </View>
+                  </Pressable>
+                );
+              })}
             </Card>
             <Text
               style={[
@@ -706,12 +811,20 @@ export default function ReglagesFacturation() {
       </ScrollView>
 
       {data ? (
-        <IbanEditSheet
-          visible={ibanSheetOpen}
-          currentIban={data.iban ?? null}
-          personality={personality}
-          onClose={() => setIbanSheetOpen(false)}
-        />
+        <>
+          <IbanEditSheet
+            visible={ibanSheetOpen}
+            currentIban={data.iban ?? null}
+            personality={personality}
+            onClose={() => setIbanSheetOpen(false)}
+          />
+          <LegalIdentityEditSheet
+            visible={legalSheetOpen}
+            company={data}
+            personality={personality}
+            onClose={() => setLegalSheetOpen(false)}
+          />
+        </>
       ) : null}
     </View>
   );

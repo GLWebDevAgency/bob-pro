@@ -2004,11 +2004,16 @@ export class HttpBobClient implements BobClient {
   updateCompanyBilling(input: { iban?: string | null; bic?: string | null }) {
     return this.req<CompanyProps>('PATCH', '/company/billing', input);
   }
-  /** A6/A2 — identité légale imprimable (capital social, médiateur conso) : PATCH partiel,
-   * `null` = effacement explicite, champ omis = inchangé (jamais réinjecté par accident). */
+  /** A6/A2 — identité légale imprimable (capital social, médiateur conso, coordonnées A3) et
+   * identité BLOQUANTE pour l'émission (n° RCS/RM art. R123-237, adresse du siège) : PATCH
+   * partiel, `null` = effacement explicite, champ omis = inchangé (jamais réinjecté par accident). */
   updateCompanyLegal(input: {
     capitalSocialCents?: number | null;
     mediateurConso?: { nom: string; coordonnees: string } | null;
+    email?: string | null;
+    phone?: string | null;
+    rcsOrRm?: string | null;
+    address?: { line1: string; zip: string; city: string };
   }) {
     return this.req<CompanyProps>('PATCH', '/company/legal', input);
   }

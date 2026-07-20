@@ -190,4 +190,24 @@ export const legalFr = {
     pro: 'Bob présente cette information au moment du choix afin de décider en connaissance de cause : la décision vous appartient entièrement.',
     direct: 'Info au bon moment. Le choix reste le tien.',
   },
+
+  // ── N° d'immatriculation RCS / RM (art. R123-237 c. com.) ────────────────────
+  // Affiché AU POINT DE DÉCISION : la feuille d'édition de l'identité légale, là où l'artisan
+  // saisit le numéro qui débloque l'émission. In-line = BÉNÉFICE (facture incontestable), pas
+  // « c'est obligatoire ».
+  'legal.rcs.inline': {
+    pote: 'Ce numéro rend ta facture incontestable — c’est lui qui prouve que ton entreprise est bien immatriculée.',
+    pro: 'Ce numéro rend votre facture incontestable : il atteste de l’immatriculation de votre entreprise.',
+    direct: 'Ce numéro rend ta facture incontestable.',
+  },
+  'legal.rcs.law': {
+    pote: 'La loi impose d’écrire sur chaque facture ton numéro d’immatriculation, suivi de « RCS » et de la ville du greffe (société) ou de « RM » (artisan). Sans lui, ta facture est incomplète : un client de mauvaise foi peut la contester, et l’administration peut te sanctionner.',
+    pro: 'La loi impose de faire figurer sur chaque facture le numéro unique d’identification, suivi de la mention « RCS » et du nom de la ville du greffe pour les sociétés, ou « RM » pour les artisans. À défaut, la facture est incomplète : elle peut être contestée par le client et l’administration peut sanctionner l’omission.',
+    direct: 'Numéro d’immatriculation + « RCS <ville du greffe> » (société) ou « RM » (artisan) obligatoire sur chaque facture. Sans lui : facture contestable, sanction possible.',
+  },
+  'legal.rcs.why': {
+    pote: 'Bob bloque la première émission tant que ce numéro manque, plutôt que de te laisser envoyer une facture attaquable. Tu le saisis une fois, il s’imprime tout seul sur toutes tes pièces.',
+    pro: 'Bob suspend la première émission tant que ce numéro est absent, plutôt que de laisser partir une facture contestable. Saisi une fois, il est repris automatiquement sur toutes vos pièces.',
+    direct: 'Bob bloque l’émission tant qu’il manque. Saisi une fois, imprimé partout.',
+  },
 } as const satisfies Record<string, Copy>;

@@ -457,6 +457,33 @@ export function useUpdateCompanyBilling() {
   });
 }
 
+/**
+ * Réglages facturation §Identité légale — écrit le n° d'immatriculation RCS/RM et l'adresse du
+ * siège (PATCH /company/legal). Ce sont les DEUX seules données qu'exige
+ * `Company.assertCanIssue()` : tant qu'elles manquaient sans écran pour les saisir, le gate
+ * « entreprise incomplète » était un cul-de-sac et aucune facture ne pouvait être émise.
+ * Invalide les mêmes caches que le profil : la complétude pilote le gate (`companyCanIssue`),
+ * le diagnostic conformité et les mentions relues au rendu des pièces.
+ */
+export function useUpdateCompanyLegal() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      rcsOrRm?: string | null;
+      address?: { line1: string; zip: string; city: string };
+    }) => {
+      const result = await client.updateCompanyLegal(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['company-me'] });
+      void queryClient.invalidateQueries({ queryKey: ['diagnostic'] });
+    },
+  });
+}
+
 /** Encaissements datés (listPayments, socle E3) — l'assiette du CA encaissé : la provision
  *  URSSAF micro (C-EXP-UI2) se dérive de CES paiements dans @bob/core (buildLedgerView). */
 export function usePayments() {

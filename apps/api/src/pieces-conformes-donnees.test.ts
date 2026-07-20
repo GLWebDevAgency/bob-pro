@@ -116,6 +116,9 @@ describe('A2/A6 — PATCH /company/legal (BackendService.updateCompanyLegal)', (
         // A3 — coordonnées de l'entreprise (modèles R221-1/R221-3) : non touchées ici.
         emailChanged: false,
         phoneChanged: false,
+        // Identité bloquant l'émission (art. R123-237 c. com.) : non touchée ici non plus.
+        rcsOrRmChanged: false,
+        addressChanged: false,
       });
 
       const reread = await service.getCompanyMe();
