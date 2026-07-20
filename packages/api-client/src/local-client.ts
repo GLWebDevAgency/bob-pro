@@ -144,7 +144,7 @@ import {
   type Horizon,
   type PaymentMethod,
   type CashflowProjection,
-  type QualifiedBankBalanceSnapshot,
+  type QualifiedBankBalanceWithPosition,
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
@@ -2491,11 +2491,13 @@ export class LocalBobClient implements BobClient {
     });
   }
 
-  async getLatestBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+  /** Parité de SIGNATURE avec les autres clients ; l'adapter local n'a pas de preuve bancaire,
+   *  donc pas davantage de position estimée — refus explicite, jamais un solde ni un estimé local. */
+  async getLatestBankBalance(): Promise<Result<QualifiedBankBalanceWithPosition, AppError>> {
     return err(appUnavailable('bank-balance-testing-adapter'));
   }
 
-  async recordManualBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+  async recordManualBankBalance(): Promise<Result<QualifiedBankBalanceWithPosition, AppError>> {
     return err(appUnavailable('bank-balance-testing-adapter'));
   }
 

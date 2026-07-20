@@ -28,6 +28,7 @@ import {
   ListCustomers,
   GetCashflow,
   GetLatestQualifiedBankBalance,
+  DeriveCashPosition,
   CreateBankBalanceSnapshot,
   BANK_BALANCE_FRESHNESS_POLICY_V1,
   deriveKnownReceivables,
@@ -163,7 +164,8 @@ import {
   type Scenario,
   type Horizon,
   type CashflowProjection,
-  type QualifiedBankBalanceSnapshot,
+  type QualifiedBankBalanceWithPosition,
+  type CashPosition,
   type PaymentMethod,
   type Quote,
   type Invoice,
@@ -1205,18 +1207,50 @@ export class BackendService {
     const list = await this.p.customers.listByCompany('readiness-probe');
     return ok({ customers: list.length });
   }
-  latestQualifiedBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
-    return new GetLatestQualifiedBankBalance({
+  /**
+   * Position de trésorerie ESTIMÉE = solde constaté qualifié + mouvements CERTAINEMENT postérieurs.
+   * Toutes les erreurs de qualification (absence, péremption, tenant) remontent TELLES QUELLES :
+   * ce use case n'invente jamais d'ancre, il en refuse une manquante.
+   */
+  cashPosition(): Promise<Result<CashPosition, AppError>> {
+    return new DeriveCashPosition({
       balances: this.p.bankBalances,
+      movements: this.p.cashMovements,
       clock: this.clock,
       freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
     }).execute({ companyId: this.companyId() });
   }
 
+  /**
+   * Lecture ADDITIVE : le FAIT bancaire qualifié tel qu'il a toujours été renvoyé, augmenté de la
+   * position estimée qui en découle. Un client antérieur qui ignore `position` lit exactement la
+   * même réponse qu'avant.
+   *
+   * Le solde constaté seul faisait mentir l'app : marquer une facture payée laissait le solde figé.
+   * La position rend visible l'autre moitié de la vérité — sans jamais la faire passer pour un fait.
+   *
+   * Si la projection des mouvements tombe, `position: null` : on dégrade la richesse de la réponse,
+   * jamais son honnêteté. Rendre le solde ILLISIBLE serait pire — c'est le chemin de réparation
+   * (ressaisie du solde) que l'on couperait.
+   */
+  async latestQualifiedBankBalance(): Promise<
+    Result<QualifiedBankBalanceWithPosition, AppError>
+  > {
+    const snapshot = await new GetLatestQualifiedBankBalance({
+      balances: this.p.bankBalances,
+      clock: this.clock,
+      freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
+    }).execute({ companyId: this.companyId() });
+    if (!snapshot.ok) return snapshot;
+
+    const position = await this.cashPosition();
+    return ok({ ...snapshot.value, position: position.ok ? position.value : null });
+  }
+
   async recordManualBankBalance(input: {
     amountCents: number;
     observedAt: string;
-  }): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+  }): Promise<Result<QualifiedBankBalanceWithPosition, AppError>> {
     const created = await new CreateBankBalanceSnapshot({
       balances: this.p.bankBalances,
       clock: this.clock,
@@ -1238,8 +1272,15 @@ export class BackendService {
     horizon: Horizon,
   ): Promise<Result<CashflowProjection, AppError>> {
     const companyId = this.companyId();
-    const balance = await new GetLatestQualifiedBankBalance({
+    // POINT D'ARRÊT DE L'ERREUR : la projection part de la POSITION ESTIMÉE, plus du solde brut.
+    // Le solde constaté est un fait ponctuel qui ne bouge pas quand Bob enregistre un encaissement ;
+    // le poser en ancre de la prévision faisait dériver TOUTES les projections (cashflow, disponible
+    // prudent, guidance de rémunération) d'un montant périmé dès le premier paiement. `DeriveCashPosition`
+    // applique la MÊME politique de fraîcheur qu'avant et remonte les mêmes erreurs : les refus
+    // fail-closed ci-dessous (`cashflow-banking-source`, observation périmée) sont inchangés.
+    const balance = await new DeriveCashPosition({
       balances: this.p.bankBalances,
+      movements: this.p.cashMovements,
       clock: this.clock,
       freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
     }).execute({ companyId });
@@ -1248,7 +1289,7 @@ export class BackendService {
     let bankBalanceCents: number;
     let bankingSource: 'qualified_snapshot' | 'none';
     if (balance.ok) {
-      bankBalanceCents = balance.value.amountCents;
+      bankBalanceCents = balance.value.estimatedBalanceCents;
       bankingSource = 'qualified_snapshot';
     } else if (balance.error.kind === 'not_found') {
       // Tenant VIERGE (aucune observation bancaire ET aucun document financier) : état NORMAL,

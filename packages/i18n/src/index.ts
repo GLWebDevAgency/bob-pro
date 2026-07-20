@@ -86,6 +86,31 @@ const legacyFr = {
     pro: 'Dernier solde confirmé. Les projections sont présentées séparément dans Argent.',
     direct: 'Dernier solde confirmé. Projections dans Argent.',
   },
+  // ── Position de trésorerie : DEUX nombres, jamais un seul ──────────────────
+  // Le solde constaté est un FAIT daté qui ne bouge pas tant que personne ne reconstate la
+  // banque ; l'affichr seul faisait croire à un bug (« j'encaisse, le solde ne bouge pas »).
+  // La position ESTIMÉE lui ajoute les mouvements postérieurs — et se présente TOUJOURS comme
+  // une estimation, jamais comme un relevé.
+  'today.balanceEstimatedLabel': {
+    pote: 'Ce que tu dois avoir en banque',
+    pro: 'Position de trésorerie estimée',
+    direct: 'Position estimée',
+  },
+  'today.balanceEstimatedVoice': {
+    pote: 'Constaté {observed} le {date} — j’ai ajouté ce qui a bougé depuis.',
+    pro: 'Solde constaté {observed} le {date}, ajusté des mouvements postérieurs.',
+    direct: 'Constaté {observed} le {date}. Le reste est estimé.',
+  },
+  'today.balanceMovementsBadge': {
+    pote: '+{inflow} encaissés · −{outflow} sortis',
+    pro: '+{inflow} encaissés · −{outflow} décaissés',
+    direct: '+{inflow} · −{outflow}',
+  },
+  'today.balanceMovementsHint': {
+    pote: 'Ouvre Argent pour voir le détail.',
+    pro: 'Ouvrir Argent pour consulter le détail.',
+    direct: 'Détail dans Argent.',
+  },
   'today.balanceMissingHint': {
     pote: 'Confirme ton solde dans Argent — je ne vais rien inventer.',
     pro: 'Confirmez le solde dans Argent. Aucune valeur n’est estimée à sa place.',
@@ -355,6 +380,26 @@ const legacyFr = {
     pote: 'Solde confirmé récemment · source propriétaire',
     pro: 'Solde confirmé récemment · source propriétaire',
     direct: 'Solde confirmé · propriétaire',
+  },
+  'argent.positionEstimatedLabel': {
+    pote: 'Ce que tu dois avoir en banque',
+    pro: 'Position de trésorerie estimée',
+    direct: 'Position estimée',
+  },
+  'argent.positionObservedMention': {
+    pote: 'Constaté {observed} le {date}',
+    pro: 'Solde constaté : {observed} le {date}',
+    direct: 'Constaté {observed} · {date}',
+  },
+  'argent.positionMovements': {
+    pote: 'Depuis : +{inflow} encaissés, −{outflow} sortis',
+    pro: 'Depuis l’observation : +{inflow} encaissés, −{outflow} décaissés',
+    direct: 'Depuis : +{inflow} · −{outflow}',
+  },
+  'argent.positionEstimateNote': {
+    pote: 'C’est une estimation, pas un relevé — reconfirme ton solde quand tu veux.',
+    pro: 'Estimation, non un relevé bancaire. Reconfirmez le solde à tout moment.',
+    direct: 'Estimation, pas un relevé.',
   },
   'argent.balanceSheetTitle': {
     pote: 'Quel est ton solde maintenant ?',

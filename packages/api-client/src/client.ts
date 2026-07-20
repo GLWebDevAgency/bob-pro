@@ -72,7 +72,7 @@ import type {
   CatalogueItemView,
   CatalogueItemWriteInput,
   CatalogueDeletionView,
-  QualifiedBankBalanceSnapshot,
+  QualifiedBankBalanceWithPosition,
   QuoteDraftPayloadV1,
   PurchaseOrderRef,
   PurchaseOrderRefInput,
@@ -1258,11 +1258,14 @@ export interface BobClient {
     scenario: Scenario;
     horizon: Horizon;
   }): Promise<Result<CashflowProjection, AppError>>;
-  getLatestBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>>;
+  /** Preuve bancaire qualifiée + `position` (ajout ADDITIF) : le solde CONSTATÉ daté et la
+   *  position ESTIMÉE qui y ajoute les mouvements postérieurs. `position: null` = projection des
+   *  mouvements indisponible → n'afficher que le constaté, jamais un estimé partiel. */
+  getLatestBankBalance(): Promise<Result<QualifiedBankBalanceWithPosition, AppError>>;
   recordManualBankBalance(input: {
     amountCents: number;
     observedAt: string;
-  }): Promise<Result<QualifiedBankBalanceSnapshot, AppError>>;
+  }): Promise<Result<QualifiedBankBalanceWithPosition, AppError>>;
   createQuote(
     input: Omit<CreateQuoteInput, 'companyId'>,
   ): Promise<Result<CreateQuoteOutput, AppError>>;

@@ -8,6 +8,7 @@ import { InMemoryVoiceTraceRepository } from './voice-traces.testing';
 import { InMemorySupplierMemoryRepository } from './supplier-memory.testing';
 import { InMemorySubscriptionRepository } from './subscriptions.testing';
 import { InMemoryBankBalanceSnapshotRepository } from './bank-balance-snapshots.testing';
+import { InMemoryCashMovementProjection } from './cash-movements.testing';
 import { InMemoryFiscalProfileRepository } from './fiscal-profiles.testing';
 import { MemoryCabinetInfrastructure } from '../cabinet/memory-cabinet-infrastructure';
 import { InMemoryDocumentFolderDeletionPlanStore } from './document-folder-deletion-plans.testing';
@@ -107,6 +108,7 @@ export class InMemoryPersistence implements Persistence {
   readonly supplierMemory = new InMemorySupplierMemoryRepository();
   readonly subscriptions = new InMemorySubscriptionRepository();
   readonly bankBalances = new InMemoryBankBalanceSnapshotRepository();
+  readonly cashMovements = new InMemoryCashMovementProjection(this.payments, this.expenses);
   readonly fiscalProfiles = new InMemoryFiscalProfileRepository();
   readonly salesDocumentSearch = new InMemorySalesDocumentSearchRepository(
     this.quotes,

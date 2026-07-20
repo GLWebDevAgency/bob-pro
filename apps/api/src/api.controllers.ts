@@ -2439,6 +2439,15 @@ export class CashflowController {
 export class BankBalanceController {
   constructor(private readonly backend: BackendService) {}
 
+  /**
+   * Renvoie la preuve bancaire qualifiée AUGMENTÉE de `position` (ajout strictement ADDITIF :
+   * tous les champs historiques sont inchangés, un client antérieur ne casse pas).
+   *
+   * `position` porte les DEUX nombres dont le mobile a besoin — `observedBalanceCents` (le fait,
+   * daté) et `estimatedBalanceCents` (le fait + les mouvements postérieurs) — plus le détail des
+   * entrées/sorties qui explique l'écart. `position: null` = projection des mouvements indisponible ;
+   * l'appelant s'en tient alors au solde constaté, jamais à un estimé partiel.
+   */
   @Get()
   async latest() {
     return unwrap(await this.backend.latestQualifiedBankBalance());

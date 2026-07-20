@@ -1,6 +1,7 @@
 import type {
   AccountingEntryRepository,
   BankBalanceSnapshotRepository,
+  CashMovementProjectionPort,
   CatalogueRepository,
   ChantierRepository,
   ChantierNoteRepository,
@@ -127,6 +128,9 @@ export interface Persistence {
   supplierMemory: SupplierMemoryRepository;
   subscriptions: SubscriptionRepository;
   bankBalances: BankBalanceSnapshotRepository;
+  /** Projection LECTURE SEULE des mouvements postérieurs à l'observation bancaire
+   *  (encaissements + règlements de dépenses) — alimente la position de trésorerie. */
+  cashMovements: CashMovementProjectionPort;
   fiscalProfiles: FiscalProfileRepository;
   salesDocumentSearch: SalesDocumentSearchPort;
   counters: SequenceCounterPort;

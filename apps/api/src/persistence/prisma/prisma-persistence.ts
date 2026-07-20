@@ -36,6 +36,7 @@ import {
 } from './catalogue-chantiers.repository';
 import { PrismaWorksiteMediaStorage } from './worksite-media.repository';
 import { PrismaBankBalanceSnapshotRepository } from './bank-balance-snapshots.repository';
+import { PrismaCashMovementProjection } from './cash-movements.projection';
 import { PrismaQuoteDraftSlotRepository } from './quote-draft-slots.repository';
 import { PrismaCompanyBillingSettingsRepository } from './company-billing-settings.repository';
 import { PrismaDiagnosticAssessmentRepository } from './diagnostic-assessment.repository';
@@ -113,6 +114,7 @@ export class PrismaPersistence implements Persistence {
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly subscriptions: PrismaSubscriptionRepository;
   readonly bankBalances: PrismaBankBalanceSnapshotRepository;
+  readonly cashMovements: PrismaCashMovementProjection;
   readonly fiscalProfiles: PrismaFiscalProfileRepository;
   readonly salesDocumentSearch: PrismaSalesDocumentSearchRepository;
   readonly counters: PrismaSequenceCounter;
@@ -249,6 +251,7 @@ export class PrismaPersistence implements Persistence {
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.subscriptions = new PrismaSubscriptionRepository(prisma);
     this.bankBalances = new PrismaBankBalanceSnapshotRepository(prisma);
+    this.cashMovements = new PrismaCashMovementProjection(prisma);
     this.fiscalProfiles = new PrismaFiscalProfileRepository(prisma);
     this.salesDocumentSearch = new PrismaSalesDocumentSearchRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);

@@ -62,6 +62,7 @@ import { patterns, shadowNative } from '@bob/tokens';
 import { deriveAgedBalance, type AgedBucketKey } from '@bob/core';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
+import { deriveCashPositionDisplay } from '../../src/finance/cash-position-view';
 import {
   Avatar,
   Button,
@@ -537,13 +538,23 @@ export default function Argent() {
   const bankBalance = useLatestBankBalance();
   const ledgerCompany = companyMe.data;
 
+  // DEUX nombres : le constaté (fait daté) et la position estimée. `null` = rien de plus à
+  // montrer (pas d'observation, projection indisponible, ou aucun mouvement) → rendu inchangé.
+  const cashPosition = useMemo(
+    () => deriveCashPositionDisplay({ balance: bankBalance.data, personality }),
+    [bankBalance.data, personality],
+  );
+  // Le grand-livre part de la POSITION ESTIMÉE, comme la projection serveur : le laisser sur le
+  // solde brut aurait rejoué ICI le bug d'origine (« Disponible prudent » figé après encaissement).
+  const ledgerBankBalanceCents = cashPosition?.estimatedCents ?? bankBalance.data?.amountCents;
+
   const ledger = useMemo(
     () =>
       buildLedgerView({
         invoices: invoices.data,
         expenses: expenses.data,
         accountingEntries: entries.data,
-        bankBalanceCents: bankBalance.data?.amountCents,
+        bankBalanceCents: ledgerBankBalanceCents,
         // Company micro + paiements datés + date du jour → cotisationsCents RÉEL (négatif),
         // « Disponible prudent » teinté d'autant, et ledger.urssaf = la déclaration pré-calculée.
         // TODO C-EXP-UI2 v2 : buildLedgerView ne propage pas encore acre/dateCreation vers
@@ -557,7 +568,7 @@ export default function Argent() {
       invoices.data,
       expenses.data,
       entries.data,
-      bankBalance.data?.amountCents,
+      ledgerBankBalanceCents,
       ledgerCompany,
       payments.data,
       today,
@@ -964,7 +975,67 @@ export default function Argent() {
                 </View>
               </View>
             </Card>
+          ) : bankBalance.data && cashPosition ? (
+            /* ── Position de trésorerie : DEUX nombres ─────────────────────────
+               L'estimé est le héros, le CONSTATÉ DATÉ reste juste dessous, et l'écart est
+               expliqué ligne par ligne (+entrées / −sorties). C'est exactement ce qui manquait
+               au fondateur : le solde figé était honnête, il lui manquait sa moitié estimée. */
+            <FadeIn index={1}>
+              <Card radius={18} padding={16} style={{ marginTop: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+                  <IconTile tone="success" size={38} radius={12}>
+                    <Feather name="trending-up" size={17} color={semantic.success} />
+                  </IconTile>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
+                      {t('argent.positionEstimatedLabel', { personality })}
+                    </Text>
+                    <View style={{ marginTop: 2 }}>
+                      <MoneyText cents={cashPosition.estimatedCents} variant="big" />
+                    </View>
+                    {/* Le FAIT, daté : il ne disparaît jamais derrière l'estimation. */}
+                    <Text
+                      style={[font('meta'), { color: colors.slate500, marginTop: 5, lineHeight: 17 }]}
+                    >
+                      {cashPosition.observedLabel}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Le détail qui explique l'écart — accessible sans quitter l'écran. */}
+                <View
+                  style={{
+                    marginTop: 12,
+                    paddingTop: 11,
+                    borderTopWidth: 1,
+                    borderTopColor: colors.lineSoft,
+                    gap: 6,
+                  }}
+                >
+                  <Text style={[font('meta'), { color: colors.ink600, lineHeight: 17 }]}>
+                    {cashPosition.movementsLabel}
+                  </Text>
+                  <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17 }]}>
+                    {t('argent.positionEstimateNote', { personality })}
+                  </Text>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('argent.balanceRefreshCta', { personality })}
+                  onPress={() => setBalanceSheetVisible(true)}
+                  hitSlop={10}
+                  style={{ minHeight: 44, justifyContent: 'center', marginTop: 4 }}
+                >
+                  <Text style={[font('label', 700), { color: colors.ink600 }]}>
+                    {t('argent.balanceRefreshCta', { personality })}
+                  </Text>
+                </Pressable>
+              </Card>
+            </FadeIn>
           ) : bankBalance.data ? (
+            /* Aucun mouvement depuis l'observation (ou projection indisponible) : l'estimé
+               égalerait le constaté — le rendu historique reste, à l'identique. */
             <Card radius={16} padding={13} style={{ marginTop: 12 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <Feather name="check-circle" size={17} color={semantic.success} />
@@ -976,6 +1047,7 @@ export default function Argent() {
                   accessibilityLabel={t('argent.balanceRefreshCta', { personality })}
                   onPress={() => setBalanceSheetVisible(true)}
                   hitSlop={10}
+                  style={{ minHeight: 44, justifyContent: 'center' }}
                 >
                   <Text style={[font('label', 700), { color: colors.ink600 }]}>
                     {t('argent.balanceRefreshCta', { personality })}

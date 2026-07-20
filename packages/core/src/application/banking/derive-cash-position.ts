@@ -9,7 +9,10 @@ import {
 } from '../ports/cash-movement-projection';
 import { type ClockPort } from '../ports/services';
 import { type AppError, appUnavailable } from '../result';
-import { GetLatestQualifiedBankBalance } from './get-latest-qualified-bank-balance';
+import {
+  GetLatestQualifiedBankBalance,
+  type QualifiedBankBalanceSnapshot,
+} from './get-latest-qualified-bank-balance';
 
 /** Projection minimale d'une observation bancaire DÉJÀ qualifiée fraîche par la politique. */
 export interface CashPositionObservation {
@@ -45,6 +48,20 @@ export interface CashPosition {
   /** L'ESTIMATION : constaté + entrées − sorties postérieures. Jamais présentée comme un fait. */
   readonly estimatedBalanceCents: number;
   readonly movements: CashPositionMovements;
+}
+
+/**
+ * Lecture COMPOSÉE exposée par `GET /bank-balance` : le FAIT bancaire qualifié, augmenté — de façon
+ * strictement ADDITIVE — de la position estimée qui en découle.
+ *
+ * `position: null` n'est JAMAIS « pas de mouvement » (ce cas donne une position avec `netCents: 0`) :
+ * c'est l'aveu que la projection des mouvements n'a pas pu être lue. Le client doit alors n'afficher
+ * que le solde constaté, tel qu'il l'a toujours fait — jamais un estimé partiel qui serait un
+ * mensonge silencieux. On dégrade la RICHESSE de la réponse, jamais son honnêteté, et surtout on ne
+ * rend pas illisible le solde qui est précisément le chemin de réparation du tenant.
+ */
+export interface QualifiedBankBalanceWithPosition extends QualifiedBankBalanceSnapshot {
+  readonly position: CashPosition | null;
 }
 
 export type CashPositionError =

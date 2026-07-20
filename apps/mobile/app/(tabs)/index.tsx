@@ -95,6 +95,7 @@ import {
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useSalesDocumentVoiceAffordance } from '../../src/documents-voice-search';
 import { deriveHomeReceivableKpis } from '../../src/home/derive-home-receivable-kpis';
+import { deriveCashPositionDisplay } from '../../src/finance/cash-position-view';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -509,6 +510,13 @@ export default function Aujourdhui() {
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const bankBalance = useLatestBankBalance();
+  // DEUX nombres, pas un seul : le solde CONSTATÉ (le fait, daté) et la POSITION ESTIMÉE qui y
+  // ajoute les mouvements postérieurs. Affiché seul, le constaté figé se lisait comme un bug
+  // (« j'encaisse, rien ne bouge »). `null` = rien de plus à montrer → rendu actuel inchangé.
+  const cashPosition = useMemo(
+    () => deriveCashPositionDisplay({ balance: bankBalance.data, personality }),
+    [bankBalance.data, personality],
+  );
   const today = useTodayPriorities();
   const quoteDraft = useQuoteDraft();
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
@@ -830,12 +838,38 @@ export default function Aujourdhui() {
 
         {bankBalance.data ? (
           <FloatingBalanceCard
-            label={t('today.balanceLabel', { personality })}
-            amountCents={bankBalance.data.amountCents}
-            voiceLine={t('today.balanceObservedHint', { personality })}
+            label={
+              cashPosition
+                ? t('today.balanceEstimatedLabel', { personality })
+                : t('today.balanceLabel', { personality })
+            }
+            // Le héros devient la POSITION dès qu'un mouvement existe ; sans mouvement, l'estimé
+            // égalerait le constaté et le rendu historique reste, à l'octet près.
+            amountCents={cashPosition ? cashPosition.estimatedCents : bankBalance.data.amountCents}
+            // Le FAIT ne disparaît jamais : il descend en voix de Bob, daté, à côté de l'estimé.
+            voiceLine={
+              cashPosition
+                ? t('today.balanceEstimatedVoice', {
+                    personality,
+                    params: {
+                      observed: cashPosition.observedAmount,
+                      date: cashPosition.observedDate,
+                    },
+                  })
+                : t('today.balanceObservedHint', { personality })
+            }
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}
+            {...(cashPosition
+              ? {
+                  badge: {
+                    label: cashPosition.movementsLabel,
+                    accessibilityHint: t('today.balanceMovementsHint', { personality }),
+                    onPress: () => router.push('/(tabs)/argent'),
+                  },
+                }
+              : {})}
           />
         ) : (
           <HeroPlaceholder
