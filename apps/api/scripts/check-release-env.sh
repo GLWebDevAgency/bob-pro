@@ -36,6 +36,11 @@ const required = [
   'BREVO_API_BASE_URL',
   'BREVO_SENDER_EMAIL',
   'ERROR_REPORTER_WEBHOOK_URL',
+  'RUN_RLS_CERT',
+  'RLS_CERT_CLEANUP',
+];
+
+const paymentVariables = [
   'STRIPE_SECRET_KEY',
   'STRIPE_PRICE_SOLO',
   'STRIPE_PRICE_PRO',
@@ -43,8 +48,6 @@ const required = [
   'STRIPE_WEBHOOK_SECRET',
   'STRIPE_LIVEMODE',
   'PAYMENT_RETURN_BASE_URL',
-  'RUN_RLS_CERT',
-  'RLS_CERT_CLEANUP',
 ];
 
 let failed = false;
@@ -71,6 +74,21 @@ function url(name) {
 
 for (const name of required) present(name);
 
+// Accès anticipé V1 : Stripe est soit entièrement absent, soit entièrement certifié. Les
+// plateformes peuvent exposer des variables vides ; elles comptent comme absentes. Une seule
+// valeur renseignée fait basculer le gate en mode paiement et rend les six autres obligatoires.
+const configuredPaymentVariables = paymentVariables.filter(
+  (name) => (process.env[name] ?? '').trim().length > 0,
+);
+const paymentConfigured = configuredPaymentVariables.length > 0;
+if (paymentConfigured && configuredPaymentVariables.length !== paymentVariables.length) {
+  for (const name of paymentVariables) {
+    if (!(process.env[name] ?? '').trim()) {
+      fail(`${name} is required when Stripe payments are configured`);
+    }
+  }
+}
+
 if (process.env.DEMO_MODE !== 'false') {
   fail("DEMO_MODE must be 'false' for production");
 }
@@ -78,11 +96,13 @@ if (process.env.DEMO_MODE !== 'false') {
 if (process.env.NODE_ENV !== 'production') {
   fail("NODE_ENV must be 'production' for production release checks");
 }
-if (process.env.STRIPE_LIVEMODE !== 'true') {
-  fail("STRIPE_LIVEMODE must be 'true' for a production release");
-}
-if (!/^whsec_[A-Za-z0-9_\-]{16,}$/.test(process.env.STRIPE_WEBHOOK_SECRET ?? '')) {
-  fail('STRIPE_WEBHOOK_SECRET must be a non-placeholder Workbench endpoint secret');
+if (paymentConfigured) {
+  if (process.env.STRIPE_LIVEMODE !== 'true') {
+    fail("STRIPE_LIVEMODE must be 'true' for a production release");
+  }
+  if (!/^whsec_[A-Za-z0-9_\-]{16,}$/.test(process.env.STRIPE_WEBHOOK_SECRET ?? '')) {
+    fail('STRIPE_WEBHOOK_SECRET must be a non-placeholder Workbench endpoint secret');
+  }
 }
 
 const llmKeys = [
@@ -214,7 +234,7 @@ const signWebBaseUrl = url('SIGN_WEB_BASE_URL');
 const cabinetWebBaseUrl = url('CABINET_INVITATION_WEB_BASE_URL');
 const errorReporterUrl = url('ERROR_REPORTER_WEBHOOK_URL');
 const brevoBaseUrl = url('BREVO_API_BASE_URL');
-const paymentReturnBaseUrl = url('PAYMENT_RETURN_BASE_URL');
+const paymentReturnBaseUrl = paymentConfigured ? url('PAYMENT_RETURN_BASE_URL') : null;
 
 if (databaseUrl && directUrl && databaseUrl.toString() === directUrl.toString()) {
   fail('DATABASE_URL and DIRECT_URL must use distinct roles');

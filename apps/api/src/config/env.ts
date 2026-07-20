@@ -5,6 +5,32 @@ const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
 const BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS = 32;
 
+/** Normalisation commune aux parseurs et aux composition roots qui lisent encore process.env. */
+export function normalizeOptionalEnvironmentString(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+const emptyStringAsUndefined = (value: unknown): unknown =>
+  typeof value === 'string' ? normalizeOptionalEnvironmentString(value) : value;
+
+const optionalStripeString = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().trim().min(1).optional(),
+);
+const optionalStripeWebhookSecret = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().trim().startsWith('whsec_').optional(),
+);
+const optionalStripeLiveMode = z.preprocess(
+  emptyStringAsUndefined,
+  z.enum(['true', 'false']).optional(),
+);
+const optionalStripeReturnUrl = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().url().optional(),
+);
+
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
   // Relâche uniquement les dépendances externes obligatoires dans certains tests de composition.
@@ -156,13 +182,16 @@ const schema = z.object({
   // OCR (A2-C14) : modèle OCR DÉDIÉ Mistral (≠ Voxtral/chat) + petit modèle d'extraction structurée.
   MISTRAL_OCR_MODEL: z.string().default('mistral-ocr-latest'),
   MISTRAL_OCR_EXTRACT_MODEL: z.string().default('mistral-small-latest'),
-  STRIPE_SECRET_KEY: z.string().optional(),
-  STRIPE_PRICE_SOLO: z.string().optional(),
-  STRIPE_PRICE_PRO: z.string().optional(),
-  STRIPE_PRICE_BUSINESS: z.string().optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().trim().startsWith('whsec_').optional(),
-  STRIPE_LIVEMODE: z.enum(['true', 'false']).optional(),
-  PAYMENT_RETURN_BASE_URL: z.string().url().optional(),
+  // Les plateformes de déploiement conservent souvent une variable déclarée avec une valeur
+  // vide. Pour le contrat V1, les sept valeurs vides équivalent à « Stripe non provisionné » ;
+  // une seule valeur non vide déclenche ensuite le contrôle tout-ou-rien dans loadEnv().
+  STRIPE_SECRET_KEY: optionalStripeString,
+  STRIPE_PRICE_SOLO: optionalStripeString,
+  STRIPE_PRICE_PRO: optionalStripeString,
+  STRIPE_PRICE_BUSINESS: optionalStripeString,
+  STRIPE_WEBHOOK_SECRET: optionalStripeWebhookSecret,
+  STRIPE_LIVEMODE: optionalStripeLiveMode,
+  PAYMENT_RETURN_BASE_URL: optionalStripeReturnUrl,
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
   SUPABASE_JWKS_URL: z.string().optional(),

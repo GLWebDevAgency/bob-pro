@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildPaymentGateway, DisabledPaymentGateway, StripePaymentGateway } from './payment-gateway';
 
 const LIVE_PAYMENT_ENV = {
@@ -13,6 +13,8 @@ const LIVE_PAYMENT_ENV = {
 } as const;
 
 describe('composition paiement — aucun lien démo en live', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it('compose un gateway désactivé quand les 7 variables Stripe sont TOUTES absentes (accès anticipé V1)', async () => {
     const gateway = buildPaymentGateway({}) as DisabledPaymentGateway;
 
@@ -32,6 +34,27 @@ describe('composition paiement — aucun lien démo en live', () => {
     await expect(
       gateway.createInvoicePaymentLink({ invoiceId: 'inv-1', amountCents: 1_000, label: 'Facture' }),
     ).rejects.toThrow(/Paiement non activé \(accès anticipé\)/u);
+  });
+
+  it('compose aussi l’accès anticipé quand la plateforme expose les 7 variables vides', () => {
+    vi.stubEnv('STRIPE_SECRET_KEY', '');
+    vi.stubEnv('STRIPE_PRICE_SOLO', '  ');
+    vi.stubEnv('STRIPE_PRICE_PRO', '');
+    vi.stubEnv('STRIPE_PRICE_BUSINESS', '');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    vi.stubEnv('STRIPE_LIVEMODE', '');
+    vi.stubEnv('PAYMENT_RETURN_BASE_URL', '');
+
+    expect(buildPaymentGateway()).toBeInstanceOf(DisabledPaymentGateway);
+  });
+
+  it('normalise les espaces mais refuse toujours une configuration réellement entamée', () => {
+    expect(() =>
+      buildPaymentGateway({
+        STRIPE_SECRET_KEY: ' sk_test_partial ',
+        STRIPE_PRICE_SOLO: '  ',
+      }),
+    ).toThrow(/Paiement live indisponible.*STRIPE_PRICE_SOLO/u);
   });
 
   it('échoue par erreur de configuration en live avec une configuration Stripe partielle', () => {

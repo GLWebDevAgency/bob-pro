@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
 import { type Provider } from '@nestjs/common';
 import { type PaymentGatewayPort, type CheckoutResult, type PlanTier } from '@bob/core';
+import { normalizeOptionalEnvironmentString } from '../config/env';
 import type {
   StripeBillingProvider,
   StripeCheckoutSessionSnapshot,
@@ -371,14 +372,25 @@ type PaymentGatewayEnv = Readonly<{
 export function buildPaymentGateway(
   env: PaymentGatewayEnv = process.env,
 ): PaymentGatewayPort & StripeBillingProvider {
+  const normalized = {
+    STRIPE_SECRET_KEY: normalizeOptionalEnvironmentString(env.STRIPE_SECRET_KEY),
+    STRIPE_PRICE_SOLO: normalizeOptionalEnvironmentString(env.STRIPE_PRICE_SOLO),
+    STRIPE_PRICE_PRO: normalizeOptionalEnvironmentString(env.STRIPE_PRICE_PRO),
+    STRIPE_PRICE_BUSINESS: normalizeOptionalEnvironmentString(env.STRIPE_PRICE_BUSINESS),
+    STRIPE_WEBHOOK_SECRET: normalizeOptionalEnvironmentString(env.STRIPE_WEBHOOK_SECRET),
+    STRIPE_LIVEMODE: normalizeOptionalEnvironmentString(env.STRIPE_LIVEMODE),
+    PAYMENT_RETURN_BASE_URL: normalizeOptionalEnvironmentString(env.PAYMENT_RETURN_BASE_URL),
+  } as const;
   const missing = [
-    !env.STRIPE_SECRET_KEY ? 'STRIPE_SECRET_KEY' : null,
-    !env.STRIPE_PRICE_SOLO ? 'STRIPE_PRICE_SOLO' : null,
-    !env.STRIPE_PRICE_PRO ? 'STRIPE_PRICE_PRO' : null,
-    !env.STRIPE_PRICE_BUSINESS ? 'STRIPE_PRICE_BUSINESS' : null,
-    !env.STRIPE_WEBHOOK_SECRET ? 'STRIPE_WEBHOOK_SECRET' : null,
-    env.STRIPE_LIVEMODE !== 'true' && env.STRIPE_LIVEMODE !== 'false' ? 'STRIPE_LIVEMODE' : null,
-    !env.PAYMENT_RETURN_BASE_URL ? 'PAYMENT_RETURN_BASE_URL' : null,
+    !normalized.STRIPE_SECRET_KEY ? 'STRIPE_SECRET_KEY' : null,
+    !normalized.STRIPE_PRICE_SOLO ? 'STRIPE_PRICE_SOLO' : null,
+    !normalized.STRIPE_PRICE_PRO ? 'STRIPE_PRICE_PRO' : null,
+    !normalized.STRIPE_PRICE_BUSINESS ? 'STRIPE_PRICE_BUSINESS' : null,
+    !normalized.STRIPE_WEBHOOK_SECRET ? 'STRIPE_WEBHOOK_SECRET' : null,
+    normalized.STRIPE_LIVEMODE !== 'true' && normalized.STRIPE_LIVEMODE !== 'false'
+      ? 'STRIPE_LIVEMODE'
+      : null,
+    !normalized.PAYMENT_RETURN_BASE_URL ? 'PAYMENT_RETURN_BASE_URL' : null,
   ].filter((value): value is string => value !== null);
   // Early-access V1 : aucune variable Stripe posée = paiement volontairement désactivé —
   // gateway inerte qui répond une erreur métier propre si jamais appelé (les CTA d'achat
@@ -391,7 +403,7 @@ export function buildPaymentGateway(
       `Paiement live indisponible : configuration incomplète (${missing.join(', ')}).`,
     );
   }
-  const returnUrl = new URL(env.PAYMENT_RETURN_BASE_URL as string);
+  const returnUrl = new URL(normalized.PAYMENT_RETURN_BASE_URL as string);
   if (
     returnUrl.protocol !== 'https:' ||
     returnUrl.hostname === 'localhost' ||
@@ -407,15 +419,15 @@ export function buildPaymentGateway(
     );
   }
   return new StripePaymentGateway(
-    env.STRIPE_SECRET_KEY as string,
+    normalized.STRIPE_SECRET_KEY as string,
     {
-      solo: env.STRIPE_PRICE_SOLO as string,
-      pro: env.STRIPE_PRICE_PRO as string,
-      business: env.STRIPE_PRICE_BUSINESS as string,
+      solo: normalized.STRIPE_PRICE_SOLO as string,
+      pro: normalized.STRIPE_PRICE_PRO as string,
+      business: normalized.STRIPE_PRICE_BUSINESS as string,
     },
-    env.PAYMENT_RETURN_BASE_URL as string,
-    env.STRIPE_WEBHOOK_SECRET as string,
-    env.STRIPE_LIVEMODE === 'true',
+    normalized.PAYMENT_RETURN_BASE_URL as string,
+    normalized.STRIPE_WEBHOOK_SECRET as string,
+    normalized.STRIPE_LIVEMODE === 'true',
   );
 }
 
