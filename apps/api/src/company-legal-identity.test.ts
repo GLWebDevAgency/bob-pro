@@ -95,6 +95,11 @@ describe('PATCH /company/legal — sortie du cul-de-sac d’émission', () => {
       const canIssue = company.value.assertCanIssue();
       expect(canIssue.ok).toBe(false);
       if (canIssue.ok) return;
+      // `DomainError` est une union : seuls les refus de VALIDATION portent un `field`.
+      // Narrower par le code avant de le lire (sinon TS2339 — l'union contient des membres
+      // sans cette propriété, ex. VAT_RATE_NOT_APPLICABLE).
+      expect(canIssue.error.code).toBe('VALIDATION');
+      if (canIssue.error.code !== 'VALIDATION') return;
       expect(canIssue.error.field).toBe('rcsOrRm');
     });
   });
