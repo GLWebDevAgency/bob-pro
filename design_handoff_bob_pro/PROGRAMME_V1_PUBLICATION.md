@@ -160,6 +160,25 @@ NICO (bundle id = décision identité fondateur) · cold onboarding re-certifié
 hors iOS · build groupé de validation fondateur (SUR GO) · incohérence Stripe/release-gate à acter
 (MATRICE_FLAGS_V1 n°1 — bloquant première release via workflow).
 
+### MAJ 20/07 nuit — BUILD ANDROID LIVRÉ + STRATÉGIE MONÉTISATION/EARLY-ACCESS ACTÉE (fondateur)
+- **BUILD EAS Android preview LIVRÉ** (GO fondateur) : build `4f027256`, commit d091b0b5, APK remis
+  au fondateur pour test terrain — premier APK contenant B8/dépense↔chantier/fiscal/épics A-A3bis-B.
+- **Monétisation — séquence actée sur analyse** (challenge des options IAP-first et bascule rejeté) :
+  ① V1 early-access SANS paiement ; ② V1.1 checkout web Stripe (serveur DÉJÀ ~complet :
+  createSubscriptionCheckout/portal/webhooks dans payment-gateway.ts) + Apple Pay/Google Pay,
+  app login-only 0 % commission, vraies factures B2B ; ③ V1.2+ datadriven : IAP dual-canal via
+  RevenueCat (adapter derrière port, subscriptions = autorité) au prix majoré ~+15-20 %.
+  Décision B2 formelle fondateur : GO early-access demandé (débloque l'amendement du release gate).
+- **Early-access par vagues (mécanisme fondateur challengé et calibré)** : waitlist (page simple
+  email+SIRET, HORS app — pré-sortie) → vagues de 25-30 admis (concierge onboarding via provisioning
+  existant, earlyAccess déjà en base backend.service.ts:4815) → récompenses : 3 mois gratuits
+  (feedback structuré) · parrainage +3 mois/filleul activé plafonné 12 mois (filleul validé = compte
+  + SIRET + 1 action de valeur ≤14 j) · statut « Membre fondateur » (badge + price-lock à vie).
+  PARRAINAGE = V1.1 (promesse commerciale d'abord, code ensuite — RIEN ne bloque la publication).
+  AJOUTS AU PÉRIMÈTRE (waitlist pré-sortie, parrainage V1.1) : accord GPT requis (règle du gel), notifié.
+- Alerting acté : **Sentry région UE** (crash mobile + API) + webhook maison conservé (canal
+  critique). Chantier autorisé fondateur (B4) — attente DSN (compte Sentry fondateur) ou webhook.
+
 ### MAJ 20/07 — MATRICE FLAGS ✓ LIVRÉE · lane GPT Mistral v2 intégrée ✓
 - **MATRICE FLAGS V1 FIGÉE** : `MATRICE_FLAGS_V1.md` (10 familles, 37 flags figés machine-readable,
   gardes boot documentées fichier:ligne) + test anti-drift `apps/api/src/flags-matrix-v1.test.ts`
