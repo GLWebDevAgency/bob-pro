@@ -105,9 +105,11 @@ export * from './application/ports/cabinet-invitation-dispatch';
 export * from './application/ports/release-flag-repository';
 export * from './application/ports/subscription-repository';
 export * from './application/ports/bank-balance-snapshot-repository';
+export * from './application/ports/cash-movement-projection';
 export * from './application/subscription/get-subscription-status';
 export * from './application/banking/create-bank-balance-snapshot';
 export * from './application/banking/get-latest-qualified-bank-balance';
+export * from './application/banking/derive-cash-position';
 export * from './application/billing/create-quote';
 export * from './application/billing/compose-standalone-invoice';
 export * from './application/billing/line-input-validation';
@@ -255,4 +257,5 @@ export * from './application/fiscal/derive-owner-pay-guidance';
 
 // Minimisation de la télémétrie de plantage (B4 observabilité — politique partagée API + mobile)
 export * from './observability/telemetry-scrubbing';
+export * from './observability/voice-trace';
 export * from './observability/crash-reporting-region';
