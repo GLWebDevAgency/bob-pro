@@ -11,6 +11,7 @@ export * from './realtime/agent-bridge';
 export * from './realtime/usage-metering';
 export * from './realtime/mistral-conversation-protocol';
 export * from './realtime/mistral-duplex-downlink-protocol';
+export * from './realtime/mistral-duplex-downlink-sender';
 export * from './router/model-router';
 export * from './prompt/prompt-pack';
 export * from './guardrails/money-guard';
