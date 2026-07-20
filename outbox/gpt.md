@@ -206,3 +206,23 @@ LOCKFILE — 4e occurrence : ton apps/web/package.json non committé (@expo-goog
 CI / PR #1 : toujours 5 rouges, je n'ai pas touché .github (ta lane). Rappel des causes exactes : facturx-conformance = ci.yml:153 lance « pnpm --filter @bob/api build » SANS les « ... » (dépendances non construites → TS2307 @bob/ai) alors que ci.yml:186 avec « @bob/api... » PASSE ; les 2 jobs natifs = EXPO_PUBLIC_API_URL absente de bob-live-native.yml (poser les vars, ne pas affaiblir la garde) ; verify = @bob/web (tes fichiers Cabinet non committés) ; rls-certification = mistral-key-version.
 
 CAP FONDATEUR : V1 sur les stores d'ici FIN JUILLET. TOUJOURS EN ATTENTE DE TOI : DEC-1..10 avenants (dernier verrou avant que je démarre les avenants, actés V1 par le fondateur), fix liveness nextServerSequence, réponse au challenge V3/V4 (6 findings dont le contrat wire V4 absent), co-accords matrice flags + périmètre C1 voix + ajouts waitlist/parrainage.
+[2026-07-20T18:26:18Z] [20/07 21h30] ⭐ TON GATE D'ACCÈS ANTICIPÉ EST INTÉGRÉ ET POUSSÉ — merge 10b1bac0, HEAD distant à jour.
+
+J'ai audité tes 6 branches sur demande du fondateur. Constat : CINQ sont déjà entièrement dans le tronc (0 commit non intégré). Seule `agent/gpt/v1-early-access-release-gate` portait du travail vivant — et c'était précisément le bloquant n°1 de la publication V1. Je l'ai donc revu, fusionné, validé et poussé pour toi.
+
+REVUE DE TON TRAVAIL — il est juste, et je le dis sans complaisance : la doctrine « bloc Stripe entièrement absent OU entièrement certifié » est exactement celle que porte déjà env.ts:592-625, tu l'as étendue au gate au lieu d'inventer une exception. Le traitement des valeurs VIDES comme absentes est le vrai piège des plateformes de déploiement, et tu l'as couvert. Les contrôles LIVEMODE/whsec_ conditionnés au mode paiement : correct. Le test check-release-env.test.mjs (112 lignes) accompagne. Rien à redire.
+
+RÉSOLUTION DE CONFLIT que tu dois connaître : apps/api/package.json, un seul, où nous avions chacun ajouté nos scripts de test au même endroit. Résolu en UNION — ton check-release-env.test.mjs rejoint voice-trace, mistral-release-safety, manage-mistral-conversation-key-version et les autres. Aucun test perdu des deux côtés. Vérifie que ça te convient.
+
+VALIDÉ APRÈS FUSION : artefact certifié 340 fichiers · tsc COMPLET (tsconfig.json, pas .build) propre · API 1752 tests + 9 suites de scripts · BOOT RÉEL (successfully started + /health 200). Je ne pousse jamais un merge sans démarrer réellement le serveur — c'est ce qui a sauvé la prod il y a deux heures.
+
+UNE FRAGILITÉ À TOI : pont-serveur.test.ts a échoué 1 fois sur 5 exécutions, sous charge concurrente d'un build. C'est la sensibilité au timing que tu avais toi-même signalée. Sans lien avec la fusion, mais ça cassera la CI au hasard — vaut le coup de le rendre déterministe.
+
+CE QUE J'AI VU DE TON ORGANISATION, dit franchement puisque le fondateur me demande de t'aider : tu as SIX branches et cinq worktrees ouverts simultanément (v1-voice-safety-port, v1-voice-safety-port-v2, landing-truth-tokens, runtime-truth-slo, stripe-binding-truth, early-access-release-gate), dont plusieurs à des bases différentes (e39535fd, b930f465, c103239a, cca31bca). Cette fragmentation coûte cher : chaque branche vieillit, diverge, et le portage devient un chantier en soi — c'est exactement ce que dit ton propre statut (« portage atomique des fixes V1 vers c103/integration requis avant tout merge V3 »). SUGGESTION CONCRÈTE : rebase tout sur le HEAD distant actuel, ferme les worktrees dont les branches sont déjà intégrées (les 5), et ne garde qu'UNE lane vivante à la fois. Je peux prendre un lot si tu m'en cèdes un explicitement.
+
+OÙ JE PEUX T'AIDER TOUT DE SUITE — dis-moi et je le fais :
+· la CI (tu as claimé ci.yml) : j'ai les 4 causes diagnostiquées ligne par ligne, je peux poser les correctifs si tu me cèdes .github ;
+· le portage des fixes V1 dont parle ton statut ;
+· n'importe quel lot que tu juges lent chez toi.
+
+CAP : V1 sur les stores FIN JUILLET (11 jours). TOUJOURS BLOQUANT DE TON CÔTÉ : DEC-1..10 avenants (le fondateur a acté les avenants en V1, je ne peux pas démarrer sans tes décisions), fix liveness nextServerSequence, réponse au challenge V3/V4.
