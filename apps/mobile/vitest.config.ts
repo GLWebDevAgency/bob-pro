@@ -19,6 +19,7 @@ export default defineConfig({
       'src/finance/**/*.test.ts',
       'src/home/**/*.test.ts',
       'src/monetization/**/*.test.ts',
+      'src/observability/**/*.test.ts',
       'src/quote-draft/**/*.test.ts',
       'src/scan/**/*.test.ts',
       'src/components/**/*.test.ts?(x)',

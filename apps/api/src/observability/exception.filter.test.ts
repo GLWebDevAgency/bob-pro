@@ -51,25 +51,47 @@ describe('appErrorLogSummary', () => {
 });
 
 describe('AllExceptionsFilter', () => {
-  it('logge le kind + service de l’AppError d’un 503 issu de unwrap (diagnostic en une lecture)', () => {
+  it("un 'unavailable' est un refus fail-closed ASSUMÉ : warn diagnosticable, JAMAIS remonté comme incident", () => {
     const errorSpy = vi.spyOn(rootLogger, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(rootLogger, 'warn').mockImplementation(() => undefined);
     const reporter: ErrorReporter = { captureException: vi.fn() };
     const json = vi.fn();
     const res = { status: vi.fn(() => ({ json })) };
-    const body = { ok: false, error: { kind: 'unavailable', service: 'subscription-record' } };
+    // Cas terrain (20/07) : aucune source bancaire connectée — état métier NORMAL, pas une panne.
+    const body = { ok: false, error: { kind: 'unavailable', service: 'cashflow-banking-source' } };
 
     new AllExceptionsFilter(reporter).catch(
       new HttpException(body, HttpStatus.SERVICE_UNAVAILABLE),
       hostWith(res),
     );
 
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    const record = errorSpy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const record = warnSpy.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(record.status).toBe(503);
-    expect(record.appError).toEqual({ kind: 'unavailable', service: 'subscription-record' });
-    expect(reporter.captureException).toHaveBeenCalledTimes(1);
+    expect(record.appError).toEqual({ kind: 'unavailable', service: 'cashflow-banking-source' });
+    // Le rapporteur alimente l'alerting (et demain Sentry) : un état assumé ne doit pas le saturer.
+    expect(reporter.captureException).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(503);
     expect(json).toHaveBeenCalledWith(body);
+  });
+
+  it("un 'dependency' (amont réellement en panne) reste remonté, mais en warn — pas en « exception non gérée »", () => {
+    const errorSpy = vi.spyOn(rootLogger, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(rootLogger, 'warn').mockImplementation(() => undefined);
+    const reporter: ErrorReporter = { captureException: vi.fn() };
+    const json = vi.fn();
+    const res = { status: vi.fn(() => ({ json })) };
+    const body = { ok: false, error: { kind: 'dependency', port: 'ocr', cause: 'mistral-ocr HTTP 503' } };
+
+    new AllExceptionsFilter(reporter).catch(
+      new HttpException(body, HttpStatus.SERVICE_UNAVAILABLE),
+      hostWith(res),
+    );
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(reporter.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('ne logge pas un 4xx mais renvoie le corps intact', () => {

@@ -47,10 +47,17 @@ import { EMAIL_CONFIRMATION_ROUTE } from '../src/auth-confirmation/email-confirm
 import { useLegacyCatalogueProtection } from '../src/data/catalogue';
 import { MistralConversationCheckpointProvider } from '../src/realtime/mistral-conversation-checkpoint-provider';
 import { authenticatedRuntimeBoundaryKey } from '../src/data/authenticated-runtime-boundary';
+import { initCrashReporter } from '../src/observability/crash-reporter';
 
 // Garde le splash NATIF visible pendant le chargement critique. L'appel au scope module est
 // volontaire : exécuté avant que React puisse rendre une frame blanche.
 void SplashScreen.preventAutoHideAsync();
+
+// Crash reporting : au scope module, AVANT le premier rendu — un plantage au montage (comme
+// celui observé sur l'écran profil fiscal) doit être capturé, pas manqué de quelques frames.
+// DORMANT tant qu'aucun EXPO_PUBLIC_SENTRY_DSN région UE n'est fourni : dans ce cas rien n'est
+// importé ni initialisé, et l'absence du flag ne casse aucun build.
+void initCrashReporter();
 
 /**
  * Migration device-scoped, indépendante du compte : retire l'ancienne clé globale en clair dès

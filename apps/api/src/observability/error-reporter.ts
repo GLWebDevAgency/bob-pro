@@ -1,6 +1,7 @@
 import type { Provider } from '@nestjs/common';
 import { isDemoMode } from '../config/env';
 import { AppLogger } from './logger';
+import { CompositeErrorReporter, createSentryErrorReporter, resolveSentryConfig } from './sentry-reporter';
 
 export const ERROR_REPORTER = Symbol('ERROR_REPORTER');
 
@@ -8,7 +9,7 @@ export interface ErrorReporter {
   captureException(error: unknown, context?: Record<string, unknown>): void;
 }
 
-/** Implémentation no-op (V1). Brancher @sentry/node derrière ce port via SENTRY_DSN. */
+/** Implémentation no-op : aucun canal d'incident configuré (ni webhook, ni SENTRY_DSN). */
 export class NoopErrorReporter implements ErrorReporter {
   captureException(): void {
     // intentionnellement vide — voir SENTRY_DSN pour activer un vrai reporter
@@ -67,13 +68,21 @@ export class HttpErrorReporter implements ErrorReporter {
   }
 }
 
+/**
+ * Compose les canaux d'incident disponibles. Le webhook maison reste le canal d'alerte
+ * critique et sa règle de configuration est inchangée ; Sentry s'y AJOUTE lorsqu'un DSN région
+ * UE est posé (§B4). Sans DSN — valeur figée V1 — le canal Sentry est strictement absent et
+ * `@sentry/node` n'est jamais chargé.
+ */
 export function buildErrorReporter(logger: AppLogger): ErrorReporter {
+  const sentry = createSentryErrorReporter(resolveSentryConfig(), logger);
   const endpoint = process.env.ERROR_REPORTER_WEBHOOK_URL;
   if (!endpoint) {
-    if (isDemoMode()) return new NoopErrorReporter();
+    if (isDemoMode()) return sentry ?? new NoopErrorReporter();
     throw new Error('ERROR_REPORTER_WEBHOOK_URL is required when DEMO_MODE=false.');
   }
-  return new HttpErrorReporter(endpoint, logger);
+  const webhook = new HttpErrorReporter(endpoint, logger);
+  return sentry ? new CompositeErrorReporter([webhook, sentry]) : webhook;
 }
 
 export const errorReporterProvider: Provider = {

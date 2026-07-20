@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sentryDsnRejectionReason } from '@bob/core';
 
 const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
@@ -187,6 +188,17 @@ const schema = z.object({
   JOB_CABINET_IDS: z.string().optional(),
   CABINET_INVITATION_WORKER_USER_ID: z.string().uuid().optional(),
   ERROR_REPORTER_WEBHOOK_URL: z.string().url().optional(),
+  // OBSERVABILITÉ §B4 — Sentry (crash reporting serveur). DORMANT en V1 : sans DSN, le SDK
+  // n'est même pas chargé (zéro appel réseau, zéro avertissement). Ce canal COMPLÈTE
+  // ERROR_REPORTER_WEBHOOK_URL — qui reste le canal d'alerte critique — il ne le remplace pas.
+  // Le DSN doit cibler la RÉGION UE de Sentry : garde fail-closed `assertSentryDsnIsEuRegion`.
+  SENTRY_DSN: z.string().url().optional(),
+  // Absent : l'environnement est déduit de CABINET_RELEASE_ENV, jamais inventé.
+  SENTRY_ENVIRONMENT: z.enum(['development', 'staging', 'production']).optional(),
+  // 0 = AUCUNE trace de performance. Les spans transportent des noms de route et des attributs
+  // applicatifs dont le scrubbing n'est pas spécifié : rien à gagner, du PII à risquer.
+  // Valeur figée par design_handoff_bob_pro/MATRICE_FLAGS_V1.md (§5 Observabilité).
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
   // BOB EXPERT FISCAL — service d'évaluation Publicodes serveur (SPIKE_PUBLICODES_20260715.md).
   // Shadow par défaut ('false') : le moteur Publicodes/modele-social embarque des trous de
   // couverture documentés (activités mixtes, PLR réglementées, non-résidents) et le format de
@@ -540,6 +552,19 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
   };
 }
 
+/**
+ * Sentry SaaS crée les organisations en région **US par défaut** : un DSN collé sans vigilance
+ * exfiltrerait, en silence et sans erreur visible, les rapports de plantage d'une application
+ * financière française hors UE. La posture souveraine actée (§B4, RGPD) exige la région UE —
+ * cette garde est donc FAIL-CLOSED : un DSN non-UE refuse le démarrage, jamais un avertissement
+ * qu'on finirait par ne plus lire. Elle s'applique dans TOUS les environnements : un poste de
+ * développement qui pousserait vers une région US poserait exactement le même problème.
+ */
+export function assertSentryDsnIsEuRegion(dsn: string): void {
+  const reason = sentryDsnRejectionReason(dsn);
+  if (reason) throw new Error(`SENTRY_DSN ${reason}.`);
+}
+
 export function loadEnv(): Env {
   const parsed = schema.safeParse(process.env);
   if (!parsed.success) {
@@ -665,6 +690,12 @@ export function loadEnv(): Env {
     if (invitationUrl.protocol !== 'https:' && invitationUrl.hostname !== 'localhost') {
       throw new Error('CABINET_INVITATION_WEB_BASE_URL doit utiliser HTTPS hors localhost.');
     }
+  }
+  // Crash reporting : dormant tant qu'aucun DSN n'est posé. Dès qu'il l'est, il est certifié
+  // AVANT que le SDK ne soit chargé — un DSN hors UE ne doit jamais atteindre le réseau.
+  if (parsed.data.SENTRY_DSN) assertSentryDsnIsEuRegion(parsed.data.SENTRY_DSN);
+  if (!parsed.data.SENTRY_DSN && parsed.data.SENTRY_ENVIRONMENT !== undefined) {
+    throw new Error('SENTRY_ENVIRONMENT ne doit pas être posé sans SENTRY_DSN (canal dormant).');
   }
   if (process.env.NODE_ENV === 'production' && parsed.data.CABINET_RELEASE_ENV === 'development') {
     throw new Error(

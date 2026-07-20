@@ -252,3 +252,7 @@ export * from './application/fiscal/update-fiscal-profile-field';
 
 // Langage & montant du prélèvement selon le profil confirmé (Phase 1C — SPEC_EXPERT_FISCAL §V2 pt. 1+6)
 export * from './application/fiscal/derive-owner-pay-guidance';
+
+// Minimisation de la télémétrie de plantage (B4 observabilité — politique partagée API + mobile)
+export * from './observability/telemetry-scrubbing';
+export * from './observability/crash-reporting-region';

@@ -98,6 +98,7 @@ const EXPECTED_API_FLAG_NAMES = [
   'MISTRAL_REALTIME_TARGET_DELAY_MS',
   'FISCAL_PUBLICODES_SIMULATIONS_ENABLED',
   'FISCAL_PUBLICODES_MAX_CONCURRENCY',
+  'SENTRY_TRACES_SAMPLE_RATE',
   'SUPABASE_STORAGE_BUCKET',
   'SUPABASE_REALTIME_AUDIO_BUCKET',
   'CABINET_INVITATION_WORKER_ENABLED',
@@ -139,6 +140,10 @@ const RESIDUAL_VARIABLES = [
   'OPENAI_REALTIME_SAFETY_SECRET',
   'OPENAI_REALTIME_PROOF_SECRET',
   'OPENAI_REALTIME_CONTROL_ENCRYPTION_SECRET',
+  // Observabilité §B4 : le canal Sentry est DORMANT en V1 (aucun DSN fourni). Un DSN traînant
+  // dans l'environnement du développeur activerait la garde de région et fausserait la mesure.
+  'SENTRY_DSN',
+  'SENTRY_ENVIRONMENT',
 ] as const;
 
 /**
@@ -248,6 +253,26 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope api)', () => {
     expect(() => loadEnv()).toThrow(
       /chiffrement identité Mistral v2 ne peut pas être configuré lorsque le replay terminal est désactivé/iu,
     );
+  });
+
+  it('canal Sentry DORMANT en V1 : aucun DSN, aucune trace de performance', () => {
+    stubV1MinimalProductionEnv();
+    const parsed = loadEnv();
+    expect(parsed.SENTRY_DSN).toBeUndefined();
+    expect(parsed.SENTRY_ENVIRONMENT).toBeUndefined();
+    expect(parsed.SENTRY_TRACES_SAMPLE_RATE).toBe(0);
+  });
+
+  it('couplage fatal : SENTRY_ENVIRONMENT posé sans DSN refuse le boot', () => {
+    stubV1MinimalProductionEnv();
+    vi.stubEnv('SENTRY_ENVIRONMENT', 'production');
+    expect(() => loadEnv()).toThrow(/SENTRY_ENVIRONMENT ne doit pas être posé sans SENTRY_DSN/iu);
+  });
+
+  it('souveraineté fail-closed : un DSN Sentry hors région UE refuse le boot', () => {
+    stubV1MinimalProductionEnv();
+    vi.stubEnv('SENTRY_DSN', 'https://k@o4507.ingest.us.sentry.io/1');
+    expect(() => loadEnv()).toThrow(/région UE de Sentry/iu);
   });
 
   it("BOB_LIVE_ENABLED='false' posé ferme le chemin d'activation legacy OPENAI_REALTIME_ENABLED", () => {
