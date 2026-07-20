@@ -296,6 +296,40 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
     });
   });
 
+  it("crée l'avoir d'une facture dont le régime de TVA est FIGÉ (cas réel de production)", async () => {
+    // Incident terrain du 20/07 remonté par Sentry (BOB-PRO-API-2) : la création d'avoir
+    // échouait en 23514 sur « invoices_vat_treatment_requires_issue ». L'avoir naît BROUILLON
+    // (issuedAt NULL) mais hérite dès sa création du régime de sa source (art. 272 CGI) — état
+    // légitime que la contrainte du 19/07 interdisait. Les fixtures existantes ne posaient
+    // aucun régime figé : le harnais était aveugle au cas réel.
+    const sourceId = `source-vat-${randomUUID()}`;
+    const creditId = `credit-vat-${randomUUID()}`;
+    await persistence.runWithTenant(companyA, async () => {
+      await persistence.invoices.save(
+        issuedInvoice({
+          id: sourceId,
+          companyId: companyA,
+          customerId: customerA,
+          kind: 'final',
+          number: `F-2026-0${randomInt(500, 899)}`,
+          vatTreatmentAtIssuance: 'standard',
+        }),
+      );
+      const useCase = new CreateCreditNote({
+        invoices: persistence.invoices,
+        ids: { newId: () => creditId },
+      });
+
+      const created = await useCase.execute({ invoiceId: sourceId });
+
+      expect(created).toEqual({ ok: true, value: { creditNoteId: creditId } });
+      const credit = await persistence.invoices.findById(creditId);
+      // Le régime est REPRIS de la source, sur une pièce encore non émise.
+      expect(credit?.vatTreatmentAtIssuance).toBe('standard');
+      expect(credit?.issuedAt).toBeNull();
+    });
+  });
+
   it('fait converger deux créations concurrentes sur un seul avoir et une seule identité', async () => {
     const candidates = [`race-credit-${randomUUID()}`, `race-credit-${randomUUID()}`];
     const attempts = workers.map((worker, index) => {
@@ -464,6 +498,9 @@ function issuedInvoice(input: {
   kind: Exclude<InvoiceKind, 'credit_note' | 'situation'>;
   number: string;
   parentQuoteId?: string;
+  /** A4 — régime de TVA CONSTATÉ à l'émission. Toute facture émise en production en porte un ;
+   * l'omettre ici rendait le harnais aveugle au cas réel (incident Sentry BOB-PRO-API-2). */
+  vatTreatmentAtIssuance?: 'standard' | 'franchise' | 'autoliquidation';
 }): Invoice {
   const deposit = input.kind === 'deposit';
   const snapshot: InvoiceSnapshot = {
@@ -502,6 +539,9 @@ function issuedInvoice(input: {
     sourceInvoiceKind: null,
     sourceInvoiceNumber: null,
     sourceInvoiceIssuedAt: null,
+    ...(input.vatTreatmentAtIssuance
+      ? { vatTreatmentAtIssuance: input.vatTreatmentAtIssuance }
+      : {}),
   };
   return Invoice.rehydrate(snapshot);
 }
