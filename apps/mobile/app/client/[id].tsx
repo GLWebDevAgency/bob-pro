@@ -34,7 +34,7 @@
  *   aujourd'hui (TODO C40) — les statuts Réglée/Réglée en partie portent l'info.
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -350,8 +350,12 @@ export default function ClientDetail() {
   const palette = useStatusBadgePalette();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string; edit?: string }>();
   const id = typeof params.id === 'string' ? params.id : '';
+  // `?edit=1` : la fiche s'ouvre DIRECTEMENT sur son formulaire d'édition. Utilisé par la carte
+  // « devis à transmettre » du briefing (il manque l'e-mail du client) — l'action proposée
+  // atterrit sur le geste exact à faire, jamais sur un écran où il faut re-chercher le bouton.
+  const editRequested = params.edit === '1';
 
   const client = useBobClient();
   const customers = useCustomers();
@@ -423,7 +427,9 @@ export default function ClientDetail() {
     return deriveTodayPriorities({
       invoices: custInvoices,
       quotes: custQuotes,
-      customers: [{ id: customer.id, name: customer.name }],
+      // L'e-mail est transporté tel quel : le moteur en a besoin pour d'autres priorités
+      // (« devis à transmettre ») et ne doit jamais recevoir une projection amputée.
+      customers: [{ id: customer.id, name: customer.name, email: customer.email }],
       today,
     }).filter((p): p is RelancePriority => p.kind === 'relance');
   }, [customer, invoices.data, quotes.data, custInvoices, custQuotes, today]);
@@ -680,6 +686,17 @@ export default function ClientDetail() {
     if (!customerFresh) setEditOpen(false);
     if (!customerFresh || !chantiersFresh) setChantierCreateOpen(false);
   }, [chantiersFresh, customerFresh]);
+
+  // Ouverture demandée par `?edit=1` — UNE SEULE fois, et seulement une fois la fiche
+  // autoritative chargée (jamais un formulaire préremplissable par un état de secours).
+  // Le drapeau consommé n'est jamais réarmé : refermer la feuille la laisse fermée.
+  const editRequestConsumed = useRef(false);
+  useEffect(() => {
+    if (!editRequested || editRequestConsumed.current) return;
+    if (!customerFresh || customer === null) return;
+    editRequestConsumed.current = true;
+    setEditOpen(true);
+  }, [editRequested, customerFresh, customer]);
 
   // KPI dérivés : encours = standing (retard/attente = dû réel) · CA 12 mois = @bob/core.
   const outstandingCents =

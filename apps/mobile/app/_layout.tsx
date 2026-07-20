@@ -48,6 +48,7 @@ import { useLegacyCatalogueProtection } from '../src/data/catalogue';
 import { MistralConversationCheckpointProvider } from '../src/realtime/mistral-conversation-checkpoint-provider';
 import { authenticatedRuntimeBoundaryKey } from '../src/data/authenticated-runtime-boundary';
 import { initCrashReporter } from '../src/observability/crash-reporter';
+import { Observe, ObserveRoot } from 'expo-observe';
 
 // Garde le splash NATIF visible pendant le chargement critique. L'appel au scope module est
 // volontaire : exécuté avant que React puisse rendre une frame blanche.
@@ -85,6 +86,11 @@ function AppReadyGate({ fontsReady, children }: { fontsReady: boolean; children:
     // affichage doit rester dans l'UI React (spinner/erreur), jamais revenir à une frame vide.
     setHasPresentedApp(true);
     void SplashScreen.hideAsync();
+    // EAS Observe — « Time to Interactive » : marqué EXACTEMENT quand l'app devient utilisable
+    // (polices chargées + bootstrap de session terminé, splash retiré), jamais au montage du
+    // module. Mesure de performance uniquement : temps, modèle d'appareil, version d'OS et
+    // identifiant d'installation anonyme — aucune donnée client, aucun transcript.
+    Observe.markInteractive();
   }, [hasPresentedApp, ready]);
   return hasPresentedApp ? <>{children}</> : null;
 }
@@ -170,7 +176,7 @@ function AuthGate({ children }: { children: ReactNode }) {
   return <BiometricGate key={runtimeKey}>{children}</BiometricGate>;
 }
 
-export default function RootLayout() {
+function RootLayout() {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -273,3 +279,12 @@ export default function RootLayout() {
     </GestureHandlerRootView>
   );
 }
+
+/**
+ * EAS Observe — mesure des performances RÉELLES sur l'appareil (démarrage à froid/chaud, premier
+ * rendu, temps jusqu'à l'interactivité, chargement du bundle, et rendus par écran). Aucune donnée
+ * personnelle : temps, modèle d'appareil, version d'OS, identifiant d'installation anonyme réinitialisé
+ * à chaque réinstallation. Motivation directe : la boucle de rendu infinie du 20/07 a figé six écrans
+ * sans lever la moindre erreur — invisible pour Sentry, criante pour une mesure de rendu.
+ */
+export default ObserveRoot.wrap(RootLayout);

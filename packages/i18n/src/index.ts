@@ -226,6 +226,35 @@ const legacyFr = {
     pro: 'Lancer le diagnostic',
     direct: 'Diagnostic',
   },
+  // Devis à transmettre (cas terrain fondateur 2026-07-20) : le devis est passé `sent` — son
+  // numéro légal est alloué — mais le client n'a pas d'e-mail, donc rien n'est parti. La copy
+  // dit CE QUI MANQUE et CE QU'ON PEUT FAIRE, sans jargon : ajouter l'adresse, ou envoyer le
+  // lien par le canal que l'artisan a déjà (WhatsApp, SMS…) via la feuille de partage native.
+  'today.prioTransmitBadge': {
+    pote: 'À transmettre',
+    pro: 'À transmettre',
+    direct: 'À transmettre',
+  },
+  'today.prioTransmitTitle': {
+    pote: 'Devis pas encore reçu — {name}',
+    pro: 'Devis non transmis — {name}',
+    direct: 'Devis non reçu — {name}',
+  },
+  'today.prioTransmitHint': {
+    pote: 'Pas d’e-mail pour ce client, donc personne ne l’a reçu. Ajoute son adresse, ou envoie-lui le lien directement.',
+    pro: 'Aucune adresse e-mail pour ce client : le devis n’a pas pu être transmis. Ajoutez son adresse, ou partagez-lui le lien.',
+    direct: 'Pas d’e-mail : rien n’est parti. Ajoute l’adresse, ou envoie le lien.',
+  },
+  'today.ctaTransmitAddEmail': {
+    pote: 'Ajouter l’e-mail',
+    pro: 'Ajouter l’adresse e-mail',
+    direct: 'Ajouter l’e-mail',
+  },
+  'today.ctaTransmitShare': {
+    pote: 'Envoyer le lien',
+    pro: 'Partager le lien',
+    direct: 'Envoyer le lien',
+  },
   // Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE, jamais remonté au
   // serveur : composé dans le rendu du Home à partir du brouillon local (voir quote-draft).
   // Sobriété : n'apparaît qu'après ~1 h, ou à la réouverture de l'app — jamais pendant l'édition.

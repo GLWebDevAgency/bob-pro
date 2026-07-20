@@ -80,6 +80,7 @@ import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
 import { combineQueryStates } from '../../src/data/query-state';
 import { ProfileMenuSheet } from '../../src/components/profile-menu-sheet';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
+import { ShareQuoteLinkButton } from '../../src/components/ShareQuoteLinkButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
@@ -337,6 +338,61 @@ function TodayPriorityCard({
         />
       );
     }
+    case 'devis_a_transmettre': {
+      // Cas terrain fondateur (2026-07-20) : le devis est bien passé `sent` — son numéro légal
+      // est alloué — mais le client n'a pas d'e-mail, donc le serveur n'a RIEN envoyé
+      // (deliveryStatus 'skipped'). Un blocage passif devient ici une action proposée, avec les
+      // DEUX sorties possibles : réparer la cause (ajouter l'adresse) ou transmettre tout de
+      // suite par le canal que l'artisan a déjà (WhatsApp, SMS, copie du lien…).
+      // La carte s'éteint d'elle-même dès que le client ouvre le lien (devis → `viewed`).
+      const name = priority.customerName || priority.docNumber || '';
+      const reference = priority.docNumber ? `${priority.docNumber} · ` : '';
+      return (
+        <PriorityCard
+          status="marine"
+          title={t('today.prioTransmitTitle', { personality, params: { name } })}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioTransmitHint',
+            { personality },
+          )}`}
+          leadingIcon={<Feather name="send" size={13} color={semantic.warning} />}
+          badge={
+            <Badge
+              label={t('today.prioTransmitBadge', { personality }).toUpperCase()}
+              tone="warning"
+            />
+          }
+          cta={
+            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start' }}>
+              {/* Réparer la cause : la fiche client existante, formulaire d'édition ouvert
+                  (?edit=1) — aucun mini-formulaire parallèle ne dupliquerait ses règles. */}
+              <Button
+                title={t('today.ctaTransmitAddEmail', { personality })}
+                variant="primary"
+                size="compact"
+                radius={11}
+                icon={<Feather name="mail" size={15} color={colors.surface} />}
+                onPress={() =>
+                  router.push({
+                    pathname: '/client/[id]',
+                    params: { id: priority.customerId, edit: '1' },
+                  })
+                }
+              />
+              {/* Transmettre maintenant : MÊME chemin que « Envoyer le lien » du devis
+                  (signature-link + feuille de partage native) — aucun sortant tant que
+                  l'utilisateur n'a pas choisi son canal. */}
+              <ShareQuoteLinkButton
+                quoteId={priority.quoteId}
+                quoteNumber={priority.docNumber}
+                title={t('today.ctaTransmitShare', { personality })}
+                icon={<Feather name="share-2" size={15} color={colors.ink800} />}
+              />
+            </View>
+          }
+        />
+      );
+    }
     case 'conformite':
       // Carte INFO (réf) : jamais de checkbox — puce bouclier, fond lavande, CTA chevron.
       return (
@@ -547,6 +603,15 @@ export default function Aujourdhui() {
           type: 'quote',
           id: priority.quoteId,
           label: priority.docNumber ? `Devis ${priority.docNumber}` : 'Devis signé',
+        });
+        add({ type: 'customer', id: priority.customerId, label: priority.customerName });
+      } else if (priority.kind === 'devis_a_transmettre') {
+        // Parité voix : ce que l'écran montre, Bob le voit — mêmes entités (devis + client)
+        // que les autres priorités actionnables, sous les mêmes capacités quote/customer.read.
+        add({
+          type: 'quote',
+          id: priority.quoteId,
+          label: priority.docNumber ? `Devis ${priority.docNumber}` : 'Devis à transmettre',
         });
         add({ type: 'customer', id: priority.customerId, label: priority.customerName });
       }

@@ -66,6 +66,33 @@ describe('i18n', () => {
     expect(t('today.footer', { personality: 'direct' })).toBe('Fini pour aujourd’hui.');
   });
 
+  it('today.prioTransmit* : dit CE QUI MANQUE et CE QU’ON PEUT FAIRE, sur les 3 humeurs', () => {
+    expect(t('today.prioTransmitTitle', { params: { name: 'Mme Leroy' } })).toBe(
+      'Devis pas encore reçu — Mme Leroy',
+    );
+    expect(
+      t('today.prioTransmitTitle', { personality: 'pro', params: { name: 'Mme Leroy' } }),
+    ).toBe('Devis non transmis — Mme Leroy');
+    expect(
+      t('today.prioTransmitTitle', { personality: 'direct', params: { name: 'Mme Leroy' } }),
+    ).toBe('Devis non reçu — Mme Leroy');
+
+    // Le manque (« pas d'e-mail ») ET la sortie (ajouter l'adresse / envoyer le lien) sont dits
+    // dans les trois tons — jamais un blocage passif, et jamais de jargon technique.
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const hint = t('today.prioTransmitHint', { personality });
+      expect(hint.toLowerCase()).toContain('e-mail');
+      expect(hint.toLowerCase()).toContain('lien');
+      expect(hint).not.toContain('{');
+      expect(t('today.prioTransmitBadge', { personality })).toBe('À transmettre');
+      expect(t('today.ctaTransmitAddEmail', { personality }).length).toBeGreaterThan(0);
+      expect(t('today.ctaTransmitShare', { personality }).length).toBeGreaterThan(0);
+    }
+    expect(t('today.prioTransmitHint', { personality: 'direct' })).toBe(
+      'Pas d’e-mail : rien n’est parti. Ajoute l’adresse, ou envoie le lien.',
+    );
+  });
+
   it('raccourcis « Vite fait » : « Facture directe » (B1, jamais un « Facture » ambigu) et « À encaisser » (destination pré-filtrée) sur les 3 humeurs', () => {
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       expect(t('today.quickInvoice', { personality })).toBe('Facture directe');
