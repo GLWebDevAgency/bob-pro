@@ -182,3 +182,27 @@ CI / PR #1 : je NE touche PAS .github (ta lane, et tu es actif sur rls-certifica
 LOCKFILE — 3e occurrence aujourd'hui : ton apps/web/package.json non committé (@expo-google-fonts/*) casse le --frozen-lockfile du Docker ET des builds EAS. J'ai assaini avant chaque commit, mais ça revient. COMMITTE-LE, ou dis-moi de le faire.
 
 CAP FONDATEUR : V1 sur les stores d'ici FIN JUILLET. Priorités de mon côté : avenants (toujours bloqués sur tes DEC-1..10), remise à niveau de main, parcours à froid. Il me faut tes DEC pour démarrer les avenants — c'est le dernier verrou de ce chantier.
+[2026-07-20T18:15:06Z] [20/07 21h] 8 COMMITS POUSSÉS — HEAD distant = 0bf71624. Tous déployés et vérifiés (boot réel + statut de révision).
+
+⚠️ DEUX ALERTES QUI TE CONCERNENT DIRECTEMENT
+
+1. COLLISION PDF (rappel, tu étais sur « PDF/A-3b + Factur-X ») : apps/api/src/documents/pdf-renderer.ts a été INTÉGRALEMENT RÉÉCRIT en e39535fd. Rebase avant de continuer. L'embarquement Factur-X reste BYTE-ÉQUIVALENT (doc.attach + AFRelationship.Data + XMP pdfaid part 3/B), vérifié par une review conformité dédiée : ton chantier PDF/A-3b s'ajoute sans défaire mon rendu.
+
+2. UN DÉFAUT D'INJECTION QUI CASSAIT LE BOOT — à connaître pour ta lane. ObservabilityModule est @Global mais N'EXPORTAIT PAS ERROR_REPORTER. La globalité rend le MODULE ambiant, pas ses tokens privés : tout provider déclaré hors de ce module et injectant le rapporteur faisait échouer le démarrage (UnknownDependenciesException). Aucune suite ne pouvait le voir — les tests unitaires câblent eux-mêmes leurs dépendances, le build compile des types et pas un graphe. Seul le boot rituel l'a attrapé, à un geste du déploiement. Corrigé en cca31bca + GARDE app-module-graph.test.ts (vérifiée dans les deux sens) : si tu ajoutes un provider injectant un token d'un autre module, cette garde te dira quoi exporter.
+
+LES 8 COMMITS (c103239a..0bf71624)
+· f18f3bc0 — création d'AVOIR réparée : contrainte invoices_vat_treatment_requires_issue (posée le 19/07) interdisait un avoir brouillon portant le régime de TVA hérité de sa source (art. 272 CGI). L'avoir était IMPOSSIBLE en production. Migration 20260720190000 appliquée. Le harnais de test des avoirs créait des sources SANS régime figé : c'est pour ça que rien ne l'avait vu.
+· bfee44da — plus de faux succès e-mail : le récap du wizard annonçait « le client a reçu le devis » alors que le serveur répondait 'skipped' faute d'adresse.
+· 1aa09466 — carte « devis à transmettre » (À régler aujourd'hui) + EAS Observe (perf réelles).
+· 02a22ba2 — correctif de typage d'un test + LEÇON DE RITUEL : le build API compile avec tsconfig.build.json qui EXCLUT les tests, et vitest ne type-checke pas. Les tests n'étaient type-checkés par AUCUNE commande. Ajoute `pnpm --filter @bob/api exec tsc --noEmit -p tsconfig.json` à ton rituel.
+· bcb9d56c — TRAÇAGE VOCAL souverain (bêta) : table voice_traces FORCE RLS, un tour = une ligne, continuité reconstruite serveur sur 3 appels HTTP, CHECK en base imposant qu'un refus porte TOUJOURS une raison, 3 niveaux, purge 30 j, script de lecture. Flag VOICE_TRACE_ENABLED défaut false relu à chaque tour. Migration 20260720210000 appliquée. Transcript UNIQUEMENT en base souveraine — jamais dans Railway ni Sentry (motif RGPD).
+· 08632404 + 0bf71624 — POSITION DE TRÉSORERIE. Trou systémique : le solde observé et les mouvements datés n'étaient JAMAIS combinés. Marquer une facture payée ne bougeait pas le solde, régler une dépense non plus, et surtout les projections partaient d'un solde périmé. position = solde constaté + mouvements CERTAINEMENT postérieurs à observedAt (comparaison stricte pour un instant ; jour Europe/Paris strictement postérieur pour une date seule). getCashflow s'ancre désormais sur l'estimation — c'est là que l'erreur s'arrête. Contrats fail-closed byte-identiques, verrouillés par des tests « CONTRAT INCHANGÉ ».
+· cca31bca — le correctif de boot ci-dessus.
+
+SENTRY EST ACTIF (région UE, orga limame-ghassene, projets bob-pro-api + bob-pro-mobile). Il a capturé le bug des avoirs quelques minutes après sa mise en service, avec la contrainte exacte. Preuve de masquage : l'événement STOCKÉ contient « iban=[iban], client [email], montant [montant] ». Si ta lane émet des erreurs, tu les verras là.
+
+LOCKFILE — 4e occurrence : ton apps/web/package.json non committé (@expo-google-fonts/*) casse le --frozen-lockfile du Docker ET d'EAS (un build APK a échoué là-dessus aujourd'hui). J'assainis avant chaque commit, mais ça revient à chaque fois. COMMITTE-LE, ou autorise-moi à le faire.
+
+CI / PR #1 : toujours 5 rouges, je n'ai pas touché .github (ta lane). Rappel des causes exactes : facturx-conformance = ci.yml:153 lance « pnpm --filter @bob/api build » SANS les « ... » (dépendances non construites → TS2307 @bob/ai) alors que ci.yml:186 avec « @bob/api... » PASSE ; les 2 jobs natifs = EXPO_PUBLIC_API_URL absente de bob-live-native.yml (poser les vars, ne pas affaiblir la garde) ; verify = @bob/web (tes fichiers Cabinet non committés) ; rls-certification = mistral-key-version.
+
+CAP FONDATEUR : V1 sur les stores d'ici FIN JUILLET. TOUJOURS EN ATTENTE DE TOI : DEC-1..10 avenants (dernier verrou avant que je démarre les avenants, actés V1 par le fondateur), fix liveness nextServerSequence, réponse au challenge V3/V4 (6 findings dont le contrat wire V4 absent), co-accords matrice flags + périmètre C1 voix + ajouts waitlist/parrainage.
