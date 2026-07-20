@@ -89,6 +89,7 @@ import {
   type AgentAffordance,
   type AgentContext,
   type AgentEntityRef,
+  type AgentSurface,
 } from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useSalesDocumentVoiceAffordance } from '../../src/documents-voice-search';
@@ -636,17 +637,20 @@ export default function Aujourdhui() {
   // mois dernier ») : Accueil est la seconde porte d'entrée voulue par le fondateur, la logique
   // vit une seule fois dans apps/mobile/src/documents-voice-search.ts.
   const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
-  usePublishAgentContext(
-    agentContext,
-    {},
-    {
+  // Surface MÉMOÏSÉE : les arguments de ce hook sont des dépendances d'effet (agent-context:177) ;
+  // un littéral inline se réidentifie à chaque rendu → republication → nouveau contexte →
+  // re-rendu → boucle infinie qui sature le fil JS (écran figé sur l'appareil).
+  const homeAgentSurface = useMemo<AgentSurface>(
+    () => ({
       affordances: [
         salesDocumentVoiceAffordance,
         ...(homeAgentDataReady ? fiscalFlow.voiceAffordances : []),
         ...draftVoiceAffordances,
       ],
-    },
+    }),
+    [salesDocumentVoiceAffordance, homeAgentDataReady, fiscalFlow.voiceAffordances, draftVoiceAffordances],
   );
+  usePublishAgentContext(agentContext, undefined, homeAgentSurface);
 
   // KPI : les encours viennent directement des factures émises/encaissées persistées. Les
   // anciennes colonnes score/outstanding du client ne sont jamais une autorité financière ici.

@@ -123,6 +123,7 @@ import {
   usePublishAgentContext,
   useAgentSession,
   type AgentAffordance,
+  type AgentAccessLayout,
   type AgentContext,
   type AgentSurface,
 } from '../../src/agent';
@@ -136,6 +137,9 @@ import {
   type QuoteDraftProposal,
 } from '../../src/quote-draft';
 import { parseDiscountInput } from '../../src/facture-directe/facture-directe-model';
+
+/** Layout FIGÉ hors composant : passé en dépendance d'effet, un littéral inline ferait boucler le rendu. */
+const WIZARD_AGENT_LAYOUT: AgentAccessLayout = Object.freeze({ bottomAvoidance: 90 });
 
 /** Profil de risque du recap (envoi du devis, éventuellement signature) — même palier
  * OUTBOUND que le bouton « Envoyer » de DocumentActions/C20. Ce n'est plus un acte fiscal :
@@ -999,7 +1003,7 @@ export default function DevisNew() {
     }),
     [contextCustomer, flow.step, quoteDraft.state.revision, quoteDraft.state.sessionId],
   );
-  usePublishAgentContext(wizardAgentContext, { bottomAvoidance: 90 }, agentSurface);
+  usePublishAgentContext(wizardAgentContext, WIZARD_AGENT_LAYOUT, agentSurface);
   const agentSession = useAgentSession();
 
   // Une reprise de route obtient une nouvelle mission vocale, mais le même sessionId de brouillon.

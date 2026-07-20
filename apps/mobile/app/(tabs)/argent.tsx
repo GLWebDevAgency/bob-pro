@@ -61,7 +61,7 @@ import {
 import { patterns, shadowNative } from '@bob/tokens';
 import { deriveAgedBalance, type AgedBucketKey } from '@bob/core';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
-import { usePublishAgentContext, type AgentContext } from '../../src/agent';
+import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
 import {
   Avatar,
   Button,
@@ -716,11 +716,12 @@ export default function Argent() {
       capabilities: agentDataReady ? ['screen.read', 'cashflow.read', 'customer.read'] : [],
     };
   }, [agentDataReady, overdueCustomers]);
-  usePublishAgentContext(
-    agentContext,
-    {},
-    { affordances: agentDataReady ? fiscalFlow.voiceAffordances : [] },
+  // Surface MÉMOÏSÉE — mêmes raisons qu'Accueil : un littéral inline ferait boucler le rendu.
+  const argentAgentSurface = useMemo<AgentSurface>(
+    () => ({ affordances: agentDataReady ? fiscalFlow.voiceAffordances : [] }),
+    [agentDataReady, fiscalFlow.voiceAffordances],
   );
+  usePublishAgentContext(agentContext, undefined, argentAgentSurface);
 
   const refetchMainData = (): void => {
     for (const query of [
