@@ -115,3 +115,36 @@ test('refuse toute mutation, suppression ou renommage d’une migration de la br
     /invalid_migration_change/u,
   );
 });
+
+test('tolère les quatre collisions HISTORIQUES déjà appliquées, mais jamais une nouvelle', () => {
+  // Ces dossiers existent en production ; les renommer casserait _prisma_migrations, qui est
+  // clé sur le nom complet. La garde les CONSTATE au lieu de bloquer la remise à niveau de main.
+  const historiques = [
+    '20260717150000_chantier_notes_photos',
+    '20260717150000_company_billing_settings',
+    '20260718110000_mistral_conversation_replay_grace',
+    '20260718110000_mistral_conversation_resume_tickets',
+  ];
+  assert.doesNotThrow(() =>
+    assertMigrationLineage({ baseNames: ['20260101000000_base'], addedNames: historiques }),
+  );
+
+  // Une NOUVELLE collision, elle, reste refusée — y compris sur un préfixe historique réutilisé
+  // sous un autre nom : l'exception est nominative, pas par préfixe.
+  assert.throws(
+    () =>
+      assertMigrationLineage({
+        baseNames: ['20260101000000_base'],
+        addedNames: ['20260717150000_chantier_notes_photos', '20260717150000_autre_chantier'],
+      }),
+    /duplicate_new_migration_prefix:20260717150000/u,
+  );
+  assert.throws(
+    () =>
+      assertMigrationLineage({
+        baseNames: ['20260101000000_base'],
+        addedNames: ['20260722000000_alpha', '20260722000000_beta'],
+      }),
+    /duplicate_new_migration_prefix:20260722000000/u,
+  );
+});

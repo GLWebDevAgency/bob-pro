@@ -4,6 +4,24 @@ import { pathToFileURL } from 'node:url';
 const MIGRATION_NAME = /^(?<prefix>\d{14})_[a-z0-9_]+$/u;
 const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/(?<name>\d{14}_[a-z0-9_]+)\/migration\.sql$/u;
 
+/**
+ * Collisions de préfixe ANTÉRIEURES à cette garde, et DÉJÀ APPLIQUÉES en production.
+ *
+ * Les renommer est exclu : `_prisma_migrations` est clé sur le NOM COMPLET du dossier — un
+ * renommage ferait diverger l'historique appliqué et casserait tout `migrate deploy` suivant.
+ * Ces quatre doublons sont donc des faits historiques que la garde constate au lieu de nier.
+ *
+ * Liste FIGÉE et NOMINATIVE : elle tolère ces dossiers-là, jamais un préfixe. Une nouvelle
+ * migration réutilisant l'un de ces préfixes sous un autre nom échoue normalement — ce qui est
+ * exactement le but de la garde.
+ */
+const HISTORICAL_DUPLICATE_MIGRATIONS = new Set([
+  '20260717150000_company_billing_settings',
+  '20260718110000_mistral_conversation_resume_tickets',
+  '20260719020000_mistral_conversation_key_version_floor',
+  '20260719030000_mistral_conversation_initial_bootstrap',
+]);
+
 function parseName(name) {
   const match = MIGRATION_NAME.exec(name);
   if (!match?.groups?.prefix) throw new Error(`invalid_migration_name:${name}`);
@@ -22,7 +40,7 @@ export function assertMigrationLineage({ baseNames, addedNames }) {
     if (entry.prefix <= baseMaximum) {
       throw new Error(`migration_prefix_not_after_base:${entry.name}:${baseMaximum}`);
     }
-    if (prefixes.has(entry.prefix)) {
+    if (prefixes.has(entry.prefix) && !HISTORICAL_DUPLICATE_MIGRATIONS.has(entry.name)) {
       throw new Error(`duplicate_new_migration_prefix:${entry.prefix}`);
     }
     prefixes.add(entry.prefix);
