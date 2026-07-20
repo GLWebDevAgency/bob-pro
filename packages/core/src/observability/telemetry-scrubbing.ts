@@ -64,9 +64,18 @@ export function redactTelemetryText(text: string): string {
 /** Borne dure : un message d'erreur kilométrique est un vecteur de fuite autant qu'un coût. */
 const MAX_TEXT_CHARS = 500;
 
+/**
+ * Marge de LECTURE au-delà de la borne d'affichage. On masque AVANT de tronquer, sinon un secret
+ * à cheval sur la coupe est amputé, ne correspond plus à son motif, et son début part EN CLAIR
+ * (mesuré : `iban=FR7612548` survivait). La marge borne le coût sur une entrée démesurée tout en
+ * couvrant largement le plus long motif détectable.
+ */
+const REDACTION_WINDOW_MARGIN_CHARS = 1_024;
+
 function safeText(value: unknown, maxChars = MAX_TEXT_CHARS): string | undefined {
   if (typeof value !== 'string' || value.length === 0) return undefined;
-  return redactTelemetryText(value.slice(0, maxChars));
+  const window = value.slice(0, maxChars + REDACTION_WINDOW_MARGIN_CHARS);
+  return redactTelemetryText(window).slice(0, maxChars);
 }
 
 /* ------------------------------------------------------------------ formes minimales */

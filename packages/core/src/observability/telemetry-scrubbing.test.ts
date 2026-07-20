@@ -60,6 +60,20 @@ describe('redactTelemetryText — masquage du PII et de la donnée financière',
       .toBe('TypeError: cannot read property of undefined');
     expect(redactTelemetryText('')).toBe('');
   });
+
+  it("un secret À CHEVAL sur la borne de troncature ne laisse pas fuir son début", () => {
+    // Tronquer AVANT de masquer coupe le secret : le fragment restant ne correspond plus au
+    // motif et part donc EN CLAIR. Mesuré : « iban=FR7612548 » survivait à la sortie.
+    const iban = 'FR7612548029981234567890161';
+    const message = `${'contexte '.repeat(54)}iban=${iban}`;
+    expect(message.indexOf('FR76')).toBeGreaterThan(480); // le secret commence juste avant la coupe
+    const event = scrubTelemetryEvent({
+      exception: { values: [{ type: 'Error', value: message }] },
+    });
+    const sortie = JSON.stringify(event);
+    expect(sortie).not.toContain('FR761');
+    expect(sortie).toContain('[iban]');
+  });
 });
 
 describe('scrubTelemetryEvent — liste blanche structurelle', () => {
