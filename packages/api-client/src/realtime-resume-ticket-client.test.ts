@@ -84,23 +84,22 @@ describe('BobClient — ticket de reprise terminale Mistral v2', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('encode le handle et lie la preuve terminale complète à la mission demandée', async () => {
+  it('refuse un handle non canonique avant le réseau', async () => {
     const handle = 'conversation/session?tenant=1#checkpoint';
-    const receipt = terminalCompleteBody({ sessionHandle: handle });
-    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
-      expect(String(url)).toBe(
-        'https://api.bob.test/voice/realtime/calls/'
-          + 'conversation%2Fsession%3Ftenant%3D1%23checkpoint/resume-tickets',
-      );
-      expect(JSON.parse(String(init?.body))).toEqual(INPUT);
-      return jsonResponse(receipt);
-    });
+    const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(client().requestRealtimeVoiceResumeTicket(handle, INPUT)).resolves.toEqual({
-      ok: true,
-      value: receipt,
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{
+          field: 'sessionHandle',
+          message: 'La session de reprise Bob Live est invalide.',
+        }],
+      },
     });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('accepte les bornes publiques exactes de la preuve terminale', async () => {

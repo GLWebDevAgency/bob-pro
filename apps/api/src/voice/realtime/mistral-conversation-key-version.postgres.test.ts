@@ -276,7 +276,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                policy.polname AS "policyName",
                policy.polcmd::text AS command,
                0::oid = ANY(policy.polroles) AS "appliesToPublic",
-               current_user::regrole::oid = ANY(policy.polroles) AS "appliesToDirectRole"
+               (
+                 SELECT role.oid FROM pg_roles AS role WHERE role.rolname = current_user
+               ) = ANY(policy.polroles) AS "appliesToDirectRole"
           FROM pg_policy AS policy
           JOIN pg_class AS table_class ON table_class.oid = policy.polrelid
          WHERE policy.polrelid IN (

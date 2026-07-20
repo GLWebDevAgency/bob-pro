@@ -20,6 +20,8 @@ jobs:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9.12.0
@@ -28,6 +30,10 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Certifier la lignée append-only des migrations
+        env:
+          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: node apps/api/scripts/assert-migration-lineage.mjs
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @bob/core test:cabinet:coverage
