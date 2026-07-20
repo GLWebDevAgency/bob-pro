@@ -42,6 +42,23 @@ export interface SentryRuntimeConfig {
 const SERVER_ALLOWED_CONTEXTS = ['runtime', 'os', 'app', 'trace'] as const;
 
 /**
+ * Intégrations du SDK désactivées à la source (première ligne de défense, avant le scrubbing) :
+ * capture des VARIABLES LOCALES de pile (où une valeur d'IBAN se trouve littéralement), du corps
+ * de requête, et de la console.
+ *
+ * Comparaison par PRÉFIXE, et non par nom exact : le SDK Node v10 enregistre la capture de
+ * variables locales sous « LocalVariablesAsync » (vérifié dans un événement réellement émis le
+ * 20/07) — un `!== 'LocalVariables'` ne la filtrait donc PAS. La défense en profondeur (liste
+ * blanche de `scrubFrame`, qui ne recopie jamais `vars`) couvrait la fuite, mais une garde
+ * silencieusement inopérante est une dette : elle rouvre le trou dès qu'on assouplit l'autre couche.
+ */
+const FORBIDDEN_INTEGRATION_PREFIXES = ['LocalVariables', 'RequestData', 'Console'] as const;
+
+export function isForbiddenIntegration(name: string): boolean {
+  return FORBIDDEN_INTEGRATION_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+/**
  * Options d'initialisation. Chaque valeur non évidente est un choix de confidentialité :
  *
  * - `sendDefaultPii: false` — n'attache ni IP, ni cookies, ni en-têtes, ni corps de requête.
@@ -65,12 +82,7 @@ export function buildSentryOptions(config: SentryRuntimeConfig): Record<string, 
     // extension ou un script tiers n'a pas de sens côté serveur.
     normalizeDepth: 3,
     integrations: (defaults: readonly { name: string }[]) =>
-      defaults.filter(
-        (integration) =>
-          integration.name !== 'LocalVariables'
-          && integration.name !== 'RequestData'
-          && integration.name !== 'Console',
-      ),
+      defaults.filter((integration) => !isForbiddenIntegration(integration.name)),
     beforeBreadcrumb: (breadcrumb: Record<string, unknown>) =>
       scrubTelemetryBreadcrumb(breadcrumb) as Record<string, unknown> | null,
     beforeSend: (event: Record<string, unknown>) =>

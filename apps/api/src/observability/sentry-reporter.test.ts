@@ -5,6 +5,7 @@ import {
   SentryErrorReporter,
   buildSentryOptions,
   createSentryErrorReporter,
+  isForbiddenIntegration,
   resolveSentryConfig,
   type SentrySdkLike,
 } from './sentry-reporter';
@@ -216,5 +217,20 @@ describe('SentryErrorReporter & composition des canaux', () => {
       new CompositeErrorReporter([cassé, sain]).captureException(new Error('boom'), {}),
     ).not.toThrow();
     expect(sain.captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isForbiddenIntegration — filtre par préfixe (défaut trouvé en émission réelle)', () => {
+  it('filtre les variantes réellement chargées par le SDK, pas seulement le nom canonique', () => {
+    // Le SDK Node v10 charge « LocalVariablesAsync » : un test d'égalité stricte laissait passer
+    // l'intégration qui capture les variables locales de pile (où l'IBAN se trouve littéralement).
+    expect(isForbiddenIntegration('LocalVariablesAsync')).toBe(true);
+    expect(isForbiddenIntegration('LocalVariables')).toBe(true);
+    expect(isForbiddenIntegration('RequestData')).toBe(true);
+    expect(isForbiddenIntegration('Console')).toBe(true);
+    // Les intégrations utiles au diagnostic restent chargées.
+    expect(isForbiddenIntegration('ContextLines')).toBe(false);
+    expect(isForbiddenIntegration('LinkedErrors')).toBe(false);
+    expect(isForbiddenIntegration('Http')).toBe(false);
   });
 });
