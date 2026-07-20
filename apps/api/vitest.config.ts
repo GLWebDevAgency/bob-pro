@@ -13,6 +13,12 @@ export default defineConfig({
         find: '@bob/core/testing',
         replacement: fileURLToPath(new URL('../../packages/core/src/testing.ts', import.meta.url)),
       },
+      {
+        // Même frontière pour les doubles IA : Vitest résout la source de test, tandis que
+        // l'artefact API de production continue de refuser explicitement @bob/ai/testing.
+        find: '@bob/ai/testing',
+        replacement: fileURLToPath(new URL('../../packages/ai/src/testing.ts', import.meta.url)),
+      },
     ],
   },
   test: {

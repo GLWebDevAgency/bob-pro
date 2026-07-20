@@ -80,6 +80,15 @@ describe('graphe d imports runtime API', () => {
     expect(source('../package.json')).toContain('assert-production-artifact.mjs');
   });
 
+  it('Vitest résout ses entrées testing depuis les sources, sans artefact local préalable', () => {
+    const config = source('../vitest.config.ts');
+
+    expect(config).toContain("find: '@bob/core/testing'");
+    expect(config).toContain("../../packages/core/src/testing.ts");
+    expect(config).toContain("find: '@bob/ai/testing'");
+    expect(config).toContain("../../packages/ai/src/testing.ts");
+  });
+
   it("la garde d'authentification runtime ne contient aucun pass-through de test ou de démo", () => {
     const code = source('./auth/auth.guard.ts');
 
