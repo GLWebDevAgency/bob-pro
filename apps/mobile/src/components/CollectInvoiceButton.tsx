@@ -6,12 +6,12 @@
  * Rend null si la facture n'a rien à encaisser (pas de bouton fantôme).
  */
 import { useRef, useState } from 'react';
-import { Alert } from 'react-native';
 import type { InvoiceView } from '@bob/api-client';
 import { Button } from '@bob/ui';
 import { useBobClient } from '../data/client';
 import { appErrorMessage, useRegisterPayment } from '../data/hooks';
 import { useConfirm } from './ConfirmSheet';
+import { useErrorSheet } from './ErrorSheet';
 import {
   collectConfirmSpec,
   collectRemainingCents,
@@ -33,6 +33,8 @@ export function CollectInvoiceButton({
   const pay = useRegisterPayment();
   const client = useBobClient();
   const confirm = useConfirm();
+  // Feuille d'erreur premium locale — plus aucune modale système dans le flow encaissement.
+  const { showError, errorSheet } = useErrorSheet();
   const lock = useRef(false);
   const [busy, setBusy] = useState(false);
 
@@ -40,6 +42,7 @@ export function CollectInvoiceButton({
   const remaining = collectRemainingCents(invoice);
 
   return (
+    <>
     <Button
       title={title}
       variant="secondary"
@@ -57,22 +60,22 @@ export function CollectInvoiceButton({
               expectedRemainingCents: remaining,
             });
             if (preview.kind === 'error') {
-              Alert.alert('Aperçu indisponible', appErrorMessage(preview.error));
+              showError('Aperçu indisponible', appErrorMessage(preview.error));
               return;
             }
             if (preview.kind === 'unavailable') {
-              Alert.alert('Aperçu indisponible', preview.reason);
+              showError('Aperçu indisponible', preview.reason);
               return;
             }
             if (preview.kind === 'stale') {
-              Alert.alert(
+              showError(
                 'Facture actualisée',
                 'Le reste dû a changé. Actualise la facture avant d’enregistrer le paiement.',
               );
               return;
             }
             if (preview.kind === 'invalid_contract') {
-              Alert.alert(
+              showError(
                 'Aperçu indisponible',
                 'La preuve comptable reçue est incohérente. Réessaie avant d’enregistrer le paiement.',
               );
@@ -91,7 +94,7 @@ export function CollectInvoiceButton({
             });
             onDone?.(remaining);
           } catch (e) {
-            Alert.alert('Oups', appErrorMessage(e));
+            showError('Oups', appErrorMessage(e));
           } finally {
             lock.current = false;
             setBusy(false);
@@ -99,5 +102,7 @@ export function CollectInvoiceButton({
         })()
       }
     />
+    {errorSheet}
+    </>
   );
 }

@@ -4,7 +4,12 @@ import type { QuickActionTone } from '@bob/ui';
 export type TodayQuickAction = Readonly<{
   id: 'quote' | 'invoice' | 'scan' | 'collect' | 'catalogue';
   labelKey: I18nKey;
-  route: '/devis/new' | '/facture/new' | '/scan-document' | '/ventes' | '/catalogue';
+  route:
+    | '/devis/new'
+    | '/facture/new'
+    | '/scan-document'
+    | '/ventes?type=invoice&status=issued'
+    | '/catalogue';
   icon: 'file' | 'file-plus' | 'camera' | 'credit-card' | 'book';
   tone: Extract<QuickActionTone, 'b2b' | 'ai' | 'warning' | 'success'>;
 }>;
@@ -38,10 +43,15 @@ export const TODAY_QUICK_ACTIONS: readonly TodayQuickAction[] = Object.freeze([
     icon: 'camera',
     tone: 'ai',
   }),
+  // « À encaisser » : /ventes pré-filtré factures + statut serveur 'issued' (émise, en attente
+  // de paiement) — le même état que poserait la modale de filtres. Mapping honnête le plus
+  // proche : le filtre statut de SearchSalesDocumentsInput est MONO-valeur, il ne peut pas
+  // couvrir aussi partially_paid/late dans un seul deep link ; ces factures restent visibles
+  // via les KPI retard et les priorités de la Home. Aucun statut serveur n'est inventé ici.
   Object.freeze({
     id: 'collect',
     labelKey: 'today.quickCollect',
-    route: '/ventes',
+    route: '/ventes?type=invoice&status=issued',
     icon: 'credit-card',
     tone: 'warning',
   }),

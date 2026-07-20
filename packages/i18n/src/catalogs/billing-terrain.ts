@@ -124,10 +124,13 @@ export const billingTerrainFr = {
     pro: 'Nouvelle facture',
     direct: 'Nouvelle',
   },
+  // Tuile « Vite fait » de la Home : nommer le raccourci comme le flux réel (B1, facture SANS
+  // devis signé) — « Facture » seul laissait croire qu'on facturait un devis. La tuile
+  // QuickAction accepte 2 lignes (numberOfLines={2}), le libellé complet tient sans troncature.
   'today.quickInvoice': {
-    pote: 'Facture',
-    pro: 'Facture',
-    direct: 'Facture',
+    pote: 'Facture directe',
+    pro: 'Facture directe',
+    direct: 'Facture directe',
   },
 
   // ── B7 — Garde-fou client professionnel étranger ───────────────────────────

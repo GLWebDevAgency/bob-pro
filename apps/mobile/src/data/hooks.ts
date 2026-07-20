@@ -60,23 +60,10 @@ function openUrl(url: string): void {
   );
 }
 
-/** Traduit une AppError en message utilisateur lisible (paywall, dépendance amont, introuvable, …). */
-export function appErrorMessage(e: unknown): string {
-  if (e && typeof e === 'object' && 'kind' in e) {
-    const err = e as { kind: string; reason?: string; error?: { code?: string; message?: string } };
-    if (err.kind === 'forbidden') return err.reason ?? 'Action non autorisée pour ton offre.';
-    if (err.kind === 'dependency')
-      return 'Service indisponible pour le moment. Réessaie ou saisis les infos à la main.';
-    if (err.kind === 'not_found') return 'Introuvable.';
-    // A3 — gel de rétractation (RETRACTATION_PERIOD_ACTIVE) et autres refus du domaine porteurs
-    // d'un message : on affiche le message HONNÊTE fabriqué par @bob/core (pourquoi, jusqu'à
-    // quand, ce qui reste possible) au lieu d'un « Action impossible » muet. Source unique — le
-    // mobile ne reformule jamais un refus légal.
-    if (err.kind === 'domain' && typeof err.error?.message === 'string' && err.error.message)
-      return err.error.message;
-  }
-  return 'Action impossible. Réessaie.';
-}
+/** Traduit une AppError en message utilisateur lisible — module pur `lib/app-error-message`
+ * (réexport de compatibilité : tous les écrans importent depuis hooks). */
+import { appErrorMessage } from '../lib/app-error-message';
+export { appErrorMessage };
 
 function alertError(e: unknown): void {
   Alert.alert('Oups', appErrorMessage(e));
@@ -1454,10 +1441,17 @@ export function useDeleteDraftInvoice() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (_data, invoiceId) => {
-      void qc.invalidateQueries({ queryKey: keys.invoices });
-      void qc.invalidateQueries({ queryKey: keys.invoice(invoiceId) });
-    },
+    onSuccess: (_data, invoiceId) =>
+      // ATTENDUES (pas fire-and-forget) : query-core attend la promesse retournée par
+      // onSuccess avant de résoudre mutateAsync — l'écran appelant (facture/[id],
+      // onDraftDeleted → router.back()) ne revient donc JAMAIS sur un devis nourri d'une
+      // liste périmée (bug terrain « badge brouillon fantôme », APK d091b0b5). Le détail
+      // supprimé est marqué périmé SANS refetch immédiat (refetchType 'none') : refetcher
+      // une pièce qui n'existe plus ne peut que 404 pendant que l'écran la quitte.
+      Promise.all([
+        qc.invalidateQueries({ queryKey: keys.invoices }),
+        qc.invalidateQueries({ queryKey: keys.invoice(invoiceId), refetchType: 'none' }),
+      ]),
   });
 }
 

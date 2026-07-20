@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler';
 import { useEffect, useState, type ReactNode } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import { AppState, Platform, View, ActivityIndicator } from 'react-native';
 import { Stack, usePathname } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -41,6 +41,7 @@ import {
   queryRetryDelayMs,
   shouldRetryQueryFailure,
 } from '../src/data/query-retry-policy';
+import { connectFocusManagerToAppState } from '../src/data/query-focus';
 import { PASSWORD_RECOVERY_ROUTE } from '../src/auth-recovery/password-recovery';
 import { EMAIL_CONFIRMATION_ROUTE } from '../src/auth-confirmation/email-confirmation';
 import { useLegacyCatalogueProtection } from '../src/data/catalogue';
@@ -177,6 +178,14 @@ export default function RootLayout() {
         },
       }),
   );
+  // Pont AppState → focusManager (doc TanStack « React Native ») : sans lui, React Query
+  // reste « focused » pour toujours — refetchOnWindowFocus ne vit jamais et une invalidation
+  // manquée n'est pas rattrapée au retour au premier plan (badge brouillon fantôme, terrain).
+  // Le web garde les événements visibilitychange natifs de React Query.
+  useEffect(() => {
+    if (Platform.OS === 'web') return undefined;
+    return connectFocusManagerToAppState(AppState);
+  }, []);
   // Identité typographique du proto (tokens.fonts) — une famille par poids (Android).
   const [fontsLoaded, fontError] = useFonts({
     SchibstedGrotesk_700Bold,

@@ -1,5 +1,5 @@
-import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Alert, Share, Text } from 'react-native';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
+import { View, Share, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
@@ -30,10 +30,13 @@ import {
 } from '../lib/embargo-prompt';
 import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
+import { useErrorSheet, type ErrorSheetHandle } from './ErrorSheet';
 import { useBobClient } from '../data/client';
 import { companyCanIssue } from '../data/company-completeness';
 import {
   deriveQuoteInvoiceCtaState,
+  mergeLinkedInvoices,
+  reconcileLinkedInvoicesEcho,
   type QuoteInvoiceLinksState,
 } from './quote-invoice-actions.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
@@ -48,20 +51,80 @@ import { isPaymentLinkEligible } from '../lib/payment-link-affordance';
  * facture « Émettre » depuis l'état brouillon : c'est précisément à ce moment que le numéro légal
  * est alloué). Les renvois/partages d'un devis DÉJÀ envoyé ne sont pas re-gatés : la complétude a
  * déjà été vérifiée à son premier envoi. CTA → /compte (fiche entreprise, §3 du chantier).
+ * Feuille @bob/ui (plus JAMAIS d'Alert système gris dans le flow) : CTA vers l'écran qui règle
+ * le manque en premier plan, « Plus tard » referme — mêmes textes i18n qu'avant.
  */
-function showCompanyIncompleteGate(kind: 'quote' | 'invoice', personality: Personality): void {
-  Alert.alert(
-    t('gate.companyIncompleteTitle', { personality }),
-    t(kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice', {
-      personality,
-    }),
-    [
-      { text: t('gate.companyIncompleteCancel', { personality }), style: 'cancel' },
-      {
-        text: t('gate.companyIncompleteCta', { personality }),
-        onPress: () => router.push('/compte'),
-      },
-    ],
+interface GateSpec {
+  readonly title: string;
+  readonly body: string;
+  readonly ctaLabel: string;
+  readonly cancelLabel: string;
+  readonly route: '/compte' | '/reglages-facturation';
+}
+
+function companyIncompleteGateSpec(kind: 'quote' | 'invoice', personality: Personality): GateSpec {
+  return {
+    title: t('gate.companyIncompleteTitle', { personality }),
+    body: t(
+      kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice',
+      { personality },
+    ),
+    ctaLabel: t('gate.companyIncompleteCta', { personality }),
+    cancelLabel: t('gate.companyIncompleteCancel', { personality }),
+    route: '/compte',
+  };
+}
+
+/** Émission sans conditions de paiement réglées : même invite deux boutons, CTA → réglages. */
+function paymentTermsMissingGateSpec(personality: Personality): GateSpec {
+  return {
+    title: t('invoice.paymentTermsMissingTitle', { personality }),
+    body: t('invoice.paymentTermsMissingBody', { personality }),
+    ctaLabel: t('invoice.paymentTermsMissingCta', { personality }),
+    cancelLabel: t('common.cancel', { personality }),
+    route: '/reglages-facturation',
+  };
+}
+
+function GateSheet({
+  gate,
+  onClose,
+}: {
+  gate: GateSpec | null;
+  onClose: () => void;
+}): ReactNode {
+  const { colors } = useTheme();
+  return (
+    <Sheet
+      visible={gate !== null}
+      onClose={onClose}
+      accessibilityLabel={gate?.title ?? 'Complément requis'}
+    >
+      {gate !== null ? (
+        <>
+          <Text
+            accessibilityRole="header"
+            style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8 }]}
+          >
+            {gate.title}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginBottom: 14 }]}>
+            {gate.body}
+          </Text>
+          <View style={{ gap: 8, marginBottom: 8 }}>
+            <Button
+              title={gate.ctaLabel}
+              onPress={() => {
+                const route = gate.route;
+                onClose();
+                router.push(route);
+              }}
+            />
+            <Button title={gate.cancelLabel} variant="secondary" onPress={onClose} />
+          </View>
+        </>
+      ) : null}
+    </Sheet>
   );
 }
 
@@ -247,7 +310,8 @@ function EmbargoPromptSheet({
 }
 
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
-function useActionLock() {
+// L'échec inattendu remonte dans la feuille d'erreur premium du composant appelant (plus d'Alert natif).
+function useActionLock(showError: ErrorSheetHandle['showError']) {
   const [busy, setBusy] = useState<string | null>(null);
   const lock = useRef(false);
   const run = async (key: string, fn: () => Promise<unknown>): Promise<void> => {
@@ -257,7 +321,7 @@ function useActionLock() {
     try {
       await fn();
     } catch (e) {
-      Alert.alert('Oups', appErrorMessage(e));
+      showError('Oups', appErrorMessage(e));
     } finally {
       lock.current = false;
       setBusy(null);
@@ -316,7 +380,10 @@ export const QuoteActions = forwardRef<
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const scheduleEmbargo = useScheduleEmbargoPayment();
-  const { busy, run } = useActionLock();
+  // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow) — partagée par le
+  // verrou d'action et les remontées embargo/génération.
+  const { showError, errorSheet } = useErrorSheet();
+  const { busy, run } = useActionLock(showError);
   const confirm = useConfirm();
   // Gate entreprise complète — ne concerne QUE le premier envoi (état brouillon), cf. doc du
   // gate en tête de fichier. `undefined` (pas encore chargé) est traité comme incomplet : on ne
@@ -327,6 +394,8 @@ export const QuoteActions = forwardRef<
   // factures liées côté appelant. La sûreté anti-doublon reste AU DOMAINE (GenerateInvoiceFromQuote,
   // idempotent par parentQuoteId+kind) ; `linkedInvoices` est la source DURABLE (survit au re-render).
   const [localLinked, setLocalLinked] = useState<QuoteLinkedInvoices>(NO_LINKED_INVOICES);
+  // Gate « entreprise complète » (feuille locale, voir GateSheet) — armé au tap « Envoyer ».
+  const [gate, setGate] = useState<GateSpec | null>(null);
   const [choiceOpen, setChoiceOpen] = useState(false);
   // B2 : feuille « Facturer une situation » — devis signé sans facture finale (le solde final
   // déduit automatiquement acompte + situations émises, GenerateInvoiceFromQuote).
@@ -345,12 +414,13 @@ export const QuoteActions = forwardRef<
   // `signQuote` ne doit jamais vider le pad — l'erreur vit ICI (pas dans SignOnsiteSheet) pour
   // survivre à ses re-renders, et n'est réarmée qu'à une ouverture explicite du pad.
   const [onsiteError, setOnsiteError] = useState<string | null>(null);
-  const linked: QuoteLinkedInvoices = {
-    hasDepositInvoice: linkedInvoices.hasDepositInvoice || localLinked.hasDepositInvoice,
-    hasFinalInvoice: linkedInvoices.hasFinalInvoice || localLinked.hasFinalInvoice,
-    depositStatus: linkedInvoices.depositStatus ?? localLinked.depositStatus,
-    finalStatus: linkedInvoices.finalStatus ?? localLinked.finalStatus,
-  };
+  // Écho ≠ vérité : dès que la source DURABLE confirme une pièce, son écho de session s'efface
+  // — sinon le OR de la fusion ne redescend jamais et supprimer ensuite le brouillon depuis
+  // l'écran facture laissait badge/CTA fantômes au retour (bug terrain APK d091b0b5).
+  useEffect(() => {
+    setLocalLinked((prev) => reconcileLinkedInvoicesEcho(prev, linkedInvoices));
+  }, [linkedInvoices.hasDepositInvoice, linkedInvoices.hasFinalInvoice]);
+  const linked: QuoteLinkedInvoices = mergeLinkedInvoices(linkedInvoices, localLinked);
   useImperativeHandle(
     ref,
     () => ({
@@ -390,10 +460,10 @@ export const QuoteActions = forwardRef<
         markGenerated(mode, out.invoiceId);
       } catch (e) {
         // Embargo L221-10 : le refus devient une INVITE (défaut = programmer à J+7, override
-        // responsabilisé en second niveau) — toute autre erreur garde l'alerte générique.
+        // responsabilisé en second niveau) — toute autre erreur garde le message générique.
         const prompt = embargoPromptOf(e, mode);
         if (prompt === null) {
-          Alert.alert('Oups', appErrorMessage(e));
+          showError('Oups', appErrorMessage(e));
           return;
         }
         setEmbargoStage('choice');
@@ -407,7 +477,7 @@ export const QuoteActions = forwardRef<
       try {
         const scheduled = await scheduleEmbargo.mutateAsync(quote.id);
         setEmbargoPrompt(null);
-        Alert.alert(
+        showError(
           t('legal.embargoSheet.title', { personality }),
           t('legal.embargoSchedule.confirmed', {
             personality,
@@ -418,7 +488,7 @@ export const QuoteActions = forwardRef<
           }),
         );
       } catch (e) {
-        Alert.alert('Oups', appErrorMessage(e));
+        showError('Oups', appErrorMessage(e));
       }
     });
 
@@ -432,13 +502,16 @@ export const QuoteActions = forwardRef<
           embargoOverride: true,
         });
         setEmbargoPrompt(null);
-        Alert.alert(
+        // La navigation vers la pièce générée attend la FERMETURE de la feuille : l'utilisateur
+        // lit la confirmation du traçage avant d'arriver sur la facture (l'Alert natif, lui,
+        // flottait au-dessus de la navigation — une feuille appartient à son écran).
+        showError(
           t('legal.embargoSheet.title', { personality }),
           t('legal.embargoOverride.traced', { personality }),
+          () => markGenerated(prompt.mode, out.invoiceId),
         );
-        markGenerated(prompt.mode, out.invoiceId);
       } catch (e) {
-        Alert.alert('Oups', appErrorMessage(e));
+        showError('Oups', appErrorMessage(e));
       }
     });
 
@@ -470,14 +543,14 @@ export const QuoteActions = forwardRef<
     await run('sendEmail', async () => {
       const result = await send.mutateAsync(quote.id);
       if (result.deliveryStatus === 'queued') {
-        Alert.alert(
+        showError(
           'Envoi programmé',
           'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
         );
       } else if (result.deliveryStatus === 'sent') {
-        Alert.alert('E-mail envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
+        showError('E-mail envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
       } else {
-        Alert.alert(
+        showError(
           'Aucun e-mail programmé',
           'Vérifiez l’adresse e-mail du client, puis réessayez.',
         );
@@ -505,46 +578,50 @@ export const QuoteActions = forwardRef<
 
   if (quote.status === 'draft') {
     return (
-      <Button
-        title="Envoyer"
-        loading={busy === 'send'}
-        disabled={!!busy}
-        onPress={() =>
-          void (async () => {
-            if (!companyComplete) {
-              showCompanyIncompleteGate('quote', personality);
-              return;
-            }
-            const ok = await confirm({
-              title: 'Envoyer le devis',
-              message: `Le devis part chez ${customerName}.`,
-              diff: buildActionDiff('envoyer_devis', {}, { number: quote.number }),
-              challenge: challengeFor(OUTBOUND, 'confirm_all'),
-            });
-            if (ok) {
-              await run('send', async () => {
-                const result = await send.mutateAsync(quote.id);
-                if (result.deliveryStatus === 'queued') {
-                  Alert.alert(
-                    'Envoi programmé',
-                    'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
-                  );
-                } else if (result.deliveryStatus === 'sent') {
-                  Alert.alert(
-                    'Devis envoyé',
-                    'L’e-mail a été pris en charge par le service d’envoi.',
-                  );
-                } else {
-                  Alert.alert(
-                    'Devis préparé',
-                    'Le devis est passé au statut Envoyé, mais aucun e-mail n’a été programmé. Vérifiez l’adresse du client.',
-                  );
-                }
+      <>
+        <Button
+          title="Envoyer"
+          loading={busy === 'send'}
+          disabled={!!busy}
+          onPress={() =>
+            void (async () => {
+              if (!companyComplete) {
+                setGate(companyIncompleteGateSpec('quote', personality));
+                return;
+              }
+              const ok = await confirm({
+                title: 'Envoyer le devis',
+                message: `Le devis part chez ${customerName}.`,
+                diff: buildActionDiff('envoyer_devis', {}, { number: quote.number }),
+                challenge: challengeFor(OUTBOUND, 'confirm_all'),
               });
-            }
-          })()
-        }
-      />
+              if (ok) {
+                await run('send', async () => {
+                  const result = await send.mutateAsync(quote.id);
+                  if (result.deliveryStatus === 'queued') {
+                    showError(
+                      'Envoi programmé',
+                      'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
+                    );
+                  } else if (result.deliveryStatus === 'sent') {
+                    showError(
+                      'Devis envoyé',
+                      'L’e-mail a été pris en charge par le service d’envoi.',
+                    );
+                  } else {
+                    showError(
+                      'Devis préparé',
+                      'Le devis est passé au statut Envoyé, mais aucun e-mail n’a été programmé. Vérifiez l’adresse du client.',
+                    );
+                  }
+                });
+              }
+            })()
+          }
+        />
+        <GateSheet gate={gate} onClose={() => setGate(null)} />
+        {errorSheet}
+      </>
     );
   }
   if (quote.status === 'sent' || quote.status === 'viewed') {
@@ -693,6 +770,7 @@ export const QuoteActions = forwardRef<
             void submitOnsiteSignature(signerName, proofDataUrl)
           }
         />
+        {errorSheet}
       </>
     );
   }
@@ -788,6 +866,7 @@ export const QuoteActions = forwardRef<
             onClose={() => setSituationOpen(false)}
           />
           {embargoSheet}
+          {errorSheet}
         </View>
       );
     }
@@ -836,6 +915,7 @@ export const QuoteActions = forwardRef<
           onClose={() => setSituationOpen(false)}
         />
         {embargoSheet}
+        {errorSheet}
       </>
     );
   }
@@ -860,10 +940,14 @@ export function InvoiceActions({
   const createCreditNote = useCreateCreditNote();
   const deleteDraft = useDeleteDraftInvoice();
   const scheduleEmbargo = useScheduleEmbargoPayment();
-  const { busy, lock, run } = useActionLock();
+  // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow encaissement/émission).
+  const { showError, errorSheet } = useErrorSheet();
+  const { busy, lock, run } = useActionLock(showError);
   const confirm = useConfirm();
   const client = useBobClient();
   const { semantic, personality } = useTheme();
+  // Gates de l'émission (entreprise incomplète, conditions de paiement) — feuille locale unique.
+  const [gate, setGate] = useState<GateSpec | null>(null);
   // Embargo L221-10 à l'ÉMISSION (l'acte qui rend la pièce opposable et permet le lien de
   // paiement) : le refus serveur devient la MÊME invite deux étages qu'à la génération —
   // jamais un « Oups » générique en cul-de-sac après un override déjà confirmé côté brouillon.
@@ -880,7 +964,7 @@ export function InvoiceActions({
         }
         const scheduled = await scheduleEmbargo.mutateAsync(invoice.parentQuoteId);
         setEmbargoPrompt(null);
-        Alert.alert(
+        showError(
           t('legal.embargoSheet.title', { personality }),
           t('legal.embargoSchedule.confirmed', {
             personality,
@@ -889,7 +973,7 @@ export function InvoiceActions({
           }),
         );
       } catch (e) {
-        Alert.alert('Oups', appErrorMessage(e));
+        showError('Oups', appErrorMessage(e));
       }
     });
 
@@ -899,12 +983,12 @@ export function InvoiceActions({
       try {
         await issue.mutateAsync({ invoiceId: invoice.id, embargoOverride: true });
         setEmbargoPrompt(null);
-        Alert.alert(
+        showError(
           t('legal.embargoSheet.title', { personality }),
           t('legal.embargoOverride.traced', { personality }),
         );
       } catch (e) {
-        Alert.alert('Oups', appErrorMessage(e));
+        showError('Oups', appErrorMessage(e));
       }
     });
 
@@ -924,7 +1008,7 @@ export function InvoiceActions({
       onStage={setEmbargoStage}
     />
   );
-  // Gate entreprise complète — même doctrine que QuoteActions (voir showCompanyIncompleteGate) :
+  // Gate entreprise complète — même doctrine que QuoteActions (voir companyIncompleteGateSpec) :
   // ne concerne que la toute première émission (état brouillon → numéro légal alloué).
   const companyMe = useCompanyMe();
   const companyComplete = companyCanIssue(companyMe.data);
@@ -957,7 +1041,12 @@ export function InvoiceActions({
 
   if (invoice.status === 'paid') {
     // Facture payée : plus rien à encaisser — reste l'avoir (correction/geste commercial).
-    return creditNoteButton || null;
+    return creditNoteButton ? (
+      <>
+        {creditNoteButton}
+        {errorSheet}
+      </>
+    ) : null;
   }
 
   if (invoice.status === 'draft') {
@@ -972,31 +1061,16 @@ export function InvoiceActions({
             onPress={() =>
               void (async () => {
                 if (!companyComplete) {
-                  showCompanyIncompleteGate('invoice', personality);
+                  setGate(companyIncompleteGateSpec('invoice', personality));
                   return;
                 }
                 if (billingSettings.isError || billingSettings.data === undefined) {
-                  Alert.alert(t('reglages.dataError', { personality }), undefined, [
-                    {
-                      text: t('common.close', { personality }),
-                      style: 'cancel',
-                    },
-                  ]);
+                  showError(t('reglages.dataError', { personality }));
                   return;
                 }
                 const paymentTermsDays = billingSettings.data.defaultInvoicePaymentTermsDays;
                 if (paymentTermsDays === null) {
-                  Alert.alert(
-                    t('invoice.paymentTermsMissingTitle', { personality }),
-                    t('invoice.paymentTermsMissingBody', { personality }),
-                    [
-                      { text: t('common.cancel', { personality }), style: 'cancel' },
-                      {
-                        text: t('invoice.paymentTermsMissingCta', { personality }),
-                        onPress: () => router.push('/reglages-facturation'),
-                      },
-                    ],
-                  );
+                  setGate(paymentTermsMissingGateSpec(personality));
                   return;
                 }
                 // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
@@ -1028,7 +1102,7 @@ export function InvoiceActions({
                         invoice.kind === 'deposit' ? 'deposit' : 'final',
                       );
                       if (prompt === null) {
-                        Alert.alert('Oups', appErrorMessage(e));
+                        showError('Oups', appErrorMessage(e));
                         return;
                       }
                       setEmbargoStage('choice');
@@ -1067,6 +1141,8 @@ export function InvoiceActions({
         />
       </View>
       {embargoSheet}
+      <GateSheet gate={gate} onClose={() => setGate(null)} />
+      {errorSheet}
       </>
     );
   }
@@ -1075,6 +1151,7 @@ export function InvoiceActions({
   if (isPaymentLinkEligible(invoice.status)) {
     const remaining = collectRemainingCents(invoice);
     return (
+      <>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         {remaining > 0 ? (
           <View style={{ flex: 1 }}>
@@ -1089,22 +1166,22 @@ export function InvoiceActions({
                     expectedRemainingCents: remaining,
                   });
                   if (preview.kind === 'error') {
-                    Alert.alert('Aperçu indisponible', appErrorMessage(preview.error));
+                    showError('Aperçu indisponible', appErrorMessage(preview.error));
                     return;
                   }
                   if (preview.kind === 'unavailable') {
-                    Alert.alert('Aperçu indisponible', preview.reason);
+                    showError('Aperçu indisponible', preview.reason);
                     return;
                   }
                   if (preview.kind === 'stale') {
-                    Alert.alert(
+                    showError(
                       'Facture actualisée',
                       'Le reste dû a changé. Actualise la facture avant d’enregistrer le paiement.',
                     );
                     return;
                   }
                   if (preview.kind === 'invalid_contract') {
-                    Alert.alert(
+                    showError(
                       'Aperçu indisponible',
                       'La preuve comptable reçue est incohérente. Réessaie avant d’enregistrer le paiement.',
                     );
@@ -1140,6 +1217,8 @@ export function InvoiceActions({
         </View>
         {creditNoteButton ? <View style={{ flex: 1 }}>{creditNoteButton}</View> : null}
       </View>
+      {errorSheet}
+      </>
     );
   }
   return null; // cancelled : rien à faire

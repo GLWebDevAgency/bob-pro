@@ -3,7 +3,12 @@ import { parseSalesDocumentRouteParams } from './documents-search-route-params';
 
 describe('parseSalesDocumentRouteParams (B9 — flow route-params -> filtres appliqués, deep link vocal)', () => {
   it('aucun paramètre : rien à appliquer (kindFilter null = le toggle actuel ne bouge pas)', () => {
-    expect(parseSalesDocumentRouteParams({})).toEqual({ kindFilter: null, dateRange: null, customerId: null });
+    expect(parseSalesDocumentRouteParams({})).toEqual({
+      kindFilter: null,
+      dateRange: null,
+      customerId: null,
+      status: null,
+    });
   });
 
   it('type=quote -> kindFilter "quotes"', () => {
@@ -63,6 +68,33 @@ describe('parseSalesDocumentRouteParams (B9 — flow route-params -> filtres app
       kindFilter: 'quotes',
       dateRange: { from: '2026-06-01', to: '2026-06-30', preset: 'custom' },
       customerId: 'cust-sevres',
+      status: null,
     });
+  });
+
+  it('status=issued avec type=invoice -> transmis (raccourci « À encaisser » de la Home)', () => {
+    const parsed = parseSalesDocumentRouteParams({ type: 'invoice', status: 'issued' });
+    expect(parsed.kindFilter).toBe('invoices');
+    expect(parsed.status).toBe('issued');
+  });
+
+  it('status de devis avec type=quote -> transmis (parité modale : statuts du scope courant)', () => {
+    expect(parseSalesDocumentRouteParams({ type: 'quote', status: 'signed' }).status).toBe('signed');
+  });
+
+  it('status sans type -> null (la modale n’offre aucun statut en scope « all »)', () => {
+    expect(parseSalesDocumentRouteParams({ status: 'issued' }).status).toBeNull();
+    expect(parseSalesDocumentRouteParams({ type: 'all', status: 'issued' }).status).toBeNull();
+  });
+
+  it('status du mauvais scope -> null (un statut facture ne filtre jamais des devis)', () => {
+    expect(parseSalesDocumentRouteParams({ type: 'quote', status: 'partially_paid' }).status).toBeNull();
+    expect(parseSalesDocumentRouteParams({ type: 'invoice', status: 'signed' }).status).toBeNull();
+  });
+
+  it('status inconnu/forgé -> null, y compris une clé du prototype (fail-closed)', () => {
+    expect(parseSalesDocumentRouteParams({ type: 'invoice', status: 'n-importe-quoi' }).status).toBeNull();
+    expect(parseSalesDocumentRouteParams({ type: 'invoice', status: 'toString' }).status).toBeNull();
+    expect(parseSalesDocumentRouteParams({ type: 'invoice', status: '' }).status).toBeNull();
   });
 });

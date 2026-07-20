@@ -66,6 +66,13 @@ describe('i18n', () => {
     expect(t('today.footer', { personality: 'direct' })).toBe('Fini pour aujourd’hui.');
   });
 
+  it('raccourcis « Vite fait » : « Facture directe » (B1, jamais un « Facture » ambigu) et « À encaisser » (destination pré-filtrée) sur les 3 humeurs', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('today.quickInvoice', { personality })).toBe('Facture directe');
+      expect(t('today.quickCollect', { personality })).toBe('À encaisser');
+    }
+  });
+
   it('argent.* : copy pote exacte du proto (C11 — « LE SOLDE MENT »)', () => {
     expect(t('argent.subtitle')).toBe('Le vrai état des comptes, sans te mentir.');
     expect(t('argent.heroLabel')).toBe('Trésorerie mobilisable ce mois-ci');

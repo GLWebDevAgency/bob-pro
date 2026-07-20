@@ -151,10 +151,13 @@ const legacyFr = {
     pro: 'Scanner',
     direct: 'Scan',
   },
+  // La tuile ouvre la vue pré-filtrée « factures émises » de /ventes (deep link status=issued,
+  // today-quick-actions.ts) : le libellé nomme la DESTINATION (« À encaisser »), pas un verbe
+  // d'action qui promettait un encaissement immédiat.
   'today.quickCollect': {
-    pote: 'Encaisser',
-    pro: 'Encaisser',
-    direct: 'Encaisser',
+    pote: 'À encaisser',
+    pro: 'À encaisser',
+    direct: 'À encaisser',
   },
   'today.quickCatalogue': {
     pote: 'Catalogue',

@@ -165,7 +165,7 @@ export default function Ventes() {
   //    avancés, autocomplétion, parité vocale par route params. Le texte tapé + les filtres
   //    avancés/chips restent TOUJOURS combinables avec kindFilter (toggle devis/factures déjà
   //    existant) — un seul jeu de résultats, jamais deux systèmes de filtre qui divergent. ──
-  const routeParams = useLocalSearchParams<{ type?: string; from?: string; to?: string; customerId?: string }>();
+  const routeParams = useLocalSearchParams<{ type?: string; from?: string; to?: string; customerId?: string; status?: string }>();
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [dateRange, setDateRange] = useState<DateRangeValue | null>(null);
   const [advancedCustomerId, setAdvancedCustomerId] = useState<string | null>(null);
@@ -182,7 +182,8 @@ export default function Ventes() {
     if (parsed.kindFilter !== null) setKindFilter(parsed.kindFilter);
     if (parsed.dateRange !== null) setDateRange(parsed.dateRange);
     if (parsed.customerId !== null) setAdvancedCustomerId(parsed.customerId);
-  }, [routeParams.type, routeParams.from, routeParams.to, routeParams.customerId]);
+    if (parsed.status !== null) setAdvancedStatus(parsed.status);
+  }, [routeParams.type, routeParams.from, routeParams.to, routeParams.customerId, routeParams.status]);
 
   useEffect(() => {
     const timeout = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
