@@ -35,32 +35,23 @@ jobs:
           node-version: 22.18.0
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
-      - name: Verify staging credential integrity
-        if: ${{ matrix.environment == 'staging' }}
+      - name: Verify Railway automation credential integrity
         env:
-          EXPECTED_SHA256: ${{ vars.RAILWAY_STAGING_TOKEN_SHA256 }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_STAGING_TOKEN }}
+          EXPECTED_SHA256: ${{ vars.RAILWAY_API_TOKEN_SHA256 }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
         run: |
-          [ -n "$EXPECTED_SHA256" ] || { echo "Staging token integrity marker is missing" >&2; exit 1; }
-          actual_sha256="$(printf '%s' "$RAILWAY_TOKEN" | sha256sum | cut -d ' ' -f 1)"
-          [ "$actual_sha256" = "$EXPECTED_SHA256" ] || { echo "Staging token secret does not match its integrity marker" >&2; exit 1; }
-      - name: Reject staging topology drift
-        if: ${{ matrix.environment == 'staging' }}
+          [ -n "$EXPECTED_SHA256" ] || { echo "Railway token integrity marker is missing" >&2; exit 1; }
+          actual_sha256="$(printf '%s' "$RAILWAY_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
+          [ "$actual_sha256" = "$EXPECTED_SHA256" ] || { echo "Railway token secret does not match its integrity marker" >&2; exit 1; }
+      - name: Reject topology drift
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_STAGING_TOKEN }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
           RAILWAY_ENV: ${{ matrix.environment }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
-          railway status --environment "$RAILWAY_ENV" --json \
-            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
-      - name: Reject production topology drift
-        if: ${{ matrix.environment == 'production' }}
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_ENV: ${{ matrix.environment }}
-          RAILWAY_SERVICE: bob-pro-api
-        run: |
-          railway status --environment "$RAILWAY_ENV" --json \
+          [ -n "$RAILWAY_PROJECT_ID" ] || { echo "Railway project id is missing" >&2; exit 1; }
+          railway status --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV" --json \
             | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
       - name: Open an owned incident on drift
         if: ${{ failure() }}
