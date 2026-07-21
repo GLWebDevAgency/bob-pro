@@ -1,6 +1,7 @@
 import type {
   AccountingEntryRepository,
   BankBalanceSnapshotRepository,
+  CashMovementProjectionPort,
   CatalogueRepository,
   ChantierRepository,
   ChantierNoteRepository,
@@ -57,6 +58,7 @@ import type { ExpenseCreationRequestStore } from './expense-creation-requests';
 import type { NotificationJobRepository } from './notification-jobs';
 import type { QuoteCreationRequestStore } from './quote-creation-requests';
 import type { SupplierMemoryRepository } from './supplier-memory';
+import type { VoiceTraceRepository } from './voice-traces';
 
 export { PERSISTENCE } from './persistence-token';
 
@@ -121,9 +123,14 @@ export interface Persistence {
   accountingEntries: AccountingEntryRepository;
   chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
+  /** Traçage du comportement vocal (bêta-test). Dormant sans VOICE_TRACE_ENABLED. */
+  voiceTraces: VoiceTraceRepository;
   supplierMemory: SupplierMemoryRepository;
   subscriptions: SubscriptionRepository;
   bankBalances: BankBalanceSnapshotRepository;
+  /** Projection LECTURE SEULE des mouvements postérieurs à l'observation bancaire
+   *  (encaissements + règlements de dépenses) — alimente la position de trésorerie. */
+  cashMovements: CashMovementProjectionPort;
   fiscalProfiles: FiscalProfileRepository;
   salesDocumentSearch: SalesDocumentSearchPort;
   counters: SequenceCounterPort;
@@ -155,6 +162,11 @@ export interface Persistence {
   createMistralConversationBootstrapReaper(): MistralConversationBootstrapReaperPort | null;
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Écriture d'OBSERVATION détachée de la transaction de requête (traçage vocal) : elle ne peut
+   * ni avorter, ni être avortée par, la conversation qu'elle observe.
+   */
+  runDetachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
   runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T>;
   runWithCabinet<T>(userId: string, cabinetId: string, fn: () => Promise<T>): Promise<T>;
   runWithCabinetInvitation<T>(

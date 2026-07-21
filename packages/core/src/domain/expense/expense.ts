@@ -1,6 +1,7 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type DateOnly, isValidDateOnly } from '../../shared-kernel/time';
 import { Siren } from '../../shared-kernel/identifiers';
+import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 import { type PaymentMethod } from '../payment/payment';
 
 export type ExpenseCategory =
@@ -86,14 +87,6 @@ export interface ExpenseProps {
 }
 
 const isInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n);
-
-function hasAsciiControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
 
 function normalizeOptionalEvidenceText(
   value: string | null | undefined,

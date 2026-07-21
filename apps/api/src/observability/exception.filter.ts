@@ -16,6 +16,14 @@ const APP_ERROR_SUMMARY_FIELDS = ['service', 'port', 'cause', 'entity', 'reason'
 const APP_ERROR_FIELD_MAX_CHARS = 300;
 
 /**
+ * Kinds d'AppError qui décrivent une DÉGRADATION ASSUMÉE, pas un plantage : le serveur a
+ * délibérément refusé de servir une donnée qu'il n'a pas (`unavailable`) ou constaté qu'un amont
+ * a échoué (`dependency`). Les journaliser comme « exception non gérée » brouille le diagnostic
+ * et noie l'alerting sous des états normaux.
+ */
+const DEGRADED_KINDS: ReadonlySet<string> = new Set(['unavailable', 'dependency']);
+
+/**
  * Extrait le kind + les champs descriptifs de l'AppError transporté par l'enveloppe
  * `{ ok: false, error }` (unwrap, http/result.ts). LISTE BLANCHE stricte : uniquement des
  * chaînes écrites par le code serveur (service indisponible, port en panne, cause technique) —
@@ -53,15 +61,30 @@ export class AllExceptionsFilter implements ExceptionFilter {
       // La stack d'une HttpException issue de unwrap() est muette (« Http Exception ») : le
       // résumé du AppError (kind + service/port/cause) rend le log diagnosticable en une lecture.
       const appError = exception instanceof HttpException ? appErrorLogSummary(body) : null;
-      rootLogger.error(
-        {
-          correlationId: getCorrelationId(),
-          status,
-          ...(appError ? { appError } : {}),
-          err: exception instanceof Error ? exception.stack : String(exception),
-        },
-        'unhandled exception',
-      );
+      const record = {
+        correlationId: getCorrelationId(),
+        status,
+        ...(appError ? { appError } : {}),
+        err: exception instanceof Error ? exception.stack : String(exception),
+      };
+      if (appError && DEGRADED_KINDS.has(appError.kind)) {
+        // Un 5xx PORTEUR d'un AppError structuré n'est pas une exception non gérée : c'est le
+        // contrat fail-closed du produit qui s'exprime (« missing/error ⇒ unavailable, jamais un
+        // zéro fabriqué »). Le journaliser en `error` mentait sur sa nature et — surtout —
+        // saturerait le rapporteur d'incidents (et demain Sentry) avec des états NORMAUX :
+        // constaté en prod le 20/07, `unavailable/cashflow-banking-source` répété pour un tenant
+        // sans banque connectée. Reste en `warn` : cherchable, compté, mais jamais alarmant.
+        rootLogger.warn(record, 'dépendance indisponible');
+        // `unavailable` = refus ASSUMÉ (donnée absente/non configurée) : rien à réparer côté
+        // serveur, aucune remontée. `dependency` = un amont a RÉELLEMENT échoué (fournisseur
+        // OCR/annuaire en panne) : ça reste un signal d'exploitation à capturer.
+        if (appError.kind !== 'unavailable') {
+          this.reporter.captureException(exception, { correlationId: getCorrelationId() });
+        }
+        res.status(status).json(typeof body === 'object' ? body : { message: body });
+        return;
+      }
+      rootLogger.error(record, 'unhandled exception');
       this.reporter.captureException(exception, { correlationId: getCorrelationId() });
     }
     res.status(status).json(typeof body === 'object' ? body : { message: body });

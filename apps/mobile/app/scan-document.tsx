@@ -61,7 +61,7 @@ import {
   supportsDocumentAnalysis,
 } from '../src/data/documents';
 import { useBobClient } from '../src/data/client';
-import { usePublishAgentContext, type AgentContext } from '../src/agent';
+import { usePublishAgentContext, type AgentAccessLayout, type AgentContext } from '../src/agent';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { useSupplierExpenseDefaults } from '../src/data/supplier-memory';
@@ -78,6 +78,9 @@ import {
   visibleScanSheet,
   type ScanDecisionSignals,
 } from '../src/scan/scan-decision-queue';
+
+/** Layout FIGÉ hors composant : passé en dépendance d'effet, un littéral inline ferait boucler le rendu. */
+const SCAN_AGENT_LAYOUT: AgentAccessLayout = Object.freeze({ bottomAvoidance: 24 });
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
@@ -269,7 +272,7 @@ export default function ScanDocument() {
     }),
     [archivedDocument],
   );
-  usePublishAgentContext(agentContext, { bottomAvoidance: 24 });
+  usePublishAgentContext(agentContext, SCAN_AGENT_LAYOUT);
   const bobScrollInsets = useBobAwareScrollInsets({
     minimumBottom: 40,
     keyboardMode: 'parent',

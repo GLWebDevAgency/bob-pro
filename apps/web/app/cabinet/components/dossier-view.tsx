@@ -2,13 +2,16 @@
 
 import { formatEUR, type FiscalDeadline } from '@bob/core';
 import { useMemo, useState } from 'react';
+import type { CabinetDossierDetail } from '@/src/cabinet/api';
 import { deriveCabinetFiscalCalendar, type CabinetFiscalCalendar } from '@/src/cabinet/fiscal-calendar';
-import type { CabinetDossier, CabinetReviewSummary } from '@/src/cabinet/types';
+import type { CabinetReviewSummary } from '@/src/cabinet/types';
 import styles from '../cabinet.module.css';
 import { AlertIcon, ArrowLeftIcon, CalendarIcon, CheckIcon, DocumentIcon, PenIcon, RefreshIcon, TrashIcon, UploadIcon } from './icons';
 
 interface DossierViewProps {
-  dossier: CabinetDossier;
+  canDelete: boolean;
+  dossier: CabinetDossierDetail;
+  mutationBusy: boolean;
   onBack: () => void;
   onDelete: () => void;
   onLetter: () => void;
@@ -36,7 +39,7 @@ function deadlineKind(deadline: FiscalDeadline): string {
   return ({ tva: 'TVA', urssaf: 'URSSAF', is: 'IS', cfe: 'CFE', comptes: 'COMPTES', ir: 'IR' } as const)[deadline.kind];
 }
 
-function deriveCalendar(dossier: CabinetDossier): CabinetFiscalCalendar | null {
+function deriveCalendar(dossier: CabinetDossierDetail): CabinetFiscalCalendar | null {
   try {
     return deriveCabinetFiscalCalendar({ fiscal: dossier.fiscal, asOf: localDateOnly(), horizonDays: 400 });
   } catch {
@@ -55,7 +58,7 @@ function ReviewSummaryIcon({ review }: { review: CabinetReviewSummary | null }) 
   return <AlertIcon className={review.verdict === 'reservations' ? styles.warningIcon : styles.dangerIcon} />;
 }
 
-export function DossierView({ dossier, onBack, onDelete, onLetter, onUpdate }: DossierViewProps) {
+export function DossierView({ canDelete, dossier, mutationBusy, onBack, onDelete, onLetter, onUpdate }: DossierViewProps) {
   const [closingText, setClosingText] = useState<string | null>(null);
   const [closingFileName, setClosingFileName] = useState<string | null>(null);
   const [closingError, setClosingError] = useState<string | null>(null);
@@ -121,8 +124,8 @@ export function DossierView({ dossier, onBack, onDelete, onLetter, onUpdate }: D
         </div>
         <div className={styles.headerActions}>
           <button className={styles.button} onClick={onLetter} type="button"><PenIcon />Lettre de mission</button>
-          <button className={styles.button} onClick={onUpdate} type="button"><RefreshIcon />Actualiser le FEC</button>
-          <button className={styles.buttonDanger} onClick={onDelete} type="button"><TrashIcon />Supprimer</button>
+          <button className={styles.button} disabled={mutationBusy} onClick={onUpdate} type="button"><RefreshIcon />Actualiser le FEC</button>
+          {canDelete ? <button className={styles.buttonDanger} disabled={mutationBusy} onClick={onDelete} type="button"><TrashIcon />Supprimer</button> : null}
         </div>
       </header>
 

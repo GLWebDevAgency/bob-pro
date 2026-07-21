@@ -36,6 +36,15 @@ export interface TodayQuoteData {
 export interface TodayCustomerData {
   id: string;
   name: string;
+  /**
+   * Adresse e-mail persistée du client. Trois valeurs, trois sens DISTINCTS :
+   * · une adresse → le client est joignable par e-mail ;
+   * · `null` (ou vide) → renseigné ABSENT : le client n'a pas d'e-mail (fiche téléphone seul) ;
+   * · `undefined` → l'appelant ne fournit pas le champ, donc l'information est INCONNUE.
+   * Fail-closed : seul `null`/vide déclenche « devis à transmettre » — on n'affirme jamais
+   * qu'une adresse manque à partir d'une projection qui ne la transporte simplement pas.
+   */
+  email?: string | null;
 }
 
 /**
@@ -81,12 +90,36 @@ export interface FactureFinalePriority {
   amountCents: number;
 }
 
+/**
+ * Devis envoyé que PERSONNE n'a reçu (cas terrain fondateur 2026-07-20) : l'artisan a demandé
+ * l'envoi du lien par e-mail pour un client dont seul le téléphone est connu. Le serveur répond
+ * `deliveryStatus: 'skipped'` et n'envoie rien — c'est correct —, mais le devis passe quand même
+ * `sent` : le numéro légal est alloué et la date d'établissement figée (art. A1). On N'INVENTE
+ * donc AUCUN statut « en attente d'envoi » dans le domaine ; la priorité se DÉRIVE de l'état
+ * réel, et elle s'éteint d'elle-même dès que le devis quitte `sent` (vu/signé/refusé/expiré).
+ */
+export interface DevisATransmettrePriority {
+  kind: 'devis_a_transmettre';
+  id: string;
+  quoteId: string;
+  customerId: string;
+  customerName: string;
+  /** Numéro du devis déjà alloué (référence visible côté UI et dans le message partagé). */
+  docNumber: string | null;
+  /** Montant TTC du devis — ce qui reste en jeu tant que le client ne l'a pas sous les yeux. */
+  amountCents: number;
+}
+
 export interface ConformitePriority {
   kind: 'conformite';
   id: string;
 }
 
-export type TodayPriority = RelancePriority | FactureFinalePriority | ConformitePriority;
+export type TodayPriority =
+  | RelancePriority
+  | FactureFinalePriority
+  | DevisATransmettrePriority
+  | ConformitePriority;
 
 // ── Règles métier ──
 
@@ -100,8 +133,19 @@ function daysBetween(from: DateOnly, to: DateOnly): number {
   return Math.round((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / MS_PER_DAY);
 }
 
-function customerNameIndex(customers: readonly TodayCustomerData[]): ReadonlyMap<string, string> {
-  return new Map(customers.map((c) => [c.id, c.name]));
+function customerIndex(
+  customers: readonly TodayCustomerData[],
+): ReadonlyMap<string, TodayCustomerData> {
+  return new Map(customers.map((c) => [c.id, c]));
+}
+
+/**
+ * Vrai UNIQUEMENT quand l'appelant AFFIRME l'absence d'adresse (`null` ou chaîne blanche).
+ * Un champ non fourni (`undefined`) reste inconnu et ne produit jamais d'affirmation.
+ */
+function isEmailKnownMissing(customer: TodayCustomerData): boolean {
+  if (customer.email === undefined) return false;
+  return customer.email === null || customer.email.trim() === '';
 }
 
 /**
@@ -117,12 +161,15 @@ function overdueRemainingCents(invoice: TodayInvoiceData, today: DateOnly): numb
   return overdue ? remaining : null;
 }
 
-function deriveRelances(input: DeriveTodayPrioritiesInput, names: ReadonlyMap<string, string>): RelancePriority[] {
+function deriveRelances(
+  input: DeriveTodayPrioritiesInput,
+  customers: ReadonlyMap<string, TodayCustomerData>,
+): RelancePriority[] {
   const relances: RelancePriority[] = [];
   for (const invoice of input.invoices) {
     const remaining = overdueRemainingCents(invoice, input.today);
     if (remaining === null) continue;
-    const customerName = names.get(invoice.customerId);
+    const customerName = customers.get(invoice.customerId)?.name;
     // Une pièce orpheline est une incohérence de référentiel, pas un client sans nom. Elle ne
     // devient jamais une priorité actionnable tant que la relation autoritative n'est pas réparée.
     if (customerName === undefined) continue;
@@ -143,7 +190,7 @@ function deriveRelances(input: DeriveTodayPrioritiesInput, names: ReadonlyMap<st
 
 function deriveFacturesFinales(
   input: DeriveTodayPrioritiesInput,
-  names: ReadonlyMap<string, string>,
+  customers: ReadonlyMap<string, TodayCustomerData>,
 ): FactureFinalePriority[] {
   const childrenByQuote = new Map<string, TodayInvoiceData[]>();
   for (const invoice of input.invoices) {
@@ -156,7 +203,7 @@ function deriveFacturesFinales(
   const finales: FactureFinalePriority[] = [];
   for (const quote of input.quotes) {
     if (quote.status !== 'signed') continue;
-    const customerName = names.get(quote.customerId);
+    const customerName = customers.get(quote.customerId)?.name;
     if (customerName === undefined) continue;
     const children = childrenByQuote.get(quote.id) ?? [];
     // Il faut un acompte ENCAISSÉ (payé), et aucune facture finale déjà engagée (même en brouillon).
@@ -179,6 +226,37 @@ function deriveFacturesFinales(
   return finales.sort((a, b) => b.amountCents - a.amountCents);
 }
 
+/**
+ * Devis `sent` dont le client n'a AUCUNE adresse e-mail connue : le lien n'est parti nulle part.
+ * Aucune autre condition n'est nécessaire — `sent` est le seul statut où le devis est vivant et
+ * pas encore ouvert. `viewed`/`signed`/`refused`/`expired` prouvent que la pièce est arrivée (ou
+ * qu'elle est close) : la carte disparaît alors toute seule, sans état supplémentaire à tracer.
+ */
+function deriveDevisATransmettre(
+  input: DeriveTodayPrioritiesInput,
+  customers: ReadonlyMap<string, TodayCustomerData>,
+): DevisATransmettrePriority[] {
+  const aTransmettre: DevisATransmettrePriority[] = [];
+  for (const quote of input.quotes) {
+    if (quote.status !== 'sent') continue;
+    const customer = customers.get(quote.customerId);
+    // Devis orphelin : incohérence de référentiel, jamais une priorité actionnable.
+    if (customer === undefined) continue;
+    if (!isEmailKnownMissing(customer)) continue;
+    aTransmettre.push({
+      kind: 'devis_a_transmettre',
+      id: `devis-a-transmettre-${quote.id}`,
+      quoteId: quote.id,
+      customerId: quote.customerId,
+      customerName: customer.name,
+      docNumber: quote.number,
+      amountCents: quote.totals.ttc,
+    });
+  }
+  // Le plus gros enjeu d'abord — même convention que les factures finales.
+  return aTransmettre.sort((a, b) => b.amountCents - a.amountCents);
+}
+
 function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority[] {
   // Une seule priorité conformité au maximum, et uniquement sur signal réel (jamais par défaut).
   if (input.company === undefined || input.company.einvoiceReceptionConfigured) return [];
@@ -189,12 +267,19 @@ function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority
  * Dérive les priorités du briefing « Aujourd'hui » :
  * 1. relances — factures échues non payées (retard desc, puis montant desc) ;
  * 2. factures finales — devis signés dont l'acompte est encaissé mais sans facture finale ;
- * 3. conformité — préparation facturation électronique 2026 non configurée (1 max).
- * Tri global : relances d'abord ; le cap d'affichage est géré par l'UI.
+ * 3. devis à transmettre — devis `sent` que le client n'a pas pu recevoir, faute d'e-mail ;
+ * 4. conformité — préparation facturation électronique 2026 non configurée (1 max).
+ * Tri global : l'argent déjà dû d'abord, l'argent à facturer ensuite, puis les devis restés
+ * dans le vide, et enfin l'information de conformité. Le cap d'affichage est géré par l'UI.
  */
 export function deriveTodayPriorities(input: DeriveTodayPrioritiesInput): TodayPriority[] {
-  const names = customerNameIndex(input.customers);
-  return [...deriveRelances(input, names), ...deriveFacturesFinales(input, names), ...deriveConformite(input)];
+  const customers = customerIndex(input.customers);
+  return [
+    ...deriveRelances(input, customers),
+    ...deriveFacturesFinales(input, customers),
+    ...deriveDevisATransmettre(input, customers),
+    ...deriveConformite(input),
+  ];
 }
 
 /**

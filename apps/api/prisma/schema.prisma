@@ -364,6 +364,7 @@ model Company {
   realtimeControlUses                         RealtimeControlConsumption[]
   realtimeVoiceUsage                          RealtimeVoiceUsageEvent[]
   realtimeVoiceUsageDaily                     RealtimeVoiceUsageDaily[]
+  voiceTraces                                 VoiceTrace[]
   subscription                                Subscription?
   fiscalProfile                               FiscalProfile?
   billingSettings                             CompanyBillingSettings?
@@ -2238,4 +2239,65 @@ model FiscalProfile {
   updatedAt            DateTime @updatedAt
 
   @@map("fiscal_profiles")
+}
+
+/// TRACE DE COMPORTEMENT VOCAL — une ligne par TOUR de conversation (bêta-test fondateur).
+///
+/// Objet : comprendre et REPRODUIRE ce que fait Bob à la voix. Une ligne raconte le fil complet
+/// d'un tour : ce qui a été dit → ce que Bob a compris → l'outil qu'il a choisi et avec quels
+/// paramètres → l'issue → ce qu'il a répondu → le temps de chaque étape.
+///
+/// SOUVERAINETÉ. `transcript` et `reply` portent les données les plus sensibles de l'app (noms de
+/// clients, montants, SIRET). Elles restent ICI, dans notre PostgreSQL, sous RLS FORCE : jamais
+/// chez un observateur tiers — ce sont exactement les données déjà exclues de la télémétrie de
+/// plantage pour motif RGPD (packages/core/src/observability/telemetry-scrubbing.ts).
+///
+/// RÉTENTION BORNÉE. Debug de bêta-test, pas archive légale : `retentionExpiresAt` (30 jours)
+/// est purgé par VoiceTracePurgeService. Aucune obligation de conservation ne s'y attache.
+///
+/// DORMANT PAR DÉFAUT : aucune ligne n'est écrite sans VOICE_TRACE_ENABLED=true.
+model VoiceTrace {
+  id                 String   @id @db.Text
+  companyId          String   @db.Text
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  /// Session vocale reconstruite côté serveur (le tour traverse 3 requêtes HTTP distinctes).
+  sessionId          String   @db.Text
+  turnIndex          Int
+  /// Identité du testeur : suivi du comportement des testeurs, sans jointure vers un profil.
+  userId             String?  @db.Text
+  /// correlationId HTTP de la requête qui a OUVERT le tour (transcription) — recolle les logs.
+  correlationId      String   @db.Text
+  /// correlationId de la requête de planification (/ai/ask), différent du précédent.
+  planCorrelationId  String?  @db.Text
+  startedAt          DateTime @db.Timestamptz(6)
+  /// Ce qui a été prononcé, tel que transcrit. Borné, jamais rédigé (cf. SOUVERAINETÉ).
+  transcript         String?  @db.Text
+  sttModel           String?  @db.Text
+  /// Ce que Bob a compris : intention résolue par le routeur, puis outil retenu et paramètres.
+  intent             String?  @db.Text
+  tool               String?  @db.Text
+  toolArgs           Json?
+  autonomy           String?  @db.Text
+  llmModel           String?  @db.Text
+  /// heard | success | refused | error (VoiceTurnOutcome, @bob/core).
+  outcome            String   @db.Text
+  /// info | warn | error (VoiceTraceLevel). `error` seul remonte au canal d'incident.
+  level              String   @db.Text
+  /// Raison LISIBLE d'un refus métier ou d'une anomalie. Null quand le tour a abouti.
+  reason             String?  @db.Text
+  /// Ce que Bob a répondu, tel qu'il l'aurait prononcé.
+  reply              String?  @db.Text
+  ttsModel           String?  @db.Text
+  transcriptionMs    Int?
+  planificationMs    Int?
+  executionMs        Int?
+  syntheseMs         Int?
+  updatedAt          DateTime @db.Timestamptz(6)
+  retentionExpiresAt DateTime @db.Timestamptz(6)
+
+  @@unique([companyId, sessionId, turnIndex], name: "voice_trace_turn")
+  @@index([companyId, startedAt], map: "voice_traces_tenant_time_idx")
+  @@index([companyId, level, startedAt], map: "voice_traces_level_idx")
+  @@index([companyId, retentionExpiresAt], map: "voice_traces_retention_idx")
+  @@map("voice_traces")
 }

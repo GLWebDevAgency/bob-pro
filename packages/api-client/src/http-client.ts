@@ -53,7 +53,7 @@ import type {
   CatalogueItemView,
   CatalogueItemWriteInput,
   CatalogueDeletionView,
-  QualifiedBankBalanceSnapshot,
+  QualifiedBankBalanceWithPosition,
   Totals,
   Discount,
   LineInput,
@@ -2109,6 +2109,12 @@ export class HttpBobClient implements BobClient {
     input: RealtimeVoiceResumeTicketInput,
     signal?: AbortSignal,
   ) {
+    if (!MISTRAL_CONVERSATION_SESSION_HANDLE_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
+        'sessionHandle',
+        'La session de reprise Bob Live est invalide.',
+      );
+    }
     if (!isRecord(input) || !hasExactKeys(input, ['missionConnectionEpoch', 'nextServerSequence'])) {
       return invalidRealtimeSpeechInput<RealtimeVoiceResumeTicketResult>(
         'resumeTicket',
@@ -2927,10 +2933,10 @@ export class HttpBobClient implements BobClient {
     );
   }
   getLatestBankBalance() {
-    return this.req<QualifiedBankBalanceSnapshot>('GET', '/bank-balance');
+    return this.req<QualifiedBankBalanceWithPosition>('GET', '/bank-balance');
   }
   recordManualBankBalance(input: { amountCents: number; observedAt: string }) {
-    return this.req<QualifiedBankBalanceSnapshot>('POST', '/bank-balance/manual', input);
+    return this.req<QualifiedBankBalanceWithPosition>('POST', '/bank-balance/manual', input);
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     const body: Omit<CreateQuoteInput, 'companyId'> = {

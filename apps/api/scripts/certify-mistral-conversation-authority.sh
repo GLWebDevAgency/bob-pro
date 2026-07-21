@@ -89,7 +89,7 @@ BEGIN
        'public.purge_realtime_mistral_conversation_retention(integer)'::regprocedure
      )
        AND function.proowner NOT IN (
-         current_user::regrole,
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
          'bob_mistral_bootstrap_reaper'::regrole
        )
   ) THEN
@@ -111,7 +111,9 @@ SELECT format(
    'public.purge_realtime_mistral_conversation_bootstrap_tickets(integer)'::regprocedure,
    'public.purge_realtime_mistral_conversation_retention(integer)'::regprocedure
  )
-   AND function.proowner = current_user::regrole
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
 \gexec
 
 SET LOCAL ROLE bob_mistral_bootstrap_reaper;

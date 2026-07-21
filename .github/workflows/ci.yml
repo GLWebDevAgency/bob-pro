@@ -20,6 +20,8 @@ jobs:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 9.12.0
@@ -28,6 +30,10 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Certifier la lignée append-only des migrations
+        env:
+          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: node apps/api/scripts/assert-migration-lineage.mjs
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @bob/core test:cabinet:coverage
@@ -241,12 +247,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Tester les gardes de rapports de conformité
         run: node --test .github/scripts/*.test.mjs
-      # L'échantillon est produit par l'API, qui importe aussi @bob/ai. Construire seulement
-      # core + api laisse cette dépendance sans artefact sur un checkout neuf.
+      # L'échantillon est produit par l'API, qui importe @bob/ai en plus de @bob/core.
+      # Construire toute la fermeture workspace garantit un checkout CI reproductible.
       - run: pnpm --filter "@bob/api..." run build
-      # Le générateur utilise les builders réservés aux certifications via @bob/core/testing.
-      # Cet artefact de test reste séparé du paquet de production et n'est construit que dans ce job.
-      - run: pnpm --filter @bob/core run build:testing
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
       - name: XSD + profil EN16931 + BR-FR strict (FNFE-MPE v1.4.0.02)

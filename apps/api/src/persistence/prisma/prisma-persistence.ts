@@ -21,6 +21,7 @@ import {
   PrismaFiscalProfileRepository,
   PrismaSequenceCounter,
 } from './repositories';
+import { PrismaVoiceTraceRepository } from '../voice-traces';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
@@ -35,6 +36,7 @@ import {
 } from './catalogue-chantiers.repository';
 import { PrismaWorksiteMediaStorage } from './worksite-media.repository';
 import { PrismaBankBalanceSnapshotRepository } from './bank-balance-snapshots.repository';
+import { PrismaCashMovementProjection } from './cash-movements.projection';
 import { PrismaQuoteDraftSlotRepository } from './quote-draft-slots.repository';
 import { PrismaCompanyBillingSettingsRepository } from './company-billing-settings.repository';
 import { PrismaDiagnosticAssessmentRepository } from './diagnostic-assessment.repository';
@@ -108,9 +110,11 @@ export class PrismaPersistence implements Persistence {
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
+  readonly voiceTraces: PrismaVoiceTraceRepository;
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly subscriptions: PrismaSubscriptionRepository;
   readonly bankBalances: PrismaBankBalanceSnapshotRepository;
+  readonly cashMovements: PrismaCashMovementProjection;
   readonly fiscalProfiles: PrismaFiscalProfileRepository;
   readonly salesDocumentSearch: PrismaSalesDocumentSearchRepository;
   readonly counters: PrismaSequenceCounter;
@@ -243,9 +247,11 @@ export class PrismaPersistence implements Persistence {
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
+    this.voiceTraces = new PrismaVoiceTraceRepository(prisma);
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.subscriptions = new PrismaSubscriptionRepository(prisma);
     this.bankBalances = new PrismaBankBalanceSnapshotRepository(prisma);
+    this.cashMovements = new PrismaCashMovementProjection(prisma);
     this.fiscalProfiles = new PrismaFiscalProfileRepository(prisma);
     this.salesDocumentSearch = new PrismaSalesDocumentSearchRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
@@ -259,6 +265,10 @@ export class PrismaPersistence implements Persistence {
 
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
     return this.prisma.withTenant(companyId, () => fn());
+  }
+
+  runDetachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+    return this.prisma.detachedWithTenant(companyId, () => fn());
   }
 
   runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T> {

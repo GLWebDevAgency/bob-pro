@@ -1,5 +1,5 @@
-import { CabinetApp } from './cabinet-app';
+import { CabinetGateway } from './cabinet-gateway';
 
 export default function CabinetPage() {
-  return <CabinetApp />;
+  return <CabinetGateway />;
 }

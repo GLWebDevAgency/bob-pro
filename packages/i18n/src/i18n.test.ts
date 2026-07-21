@@ -66,6 +66,33 @@ describe('i18n', () => {
     expect(t('today.footer', { personality: 'direct' })).toBe('Fini pour aujourd’hui.');
   });
 
+  it('today.prioTransmit* : dit CE QUI MANQUE et CE QU’ON PEUT FAIRE, sur les 3 humeurs', () => {
+    expect(t('today.prioTransmitTitle', { params: { name: 'Mme Leroy' } })).toBe(
+      'Devis pas encore reçu — Mme Leroy',
+    );
+    expect(
+      t('today.prioTransmitTitle', { personality: 'pro', params: { name: 'Mme Leroy' } }),
+    ).toBe('Devis non transmis — Mme Leroy');
+    expect(
+      t('today.prioTransmitTitle', { personality: 'direct', params: { name: 'Mme Leroy' } }),
+    ).toBe('Devis non reçu — Mme Leroy');
+
+    // Le manque (« pas d'e-mail ») ET la sortie (ajouter l'adresse / envoyer le lien) sont dits
+    // dans les trois tons — jamais un blocage passif, et jamais de jargon technique.
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const hint = t('today.prioTransmitHint', { personality });
+      expect(hint.toLowerCase()).toContain('e-mail');
+      expect(hint.toLowerCase()).toContain('lien');
+      expect(hint).not.toContain('{');
+      expect(t('today.prioTransmitBadge', { personality })).toBe('À transmettre');
+      expect(t('today.ctaTransmitAddEmail', { personality }).length).toBeGreaterThan(0);
+      expect(t('today.ctaTransmitShare', { personality }).length).toBeGreaterThan(0);
+    }
+    expect(t('today.prioTransmitHint', { personality: 'direct' })).toBe(
+      'Pas d’e-mail : rien n’est parti. Ajoute l’adresse, ou envoie le lien.',
+    );
+  });
+
   it('raccourcis « Vite fait » : « Facture directe » (B1, jamais un « Facture » ambigu) et « À encaisser » (destination pré-filtrée) sur les 3 humeurs', () => {
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       expect(t('today.quickInvoice', { personality })).toBe('Facture directe');
@@ -1432,6 +1459,87 @@ describe('catalogue legal (LegalHint — protections légales ×3 tons)', () => 
         'Coupa',
       );
       expect(t('canal.sectionTitle', { personality }).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('devis — confirmation honnête quand le client n’a pas d’e-mail', () => {
+  it('ne promet JAMAIS un envoi e-mail dans la copie « préparé »', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const titre = t('devis.recapPreparedTitle', { personality });
+      const corps = t('devis.recapPreparedBody', {
+        personality,
+        params: { number: 'D-2026-0042', name: 'Jean de la Croix', amount: '1 200,00 €' },
+      });
+      expect(titre.length).toBeGreaterThan(0);
+      // Le mot « e-mail » peut apparaître pour dire qu'il MANQUE, jamais pour dire qu'il est parti.
+      expect(corps).not.toMatch(/a reçu|envoyé par e-mail|reçu le devis/iu);
+      expect(corps).toContain('D-2026-0042');
+      expect(corps).toContain('Jean de la Croix');
+    }
+  });
+});
+
+describe('position de trésorerie — les DEUX nombres, sur les 3 humeurs', () => {
+  // Le solde constaté seul faisait croire à un bug (facture encaissée, solde figé). La copy doit
+  // TOUJOURS porter le constaté daté À CÔTÉ de l'estimé, et ne jamais présenter l'estimé comme
+  // un relevé bancaire.
+  it('today.balanceEstimatedVoice interpole le constaté ET sa date sur les 3 humeurs', () => {
+    const params = { observed: '1 000,00 €', date: '19/07/2026' };
+    expect(t('today.balanceEstimatedVoice', { params })).toBe(
+      'Constaté 1 000,00 € le 19/07/2026 — j’ai ajouté ce qui a bougé depuis.',
+    );
+    expect(t('today.balanceEstimatedVoice', { personality: 'pro', params })).toBe(
+      'Solde constaté 1 000,00 € le 19/07/2026, ajusté des mouvements postérieurs.',
+    );
+    expect(t('today.balanceEstimatedVoice', { personality: 'direct', params })).toBe(
+      'Constaté 1 000,00 € le 19/07/2026. Le reste est estimé.',
+    );
+  });
+
+  it('today.balanceMovementsBadge expose entrées ET sorties sur les 3 humeurs', () => {
+    const params = { inflow: '60,00 €', outflow: '184,90 €' };
+    expect(t('today.balanceMovementsBadge', { params })).toBe(
+      '+60,00 € encaissés · −184,90 € sortis',
+    );
+    expect(t('today.balanceMovementsBadge', { personality: 'pro', params })).toBe(
+      '+60,00 € encaissés · −184,90 € décaissés',
+    );
+    expect(t('today.balanceMovementsBadge', { personality: 'direct', params })).toBe(
+      '+60,00 € · −184,90 €',
+    );
+  });
+
+  it('argent.positionObservedMention garde le FAIT daté visible sur les 3 humeurs', () => {
+    const params = { observed: '2 500,00 €', date: '19/07/2026' };
+    expect(t('argent.positionObservedMention', { params })).toBe('Constaté 2 500,00 € le 19/07/2026');
+    expect(t('argent.positionObservedMention', { personality: 'pro', params })).toBe(
+      'Solde constaté : 2 500,00 € le 19/07/2026',
+    );
+    expect(t('argent.positionObservedMention', { personality: 'direct', params })).toBe(
+      'Constaté 2 500,00 € · 19/07/2026',
+    );
+  });
+
+  it('argent.positionMovements détaille entrées et sorties sur les 3 humeurs', () => {
+    const params = { inflow: '60,00 €', outflow: '184,90 €' };
+    expect(t('argent.positionMovements', { params })).toBe(
+      'Depuis : +60,00 € encaissés, −184,90 € sortis',
+    );
+    expect(t('argent.positionMovements', { personality: 'pro', params })).toBe(
+      'Depuis l’observation : +60,00 € encaissés, −184,90 € décaissés',
+    );
+    expect(t('argent.positionMovements', { personality: 'direct', params })).toBe(
+      'Depuis : +60,00 € · −184,90 €',
+    );
+  });
+
+  it('aucune humeur ne présente l’estimation comme un relevé bancaire', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('argent.positionEstimateNote', { personality }).toLowerCase()).toContain('estimation');
+      expect(t('today.balanceEstimatedLabel', { personality }).length).toBeGreaterThan(0);
+      expect(t('argent.positionEstimatedLabel', { personality }).length).toBeGreaterThan(0);
+      expect(t('today.balanceMovementsHint', { personality }).length).toBeGreaterThan(0);
     }
   });
 });

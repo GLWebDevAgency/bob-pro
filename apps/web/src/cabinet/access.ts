@@ -24,24 +24,43 @@ export interface CabinetTeamTransport {
   ) => Promise<import('./api').CabinetMemberSummary>;
 }
 
-export type CabinetAccessContext =
-  | {
-      readonly mode: 'local';
-    }
-  | {
-      readonly mode: 'authenticated';
-      readonly cabinets: readonly CabinetAccessSummary[];
-      readonly selectedCabinet: CabinetAccessSummary;
-      readonly team: CabinetTeamTransport;
-      readonly userEmail: string;
-      readonly onSelectCabinet: (cabinetId: string) => void;
-      readonly onSignOut: () => void | Promise<void>;
-    };
+export interface CabinetDossierTransport {
+  readonly listDossiers: (
+    cabinetId: string,
+    cursor?: string,
+  ) => Promise<import('./api').CabinetDossierPage>;
+  readonly getDossier: (
+    cabinetId: string,
+    siren: string,
+  ) => Promise<import('./api').CabinetDossierDetail>;
+  readonly saveDossier: (
+    cabinetId: string,
+    input: import('./api').CabinetDossierWrite,
+  ) => Promise<import('./api').CabinetDossierDetail>;
+  readonly deleteDossier: (
+    cabinetId: string,
+    siren: string,
+    expectedRevision: number,
+  ) => Promise<void>;
+}
 
-export function isLocalCabinetAccess(
-  access: CabinetAccessContext,
-): access is Extract<CabinetAccessContext, { readonly mode: 'local' }> {
-  return access.mode === 'local';
+/**
+ * Contexte de production de l'Espace Cabinet. Il n'existe volontairement aucun mode local :
+ * sans session, API ou membership actif, le gateway reste fermé.
+ */
+export interface CabinetAccessContext {
+  readonly mode: 'authenticated';
+  readonly cabinets: readonly CabinetAccessSummary[];
+  readonly selectedCabinet: CabinetAccessSummary;
+  readonly dossiers: CabinetDossierTransport;
+  readonly team: CabinetTeamTransport;
+  readonly userEmail: string;
+  readonly onSelectCabinet: (cabinetId: string) => void;
+  readonly onSignOut: () => void | Promise<void>;
+}
+
+export function canDeleteCabinetDossier(actorRole: CabinetRole): boolean {
+  return actorRole === 'admin';
 }
 
 export function canEditCabinetMemberRole(

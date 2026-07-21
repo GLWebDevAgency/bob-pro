@@ -568,7 +568,7 @@ BEGIN
        'public.purge_realtime_mistral_conversation_retention(integer)'::regprocedure
      )
        AND function.proowner NOT IN (
-         current_user::regrole,
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
          'bob_mistral_bootstrap_reaper'::regrole
        )
   ) THEN
@@ -590,7 +590,9 @@ SELECT format(
    'public.purge_realtime_mistral_conversation_bootstrap_tickets(integer)'::regprocedure,
    'public.purge_realtime_mistral_conversation_retention(integer)'::regprocedure
  )
-   AND function.proowner = current_user::regrole
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
 \gexec
 
 -- L'idempotence est explicite : au premier passage comme aux suivants, la configuration et les
@@ -1126,14 +1128,25 @@ command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
+node apps/api/scripts/assert-database-pair.mjs
+node --test \
+  apps/api/scripts/assert-database-pair.test.mjs \
+  apps/api/scripts/assert-migration-lineage.test.mjs \
+  apps/api/scripts/assert-applied-migration-checksums.test.mjs
+# Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
+# octet au dépôt. Les nouveaux fichiers locaux sont attendus jusqu'au migrate deploy.
+node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local
+
 # Ne jamais installer l'expand qui gèle les sorties historiques si des factures émises n'ont pas
 # encore reçu une audience revue. Le contrôle est volontairement antérieur à toute mutation de
 # rôle ou de schéma de ce train.
 sh apps/api/scripts/check-document-archive-legacy-audience.sh
+pnpm --filter '@bob/api...' run build
 
 # Révoque tout ancien SET ROLE runtime avant même que la migration SECURITY DEFINER soit visible.
 ensure_mistral_bootstrap_reaper_role
 pnpm --filter @bob/api exec prisma migrate deploy
+node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_generated_legal_storage_fence
 provision_mistral_bootstrap_reaper
 node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage

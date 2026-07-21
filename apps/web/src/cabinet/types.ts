@@ -179,20 +179,3 @@ export interface CabinetDossier {
   /** Instant ISO injecté par l'appelant ; le domaine ne lit pas l'horloge. */
   lastImportedAt: string;
 }
-
-export const CABINET_STATE_VERSION = 1 as const;
-
-/**
- * Seul état autorisé dans localStorage. L'absence volontaire de FEC brut, d'écritures et
- * de lignes source rend explicite la frontière de confidentialité.
- */
-export interface CabinetStateV1 {
-  version: typeof CABINET_STATE_VERSION;
-  dossiers: CabinetDossier[];
-}
-
-export type CabinetState = CabinetStateV1;
-
-export function createEmptyCabinetState(): CabinetStateV1 {
-  return { version: CABINET_STATE_VERSION, dossiers: [] };
-}

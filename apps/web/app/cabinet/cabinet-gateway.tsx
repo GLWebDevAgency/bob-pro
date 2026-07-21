@@ -9,7 +9,6 @@ import { acceptStashedInvitation, invitationFromFragment, stashInvitation } from
 import {
   getSupabaseBrowserClient,
   getSupabasePublicConfig,
-  isLocalCabinetDemoEnabled,
 } from '@/src/cabinet/supabase';
 import styles from './cabinet.module.css';
 import { CabinetApp } from './cabinet-app';
@@ -68,9 +67,7 @@ function SignIn({ onSession }: { readonly onSession: (session: Session) => void 
         description={tc('cabinet.auth.missingConfigDescription')}
         icon="lock"
         title={tc('cabinet.auth.missingConfigTitle')}
-      >
-        {isLocalCabinetDemoEnabled() ? <LocalDemoButton /> : null}
-      </StatePanel>
+      />
     );
   }
 
@@ -139,20 +136,6 @@ function SignIn({ onSession }: { readonly onSession: (session: Session) => void 
         )}
       </section>
     </main>
-  );
-}
-
-function LocalDemoButton() {
-  const [open, setOpen] = useState(false);
-  if (open) return <CabinetApp access={{ mode: 'local' }} />;
-  return (
-    <div className={styles.demoRail}>
-      <strong>{tc('cabinet.state.demoBadge')}</strong>
-      <span>{tc('cabinet.state.demoDescription')}</span>
-      <button className={styles.button} onClick={() => setOpen(true)} type="button">
-        {tc('cabinet.state.openDemo')}
-      </button>
-    </div>
   );
 }
 
@@ -281,6 +264,12 @@ function CabinetPortfolio({
         mode: 'authenticated',
         cabinets: state.cabinets,
         selectedCabinet,
+        dossiers: {
+          listDossiers: (cabinetId, cursor) => connectedApi.listDossiers(cabinetId, cursor),
+          getDossier: (cabinetId, siren) => connectedApi.getDossier(cabinetId, siren),
+          saveDossier: (cabinetId, input) => connectedApi.saveDossier(cabinetId, input),
+          deleteDossier: (cabinetId, siren, expectedRevision) => connectedApi.deleteDossier(cabinetId, siren, expectedRevision),
+        },
         team: {
           listMembers: (cabinetId, cursor) => connectedApi.listMembers(cabinetId, cursor),
           listInvitations: (cabinetId, cursor) => connectedApi.listInvitations(cabinetId, cursor),

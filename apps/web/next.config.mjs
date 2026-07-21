@@ -6,6 +6,7 @@ const workspaceRoot = join(here, '../..');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  poweredByHeader: false,
   reactStrictMode: true,
   // Monorepo : ancre le traçage des fichiers et Turbopack à la racine (évite l'inférence ambiguë).
   outputFileTracingRoot: workspaceRoot,

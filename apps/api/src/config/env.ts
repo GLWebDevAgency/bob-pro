@@ -1,8 +1,35 @@
 import { z } from 'zod';
+import { sentryDsnRejectionReason } from '@bob/core';
 
 const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
 const BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS = 32;
+
+/** Normalisation commune aux parseurs et aux composition roots qui lisent encore process.env. */
+export function normalizeOptionalEnvironmentString(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+const emptyStringAsUndefined = (value: unknown): unknown =>
+  typeof value === 'string' ? normalizeOptionalEnvironmentString(value) : value;
+
+const optionalStripeString = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().trim().min(1).optional(),
+);
+const optionalStripeWebhookSecret = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().trim().startsWith('whsec_').optional(),
+);
+const optionalStripeLiveMode = z.preprocess(
+  emptyStringAsUndefined,
+  z.enum(['true', 'false']).optional(),
+);
+const optionalStripeReturnUrl = z.preprocess(
+  emptyStringAsUndefined,
+  z.string().url().optional(),
+);
 
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
@@ -155,13 +182,16 @@ const schema = z.object({
   // OCR (A2-C14) : modèle OCR DÉDIÉ Mistral (≠ Voxtral/chat) + petit modèle d'extraction structurée.
   MISTRAL_OCR_MODEL: z.string().default('mistral-ocr-latest'),
   MISTRAL_OCR_EXTRACT_MODEL: z.string().default('mistral-small-latest'),
-  STRIPE_SECRET_KEY: z.string().optional(),
-  STRIPE_PRICE_SOLO: z.string().optional(),
-  STRIPE_PRICE_PRO: z.string().optional(),
-  STRIPE_PRICE_BUSINESS: z.string().optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().trim().startsWith('whsec_').optional(),
-  STRIPE_LIVEMODE: z.enum(['true', 'false']).optional(),
-  PAYMENT_RETURN_BASE_URL: z.string().url().optional(),
+  // Les plateformes de déploiement conservent souvent une variable déclarée avec une valeur
+  // vide. Pour le contrat V1, les sept valeurs vides équivalent à « Stripe non provisionné » ;
+  // une seule valeur non vide déclenche ensuite le contrôle tout-ou-rien dans loadEnv().
+  STRIPE_SECRET_KEY: optionalStripeString,
+  STRIPE_PRICE_SOLO: optionalStripeString,
+  STRIPE_PRICE_PRO: optionalStripeString,
+  STRIPE_PRICE_BUSINESS: optionalStripeString,
+  STRIPE_WEBHOOK_SECRET: optionalStripeWebhookSecret,
+  STRIPE_LIVEMODE: optionalStripeLiveMode,
+  PAYMENT_RETURN_BASE_URL: optionalStripeReturnUrl,
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
   SUPABASE_JWKS_URL: z.string().optional(),
@@ -191,6 +221,17 @@ const schema = z.object({
   JOB_CABINET_IDS: z.string().optional(),
   CABINET_INVITATION_WORKER_USER_ID: z.string().uuid().optional(),
   ERROR_REPORTER_WEBHOOK_URL: z.string().url().optional(),
+  // OBSERVABILITÉ §B4 — Sentry (crash reporting serveur). DORMANT en V1 : sans DSN, le SDK
+  // n'est même pas chargé (zéro appel réseau, zéro avertissement). Ce canal COMPLÈTE
+  // ERROR_REPORTER_WEBHOOK_URL — qui reste le canal d'alerte critique — il ne le remplace pas.
+  // Le DSN doit cibler la RÉGION UE de Sentry : garde fail-closed `assertSentryDsnIsEuRegion`.
+  SENTRY_DSN: z.string().url().optional(),
+  // Absent : l'environnement est déduit de CABINET_RELEASE_ENV, jamais inventé.
+  SENTRY_ENVIRONMENT: z.enum(['development', 'staging', 'production']).optional(),
+  // 0 = AUCUNE trace de performance. Les spans transportent des noms de route et des attributs
+  // applicatifs dont le scrubbing n'est pas spécifié : rien à gagner, du PII à risquer.
+  // Valeur figée par design_handoff_bob_pro/MATRICE_FLAGS_V1.md (§5 Observabilité).
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
   // BOB EXPERT FISCAL — service d'évaluation Publicodes serveur (SPIKE_PUBLICODES_20260715.md).
   // Shadow par défaut ('false') : le moteur Publicodes/modele-social embarque des trous de
   // couverture documentés (activités mixtes, PLR réglementées, non-résidents) et le format de
@@ -203,6 +244,12 @@ const schema = z.object({
   // mono-thread) : évite qu'une rafale de requêtes ne monopolise la boucle d'événements en continu
   // (dont /voice/realtime, sur le même process).
   FISCAL_PUBLICODES_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+  // TRAÇAGE DU COMPORTEMENT VOCAL (bêta-test fondateur). Dormant par défaut, et c'est le point :
+  // une trace vocale transporte le texte prononcé et la réponse de Bob, soit les données les plus
+  // sensibles de l'app. Sans ce flag, AUCUNE ligne n'est écrite — zéro coût, zéro donnée. Le
+  // consommateur (VoiceTraceRecorder) relit `process.env` à chaque tour : couper le flag arrête
+  // l'écriture au tour suivant, sans redéploiement.
+  VOICE_TRACE_ENABLED: z.enum(['true', 'false']).default('false'),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -544,6 +591,19 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
   };
 }
 
+/**
+ * Sentry SaaS crée les organisations en région **US par défaut** : un DSN collé sans vigilance
+ * exfiltrerait, en silence et sans erreur visible, les rapports de plantage d'une application
+ * financière française hors UE. La posture souveraine actée (§B4, RGPD) exige la région UE —
+ * cette garde est donc FAIL-CLOSED : un DSN non-UE refuse le démarrage, jamais un avertissement
+ * qu'on finirait par ne plus lire. Elle s'applique dans TOUS les environnements : un poste de
+ * développement qui pousserait vers une région US poserait exactement le même problème.
+ */
+export function assertSentryDsnIsEuRegion(dsn: string): void {
+  const reason = sentryDsnRejectionReason(dsn);
+  if (reason) throw new Error(`SENTRY_DSN ${reason}.`);
+}
+
 export function loadEnv(): Env {
   const parsed = schema.safeParse(process.env);
   if (!parsed.success) {
@@ -669,6 +729,12 @@ export function loadEnv(): Env {
     if (invitationUrl.protocol !== 'https:' && invitationUrl.hostname !== 'localhost') {
       throw new Error('CABINET_INVITATION_WEB_BASE_URL doit utiliser HTTPS hors localhost.');
     }
+  }
+  // Crash reporting : dormant tant qu'aucun DSN n'est posé. Dès qu'il l'est, il est certifié
+  // AVANT que le SDK ne soit chargé — un DSN hors UE ne doit jamais atteindre le réseau.
+  if (parsed.data.SENTRY_DSN) assertSentryDsnIsEuRegion(parsed.data.SENTRY_DSN);
+  if (!parsed.data.SENTRY_DSN && parsed.data.SENTRY_ENVIRONMENT !== undefined) {
+    throw new Error('SENTRY_ENVIRONMENT ne doit pas être posé sans SENTRY_DSN (canal dormant).');
   }
   if (process.env.NODE_ENV === 'production' && parsed.data.CABINET_RELEASE_ENV === 'development') {
     throw new Error(
@@ -870,6 +936,11 @@ export const hasDeepseekKey = (): boolean => !!process.env.DEEPSEEK_API_KEY;
 export const hasMistralKey = (): boolean => !!process.env.MISTRAL_API_KEY;
 export const hasOpenaiKey = (): boolean => !!process.env.OPENAI_API_KEY;
 export const isDemoMode = (): boolean => process.env.DEMO_MODE === 'true';
+/**
+ * Fail-closed : tout ce qui n'est pas exactement 'true' laisse le traçage vocal éteint. Lu à
+ * CHAQUE tour (pas capturé au boot) pour qu'une coupure d'urgence prenne effet immédiatement.
+ */
+export const isVoiceTraceEnabled = (): boolean => process.env.VOICE_TRACE_ENABLED === 'true';
 export const isFiscalPublicodesSimulationsEnabled = (): boolean =>
   process.env.FISCAL_PUBLICODES_SIMULATIONS_ENABLED === 'true';
 export const fiscalPublicodesMaxConcurrency = (): number => {

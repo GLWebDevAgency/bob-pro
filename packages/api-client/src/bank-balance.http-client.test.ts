@@ -16,6 +16,23 @@ const SNAPSHOT = {
     maximumAgeSeconds: 86_400,
     policyVersion: 'bank-balance-freshness/1',
   },
+  // Ajout ADDITIF : le constaté (456 789) + 60 000 encaissés − 12 000 réglés = 504 789 estimés.
+  position: {
+    companyId: 'company-owner',
+    observedBalanceCents: 456_789,
+    observedAt: '2026-07-17T10:00:00.000Z',
+    observationSource: 'manual_confirmed',
+    estimatedAt: '2026-07-18T09:00:00.000Z',
+    estimatedBalanceCents: 504_789,
+    movements: {
+      inflowCents: 60_000,
+      outflowCents: 12_000,
+      netCents: 48_000,
+      inflowCount: 1,
+      outflowCount: 1,
+      ignoredBeforeObservationCount: 2,
+    },
+  },
 };
 
 describe('HttpBobClient — preuve bancaire persistée', () => {
@@ -102,5 +119,57 @@ describe('HttpBobClient — preuve bancaire persistée', () => {
       ok: false,
       error: { kind: 'dependency', port: 'bank-balance-snapshot-repository', cause: 'unavailable' },
     });
+  });
+});
+
+describe('HttpBobClient — position de trésorerie (ajout additif)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('remonte les DEUX nombres : le constaté daté et l’estimé qui en découle', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(SNAPSHOT), {
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+    });
+
+    const result = await client.getLatestBankBalance();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Le fait ne bouge pas ; l'estimation le complète. C'est l'écart que le fondateur voyait
+    // manquer quand il marquait une facture payée et que le solde restait figé.
+    expect(result.value.amountCents).toBe(456_789);
+    expect(result.value.position?.observedBalanceCents).toBe(456_789);
+    expect(result.value.position?.estimatedBalanceCents).toBe(504_789);
+    expect(result.value.position?.movements.netCents).toBe(48_000);
+  });
+
+  it('accepte position: null (projection des mouvements indisponible) sans perdre le constaté', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ...SNAPSHOT, position: null }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+    });
+
+    const result = await client.getLatestBankBalance();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.position).toBeNull();
+    expect(result.value.amountCents).toBe(456_789);
   });
 });

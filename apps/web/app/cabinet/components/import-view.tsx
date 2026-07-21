@@ -10,7 +10,7 @@ interface ImportViewProps {
   busy: boolean;
   onCancel: () => void;
   onFile: (file: File) => void | Promise<void>;
-  onSave: (identity: ImportIdentityInput) => void;
+  onSave: (identity: ImportIdentityInput) => void | Promise<void>;
   pending: PendingFecImport | null;
 }
 
@@ -62,7 +62,7 @@ export function ImportView({ busy, onCancel, onFile, onSave, pending }: ImportVi
   };
 
   const submit = () => {
-    onSave({
+    void onSave({
       clientName: form.clientName,
       siren: form.siren,
       legalForm: form.legalForm,
@@ -153,7 +153,7 @@ export function ImportView({ busy, onCancel, onFile, onSave, pending }: ImportVi
               <div className={styles.formActions}>
                 <button className={styles.button} onClick={() => inputRef.current?.click()} type="button"><DocumentIcon />Choisir un autre fichier</button>
                 <input ref={inputRef} className={styles.srOnly} accept=".txt,text/plain" type="file" onChange={(event) => { receive(event.target.files); event.currentTarget.value = ''; }} />
-                <button className={styles.buttonPrimary} type="submit"><CheckIcon />{pending.previous ? 'Mettre à jour le dossier' : 'Ajouter au portefeuille'}</button>
+                <button aria-busy={busy} className={styles.buttonPrimary} disabled={busy} type="submit"><CheckIcon />{busy ? 'Enregistrement…' : pending.previous ? 'Mettre à jour le dossier' : 'Ajouter au portefeuille'}</button>
               </div>
             </form>
           </div>

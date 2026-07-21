@@ -145,7 +145,7 @@ import {
   type Horizon,
   type PaymentMethod,
   type CashflowProjection,
-  type QualifiedBankBalanceSnapshot,
+  type QualifiedBankBalanceWithPosition,
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
@@ -2526,11 +2526,13 @@ export class LocalBobClient implements BobClient {
     });
   }
 
-  async getLatestBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+  /** Parité de SIGNATURE avec les autres clients ; l'adapter local n'a pas de preuve bancaire,
+   *  donc pas davantage de position estimée — refus explicite, jamais un solde ni un estimé local. */
+  async getLatestBankBalance(): Promise<Result<QualifiedBankBalanceWithPosition, AppError>> {
     return err(appUnavailable('bank-balance-testing-adapter'));
   }
 
-  async recordManualBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+  async recordManualBankBalance(): Promise<Result<QualifiedBankBalanceWithPosition, AppError>> {
     return err(appUnavailable('bank-balance-testing-adapter'));
   }
 
@@ -4006,15 +4008,27 @@ export class LocalBobClient implements BobClient {
       reference: invoice.number ?? 'a-emettre',
       ...(chart.ok ? { chart: chart.value } : {}),
     });
-    if (!entry.ok || entry.value === null) {
+    if (!entry.ok) {
       const detail =
-        !entry.ok && 'message' in entry.error && typeof entry.error.message === 'string'
+        'message' in entry.error && typeof entry.error.message === 'string'
           ? entry.error.message.trim()
           : '';
       return ok({
         invoiceId,
         available: false,
         reason: detail || 'Aperçu comptable indisponible.',
+      });
+    }
+    // Parité serveur : une finale entièrement soldée par des situations déjà émises ne crée
+    // aucun nouveau fait comptable. `ok(null)` est donc un aperçu honnêtement indisponible,
+    // jamais une erreur ni une écriture artificielle à zéro.
+    if (entry.value === null) {
+      return ok({
+        invoiceId,
+        available: false,
+        reason:
+          'Aucune écriture à passer : le solde est entièrement couvert par les situations émises ' +
+        '(chiffre d’affaires et TVA déjà constatés à chaque situation).',
       });
     }
     const accountingEntry = entry.value;

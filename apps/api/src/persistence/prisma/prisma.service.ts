@@ -58,6 +58,25 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     await tx.$executeRaw`SELECT set_config('app.notification_outbox_version', ${NOTIFICATION_OUTBOX_VERSION}, true)`;
   }
 
+  /**
+   * Écriture DÉTACHÉE de la transaction de requête, avec le GUC tenant posé.
+   *
+   * Réservé aux écritures d'OBSERVATION (traçage vocal). Motif : une écriture qui échoue DANS la
+   * transaction de requête l'avorte entièrement — même attrapée, la transaction est empoisonnée
+   * et les écritures métier qui suivent échouent. Une trace de debug ne doit JAMAIS pouvoir
+   * casser la conversation qu'elle observe : elle prend donc sa propre connexion, réussit ou
+   * échoue seule, et n'est jamais inscrite dans le `txStorage` de la requête appelante.
+   *
+   * `txStorage.run` interne : les repos passant par `client()` voient CETTE transaction, quel
+   * que soit le contexte asynchrone d'où le drain est déclenché.
+   */
+  detachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await this.setCompanyContext(tx, companyId);
+      return txStorage.run(tx, fn);
+    });
+  }
+
   /** Pose uniquement l'identité authentifiée. Utile pour lister les memberships de l'utilisateur. */
   withIdentity<T>(userId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     if (this.inTransaction()) {

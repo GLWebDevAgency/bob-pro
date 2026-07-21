@@ -3,12 +3,27 @@ import type {
   CabinetFiscalProfile,
   CabinetFinancialSummary,
   CabinetReviewSummary,
-  CabinetStateV1,
   StoredFecAnalysis,
   StoredIncomeStatement,
   StoredTrialBalance,
 } from './types';
-import { CABINET_STATE_VERSION, createEmptyCabinetState } from './types';
+
+/**
+ * @internal Compatibilité historique réservée aux tests de migration d’anciens exports.
+ * Aucun fichier de l’application ni de l’API de production ne doit importer ce module.
+ */
+export const CABINET_STATE_VERSION = 1 as const;
+
+export interface CabinetStateV1 {
+  version: typeof CABINET_STATE_VERSION;
+  dossiers: CabinetDossier[];
+}
+
+export type CabinetState = CabinetStateV1;
+
+export function createEmptyCabinetState(): CabinetStateV1 {
+  return { version: CABINET_STATE_VERSION, dossiers: [] };
+}
 
 export const CABINET_STORAGE_KEY = 'bobcabinet.v1';
 
@@ -42,7 +57,7 @@ const URSSAF_PERIODICITIES = new Set(['monthly', 'quarterly']);
 const REVIEW_VERDICTS = new Set(['ready', 'reservations', 'anomalies']);
 const MAX_DOSSIERS = 5_000;
 
-interface ValidationIssue {
+export interface ValidationIssue {
   message: string;
   path: string;
   code?: 'unsupported_version';
@@ -142,7 +157,7 @@ export function normalizeSiren(value: string): string | null {
   return /^\d{9}$/.test(normalized) && luhnValid(normalized) ? normalized : null;
 }
 
-function validatePeriod(value: unknown, path: string): ValidationIssue | null {
+export function validatePeriod(value: unknown, path: string): ValidationIssue | null {
   if (!isPlainRecord(value)) return { path, message: 'La période doit être un objet.' };
   const keysIssue = hasExactKeys(value, ['from', 'to'], path);
   if (keysIssue) return keysIssue;
@@ -154,7 +169,7 @@ function validatePeriod(value: unknown, path: string): ValidationIssue | null {
   return null;
 }
 
-function validateFinancial(value: unknown, path: string): ValidationIssue | null {
+export function validateFinancial(value: unknown, path: string): ValidationIssue | null {
   if (!isPlainRecord(value)) return { path, message: 'La synthèse financière doit être un objet.' };
   const keysIssue = hasExactKeys(
     value,
@@ -518,7 +533,7 @@ function validateUnbalancedEntries(value: unknown, path: string): ValidationIssu
   return null;
 }
 
-function validateAnalysis(value: unknown, path: string): ValidationIssue | null {
+export function validateAnalysis(value: unknown, path: string): ValidationIssue | null {
   if (!isPlainRecord(value)) return { path, message: "L'analyse FEC doit être un objet." };
   const keysIssue = hasExactKeys(
     value,
@@ -583,7 +598,7 @@ function validateAnalysis(value: unknown, path: string): ValidationIssue | null 
   return null;
 }
 
-function validateReview(value: unknown, path: string): ValidationIssue | null {
+export function validateReview(value: unknown, path: string): ValidationIssue | null {
   if (value === null) return null;
   if (!isPlainRecord(value)) return { path, message: 'La revue doit être un objet ou null.' };
   const keysIssue = hasExactKeys(
@@ -612,7 +627,7 @@ function validateReview(value: unknown, path: string): ValidationIssue | null {
   return null;
 }
 
-function validateFiscal(value: unknown, path: string): ValidationIssue | null {
+export function validateFiscal(value: unknown, path: string): ValidationIssue | null {
   if (!isPlainRecord(value))
     return { path, message: 'Les paramètres fiscaux doivent être un objet.' };
   const keysIssue = hasExactKeys(
@@ -818,6 +833,14 @@ export function validateCabinetState(value: unknown): CabinetStorageResult<Cabin
   const issue = validateState(value);
   if (issue) return failure(issue.code ?? 'invalid_state', issue.message, issue.path);
   return success(cloneState(value as CabinetStateV1));
+}
+
+export function validateCabinetDossierValue(
+  value: unknown,
+): CabinetStorageResult<CabinetDossier> {
+  const issue = validateDossier(value, '$');
+  if (issue) return failure('invalid_state', issue.message, issue.path);
+  return success(cloneDossier(value as CabinetDossier));
 }
 
 export function parseCabinetStateJson(raw: string): CabinetStorageResult<CabinetStateV1> {

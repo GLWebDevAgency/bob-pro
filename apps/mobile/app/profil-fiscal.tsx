@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { applicableFiscalFields, type FiscalProfileView } from '@bob/core';
 import { t, type Personality } from '@bob/i18n';
 import { Button, Card, ErrorRetry, SkeletonCard, font, useTheme } from '@bob/ui';
-import { usePublishAgentContext, type AgentContext } from '../src/agent';
+import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { FIELD_NAME_KEY, FIELD_STATUS_LABEL_KEY, FIELD_STATUS_TONE, type FiscalProfileFieldName } from '../src/fiscal/fiscal-i18n-keys';
 import { fieldSourceCaption, fieldValueDisplay } from '../src/fiscal/fiscal-value-labels';
@@ -95,7 +95,15 @@ export default function ProfilFiscal() {
     }),
     [profileReady],
   );
-  usePublishAgentContext(agentContext, {}, { affordances: flow.voiceAffordances });
+  // Les arguments de `usePublishAgentContext` sont des DÉPENDANCES d'effet (agent-context:177) :
+  // un littéral inline change d'identité à chaque rendu → republication → nouvelle valeur de
+  // contexte → re-rendu → boucle infinie (mesurée : 20 002 rendus sans convergence, fil JS saturé
+  // = écran figé sur l'appareil). `undefined` retombe sur la constante figée EMPTY_LAYOUT.
+  const agentSurface = useMemo<AgentSurface>(
+    () => ({ affordances: flow.voiceAffordances }),
+    [flow.voiceAffordances],
+  );
+  usePublishAgentContext(agentContext, undefined, agentSurface);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>

@@ -1,5 +1,6 @@
 import { isVatRate, type VatRate } from '../../domain/billing/shared/vat-rate';
 import { type LineCategory } from '../../domain/billing/shared/line-item';
+import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 
 /**
  * Contrat durable du brouillon de devis.
@@ -143,14 +144,6 @@ function record(value: unknown): Record<string, unknown> | null {
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {
   const allowed = new Set([...required, ...optional]);
   return required.every((key) => key in value) && Object.keys(value).every((key) => allowed.has(key));
-}
-
-function hasAsciiControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
 }
 
 function canonicalIdentifier(value: unknown): value is string {

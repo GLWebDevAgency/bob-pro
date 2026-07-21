@@ -9,13 +9,13 @@ import {
   type MissionLetterDocument,
   type MissionLetterInput,
 } from '@/src/cabinet/mission-letter';
-import type { CabinetDossier } from '@/src/cabinet/types';
+import type { CabinetDossierListItem } from '@/src/cabinet/api';
 import styles from '../cabinet.module.css';
 import { AlertIcon, ArrowLeftIcon, PrintIcon, RefreshIcon, ShieldIcon } from './icons';
 
 interface LetterViewProps {
-  dossiers: CabinetDossier[];
-  initialDossier: CabinetDossier | null;
+  dossiers: readonly CabinetDossierListItem[];
+  initialDossier: CabinetDossierListItem | null;
   onBack: () => void;
 }
 
@@ -66,7 +66,7 @@ function today(): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function initialState(dossier: CabinetDossier | null): LetterFormState {
+function initialState(dossier: CabinetDossierListItem | null): LetterFormState {
   return {
     selectedSiren: dossier?.siren ?? '',
     cabinetName: '',
@@ -308,7 +308,7 @@ export function LetterView({ dossiers, initialDossier, onBack }: LetterViewProps
 
         <aside className={styles.paperPanel}>
           <div className={styles.paperToolbar}><strong>Aperçu du document</strong><span className={preview.document ? styles.positive : styles.negative}>{preview.document ? 'Document prêt à relire' : 'Champs à compléter'}</span></div>
-          {preview.document ? <LetterPreview document={preview.document} /> : <div className={styles.emptyState} style={{ minHeight: 700, background: '#fff' }}><div className={styles.emptyStateInner}><span className={styles.emptyIcon}><AlertIcon /></span><h2>Complétez les identités</h2><p>{preview.error}. L’aperçu complet apparaîtra sans envoyer les informations.</p></div></div>}
+          {preview.document ? <LetterPreview document={preview.document} /> : <div className={styles.emptyState} style={{ minHeight: 700, background: 'var(--bob-color-surface)' }}><div className={styles.emptyStateInner}><span className={styles.emptyIcon}><AlertIcon /></span><h2>Complétez les identités</h2><p>{preview.error}. L’aperçu complet apparaîtra sans envoyer les informations.</p></div></div>}
           <div className={styles.letterDisclaimer}><AlertIcon /> {MISSION_LETTER_DISCLAIMER} Les mentions entre crochets, la médiation et la qualification RGPD doivent être complétées avant signature.</div>
         </aside>
       </div>

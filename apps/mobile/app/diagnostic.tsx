@@ -61,7 +61,7 @@ import {
   useSaveDiagnosticAssessment,
 } from '../src/data/hooks';
 import { combineQueryStates } from '../src/data/query-state';
-import { usePublishAgentContext, type AgentContext } from '../src/agent';
+import { usePublishAgentContext, type AgentAccessLayout, type AgentContext } from '../src/agent';
 import {
   useBobAwareScrollInsets,
   type BobAwareScrollInsets,
@@ -74,6 +74,9 @@ import {
   CloseIcon,
   ShieldIcon,
 } from '../src/components/icons';
+
+/** Layout FIGÉ hors composant : passé en dépendance d'effet, un littéral inline ferait boucler le rendu. */
+const DIAGNOSTIC_AGENT_LAYOUT: AgentAccessLayout = Object.freeze({ bottomAvoidance: 72 });
 
 // ── Copy des questions (valeurs → @bob/core, clés → @bob/i18n) ────────────────
 interface QuestionOption {
@@ -500,7 +503,7 @@ export default function Diagnostic() {
     }),
     [phase, queryState.failed, sourceSnapshot, sourcesReady, step],
   );
-  usePublishAgentContext(agentContext, { bottomAvoidance: 72 });
+  usePublishAgentContext(agentContext, DIAGNOSTIC_AGENT_LAYOUT);
   const bobScrollInsets = useBobAwareScrollInsets({
     minimumBottom: 18,
     viewportBottomInset: insets.bottom + 16,

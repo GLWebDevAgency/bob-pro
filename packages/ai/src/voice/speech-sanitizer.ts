@@ -23,7 +23,8 @@ const INT_PATTERN = '\\d{1,3}(?:[\\u202F\\u00A0 ]\\d{3})+|\\d+';
 const AMOUNT_WITH_CENTS = new RegExp(`(${INT_PATTERN}),(\\d{2})\\s*€`, 'gu');
 const AMOUNT_WHOLE = new RegExp(`(${INT_PATTERN})\\s*€`, 'gu');
 /** Symboles visuels muets : flèches, coches, avertissements, emojis — rien à prononcer. */
-const VISUAL_SYMBOLS = /[→⇒←↔✓✗\u{FE0F}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F300}-\u{1FAFF}]/gu;
+const VISUAL_SYMBOLS = /[→⇒←↔✓✗\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F300}-\u{1FAFF}]/gu;
+const EMOJI_VARIATION_SELECTORS = /\u{FE0F}/gu;
 
 function joinDigits(integer: string): string {
   return integer.replace(/[\u202F\u00A0 ]/g, '');
@@ -42,6 +43,7 @@ export function sanitizeForSpeech(text: string): string {
         // Tiret décoratif en incise : une respiration, pas un symbole lu.
         .replace(/\s+[—–]\s+/gu, ', ')
         .replace(VISUAL_SYMBOLS, ' ')
+        .replace(EMOJI_VARIATION_SELECTORS, '')
         // Montants formatEUR : « 1 386,50 € » → « 1386 euros 50 » ; « 415,00 € » → « 415 euros ».
         .replace(AMOUNT_WITH_CENTS, (_match: string, integer: string, cents: string) =>
           cents === '00'

@@ -80,6 +80,7 @@ import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
 import { combineQueryStates } from '../../src/data/query-state';
 import { ProfileMenuSheet } from '../../src/components/profile-menu-sheet';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
+import { ShareQuoteLinkButton } from '../../src/components/ShareQuoteLinkButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
@@ -89,10 +90,12 @@ import {
   type AgentAffordance,
   type AgentContext,
   type AgentEntityRef,
+  type AgentSurface,
 } from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useSalesDocumentVoiceAffordance } from '../../src/documents-voice-search';
 import { deriveHomeReceivableKpis } from '../../src/home/derive-home-receivable-kpis';
+import { deriveCashPositionDisplay } from '../../src/finance/cash-position-view';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -336,6 +339,61 @@ function TodayPriorityCard({
         />
       );
     }
+    case 'devis_a_transmettre': {
+      // Cas terrain fondateur (2026-07-20) : le devis est bien passé `sent` — son numéro légal
+      // est alloué — mais le client n'a pas d'e-mail, donc le serveur n'a RIEN envoyé
+      // (deliveryStatus 'skipped'). Un blocage passif devient ici une action proposée, avec les
+      // DEUX sorties possibles : réparer la cause (ajouter l'adresse) ou transmettre tout de
+      // suite par le canal que l'artisan a déjà (WhatsApp, SMS, copie du lien…).
+      // La carte s'éteint d'elle-même dès que le client ouvre le lien (devis → `viewed`).
+      const name = priority.customerName || priority.docNumber || '';
+      const reference = priority.docNumber ? `${priority.docNumber} · ` : '';
+      return (
+        <PriorityCard
+          status="marine"
+          title={t('today.prioTransmitTitle', { personality, params: { name } })}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioTransmitHint',
+            { personality },
+          )}`}
+          leadingIcon={<Feather name="send" size={13} color={semantic.warning} />}
+          badge={
+            <Badge
+              label={t('today.prioTransmitBadge', { personality }).toUpperCase()}
+              tone="warning"
+            />
+          }
+          cta={
+            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start' }}>
+              {/* Réparer la cause : la fiche client existante, formulaire d'édition ouvert
+                  (?edit=1) — aucun mini-formulaire parallèle ne dupliquerait ses règles. */}
+              <Button
+                title={t('today.ctaTransmitAddEmail', { personality })}
+                variant="primary"
+                size="compact"
+                radius={11}
+                icon={<Feather name="mail" size={15} color={colors.surface} />}
+                onPress={() =>
+                  router.push({
+                    pathname: '/client/[id]',
+                    params: { id: priority.customerId, edit: '1' },
+                  })
+                }
+              />
+              {/* Transmettre maintenant : MÊME chemin que « Envoyer le lien » du devis
+                  (signature-link + feuille de partage native) — aucun sortant tant que
+                  l'utilisateur n'a pas choisi son canal. */}
+              <ShareQuoteLinkButton
+                quoteId={priority.quoteId}
+                quoteNumber={priority.docNumber}
+                title={t('today.ctaTransmitShare', { personality })}
+                icon={<Feather name="share-2" size={15} color={colors.ink800} />}
+              />
+            </View>
+          }
+        />
+      );
+    }
     case 'conformite':
       // Carte INFO (réf) : jamais de checkbox — puce bouclier, fond lavande, CTA chevron.
       return (
@@ -452,6 +510,13 @@ export default function Aujourdhui() {
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const bankBalance = useLatestBankBalance();
+  // DEUX nombres, pas un seul : le solde CONSTATÉ (le fait, daté) et la POSITION ESTIMÉE qui y
+  // ajoute les mouvements postérieurs. Affiché seul, le constaté figé se lisait comme un bug
+  // (« j'encaisse, rien ne bouge »). `null` = rien de plus à montrer → rendu actuel inchangé.
+  const cashPosition = useMemo(
+    () => deriveCashPositionDisplay({ balance: bankBalance.data, personality }),
+    [bankBalance.data, personality],
+  );
   const today = useTodayPriorities();
   const quoteDraft = useQuoteDraft();
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
@@ -548,6 +613,15 @@ export default function Aujourdhui() {
           label: priority.docNumber ? `Devis ${priority.docNumber}` : 'Devis signé',
         });
         add({ type: 'customer', id: priority.customerId, label: priority.customerName });
+      } else if (priority.kind === 'devis_a_transmettre') {
+        // Parité voix : ce que l'écran montre, Bob le voit — mêmes entités (devis + client)
+        // que les autres priorités actionnables, sous les mêmes capacités quote/customer.read.
+        add({
+          type: 'quote',
+          id: priority.quoteId,
+          label: priority.docNumber ? `Devis ${priority.docNumber}` : 'Devis à transmettre',
+        });
+        add({ type: 'customer', id: priority.customerId, label: priority.customerName });
       }
     }
     return {
@@ -636,17 +710,20 @@ export default function Aujourdhui() {
   // mois dernier ») : Accueil est la seconde porte d'entrée voulue par le fondateur, la logique
   // vit une seule fois dans apps/mobile/src/documents-voice-search.ts.
   const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
-  usePublishAgentContext(
-    agentContext,
-    {},
-    {
+  // Surface MÉMOÏSÉE : les arguments de ce hook sont des dépendances d'effet (agent-context:177) ;
+  // un littéral inline se réidentifie à chaque rendu → republication → nouveau contexte →
+  // re-rendu → boucle infinie qui sature le fil JS (écran figé sur l'appareil).
+  const homeAgentSurface = useMemo<AgentSurface>(
+    () => ({
       affordances: [
         salesDocumentVoiceAffordance,
         ...(homeAgentDataReady ? fiscalFlow.voiceAffordances : []),
         ...draftVoiceAffordances,
       ],
-    },
+    }),
+    [salesDocumentVoiceAffordance, homeAgentDataReady, fiscalFlow.voiceAffordances, draftVoiceAffordances],
   );
+  usePublishAgentContext(agentContext, undefined, homeAgentSurface);
 
   // KPI : les encours viennent directement des factures émises/encaissées persistées. Les
   // anciennes colonnes score/outstanding du client ne sont jamais une autorité financière ici.
@@ -761,12 +838,38 @@ export default function Aujourdhui() {
 
         {bankBalance.data ? (
           <FloatingBalanceCard
-            label={t('today.balanceLabel', { personality })}
-            amountCents={bankBalance.data.amountCents}
-            voiceLine={t('today.balanceObservedHint', { personality })}
+            label={
+              cashPosition
+                ? t('today.balanceEstimatedLabel', { personality })
+                : t('today.balanceLabel', { personality })
+            }
+            // Le héros devient la POSITION dès qu'un mouvement existe ; sans mouvement, l'estimé
+            // égalerait le constaté et le rendu historique reste, à l'octet près.
+            amountCents={cashPosition ? cashPosition.estimatedCents : bankBalance.data.amountCents}
+            // Le FAIT ne disparaît jamais : il descend en voix de Bob, daté, à côté de l'estimé.
+            voiceLine={
+              cashPosition
+                ? t('today.balanceEstimatedVoice', {
+                    personality,
+                    params: {
+                      observed: cashPosition.observedAmount,
+                      date: cashPosition.observedDate,
+                    },
+                  })
+                : t('today.balanceObservedHint', { personality })
+            }
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}
+            {...(cashPosition
+              ? {
+                  badge: {
+                    label: cashPosition.movementsLabel,
+                    accessibilityHint: t('today.balanceMovementsHint', { personality }),
+                    onPress: () => router.push('/(tabs)/argent'),
+                  },
+                }
+              : {})}
           />
         ) : (
           <HeroPlaceholder

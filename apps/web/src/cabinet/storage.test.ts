@@ -4,7 +4,6 @@ import {
   summarizeClosingReview,
   summarizeFecAnalysis,
   type CabinetDossier,
-  type CabinetStateV1,
   type StoredFecAnalysis,
 } from './types';
 import {
@@ -18,6 +17,7 @@ import {
   upsertDossier,
   upsertStoredDossier,
   type CabinetStorage,
+  type CabinetStateV1,
 } from './storage';
 
 const FEC_ANALYSIS_IS_STRUCTURALLY_PERSISTABLE: FecAnalysis extends StoredFecAnalysis

@@ -1,9 +1,9 @@
 // Génère un échantillon Factur-X (PDF hybride + XML CII) pour la validation de conformité en CI
 // (Mustang/veraPDF/Schematron EN 16931). Usage : node scripts/generate-facturx-sample.mjs [dossier]
-// Pré-requis : fermeture @bob/api buildée + builders de certification @bob/core/testing
-// (`pnpm --filter "@bob/api..." build && pnpm --filter @bob/core build:testing`).
+// Pré-requis : fermeture workspace de @bob/api buildée (`pnpm --filter "@bob/api..." build`).
 import { mkdirSync, writeFileSync } from 'node:fs';
 import {
+  Company,
   Invoice,
   DocNumber,
   PaymentTerms,
@@ -12,7 +12,6 @@ import {
   buildFacturXBasicXml,
   validateFacturXEn16931,
 } from '@bob/core';
-import { seedCompany } from '@bob/core/testing';
 import { PdfRenderer } from '../dist/documents/pdf-renderer.js';
 
 const unwrap = (r, label) => {
@@ -23,7 +22,21 @@ const unwrap = (r, label) => {
   return r.value;
 };
 
-const company = seedCompany();
+const company = unwrap(Company.of({
+  id: 'facturx-conformance-sample',
+  name: 'Mercier Plomberie',
+  legalForm: 'EI',
+  siren: '732829320',
+  siret: '73282932000074',
+  apeCode: '4322A',
+  trade: 'plombier',
+  vatRegime: 'reel_simpl',
+  tvaIntracom: 'FR44732829320',
+  rcsOrRm: 'RM 92',
+  address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
+  iban: 'FR7630006000011234567890189',
+  bic: 'AGRIFRPP',
+}), 'company');
 const inv = unwrap(Invoice.composeStandalone({ id: 'sample', companyId: company.id, customerId: 'cust' }), 'composeStandalone');
 inv.addLine({ id: 'l1', label: 'Pose chaudière', category: 'labor', qty: 1, unitPriceHT: 120000, vatRate: 20 });
 inv.addLine({ id: 'l2', label: 'Joint', category: 'supply', qty: 2, unitPriceHT: 1500, vatRate: 10 });

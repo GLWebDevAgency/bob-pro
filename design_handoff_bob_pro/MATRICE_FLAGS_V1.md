@@ -103,6 +103,24 @@ Décision actée : ADR-0001 rollout fermé + **garde liveness `nextServerSequenc
 | `METRICS_TOKEN` (secret) | Railway | absent (requis live, ≥32 chars) (`env.ts:181`) | **posée**, aléatoire, distincte par environnement | `/metrics` fail-closed, comparaison timing-safe (`auth.guard.ts:57`) | Placeholder crochets = boot refusé (voulu) |
 | `LOG_LEVEL` | Railway (HORS schéma, `logger.ts:48`) | `info` | **défaut** | Niveau pino | `debug` en prod = verbosité/coût ; `silent` = perte de diagnostic |
 | `PRODUCT_ANALYTICS_ENDPOINT` (secret) | Railway (HORS schéma, `analytics.ts:44`) | absent → Noop | **ABSENTE** sauf décision fondateur (question ouverte) | Fire-and-forget, jamais une condition d'exploitation | Faible |
+| `SENTRY_DSN` (secret) | Railway | absent → canal DORMANT (`env.ts`, `sentry-reporter.ts`) | **POSÉE (20/07) — projet `bob-pro-api`, orga `limame-ghassene`, hôte `*.ingest.de.sentry.io` (région UE vérifiée)** | Crash reporting serveur (§B4). Sans DSN, `@sentry/node` n'est même pas chargé : zéro appel réseau, zéro avertissement. **S'AJOUTE** à `ERROR_REPORTER_WEBHOOK_URL` (composition), ne le remplace pas | DSN hors UE = **refus de boot** (garde `sentryDsnRejectionReason`, fail-closed) : Sentry crée les orgas en région **US par défaut** |
+| `SENTRY_ENVIRONMENT` | Railway | absent → déduit de `CABINET_RELEASE_ENV` | **ABSENTE** (posée avec le DSN uniquement si l'on veut dissocier des noms d'environnement) | Évite d'inventer un environnement | **Posée SANS `SENTRY_DSN` = refus de boot** (couplage voulu : pas de résidu de configuration sur un canal dormant) |
+| `SENTRY_TRACES_SAMPLE_RATE` | Railway | `0` (`env.ts`) | **défaut = `0`** | Aucune trace de performance : les spans portent noms de route et attributs applicatifs dont le scrubbing n'est pas spécifié — rien à gagner, du PII à risquer | >0 = transactions envoyées à un tiers sans politique de minimisation dédiée |
+| `VOICE_TRACE_ENABLED` | Railway | `false` (`env.ts`) | **défaut = `false`** (DORMANT) | Traçage du comportement vocal du bêta-test (une ligne par TOUR : texte prononcé, intention, outil + paramètres, issue, réponse, latences), **souverain** — table `voice_traces` dans notre PostgreSQL sous RLS FORCE, rétention 30 j purgée, jamais chez un tiers (`telemetry-scrubbing.ts` interdit ces données à Sentry). Sans le flag, aucune ligne n'est écrite : zéro coût, zéro donnée | `true` = stock de transcripts en clair (noms clients, montants, SIRET) pendant 30 j — à n'activer que le temps d'une campagne de test |
+| `EXPO_PUBLIC_SENTRY_DSN` / `EXPO_PUBLIC_SENTRY_ENVIRONMENT` | `eas.json` (mobile) | absents → canal DORMANT (`crash-reporter.ts`) | **DSN POSÉ (20/07) dans les DEUX profils — projet `bob-pro-mobile`, région UE ; `_ENVIRONMENT` reste ABSENT** | Crash reporting terrain (plantage profil fiscal indiagnosticable). **Volontairement HORS de la garde `required()` de `app.config.ts`** : un build EAS ne doit jamais dépendre d'un canal d'observabilité | Les déclarer obligatoires casserait TOUS les builds EAS ; un DSN non-UE désactive le canal (jamais de plantage induit) |
+
+**Minimisation (RGPD, application financière).** Les deux SDK partagent la politique
+`packages/core/src/observability/telemetry-scrubbing.ts`, branchée sur `beforeSend` /
+`beforeBreadcrumb` — dernier point de passage avant sortie réseau : `sendDefaultPii: false`,
+reconstruction de l'événement par **liste blanche structurelle** (donc `request`, `user`,
+`extra`, `server_name` et tout champ futur écartés par défaut), suppression des variables
+locales de pile (`frame.vars`), redaction IBAN / e-mail / téléphone / SIREN-SIRET / montant /
+carte / jeton, miettes bornées et réduites au transport. Preuve : `telemetry-scrubbing.test.ts`,
+`sentry-reporter.test.ts`, `crash-reporter.test.ts`.
+
+⚠️ **Reste à faire hors de cette matrice** : inscrire Sentry dans `docs/compliance/sous-traitants.md`
+(sous-traitant, région UE, DPA à signer) — non fait ici, fichier en cours de modification sur une
+autre lane.
 
 ---
 
@@ -265,6 +283,8 @@ Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeu
     { "name": "MISTRAL_REALTIME_TARGET_DELAY_MS", "v1Value": 240, "scope": "api", "enforcement": "default" },
     { "name": "FISCAL_PUBLICODES_SIMULATIONS_ENABLED", "v1Value": "false", "scope": "api", "enforcement": "default" },
     { "name": "FISCAL_PUBLICODES_MAX_CONCURRENCY", "v1Value": 4, "scope": "api", "enforcement": "default" },
+    { "name": "SENTRY_TRACES_SAMPLE_RATE", "v1Value": 0, "scope": "api", "enforcement": "default" },
+    { "name": "VOICE_TRACE_ENABLED", "v1Value": "false", "scope": "api", "enforcement": "default" },
     { "name": "SUPABASE_STORAGE_BUCKET", "v1Value": "bob-documents", "scope": "api", "enforcement": "default" },
     { "name": "SUPABASE_REALTIME_AUDIO_BUCKET", "v1Value": "bob-live-audio", "scope": "api", "enforcement": "default" },
     { "name": "CABINET_INVITATION_WORKER_ENABLED", "v1Value": "false", "scope": "api", "enforcement": "default" },

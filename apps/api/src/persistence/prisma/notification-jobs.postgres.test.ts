@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -13,6 +13,14 @@ import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_OUTBOX_CERT === 'true';
 const WORKER_COUNT = 8;
+const HISTORICAL_OUTBOX_RLS = `
+  ALTER TABLE notification_jobs ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE notification_jobs FORCE ROW LEVEL SECURITY;
+  DROP POLICY IF EXISTS tenant_isolation ON notification_jobs;
+  CREATE POLICY tenant_isolation ON notification_jobs
+    USING ("companyId" = current_setting('app.current_company_id', true))
+    WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+`;
 
 interface Deferred {
   promise: Promise<void>;
@@ -276,33 +284,17 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Notification outbox — certification Postg
            '{"channel":"email","to":"cutover@example.test","subject":"Cutover","body":"Créé pendant expand"}'::jsonb,
            'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
       `], { stdio: 'pipe' });
-      // Le cutover n'est pas déployé dans un musée du schéma 2026-07-13 : en production,
-      // toutes les migrations suivantes sont appliquées avant le RLS courant. Rejouer la suite
-      // exacte protège l'upgrade outbox contre chaque évolution additive du monorepo et évite
-      // qu'un nouveau tableau rende artificiellement le harnais rouge.
-      const laterMigrations = readdirSync(migrationRoot, { withFileTypes: true })
-        .filter((entry) =>
-          entry.isDirectory()
-          && entry.name > '20260713043000_notification_job_lease_token')
-        .map((entry) => entry.name)
-        .sort();
-      for (const migration of laterMigrations) {
-        execFileSync('psql', [
-          upgradeUrl.toString(),
-          '-X',
-          '-v',
-          'ON_ERROR_STOP=1',
-          '-f',
-          resolve(migrationRoot, migration, 'migration.sql'),
-        ], { stdio: 'pipe' });
-      }
+      // Cette base représente strictement N-1 : les tables ajoutées après l'outbox n'y existent
+      // volontairement pas. Rejouer le rls.sql courant couplerait ce test historique au schéma N
+      // et le ferait casser à chaque nouvelle table. On réinstalle donc uniquement la policy
+      // notification_jobs qui protégeait N-1, avant de tester le vrai cutover v2.
       execFileSync('psql', [
         upgradeUrl.toString(),
         '-X',
         '-v',
         'ON_ERROR_STOP=1',
-        '-f',
-        resolve(process.cwd(), 'prisma/rls.sql'),
+        '-c',
+        HISTORICAL_OUTBOX_RLS,
       ], { stdio: 'pipe' });
       execFileSync('sh', [resolve(process.cwd(), 'scripts/activate-notification-outbox-v2.sh')], {
         env: { ...process.env, DIRECT_URL: upgradeUrl.toString() },

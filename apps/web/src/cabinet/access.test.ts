@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { canEditCabinetMemberRole, isLocalCabinetAccess } from './access';
+import { canDeleteCabinetDossier, canEditCabinetMemberRole, type CabinetAccessContext } from './access';
 
 describe('politiques d’accès du web cabinet', () => {
-  it('réserve le prototype persistant au mode local explicite', () => {
-    expect(isLocalCabinetAccess({ mode: 'local' })).toBe(true);
-    expect(isLocalCabinetAccess({
+  it('exige un transport distant pour chaque donnée métier du cabinet', () => {
+    const access: CabinetAccessContext = {
       mode: 'authenticated',
       cabinets: [],
       selectedCabinet: { id: 'cabinet-1', name: 'Cabinet Martin', role: 'admin' },
+      dossiers: {
+        listDossiers: async () => ({ items: [], nextCursor: null, hasMore: false }),
+        getDossier: async () => { throw new Error('not found'); },
+        saveDossier: async () => { throw new Error('not configured'); },
+        deleteDossier: async () => undefined,
+      },
       team: {
         listMembers: async () => ({ items: [], nextCursor: null, hasMore: false }),
         listInvitations: async () => ({ items: [], nextCursor: null, hasMore: false }),
@@ -18,7 +23,10 @@ describe('politiques d’accès du web cabinet', () => {
       userEmail: 'admin@cabinet.fr',
       onSelectCabinet: () => undefined,
       onSignOut: () => undefined,
-    })).toBe(false);
+    };
+
+    expect(access.mode).toBe('authenticated');
+    expect(access.dossiers.listDossiers).toBeTypeOf('function');
   });
 
   it('interdit tout changement de rôle sur un membre suspendu ou révoqué', () => {
@@ -26,5 +34,11 @@ describe('politiques d’accès du web cabinet', () => {
     expect(canEditCabinetMemberRole('admin', 'suspended')).toBe(false);
     expect(canEditCabinetMemberRole('admin', 'revoked')).toBe(false);
     expect(canEditCabinetMemberRole('manager', 'active')).toBe(false);
+  });
+
+  it('réserve la suppression définitive d’un dossier aux administrateurs', () => {
+    expect(canDeleteCabinetDossier('admin')).toBe(true);
+    expect(canDeleteCabinetDossier('manager')).toBe(false);
+    expect(canDeleteCabinetDossier('collaborator')).toBe(false);
   });
 });

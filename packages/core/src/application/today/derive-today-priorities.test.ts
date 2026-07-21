@@ -68,8 +68,8 @@ function invoiceFixture(
 }
 
 const CUSTOMERS: TodayCustomerData[] = [
-  { id: 'cust-1', name: 'M. Martin' },
-  { id: 'cust-2', name: 'Durand SARL' },
+  { id: 'cust-1', name: 'M. Martin', email: 'martin@example.fr' },
+  { id: 'cust-2', name: 'Durand SARL', email: 'compta@durand.fr' },
 ];
 
 function derive(partial: Partial<DeriveTodayPrioritiesInput>) {
@@ -393,6 +393,94 @@ describe('deriveTodayPriorities', () => {
     expect(
       derive({ invoices: [depositPaid], quotes: [{ ...signedQuote, status: 'sent' }] }),
     ).toEqual([]);
+  });
+
+  // ── Devis à transmettre (cas terrain fondateur 2026-07-20) ────────────────────
+  //
+  // Le serveur répond `deliveryStatus: 'skipped'` quand le client n'a PAS d'e-mail : le devis
+  // passe quand même `sent` (le numéro légal est alloué, art. A1 — la machine à états ne bouge
+  // pas), mais personne ne l'a reçu. La priorité se DÉRIVE de cet état, sans nouveau statut.
+  describe('devis à transmettre', () => {
+    const sentQuote: TodayQuoteData = {
+      id: 'quote-tel',
+      customerId: 'cust-3',
+      status: 'sent',
+      number: 'D-2026-0007',
+      totals: totalsOf(240000),
+    };
+    /** Client dont SEUL le téléphone est connu : e-mail explicitement absent (null). */
+    const phoneOnly: TodayCustomerData = { id: 'cust-3', name: 'Mme Leroy', email: null };
+
+    it('signale un devis envoyé dont le client n’a pas d’e-mail (montant TTC en jeu)', () => {
+      expect(derive({ quotes: [sentQuote], customers: [phoneOnly] })).toEqual([
+        {
+          kind: 'devis_a_transmettre',
+          id: 'devis-a-transmettre-quote-tel',
+          quoteId: 'quote-tel',
+          customerId: 'cust-3',
+          customerName: 'Mme Leroy',
+          docNumber: 'D-2026-0007',
+          amountCents: 240000,
+        },
+      ]);
+    });
+
+    it('ne se déclenche pas si le client a une adresse e-mail (l’envoi a bien eu lieu)', () => {
+      expect(
+        derive({
+          quotes: [{ ...sentQuote, customerId: 'cust-1' }],
+          customers: CUSTOMERS,
+        }),
+      ).toEqual([]);
+    });
+
+    it('ne se déclenche pas sur un e-mail vide ou seulement des espaces — mais bien sur null', () => {
+      expect(
+        derive({ quotes: [sentQuote], customers: [{ ...phoneOnly, email: '   ' }] }),
+      ).toHaveLength(1);
+      expect(derive({ quotes: [sentQuote], customers: [{ ...phoneOnly, email: '' }] })).toHaveLength(
+        1,
+      );
+      expect(
+        derive({ quotes: [sentQuote], customers: [{ ...phoneOnly, email: ' a@b.fr ' }] }),
+      ).toEqual([]);
+    });
+
+    it('fail-closed : e-mail NON FOURNI par l’appelant (undefined) = inconnu, aucune priorité', () => {
+      expect(derive({ quotes: [sentQuote], customers: [{ id: 'cust-3', name: 'Mme Leroy' }] })).toEqual(
+        [],
+      );
+    });
+
+    it('disparaît dès que le devis a été vu, signé, refusé ou expiré — et n’existe pas en brouillon', () => {
+      for (const status of ['draft', 'viewed', 'signed', 'refused', 'expired'] as const) {
+        expect(
+          derive({ quotes: [{ ...sentQuote, status }], customers: [phoneOnly] }),
+        ).toEqual([]);
+      }
+    });
+
+    it('n’invente aucun client pour un devis orphelin', () => {
+      expect(derive({ quotes: [sentQuote], customers: [] })).toEqual([]);
+    });
+
+    it('trie par montant décroissant et passe après relances et factures finales, avant la conformité', () => {
+      const priorities = derive({
+        invoices: [invoiceFixture({ id: 'inv-late' })],
+        quotes: [
+          { ...sentQuote, id: 'quote-small', number: 'D-2026-0008', totals: totalsOf(50000) },
+          sentQuote,
+        ],
+        customers: [...CUSTOMERS, phoneOnly],
+        company: { einvoiceReceptionConfigured: false },
+      });
+      expect(priorities.map((p) => p.id)).toEqual([
+        'relance-inv-late',
+        'devis-a-transmettre-quote-tel', // 2 400 € avant 500 €
+        'devis-a-transmettre-quote-small',
+        'conformite-einvoice-2026',
+      ]);
+    });
   });
 
   it('conformité : uniquement sur signal réel non configuré, une seule fois', () => {

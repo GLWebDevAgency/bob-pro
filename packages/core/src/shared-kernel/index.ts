@@ -9,3 +9,4 @@ export * from './aggregate';
 export * from './latin9';
 export * from './sha256';
 export * from './french-vat-id';
+export * from './control-characters';
