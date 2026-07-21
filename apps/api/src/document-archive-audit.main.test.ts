@@ -4,9 +4,76 @@ import {
   buildExternalValidatorEnvironment,
   buildProtocolV2VerifiedReport,
   buildValidatorSandboxArguments,
+  finalizeArchiveAuditRun,
   parseArchiveAuditRuntimeConfig,
   SupabaseArchiveAuditStorage,
 } from './document-archive-audit.main';
+
+describe('finalizeArchiveAuditRun', () => {
+  it('publie seulement après la fin du travail et la libération de toutes les ressources', async () => {
+    const events: string[] = [];
+
+    const outcome = await finalizeArchiveAuditRun({
+      work: async () => {
+        events.push('work');
+        return { ready: true };
+      },
+      cleanup: async () => {
+        events.push('cleanup');
+      },
+      publish: () => {
+        events.push('publish');
+      },
+    });
+
+    expect(outcome).toEqual({ ready: true });
+    expect(events).toEqual(['work', 'cleanup', 'publish']);
+  });
+
+  it('ne publie pas quand la libération échoue après un travail committé', async () => {
+    const events: string[] = [];
+    const cleanupError = new Error('disconnect failed');
+
+    await expect(
+      finalizeArchiveAuditRun({
+        work: async () => {
+          events.push('work');
+          return { ready: true };
+        },
+        cleanup: async () => {
+          events.push('cleanup');
+          throw cleanupError;
+        },
+        publish: () => {
+          events.push('publish');
+        },
+      }),
+    ).rejects.toBe(cleanupError);
+    expect(events).toEqual(['work', 'cleanup']);
+  });
+
+  it('préserve l’erreur métier initiale tout en tentant toujours le nettoyage', async () => {
+    const workError = new Error('audit failed');
+    const events: string[] = [];
+
+    await expect(
+      finalizeArchiveAuditRun({
+        work: async () => {
+          events.push('work');
+          throw workError;
+        },
+        cleanup: async () => {
+          events.push('cleanup');
+          throw new Error('disconnect failed too');
+        },
+        publish: () => {
+          events.push('publish');
+        },
+      }),
+    ).rejects.toBe(workError);
+    expect(events).toEqual(['work', 'cleanup']);
+  });
+});
 
 function protocolV2ByteAudit() {
   return {

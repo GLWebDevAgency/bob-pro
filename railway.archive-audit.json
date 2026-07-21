@@ -5,11 +5,14 @@
     "dockerfilePath": "Dockerfile.archive-audit"
   },
   "deploy": {
+    "preDeployCommand": null,
     "startCommand": "/usr/local/bin/bob-archive-audit-entrypoint",
+    "cronSchedule": null,
+    "sleepApplication": false,
     "healthcheckPath": null,
     "healthcheckTimeout": null,
     "numReplicas": 1,
-    "drainingSeconds": 0,
+    "drainingSeconds": 30,
     "overlapSeconds": 0,
     "restartPolicyType": "NEVER",
     "restartPolicyMaxRetries": null,

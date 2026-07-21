@@ -40,8 +40,12 @@ on:
         value: ${{ jobs.release-api.outputs.release_environment }}
 jobs:
   release-api:
+    # GitHub cancels a normal run step after roughly ten seconds. Keep the job alive so the
+    # cancellation-specific cleanup step below can reconcile an archive deployment whose creation
+    # response was lost; all ordinary unfinished steps still retain their implicit success() guard.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     # Map the free-form workflow_call input before GitHub resolves environment
     # secrets. The validation step below still fails closed for unsupported
     # values, while an invalid caller can never select an arbitrary environment.
@@ -54,6 +58,8 @@ jobs:
       release_sha: ${{ steps.readiness.outputs.release_sha }}
       release_environment: ${{ steps.readiness.outputs.release_environment }}
     steps:
+      - name: Capture the release job time budget
+        run: echo "BOB_RELEASE_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
@@ -231,19 +237,51 @@ jobs:
           echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
           echo "release_sha=$EXPECTED_RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "release_environment=$EXPECTED_RELEASE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
+      - name: Reserve the archive audit and cleanup time budget
+        if: ${{ success() && !cancelled() }}
+        env:
+          RELEASE_JOB_STARTED_AT: ${{ env.BOB_RELEASE_JOB_STARTED_AT }}
+        run: |
+          node <<'NODE'
+          const startedAt = Number(process.env.RELEASE_JOB_STARTED_AT);
+          const now = Math.floor(Date.now() / 1_000);
+          const elapsedSeconds = now - startedAt;
+          if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0) {
+            throw new Error('Release job time budget is invalid');
+          }
+          if (elapsedSeconds > 10_800) {
+            throw new Error('Refusing to start the archive audit without its cleanup time budget');
+          }
+          NODE
       - name: Preflight and run the isolated Railway archive byte-audit
+        id: archive_audit
+        if: ${{ success() && !cancelled() }}
+        timeout-minutes: 100
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
           RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
           RELEASE_SHA: ${{ github.sha }}
           DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.release-evidence/document-archive/audit-${{ github.sha }}.json
-          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: "5400"
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
           # Railway's public API is quota-bound; the runner rejects any cadence below 10 s.
-          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: "10"
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
         run: node apps/api/scripts/run-railway-document-archive-audit.mjs
+      - name: Reconcile an interrupted Railway archive audit
+        if: ${{ always() && (steps.archive_audit.outcome == 'failure' || steps.archive_audit.outcome == 'cancelled') }}
+        timeout-minutes: 4
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          RELEASE_SHA: ${{ github.sha }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.release-evidence/document-archive/audit-${{ github.sha }}.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: node apps/api/scripts/run-railway-document-archive-audit.mjs --cleanup-only
       - name: Preserve the non-PII archive audit envelope
         if: always()
+        timeout-minutes: 10
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: document-archive-${{ inputs.environment }}-${{ github.sha }}
@@ -251,6 +289,8 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Retire the previous Mistral key, activate archive/settlement/outbox v2 and certify the contract
+        if: ${{ success() && steps.archive_audit.outcome == 'success' }}
+        timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}

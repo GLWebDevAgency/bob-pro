@@ -1503,79 +1503,129 @@ export function buildArchiveAuditSafeEnvelope(input: {
   };
 }
 
+export async function finalizeArchiveAuditRun<T>(input: {
+  work: () => Promise<T>;
+  cleanup: () => Promise<void>;
+  publish: (outcome: T) => void;
+}): Promise<T> {
+  let outcome: T | undefined;
+  let workFailed = false;
+  let workFailure: unknown;
+  try {
+    outcome = await input.work();
+  } catch (error) {
+    workFailed = true;
+    workFailure = error;
+  }
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  try {
+    await input.cleanup();
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupFailure = error;
+  }
+  if (workFailed) throw workFailure;
+  if (cleanupFailed) throw cleanupFailure;
+  input.publish(outcome as T);
+  return outcome as T;
+}
+
 export async function runDocumentArchiveAudit(environment: NodeJS.ProcessEnv): Promise<number> {
   const config = parseArchiveAuditRuntimeConfig(environment);
   const authority = prismaFor(config.directUrl);
   const runtime = prismaFor(config.databaseUrl);
   const lease = prismaFor(config.directUrl);
-  try {
-    const repository = new PrismaArchivePreactivationRepository(
-      authority,
-      runtime,
-      lease,
-      config.bucket,
-    );
-    return await repository.withExclusiveAuditLease(async () => {
-      const protocolIdentity = await repository.assertAuthorities(config.applyAttestations);
-      const auditedAt = await repository.databaseNow();
-      const storage = new SupabaseArchiveAuditStorage(
-        config.supabaseUrl,
-        config.supabaseServiceRoleKey,
-        config.bucket,
-        config.maxObjectBytes,
-      );
-      const externalValidator = new PinnedFacturXExternalValidator(
-        resolve(__dirname, '../../..'),
-        config.mustangJarPath,
-        config.fnfeBundlePath,
-        config.validatorSandboxPath,
-      );
-      const byteAudit = await auditDocumentArchivePreactivation({
-        repository,
-        storage,
-        inspectInvoicePdf: inspectInvoicePdfRepresentation,
-        validateProfessionalFacturX: (pair) => externalValidator.validate(pair),
-        // Après le cutover, la capacité historique reste définitivement retirée. Une attestation
-        // absente est un P0 et ne doit jamais provoquer une tentative d’écriture tardive.
-        applyAttestations: protocolIdentity.activeVersion === 1 ? config.applyAttestations : false,
-        auditedAt,
-        releaseSha: config.releaseSha,
-        storageBucket: config.bucket,
-      });
-      let report: ArchivePreactivationAuditReport;
-      if (protocolIdentity.activeVersion === 2) {
-        report = await repository.verifyActiveProtocolV2({
-          byteAudit,
+  const repository = new PrismaArchivePreactivationRepository(
+    authority,
+    runtime,
+    lease,
+    config.bucket,
+  );
+  const outcome = await finalizeArchiveAuditRun({
+    work: () =>
+      repository.withExclusiveAuditLease(async () => {
+        const protocolIdentity = await repository.assertAuthorities(config.applyAttestations);
+        const auditedAt = await repository.databaseNow();
+        const storage = new SupabaseArchiveAuditStorage(
+          config.supabaseUrl,
+          config.supabaseServiceRoleKey,
+          config.bucket,
+          config.maxObjectBytes,
+        );
+        const externalValidator = new PinnedFacturXExternalValidator(
+          resolve(__dirname, '../../..'),
+          config.mustangJarPath,
+          config.fnfeBundlePath,
+          config.validatorSandboxPath,
+        );
+        const byteAudit = await auditDocumentArchivePreactivation({
+          repository,
+          storage,
+          inspectInvoicePdf: inspectInvoicePdfRepresentation,
+          validateProfessionalFacturX: (pair) => externalValidator.validate(pair),
+          // Après le cutover, la capacité historique reste définitivement retirée. Une attestation
+          // absente est un P0 et ne doit jamais provoquer une tentative d’écriture tardive.
+          applyAttestations:
+            protocolIdentity.activeVersion === 1 ? config.applyAttestations : false,
           auditedAt,
           releaseSha: config.releaseSha,
           storageBucket: config.bucket,
         });
-      } else {
-        report = byteAudit;
+        let report: ArchivePreactivationAuditReport;
+        if (protocolIdentity.activeVersion === 2) {
+          report = await repository.verifyActiveProtocolV2({
+            byteAudit,
+            auditedAt,
+            releaseSha: config.releaseSha,
+            storageBucket: config.bucket,
+          });
+        } else {
+          report = byteAudit;
+        }
+        const validatorEvidenceSeed = externalValidator.evidenceDigest(report.inventoryDigest);
+        const evidence = await writeImmutableReport(config.outputPath, report);
+        const envelope = buildArchiveAuditSafeEnvelope({
+          deploymentId: config.deploymentId,
+          report,
+          reportSha256: evidence.sha256,
+          validatorEvidenceSeed,
+        });
+        await repository.persistEvidence({
+          databaseIdentity: protocolIdentity.databaseIdentity,
+          storageBucket: report.storageBucket,
+          envelope,
+          report,
+          auditedAt: report.auditedAt,
+        });
+        return {
+          envelope,
+          exitCode: report.readyForActivation ? (0 as const) : (2 as const),
+        };
+      }),
+    cleanup: async () => {
+      const disconnectResults = await Promise.allSettled([
+        authority.$disconnect(),
+        runtime.$disconnect(),
+        lease.$disconnect(),
+      ]);
+      const disconnectFailures = disconnectResults.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (disconnectFailures.length > 0) {
+        throw new AggregateError(
+          disconnectFailures,
+          'La preuve Archive est committée mais les connexions PostgreSQL ne sont pas toutes libérées.',
+        );
       }
-      const validatorEvidenceSeed = externalValidator.evidenceDigest(report.inventoryDigest);
-      const evidence = await writeImmutableReport(config.outputPath, report);
-      const envelope = buildArchiveAuditSafeEnvelope({
-        deploymentId: config.deploymentId,
-        report,
-        reportSha256: evidence.sha256,
-        validatorEvidenceSeed,
-      });
-      await repository.persistEvidence({
-        databaseIdentity: protocolIdentity.databaseIdentity,
-        storageBucket: report.storageBucket,
-        envelope,
-        report,
-        auditedAt: report.auditedAt,
-      });
+    },
+    publish: ({ envelope }) => {
       process.stdout.write(
         `BOB_DOCUMENT_ARCHIVE_AUDIT_EVIDENCE=${Buffer.from(JSON.stringify(envelope), 'utf8').toString('base64url')}\n`,
       );
-      return report.readyForActivation ? 0 : 2;
-    });
-  } finally {
-    await Promise.allSettled([authority.$disconnect(), runtime.$disconnect(), lease.$disconnect()]);
-  }
+    },
+  });
+  return outcome.exitCode;
 }
 
 if (require.main === module) {

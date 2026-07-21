@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,8 +14,49 @@ const MAX_GRAPHQL_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
 const MAX_ISSUE_CODES = 128;
 const MAX_RETRY_AFTER_MILLISECONDS = 60_000;
+const DEPLOYMENT_SNAPSHOT_PAGE_SIZE = 100;
+const MAX_DEPLOYMENT_SNAPSHOT_PAGES = 20;
+const AMBIGUOUS_RECONCILIATION_INTERVAL_MILLISECONDS = 10_000;
+const MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS = 7;
+const MAX_AMBIGUOUS_RECONCILIATION_SNAPSHOTS = 8;
+const REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS = 2;
 const EXPECTED_RAILWAY_CONFIG_FILE = '/railway.archive-audit.json';
 const EXPECTED_START_COMMAND = '/usr/local/bin/bob-archive-audit-entrypoint';
+const EXPECTED_DOCKERFILE_PATH = 'Dockerfile.archive-audit';
+const EXPECTED_DRAINING_SECONDS = 30;
+const ACTIVE_DEPLOYMENT_STATUSES = new Set([
+  'BUILDING',
+  'DEPLOYING',
+  'INITIALIZING',
+  'NEEDS_APPROVAL',
+  'QUEUED',
+  'REMOVING',
+  'SLEEPING',
+  'WAITING',
+]);
+const DEPLOYMENT_STATUSES = new Set([
+  ...ACTIVE_DEPLOYMENT_STATUSES,
+  'CRASHED',
+  'FAILED',
+  'REMOVED',
+  'SKIPPED',
+  'SUCCESS',
+]);
+const ACTIVE_DEPLOYMENT_INSTANCE_STATUSES = new Set([
+  'CREATED',
+  'INITIALIZING',
+  'RESTARTING',
+  'RUNNING',
+]);
+const DEPLOYMENT_INSTANCE_STATUSES = new Set([
+  ...ACTIVE_DEPLOYMENT_INSTANCE_STATUSES,
+  'CRASHED',
+  'EXITED',
+  'REMOVED',
+  'REMOVING',
+  'SKIPPED',
+  'STOPPED',
+]);
 const ALLOWED_ISSUE_CODES = new Set([
   'ARCHIVE_ATTESTATION_WRITE_OUTSIDE_V1',
   'ARCHIVE_PREACTIVATION_SCAN_RACE_DETECTED',
@@ -77,9 +118,8 @@ const TERMINAL_FAILURES = new Set([
   'SLEEPING',
   'WAITING',
 ]);
-const TERMINAL_SUCCESSES = new Set(['COMPLETED', 'SUCCESS']);
+const TERMINAL_SUCCESSES = new Set(['SUCCESS']);
 const CLEANUP_NOT_NEEDED_STATUSES = new Set([
-  'COMPLETED',
   'FAILED',
   'CRASHED',
   'REMOVED',
@@ -415,10 +455,7 @@ async function graphql(
         },
         body: JSON.stringify({ query, variables }),
         redirect: 'error',
-        signal: combinedRequestSignal(
-          requestTimeoutSignal(30_000),
-          cancellationSignal,
-        ),
+        signal: combinedRequestSignal(requestTimeoutSignal(30_000), cancellationSignal),
       });
       throwIfCancelled(cancellationSignal);
       if (!response || typeof response.status !== 'number' || typeof response.text !== 'function') {
@@ -520,7 +557,7 @@ async function waitForNextPoll(sleep, now, deadline, pollMilliseconds) {
   return true;
 }
 
-function certifyArchiveAuditServiceInstance(value, config) {
+function certifyArchiveAuditServiceInstance(value, autoDeployValue, config) {
   const serviceInstance = object(value);
   if (
     serviceInstance === null ||
@@ -539,20 +576,186 @@ function certifyArchiveAuditServiceInstance(value, config) {
   if (serviceInstance.builder !== 'DOCKERFILE') {
     violations.push(`builder=${String(serviceInstance.builder)}`);
   }
+  if (serviceInstance.dockerfilePath !== EXPECTED_DOCKERFILE_PATH) {
+    violations.push(`dockerfilePath=${String(serviceInstance.dockerfilePath)}`);
+  }
+  if (serviceInstance.preDeployCommand !== null) {
+    violations.push('preDeployCommand=present');
+  }
+  if (serviceInstance.cronSchedule !== null) {
+    violations.push('cronSchedule=present');
+  }
+  if (serviceInstance.sleepApplication !== false) {
+    violations.push(`sleepApplication=${String(serviceInstance.sleepApplication)}`);
+  }
   if (serviceInstance.healthcheckPath !== null) {
     violations.push(`healthcheckPath=${String(serviceInstance.healthcheckPath)}`);
+  }
+  if (serviceInstance.healthcheckTimeout !== null) {
+    violations.push(`healthcheckTimeout=${String(serviceInstance.healthcheckTimeout)}`);
   }
   if (serviceInstance.numReplicas !== 1) {
     violations.push(`numReplicas=${String(serviceInstance.numReplicas)}`);
   }
+  if (serviceInstance.drainingSeconds !== EXPECTED_DRAINING_SECONDS) {
+    violations.push(`drainingSeconds=${String(serviceInstance.drainingSeconds)}`);
+  }
+  if (serviceInstance.overlapSeconds !== 0) {
+    violations.push(`overlapSeconds=${String(serviceInstance.overlapSeconds)}`);
+  }
   if (serviceInstance.restartPolicyType !== 'NEVER') {
     violations.push(`restartPolicyType=${String(serviceInstance.restartPolicyType)}`);
+  }
+  // Config-as-Code keeps this source field null with NEVER, while Railway's live GraphQL schema
+  // exposes the resolved value as Int!. Accept that resolved non-negative integer, never null.
+  if (
+    !Number.isSafeInteger(serviceInstance.restartPolicyMaxRetries) ||
+    serviceInstance.restartPolicyMaxRetries < 0
+  ) {
+    violations.push(`restartPolicyMaxRetries=${String(serviceInstance.restartPolicyMaxRetries)}`);
+  }
+  const autoDeployStatus = object(autoDeployValue);
+  if (autoDeployStatus === null || autoDeployStatus.enabled !== false) {
+    violations.push(`autoDeployEnabled=${String(autoDeployStatus?.enabled)}`);
   }
   if (violations.length > 0) {
     throw new Error(
       `Railway archive audit service configuration drifted: ${violations.join(', ')}.`,
     );
   }
+}
+
+function deploymentCommitHash(metaValue) {
+  const meta = object(metaValue);
+  const commitHash = meta?.commitHash;
+  return typeof commitHash === 'string' && SHA.test(commitHash) ? commitHash : null;
+}
+
+function parseDeploymentSnapshotPage(value, config, projectId) {
+  const connection = object(value);
+  const pageInfo = object(connection?.pageInfo);
+  if (
+    connection === null ||
+    !Array.isArray(connection.edges) ||
+    pageInfo === null ||
+    typeof pageInfo.hasNextPage !== 'boolean' ||
+    !(
+      pageInfo.endCursor === null ||
+      (typeof pageInfo.endCursor === 'string' && pageInfo.endCursor.length > 0)
+    ) ||
+    (pageInfo.hasNextPage && pageInfo.endCursor === null)
+  ) {
+    throw new Error('Railway returned an invalid deployment snapshot envelope.');
+  }
+
+  const deployments = [];
+  for (const edgeValue of connection.edges) {
+    const edge = object(edgeValue);
+    const deployment = object(edge?.node);
+    if (
+      deployment === null ||
+      !UUID.test(deployment.id ?? '') ||
+      deployment.projectId !== projectId ||
+      deployment.serviceId !== config.serviceId ||
+      deployment.environmentId !== config.environmentId ||
+      typeof deployment.status !== 'string' ||
+      !DEPLOYMENT_STATUSES.has(deployment.status) ||
+      typeof deployment.deploymentStopped !== 'boolean' ||
+      !Array.isArray(deployment.instances)
+    ) {
+      throw new Error('Railway returned an invalid or cross-scoped deployment snapshot.');
+    }
+    const instanceStatuses = deployment.instances.map((instanceValue) => {
+      const instance = object(instanceValue);
+      if (
+        instance === null ||
+        !UUID.test(instance.id ?? '') ||
+        typeof instance.status !== 'string' ||
+        !DEPLOYMENT_INSTANCE_STATUSES.has(instance.status)
+      ) {
+        throw new Error('Railway returned an invalid deployment instance snapshot.');
+      }
+      return instance.status;
+    });
+    const hasActiveInstance = instanceStatuses.some((status) =>
+      ACTIVE_DEPLOYMENT_INSTANCE_STATUSES.has(status),
+    );
+    if (deployment.deploymentStopped && hasActiveInstance) {
+      throw new Error('Railway returned a contradictory stopped deployment snapshot.');
+    }
+    deployments.push({
+      id: deployment.id,
+      status: deployment.status,
+      commitHash: deploymentCommitHash(deployment.meta),
+      active: !deployment.deploymentStopped,
+    });
+  }
+
+  return {
+    deployments,
+    hasNextPage: pageInfo.hasNextPage,
+    endCursor: pageInfo.endCursor,
+  };
+}
+
+async function readDeploymentSnapshot(config, projectId, graphqlDependencies) {
+  const deployments = new Map();
+  let after = null;
+  for (let page = 0; page < MAX_DEPLOYMENT_SNAPSHOT_PAGES; page += 1) {
+    const snapshotData = await graphql(
+      config.token,
+      `
+        query ArchiveAuditDeploymentsSnapshot(
+          $input: DeploymentListInput!
+          $first: Int!
+          $after: String
+        ) {
+          deployments(input: $input, first: $first, after: $after) {
+            edges {
+              node {
+                id
+                projectId
+                serviceId
+                environmentId
+                status
+                meta
+                deploymentStopped
+                instances {
+                  id
+                  status
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      `,
+      {
+        input: {
+          projectId,
+          serviceId: config.serviceId,
+          environmentId: config.environmentId,
+          includeDeleted: true,
+        },
+        first: DEPLOYMENT_SNAPSHOT_PAGE_SIZE,
+        after,
+      },
+      { ...graphqlDependencies, attempts: 3 },
+    );
+    const parsed = parseDeploymentSnapshotPage(snapshotData?.deployments, config, projectId);
+    for (const deployment of parsed.deployments) {
+      if (deployments.has(deployment.id)) {
+        throw new Error('Railway returned a duplicate deployment in its paginated snapshot.');
+      }
+      deployments.set(deployment.id, deployment);
+    }
+    if (!parsed.hasNextPage) return deployments;
+    after = parsed.endCursor;
+  }
+  throw new Error('Railway deployment snapshot exceeded its bounded pagination limit.');
 }
 
 async function readDeploymentEvidence(config, deploymentId, graphqlDependencies) {
@@ -586,11 +789,19 @@ async function persistEvidence(outputPath, evidence) {
   });
 }
 
-async function persistEvidenceUnlessCancelled(
-  outputPath,
-  evidence,
-  cancellationSignal,
-) {
+async function assertEvidenceOutputDoesNotExist(outputPath) {
+  try {
+    await access(outputPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  const error = new Error('Archive audit evidence output already exists.');
+  error.code = 'EEXIST';
+  throw error;
+}
+
+async function persistEvidenceUnlessCancelled(outputPath, evidence, cancellationSignal) {
   throwIfCancelled(cancellationSignal);
   await persistEvidence(outputPath, evidence);
   if (cancellationSignal?.aborted) {
@@ -628,6 +839,242 @@ async function cleanupDeploymentBestEffort(config, deploymentId, status, graphql
   }
 }
 
+async function reconcileAmbiguousDeployment(
+  config,
+  projectId,
+  snapshotBeforeMutation,
+  graphqlDependencies,
+) {
+  const trackedDeployments = new Map();
+  const cleanupAttempted = new Set();
+  const foreignDeploymentIds = new Set();
+  let quiescentSnapshots = 0;
+
+  for (
+    let snapshotIndex = 0;
+    snapshotIndex < MAX_AMBIGUOUS_RECONCILIATION_SNAPSHOTS;
+    snapshotIndex += 1
+  ) {
+    if (snapshotIndex > 0) {
+      await sleepUntilOrCancellation(
+        graphqlDependencies.sleep,
+        AMBIGUOUS_RECONCILIATION_INTERVAL_MILLISECONDS,
+        graphqlDependencies.cancellationSignal,
+      );
+    }
+    const snapshotAfterMutation = await readDeploymentSnapshot(
+      config,
+      projectId,
+      graphqlDependencies,
+    );
+    const presentTrackedDeploymentIds = new Set();
+    let discoveredDeployment = false;
+
+    for (const deployment of snapshotAfterMutation.values()) {
+      if (snapshotBeforeMutation.has(deployment.id) || foreignDeploymentIds.has(deployment.id)) {
+        continue;
+      }
+      const alreadyTracked = trackedDeployments.has(deployment.id);
+      if (deployment.commitHash !== null && deployment.commitHash !== config.releaseSha) {
+        trackedDeployments.delete(deployment.id);
+        foreignDeploymentIds.add(deployment.id);
+        continue;
+      }
+      if (!alreadyTracked) discoveredDeployment = true;
+      trackedDeployments.set(deployment.id, deployment);
+      presentTrackedDeploymentIds.add(deployment.id);
+      if (
+        deployment.active &&
+        deployment.commitHash === config.releaseSha &&
+        !cleanupAttempted.has(deployment.id)
+      ) {
+        cleanupAttempted.add(deployment.id);
+        await cleanupDeploymentBestEffort(
+          config,
+          deployment.id,
+          deployment.status,
+          graphqlDependencies,
+        );
+      }
+    }
+
+    const unresolvedDeployment = [...trackedDeployments.values()].some(
+      (deployment) => deployment.active || !presentTrackedDeploymentIds.has(deployment.id),
+    );
+    quiescentSnapshots =
+      !discoveredDeployment && !unresolvedDeployment ? quiescentSnapshots + 1 : 0;
+    if (
+      snapshotIndex + 1 >= MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS &&
+      quiescentSnapshots >= REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS
+    ) {
+      return cleanupAttempted.size;
+    }
+  }
+  throw new Error(
+    'Railway ambiguous deployment reconciliation did not converge to an inactive stable state.',
+  );
+}
+
+async function preflightArchiveAuditService(config, graphqlDependencies) {
+  // A token scope mismatch must be discovered before any mutation: acting first could target a
+  // real service in another release lane before the runner fails closed.
+  const projectData = await graphql(
+    config.token,
+    'query ProjectToken { projectToken { projectId environmentId } }',
+    {},
+    { ...graphqlDependencies, attempts: 3 },
+  );
+  const projectId = projectData?.projectToken?.projectId;
+  if (
+    !UUID.test(projectId ?? '') ||
+    projectData?.projectToken?.environmentId !== config.environmentId
+  ) {
+    throw new Error('Railway project token is not scoped to the requested environment.');
+  }
+
+  const serviceInstanceData = await graphql(
+    config.token,
+    `
+      query ArchiveAuditServiceInstance(
+        $projectId: String!
+        $serviceId: String!
+        $environmentId: String!
+      ) {
+        serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
+          id
+          serviceId
+          environmentId
+          railwayConfigFile
+          startCommand
+          builder
+          dockerfilePath
+          preDeployCommand
+          cronSchedule
+          sleepApplication
+          healthcheckPath
+          healthcheckTimeout
+          numReplicas
+          drainingSeconds
+          overlapSeconds
+          restartPolicyType
+          restartPolicyMaxRetries
+        }
+        serviceInstanceAutoDeployStatus(
+          projectId: $projectId
+          serviceId: $serviceId
+          environmentId: $environmentId
+        ) {
+          enabled
+        }
+      }
+    `,
+    { projectId, serviceId: config.serviceId, environmentId: config.environmentId },
+    { ...graphqlDependencies, attempts: 3 },
+  );
+  certifyArchiveAuditServiceInstance(
+    serviceInstanceData?.serviceInstance,
+    serviceInstanceData?.serviceInstanceAutoDeployStatus,
+    config,
+  );
+  return projectId;
+}
+
+export async function cleanupRailwayDocumentArchiveAuditDeployments({
+  cancellationSignal,
+  environment = process.env,
+  fetchImpl = globalThis.fetch,
+  requestTimeoutSignal = (milliseconds) => AbortSignal.timeout(milliseconds),
+  sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
+  stdout = process.stdout,
+} = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required.');
+  if (typeof sleep !== 'function') throw new Error('A sleep implementation is required.');
+  if (typeof requestTimeoutSignal !== 'function') {
+    throw new Error('A request timeout signal factory is required.');
+  }
+  if (typeof stdout?.write !== 'function') throw new Error('A writable stdout is required.');
+  if (
+    cancellationSignal !== undefined &&
+    (typeof cancellationSignal?.aborted !== 'boolean' ||
+      typeof cancellationSignal?.addEventListener !== 'function')
+  ) {
+    throw new Error('A valid cancellation signal is required.');
+  }
+
+  const config = parseConfig(environment);
+  const graphqlDependencies = {
+    cancellationSignal,
+    fetchImpl,
+    requestTimeoutSignal,
+    sleep,
+  };
+  const projectId = await preflightArchiveAuditService(config, graphqlDependencies);
+  const trackedDeploymentIds = new Set();
+  const cleanupAttempted = new Set();
+  let quiescentSnapshots = 0;
+
+  for (
+    let snapshotIndex = 0;
+    snapshotIndex < MAX_AMBIGUOUS_RECONCILIATION_SNAPSHOTS;
+    snapshotIndex += 1
+  ) {
+    if (snapshotIndex > 0) {
+      await sleepUntilOrCancellation(
+        sleep,
+        AMBIGUOUS_RECONCILIATION_INTERVAL_MILLISECONDS,
+        cancellationSignal,
+      );
+    }
+    const snapshot = await readDeploymentSnapshot(config, projectId, graphqlDependencies);
+    const activeDeployments = [...snapshot.values()].filter((deployment) => deployment.active);
+    const unrelatedActiveDeployments = activeDeployments.filter(
+      (deployment) => deployment.commitHash !== null && deployment.commitHash !== config.releaseSha,
+    );
+    if (unrelatedActiveDeployments.length > 0) {
+      throw new Error(
+        `Railway archive audit cleanup found ${unrelatedActiveDeployments.length} active deployment(s) from another release.`,
+      );
+    }
+    const unidentifiedActiveDeployments = activeDeployments.filter(
+      (deployment) => deployment.commitHash === null,
+    );
+    const correlatedActiveDeployments = activeDeployments.filter(
+      (deployment) => deployment.commitHash === config.releaseSha,
+    );
+
+    for (const deployment of correlatedActiveDeployments) {
+      trackedDeploymentIds.add(deployment.id);
+      if (cleanupAttempted.has(deployment.id)) continue;
+      cleanupAttempted.add(deployment.id);
+      await cleanupDeploymentBestEffort(
+        config,
+        deployment.id,
+        deployment.status,
+        graphqlDependencies,
+      );
+    }
+
+    const trackedDeploymentIsUnresolved = [...trackedDeploymentIds].some((deploymentId) => {
+      const deployment = snapshot.get(deploymentId);
+      return deployment === undefined || deployment.active;
+    });
+    quiescentSnapshots =
+      trackedDeploymentIsUnresolved || unidentifiedActiveDeployments.length > 0
+        ? 0
+        : quiescentSnapshots + 1;
+    if (
+      snapshotIndex + 1 >= MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS &&
+      quiescentSnapshots >= REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS
+    ) {
+      const result = { cleanedDeploymentCount: cleanupAttempted.size };
+      stdout.write(JSON.stringify(result) + '\n');
+      return result;
+    }
+  }
+
+  throw new Error('Railway archive audit cleanup did not converge to an inactive stable state.');
+}
+
 export async function runRailwayDocumentArchiveAudit({
   cancellationSignal,
   environment = process.env,
@@ -654,6 +1101,7 @@ export async function runRailwayDocumentArchiveAudit({
   }
 
   const config = parseConfig(environment);
+  await assertEvidenceOutputDoesNotExist(config.outputPath);
   const graphqlDependencies = {
     cancellationSignal,
     fetchImpl,
@@ -661,43 +1109,21 @@ export async function runRailwayDocumentArchiveAudit({
     sleep,
   };
 
-  // A token scope mismatch must be discovered before the mutation: triggering first would
-  // create a real one-shot deployment in the wrong release lane before failing closed.
-  const projectData = await graphql(
-    config.token,
-    'query ProjectToken { projectToken { projectId environmentId } }',
-    {},
-    { ...graphqlDependencies, attempts: 3 },
-  );
-  const projectId = projectData?.projectToken?.projectId;
-  if (
-    !UUID.test(projectId ?? '') ||
-    projectData?.projectToken?.environmentId !== config.environmentId
-  ) {
-    throw new Error('Railway project token is not scoped to the requested environment.');
-  }
+  const projectId = await preflightArchiveAuditService(config, graphqlDependencies);
 
-  const serviceInstanceData = await graphql(
-    config.token,
-    `
-      query ArchiveAuditServiceInstance($serviceId: String!, $environmentId: String!) {
-        serviceInstance(serviceId: $serviceId, environmentId: $environmentId) {
-          id
-          serviceId
-          environmentId
-          railwayConfigFile
-          startCommand
-          builder
-          healthcheckPath
-          numReplicas
-          restartPolicyType
-        }
-      }
-    `,
-    { serviceId: config.serviceId, environmentId: config.environmentId },
-    { ...graphqlDependencies, attempts: 3 },
+  const snapshotBeforeMutation = await readDeploymentSnapshot(
+    config,
+    projectId,
+    graphqlDependencies,
   );
-  certifyArchiveAuditServiceInstance(serviceInstanceData?.serviceInstance, config);
+  const activeDeploymentCount = [...snapshotBeforeMutation.values()].filter(
+    (deployment) => deployment.active,
+  ).length;
+  if (activeDeploymentCount > 0) {
+    throw new Error(
+      `Railway archive audit service already has ${activeDeploymentCount} active deployment(s).`,
+    );
+  }
 
   throwIfCancelled(cancellationSignal);
   let deploymentId = null;
@@ -705,33 +1131,75 @@ export async function runRailwayDocumentArchiveAudit({
   try {
     // This mutation is deliberately never retried. Once started, it is not aborted on a process
     // signal: preserving its response is the only way to obtain the deployment id and stop the
-    // remote job. Cancellation is observed immediately before and after this bounded request.
-    const deployData = await graphql(
-      config.token,
-      `
-        mutation DeployArchiveAudit(
-          $serviceId: String!
-          $environmentId: String!
-          $commitSha: String!
-        ) {
-          serviceInstanceDeployV2(
-            serviceId: $serviceId
-            environmentId: $environmentId
-            commitSha: $commitSha
-          )
-        }
-      `,
-      {
-        serviceId: config.serviceId,
-        environmentId: config.environmentId,
-        commitSha: config.releaseSha,
-      },
-      { ...graphqlDependencies, cancellationSignal: undefined, attempts: 1 },
-    );
-    deploymentId = deployData?.serviceInstanceDeployV2;
-    if (!UUID.test(deploymentId ?? '')) {
-      throw new Error('Railway did not return a deployment UUID.');
+    // remote job. Cancellation is observed immediately before the request, then after any
+    // mandatory ambiguous-response reconciliation so a signal never abandons an unknown job.
+    let deployData;
+    let deployError = null;
+    try {
+      deployData = await graphql(
+        config.token,
+        `
+          mutation DeployArchiveAudit(
+            $serviceId: String!
+            $environmentId: String!
+            $commitSha: String!
+          ) {
+            serviceInstanceDeployV2(
+              serviceId: $serviceId
+              environmentId: $environmentId
+              commitSha: $commitSha
+            )
+          }
+        `,
+        {
+          serviceId: config.serviceId,
+          environmentId: config.environmentId,
+          commitSha: config.releaseSha,
+        },
+        { ...graphqlDependencies, cancellationSignal: undefined, attempts: 1 },
+      );
+    } catch (error) {
+      deployError = error;
     }
+    const returnedDeploymentId = deployData?.serviceInstanceDeployV2;
+    const returnedIdIsFresh =
+      UUID.test(returnedDeploymentId ?? '') && !snapshotBeforeMutation.has(returnedDeploymentId);
+    if (deployError !== null || !returnedIdIsFresh) {
+      let reconciledDeploymentCount;
+      let reconciliationError = null;
+      try {
+        reconciledDeploymentCount = await reconcileAmbiguousDeployment(
+          config,
+          projectId,
+          snapshotBeforeMutation,
+          { ...graphqlDependencies, cancellationSignal: undefined },
+        );
+      } catch (error) {
+        reconciliationError = error;
+      }
+      // A process signal wins only after the non-cancellable remote reconciliation has attempted
+      // to discover and stop every deployment that the lost mutation response may have created.
+      throwIfCancelled(cancellationSignal);
+      if (reconciliationError !== null) {
+        throw new Error(
+          'Railway deployment creation was ambiguous and its remote reconciliation failed.',
+          {
+            cause: new AggregateError(
+              [deployError, reconciliationError].filter((error) => error !== null),
+            ),
+          },
+        );
+      }
+      throw new Error(
+        `Railway deployment creation was ambiguous; cleanup was attempted for ${reconciledDeploymentCount} correlated deployment(s).`,
+        {
+          cause:
+            deployError ??
+            new Error('Railway returned an invalid or previously existing deployment UUID.'),
+        },
+      );
+    }
+    deploymentId = returnedDeploymentId;
     throwIfCancelled(cancellationSignal);
 
     const startedAt = now();
@@ -806,11 +1274,7 @@ export async function runRailwayDocumentArchiveAudit({
         const observed = await readDeploymentEvidence(config, deploymentId, graphqlDependencies);
         if (observed !== null) {
           if (observed.readyForActivation === false) {
-            await persistEvidenceUnlessCancelled(
-              config.outputPath,
-              observed,
-              cancellationSignal,
-            );
+            await persistEvidenceUnlessCancelled(config.outputPath, observed, cancellationSignal);
             stdout.write(
               JSON.stringify({
                 deploymentId,
@@ -824,9 +1288,9 @@ export async function runRailwayDocumentArchiveAudit({
           }
           evidence = observed;
           successfulMarkerObservations += 1;
-          // COMPLETED is definitive. SUCCESS is also emitted while a process is still alive, so
-          // observe the marker under SUCCESS twice to catch an immediate post-marker crash.
-          if (status === 'COMPLETED' || successfulMarkerObservations >= 2) {
+          // Railway exposes SUCCESS while the process can still be draining. Observe the marker
+          // twice to catch an immediate post-marker crash before accepting the one-shot result.
+          if (successfulMarkerObservations >= 2) {
             evidenceAccepted = true;
             break;
           }
@@ -840,12 +1304,15 @@ export async function runRailwayDocumentArchiveAudit({
       } else {
         throw new Error(`Railway returned an unsupported archive audit status: ${status}.`);
       }
-      if (!(await waitForNextPoll(
-        (milliseconds) => sleepUntilOrCancellation(sleep, milliseconds, cancellationSignal),
-        now,
-        deadline,
-        pollMilliseconds,
-      ))) break;
+      if (
+        !(await waitForNextPoll(
+          (milliseconds) => sleepUntilOrCancellation(sleep, milliseconds, cancellationSignal),
+          now,
+          deadline,
+          pollMilliseconds,
+        ))
+      )
+        break;
     }
 
     if (!evidenceAccepted || evidence === null || !TERMINAL_SUCCESSES.has(status)) {
@@ -894,8 +1361,7 @@ export async function runRailwayDocumentArchiveAuditCli({
     processObject.stderr.write(
       `${error instanceof Error ? error.message : 'Railway archive audit failed.'}\n`,
     );
-    const exitCode =
-      error instanceof ArchiveAuditCancellationError ? error.exitCode : 1;
+    const exitCode = error instanceof ArchiveAuditCancellationError ? error.exitCode : 1;
     processObject.exitCode = exitCode;
     return exitCode;
   } finally {
@@ -905,6 +1371,21 @@ export async function runRailwayDocumentArchiveAuditCli({
   }
 }
 
+export async function runRailwayDocumentArchiveAuditCommand({
+  argv = process.argv.slice(2),
+  runCli = runRailwayDocumentArchiveAuditCli,
+  auditRun = runRailwayDocumentArchiveAudit,
+  cleanupRun = cleanupRailwayDocumentArchiveAuditDeployments,
+} = {}) {
+  if (!Array.isArray(argv) || argv.some((argument) => typeof argument !== 'string')) {
+    throw new Error('Archive audit command arguments must be strings.');
+  }
+  if (argv.length > 1 || (argv.length === 1 && argv[0] !== '--cleanup-only')) {
+    throw new Error('Unknown archive audit command argument.');
+  }
+  return runCli({ run: argv[0] === '--cleanup-only' ? cleanupRun : auditRun });
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  void runRailwayDocumentArchiveAuditCli();
+  void runRailwayDocumentArchiveAuditCommand();
 }

@@ -170,10 +170,14 @@ runner GitHub : `railway run` exécute localement et ferait transiter les origin
 service Railway dédié utilise `Dockerfile.archive-audit` et `railway.archive-audit.json` :
 
 - aucun domaine public ni healthcheck HTTP ;
-- une seule instance en région européenne, `restartPolicyType = NEVER` ;
+- une seule instance en région européenne, `restartPolicyType = NEVER`, aucun cron ni
+  `preDeployCommand`, veille applicative désactivée, `overlapSeconds = 0` et une fenêtre de drainage
+  de 30 secondes pour laisser le scanner libérer proprement ses connexions et son verrou PostgreSQL
+  après `SIGTERM` ;
 - fichier Config-as-Code du service explicitement réglé sur `/railway.archive-audit.json`,
-  `startCommand` fixé et aucun héritage silencieux du dashboard ; le runner relit ces valeurs par
-  GraphQL et refuse toute dérive **avant** de créer un déploiement ;
+  `startCommand` et `dockerfilePath` fixés, auto-déploiement GitHub désactivé et aucun héritage
+  silencieux du dashboard ; le runner relit tous ces réglages par GraphQL et refuse toute dérive
+  **avant** de créer un déploiement ;
 - image exacte du SHA à publier, Java/Mustang/FNFE/bubblewrap intégrés au build ;
 - runtime UID/GID dédié non-root ; l’entrypoint exécute un vrai smoke bubblewrap avant tout accès
   aux données et vérifie réseau isolé, environnement vidé, racine en lecture seule et workdir seul
@@ -191,7 +195,15 @@ La sentinelle négative BR-FR est exercée une fois par job, pas une fois par fa
 
 Le workflow déclenche ce service par `serviceInstanceDeployV2(serviceId, environmentId, commitSha)`.
 Le project token est borné à l’environnement ; la mutation n’est jamais rejouée si sa réponse est
-perdue. Le gate attend le déploiement exact et un unique marqueur final corrélé à
+perdue. Avant la mutation, le runner prend un instantané paginé des déploiements du service. Si la
+réponse est absente, invalide ou réutilise un identifiant antérieur, il ouvre une fenêtre bornée de
+convergence : au moins sept et jusqu’à huit instantanés espacés de dix secondes, soit au minimum
+soixante secondes de surveillance après l’ambiguïté. Il suit les nouveaux identifiants du SHA demandé
+ainsi que ceux dont la métadonnée de commit n’est pas encore propagée, tente de les
+arrêter une seule fois, puis exige deux instantanés stables confirmant `deploymentStopped=true`.
+Une cible encore active, disparue de la liste ou non convergée fait échouer le gate. Il refuse
+également de muter tant qu’une instance antérieure du service n’est pas explicitement marquée
+arrêtée par Railway. Le gate attend le déploiement exact et un unique marqueur final corrélé à
 `RAILWAY_DEPLOYMENT_ID` et au SHA. Un statut Railway seul ne constitue jamais une preuve.
 Le polling est espacé d’au moins dix secondes, respecte `Retry-After` dans une borne de soixante
 secondes et ne double pas les mutations. Toute sortie non acceptée tente une seule annulation ou un
@@ -199,6 +211,25 @@ seul arrêt distant, sans masquer l’erreur d’origine. Un refus métier garde
 ses codes canoniques ; un crash sans cette preuve reste une panne technique. `SIGHUP`, `SIGINT` et
 `SIGTERM` interrompent les requêtes/pollings, conservent le handler pendant le cleanup idempotent,
 retirent toute preuve locale écrite pendant la course puis ressortent avec le code Unix du signal.
+Si le signal croise une réponse de création perdue et que l’hôte laisse le processus vivre, le runner
+termine d’abord la réconciliation distante non annulable, puis restitue le code du signal. Lors
+d’une [annulation GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
+le processus n’obtient toutefois qu’environ dix secondes : le job porte donc
+une condition `always()` et enchaîne, après l’arrêt forcé de l’étape primaire, un mode
+`--cleanup-only` indépendant. Celui-ci recherche pendant au moins 60 secondes tout déploiement actif
+du SHA, le stoppe puis exige deux confirmations d’arrêt avant de rendre la main ; aucune activation
+ne peut suivre une étape primaire échouée ou annulée. Le conteneur Railway dispose séparément d’au
+plus 30 secondes entre `SIGTERM` et `SIGKILL`, laissant au cleanup durable assez de temps pour
+observer sa terminaison même si tout ce délai de drainage est consommé. Le job est borné à six
+heures et refuse de démarrer l’audit après trois heures écoulées ; l’étape d’audit est elle-même
+bornée à 100 minutes, le cleanup à quatre minutes, la preuve à dix minutes et l’activation à une
+heure. Le hard-timeout du job ne peut donc pas supprimer la fenêtre de cleanup une fois l’audit lancé.
+Le shell d’entrypoint relaie ces mêmes signaux à Node et attend sa sortie : le conteneur PID 1 ne
+peut donc pas disparaître en laissant le scanner ou le verrou advisory vivre en arrière-plan.
+Ce gate exige un projet Railway **Hobby ou Pro** : sa cadence nominale maximale est de 720 lectures
+par heure pendant la courte phase `SUCCESS`, avec temporisation explicite sur `Retry-After`. Elle
+n’est donc pas compatible avec les 100 requêtes par heure du plan Free. Voir les
+[limites API Railway](https://docs.railway.com/integrations/api#rate-limits).
 
 En protocole V1, le job prend un snapshot SQL + métadonnées `storage.objects`, relit chaque octet,
 recalcule taille/SHA/MIME, détecte le profil PDF, valide
@@ -222,7 +253,8 @@ filesystem éphémère du conteneur puis est détruit. Avant toute sortie, le sc
 au SHA, au bucket, aux digests, versions et compteurs, ainsi que le rapport détaillé JSONB accessible
 uniquement au rôle privilégié. GitHub ne reçoit qu’une enveloppe allowlistée sans PII, enrichie de
 codes d’écart canoniques ; aucun PDF, XML, nom de fichier, identifiant tenant/document, URL ou secret
-ne quitte Railway.
+ne quitte Railway. Le marqueur n’est publié qu’après commit de cette preuve, sortie de la transaction
+qui porte le verrou advisory et déconnexion des trois clients PostgreSQL.
 
 Le marqueur est accepté uniquement si `readyForActivation=true`, `p0Issues=0`, mode/protocole
 cohérents, validateurs exacts et trois SHA-256 canoniques. Une preuve CI préexistante n’est jamais

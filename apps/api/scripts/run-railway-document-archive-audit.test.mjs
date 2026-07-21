@@ -8,8 +8,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import {
   ArchiveAuditBusinessRefusalError,
+  ArchiveAuditCancellationError,
+  cleanupRailwayDocumentArchiveAuditDeployments,
   extractArchiveAuditEvidence,
   runRailwayDocumentArchiveAudit,
+  runRailwayDocumentArchiveAuditCommand,
 } from './run-railway-document-archive-audit.mjs';
 
 const PROJECT_ID = '10000000-0000-4000-8000-000000000001';
@@ -17,6 +20,7 @@ const SERVICE_ID = '20000000-0000-4000-8000-000000000002';
 const ENVIRONMENT_ID = '30000000-0000-4000-8000-000000000003';
 const OTHER_ENVIRONMENT_ID = '30000000-0000-4000-8000-000000000004';
 const DEPLOYMENT_ID = '40000000-0000-4000-8000-000000000005';
+const OTHER_DEPLOYMENT_ID = '40000000-0000-4000-8000-000000000006';
 const RELEASE_SHA = 'a'.repeat(40);
 const DIGEST_A = '1'.repeat(64);
 const DIGEST_B = '2'.repeat(64);
@@ -79,11 +83,47 @@ function serviceInstanceFixture(overrides = {}) {
     railwayConfigFile: '/railway.archive-audit.json',
     startCommand: '/usr/local/bin/bob-archive-audit-entrypoint',
     builder: 'DOCKERFILE',
+    dockerfilePath: 'Dockerfile.archive-audit',
+    preDeployCommand: null,
+    cronSchedule: null,
+    sleepApplication: false,
     healthcheckPath: null,
+    healthcheckTimeout: null,
     numReplicas: 1,
+    drainingSeconds: 30,
+    overlapSeconds: 0,
     restartPolicyType: 'NEVER',
+    restartPolicyMaxRetries: 10,
     ...overrides,
   };
+}
+
+function deploymentSnapshotFixture({
+  id = DEPLOYMENT_ID,
+  status = 'BUILDING',
+  commitHash = RELEASE_SHA,
+  overrides = {},
+} = {}) {
+  return {
+    id,
+    projectId: PROJECT_ID,
+    serviceId: SERVICE_ID,
+    environmentId: ENVIRONMENT_ID,
+    status,
+    meta: commitHash === null ? {} : { commitHash },
+    deploymentStopped: false,
+    instances: [],
+    ...overrides,
+  };
+}
+
+function stoppedDeploymentSnapshotFixture({ id = DEPLOYMENT_ID, commitHash = RELEASE_SHA } = {}) {
+  return deploymentSnapshotFixture({
+    id,
+    status: 'REMOVED',
+    commitHash,
+    overrides: { deploymentStopped: true, instances: [] },
+  });
 }
 
 function marker(evidence = evidenceFixture()) {
@@ -105,6 +145,7 @@ function operationName(query) {
   return [
     'ArchiveAuditDeploymentCancel',
     'ArchiveAuditDeploymentStop',
+    'ArchiveAuditDeploymentsSnapshot',
     'ArchiveAuditServiceInstance',
     'ArchiveAuditDeployment',
     'ArchiveAuditLogs',
@@ -129,6 +170,7 @@ function scriptedFetch(steps) {
     assert.equal(operation, step.operation);
     calls.push({ operation, variables: body.variables });
     step.assertVariables?.(body.variables);
+    step.before?.(body.variables);
     if (step.throw) throw step.throw;
     return typeof step.response === 'function' ? step.response() : step.response;
   };
@@ -147,12 +189,49 @@ function projectStep(overrides = {}) {
   };
 }
 
-function serviceInstanceStep(instance = serviceInstanceFixture()) {
+function serviceInstanceStep(
+  instance = serviceInstanceFixture(),
+  autoDeployStatus = { enabled: false },
+) {
   return {
     operation: 'ArchiveAuditServiceInstance',
     assertVariables: (variables) =>
-      assert.deepEqual(variables, { serviceId: SERVICE_ID, environmentId: ENVIRONMENT_ID }),
-    response: dataResponse({ serviceInstance: instance }),
+      assert.deepEqual(variables, {
+        projectId: PROJECT_ID,
+        serviceId: SERVICE_ID,
+        environmentId: ENVIRONMENT_ID,
+      }),
+    response: dataResponse({
+      serviceInstance: instance,
+      serviceInstanceAutoDeployStatus: autoDeployStatus,
+    }),
+  };
+}
+
+function deploymentSnapshotStep(
+  deployments = [],
+  { after = null, hasNextPage = false, endCursor = null, ...overrides } = {},
+) {
+  return {
+    operation: 'ArchiveAuditDeploymentsSnapshot',
+    assertVariables: (variables) =>
+      assert.deepEqual(variables, {
+        input: {
+          projectId: PROJECT_ID,
+          serviceId: SERVICE_ID,
+          environmentId: ENVIRONMENT_ID,
+          includeDeleted: true,
+        },
+        first: 100,
+        after,
+      }),
+    response: dataResponse({
+      deployments: {
+        edges: deployments.map((deployment) => ({ node: deployment })),
+        pageInfo: { hasNextPage, endCursor },
+      },
+    }),
+    ...overrides,
   };
 }
 
@@ -193,10 +272,10 @@ function logsStep(logs = [{ message: marker() }]) {
   };
 }
 
-function cleanupStep(kind, response = true) {
+function cleanupStep(kind, response = true, deploymentId = DEPLOYMENT_ID) {
   return {
     operation: kind === 'cancel' ? 'ArchiveAuditDeploymentCancel' : 'ArchiveAuditDeploymentStop',
-    assertVariables: (variables) => assert.deepEqual(variables, { id: DEPLOYMENT_ID }),
+    assertVariables: (variables) => assert.deepEqual(variables, { id: deploymentId }),
     response: dataResponse({
       [kind === 'cancel' ? 'deploymentCancel' : 'deploymentStop']: response,
     }),
@@ -204,11 +283,21 @@ function cleanupStep(kind, response = true) {
 }
 
 function beforeDeploymentSteps() {
-  return [projectStep(), serviceInstanceStep(), deployStep()];
+  return [projectStep(), serviceInstanceStep(), deploymentSnapshotStep(), deployStep()];
 }
 
-function successSteps({ status = 'COMPLETED', logs = [{ message: marker() }] } = {}) {
-  return [...beforeDeploymentSteps(), deploymentStep(status), logsStep(logs)];
+function successSteps({
+  status = 'SUCCESS',
+  logs = [{ message: marker() }],
+  successfulObservations = 2,
+} = {}) {
+  return [
+    ...beforeDeploymentSteps(),
+    ...Array.from({ length: successfulObservations }, () => [
+      deploymentStep(status),
+      logsStep(logs),
+    ]).flat(),
+  ];
 }
 
 function baseEnvironment(outputPath, overrides = {}) {
@@ -269,7 +358,10 @@ test('préflight exact puis preuve prête corrélée, non-PII et immuable côté
     [
       'ProjectToken',
       'ArchiveAuditServiceInstance',
+      'ArchiveAuditDeploymentsSnapshot',
       'DeployArchiveAudit',
+      'ArchiveAuditDeployment',
+      'ArchiveAuditLogs',
       'ArchiveAuditDeployment',
       'ArchiveAuditLogs',
     ],
@@ -279,7 +371,7 @@ test('préflight exact puis preuve prête corrélée, non-PII et immuable côté
   assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(runtime.output()), {
     deploymentId: DEPLOYMENT_ID,
-    status: 'COMPLETED',
+    status: 'SUCCESS',
     evidencePath: resolve(outputPath),
   });
 });
@@ -289,9 +381,17 @@ test('refuse toute dérive du service Railway avant la mutation', async (t) => {
     ['config-file', { railwayConfigFile: '/railway.json' }, /railwayConfigFile/u],
     ['start-command', { startCommand: 'node server.js' }, /startCommand/u],
     ['builder', { builder: 'RAILPACK' }, /builder/u],
+    ['dockerfile', { dockerfilePath: 'Dockerfile' }, /dockerfilePath/u],
+    ['pre-deploy', { preDeployCommand: ['pnpm', 'migrate'] }, /preDeployCommand/u],
+    ['cron', { cronSchedule: '0 0 * * *' }, /cronSchedule/u],
+    ['sleep', { sleepApplication: true }, /sleepApplication/u],
     ['healthcheck', { healthcheckPath: '/health' }, /healthcheckPath/u],
+    ['healthcheck-timeout', { healthcheckTimeout: 30 }, /healthcheckTimeout/u],
     ['replicas', { numReplicas: 2 }, /numReplicas/u],
+    ['draining', { drainingSeconds: 0 }, /drainingSeconds/u],
+    ['overlap', { overlapSeconds: 1 }, /overlapSeconds/u],
     ['restart', { restartPolicyType: 'ON_FAILURE' }, /restartPolicyType/u],
+    ['restart-retries', { restartPolicyMaxRetries: -1 }, /restartPolicyMaxRetries/u],
     ['wrong-service', { serviceId: '50000000-0000-4000-8000-000000000099' }, /another service/u],
     ['wrong-environment', { environmentId: OTHER_ENVIRONMENT_ID }, /another service/u],
   ];
@@ -317,6 +417,157 @@ test('refuse toute dérive du service Railway avant la mutation', async (t) => {
       fetchImpl.assertDone();
     });
   }
+
+  await t.test('auto-deploy', async (subtest) => {
+    const outputPath = await temporaryOutput(subtest, 'auto-deploy.json');
+    const fetchImpl = scriptedFetch([
+      projectStep(),
+      serviceInstanceStep(serviceInstanceFixture(), { enabled: true }),
+    ]);
+    await assert.rejects(
+      runRailwayDocumentArchiveAudit({
+        environment: baseEnvironment(outputPath),
+        fetchImpl,
+        ...fakeRuntime(),
+      }),
+      /autoDeployEnabled=true/u,
+    );
+    assert.equal(
+      fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+      false,
+    );
+    fetchImpl.assertDone();
+  });
+});
+
+test('refuse un nouveau one-shot tant qu’un déploiement du service est encore actif', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([
+      deploymentSnapshotFixture({
+        status: 'SUCCESS',
+        overrides: {
+          instances: [
+            {
+              id: '60000000-0000-4000-8000-000000000009',
+              status: 'RUNNING',
+            },
+          ],
+        },
+      }),
+    ]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /already has 1 active deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('traite SUCCESS sans instance visible comme actif tant que Railway ne confirme pas l’arrêt', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([deploymentSnapshotFixture({ status: 'SUCCESS' })]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /already has 1 active deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('refuse un statut de déploiement Railway inconnu avant la mutation', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([
+      deploymentSnapshotFixture({
+        status: 'FUTURE_STATUS',
+        overrides: { deploymentStopped: true },
+      }),
+    ]),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /invalid or cross-scoped deployment snapshot/u,
+  );
+  assert.equal(
+    fetchImpl.calls.some(({ operation }) => operation === 'DeployArchiveAudit'),
+    false,
+  );
+  fetchImpl.assertDone();
+});
+
+test('pagine intégralement l’instantané des déploiements avant toute mutation', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const inactiveDeployment = deploymentSnapshotFixture({
+    id: OTHER_DEPLOYMENT_ID,
+    status: 'SUCCESS',
+    overrides: {
+      deploymentStopped: true,
+      instances: [
+        {
+          id: '60000000-0000-4000-8000-000000000011',
+          status: 'EXITED',
+        },
+      ],
+    },
+  });
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([inactiveDeployment], {
+      hasNextPage: true,
+      endCursor: 'archive-cursor-1',
+    }),
+    deploymentSnapshotStep([], { after: 'archive-cursor-1' }),
+    deployStep(),
+    deploymentStep('SUCCESS'),
+    logsStep(),
+    deploymentStep('SUCCESS'),
+    logsStep(),
+  ]);
+
+  await runRailwayDocumentArchiveAudit({
+    environment: baseEnvironment(outputPath),
+    fetchImpl,
+    ...fakeRuntime(),
+  });
+
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentsSnapshot')
+      .length,
+    2,
+  );
+  fetchImpl.assertDone();
 });
 
 test('ne déclenche rien lorsque le project token vise un autre environnement', async (t) => {
@@ -417,7 +668,7 @@ test('retente les lectures, borne Retry-After à 60 s et ne retente jamais le d�
     fetchImpl: retryingFetch,
     ...runtime,
   });
-  assert.deepEqual(runtime.sleeps, [60_000]);
+  assert.deepEqual(runtime.sleeps, [60_000, 10_000]);
   retryingFetch.assertDone();
 
   const datedOutputPath = await temporaryOutput(t, 'retry-after-date.json');
@@ -433,14 +684,22 @@ test('retente les lectures, borne Retry-After à 60 s et ne retente jamais le d�
     fetchImpl: datedFetch,
     ...datedRuntime,
   });
-  assert.deepEqual(datedRuntime.sleeps, [60_000]);
+  assert.deepEqual(datedRuntime.sleeps, [60_000, 10_000]);
   datedFetch.assertDone();
 
   const failedOutputPath = await temporaryOutput(t, 'mutation-failed.json');
   const mutationFetch = scriptedFetch([
     projectStep(),
     serviceInstanceStep(),
+    deploymentSnapshotStep(),
     deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
   ]);
   await assert.rejects(
     runRailwayDocumentArchiveAudit({
@@ -448,7 +707,7 @@ test('retente les lectures, borne Retry-After à 60 s et ne retente jamais le d�
       fetchImpl: mutationFetch,
       ...fakeRuntime(),
     }),
-    /failed before a usable response/u,
+    /cleanup was attempted for 0 correlated deployment/u,
   );
   assert.equal(
     mutationFetch.calls.filter(({ operation }) => operation === 'DeployArchiveAudit').length,
@@ -457,13 +716,445 @@ test('retente les lectures, borne Retry-After à 60 s et ne retente jamais le d�
   mutationFetch.assertDone();
 });
 
-test('SUCCESS exige deux observations espacées de dix secondes', async (t) => {
+test('réconcilie et annule le déploiement corrélé quand la réponse de mutation est perdue', async (t) => {
   const outputPath = await temporaryOutput(t);
   const fetchImpl = scriptedFetch([
-    ...successSteps({ status: 'SUCCESS' }),
-    deploymentStep('SUCCESS'),
-    logsStep(),
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([deploymentSnapshotFixture()]),
+    cleanupStep('cancel'),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
+    deploymentSnapshotStep([stoppedDeploymentSnapshotFixture()]),
   ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /cleanup was attempted for 1 correlated deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'DeployArchiveAudit').length,
+    1,
+  );
+  fetchImpl.assertDone();
+});
+
+test('un SIGTERM pendant une réponse de mutation perdue attend la réconciliation puis ressort 143', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const cancellation = new AbortController();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({
+      before: () => cancellation.abort(new ArchiveAuditCancellationError('SIGTERM')),
+      throw: new TypeError('socket closed after request'),
+    }),
+    ...Array.from({ length: 7 }, () => deploymentSnapshotStep()),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      cancellationSignal: cancellation.signal,
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.ok(error instanceof ArchiveAuditCancellationError);
+      assert.equal(error.signalName, 'SIGTERM');
+      assert.equal(error.exitCode, 143);
+      return true;
+    },
+  );
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'DeployArchiveAudit').length,
+    1,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentsSnapshot')
+      .length,
+    8,
+  );
+  await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
+  fetchImpl.assertDone();
+});
+
+test('un SIGTERM reste prioritaire après une réconciliation distante non convergée', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const cancellation = new AbortController();
+  const activeDeployment = deploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({
+      before: () => cancellation.abort(new ArchiveAuditCancellationError('SIGTERM')),
+      throw: new TypeError('socket closed after request'),
+    }),
+    deploymentSnapshotStep([activeDeployment]),
+    cleanupStep('cancel'),
+    ...Array.from({ length: 7 }, () => deploymentSnapshotStep([activeDeployment])),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      cancellationSignal: cancellation.signal,
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.ok(error instanceof ArchiveAuditCancellationError);
+      assert.equal(error.signalName, 'SIGTERM');
+      assert.equal(error.exitCode, 143);
+      return true;
+    },
+  );
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    1,
+  );
+  await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
+  fetchImpl.assertDone();
+});
+
+test('le cleanup durable découvre tardivement puis arrête le déploiement de la release', async (t) => {
+  const stoppedDeployment = stoppedDeploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep([deploymentSnapshotFixture()]),
+    cleanupStep('cancel'),
+    deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
+  ]);
+  const runtime = fakeRuntime();
+
+  const result = await cleanupRailwayDocumentArchiveAuditDeployments({
+    environment: baseEnvironment(await temporaryOutput(t)),
+    fetchImpl,
+    ...runtime,
+  });
+
+  assert.deepEqual(result, { cleanedDeploymentCount: 1 });
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.deepEqual(JSON.parse(runtime.output()), { cleanedDeploymentCount: 1 });
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    1,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup durable observe une fenêtre complète même sans déploiement visible', async (t) => {
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    ...Array.from({ length: 7 }, () => deploymentSnapshotStep()),
+  ]);
+  const runtime = fakeRuntime();
+
+  const result = await cleanupRailwayDocumentArchiveAuditDeployments({
+    environment: baseEnvironment(await temporaryOutput(t)),
+    fetchImpl,
+    ...runtime,
+  });
+
+  assert.deepEqual(result, { cleanedDeploymentCount: 0 });
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  fetchImpl.assertDone();
+});
+
+test('le cleanup durable refuse de stopper un déploiement actif d’une autre release', async (t) => {
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([deploymentSnapshotFixture({ commitHash: 'b'.repeat(40) })]),
+  ]);
+
+  await assert.rejects(
+    cleanupRailwayDocumentArchiveAuditDeployments({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /active deployment\(s\) from another release/u,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    0,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentStop').length,
+    0,
+  );
+  fetchImpl.assertDone();
+});
+
+test('le cleanup durable ne mute jamais un SHA absent qui devient une autre release', async (t) => {
+  const deploymentId = '40000000-0000-4000-8000-000000000077';
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([deploymentSnapshotFixture({ id: deploymentId, commitHash: null })]),
+    deploymentSnapshotStep([
+      deploymentSnapshotFixture({ id: deploymentId, commitHash: 'b'.repeat(40) }),
+    ]),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    cleanupRailwayDocumentArchiveAuditDeployments({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...runtime,
+    }),
+    /active deployment\(s\) from another release/u,
+  );
+  assert.deepEqual(runtime.sleeps, [10_000]);
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    0,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentStop').length,
+    0,
+  );
+  fetchImpl.assertDone();
+});
+
+test('la commande câble exactement le mode audit ou cleanup et refuse tout argument ambigu', async () => {
+  const auditRun = async () => undefined;
+  const cleanupRun = async () => undefined;
+  const selectedRuns = [];
+  const runCli = async ({ run }) => {
+    selectedRuns.push(run);
+    return 0;
+  };
+
+  assert.equal(
+    await runRailwayDocumentArchiveAuditCommand({ argv: [], runCli, auditRun, cleanupRun }),
+    0,
+  );
+  assert.equal(
+    await runRailwayDocumentArchiveAuditCommand({
+      argv: ['--cleanup-only'],
+      runCli,
+      auditRun,
+      cleanupRun,
+    }),
+    0,
+  );
+  assert.deepEqual(selectedRuns, [auditRun, cleanupRun]);
+  await assert.rejects(
+    runRailwayDocumentArchiveAuditCommand({
+      argv: ['--cleanup-only', '--unexpected'],
+      runCli,
+      auditRun,
+      cleanupRun,
+    }),
+    /Unknown archive audit command argument/u,
+  );
+  await assert.rejects(
+    runRailwayDocumentArchiveAuditCommand({
+      argv: [42],
+      runCli,
+      auditRun,
+      cleanupRun,
+    }),
+    /arguments must be strings/u,
+  );
+});
+
+test('attend un déploiement retardé et nettoie une métadonnée commit encore absente', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const stoppedDeployment = stoppedDeploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep(),
+    deploymentSnapshotStep([deploymentSnapshotFixture({ commitHash: null })]),
+    deploymentSnapshotStep([deploymentSnapshotFixture()]),
+    cleanupStep('cancel'),
+    deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
+    deploymentSnapshotStep([stoppedDeployment]),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    /cleanup was attempted for 1 correlated deployment/u,
+  );
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'DeployArchiveAudit').length,
+    1,
+  );
+  fetchImpl.assertDone();
+});
+
+test('la réconciliation primaire ne mute jamais un nouveau SHA absent devenu étranger', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const deploymentId = '40000000-0000-4000-8000-000000000078';
+  const foreignDeployment = deploymentSnapshotFixture({
+    id: deploymentId,
+    commitHash: 'b'.repeat(40),
+  });
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([deploymentSnapshotFixture({ id: deploymentId, commitHash: null })]),
+    deploymentSnapshotStep([foreignDeployment]),
+    deploymentSnapshotStep([foreignDeployment]),
+    deploymentSnapshotStep([foreignDeployment]),
+    deploymentSnapshotStep([foreignDeployment]),
+    deploymentSnapshotStep([foreignDeployment]),
+    deploymentSnapshotStep([foreignDeployment]),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    /cleanup was attempted for 0 correlated deployment/u,
+  );
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 10_000, 10_000, 10_000]);
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    0,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentStop').length,
+    0,
+  );
+  fetchImpl.assertDone();
+});
+
+test('refuse de déclarer la réconciliation réussie tant que le job distant reste actif', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const activeDeployment = deploymentSnapshotFixture();
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep(),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([activeDeployment]),
+    cleanupStep('cancel'),
+    ...Array.from({ length: 7 }, () => deploymentSnapshotStep([activeDeployment])),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /remote reconciliation failed/u,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentCancel').length,
+    1,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'ArchiveAuditDeploymentStop').length,
+    0,
+  );
+  fetchImpl.assertDone();
+});
+
+test('réconcilie tous les nouveaux déploiements du commit sans toucher aux déploiements antérieurs', async (t) => {
+  const preExistingDeployment = deploymentSnapshotFixture({
+    id: OTHER_DEPLOYMENT_ID,
+    status: 'SUCCESS',
+    overrides: {
+      deploymentStopped: true,
+      instances: [
+        {
+          id: '60000000-0000-4000-8000-000000000010',
+          status: 'EXITED',
+        },
+      ],
+    },
+  });
+  const secondCorrelatedDeploymentId = '40000000-0000-4000-8000-000000000007';
+  const stoppedCorrelatedDeployments = [
+    preExistingDeployment,
+    stoppedDeploymentSnapshotFixture(),
+    stoppedDeploymentSnapshotFixture({ id: secondCorrelatedDeploymentId }),
+  ];
+  const fetchImpl = scriptedFetch([
+    projectStep(),
+    serviceInstanceStep(),
+    deploymentSnapshotStep([preExistingDeployment]),
+    deployStep({ throw: new TypeError('socket closed after request') }),
+    deploymentSnapshotStep([
+      preExistingDeployment,
+      deploymentSnapshotFixture(),
+      deploymentSnapshotFixture({ id: secondCorrelatedDeploymentId }),
+      deploymentSnapshotFixture({
+        id: '40000000-0000-4000-8000-000000000008',
+        commitHash: 'b'.repeat(40),
+      }),
+    ]),
+    cleanupStep('cancel'),
+    cleanupStep('cancel', true, secondCorrelatedDeploymentId),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+    deploymentSnapshotStep(stoppedCorrelatedDeployments),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(await temporaryOutput(t)),
+      fetchImpl,
+      ...fakeRuntime(),
+    }),
+    /cleanup was attempted for 2 correlated deployment/u,
+  );
+  assert.equal(
+    fetchImpl.calls.filter(({ operation }) => operation === 'DeployArchiveAudit').length,
+    1,
+  );
+  fetchImpl.assertDone();
+});
+
+test('SUCCESS exige deux observations espacées de dix secondes', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const fetchImpl = scriptedFetch(successSteps());
   const runtime = fakeRuntime();
   await runRailwayDocumentArchiveAudit({
     environment: baseEnvironment(outputPath),
@@ -477,7 +1168,7 @@ test('SUCCESS exige deux observations espacées de dix secondes', async (t) => {
 test('un crash post-marqueur prêt reste un crash et ne produit aucune preuve CI', async (t) => {
   const outputPath = await temporaryOutput(t);
   const fetchImpl = scriptedFetch([
-    ...successSteps({ status: 'SUCCESS' }),
+    ...successSteps({ successfulObservations: 1 }),
     deploymentStep('CRASHED'),
     logsStep(),
   ]);
@@ -670,7 +1361,11 @@ test('ne remplace jamais une preuve CI préexistante', async (t) => {
   const outputPath = await temporaryOutput(t);
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, 'existing-proof\n');
-  const fetchImpl = scriptedFetch(successSteps());
+  let networkCalls = 0;
+  const fetchImpl = async () => {
+    networkCalls += 1;
+    throw new Error('network must not be called when the evidence path already exists');
+  };
   await assert.rejects(
     runRailwayDocumentArchiveAudit({
       environment: baseEnvironment(outputPath),
@@ -680,7 +1375,7 @@ test('ne remplace jamais une preuve CI préexistante', async (t) => {
     (error) => error?.code === 'EEXIST',
   );
   assert.equal(await readFile(outputPath, 'utf8'), 'existing-proof\n');
-  fetchImpl.assertDone();
+  assert.equal(networkCalls, 0);
 });
 
 test('accepte les deux modes protocolaires et les deux verdicts cohérents', () => {
@@ -862,15 +1557,50 @@ test('le contrat image/config impose Node épinglé, rôle non-root et smoke bub
     builder: 'DOCKERFILE',
     dockerfilePath: 'Dockerfile.archive-audit',
   });
+  assert.equal(railwayConfig.deploy.preDeployCommand, null);
   assert.equal(railwayConfig.deploy.startCommand, '/usr/local/bin/bob-archive-audit-entrypoint');
+  assert.equal(railwayConfig.deploy.cronSchedule, null);
+  assert.equal(railwayConfig.deploy.sleepApplication, false);
   assert.equal(railwayConfig.deploy.healthcheckPath, null);
   assert.equal(railwayConfig.deploy.healthcheckTimeout, null);
   assert.equal(railwayConfig.deploy.numReplicas, 1);
+  assert.equal(railwayConfig.deploy.drainingSeconds, 30);
+  assert.equal(railwayConfig.deploy.overlapSeconds, 0);
   assert.equal(railwayConfig.deploy.restartPolicyType, 'NEVER');
   assert.equal(railwayConfig.deploy.restartPolicyMaxRetries, null);
   assert.deepEqual(
     Object.values(railwayConfig.deploy.multiRegionConfig).map(({ numReplicas }) => numReplicas),
     [1],
+  );
+
+  const workflow = await readFile(
+    join(REPOSITORY_ROOT, '.github/workflows/railway-api.yml'),
+    'utf8',
+  );
+  assert.match(
+    workflow,
+    /release-api:\n\s+# [^\n]+\n(?:\s+# [^\n]+\n){2}\s+if: \$\{\{ always\(\) \}\}/u,
+  );
+  assert.match(workflow, /release-api:[\s\S]*?timeout-minutes: 360/u);
+  assert.match(
+    workflow,
+    /Reserve the archive audit and cleanup time budget[\s\S]*elapsedSeconds > 10_800/u,
+  );
+  assert.match(
+    workflow,
+    /id: archive_audit\n\s+if: \$\{\{ success\(\) && !cancelled\(\) \}\}\n\s+timeout-minutes: 100[\s\S]*if: \$\{\{ always\(\) && \(steps\.archive_audit\.outcome == 'failure' \|\| steps\.archive_audit\.outcome == 'cancelled'\) \}\}\n\s+timeout-minutes: 4[\s\S]*--cleanup-only/u,
+  );
+  assert.match(
+    workflow,
+    /Preserve the non-PII archive audit envelope\n\s+if: always\(\)\n\s+timeout-minutes: 10/u,
+  );
+  assert.ok(
+    workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-document-archive-v2.sh'),
+    'durable archive cleanup must run before any irreversible activation',
+  );
+  assert.match(
+    workflow,
+    /Retire the previous Mistral key[^\n]*\n\s+if: \$\{\{ success\(\) && steps\.archive_audit\.outcome == 'success' \}\}\n\s+timeout-minutes: 60/u,
   );
 });
 
@@ -935,16 +1665,33 @@ test('SIGHUP/SIGINT/SIGTERM réels annulent une seule fois le déploiement dista
             return response({ projectToken: { projectId, environmentId } });
           }
           if (query.includes('ArchiveAuditServiceInstance')) {
-            return response({ serviceInstance: {
-              id: '50000000-0000-4000-8000-000000000006',
-              serviceId,
-              environmentId,
-              railwayConfigFile: '/railway.archive-audit.json',
-              startCommand: '/usr/local/bin/bob-archive-audit-entrypoint',
-              builder: 'DOCKERFILE',
-              healthcheckPath: null,
-              numReplicas: 1,
-              restartPolicyType: 'NEVER',
+            return response({
+              serviceInstance: {
+                id: '50000000-0000-4000-8000-000000000006',
+                serviceId,
+                environmentId,
+                railwayConfigFile: '/railway.archive-audit.json',
+                startCommand: '/usr/local/bin/bob-archive-audit-entrypoint',
+                builder: 'DOCKERFILE',
+                dockerfilePath: 'Dockerfile.archive-audit',
+                preDeployCommand: null,
+                cronSchedule: null,
+                sleepApplication: false,
+                healthcheckPath: null,
+                healthcheckTimeout: null,
+                numReplicas: 1,
+                drainingSeconds: 30,
+                overlapSeconds: 0,
+                restartPolicyType: 'NEVER',
+                restartPolicyMaxRetries: 10,
+              },
+              serviceInstanceAutoDeployStatus: { enabled: false },
+            });
+          }
+          if (query.includes('ArchiveAuditDeploymentsSnapshot')) {
+            return response({ deployments: {
+              edges: [],
+              pageInfo: { hasNextPage: false, endCursor: null },
             } });
           }
           if (query.includes('DeployArchiveAudit')) {
@@ -1015,11 +1762,7 @@ test('SIGHUP/SIGINT/SIGTERM réels annulent une seule fois le déploiement dista
       if (child.exitCode === null && child.signalCode === null) child.kill(signalName);
       const [exitCode, exitSignal] = await exit;
 
-      assert.equal(
-        exitCode,
-        expectedExitCode,
-        `exitSignal=${exitSignal}; stderr=${childStderr}`,
-      );
+      assert.equal(exitCode, expectedExitCode, `exitSignal=${exitSignal}; stderr=${childStderr}`);
       assert.equal(exitSignal, null);
       assert.equal(await readFile(cleanupPath, 'utf8'), 'cancel\n');
       await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
