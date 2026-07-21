@@ -11,8 +11,8 @@ on:
     - cron: '17 * * * *'
 
 concurrency:
-  group: railway-topology-drift
-  cancel-in-progress: true
+  group: railway-topology-drift-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   certify-single-replica:
@@ -36,6 +36,7 @@ jobs:
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
       - name: Reject topology drift
+        id: topology
         env:
           # Each matrix job resolves this name from its declared GitHub
           # environment. Staging and production therefore receive separate,
@@ -44,21 +45,55 @@ jobs:
           RAILWAY_ENV: ${{ matrix.environment }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
-          railway status --environment "$RAILWAY_ENV" --json \
-            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
-      - name: Open an owned incident on drift
-        if: ${{ failure() }}
+          status_file="$RUNNER_TEMP/railway-status-$RAILWAY_ENV.json"
+          if ! railway status --environment "$RAILWAY_ENV" --json >"$status_file"; then
+            echo "failure_kind=unavailable" >>"$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if ! node apps/api/scripts/certify-railway-single-replica.mjs \
+            "$RAILWAY_ENV" "$RAILWAY_SERVICE" "$status_file"
+          then
+            echo "failure_kind=drift" >>"$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "failure_kind=none" >>"$GITHUB_OUTPUT"
+      - name: Open an owned incident
+        if: ${{ failure() && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          INCIDENT_TITLE: Railway topology drift (${{ matrix.environment }})
+          FAILURE_KIND: ${{ steps.topology.outputs.failure_kind }}
+          RAILWAY_ENV: ${{ matrix.environment }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          existing="$(gh issue list --state open --search "\"$INCIDENT_TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          if [ "$FAILURE_KIND" = drift ]; then
+            incident_title="Railway topology drift ($RAILWAY_ENV)"
+            incident_body="Le contrôle mono-process a détecté une topologie incompatible. Tant que le throttler public reste local au processus, traiter cette alerte avant toute promotion : $RUN_URL"
+          else
+            incident_title="Railway topology check unavailable ($RAILWAY_ENV)"
+            incident_body="Le contrôle de topologie Railway n'a pas pu interroger l'environnement. Rétablir l'intégration avant toute promotion : $RUN_URL"
+          fi
+          existing="$(gh issue list --state open --search "\"$incident_title\" in:title" --json number --jq '.[0].number // empty')"
           if [ -z "$existing" ]; then
             gh issue create \
-              --title "$INCIDENT_TITLE" \
-              --body "Le contrôle mono-process a échoué. Tant que le throttler public reste local au processus, traiter cette alerte avant toute promotion : $RUN_URL"
+              --title "$incident_title" \
+              --body "$incident_body"
           else
             gh issue comment "$existing" --body "Le contrôle échoue encore : $RUN_URL"
           fi
+      - name: Close owned incidents after recovery
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RAILWAY_ENV: ${{ matrix.environment }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          for incident_kind in "topology drift" "topology check unavailable"; do
+            incident_title="Railway $incident_kind ($RAILWAY_ENV)"
+            existing="$(gh issue list --state open --search "\"$incident_title\" in:title" --json number --jq '.[0].number // empty')"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body "Contrôle rétabli : $RUN_URL"
+              gh issue close "$existing" --reason completed
+            fi
+          done
