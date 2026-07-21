@@ -37,7 +37,9 @@ jobs:
         run: sh apps/api/scripts/install-railway-cli.sh
       - name: Reject topology drift
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # The staging token is repository-scoped under a distinct name so a
+          # same-name production fallback can never be selected silently.
+          RAILWAY_TOKEN: ${{ matrix.environment == 'staging' && secrets.RAILWAY_STAGING_TOKEN || secrets.RAILWAY_TOKEN }}
           RAILWAY_ENV: ${{ matrix.environment }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
