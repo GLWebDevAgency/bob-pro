@@ -35,11 +35,19 @@ jobs:
           node-version: 22.18.0
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
-      - name: Reject topology drift
+      - name: Reject staging topology drift
+        if: ${{ matrix.environment == 'staging' }}
         env:
-          # The staging token is repository-scoped under a distinct name so a
-          # same-name production fallback can never be selected silently.
-          RAILWAY_TOKEN: ${{ matrix.environment == 'staging' && secrets.RAILWAY_STAGING_TOKEN || secrets.RAILWAY_TOKEN }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_STAGING_TOKEN }}
+          RAILWAY_ENV: ${{ matrix.environment }}
+          RAILWAY_SERVICE: bob-pro-api
+        run: |
+          railway status --environment "$RAILWAY_ENV" --json \
+            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
+      - name: Reject production topology drift
+        if: ${{ matrix.environment == 'production' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_ENV: ${{ matrix.environment }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
