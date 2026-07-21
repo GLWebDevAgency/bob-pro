@@ -35,6 +35,15 @@ jobs:
           node-version: 22.18.0
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
+      - name: Verify staging credential integrity
+        if: ${{ matrix.environment == 'staging' }}
+        env:
+          EXPECTED_SHA256: ${{ vars.RAILWAY_STAGING_TOKEN_SHA256 }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_STAGING_TOKEN }}
+        run: |
+          [ -n "$EXPECTED_SHA256" ] || { echo "Staging token integrity marker is missing" >&2; exit 1; }
+          actual_sha256="$(printf '%s' "$RAILWAY_TOKEN" | sha256sum | cut -d ' ' -f 1)"
+          [ "$actual_sha256" = "$EXPECTED_SHA256" ] || { echo "Staging token secret does not match its integrity marker" >&2; exit 1; }
       - name: Reject staging topology drift
         if: ${{ matrix.environment == 'staging' }}
         env:
