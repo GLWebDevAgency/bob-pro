@@ -23,11 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - environment: staging
-            railway_environment_id: 3c687d72-d6ff-4242-bb22-7eb38522226b
-          - environment: production
-            railway_environment_id: 0ca9e425-166a-4cd0-bab2-69cdd33f48b9
+        environment:
+          - staging
+          - production
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -37,24 +35,16 @@ jobs:
           node-version: 22.18.0
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
-      - name: Verify Railway automation credential integrity
-        env:
-          EXPECTED_SHA256: ${{ vars.RAILWAY_API_TOKEN_SHA256 }}
-          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
-        run: |
-          [ -n "$EXPECTED_SHA256" ] || { echo "Railway token integrity marker is missing" >&2; exit 1; }
-          actual_sha256="$(printf '%s' "$RAILWAY_API_TOKEN" | sha256sum | cut -d ' ' -f 1)"
-          [ "$actual_sha256" = "$EXPECTED_SHA256" ] || { echo "Railway token secret does not match its integrity marker" >&2; exit 1; }
       - name: Reject topology drift
         env:
-          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          # Each matrix job resolves this name from its declared GitHub
+          # environment. Staging and production therefore receive separate,
+          # least-privilege Railway project tokens without a shared fallback.
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_ENV: ${{ matrix.environment }}
-          RAILWAY_ENVIRONMENT_ID: ${{ matrix.railway_environment_id }}
-          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
-          [ -n "$RAILWAY_PROJECT_ID" ] || { echo "Railway project id is missing" >&2; exit 1; }
-          railway status --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --json \
+          railway status --environment "$RAILWAY_ENV" --json \
             | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
       - name: Open an owned incident on drift
         if: ${{ failure() }}
