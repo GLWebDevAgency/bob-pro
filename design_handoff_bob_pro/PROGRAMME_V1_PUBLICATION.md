@@ -1,5 +1,12 @@
 # PROGRAMME V1 — CAP PUBLICATION (ordre fondateur 15/07/2026)
 
+> **Mise à jour normative du 21/07/2026** — Les objectifs, l'ordre d'exécution et la DoD
+> actuels vivent dans [OBJECTIFS_SPECS_DOD_PUBLICATION.md](OBJECTIFS_SPECS_DOD_PUBLICATION.md).
+> La décision fondateur est désormais : **GPT Realtime + Voice Trace sur le chemin critique de
+> publication ; Mistral Realtime V3 préservé mais différé après publication ; un seul tronc et une
+> seule branche courte active à la fois**. Les sections historiques ci-dessous restent un journal
+> de décision et ne prévalent pas lorsqu'elles contredisent ce cap.
+
 RÈGLE : quand le travail EN COURS est terminé, FEATURE FREEZE — plus aucun ajout avant
 publication de la V1, SAUF manque jugé indispensable D'UN COMMUN ACCORD Claude+GPT.
 Ce document est la liste unique de clôture ; toute entrée nouvelle exige l'accord des

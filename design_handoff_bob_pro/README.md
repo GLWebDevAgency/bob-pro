@@ -23,6 +23,7 @@ Les fichiers `*.dc.html` de ce dossier sont des **références de design** : des
 | Fichier | Contenu |
 |---|---|
 | `README.md` | Ce document : vue d'ensemble, architecture, conventions, ordre de construction. |
+| `OBJECTIFS_SPECS_DOD_PUBLICATION.md` | **Source normative du train de publication** : objectifs mesurables, périmètre, GPT Realtime + Voice Trace, séquence Git et Definition of Done binaire. |
 | `tokens.ts` | **Source unique de vérité** des design tokens (couleurs, type, espacements, rayons, ombres, 4 thèmes). Partagé mobile + web. |
 | `tokens.json` | Même chose, format machine (pour générer des CSS vars, du Tailwind config, etc.). |
 | `DOMAIN_MODEL.md` | Entités métier (TS), **règles de conformité réelles** (TVA, e-invoicing 2026/2027, mentions, scoring, trésorerie, tons de relance) + données de seed du proto. |

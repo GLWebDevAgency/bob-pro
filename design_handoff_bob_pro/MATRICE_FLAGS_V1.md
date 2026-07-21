@@ -2,6 +2,13 @@
 
 Document de référence — figé le 2026-07-20 (branche `hardening/integrity-rls-conformite-deps`).
 
+> **Écart de cible consigné le 21/07/2026** — cette matrice décrit encore l'état réellement
+> configuré avant la bascule. La cible de publication est GPT Realtime conformément à
+> [OBJECTIFS_SPECS_DOD_PUBLICATION.md](OBJECTIFS_SPECS_DOD_PUBLICATION.md) et à l'ADR-0004.
+> Les valeurs et le bloc machine-readable ne seront changés que dans le lot atomique qui livre les
+> gardes runtime, les profils EAS et les tests anti-drift correspondants. Jusqu'alors, ne pas lire
+> cette matrice comme la preuve que GPT Realtime est déjà actif.
+
 ## Préambule
 
 Ce document **fige la matrice des flags et variables d'environnement de la build V1 publiée** de Bob Pro, sur les quatre plans où un flag peut se poser :
