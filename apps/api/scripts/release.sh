@@ -461,6 +461,11 @@ REVOKE DELETE, TRUNCATE ON TABLE
   public.realtime_speech_artifacts,
   public.stripe_subscription_invoices
 FROM :"app_role";
+-- Le registre RTP natif est mutable uniquement par CAS UPDATE. La rétention passera par une
+-- capacité bornée dédiée avant activation ; aucune suppression/DDL relationnel ne fuit au runtime.
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.realtime_native_speech_deliveries
+FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
   public.realtime_mistral_conversation_outbox,
   public.realtime_mistral_conversation_commands,
@@ -469,6 +474,24 @@ REVOKE UPDATE, DELETE ON TABLE
   public.realtime_voice_usage_events
 FROM :"app_role";
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.realtime_voice_usage_daily FROM :"app_role";
+-- Les triggers invoquent ces fonctions sans privilège EXECUTE du caller. Les exposer permettrait
+-- sinon de contourner l'adapter CAS et ses preuves applicatives.
+REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
+  TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
+  TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
+  TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.assert_realtime_control_consumption_binding_v3(
+  TEXT, UUID, UUID, UUID, UUID, TIMESTAMPTZ
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant_v2() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption_v2() FROM :"app_role";
 -- Les registres globaux de versions sont monotones, append-only et isolés par keySpace. Le runtime
 -- peut seulement les lire ; seul DIRECT_URL prépare ou retire une version au déploiement.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE

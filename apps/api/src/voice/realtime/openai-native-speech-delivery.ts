@@ -75,8 +75,7 @@ export type OpenAiNativeSpeechDeliveryErrorCode =
   | 'acknowledgement_conflict'
   | 'terminal_immutable'
   | 'delivery_expired'
-  | 'expiry_not_reached'
-  | 'revision_exhausted';
+  | 'expiry_not_reached';
 
 export class OpenAiNativeSpeechDeliveryError extends Error {
   constructor(readonly code: OpenAiNativeSpeechDeliveryErrorCode) {
@@ -655,6 +654,17 @@ function progressionPrefixIsValid(state: OpenAiNativeSpeechDeliveryState): boole
   return state.completedAtMs !== null;
 }
 
+function expectedTerminalRevision(state: OpenAiNativeSpeechDeliveryState): number | null {
+  if (!progressionPrefixIsValid(state)) return null;
+  if (state.completedAtMs !== null) return 8;
+  if (state.responseDoneAtMs !== null || state.outputStoppedAtMs !== null) return 7;
+  if (state.streamingAtMs !== null) return 6;
+  if (state.acceptedAtMs !== null) return 5;
+  if (state.requestedAtMs !== null) return 4;
+  if (state.dispatchingAtMs !== null) return 3;
+  return 2;
+}
+
 /**
  * Verifie une projection relue de la base avant tout calcul. Une colonne incoherente n'est jamais
  * interpretee comme un etat plus permissif.
@@ -713,7 +723,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   const hasCompleted = hasDoneLatch && hasStoppedLatch && state.completedAtMs !== null;
 
   if (state.phase === 'prepared') {
-    if (state.dispatchClaimId !== null || state.dispatchingAtMs !== null
+    if (state.revision !== 1
+      || state.dispatchClaimId !== null || state.dispatchingAtMs !== null
       || state.requestedAtMs !== null || state.providerResponseIdHmac !== null
       || state.acceptedAtMs !== null || state.streamingAtMs !== null
       || !noResponseLatches || !terminalFieldsAreEmpty(state)) fail('invalid_state');
@@ -721,7 +732,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'dispatching') {
-    if (!hasProgressionThrough(state, 'dispatching') || state.requestedAtMs !== null
+    if (state.revision !== 2
+      || !hasProgressionThrough(state, 'dispatching') || state.requestedAtMs !== null
       || state.providerResponseIdHmac !== null || state.acceptedAtMs !== null
       || state.streamingAtMs !== null || !noResponseLatches
       || !terminalFieldsAreEmpty(state)) fail('invalid_state');
@@ -729,26 +741,30 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'requested') {
-    if (!hasProgressionThrough(state, 'requested') || state.providerResponseIdHmac !== null
+    if (state.revision !== 3
+      || !hasProgressionThrough(state, 'requested') || state.providerResponseIdHmac !== null
       || state.acceptedAtMs !== null || state.streamingAtMs !== null
       || !noResponseLatches || !terminalFieldsAreEmpty(state)) fail('invalid_state');
     return;
   }
 
   if (state.phase === 'accepted') {
-    if (!hasProgressionThrough(state, 'accepted') || state.streamingAtMs !== null
+    if (state.revision !== 4
+      || !hasProgressionThrough(state, 'accepted') || state.streamingAtMs !== null
       || !noResponseLatches || !terminalFieldsAreEmpty(state)) fail('invalid_state');
     return;
   }
 
   if (state.phase === 'streaming') {
-    if (!hasProgressionThrough(state, 'streaming') || !noResponseLatches
+    if (state.revision !== 5
+      || !hasProgressionThrough(state, 'streaming') || !noResponseLatches
       || !terminalFieldsAreEmpty(state)) fail('invalid_state');
     return;
   }
 
   if (state.phase === 'draining') {
-    if (!hasProgressionThrough(state, 'streaming')
+    if (state.revision !== 6
+      || !hasProgressionThrough(state, 'streaming')
       || hasDoneLatch === hasStoppedLatch
       || state.completedAtMs !== null
       || !terminalFieldsAreEmpty(state)) fail('invalid_state');
@@ -756,13 +772,15 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'completed') {
-    if (!hasProgressionThrough(state, 'streaming') || !hasCompleted
+    if (state.revision !== 7
+      || !hasProgressionThrough(state, 'streaming') || !hasCompleted
       || !terminalFieldsAreEmpty(state)) fail('invalid_state');
     return;
   }
 
   if (state.phase === 'delivered') {
-    if (!hasProgressionThrough(state, 'streaming') || !hasCompleted
+    if (state.revision !== 8
+      || !hasProgressionThrough(state, 'streaming') || !hasCompleted
       || !isUuid(state.acknowledgementId)
       || state.deliveredAtMs === null
       || state.deliveredAtMs >= state.expiresAtMs
@@ -773,7 +791,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'cancelled') {
-    if (!progressionPrefixIsValid(state)
+    if (state.revision !== expectedTerminalRevision(state)
+      || !progressionPrefixIsValid(state)
       || !isUuid(state.cancellationId)
       || !CANCELLATION_REASONS.has(state.cancellationReason as OpenAiNativeSpeechCancellationReason)
       || state.terminalAtMs === null
@@ -785,7 +804,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'failed') {
-    if (!progressionPrefixIsValid(state)
+    if (state.revision !== expectedTerminalRevision(state)
+      || !progressionPrefixIsValid(state)
       || !isUuid(state.failureId)
       || !FAILURE_REASONS.has(state.failureReason as OpenAiNativeSpeechFailureReason)
       || state.terminalAtMs === null
@@ -797,7 +817,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'expired') {
-    if (!progressionPrefixIsValid(state)
+    if (state.revision !== expectedTerminalRevision(state)
+      || !progressionPrefixIsValid(state)
       || state.terminalAtMs === null || state.terminalAtMs < state.expiresAtMs
       || state.acknowledgementId !== null || state.deliveredAtMs !== null
       || !stateHasNoSlo(state)
@@ -924,7 +945,7 @@ function assertLiveEventTime(
 }
 
 function nextRevision(state: OpenAiNativeSpeechDeliveryState): number {
-  if (state.revision >= POSTGRES_INT_MAX) fail('revision_exhausted');
+  // La projection valide borne structurellement le lifecycle à 8 révisions maximum.
   return state.revision + 1;
 }
 

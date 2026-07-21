@@ -60,6 +60,7 @@ BEGIN
     'realtime_mistral_conversation_identity_key_version_floors',
     'realtime_mistral_conversation_identity_key_bindings',
     'realtime_speech_artifacts',
+    'realtime_native_speech_deliveries',
     'realtime_control_grants',
     'realtime_control_consumptions',
     'realtime_voice_usage_events',
@@ -745,6 +746,38 @@ CREATE POLICY realtime_speech_artifact_select ON realtime_speech_artifacts
 CREATE POLICY realtime_speech_artifact_insert ON realtime_speech_artifacts
   FOR INSERT WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 CREATE POLICY realtime_speech_artifact_update ON realtime_speech_artifacts
+  FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Preuve OpenAI RTP native : CAS tenanté uniquement. Aucun DELETE runtime et aucun helper
+-- SECURITY DEFINER directement exécutable ; les triggers restent l'unique voie d'autorité.
+REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
+  TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
+  TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
+  TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.assert_realtime_control_consumption_binding_v3(
+  TEXT, UUID, UUID, UUID, UUID, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant_v2() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption_v2() FROM PUBLIC;
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_select ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_update ON realtime_native_speech_deliveries;
+CREATE POLICY realtime_native_speech_delivery_select ON realtime_native_speech_deliveries
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries
+  FOR INSERT WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_update ON realtime_native_speech_deliveries
   FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));

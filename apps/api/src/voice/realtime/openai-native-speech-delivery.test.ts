@@ -222,6 +222,34 @@ describe('OpenAI native speech delivery preparation', () => {
       'invalid_state',
     );
   });
+
+  it('refuse toute revision impossible pour le prefixe durable relu', () => {
+    const prepared = createOpenAiNativeSpeechDelivery(preparation());
+    const dispatching = reduceOpenAiNativeSpeechDelivery(prepared, {
+      type: 'CLAIM_DISPATCH',
+      dispatchClaimId: CLAIM_ID,
+      atMs: 2_000,
+    });
+    const delivered = reduceOpenAiNativeSpeechDelivery(advanceToCompleted(), acknowledgement());
+    const cancelled = reduceOpenAiNativeSpeechDelivery(prepared, {
+      type: 'CANCEL',
+      cancellationId: CANCEL_ID,
+      reason: 'user_cancel',
+      atMs: 2_000,
+    });
+
+    for (const state of [
+      { ...prepared, revision: 2 },
+      { ...dispatching, revision: 1 },
+      { ...delivered, revision: 7 },
+      { ...cancelled, revision: 3 },
+    ]) {
+      expectDeliveryError(
+        () => assertOpenAiNativeSpeechDeliveryState(state),
+        'invalid_state',
+      );
+    }
+  });
 });
 
 describe('OpenAI native speech delivery linear lifecycle', () => {
@@ -554,16 +582,6 @@ describe('OpenAI native delivery acknowledgement and terminal states', () => {
     expect(expired).toMatchObject({ phase: 'expired', terminalAtMs: 60_000 });
   });
 
-  it('refuse une revision CAS epuisee plutot que de boucler', () => {
-    const prepared = createOpenAiNativeSpeechDelivery(preparation());
-    const exhausted = { ...prepared, revision: 2_147_483_647 };
-
-    expectDeliveryError(() => reduceOpenAiNativeSpeechDelivery(exhausted, {
-      type: 'CLAIM_DISPATCH',
-      dispatchClaimId: CLAIM_ID,
-      atMs: 2_000,
-    }), 'revision_exhausted');
-  });
 });
 
 describe('DisabledOpenAiNativeSpeechDeliveryRepository', () => {

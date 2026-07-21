@@ -28,6 +28,131 @@ SELECT pg_temp.assert_eq(
   'cert role cannot bypass RLS'
 );
 SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_native_speech_deliveries'::regclass),
+  1,
+  'native speech delivery has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'),
+  3,
+  'native speech delivery exposes exactly three policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_select' AND cmd = 'SELECT'),
+  1,
+  'native speech delivery select policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_insert' AND cmd = 'INSERT'),
+  1,
+  'native speech delivery insert policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_update' AND cmd = 'UPDATE'),
+  1,
+  'native speech delivery update policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_attribute
+    WHERE attrelid = 'public.realtime_native_speech_deliveries'::regclass
+      AND attname = ANY (ARRAY[
+        'dispatchingAt', 'requestedAt', 'acceptedAt', 'streamingAt',
+        'responseDoneAt', 'outputStoppedAt', 'completedAt', 'deliveredAt',
+        'terminalAt', 'createdAt', 'expiresAt', 'retentionExpiresAt'
+      ]::TEXT[])
+      AND format_type(atttypid, atttypmod) = 'timestamp(3) with time zone'),
+  12,
+  'native speech machine timestamps persist exact JavaScript millisecond precision'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_constraint
+    WHERE conrelid = 'public.realtime_native_speech_deliveries'::regclass
+      AND conname = 'realtime_native_speech_deliveries_finite_timestamps_check'
+      AND pg_get_constraintdef(oid) LIKE '%isfinite%'),
+  1,
+  'native speech delivery rejects non-finite machine timestamps'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'SELECT') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can read native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'INSERT') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can prepare native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'UPDATE') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can perform native speech CAS updates'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_native_speech_deliveries',
+    'DELETE, TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot delete, truncate, reference or retarget native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech fence directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_delivery_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech transition guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_speech_slo_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech SLO guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_control_grant_binding_v3(text,integer,uuid,uuid,text,uuid,uuid,integer,character,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot inspect control delivery bindings directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_control_consumption_binding_v3(text,uuid,uuid,uuid,uuid,timestamp with time zone)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot inspect control consumption bindings directly'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.companies', 'DELETE') THEN 1 ELSE 0 END,
   0,
   'runtime role cannot hard-delete companies'
@@ -750,6 +875,7 @@ SELECT pg_temp.assert_eq(
       AND table_name IN (
         'realtime_admission_events', 'realtime_session_leases',
         'realtime_mistral_ingress_tickets', 'realtime_speech_artifacts',
+        'realtime_native_speech_deliveries',
         'realtime_control_grants', 'realtime_control_consumptions',
         'realtime_voice_usage_events', 'realtime_voice_usage_daily'
       )
@@ -855,6 +981,137 @@ VALUES (
   repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '1 minute', 1,
   1, repeat('4', 64), CURRENT_TIMESTAMP, 1, 2, CURRENT_TIMESTAMP, 1
 );
+-- GPT Realtime natif : preuve v2 liée à la politique v1, sans contrôle provider_stream. La
+-- politique applicative V1 n'autorise le RTP que pour ces scénarios génériques exacts.
+INSERT INTO realtime_native_speech_deliveries (
+  "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+  "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+  "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+  "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+  version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+)
+VALUES (
+  '00000000-0000-4000-8000-00000000c0b3', 'rls-co-a', repeat('a', 64),
+  '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b4',
+  1, repeat('4', 64), 1, repeat('2', 64),
+  1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('e', 64),
+  2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+  1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+  CURRENT_TIMESTAMP + INTERVAL '30 days'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_native_speech_deliveries (
+      "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+      "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+      "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+      "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+      version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+    )
+    VALUES (
+      '00000000-0000-4000-0000-00000000c0b7', 'rls-co-a', repeat('a', 64),
+      '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b7',
+      1, repeat('4', 64), 1, repeat('2', 64),
+      1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('d', 64),
+      2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+      1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+      CURRENT_TIMESTAMP + INTERVAL '30 days'
+    );
+    RAISE EXCEPTION 'RLS cert failed: non-RFC native delivery UUID was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO realtime_native_speech_deliveries (
+      "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+      "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+      "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+      "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+      version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+    )
+    VALUES (
+      '00000000-0000-4000-8000-00000000c0b8', 'rls-co-a', repeat('a', 64),
+      '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b9',
+      1, repeat('4', 64), 1, repeat('2', 64),
+      1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('c', 64),
+      2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+      1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+      'infinity'::TIMESTAMPTZ
+    );
+    RAISE EXCEPTION 'RLS cert failed: infinite native delivery timestamp was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+END;
+$$;
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_native_speech_deliveries),
+  1,
+  'invalid native UUID and infinity probes leave no row behind'
+);
+DO $$
+BEGIN
+  BEGIN
+    UPDATE realtime_native_speech_deliveries
+       SET phase = 'expired', revision = 2,
+           "terminalAt" = "expiresAt"
+     WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 1;
+    RAISE EXCEPTION 'RLS cert failed: native speech delivery expired before DB deadline';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    NULL;
+  END;
+END;
+$$;
+SELECT pg_temp.assert_eq(
+  (SELECT revision FROM realtime_native_speech_deliveries
+    WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3'),
+  1,
+  'early native expiration is rejected without mutation'
+);
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'dispatching', revision = 2,
+       "dispatchClaimId" = '00000000-0000-4000-8000-00000000c0b6',
+       "dispatchingAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 1;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'requested', revision = 3, "requestedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 2;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'accepted', revision = 4,
+       "providerResponseIdHmac" = repeat('b', 64), "acceptedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 3;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'streaming', revision = 5, "streamingAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 4;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'draining', revision = 6, "responseDoneAt" = CURRENT_TIMESTAMP,
+       "outputTranscriptHmac" = repeat('5', 64)
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 5;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'completed', revision = 7, "outputStoppedAt" = CURRENT_TIMESTAMP,
+       "completedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 6;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'delivered', revision = 8,
+       "acknowledgementId" = '00000000-0000-4000-8000-00000000c0b5',
+       "deliveredAt" = CURRENT_TIMESTAMP, "terminalAt" = CURRENT_TIMESTAMP,
+       "sloFormatVersion" = 1, "speechStoppedEventToFirstInboundRtpMs" = 250,
+       "bargeInStatus" = 'complete', "bargeInDurationsMs" = ARRAY[120]::INTEGER[]
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 7;
+DO $$
+BEGIN
+  BEGIN
+    UPDATE realtime_native_speech_deliveries
+       SET revision = 9
+     WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3';
+    RAISE EXCEPTION 'RLS cert failed: terminal native speech delivery was mutable';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    NULL;
+  END;
+END;
+$$;
 INSERT INTO realtime_speech_artifacts (
   id, "companyId", "subjectHash", "sessionId", "turnId", "segmentIndex", "renderTokenHash",
   "sidebandOwnerEpoch", "sidebandOwnerTokenHash", state, classification,
@@ -928,12 +1185,14 @@ VALUES (
   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '35 days'
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_speech_artifacts), 1, 'speech artifact tenant A visible');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 1, 'native speech delivery tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_grants), 1, 'control grant tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 1, 'control consumption tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 1, 'voice usage event tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_daily), 1, 'voice usage rollup tenant A visible');
 SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_speech_artifacts), 0, 'tenant B cannot see tenant A speech');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 0, 'tenant B cannot see tenant A native speech');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_grants), 0, 'tenant B cannot see tenant A control');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 0, 'tenant B cannot see tenant A consumption');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 0, 'tenant B cannot see tenant A usage');

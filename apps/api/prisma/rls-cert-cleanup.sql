@@ -18,6 +18,7 @@ DELETE FROM release_flag_subjects WHERE id IN ('rls-flag-user-pilot', 'rls-flag-
 
 DELETE FROM realtime_control_consumptions WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_control_grants WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
+DELETE FROM realtime_native_speech_deliveries WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_speech_artifacts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_voice_usage_events WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_voice_usage_daily WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
