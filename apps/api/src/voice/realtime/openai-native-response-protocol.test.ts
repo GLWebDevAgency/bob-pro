@@ -273,6 +273,33 @@ describe('Bob Live OpenAI natif — décodeur wire strict', () => {
     );
   });
 
+  it('tolère output_modalities absent des snapshots fournisseur sans relâcher audio-only', () => {
+    const created = createdEvent() as { response: Record<string, unknown> };
+    delete created.response.output_modalities;
+    expect(decodeOpenAiNativeResponseEvent(wire(created))).toMatchObject({
+      type: 'response_created',
+      responseId: RESPONSE_ID,
+    });
+
+    const done = responseDoneEvent() as { response: Record<string, unknown> };
+    delete done.response.output_modalities;
+    expect(decodeOpenAiNativeResponseEvent(wire(done))).toMatchObject({
+      type: 'response_done',
+      responseId: RESPONSE_ID,
+      status: 'completed',
+    });
+
+    for (const modalities of [null, [], ['text'], ['audio', 'text'], 'audio']) {
+      for (const event of [createdEvent(), responseDoneEvent()]) {
+        (event as { response: Record<string, unknown> }).response.output_modalities = modalities;
+        expectProtocolError(
+          () => decodeOpenAiNativeResponseEvent(wire(event)),
+          'forbidden_text_output',
+        );
+      }
+    }
+  });
+
   it('valide le PCM base64 mais ne le conserve jamais dans l’événement décodé', () => {
     const event = decodeOpenAiNativeResponseEvent(wire(audioEvent(
       'response.output_audio.delta',

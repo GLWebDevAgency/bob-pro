@@ -524,6 +524,10 @@ function decodeAudioMessageItem(value: unknown, allowEmptyContent: boolean): Dec
 }
 
 function validateAudioOnlyModalities(value: unknown): void {
+  // OpenAI omet ce snapshot sur certains événements `response.created`/`response.done`.
+  // Son absence n'autorise rien de plus : les sorties restent contrôlées événement par
+  // événement et, lorsqu'il est présent, le champ doit déclarer exclusivement l'audio.
+  if (value === undefined) return;
   if (!Array.isArray(value) || value.length !== 1 || value[0] !== 'audio') {
     fail('forbidden_text_output');
   }
