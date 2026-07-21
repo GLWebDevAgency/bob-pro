@@ -292,7 +292,7 @@ remplace jamais ce registre.
 | --- | --- | --- |
 | O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
 | O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés | suites globales + scanner Railway sur Storage cible + train 0/1 + checkout propre |
-| O3 — GPT Realtime | specified | contrat homogène OpenAI + test sans clé Mistral + QA device |
+| O3 — GPT Realtime | implemented partiellement — isolation fournisseur certifiée localement (`706108dc`, [spec et preuves](SPEC_GPT_REALTIME_PROVIDER_ISOLATION.md)) | sortie audio GPT native + barge-in réel + Voice Trace + QA device sans requête Mistral |
 | O4 — mission continue | specified | scénario devis E2E voix/tap sur vrais use cases |
 | O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
 | O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
