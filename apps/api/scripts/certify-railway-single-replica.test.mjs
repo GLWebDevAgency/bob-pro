@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { certifySingleRailwayReplica } from './certify-railway-single-replica.mjs';
+import {
+  certifySingleRailwayReplica,
+  railwayTopologyExitCode,
+  RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE,
+  RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE,
+  RailwayTopologyDriftError,
+  RailwayTopologyUnavailableError,
+} from './certify-railway-single-replica.mjs';
+
+function captureError(callback) {
+  let captured;
+  try {
+    callback();
+  } catch (error) {
+    captured = error;
+  }
+  assert.ok(captured instanceof Error, 'la certification devait échouer');
+  return captured;
+}
 
 function deployConfig(
   replicaCounts = [1],
@@ -223,7 +241,7 @@ test('échoue fermé si la forme Railway attendue disparaît', () => {
     .activeDeployments;
   assert.throws(
     () => certifySingleRailwayReplica(missingRuntimeShape, 'production', 'bob-pro-api'),
-    /exactement un déploiement actif/u,
+    /activeDeployments absents/u,
   );
   const missingActiveManifest = fixture();
   delete missingActiveManifest.environments.edges[0].node.serviceInstances.edges[0].node
@@ -232,4 +250,34 @@ test('échoue fermé si la forme Railway attendue disparaît', () => {
     () => certifySingleRailwayReplica(missingActiveManifest, 'production', 'bob-pro-api'),
     /activeDeployments\[0\]\.meta\.serviceManifest\.deploy absent/u,
   );
+});
+
+test('classe une topologie dangereuse comme dérive avec un code de sortie dédié', () => {
+  const error = captureError(() =>
+    certifySingleRailwayReplica(fixture([2]), 'production', 'bob-pro-api'),
+  );
+
+  assert.ok(error instanceof RailwayTopologyDriftError);
+  assert.equal(railwayTopologyExitCode(error), RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE);
+});
+
+test('classe une réponse absente ou invalide comme indisponible, jamais comme dérive', () => {
+  const missingShape = captureError(() =>
+    certifySingleRailwayReplica({}, 'production', 'bob-pro-api'),
+  );
+  assert.ok(missingShape instanceof RailwayTopologyUnavailableError);
+  assert.equal(railwayTopologyExitCode(missingShape), RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE);
+
+  const malformedReplicaConfig = fixture();
+  const malformedDeployment =
+    malformedReplicaConfig.environments.edges[0].node.serviceInstances.edges[0].node
+      .latestDeployment;
+  malformedDeployment.meta.serviceManifest.deploy.multiRegionConfig = {
+    region: { numReplicas: '1' },
+  };
+  const malformed = captureError(() =>
+    certifySingleRailwayReplica(malformedReplicaConfig, 'production', 'bob-pro-api'),
+  );
+  assert.ok(malformed instanceof RailwayTopologyUnavailableError);
+  assert.equal(railwayTopologyExitCode(malformed), RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE);
 });

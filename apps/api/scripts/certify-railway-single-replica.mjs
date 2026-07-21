@@ -5,32 +5,72 @@ function object(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null;
 }
 
+export const RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE = 1;
+export const RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE = 2;
+
+export class RailwayTopologyUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RailwayTopologyUnavailableError';
+  }
+}
+
+export class RailwayTopologyDriftError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RailwayTopologyDriftError';
+  }
+}
+
+function unavailable(message) {
+  throw new RailwayTopologyUnavailableError(message);
+}
+
+function drift(message) {
+  throw new RailwayTopologyDriftError(message);
+}
+
 function certifyDeploymentConfig(deployment, deploymentLabel) {
   const deploy = object(object(object(deployment)?.meta)?.serviceManifest)?.deploy;
   if (!object(deploy)) {
-    throw new Error(`Railway status: ${deploymentLabel}.meta.serviceManifest.deploy absent`);
+    unavailable(`Railway status: ${deploymentLabel}.meta.serviceManifest.deploy absent`);
   }
   const regions = object(deploy.multiRegionConfig);
   if (!regions) {
-    throw new Error(`Railway status: ${deploymentLabel}.deploy.multiRegionConfig absent`);
+    unavailable(`Railway status: ${deploymentLabel}.deploy.multiRegionConfig absent`);
   }
   const regionalReplicaCounts = Object.values(regions).map((region) => object(region)?.numReplicas);
   if (
-    regionalReplicaCounts.length !== 1 ||
+    regionalReplicaCounts.length === 0 ||
     regionalReplicaCounts.some((count) => !Number.isInteger(count) || count < 0) ||
+    !Number.isInteger(deploy.numReplicas) ||
+    deploy.numReplicas < 0
+  ) {
+    unavailable(`Railway status: ${deploymentLabel}.deploy replica config invalide`);
+  }
+  if (
+    regionalReplicaCounts.length !== 1 ||
     regionalReplicaCounts.reduce((total, count) => total + count, 0) !== 1 ||
     deploy.numReplicas !== 1
   ) {
-    throw new Error(
+    drift(
       `Railway ${deploymentLabel} doit rester à exactement un replica tant que le throttler est process-local`,
     );
+  }
+
+  if (
+    !['overlapSeconds', 'drainingSeconds'].every(
+      (field) => deploy[field] === null || typeof deploy[field] === 'number',
+    )
+  ) {
+    unavailable(`Railway status: ${deploymentLabel}.deploy overlap/draining invalide`);
   }
 
   if (
     (deploy.overlapSeconds !== null && deploy.overlapSeconds !== 0) ||
     (deploy.drainingSeconds !== null && deploy.drainingSeconds !== 0)
   ) {
-    throw new Error(
+    drift(
       `Railway ${deploymentLabel} overlap/draining doit rester nul tant que le throttler est process-local`,
     );
   }
@@ -39,13 +79,13 @@ function certifyDeploymentConfig(deployment, deploymentLabel) {
 export function certifySingleRailwayReplica(status, environmentName, serviceNameOrId) {
   const root = object(status);
   const environments = object(root?.environments)?.edges;
-  if (!Array.isArray(environments)) throw new Error('Railway status: environments absents');
+  if (!Array.isArray(environments)) unavailable('Railway status: environments absents');
   const environment = environments
     .map((edge) => object(edge)?.node)
     .find((node) => object(node)?.name === environmentName);
-  if (!object(environment)) throw new Error(`Railway environment introuvable: ${environmentName}`);
+  if (!object(environment)) unavailable(`Railway environment introuvable: ${environmentName}`);
   const services = object(environment.serviceInstances)?.edges;
-  if (!Array.isArray(services)) throw new Error('Railway status: serviceInstances absents');
+  if (!Array.isArray(services)) unavailable('Railway status: serviceInstances absents');
   const matches = services
     .map((edge) => object(edge)?.node)
     .filter((node) => {
@@ -53,31 +93,46 @@ export function certifySingleRailwayReplica(status, environmentName, serviceName
       return service?.serviceName === serviceNameOrId || service?.serviceId === serviceNameOrId;
     });
   if (matches.length !== 1) {
-    throw new Error(`Railway service non unique ou introuvable: ${serviceNameOrId}`);
+    unavailable(`Railway service non unique ou introuvable: ${serviceNameOrId}`);
   }
   const service = object(matches[0]);
   certifyDeploymentConfig(service?.latestDeployment, 'latestDeployment');
 
   const activeDeployments = service.activeDeployments;
-  if (!Array.isArray(activeDeployments) || activeDeployments.length !== 1) {
-    throw new Error('Railway doit exposer exactement un déploiement actif');
+  if (!Array.isArray(activeDeployments)) {
+    unavailable('Railway status: activeDeployments absents');
+  }
+  if (activeDeployments.length !== 1) {
+    drift('Railway doit exposer exactement un déploiement actif');
   }
   const activeDeployment = object(activeDeployments[0]);
   const instances = activeDeployment?.instances;
   if (
+    !activeDeployment ||
+    typeof activeDeployment.status !== 'string' ||
+    typeof activeDeployment.deploymentStopped !== 'boolean' ||
+    !Array.isArray(instances) ||
+    instances.some((instance) => typeof object(instance)?.status !== 'string')
+  ) {
+    unavailable('Railway status: déploiement actif incomplet');
+  }
+  if (
     activeDeployment?.status !== 'SUCCESS' ||
     activeDeployment.deploymentStopped !== false ||
-    !Array.isArray(instances) ||
     instances.length !== 1 ||
     object(instances[0])?.status !== 'RUNNING'
   ) {
-    throw new Error(
-      'Railway doit exposer exactement une instance RUNNING sur un déploiement SUCCESS',
-    );
+    drift('Railway doit exposer exactement une instance RUNNING sur un déploiement SUCCESS');
   }
   certifyDeploymentConfig(activeDeployment, 'activeDeployments[0]');
 
   return { environment: environmentName, service: service.serviceName, replicas: 1 };
+}
+
+export function railwayTopologyExitCode(error) {
+  return error instanceof RailwayTopologyDriftError
+    ? RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE
+    : RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE;
 }
 
 async function main() {
@@ -108,6 +163,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.stderr.write(
       `${error instanceof Error ? error.message : 'Railway replica certification failed'}\n`,
     );
-    process.exitCode = 1;
+    process.exitCode = railwayTopologyExitCode(error);
   });
 }
