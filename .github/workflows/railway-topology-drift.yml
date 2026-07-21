@@ -5,6 +5,7 @@ permissions:
   issues: write
 
 on:
+  workflow_dispatch:
   schedule:
     # Le throttler public reste process-local jusqu'au passage à un storage partagé atomique.
     - cron: '17 * * * *'
