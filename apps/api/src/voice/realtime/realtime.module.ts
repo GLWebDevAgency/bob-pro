@@ -475,10 +475,15 @@ const sidebandProvider: Provider = {
 
 const realtimeAgentTurnProvider: Provider = {
   provide: REALTIME_AGENT_TURN,
-  inject: [PERSISTENCE, ModuleRef],
-  useFactory: (persistence: Persistence, moduleRef: ModuleRef) =>
+  inject: [PERSISTENCE, REALTIME_VOICE_SETTINGS, ModuleRef],
+  useFactory: (
+    persistence: Persistence,
+    settings: RealtimeVoiceSettings,
+    moduleRef: ModuleRef,
+  ) =>
     new RealtimeBobAgentTurnAdapter(
       persistence,
+      settings.provider,
       // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
       // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
       () => moduleRef.get(BackendService, { strict: false }),

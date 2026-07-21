@@ -21,15 +21,15 @@ function run(overrides: Partial<AgentRun> = {}): AgentRun {
   };
 }
 
-function harness(result: Result<AgentRun, AppError>) {
+function harness(result: Result<AgentRun, AppError>, requiredProvider: 'openai' | 'mistral' = 'openai') {
   const runWithTenant = vi.fn(async (_companyId: string, operation: () => Promise<unknown>) => operation());
   const askBob = vi.fn<RealtimeBobAgentExecutor['askBob']>(
-    async (_payload: AgentAskPayload, _execution: { readonly signal: AbortSignal }) => result,
+    async (_payload: AgentAskPayload, _execution) => result,
   );
   const persistence = { runWithTenant } as unknown as Persistence;
   const executor: RealtimeBobAgentExecutor = { askBob };
   return {
-    adapter: new RealtimeBobAgentTurnAdapter(persistence, () => executor),
+    adapter: new RealtimeBobAgentTurnAdapter(persistence, requiredProvider, () => executor),
     runWithTenant,
     askBob,
   };
@@ -86,7 +86,18 @@ describe('RealtimeBobAgentTurnAdapter', () => {
         autonomy: 'confirm_all',
         tone: 'pote',
       }),
-      { signal: expect.any(AbortSignal) },
+      { signal: expect.any(AbortSignal), requiredProvider: 'openai' },
+    );
+  });
+
+  it('propage le fournisseur Mistral exact sans le déduire des clés disponibles', async () => {
+    const h = harness({ ok: true, value: run() }, 'mistral');
+
+    await h.adapter.run(input());
+
+    expect(h.askBob).toHaveBeenCalledWith(
+      expect.any(Object),
+      { signal: expect.any(AbortSignal), requiredProvider: 'mistral' },
     );
   });
 

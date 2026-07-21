@@ -5,6 +5,7 @@ import {
   type AgentContext,
   type AgentHistoryTurn,
   type AgentRun,
+  type Provider,
 } from '@bob/ai';
 import type { AppError, Result } from '@bob/core';
 import { requestContext } from '../../observability/logger';
@@ -55,10 +56,15 @@ export interface RealtimeAgentTurnPort {
   run(input: RealtimeAgentTurnInput): Promise<RealtimeAgentTurnOutcome>;
 }
 
+export type RealtimeAgentProvider = Extract<Provider, 'openai' | 'mistral'>;
+
 export interface RealtimeBobAgentExecutor {
   askBob(
     input: AgentAskPayload,
-    execution: { readonly signal: AbortSignal },
+    execution: {
+      readonly signal: AbortSignal;
+      readonly requiredProvider: RealtimeAgentProvider;
+    },
   ): Promise<Result<AgentRun, AppError>>;
 }
 
@@ -131,6 +137,7 @@ function safeFailureSpeech(error: AppError): string {
 export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
   constructor(
     private readonly persistence: Persistence,
+    private readonly requiredProvider: RealtimeAgentProvider,
     private readonly resolveExecutor: () => RealtimeBobAgentExecutor,
   ) {}
 
@@ -166,7 +173,10 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
         },
         () => this.persistence.runWithTenant(
           input.companyId,
-          () => this.resolveExecutor().askBob(payload, { signal: input.signal }),
+          () => this.resolveExecutor().askBob(payload, {
+            signal: input.signal,
+            requiredProvider: this.requiredProvider,
+          }),
         ),
       );
     } catch {

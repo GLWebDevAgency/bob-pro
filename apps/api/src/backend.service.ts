@@ -252,6 +252,7 @@ import {
   type AgentAskPayload,
   type AgentRun,
   type AgentAutonomy,
+  type Provider,
   type BatchItem,
   type PendingAction,
   type JournalEntry,
@@ -1048,6 +1049,8 @@ function documentExpenseCreationKey(documentSha256: string): string {
 /** Options d'exécution non sérialisables : réservées aux transports serveur de confiance. */
 export interface AgentExecutionOptions {
   readonly signal?: AbortSignal;
+  /** Contrainte exacte issue d'un transport serveur authentifié, jamais du payload utilisateur. */
+  readonly requiredProvider?: Provider;
 }
 
 /**
@@ -4106,13 +4109,14 @@ export class BackendService {
     };
   }
 
-  private bobAgent() {
+  private bobAgent(requiredProvider?: Provider) {
     const router = new ModelRouter({
       hasClaudeKey: hasClaudeKey(),
       hasGlmKey: hasGlmKey(),
       hasDeepseekKey: hasDeepseekKey(),
       hasMistralKey: hasMistralKey(),
       hasOpenaiKey: hasOpenaiKey(),
+      ...(requiredProvider === undefined ? {} : { requiredProvider }),
     });
     // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur.
     const provider = router.route('intent.detect').model;
@@ -4185,7 +4189,7 @@ export class BackendService {
       subscription.autonomyEntitlement(),
     );
     const start = Date.now();
-    const bobRuntime = this.bobAgent();
+    const bobRuntime = this.bobAgent(execution?.requiredProvider);
     if (bobRuntime.provider === 'unavailable') {
       return err(appUnavailable('bob-llm'));
     }
@@ -4306,6 +4310,8 @@ export class BackendService {
       this.metrics.aiGuardViolations.inc();
     this.logger.audit('ai.ask', {
       model,
+      selectedProvider: bobRuntime.provider,
+      requiredProvider: execution?.requiredProvider ?? null,
       intent,
       outcome,
       ms,

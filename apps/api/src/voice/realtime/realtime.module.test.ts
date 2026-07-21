@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { FactoryProvider, Provider } from '@nestjs/common';
+import { MODULE_METADATA } from '@nestjs/common/constants';
+import { ModuleRef } from '@nestjs/core';
 import { loadEnv } from '../../config/env';
 import type { Persistence } from '../../persistence/persistence';
+import { PERSISTENCE } from '../../persistence/persistence-token';
 import type { MistralConversationDurableAuthority } from './mistral-conversation-gateway-v2';
 import type { MistralConversationPersistenceKeyRing } from './mistral-conversation-outbox-seal';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
@@ -12,10 +16,34 @@ import {
   type MistralRealtimeIdentityBinding,
   type MistralRealtimeIngressIdentityKeyRing,
 } from './realtime-mistral-ingress-ticket';
+import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
+import {
+  REALTIME_AGENT_TURN,
+  REALTIME_VOICE_SETTINGS,
+} from './realtime.tokens';
+import type { RealtimeVoiceSettings } from './realtime.types';
 import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
+  RealtimeVoiceModule,
 } from './realtime.module';
+
+type RealtimeAgentTurnFactoryProvider = FactoryProvider & {
+  provide: typeof REALTIME_AGENT_TURN;
+};
+
+function isRealtimeAgentTurnFactoryProvider(
+  provider: Provider,
+): provider is RealtimeAgentTurnFactoryProvider {
+  return typeof provider === 'object'
+    && provider !== null
+    && 'provide' in provider
+    && provider.provide === REALTIME_AGENT_TURN
+    && 'inject' in provider
+    && Array.isArray(provider.inject)
+    && 'useFactory' in provider
+    && typeof provider.useFactory === 'function';
+}
 
 function validMistralEnvironment(): void {
   vi.stubEnv('DEMO_MODE', 'true');
@@ -309,4 +337,42 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     expect(authorities.assertCurrentKeyVersion).toHaveBeenCalledOnce();
     expect(authorities.durable.open).not.toHaveBeenCalled();
   });
+});
+
+describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
+  it.each(['openai', 'mistral'] as const)(
+    'injecte le fournisseur %s choisi au bootstrap dans l’adaptateur agent',
+    (provider) => {
+      const providers = Reflect.getMetadata(
+        MODULE_METADATA.PROVIDERS,
+        RealtimeVoiceModule,
+      ) as Provider[];
+      const definition = providers.find(isRealtimeAgentTurnFactoryProvider);
+
+      expect(definition).toBeDefined();
+      expect(definition?.inject).toEqual([
+        PERSISTENCE,
+        REALTIME_VOICE_SETTINGS,
+        ModuleRef,
+      ]);
+
+      const persistence = {} as Persistence;
+      const moduleRef = { get: vi.fn() } as unknown as ModuleRef;
+      const factory = definition?.useFactory as ((
+        persistence: Persistence,
+        settings: RealtimeVoiceSettings,
+        moduleRef: ModuleRef,
+      ) => RealtimeBobAgentTurnAdapter) | undefined;
+      const adapter = factory?.(
+        persistence,
+        { provider } as RealtimeVoiceSettings,
+        moduleRef,
+      );
+
+      expect(adapter).toBeInstanceOf(RealtimeBobAgentTurnAdapter);
+      expect(
+        (adapter as unknown as { readonly requiredProvider: unknown }).requiredProvider,
+      ).toBe(provider);
+    },
+  );
 });
