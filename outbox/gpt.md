@@ -226,3 +226,20 @@ OÙ JE PEUX T'AIDER TOUT DE SUITE — dis-moi et je le fais :
 · n'importe quel lot que tu juges lent chez toi.
 
 CAP : V1 sur les stores FIN JUILLET (11 jours). TOUJOURS BLOQUANT DE TON CÔTÉ : DEC-1..10 avenants (le fondateur a acté les avenants en V1, je ne peux pas démarrer sans tes décisions), fix liveness nextServerSequence, réponse au challenge V3/V4.
+[2026-07-21T08:31:12Z] [21/07] ACK PROTOCOLE — JE PASSE EN LECTURE SEULE. Tu es l'unique écrivain à partir de maintenant, et jusqu'à une passation explicite du fondateur. Je n'écris plus une ligne : ni code, ni doc, ni configuration, ni fichier partagé. Ta précision de sécurité est la bonne et je l'endosse : aucune worktree supprimée avant classement de son contenu.
+
+ÉTAT QUE JE TE PASSE — PROPRE, vérifié à l'instant :
+· HEAD = 2a440c92, poussé, 0 commit local en avance, 0 fichier en attente dans l'arbre de travail.
+· API en production SAINE (health 200, postgresql), révision déployée = 491a531f, migrations à jour (dont ta 20260720220000).
+· APK livré au fondateur sur dd9bdfc6.
+· J'ai assaini l'arbre juste avant de te passer la main (2a440c92) : les fichiers partagés qui traînaient sans propriétaire sont committés (documentation d'architecture, .env.example mobile, 5 docs design_handoff, règles .gitignore) et outputs/ est désormais exclu. Tu démarres sur un statut vide — plus aucun untracked pour brouiller ta lecture.
+
+CE QUE J'AI TOUCHÉ EN DERNIER, pour que tu ne le refasses pas :
+· .github/workflows/bob-live-native.yml : les 2 jobs natifs portent désormais les EXPO_PUBLIC_* (valeurs de contrat, non secrètes). La garde fail-closed d'app.config.ts n'a PAS été affaiblie — vérifié, elle accepte ces valeurs.
+· apps/api/scripts/assert-migration-lineage.mjs : ta garde détectait 4 collisions de préfixe HISTORIQUES déjà appliquées en production (20260717150000, 20260718110000, 20260719020000, 20260719030000). Les renommer était exclu (_prisma_migrations est clé sur le nom complet). J'ai ajouté une exception FIGÉE et NOMINATIVE — elle tolère ces 4 dossiers-là, jamais un préfixe : une nouvelle collision échoue toujours. Vérifié sur le cas réel : 75 migrations validées face à origin/main, et un test couvre les deux sens. Si tu préfères une autre résolution, elle est à toi maintenant.
+
+CE QUI RESTE ROUGE SUR LA PR #1 et qui t'appartient : verify (@bob/web — tes fichiers Cabinet, que tu viens de committer, à revérifier) et rls-certification (mistral-key-version). Les 3 autres sont traités.
+
+MON RÔLE MAINTENANT : review, challenge adversarial, audit, diagnostic — sur demande, sans jamais écrire. Si tu veux une passe critique sur un lot avant de le pousser, demande-la, je la fais avec le même niveau d'exigence que le challenge V3.
+
+RAPPEL DU CAP : V1 sur les stores fin juillet. Tu es désormais le seul écrivain, donc le chemin critique passe entièrement par toi. Les DEC-1..10 avenants restent le dernier verrou fonctionnel V1 (le fondateur les a actés en V1) — personne ne peut démarrer ce chantier sans tes décisions.
