@@ -270,35 +270,40 @@ describe('C-EXP6b ② — POST /expenses/import-facturx/confirm : la décision A
     });
   });
 
-  it('AUTOLIQUIDATION (AE) approuvée → ZÉRO ligne 44566 : charge TTC intégrale, TVA à autoliquider', async () => {
-    const { service } = await seeded();
+  it('AUTOLIQUIDATION (AE) reste fail-closed tant que le miroir TVA/CA3 n’est pas certifié', async () => {
+    const { service, p } = await seeded();
     await asPrincipal(MERCIER, async () => {
-      const review = await service.importFacturXExpense({ xml: buildFacturXBasicXml(autoliquidationData()) });
-      expect(review.ok).toBe(true);
-      if (!review.ok) return;
-      expect(review.value.draft.vatNonDeductible).toBe(true);
-      expect(review.value.draft.vatNote).toContain('283-2 nonies');
-      expect(review.value.draft.categoryGuess).toBe('sous_traitance');
+      const xml = buildFacturXBasicXml(autoliquidationData());
+      const expensesBefore = await p.expenses.listByCompany(MERCIER_PROPS.id);
+      const entriesBefore = await p.accountingEntries.listByCompany(MERCIER_PROPS.id);
+
+      const review = await service.importFacturXExpense({ xml });
+      expect(review).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [
+            {
+              field: 'facturx.autoliquidation_non_geree',
+              message: expect.stringContaining('Aucune dépense'),
+            },
+          ],
+        },
+      });
 
       const outcome = await service.confirmFacturXExpense({
-        xml: buildFacturXBasicXml(autoliquidationData()),
+        xml,
         decision: { action: 'approve' },
       });
-      expect(outcome.ok).toBe(true);
-      if (!outcome.ok || outcome.value.status !== 'approved') return;
-      const aeExpenseId = outcome.value.expenseId;
-
-      const entries = await service.listAccountingEntries();
-      expect(entries.ok).toBe(true);
-      if (!entries.ok) return;
-      const purchase = entries.value.find((e) => e.id === `expense:${aeExpenseId}:recorded`);
-      expect(purchase).toBeDefined();
-      // LE test du piège P21 : un import naïf aurait déduit la TVA du sous-traitant.
-      expect(purchase?.lines.some((l) => l.account === '44566')).toBe(false);
-      expect(purchase?.lines).toEqual([
-        expect.objectContaining({ account: '611', debitCents: 100000, creditCents: 0 }),
-        expect.objectContaining({ account: '401', debitCents: 0, creditCents: 100000 }),
-      ]);
+      expect(outcome).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'facturx.autoliquidation_non_geree' }],
+        },
+      });
+      expect(await p.expenses.listByCompany(MERCIER_PROPS.id)).toEqual(expensesBefore);
+      expect(await p.accountingEntries.listByCompany(MERCIER_PROPS.id)).toEqual(entriesBefore);
     });
   });
 

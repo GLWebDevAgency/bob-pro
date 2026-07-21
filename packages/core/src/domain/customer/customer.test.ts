@@ -36,6 +36,53 @@ describe('Customer', () => {
     expect(r.ok).toBe(false);
   });
 
+  it('normalise une adresse électronique réelle et refuse un endpoint EM invalide', () => {
+    const valid = Customer.of({ ...base, email: '  CLIENT@Example.FR  ' });
+    expect(valid.ok && valid.value.email).toBe('client@example.fr');
+
+    const invalid = Customer.of({ ...base, email: 'client-sans-domaine' });
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'email' },
+    });
+  });
+
+  it('conserve une TVA française réelle cohérente et refuse toute valeur fabriquée', () => {
+    const valid = Customer.of({ ...base, type: 'b2b', siren: '732829320', tvaIntracom: ' fr44 732829320 ' });
+    expect(valid.ok && valid.value.tvaIntracom).toBe('FR44732829320');
+
+    expect(Customer.of({ ...base, type: 'b2b', siren: '732829320', tvaIntracom: 'FR24732829320' })).toMatchObject({
+      ok: false,
+      error: { field: 'tvaIntracom' },
+    });
+    expect(Customer.of({ ...base, tvaIntracom: 'FR44732829320' })).toMatchObject({
+      ok: false,
+      error: { field: 'tvaIntracom' },
+    });
+  });
+
+  it('refuse un SIREN de 9 chiffres dont la clé Luhn est fausse', () => {
+    expect(Customer.of({ ...base, type: 'b2b', siren: '732829321' })).toMatchObject({
+      ok: false,
+      error: { field: 'siren' },
+    });
+  });
+
+  it('autorise une fiche minimale mais refuse son usage en facturation tant que l’adresse est incomplète', () => {
+    const minimal = Customer.of({
+      ...base,
+      address: { line1: '   ', zip: '', city: 'Paris' },
+    });
+    expect(minimal.ok).toBe(true);
+    expect(minimal.ok && minimal.value.assertBillingAddressComplete()).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'customer.address' },
+    });
+
+    const complete = Customer.of(base);
+    expect(complete.ok && complete.value.assertBillingAddressComplete().ok).toBe(true);
+  });
+
   it('isProfessional : b2b et b2g sont des débiteurs professionnels, b2c non (gate L441-10/CCP)', () => {
     const of = (type: CustomerProps['type']) => {
       const r = Customer.of({ ...base, type });

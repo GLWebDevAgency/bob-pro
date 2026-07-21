@@ -1,0 +1,143 @@
+# syntax=docker/dockerfile:1
+# Scanner one-shot des archives légales historiques. Cette image est déployée sur un service
+# Railway isolé : aucun PDF/XML de production ne transite par GitHub et l'API n'embarque pas Java.
+
+FROM node:22.18.0-slim AS base
+ENV PNPM_HOME="/pnpm" PATH="/pnpm:$PATH"
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable && corepack prepare pnpm@9.12.0 --activate
+WORKDIR /repo
+
+FROM base AS build
+COPY . .
+RUN pnpm install --frozen-lockfile --filter "@bob/api..."
+RUN pnpm --filter "@bob/api..." run build
+
+# Les dépendances normatives sont récupérées uniquement pendant le build, sans aucun secret ni
+# document. Chaque archive et chaque fichier de règles est vérifié par SHA-256 avant d'entrer dans
+# l'image finale ; le job de production n'a donc pas besoin d'un accès réseau sortant général.
+FROM base AS validators
+RUN apt-get update -y && apt-get install -y --no-install-recommends curl unzip \
+  && rm -rf /var/lib/apt/lists/*
+COPY .github/scripts/certify-facturx-fnfe.sh /repo/.github/scripts/certify-facturx-fnfe.sh
+RUN mkdir -p /opt/bob-validators \
+  && curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 180 \
+       -o /opt/bob-validators/Mustang-CLI-2.24.0.jar \
+       https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/2.24.0/Mustang-CLI-2.24.0.jar \
+  && printf '%s  %s\n' \
+       e4904ffa0afdce3f5836dceb927c440a05ed5d60386fdd37e17a4b2f7652edbf \
+       /opt/bob-validators/Mustang-CLI-2.24.0.jar | sha256sum -c - \
+  && FNFE_PREPARE_ONLY=true bash /repo/.github/scripts/certify-facturx-fnfe.sh \
+       /dev/null /tmp/fnfe-prepare /opt/bob-validators/fnfe-bundle \
+  && rm -rf /tmp/fnfe-prepare
+
+FROM base AS runner
+ENV NODE_ENV="production" \
+    HOME="/work" \
+    DOCUMENT_ARCHIVE_MUSTANG_JAR="/opt/bob-validators/Mustang-CLI-2.24.0.jar" \
+    DOCUMENT_ARCHIVE_FNFE_BUNDLE="/opt/bob-validators/fnfe-bundle" \
+    DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX="/usr/bin/bwrap"
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    default-jre-headless libxml2-utils unzip bubblewrap \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --gid 10001 bob-archive-audit \
+  && useradd --uid 10001 --gid 10001 --home-dir /work --shell /usr/sbin/nologin \
+       bob-archive-audit \
+  && install -d -o 10001 -g 10001 -m 0700 /work
+COPY --from=build /repo /repo
+COPY --from=validators /opt/bob-validators /opt/bob-validators
+RUN <<'EOF'
+install -o root -g root -m 0755 /dev/stdin /usr/local/bin/bob-archive-audit-entrypoint <<'SCRIPT'
+#!/bin/sh
+set -eu
+umask 077
+. /repo/apps/api/scripts/lib/preserve-cleanup-status.sh
+
+if [ "$(id -u)" != "10001" ] || [ "$(id -g)" != "10001" ] || \
+   [ "$(id -un)" != "bob-archive-audit" ]; then
+  echo "Archive audit role identity is invalid." >&2
+  exit 70
+fi
+
+outer_probe="/bob-archive-rootfs-probe-$$"
+if touch "$outer_probe" 2>/dev/null; then
+  rm -f "$outer_probe"
+  echo "Archive audit root filesystem is writable by the runtime role." >&2
+  exit 70
+fi
+
+smoke_directory="$(mktemp -d /work/bwrap-smoke.XXXXXX)"
+cleanup_smoke_directory() {
+  rm -rf "$smoke_directory"
+}
+cleanup_archive_entrypoint_on_exit() {
+  original_status=$?
+  trap - EXIT HUP INT TERM
+  preserve_exit_status_after_cleanup "$original_status" cleanup_smoke_directory
+}
+trap cleanup_archive_entrypoint_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+touch "$smoke_directory/outer-workdir-writable"
+
+# Ce test exécute réellement bubblewrap dans le même environnement que les validateurs : réseau
+# absent, environnement nettoyé, racine en lecture seule et seul répertoire de travail inscriptible.
+env BOB_ARCHIVE_SANDBOX_SMOKE_SECRET=must-not-cross \
+  /usr/bin/bwrap \
+    --unshare-user \
+    --unshare-pid \
+    --unshare-net \
+    --unshare-ipc \
+    --unshare-uts \
+    --die-with-parent \
+    --new-session \
+    --ro-bind / / \
+    --proc /proc \
+    --dev /dev \
+    --tmpfs /tmp \
+    --bind "$smoke_directory" "$smoke_directory" \
+    --chdir "$smoke_directory" \
+    --clearenv \
+    --setenv PATH /usr/local/bin:/usr/bin:/bin \
+    --setenv HOME "$smoke_directory" \
+    --setenv TMPDIR "$smoke_directory" \
+    --setenv LANG C.UTF-8 \
+    --setenv LC_ALL C.UTF-8 \
+    -- \
+    /usr/local/bin/node -e '
+      const fs = require("node:fs");
+      const os = require("node:os");
+      const forbidden = [
+        "BOB_ARCHIVE_SANDBOX_SMOKE_SECRET",
+        "DATABASE_URL",
+        "DIRECT_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "RAILWAY_TOKEN",
+      ];
+      if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(71);
+      const exposedNetwork = Object.entries(os.networkInterfaces()).some(
+        ([name, addresses]) => name !== "lo" && Array.isArray(addresses) && addresses.length > 0,
+      );
+      if (exposedNetwork) process.exit(72);
+      const writable = `${process.env.HOME}/inner-workdir-writable`;
+      fs.writeFileSync(writable, "ok", { mode: 0o600 });
+      fs.unlinkSync(writable);
+      try {
+        fs.writeFileSync("/bob-archive-sandbox-rootfs-probe", "forbidden");
+        process.exit(73);
+      } catch (error) {
+        if (!["EACCES", "EPERM", "EROFS"].includes(error?.code)) process.exit(74);
+      }
+    '
+
+cleanup_smoke_directory
+trap - EXIT HUP INT TERM
+cd /repo
+exec sh apps/api/scripts/run-document-archive-audit-job.sh
+SCRIPT
+EOF
+WORKDIR /repo
+USER bob-archive-audit:bob-archive-audit
+CMD ["/usr/local/bin/bob-archive-audit-entrypoint"]

@@ -387,7 +387,7 @@ for (const origin of corsOrigins) {
 if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(process.env.BREVO_SENDER_EMAIL ?? '')) {
   fail('BREVO_SENDER_EMAIL must be a valid email address');
 }
-if (!/^[A-Za-z0-9._-]{1,100}$/.test(process.env.SUPABASE_STORAGE_BUCKET ?? '')) {
+if (!/^[a-z0-9][a-z0-9._-]{0,62}$/.test(process.env.SUPABASE_STORAGE_BUCKET ?? '')) {
   fail('SUPABASE_STORAGE_BUCKET has an invalid format');
 }
 

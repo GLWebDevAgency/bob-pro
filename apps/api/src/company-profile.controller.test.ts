@@ -274,10 +274,10 @@ describe('CompanyLookupController — identité légale (A6 capital, A2 médiate
       capitalSocialCents: 500000,
       mediateurConso: { nom: '  CM2C  ', coordonnees: '  14 rue Saint-Jean, 75017 Paris  ' },
     });
-    expect(updateCompanyLegal).toHaveBeenCalledWith({
+    expect(updateCompanyLegal).toHaveBeenCalledWith(expect.objectContaining({
       capitalSocialCents: 500000,
       mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris' },
-    });
+    }));
   });
 
   it('accepte un effacement explicite (null) sans toucher au champ non transmis', async () => {
@@ -285,10 +285,33 @@ describe('CompanyLookupController — identité légale (A6 capital, A2 médiate
     const value = controller({ updateCompanyLegal } as never);
 
     await value.updateLegal({ mediateurConso: null });
-    expect(updateCompanyLegal).toHaveBeenCalledWith({
+    expect(updateCompanyLegal).toHaveBeenCalledWith(expect.objectContaining({
       capitalSocialCents: undefined,
       mediateurConso: null,
-    });
+    }));
+  });
+
+  it('transmet une TVA attribuée normalisable et permet son effacement explicite', async () => {
+    const updateCompanyLegal = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const value = controller({ updateCompanyLegal } as never);
+
+    await value.updateLegal({ tvaIntracom: '  fr44 732829320  ' });
+    expect(updateCompanyLegal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tvaIntracom: 'fr44 732829320' }),
+    );
+
+    await value.updateLegal({ tvaIntracom: null });
+    expect(updateCompanyLegal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tvaIntracom: null }),
+    );
+  });
+
+  it.each(['', '   ', 42, false])('refuse une TVA de forme HTTP invalide (%j)', async (tvaIntracom) => {
+    const updateCompanyLegal = vi.fn();
+    const value = controller({ updateCompanyLegal } as never);
+
+    await expect(value.updateLegal({ tvaIntracom })).rejects.toMatchObject({ status: 422 });
+    expect(updateCompanyLegal).not.toHaveBeenCalled();
   });
 });
 

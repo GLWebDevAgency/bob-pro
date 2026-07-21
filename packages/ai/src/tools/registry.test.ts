@@ -109,7 +109,7 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
     expect(t.projectPublicResult?.(run.ok ? run.value : {})).not.toHaveProperty('jobId');
   });
 
-  it('emettre_facture : embargoOverride booléen STRICT — seul `true` traverse jusqu’à l’hôte', async () => {
+  it('emettre_facture : BT-23 et embargo sont fermés et traversent ensemble jusqu’à l’hôte', async () => {
     const overrides: unknown[] = [];
     const actions: BobActions = {
       ...baseActions,
@@ -117,13 +117,23 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
     };
     const t = tool(actions, 'emettre_facture')!;
     expect(t.parse({ invoiceId: 'inv-1', embargoOverride: 'oui' }).ok).toBe(false);
+    expect(t.parse({ invoiceId: 'inv-1', operationCategory: 'S1' }).ok).toBe(false);
+    expect(t.parse({ invoiceId: 'inv-1', operationCategory: 'hybrid' }).ok).toBe(false);
     const plain = t.parse({ invoiceId: 'inv-1', embargoOverride: false });
     expect(plain.ok && !('embargoOverride' in (plain.value as Record<string, unknown>))).toBe(true);
-    const forced = t.parse({ invoiceId: 'inv-1', embargoOverride: true });
+    const forced = t.parse({
+      invoiceId: 'inv-1',
+      operationCategory: 'services',
+      embargoOverride: true,
+    });
     expect(forced.ok).toBe(true);
     if (!forced.ok) return;
     await t.run(forced.value);
-    expect(overrides).toEqual([{ invoiceId: 'inv-1', embargoOverride: true }]);
+    expect(overrides).toEqual([{
+      invoiceId: 'inv-1',
+      operationCategory: 'services',
+      embargoOverride: true,
+    }]);
   });
 
   it('generer_facture : le mode est obligatoire pour garantir un rejeu déterministe', () => {

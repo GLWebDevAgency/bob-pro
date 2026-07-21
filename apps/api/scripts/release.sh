@@ -4,6 +4,8 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
+. apps/api/scripts/lib/preserve-cleanup-status.sh
+
 : "${DATABASE_URL:?DATABASE_URL runtime app-role is required}"
 : "${DIRECT_URL:?DIRECT_URL privileged migration URL is required}"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
@@ -16,6 +18,316 @@ fi
 
 cleanup_rls_cert() {
   psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cleanup.sql
+}
+
+cleanup_release_on_exit() {
+  original_status=$?
+  trap - EXIT HUP INT TERM
+  preserve_exit_status_after_cleanup "$original_status" cleanup_rls_cert
+}
+
+certify_invoice_settlement_protocol() {
+  local_version="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -c 'SELECT "activeVersion" FROM public.invoice_settlement_protocol_state WHERE id = 1'
+  )"
+  case "$local_version" in
+    1)
+      RUN_POSTGRES_INVOICE_SETTLEMENT_ROLLOUT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/invoice-settlement-rollout.postgres.test.ts
+      ;;
+    2)
+      RUN_POSTGRES_INVOICE_SETTLEMENT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/invoice-settlement-semantics.postgres.test.ts
+      ;;
+    *)
+      echo "invoice settlement protocol singleton is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+}
+
+certify_document_archive_protocol() {
+  local_version="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -c 'SELECT "activeVersion" FROM public.document_archive_protocol_state WHERE id = 1'
+  )"
+  case "$local_version" in
+    1)
+      RUN_POSTGRES_DOCUMENT_ARCHIVE_ROLLOUT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/document-archive-rollout.postgres.test.ts
+      ;;
+    2)
+      RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/document-archive-integrity.postgres.test.ts
+      ;;
+    *)
+      echo "document archive protocol singleton is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+}
+
+certify_generated_legal_storage_fence() {
+  fence_count="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_trigger AS trigger
+  JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_proc AS function ON function.oid = trigger.tgfoid
+  JOIN pg_catalog.pg_roles AS function_owner ON function_owner.oid = function.proowner
+ WHERE namespace.nspname = 'storage'
+   AND relation.relname = 'objects'
+   AND trigger.tgname = 'generated_legal_storage_object_immutable'
+   AND NOT trigger.tgisinternal
+   AND trigger.tgenabled = 'O'
+   AND function.proname = 'prevent_generated_legal_storage_object_mutation'
+   AND function.prosecdef
+   AND function.proconfig @> ARRAY['row_security=off']::TEXT[]
+   AND (function_owner.rolsuper OR function_owner.rolbypassrls);
+SQL
+  )"
+  if [ "$fence_count" != "1" ]; then
+    echo "generated legal Storage immutability trigger is missing or invalid" >&2
+    return 1
+  fi
+}
+
+certify_document_archive_evidence_privacy() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  direct_authority RECORD;
+  evidence_relation RECORD;
+  private_relation RECORD;
+  private_table TEXT;
+  control_relation RECORD;
+  control_table TEXT;
+  expected_archive_function_names CONSTANT TEXT[] := ARRAY[
+    'attest_generated_invoice_pdf_v1',
+    'attest_historical_generated_invoice_pdf_v1',
+    'capture_invoice_archive_audience_v1',
+    'document_archive_backfill_proved_artifacts_v1',
+    'document_archive_integrity_proof_for_reason_v2_is_valid',
+    'document_archive_integrity_proof_v1_is_valid',
+    'document_archive_integrity_proof_v1_sha256',
+    'document_archive_job_claim_v1',
+    'document_archive_job_complete_v1',
+    'document_archive_job_complete_v2',
+    'document_archive_job_enqueue_v1',
+    'document_archive_job_enqueue_v2',
+    'document_archive_job_fail_v1',
+    'document_archive_job_pdf_attestation_v2_is_valid',
+    'document_archive_job_scope_v2_is_valid',
+    'document_archive_protocol_v2_is_active',
+    'enforce_document_archive_audit_evidence_immutable',
+    'enforce_document_archive_protocol_monotonicity',
+    'generated_invoice_pdf_attestation_visible_v2',
+    'generated_legal_archive_representation_v2_is_valid',
+    'guard_customer_type_after_legal_piece_v1',
+    'guard_document_archive_job_proof_v1',
+    'guard_document_archive_job_scope_v2',
+    'guard_document_invoice_pdf_attestation_immutable_v1',
+    'guard_document_original_facts_v1',
+    'guard_document_version_immutable_v1',
+    'guard_generated_invoice_facturx_scope_v1',
+    'guard_generated_legal_archive_cutover_v2',
+    'guard_generated_legal_archive_representation_v2',
+    'prevent_generated_legal_storage_object_mutation',
+    'spool_document_archive_job_during_v2_cutover'
+  ]::TEXT[];
+  archive_function RECORD;
+  archive_function_count INTEGER;
+  exposed_role TEXT;
+BEGIN
+  SELECT rolsuper, rolbypassrls
+    INTO STRICT direct_authority
+    FROM pg_catalog.pg_roles
+   WHERE rolname = current_user;
+
+  IF NOT (direct_authority.rolsuper OR direct_authority.rolbypassrls) THEN
+    RAISE EXCEPTION
+      'DIRECT_URL role must be SUPERUSER or BYPASSRLS for private archive evidence';
+  END IF;
+
+  SELECT relation.oid, relation.relacl, relation.relowner,
+         relation.relrowsecurity, relation.relforcerowsecurity
+    INTO STRICT evidence_relation
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+   WHERE namespace.nspname = 'public'
+     AND relation.relname = 'document_archive_audit_evidence'
+     AND relation.relkind = 'r';
+
+  IF NOT evidence_relation.relrowsecurity OR NOT evidence_relation.relforcerowsecurity THEN
+    RAISE EXCEPTION 'document archive evidence must have ENABLE + FORCE RLS';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_policy
+     WHERE polrelid = evidence_relation.oid
+  ) THEN
+    RAISE EXCEPTION 'document archive evidence must not expose any RLS policy';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.aclexplode(
+        coalesce(
+          evidence_relation.relacl,
+          pg_catalog.acldefault('r', evidence_relation.relowner)
+        )
+      ) AS privilege
+     WHERE privilege.grantee = 0
+       AND privilege.privilege_type IN (
+         'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+       )
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC retains a privilege on document archive evidence';
+  END IF;
+
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+       AND pg_catalog.has_table_privilege(
+         exposed_role,
+         'public.document_archive_audit_evidence',
+         'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+       ) THEN
+      RAISE EXCEPTION '% retains a privilege on document archive evidence', exposed_role;
+    END IF;
+  END LOOP;
+
+  FOREACH private_table IN ARRAY ARRAY[
+    'document_archive_job_artifacts',
+    'document_invoice_pdf_attestations'
+  ]::TEXT[] LOOP
+    SELECT relation.oid, relation.relacl, relation.relowner,
+           relation.relrowsecurity, relation.relforcerowsecurity
+      INTO STRICT private_relation
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname = 'public'
+       AND relation.relname = private_table
+       AND relation.relkind = 'r';
+    IF NOT private_relation.relrowsecurity OR NOT private_relation.relforcerowsecurity THEN
+      RAISE EXCEPTION '% must have ENABLE + FORCE RLS', private_table;
+    END IF;
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(private_relation.relacl, pg_catalog.acldefault('r', private_relation.relowner))
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type IN (
+           'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+         )
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains a privilege on private archive table %', private_table;
+    END IF;
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_table_privilege(
+           exposed_role,
+           pg_catalog.format('public.%I', private_table),
+           'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+         ) THEN
+        RAISE EXCEPTION '% retains a privilege on private archive table %',
+          exposed_role, private_table;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  FOREACH control_table IN ARRAY ARRAY[
+    'document_archive_protocol_state',
+    'invoice_settlement_protocol_state'
+  ]::TEXT[] LOOP
+    SELECT relation.oid, relation.relacl, relation.relowner
+      INTO STRICT control_relation
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname = 'public'
+       AND relation.relname = control_table
+       AND relation.relkind = 'r';
+
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(
+            control_relation.relacl,
+            pg_catalog.acldefault('r', control_relation.relowner)
+          )
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type IN (
+           'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+         )
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains a mutation privilege on %', control_table;
+    END IF;
+
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_table_privilege(
+           exposed_role,
+           pg_catalog.format('public.%I', control_table),
+           'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+         ) THEN
+        RAISE EXCEPTION '% retains a mutation privilege on %', exposed_role, control_table;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  SELECT count(*)::INTEGER
+    INTO archive_function_count
+    FROM pg_catalog.pg_proc AS procedure
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+   WHERE namespace.nspname = 'public'
+     AND procedure.prokind = 'f'
+     AND procedure.proname = ANY(expected_archive_function_names);
+  IF archive_function_count <> cardinality(expected_archive_function_names) THEN
+    RAISE EXCEPTION
+      'archive RPC inventory drift: expected %, found %',
+      cardinality(expected_archive_function_names), archive_function_count;
+  END IF;
+
+  FOR archive_function IN
+    SELECT procedure.oid, procedure.proacl, procedure.proowner, procedure.proname
+      FROM pg_catalog.pg_proc AS procedure
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+     WHERE namespace.nspname = 'public'
+       AND procedure.prokind = 'f'
+       AND procedure.proname = ANY(expected_archive_function_names)
+  LOOP
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(
+            archive_function.proacl,
+            pg_catalog.acldefault('f', archive_function.proowner)
+          )
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type = 'EXECUTE'
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains EXECUTE on archive RPC %', archive_function.proname;
+    END IF;
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_function_privilege(exposed_role, archive_function.oid, 'EXECUTE') THEN
+        RAISE EXCEPTION '% retains EXECUTE on archive RPC %',
+          exposed_role, archive_function.proname;
+      END IF;
+    END LOOP;
+  END LOOP;
+END;
+$$;
+SQL
 }
 
 grant_app_role() {
@@ -47,6 +359,98 @@ REVOKE UPDATE, DELETE ON TABLE
   public.quote_creation_requests,
   public.bank_balance_snapshots
 FROM :"app_role";
+-- Rail global monotone du protocole de règlement : le runtime le lit via le trigger, mais seule
+-- DIRECT_URL peut activer V2 après retrait prouvé de N-1. Les snapshots d'antécédents n'ont
+-- aucune capacité UPDATE, même si une future policy RLS dérive.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.invoice_settlement_protocol_state
+FROM :"app_role";
+REVOKE UPDATE, TRUNCATE ON TABLE public.invoice_predecessors FROM :"app_role";
+-- Les originaux du coffre ne sont jamais supprimés par le runtime. Les versions sont strictement
+-- append-only ; les seules mutations admises sur `documents` sont les métadonnées bornées et
+-- contrôlées par le trigger `documents_original_facts_immutable`.
+REVOKE DELETE, TRUNCATE ON TABLE public.documents FROM :"app_role";
+REVOKE DELETE, TRUNCATE ON TABLE public.document_versions FROM :"app_role";
+-- Aucun use case ne supprime une ligne de devis canonique. Les brouillons éditables sont portés
+-- par quote_draft_slots ; révoquer DELETE ici protège définitivement le contrat signé et son
+-- archive polymorphe contre une dérive de policy ou une requête SQL directe.
+REVOKE DELETE ON TABLE public.quotes FROM :"app_role";
+-- Rail global monotone de l'archive : lecture runtime seulement, activation via DIRECT_URL.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_archive_protocol_state
+FROM :"app_role";
+-- Preuve globale de cutover, sans PII mais strictement réservée aux opérations DIRECT_URL.
+REVOKE ALL ON TABLE public.document_archive_audit_evidence FROM :"app_role";
+-- La projection relationnelle est toujours privée. L'outbox conserve temporairement INSERT /
+-- UPDATE en phase expand uniquement pour que N-1 puisse déposer un ordre qui sera spoolé ; aucune
+-- archive légale générée ne peut être matérialisée avant l'activation post-readiness.
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_archive_jobs,
+  public.document_archive_job_artifacts
+FROM :"app_role";
+REVOKE INSERT, UPDATE ON TABLE public.document_archive_job_artifacts FROM :"app_role";
+-- Le détecteur d'octets écrit l'attestation par une capacité bornée. Le runtime peut la relire via
+-- RLS mais n'a aucun geste SQL direct ; le helper profond non tenant-scopé reste privé.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_invoice_pdf_attestations
+FROM :"app_role";
+GRANT SELECT ON TABLE public.document_invoice_pdf_attestations TO :"app_role";
+REVOKE EXECUTE ON FUNCTION public.generated_legal_archive_representation_v2_is_valid(TEXT)
+  FROM :"app_role";
+REVOKE EXECUTE ON FUNCTION public.document_archive_job_pdf_attestation_v2_is_valid(
+  TEXT, TEXT, TEXT, JSONB
+) FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.attest_generated_invoice_pdf_v1(
+  TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.generated_invoice_pdf_attestation_visible_v2(TEXT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v2(TEXT, TEXT, TEXT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_claim_v1(
+  TEXT, TEXT, TIMESTAMP WITHOUT TIME ZONE, BIGINT, TEXT
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_fail_v1(TEXT, TEXT, TEXT, BIGINT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v2(TEXT, TEXT, TEXT, JSONB, TEXT)
+  TO :"app_role";
+SELECT ("activeVersion" = 1)::text AS document_archive_expand
+  FROM public.document_archive_protocol_state
+ WHERE id = 1
+\gset
+\if :document_archive_expand
+  GRANT EXECUTE ON FUNCTION public.attest_historical_generated_invoice_pdf_v1(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+  ) TO :"app_role";
+  GRANT INSERT, UPDATE ON TABLE public.document_archive_jobs TO :"app_role";
+  -- Le CHECK de forme est SECURITY INVOKER : N-1 doit pouvoir l'évaluer tant que ses écritures
+  -- directes sont tolérées. Cette capacité pure est retirée dans la même transaction que V2.
+  GRANT EXECUTE ON FUNCTION public.document_archive_integrity_proof_for_reason_v2_is_valid(
+    TEXT, TEXT, TEXT, JSONB
+  ) TO :"app_role";
+  -- N-1 confirme encore un retry de version via UPSERT ... DO UPDATE. Le trigger n'autorise
+  -- qu'un no-op exact et la policy est elle-même bornée au protocole V1.
+  GRANT UPDATE ON TABLE public.document_versions TO :"app_role";
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v1(TEXT, TEXT, TEXT, TEXT)
+    TO :"app_role";
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v1(
+    TEXT, TEXT, TEXT, JSONB, TEXT
+  ) TO :"app_role";
+\else
+  REVOKE EXECUTE ON FUNCTION public.attest_historical_generated_invoice_pdf_v1(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+  ) FROM :"app_role";
+  REVOKE INSERT, UPDATE ON TABLE public.document_archive_jobs FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_integrity_proof_for_reason_v2_is_valid(
+    TEXT, TEXT, TEXT, JSONB
+  ) FROM :"app_role";
+  REVOKE UPDATE ON TABLE public.document_versions FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_enqueue_v1(TEXT, TEXT, TEXT, TEXT)
+    FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_complete_v1(
+    TEXT, TEXT, TEXT, JSONB, TEXT
+  ) FROM :"app_role";
+\endif
 -- Une société se clôture, elle ne se supprime jamais depuis le runtime : son identité légale
 -- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.
 REVOKE DELETE ON TABLE public.companies FROM :"app_role";
@@ -722,15 +1126,25 @@ command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
+# Ne jamais installer l'expand qui gèle les sorties historiques si des factures émises n'ont pas
+# encore reçu une audience revue. Le contrôle est volontairement antérieur à toute mutation de
+# rôle ou de schéma de ce train.
+sh apps/api/scripts/check-document-archive-legacy-audience.sh
+
 # Révoque tout ancien SET ROLE runtime avant même que la migration SECURITY DEFINER soit visible.
 ensure_mistral_bootstrap_reaper_role
 pnpm --filter @bob/api exec prisma migrate deploy
+certify_generated_legal_storage_fence
 provision_mistral_bootstrap_reaper
 node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+certify_document_archive_evidence_privacy
 
-trap cleanup_rls_cert EXIT INT TERM
+trap cleanup_release_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cleanup_rls_cert
 node apps/api/scripts/bootstrap-cabinet-pilots.mjs
 certify_cabinet_worker_scope
@@ -757,6 +1171,10 @@ RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
 RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
+certify_document_archive_protocol
+RUN_POSTGRES_CREDIT_NOTE_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/credit-note-traceability.postgres.test.ts
+certify_invoice_settlement_protocol
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
 RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
@@ -764,6 +1182,6 @@ RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
 DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
   sh apps/api/scripts/certify-mistral-conversation-authority.sh
 cleanup_rls_cert
-trap - EXIT INT TERM
+trap - EXIT HUP INT TERM
 
 echo "Bob Pro API release checks passed"

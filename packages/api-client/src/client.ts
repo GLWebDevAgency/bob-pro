@@ -1029,6 +1029,8 @@ export interface BobClient {
     email?: string | null;
     phone?: string | null;
     rcsOrRm?: string | null;
+    /** Numéro attribué et confirmé ; le client ne le calcule jamais depuis le SIREN. */
+    tvaIntracom?: string | null;
     /** Objet COMPLET (jamais un patch par sous-champ : une adresse partielle est incohérente). */
     address?: { line1: string; zip: string; city: string };
   }): Promise<Result<CompanyProps, AppError>>;

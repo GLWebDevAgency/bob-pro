@@ -10,6 +10,7 @@ import {
   type FiscalDeadline,
   type SituationAmountInput,
   type SubscriptionStatusView,
+  type FrenchOperationCategory,
   EXPENSE_PAYMENT_PROOF_DOCUMENT_ID_MAX_LENGTH,
   EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
   PaymentTerms,
@@ -64,6 +65,11 @@ const LINE_CATEGORIES: readonly LineCategory[] = ['labor', 'supply', 'travel', '
 const EXPENSE_CATEGORIES: readonly ExpenseCategory[] = ['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre'];
 const CUSTOMER_TYPES: readonly CreateCustomerActionInput['type'][] = ['b2c', 'b2b', 'b2g'];
 const INVOICE_MODES: readonly NonNullable<GenerateInvoiceActionInput['mode']>[] = ['deposit', 'final'];
+const FRENCH_OPERATION_CATEGORIES: readonly FrenchOperationCategory[] = [
+  'goods',
+  'services',
+  'mixed',
+];
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -210,10 +216,20 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.sendQuote(input),
   };
 
-  const issueInvoice: Tool<{ invoiceId: string; embargoOverride?: boolean }, { number: string }> = {
+  const issueInvoice: Tool<
+    {
+      invoiceId: string;
+      operationCategory?: FrenchOperationCategory;
+      embargoOverride?: boolean;
+    },
+    { number: string }
+  > = {
     name: 'emettre_facture',
     description:
       'Émet une facture définitive : numéro légal séquentiel, mentions et PDF/Factur-X archivés. ' +
+      'Si le serveur demande operationCategory, pose une question avec les trois choix réels : services ' +
+      '(prestation avec fournitures intégrées), goods (vente avec prestation accessoire), mixed ' +
+      '(biens et prestations indépendants), puis rejoue avec le choix explicite. Ne choisis jamais seul. ' +
       'Si le serveur refuse pour embargo L221-10 (signature à domicile, 7 jours), explique le refus honnête et propose le DÉFAUT ' +
       '(programmer_encaissement_embargo) ; « embargoOverride: true » n’est permis qu’après avoir reformulé le risque concret ' +
       '(contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée.',
@@ -221,15 +237,31 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     outbound: false,
     compliance: 'high',
     safetyFloor: true,
-    parse: (raw): Result<{ invoiceId: string; embargoOverride?: boolean }, AppError> => {
-      const r = raw as { invoiceId?: unknown; embargoOverride?: unknown };
+    parse: (raw): Result<{
+      invoiceId: string;
+      operationCategory?: FrenchOperationCategory;
+      embargoOverride?: boolean;
+    }, AppError> => {
+      const r = raw as {
+        invoiceId?: unknown;
+        operationCategory?: unknown;
+        embargoOverride?: unknown;
+      };
       if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
         return err(appValidation('invoiceId', 'Facture manquante.'));
+      if (
+        r.operationCategory !== undefined
+        && !FRENCH_OPERATION_CATEGORIES.includes(r.operationCategory as FrenchOperationCategory)
+      )
+        return err(appValidation('operationCategory', 'Nature de l’opération invalide.'));
       // Override L221-10 : booléen strict — seul `true` traverse (jamais par truthiness).
       if (r.embargoOverride !== undefined && typeof r.embargoOverride !== 'boolean')
         return err(appValidation('embargoOverride', 'Booléen attendu.'));
       return ok({
         invoiceId: r.invoiceId,
+        ...(r.operationCategory === undefined
+          ? {}
+          : { operationCategory: r.operationCategory as FrenchOperationCategory }),
         ...(r.embargoOverride === true ? { embargoOverride: true } : {}),
       });
     },

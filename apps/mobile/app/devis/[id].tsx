@@ -292,6 +292,11 @@ export default function DevisDetail() {
   linkedRef.current = quoteLinkedInvoices;
   const depositPctRef = useRef<number | null>(quote.data?.depositPct ?? null);
   depositPctRef.current = quote.data?.depositPct ?? null;
+  const customerTypeRef = useRef<'b2c' | 'b2b' | 'b2g' | null>(
+    (customers.data ?? []).find((customer) => customer.id === quote.data?.customerId)?.type ?? null,
+  );
+  customerTypeRef.current =
+    (customers.data ?? []).find((customer) => customer.id === quote.data?.customerId)?.type ?? null;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
   // R7 : « partage le lien du devis » — dit + ouvre le Share (pattern établi), SANS Sheet
@@ -313,6 +318,9 @@ export default function DevisDetail() {
             return () => {
               const p = personalityRef.current;
               if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (linkedRef.current.hasDepositInvoice && customerTypeRef.current !== 'b2c') {
+                return { say: t('devis.voice.invoiceDepositUnavailable', { personality: p }) };
+              }
               if (linkedRef.current.depositStatus === 'draft') {
                 return { say: t('devis.voice.invoiceDepositDraft', { personality: p }) };
               }
@@ -330,6 +338,9 @@ export default function DevisDetail() {
             return () => {
               const p = personalityRef.current;
               if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (customerTypeRef.current !== 'b2c') {
+                return { say: t('devis.voice.invoiceDepositUnavailable', { personality: p }) };
+              }
               if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
               const pct = depositPctRef.current;
               if (pct === null) return { say: t('devis.voice.invoiceNoDeposit', { personality: p }) };

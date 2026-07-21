@@ -22,7 +22,7 @@ function issuedInvoice(): Invoice {
   const inv = r.value;
   inv.addLine({ id: 'l1', label: 'Depannage', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 });
   inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-  const issued = inv.issue({ mentions: [], terms, issuedAt: '2026-07-20', at: AT });
+  const issued = inv.issue({ mentions: [], terms, issuedAt: '2026-07-20', at: AT, frenchBillingMode: 'S1' });
   if (!issued.ok) throw new Error('issue');
   return inv;
 }

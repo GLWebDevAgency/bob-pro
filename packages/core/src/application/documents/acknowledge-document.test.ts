@@ -64,7 +64,7 @@ class MemoryDocuments implements Pick<DocumentRepository, 'findById' | 'markRevi
   readonly map = new Map<string, Document>();
   forceRevisionConflict = false;
   markReviewedCalls = 0;
-  save(d: Document): void {
+  seed(d: Document): void {
     this.map.set(d.id, d);
   }
   async markReviewed(
@@ -90,7 +90,7 @@ class MemoryDocuments implements Pick<DocumentRepository, 'findById' | 'markRevi
 describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
   it('pose reviewedAt, incrémente la révision, sans déplacer ni lier', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument({ folderId: 'folder-achats' }));
+    documents.seed(makeDocument({ folderId: 'folder-achats' }));
     const uc = new AcknowledgeDocument({ documents, clock });
 
     const r = await uc.execute({ companyId: COMPANY, documentId: 'doc-leroy', expectedRevision: 1 });
@@ -110,7 +110,7 @@ describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
 
   it('idempotent : re-valider un document déjà confirmé ne réécrit rien (première validation conservée)', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument({ reviewedAt: '2026-07-10T08:00:00.000Z' }));
+    documents.seed(makeDocument({ reviewedAt: '2026-07-10T08:00:00.000Z' }));
     const uc = new AcknowledgeDocument({ documents, clock });
 
     const r = await uc.execute({ companyId: COMPANY, documentId: 'doc-leroy', expectedRevision: 1 });
@@ -125,7 +125,7 @@ describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
 
   it('refuse un document introuvable (ou hors tenant) et une révision invalide', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new AcknowledgeDocument({ documents, clock });
 
     const missing = await uc.execute({ companyId: COMPANY, documentId: 'inconnu', expectedRevision: 1 });
@@ -141,7 +141,7 @@ describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
 
   it('révision périmée (lecture stale) → conflit, sans mutation', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument({ revision: 3 }));
+    documents.seed(makeDocument({ revision: 3 }));
     const uc = new AcknowledgeDocument({ documents, clock });
 
     const r = await uc.execute({ companyId: COMPANY, documentId: 'doc-leroy', expectedRevision: 1 });
@@ -152,7 +152,7 @@ describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
 
   it('échoue sans mutation si le compare-and-set de persistance perd une course', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     documents.forceRevisionConflict = true;
     const uc = new AcknowledgeDocument({ documents, clock });
 
@@ -164,7 +164,7 @@ describe('AcknowledgeDocument (« c’est bon, je valide » — LOT 2)', () => {
 
   it('refuse de valider un document supprimé (erreur domaine)', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }));
+    documents.seed(makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }));
     const uc = new AcknowledgeDocument({ documents, clock });
 
     const r = await uc.execute({ companyId: COMPANY, documentId: 'doc-del', expectedRevision: 1 });

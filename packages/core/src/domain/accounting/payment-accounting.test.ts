@@ -36,7 +36,7 @@ function issuedInvoice(companyId = 'co-1'): Invoice {
   const inv = Invoice.fromSignedQuote(signedQuote(companyId), 'final', 'inv-1');
   if (!inv.ok) throw new Error('invoice');
   inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
   return inv.value;
 }
 
@@ -115,6 +115,33 @@ describe('buildPaymentAccountingEntry', () => {
 
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.lines.map((line) => line.account)).toEqual(['530', '411']);
+  });
+
+  it('ventile un encaissement mixte entre créance ordinaire 411 et retenue 4117', () => {
+    const split = Payment.record({
+      id: 'pay-retention',
+      companyId: 'co-1',
+      invoiceId: 'inv-1',
+      amount: 3000,
+      method: 'transfer',
+      receivedAt: PAID_AT,
+      ordinaryReceivableCents: 558,
+      retentionReceivableCents: 2442,
+    });
+    if (!split.ok) throw new Error('payment');
+    const r = buildPaymentAccountingEntry({
+      entryId: 'payment:pay-retention:received',
+      payment: split.value,
+      invoice: issuedInvoice(),
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.lines).toEqual([
+        { account: '512', label: 'Encaissement F-2026-0001', debitCents: 3000, creditCents: 0 },
+        { account: '411', label: 'Encaissement F-2026-0001', debitCents: 0, creditCents: 558 },
+        { account: '4117', label: 'Encaissement F-2026-0001', debitCents: 0, creditCents: 2442 },
+      ]);
+    }
   });
 
   it('refuse un paiement rattache a une autre societe', () => {

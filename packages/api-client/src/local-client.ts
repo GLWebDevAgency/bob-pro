@@ -38,6 +38,7 @@ import {
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
   ListInvoiceableQuotes,
+  requiresFrenchOperationCategoryAtIssuance,
   UpdateQuoteLine,
   RemoveQuoteLine,
   DeleteDraftInvoice,
@@ -847,6 +848,7 @@ export class LocalBobClient implements BobClient {
     const postEntries = new RecordExpenseAccountingEntries({
       expenses: this.expenses,
       entries: this.accountingEntries,
+      companies: this.companies,
       charts: this.chartOfAccounts,
     });
     for (const expense of await this.expenses.listByCompany(this.companyId)) {
@@ -922,7 +924,12 @@ export class LocalBobClient implements BobClient {
     await this.signQuoteInternal({ quoteId, signerName: 'SARL Martin Rénovation' });
     const generated = await this.generateInvoiceInternal({ quoteId, mode: 'deposit' });
     if (!generated.ok) return;
-    await this.issueInvoiceInternal({ invoiceId: generated.value.invoiceId });
+    await this.issueInvoiceInternal({
+      invoiceId: generated.value.invoiceId,
+      // Le marché pompe à chaleur mélange fourniture + pose : fait métier explicite du seed,
+      // jamais une décision implicite du moteur.
+      operationCategory: 'services',
+    });
     // L'acompte est encaissé — plafonné netToPay (488,40 €), comme la doctrine l'exige.
     await this.registerPaymentInternal({
       invoiceId: generated.value.invoiceId,
@@ -1281,7 +1288,10 @@ export class LocalBobClient implements BobClient {
   async updateCompanyLegal(input: {
     capitalSocialCents?: number | null;
     mediateurConso?: { nom: string; coordonnees: string } | null;
+    email?: string | null;
+    phone?: string | null;
     rcsOrRm?: string | null;
+    tvaIntracom?: string | null;
     address?: { line1: string; zip: string; city: string };
   }): Promise<Result<CompanyProps, AppError>> {
     const current = await this.companies.findById(this.companyId);
@@ -1291,7 +1301,10 @@ export class LocalBobClient implements BobClient {
     const {
       capitalSocialCents: currentCapital,
       mediateurConso: currentMediateur,
+      email: currentEmail,
+      phone: currentPhone,
       rcsOrRm: currentRcsOrRm,
+      tvaIntracom: currentTvaIntracom,
       ...requiredProps
     } = props;
     const updated = Company.of({
@@ -1320,6 +1333,27 @@ export class LocalBobClient implements BobClient {
         : input.rcsOrRm === null
           ? {}
           : { rcsOrRm: input.rcsOrRm }),
+      ...(input.email === undefined
+        ? currentEmail === undefined
+          ? {}
+          : { email: currentEmail }
+        : input.email === null
+          ? {}
+          : { email: input.email }),
+      ...(input.phone === undefined
+        ? currentPhone === undefined
+          ? {}
+          : { phone: currentPhone }
+        : input.phone === null
+          ? {}
+          : { phone: input.phone }),
+      ...(input.tvaIntracom === undefined
+        ? currentTvaIntracom === undefined
+          ? {}
+          : { tvaIntracom: currentTvaIntracom }
+        : input.tvaIntracom === null
+          ? {}
+          : { tvaIntracom: input.tvaIntracom }),
     });
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);
@@ -2484,6 +2518,7 @@ export class LocalBobClient implements BobClient {
       snapshots: this.snapshots,
       expenses: this.expenses,
       invoices: this.invoices,
+      companies: this.companies,
       clock: this.clock,
     }).execute({
       companyId: this.companyId,
@@ -2542,6 +2577,7 @@ export class LocalBobClient implements BobClient {
     try {
       const recorded = await new RecordExpense({
         expenses: this.expenses,
+        companies: this.companies,
         ids: this.ids,
         clock: this.clock,
         // Parité serveur : un chantierId fourni est PROUVÉ dans le tenant avant persistance
@@ -2558,6 +2594,7 @@ export class LocalBobClient implements BobClient {
       const accounting = await new RecordExpenseAccountingEntries({
         expenses: this.expenses,
         entries: this.accountingEntries,
+        companies: this.companies,
         charts: this.chartOfAccounts,
       }).execute({ expenseId: recorded.value.id });
       if (!accounting.ok) {
@@ -3969,9 +4006,9 @@ export class LocalBobClient implements BobClient {
       reference: invoice.number ?? 'a-emettre',
       ...(chart.ok ? { chart: chart.value } : {}),
     });
-    if (!entry.ok) {
+    if (!entry.ok || entry.value === null) {
       const detail =
-        'message' in entry.error && typeof entry.error.message === 'string'
+        !entry.ok && 'message' in entry.error && typeof entry.error.message === 'string'
           ? entry.error.message.trim()
           : '';
       return ok({
@@ -3980,7 +4017,8 @@ export class LocalBobClient implements BobClient {
         reason: detail || 'Aperçu comptable indisponible.',
       });
     }
-    const props = entry.value.toProps();
+    const accountingEntry = entry.value;
+    const props = accountingEntry.toProps();
     return ok({
       invoiceId,
       available: true,
@@ -3988,8 +4026,8 @@ export class LocalBobClient implements BobClient {
       reference: props.reference,
       entryDate: props.entryDate,
       label: props.label,
-      totalDebitCents: entry.value.totalDebitCents,
-      totalCreditCents: entry.value.totalCreditCents,
+      totalDebitCents: accountingEntry.totalDebitCents,
+      totalCreditCents: accountingEntry.totalCreditCents,
       lines: props.lines,
     });
   }
@@ -4174,6 +4212,7 @@ export class LocalBobClient implements BobClient {
         ]);
         return ok(
           deriveVatPosition({
+            vatRegime: seedCompany().vatRegime,
             invoices: invoices.map((i) => ({
               kind: i.kind,
               status: i.status,
@@ -4474,18 +4513,46 @@ export class LocalBobClient implements BobClient {
         });
       },
       listIssuableInvoices: async () => {
-        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        await this.ready;
+        const [inv, cust, company] = await Promise.all([
+          this.listInvoices(),
+          this.listCustomers(),
+          this.companies.findById(this.companyId),
+        ]);
         if (!inv.ok) return inv;
-        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
-        const invoices: IssuableInvoice[] = inv.value
-          .filter((x) => x.status === 'draft')
-          .map((x) => ({
+        if (!cust.ok) return cust;
+        if (!company || company.id !== this.companyId) {
+          return err(appUnavailable('company-reference'));
+        }
+        const customers = new Map(cust.value.map((c) => [c.id, c]));
+        const candidates = inv.value.filter((x) => x.status === 'draft' && !x.number);
+        if (candidates.some((invoice) => !customers.has(invoice.customerId))) {
+          return err(appUnavailable('customer-reference'));
+        }
+        const invoices: IssuableInvoice[] = candidates.map((x) => {
+          const customer = customers.get(x.customerId)!;
+          const franchise = company.isVatFranchise();
+          const vatTreatment = franchise
+            ? 'franchise' as const
+            : company.requiresAutoliquidation({
+                type: customer.type,
+                isSubcontractingBtp: customer.isSubcontractingBtp ?? false,
+              })
+              ? 'autoliquidation' as const
+              : 'standard' as const;
+          return {
             id: x.id,
             number: x.number,
-            customerName: names.get(x.customerId) ?? 'Client',
+            customerName: customer.name,
             totalTtcCents: x.totals.ttc,
             status: x.status,
-          }));
+            operationCategoryRequired: requiresFrenchOperationCategoryAtIssuance({
+              kind: x.kind,
+              vatTreatment,
+              lineCategories: x.lines.map((line) => line.category),
+            }),
+          };
+        });
         return ok(invoices);
       },
       listDocuments: async () => {
@@ -4518,6 +4585,9 @@ export class LocalBobClient implements BobClient {
       issueInvoice: async (input) =>
         this.issueInvoice({
           invoiceId: input.invoiceId,
+          ...(input.operationCategory === undefined
+            ? {}
+            : { operationCategory: input.operationCategory }),
           // Override L221-10 : `true` strict uniquement — même contrat que le serveur.
           ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
         }),

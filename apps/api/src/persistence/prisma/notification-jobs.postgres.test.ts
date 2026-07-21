@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -276,6 +276,26 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Notification outbox — certification Postg
            '{"channel":"email","to":"cutover@example.test","subject":"Cutover","body":"Créé pendant expand"}'::jsonb,
            'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
       `], { stdio: 'pipe' });
+      // Le cutover n'est pas déployé dans un musée du schéma 2026-07-13 : en production,
+      // toutes les migrations suivantes sont appliquées avant le RLS courant. Rejouer la suite
+      // exacte protège l'upgrade outbox contre chaque évolution additive du monorepo et évite
+      // qu'un nouveau tableau rende artificiellement le harnais rouge.
+      const laterMigrations = readdirSync(migrationRoot, { withFileTypes: true })
+        .filter((entry) =>
+          entry.isDirectory()
+          && entry.name > '20260713043000_notification_job_lease_token')
+        .map((entry) => entry.name)
+        .sort();
+      for (const migration of laterMigrations) {
+        execFileSync('psql', [
+          upgradeUrl.toString(),
+          '-X',
+          '-v',
+          'ON_ERROR_STOP=1',
+          '-f',
+          resolve(migrationRoot, migration, 'migration.sql'),
+        ], { stdio: 'pipe' });
+      }
       execFileSync('psql', [
         upgradeUrl.toString(),
         '-X',

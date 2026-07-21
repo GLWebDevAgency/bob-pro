@@ -81,6 +81,49 @@ const autoliquidationData = (): FacturXInvoiceData => ({
   duePayableCents: 100000,
 });
 
+/** Cas dangereux : une même pièce porte une base AE et une base standard taxée. */
+const mixedAutoliquidationData = (): FacturXInvoiceData => ({
+  ...autoliquidationData(),
+  number: 'ST-2026-008',
+  lines: [
+    {
+      id: '1',
+      name: 'Sous-traitance pose réseau cuivre',
+      qty: 1,
+      unitCode: 'C62',
+      unitPriceHTCents: 100000,
+      netAmountCents: 100000,
+      vatCategory: 'AE',
+      vatRatePct: 0,
+    },
+    {
+      id: '2',
+      name: 'Fourniture complémentaire',
+      qty: 1,
+      unitCode: 'C62',
+      unitPriceHTCents: 10000,
+      netAmountCents: 10000,
+      vatCategory: 'S',
+      vatRatePct: 20,
+    },
+  ],
+  vatBreakdown: [
+    {
+      category: 'AE',
+      ratePct: 0,
+      basisCents: 100000,
+      vatCents: 0,
+      exemptionReason: 'Autoliquidation, art. 283-2 nonies CGI',
+    },
+    { category: 'S', ratePct: 20, basisCents: 10000, vatCents: 2000 },
+  ],
+  lineTotalHTCents: 110000,
+  taxBasisTotalCents: 110000,
+  taxTotalCents: 2000,
+  grandTotalCents: 112000,
+  duePayableCents: 112000,
+});
+
 /** Facture d'un fournisseur EXONÉRÉ / en franchise (catégorie E, 293 B). */
 const exemptData = (): FacturXInvoiceData => ({
   number: 'MICRO-2026-31',
@@ -196,6 +239,43 @@ describe('importFacturXExpense — contrôles bloquants (un par un)', () => {
     const e = importErr(data);
     expect(e.code).toBe('devise_non_geree');
   });
+
+  it('AUTOLIQUIDATION AE pure : fail-closed avant brouillon et avant toute tentative de persistance', () => {
+    let recordExpenseCalls = 0;
+    const imported = importFacturXExpense({
+      xml: buildFacturXBasicXml(autoliquidationData()),
+      mySiren: MY_SIREN,
+      existingInvoiceKeys: [],
+    });
+    if (imported.ok) {
+      recordExpenseCalls += 1;
+      facturXDraftToRecordExpenseInput(imported.value);
+    }
+
+    expect(imported.ok).toBe(false);
+    if (!imported.ok) {
+      expect(imported.error.code).toBe('autoliquidation_non_geree');
+      expect(imported.error.message).toContain("Aucune dépense n'a été créée");
+    }
+    expect(recordExpenseCalls).toBe(0);
+  });
+
+  it('AUTOLIQUIDATION mixte AE+S : bloque toute la pièce au lieu de supprimer sa TVA standard', () => {
+    let recordExpenseCalls = 0;
+    const imported = importFacturXExpense({
+      xml: buildFacturXBasicXml(mixedAutoliquidationData()),
+      mySiren: MY_SIREN,
+      existingInvoiceKeys: [],
+    });
+    if (imported.ok) {
+      recordExpenseCalls += 1;
+      facturXDraftToRecordExpenseInput(imported.value);
+    }
+
+    expect(imported.ok).toBe(false);
+    if (!imported.ok) expect(imported.error.code).toBe('autoliquidation_non_geree');
+    expect(recordExpenseCalls).toBe(0);
+  });
 });
 
 describe('importFacturXExpense — mapping expert du brouillon', () => {
@@ -237,15 +317,6 @@ describe('importFacturXExpense — mapping expert du brouillon', () => {
     );
   });
 
-  it('AUTOLIQUIDATION (AE) : TVA non déductible + note art. 283-2 nonies + sous_traitance proposé', () => {
-    const draft = importOk(autoliquidationData());
-    expect(draft.vatCents).toBe(0); // EN 16931 : TVA 0 SUR LA PIÈCE, le preneur autoliquide
-    expect(draft.vatNonDeductible).toBe(true);
-    expect(draft.vatNote).toContain('283-2 nonies');
-    expect(draft.categoryGuess).toBe('sous_traitance');
-    expect(draft.dueAt).toBeNull();
-  });
-
   it('EXONÉRÉ / franchise (E) : zéro déductible + note avec le motif 293 B', () => {
     const draft = importOk(exemptData());
     expect(draft.vatCents).toBe(0);
@@ -263,42 +334,6 @@ describe('importFacturXExpense — mapping expert du brouillon', () => {
 });
 
 describe('facturXDraftToRecordExpenseInput — approbation vers RecordExpense (E1)', () => {
-  it('autoliquidation : vatCents 0 / vatRatePct null → AUCUNE ligne 44566 dans l’écriture d’achat', () => {
-    const draft = importOk(autoliquidationData());
-    const input = facturXDraftToRecordExpenseInput(draft);
-    expect(input.vatCents).toBe(0);
-    expect(input.vatRatePct).toBeNull();
-    expect(input.source).toBe('facturx');
-
-    const expense = Expense.record({
-      id: 'exp-ae',
-      companyId: 'company-mercier',
-      supplierName: input.supplierName,
-      supplierSiren: input.supplierSiren ?? null,
-      documentDate: input.documentDate,
-      totalTtcCents: input.totalTtcCents,
-      totalHtCents: input.totalHtCents ?? null,
-      vatCents: input.vatCents ?? null,
-      vatRatePct: input.vatRatePct ?? null,
-      category: input.category,
-      status: 'to_pay',
-      source: 'facturx',
-      supplierInvoiceNumber: input.supplierInvoiceNumber ?? null,
-      dueAt: input.dueAt ?? null,
-    });
-    expect(expense.ok).toBe(true);
-    if (!expense.ok) return;
-    const entry = buildRecordedExpenseAccountingEntry({ entryId: 'e-ae', expense: expense.value });
-    expect(entry.ok).toBe(true);
-    if (!entry.ok) return;
-    const lines = entry.value.toProps().lines;
-    expect(lines.some((l) => l.account === '44566')).toBe(false); // le piège P21 neutralisé
-    expect(lines).toEqual([
-      expect.objectContaining({ account: '611', debitCents: 100000, creditCents: 0 }), // charge = TTC intégral
-      expect.objectContaining({ account: '401', debitCents: 0, creditCents: 100000 }),
-    ]);
-  });
-
   it('TVA classique multi-taux : la somme exacte part en 44566, la catégorie confirmée prime', () => {
     const draft = importOk(inboundData());
     const input = facturXDraftToRecordExpenseInput(draft, { category: 'materiel' });
@@ -325,7 +360,11 @@ describe('facturXDraftToRecordExpenseInput — approbation vers RecordExpense (E
     });
     expect(expense.ok).toBe(true);
     if (!expense.ok) return;
-    const entry = buildRecordedExpenseAccountingEntry({ entryId: 'e-multi', expense: expense.value });
+    const entry = buildRecordedExpenseAccountingEntry({
+      entryId: 'e-multi',
+      expense: expense.value,
+      vatRegime: 'reel_normal',
+    });
     expect(entry.ok).toBe(true);
     if (!entry.ok) return;
     expect(entry.value.toProps().lines).toEqual([

@@ -117,14 +117,15 @@ function buildInvoiceAccountingEntry(input: {
   // B2 — part de la deduction de la finale provenant des SITUATIONS emises : leur CA a DEJA ete
   // constate a chaque situation (70x). La finale ne re-credite que le CA restant, et la reprise
   // miroir 4191 ne porte que sur la part ACOMPTE (jamais un CA compte deux fois).
-  const situationDeductionCents = accountingKind === 'final' ? invoice.situationDeductionCents : 0;
+  const situationDeductionCents =
+    accountingKind === 'final' && invoice.settlementSemanticsVersion === 1
+      ? invoice.situationDeductionCents
+      : 0;
   // Reprise d'avances : une finale deduit l'acompte deja facture (4191). Elle peut etre
   // entierement couverte (acompte + situations = 100 %) : netToPay = 0 y est legitime —
   // c'est precisement l'ecriture qui constate le CA (70x) et solde les avances.
   const advanceRepriseCents =
-    accountingKind === 'final' && invoice.depositDeductionCents > 0
-      ? invoice.depositDeductionCents - situationDeductionCents
-      : 0;
+    accountingKind === 'final' ? invoice.advanceDeductionCents : 0;
   // B5 — retenue de garantie (loi 71-584) : creance client DIFFEREE (4117), figee aux totaux.
   const retentionCents = totals.retenueGarantieCents ?? 0;
   if (
@@ -154,8 +155,9 @@ function buildInvoiceAccountingEntry(input: {
     fullComponents.push({ account: accounts.vatCollected, amount: vat, kind: 'vat' });
   }
 
-  // Acompte : composants alloues au prorata du netToPay. Finale apres situations : composants
-  // alloues au prorata de (ttc − part situations) — le CA/TVA des situations est deja constate.
+  // Acompte historique V1 : composants alloués au prorata du net à payer. Finale historique
+  // V1 après situations : composants alloués au reliquat. En V2, acompte et finale portent déjà
+  // leurs lignes fiscales réelles/résiduelles : toute nouvelle réduction serait un double retrait.
   const allocated = accountingKind === 'deposit'
     ? allocateAmounts(fullComponents.map((component) => component.amount), totals.netToPay)
     : situationDeductionCents > 0

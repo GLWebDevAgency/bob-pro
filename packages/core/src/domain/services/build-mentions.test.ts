@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { buildMentions, operationNatureOf, type BuildMentionsInput } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
-import { frenchVatNumber } from '../compliance/facturx';
 import { formatEUR } from '../../format/money';
 
 const baseCompany: CompanyProps = {
@@ -15,6 +14,7 @@ const baseCompany: CompanyProps = {
   vatRegime: 'reel_simpl',
   address: { line1: '1 rue X', zip: '92000', city: 'Nanterre' },
   rcsOrRm: 'RM 92',
+  tvaIntracom: 'FR44732829320',
   decennale: { insurer: 'AXA', policyNo: 'P123', coverage: 'France', expiresAt: '2027-12-31' },
 };
 const baseCustomer: CustomerProps = {
@@ -213,11 +213,14 @@ describe('buildMentions', () => {
       expect(mentions().some((s) => s === 'SIREN 732 829 320')).toBe(true);
     });
 
-    it('TVA intracom : valeur du profil si saisie, sinon dérivée du SIREN (même algorithme que le XML BT-31)', () => {
-      const fromProfile = mentions({ company: company({ tvaIntracom: 'FR44732829320' }) });
+    it('TVA intracom : utilise uniquement la valeur réelle du profil, jamais une dérivation SIREN', () => {
+      const fromProfile = mentions();
       expect(fromProfile.some((s) => s === 'TVA intracommunautaire : FR44732829320')).toBe(true);
-      const derived = mentions();
-      expect(derived.some((s) => s === `TVA intracommunautaire : ${frenchVatNumber('732829320')}`)).toBe(true);
+      const { tvaIntracom: _vat, ...withoutVat } = baseCompany;
+      const missingCompany = Company.of(withoutVat);
+      if (!missingCompany.ok) throw new Error('company sans TVA de test invalide');
+      const missing = mentions({ company: missingCompany.value });
+      expect(missing.some((s) => s.startsWith('TVA intracommunautaire :'))).toBe(false);
     });
 
     it('franchise en base : AUCUN n° TVA intracom (TVA non applicable — cohérent avec le XML)', () => {

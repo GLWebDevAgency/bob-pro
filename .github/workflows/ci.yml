@@ -56,16 +56,20 @@ jobs:
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
-      CABINET_INVITATION_WORKER_ENABLED: "false"
-      RUN_RLS_CERT: "true"
-      RLS_CERT_CLEANUP: "true"
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      # Uniquement sur le Postgres service éphémère et loopback de ce job : le test de rollout
+      # crée la fixture minimale `storage.objects` et une preuve liée à GITHUB_SHA, afin que le
+      # vrai script d'activation soit exercé ensuite. Le garde du test refuse tout hôte distant.
+      DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'
       # Clés déterministes réservées à la base PostgreSQL éphémère de CI. Elles arment le même
       # protocole prepare/retire que la production sans dépendre d'un secret externe.
-      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: "true"
-      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: "1"
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
       BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
-      BOB_LIVE_SUBJECT_KEY_VERSION: "1"
-      BOB_LIVE_SUBJECT_HMAC_SECRET: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +82,11 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      # `release.sh` exécute les certifications sur le vrai code API. Un checkout CI neuf
+      # ne possède ni Prisma Client généré ni les `dist/` des dépendances workspace : construire
+      # toute la fermeture topologique évite de certifier un environnement différent de celui
+      # qui sera réellement déployé.
+      - run: pnpm --filter "@bob/api..." run build
       - name: Create non-superuser app role
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
@@ -90,10 +99,29 @@ jobs:
             END IF;
           END $$;
           SQL
+      - name: Provision the ephemeral Supabase Storage metadata contract
+        run: |
+          # Test-only vendor surface: production already owns this schema. Creating it before
+          # migrate proves that the legal-object immutability trigger is attached by the migration.
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
         run: sh apps/api/scripts/release.sh
-      - name: Activate outbox v2 and certify the post-deploy contract
+      - name: Activate archive/settlement/outbox v2 and certify the post-deploy contract
         run: |
+          DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-document-archive-v2.sh
+          INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           sh apps/api/scripts/release.sh
       - name: Certify Mistral durable authority on the ephemeral mixed-key range
@@ -102,39 +130,59 @@ jobs:
             node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
           RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=true \
             sh apps/api/scripts/certify-mistral-conversation-authority.sh
-      - name: Certify Mistral key rotation and an observed retire-versus-writer race
-        env:
-          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
-          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
-        run: >-
-          pnpm --filter @bob/api exec vitest run
-          src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
       - name: Certify notification outbox concurrency and fencing on PostgreSQL
         env:
-          RUN_POSTGRES_OUTBOX_CERT: "true"
+          RUN_POSTGRES_OUTBOX_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/notification-jobs.postgres.test.ts
       - name: Certify expense creation idempotency on PostgreSQL
         env:
-          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: "true"
+          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-creation-requests.postgres.test.ts
       - name: Certify quote creation idempotency on PostgreSQL
         env:
-          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: "true"
+          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-creation-requests.postgres.test.ts
       - name: Certify global push-token rebind and revocation under FORCE RLS
         env:
-          RUN_POSTGRES_DEVICE_REBIND_CERT: "true"
+          RUN_POSTGRES_DEVICE_REBIND_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
 
-  facturx-conformance:
+  mistral-key-rotation-certification:
+    # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. La certification
+    # d'autorité ci-dessus produit volontairement de telles preuves ; la course destructive
+    # prepare/retire vit donc dans sa propre base PostgreSQL éphémère, comme en exploitation.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bobpro
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bobpro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
-      # Validateur Factur-X officiel (Schematron EN 16931 + PDF/A via veraPDF embarqué).
-      # Mettre à jour vers la dernière version publiée sur Maven Central si besoin.
-      MUSTANG_VERSION: "2.16.1"
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING: '{"1":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU","2":"BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -144,22 +192,84 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - uses: actions/setup-java@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Create non-superuser app role
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+          SQL
+      - name: Install and certify the isolated schema
+        run: sh apps/api/scripts/release.sh
+      - name: Certify key rotation and an observed retire-versus-writer race
+        env:
+          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: 'true'
+          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: '2'
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
+
+  facturx-conformance:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
+      # Validateur tiers indépendant Mustang (règles Factur-X/EN 16931/France + veraPDF embarqué),
+      # épinglé avec l'empreinte de l'artefact Maven Central. Ce gate complète nos validations
+      # internes ; il n'est pas présenté comme une homologation DGFiP ou FNFE-MPE.
+      MUSTANG_VERSION: "2.24.0"
+      MUSTANG_SHA256: 'e4904ffa0afdce3f5836dceb927c440a05ed5d60386fdd37e17a4b2f7652edbf'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
+      - name: Installer les outils XML déterministes
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils unzip
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @bob/core build
-      - run: pnpm --filter @bob/api build
+      - name: Tester les gardes de rapports de conformité
+        run: node --test .github/scripts/*.test.mjs
+      # L'échantillon est produit par l'API, qui importe aussi @bob/ai. Construire seulement
+      # core + api laisse cette dépendance sans artefact sur un checkout neuf.
+      - run: pnpm --filter "@bob/api..." run build
+      # Le générateur utilise les builders réservés aux certifications via @bob/core/testing.
+      # Cet artefact de test reste séparé du paquet de production et n'est construit que dans ce job.
+      - run: pnpm --filter @bob/core run build:testing
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
+      - name: XSD + profil EN16931 + BR-FR strict (FNFE-MPE v1.4.0.02)
+        run: bash .github/scripts/certify-facturx-fnfe.sh facturx-sample/factur-x.xml
       - name: Télécharger le validateur Mustang
-        run: curl -fsSL --retry 3 --retry-delay 5 -o mustang-cli.jar "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 -o mustang-cli.jar \
+            "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+          echo "${MUSTANG_SHA256}  mustang-cli.jar" | sha256sum -c -
       - name: Schematron EN 16931 sur le XML CII (gate bloquant)
-        run: java -jar mustang-cli.jar --action validate --source facturx-sample/factur-x.xml --no-notices
-      - name: veraPDF PDF/A-3 sur le PDF (informatif — embarquage polices = post-traitement prod)
-        continue-on-error: true
-        run: java -jar mustang-cli.jar --action validate --source facturx-sample/facture-x.pdf --no-notices
+        run: |
+          java -jar mustang-cli.jar --action validate \
+            --source facturx-sample/factur-x.xml --no-notices --disable-file-logging \
+            > facturx-sample/mustang-xml-report.xml
+          node .github/scripts/assert-mustang-report.mjs \
+            facturx-sample/mustang-xml-report.xml "${MUSTANG_VERSION}" xml
+      - name: veraPDF PDF/A-3b + XML embarqué (gate bloquant)
+        run: |
+          java -jar mustang-cli.jar --action validate \
+            --source facturx-sample/facture-x.pdf --no-notices --disable-file-logging \
+            > facturx-sample/mustang-pdf-report.xml
+          node .github/scripts/assert-mustang-report.mjs \
+            facturx-sample/mustang-pdf-report.xml "${MUSTANG_VERSION}" pdf
 
   api-artifact:
     # Leçon 2 du postmortem (design_handoff_bob_pro/POSTMORTEM_DEPLOY_20260717.md) : construit
@@ -197,22 +307,22 @@ jobs:
         # et le process n'ouvre pas de connexion Postgres réelle avant d'atteindre /health.
         env:
           NODE_ENV: production
-          DEMO_MODE: "false"
-          BOB_LIVE_ENABLED: "false"
-          OPENAI_REALTIME_ENABLED: "false"
+          DEMO_MODE: 'false'
+          BOB_LIVE_ENABLED: 'false'
+          OPENAI_REALTIME_ENABLED: 'false'
           CABINET_RELEASE_ENV: staging
-          DATABASE_URL: "postgresql://bob_app:secret@db.example.test:5432/bob"
-          SUPABASE_JWKS_URL: "https://project.supabase.co/auth/v1/.well-known/jwks.json"
-          SUPABASE_URL: "https://project.supabase.co"
-          SUPABASE_SERVICE_ROLE_KEY: "service-role-key-for-ci-boot-smoke"
-          CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
-          BREVO_API_KEY: "brevo-ci-boot-smoke-key"
-          BREVO_SENDER_EMAIL: "bob@example.test"
-          METRICS_TOKEN: "fedcba9876543210fedcba9876543210"
-          ERROR_REPORTER_WEBHOOK_URL: "https://errors.example.test/hook"
-          SIGN_WEB_BASE_URL: "https://signature.bobpro.fr"
-          CABINET_INVITATION_WEB_BASE_URL: "https://cabinet.bobpro.fr"
-          MISTRAL_API_KEY: "mistral-ci-boot-smoke-key"
+          DATABASE_URL: 'postgresql://bob_app:secret@db.example.test:5432/bob'
+          SUPABASE_JWKS_URL: 'https://project.supabase.co/auth/v1/.well-known/jwks.json'
+          SUPABASE_URL: 'https://project.supabase.co'
+          SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-for-ci-boot-smoke'
+          CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef'
+          BREVO_API_KEY: 'brevo-ci-boot-smoke-key'
+          BREVO_SENDER_EMAIL: 'bob@example.test'
+          METRICS_TOKEN: 'fedcba9876543210fedcba9876543210'
+          ERROR_REPORTER_WEBHOOK_URL: 'https://errors.example.test/hook'
+          SIGN_WEB_BASE_URL: 'https://signature.bobpro.fr'
+          CABINET_INVITATION_WEB_BASE_URL: 'https://cabinet.bobpro.fr'
+          MISTRAL_API_KEY: 'mistral-ci-boot-smoke-key'
         run: |
           set -euo pipefail
           node apps/api/dist/main.js > api-boot-smoke.log 2>&1 &

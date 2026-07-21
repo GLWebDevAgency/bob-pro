@@ -19,7 +19,7 @@ const actions: BobActions = {
       { id: 'quote-2', number: 'D2026-021', totalTtcCents: 90000, customerName: 'M. Martin', status: 'sent' },
     ]),
   listIssuableInvoices: async () =>
-    ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft' }]),
+    ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft', operationCategoryRequired: false }]),
   listDocuments: async () =>
     ok([
       {
@@ -277,6 +277,42 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && (r.value.ask ?? []).length).toBe(0);
   });
 
+  it('ASK-2 : acompte professionnel indisponible → explication réelle, aucune proposition morte', async () => {
+    const generateInvoice = vi.fn(actions.generateInvoice);
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: {
+        ...actions,
+        listInvoiceableQuotes: async () =>
+          ok([
+            {
+              id: 'sign-pro',
+              number: 'D2026-099',
+              customerName: 'Durand SARL',
+              totalTtcCents: 480000,
+              depositPct: 30,
+              depositInvoiced: false,
+              depositAvailable: false,
+              depositUnavailableReason: 'Parcours professionnel en attente de certification EXTENDED.',
+            },
+          ]),
+        generateInvoice,
+      },
+    });
+
+    const explicit = await agent.ask("Fais la facture d'acompte du devis D2026-099");
+    expect(explicit.ok && explicit.value.kind).toBe('answer');
+    expect(explicit.ok && explicit.value.card.body).toContain('EXTENDED');
+    expect(explicit.ok && explicit.value.pending).toBeUndefined();
+
+    const ambiguous = await agent.ask('Fais la facture du devis D2026-099');
+    expect(ambiguous.ok && ambiguous.value.kind).toBe('answer');
+    expect(ambiguous.ok && ambiguous.value.choices?.map((choice) => choice.label)).toEqual([
+      'Facture finale',
+    ]);
+    expect(generateInvoice).not.toHaveBeenCalled();
+  });
+
   it('ASK-2 : sans cible → question « quel devis ? » avec l’acompte prévu dans la description', async () => {
     const r = await makeAgent().ask('Génère la facture du devis');
     expect(r.ok && r.value.intent).toBe('generer_facture');
@@ -359,6 +395,120 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && r.value.intent).toBe('emettre_facture');
     expect(r.ok && r.value.kind).toBe('proposed');
     if (r.ok) expect(r.value.pending?.tool).toBe('emettre_facture');
+  });
+
+  describe('émettre une facture — qualification BT-23 voix ↔ choix manuel', () => {
+    const ambiguousActions = (issueInvoice = vi.fn(actions.issueInvoice)): BobActions => ({
+      ...actions,
+      issueInvoice,
+      listIssuableInvoices: async () => ok([{
+        id: 'draft-mixed-1',
+        number: null,
+        totalTtcCents: 264000,
+        customerName: 'Durand SARL',
+        status: 'draft',
+        operationCategoryRequired: true,
+      }]),
+    });
+
+    it('pose une question fermée avec trois faits réels et ne lance aucune mutation', async () => {
+      const issueInvoice = vi.fn(actions.issueInvoice);
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: ambiguousActions(issueInvoice),
+      });
+
+      const result = await agent.ask('émets la facture Durand');
+
+      expect(result.ok && result.value.kind).toBe('answer');
+      expect(result.ok && result.value.ask?.[0]?.id).toBe('emettre_facture.operationCategory');
+      expect(result.ok && result.value.ask?.[0]?.options.map((option) => option.value)).toEqual([
+        'services',
+        'goods',
+        'mixed',
+      ]);
+      expect(issueInvoice).not.toHaveBeenCalled();
+    });
+
+    it('un choix tapé devient le fait explicite de la proposition, jamais un code inventé', async () => {
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: ambiguousActions(),
+      });
+      const question = await agent.ask('émets la facture Durand');
+      if (!question.ok) throw new Error('question');
+      const followUp = question.value.ask?.[0]?.options[0]?.followUp;
+      if (!followUp) throw new Error('follow-up');
+
+      const proposed = await agent.ask(followUp);
+
+      expect(proposed.ok && proposed.value.kind).toBe('proposed');
+      expect(proposed.ok && proposed.value.pending?.args).toEqual({
+        invoiceId: 'draft-mixed-1',
+        operationCategory: 'services',
+      });
+    });
+
+    it.each([
+      ['le premier', 'services'],
+      ['le deuxième', 'goods'],
+      ['le troisième', 'mixed'],
+    ] as const)('comprend « %s » uniquement dans la continuité immédiate BT-23', async (answer, expected) => {
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: ambiguousActions(),
+      });
+      const initial = await agent.ask('émets la facture Durand');
+      if (!initial.ok) throw new Error('question');
+
+      const proposed = await agent.ask(answer, {
+        history: [
+          { role: 'user', text: 'émets la facture Durand' },
+          { role: 'bob', text: initial.value.card.body },
+        ],
+      });
+
+      expect(proposed.ok && proposed.value.kind).toBe('proposed');
+      expect(proposed.ok && proposed.value.pending?.args).toMatchObject({
+        operationCategory: expected,
+      });
+    });
+
+    it('une réponse contradictoire repose la question sans valeur par défaut', async () => {
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: ambiguousActions(),
+      });
+      const result = await agent.ask(
+        'émets la facture Durand : prestation principale et vente principale',
+      );
+
+      expect(result.ok && result.value.kind).toBe('answer');
+      expect(result.ok && result.value.ask?.[0]?.id).toBe('emettre_facture.operationCategory');
+    });
+
+    it('une course au confirm redevient la même question structurée', async () => {
+      const issueInvoice = vi.fn(async () => err({
+        kind: 'domain' as const,
+        error: {
+          code: 'VALIDATION' as const,
+          field: 'operationCategory',
+          message: 'Nature requise.',
+        },
+      }));
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: { ...actions, issueInvoice },
+      });
+      const proposal = await agent.ask('émets la facture Durand');
+      if (!proposal.ok || !proposal.value.pending) throw new Error('proposal');
+
+      const result = await agent.confirm(proposal.value.pending);
+
+      expect(result.ok && result.value.kind).toBe('answer');
+      expect(result.ok && result.value.ask?.[0]?.id).toBe('emettre_facture.operationCategory');
+      expect(issueInvoice).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('documents : liste les pièces archivées sans mutation', async () => {
@@ -685,6 +835,94 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
       const r = await agent.confirm(p.value.pending);
       expect(r.ok && r.value.kind).toBe('done');
     }
+  });
+
+  it('lot : une émission ambiguë conserve le fait BT-23 explicite dans le batch', async () => {
+    const llm: LlmPort = {
+      id: 'fake-bt23-batch',
+      async complete() {
+        return {
+          text: null,
+          toolCalls: [
+            { name: 'emettre_facture', arguments: { reference: 'Durand' } },
+            { name: 'tresorerie_versement', arguments: {} },
+          ],
+          model: 'glm',
+        };
+      },
+      async generate() { return { text: '', model: 'glm' }; },
+      async health() { return { healthy: true }; },
+    };
+    const agent = new BobAgent({
+      router: routerWithKey,
+      llm,
+      actions: {
+        ...actions,
+        listIssuableInvoices: async () => ok([{
+          id: 'draft-mixed-1',
+          number: null,
+          totalTtcCents: 264000,
+          customerName: 'Durand SARL',
+          status: 'draft',
+          operationCategoryRequired: true,
+        }]),
+      },
+    });
+
+    const result = await agent.ask(
+      'émets la facture Durand, nature de l’opération : services, puis calcule ma trésorerie',
+    );
+
+    expect(result.ok && result.value.kind).toBe('proposed');
+    expect(result.ok && result.value.pending?.batch?.[0]?.args).toEqual({
+      invoiceId: 'draft-mixed-1',
+      operationCategory: 'services',
+    });
+  });
+
+  it('lot : deux émissions ambiguës refusent une catégorie globale silencieuse', async () => {
+    const llm: LlmPort = {
+      id: 'fake-bt23-double-batch',
+      async complete() {
+        return {
+          text: null,
+          toolCalls: [
+            { name: 'emettre_facture', arguments: { reference: 'Durand' } },
+            { name: 'emettre_facture', arguments: { reference: 'Martin' } },
+          ],
+          model: 'glm',
+        };
+      },
+      async generate() { return { text: '', model: 'glm' }; },
+      async health() { return { healthy: true }; },
+    };
+    const agent = new BobAgent({
+      router: routerWithKey,
+      llm,
+      actions: {
+        ...actions,
+        listIssuableInvoices: async () => ok([
+          {
+            id: 'draft-mixed-1', number: null, totalTtcCents: 264000,
+            customerName: 'Durand SARL', status: 'draft', operationCategoryRequired: true,
+          },
+          {
+            id: 'draft-mixed-2', number: null, totalTtcCents: 90000,
+            customerName: 'Martin SARL', status: 'draft', operationCategoryRequired: true,
+          },
+        ]),
+      },
+    });
+
+    const result = await agent.ask(
+      'émets les factures Durand et Martin, prestation principale',
+    );
+
+    expect(result.ok && result.value.kind).toBe('answer');
+    expect(result.ok && result.value.ask?.[0]?.id).toBe(
+      'plan.emettre_facture.operationCategory',
+    );
+    expect(result.ok && result.value.card.body).toContain('Rien n’a été exécuté');
   });
 
   it('retombe sur la regex si le LLM échoue (jamais bloquant)', async () => {

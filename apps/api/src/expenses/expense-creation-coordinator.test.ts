@@ -1,4 +1,5 @@
 import {
+  Company,
   appConflict,
   err,
   ok,
@@ -9,6 +10,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { expenseCreationFingerprint, type ExpenseCreationRequestRecord } from '../persistence/expense-creation-requests';
 import { InMemoryPersistence } from '../persistence/persistence.testing';
+import { seedCompany } from '@bob/core/testing';
 import { ExpenseCreationCoordinator } from './expense-creation-coordinator';
 
 const COMPANY = 'company-expense-coordinator';
@@ -46,6 +48,10 @@ class QueuedIds implements IdGeneratorPort {
 
 function harness(ids = new QueuedIds()) {
   const persistence = new InMemoryPersistence();
+  const company = seedCompany();
+  const companyForHarness = Company.of({ ...company.toProps(), id: COMPANY });
+  if (!companyForHarness.ok) throw new Error('Société de test invalide.');
+  persistence.companies.seed(companyForHarness.value);
   const coordinator = new ExpenseCreationCoordinator({
     persistence,
     ids,

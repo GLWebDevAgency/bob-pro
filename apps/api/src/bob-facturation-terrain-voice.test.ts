@@ -268,6 +268,91 @@ describe('B2 — facturer_situation à la voix (hôte réel → GenerateInvoiceF
   });
 });
 
+describe('BT-23 — émission vocale verticale sur l’hôte serveur réel', () => {
+  it('facture mixte : demande le fait, le conserve dans la proposition opaque et fige S1', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asMercier(async () => {
+      const customer = await service.createCustomer({
+        name: 'Atelier Kerbrat SARL',
+        type: 'b2b',
+        siren: '732829320',
+        address: { line1: '4 rue du Port', zip: '29200', city: 'Brest' },
+      });
+      expect(customer.ok).toBe(true);
+      if (!customer.ok) return;
+      const quote = await service.createQuote({
+        customerId: customer.value.id,
+        lines: [
+          {
+            label: 'Pose du chauffe-eau', category: 'labor', qty: 2,
+            unitPriceHT: 5500, vatRate: 20,
+          },
+          {
+            label: 'Chauffe-eau 200 litres', category: 'supply', qty: 1,
+            unitPriceHT: 80000, vatRate: 20,
+          },
+        ],
+      });
+      if (!quote.ok) throw new Error('create quote');
+      expect((await service.sendQuote(quote.value.quoteId)).ok).toBe(true);
+      expect((await service.signQuote({
+        quoteId: quote.value.quoteId,
+        signerName: 'Mme Kerbrat',
+      })).ok).toBe(true);
+      const generated = await service.generateInvoice({
+        quoteId: quote.value.quoteId,
+        mode: 'final',
+      });
+      if (!generated.ok) throw new Error('generate invoice');
+      const bobLists = (
+        service as unknown as {
+          buildBobActions(): {
+            listIssuableInvoices(): Promise<{
+              ok: true;
+              value: { id: string; operationCategoryRequired: boolean }[];
+            }>;
+          };
+        }
+      ).buildBobActions();
+      const candidates = await bobLists.listIssuableInvoices();
+      expect(
+        candidates.ok
+          ? candidates.value.find((invoice) => invoice.id === generated.value.invoiceId)
+          : null,
+      ).toMatchObject({ operationCategoryRequired: true });
+
+      const question = await service.askBob(
+        `Émets la facture ${generated.value.invoiceId}`,
+      );
+      expect(question.ok && question.value.kind).toBe('answer');
+      expect(question.ok && question.value.ask?.[0]?.id).toBe(
+        'emettre_facture.operationCategory',
+      );
+      const followUp = question.ok
+        ? question.value.ask?.[0]?.options.find((option) => option.value === 'services')?.followUp
+        : undefined;
+      if (!followUp) throw new Error('BT-23 follow-up');
+
+      const proposed = await service.askBob(followUp);
+      expect(proposed.ok && proposed.value.kind).toBe('proposed');
+      expect(proposed.ok && proposed.value.pending?.args).toMatchObject({
+        invoiceId: generated.value.invoiceId,
+        operationCategory: 'services',
+      });
+      if (!proposed.ok || !proposed.value.pending?.proposalId) throw new Error('proposal');
+
+      const confirmed = await service.confirmBob({
+        proposalId: proposed.value.pending.proposalId,
+      });
+      expect(confirmed.ok && confirmed.value.kind).toBe('done');
+      const persisted = await p.invoices.findById(generated.value.invoiceId);
+      expect(persisted?.status).toBe('issued');
+      expect(persisted?.frenchBillingModeAtIssuance).toBe('S1');
+    });
+  });
+});
+
 describe('B4 — definir_conditions_paiement à la voix (hôte réel → UpdateCustomer)', () => {
   it('« Kerbrat paie à 45 jours fin de mois » : propose, la confirmation pose Customer.paymentTerms (fiche relue à l’identique)', async () => {
     const { service, p, audit } = makeService();

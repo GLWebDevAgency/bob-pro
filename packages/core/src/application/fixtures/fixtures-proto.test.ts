@@ -43,7 +43,7 @@ describe('fixtures-proto (alignement Bob Pro.dc.html v2)', () => {
     const martin = byId.get('cust-martin')!;
     expect(martin.name).toBe('SARL Martin Rénovation');
     expect(martin.type).toBe('b2b');
-    expect(martin.siren).toBe('821503642');
+    expect(martin.siren).toBe('821503646');
     expect(martin.toProps()).not.toHaveProperty('score');
     expect(martin.toProps()).not.toHaveProperty('avgDelayDays');
 
@@ -51,7 +51,7 @@ describe('fixtures-proto (alignement Bob Pro.dc.html v2)', () => {
     const camping = byId.get('cust-camping')!;
     expect(camping.name).toBe('Camping Les Pins');
     expect(camping.type).toBe('b2b');
-    expect(camping.siren).toBe('789220117');
+    expect(camping.siren).toBe('789220118');
     expect(camping.toProps()).not.toHaveProperty('outstanding');
 
     // Les 3 canaux e-invoicing du proto restent représentés (b2c/b2b/b2g).

@@ -10,6 +10,7 @@ const BASE: CompanyProps = {
   siret: '73282932000074',
   trade: 'plombier',
   vatRegime: 'reel_simpl',
+  tvaIntracom: 'FR44732829320',
   rcsOrRm: 'RM 92',
   address: { line1: '24 rue de la Forge', zip: '92310', city: 'Sèvres' },
 };
@@ -20,7 +21,7 @@ describe('companyCanIssue', () => {
     expect(companyCanIssue(undefined)).toBe(false);
   });
 
-  it('accepte une société avec RCS/RM et adresse complète', () => {
+  it('accepte une société au réel avec RCS/RM, adresse complète et TVA attribuée', () => {
     expect(companyCanIssue(BASE)).toBe(true);
   });
 
@@ -31,5 +32,11 @@ describe('companyCanIssue', () => {
 
   it('refuse une société avec une adresse incomplète', () => {
     expect(companyCanIssue({ ...BASE, address: { line1: '', zip: '92310', city: '' } })).toBe(false);
+  });
+
+  it('refuse le régime réel sans TVA attribuée, mais accepte son absence en franchise', () => {
+    const { tvaIntracom: _tvaIntracom, ...withoutVat } = BASE;
+    expect(companyCanIssue(withoutVat)).toBe(false);
+    expect(companyCanIssue({ ...withoutVat, vatRegime: 'franchise' })).toBe(true);
   });
 });

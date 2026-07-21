@@ -14,7 +14,7 @@ const actions: BobActions = {
   listSendableQuotes: async () =>
     ok([{ id: 'quote-1', number: 'D2026-014', totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft' }]),
   listIssuableInvoices: async () =>
-    ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft' }]),
+    ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft', operationCategoryRequired: false }]),
   listDocuments: async () =>
     ok([
       {

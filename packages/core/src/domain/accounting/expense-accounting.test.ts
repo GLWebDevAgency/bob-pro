@@ -29,7 +29,12 @@ const chart = (() => {
 
 describe('buildRecordedExpenseAccountingEntry (cycle achats — journal AC)', () => {
   it('poste 606 débit (TTC−TVA) + 44566 débit + 401 crédit, équilibrée, validée par le plan', () => {
-    const r = buildRecordedExpenseAccountingEntry({ entryId: 'expense:exp-1:recorded', expense: expense(), chart });
+    const r = buildRecordedExpenseAccountingEntry({
+      entryId: 'expense:exp-1:recorded',
+      expense: expense(),
+      vatRegime: 'reel_normal',
+      chart,
+    });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.journal).toBe('purchases');
@@ -46,6 +51,7 @@ describe('buildRecordedExpenseAccountingEntry (cycle achats — journal AC)', ()
     const r = buildRecordedExpenseAccountingEntry({
       entryId: 'expense:exp-2:recorded',
       expense: expense({ id: 'exp-2', vatCents: null, totalHtCents: null }),
+      vatRegime: 'reel_simpl',
       chart,
     });
     expect(r.ok).toBe(true);
@@ -58,11 +64,13 @@ describe('buildRecordedExpenseAccountingEntry (cycle achats — journal AC)', ()
     const repas = buildRecordedExpenseAccountingEntry({
       entryId: 'e:repas',
       expense: expense({ id: 'e-repas', category: 'repas' }),
+      vatRegime: 'reel_normal',
       chart,
     });
     const sstt = buildRecordedExpenseAccountingEntry({
       entryId: 'e:sstt',
       expense: expense({ id: 'e-sstt', category: 'sous_traitance' }),
+      vatRegime: 'reel_normal',
       chart,
     });
     expect(repas.ok && repas.value.lines[0]?.account).toBe('625');
@@ -73,9 +81,48 @@ describe('buildRecordedExpenseAccountingEntry (cycle achats — journal AC)', ()
     const r = buildRecordedExpenseAccountingEntry({
       entryId: 'e:zero',
       expense: expense({ id: 'e-zero', totalTtcCents: 0, totalHtCents: null, vatCents: null }),
+      vatRegime: 'reel_normal',
       chart,
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('franchise en base : TVA fournisseur incluse dans la charge, jamais de 44566', () => {
+    const r = buildRecordedExpenseAccountingEntry({
+      entryId: 'expense:exp-franchise:recorded',
+      expense: expense({ id: 'exp-franchise' }),
+      vatRegime: 'franchise',
+      chart,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.lines).toEqual([
+      { account: '606', label: 'Achat Leroy Merlin', debitCents: 18490, creditCents: 0 },
+      { account: '401', label: 'Achat Leroy Merlin', debitCents: 0, creditCents: 18490 },
+    ]);
+  });
+
+  it('FAIL-CLOSED : régime TVA non qualifié => aucune écriture calculée', () => {
+    const r = buildRecordedExpenseAccountingEntry({
+      entryId: 'expense:exp-unknown:recorded',
+      expense: expense({ id: 'exp-unknown' }),
+      vatRegime: null,
+      chart,
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'vatRegime' },
+    });
+
+    const missingAtRuntime = buildRecordedExpenseAccountingEntry({
+      entryId: 'expense:exp-missing:recorded',
+      expense: expense({ id: 'exp-missing' }),
+      chart,
+    } as unknown as Parameters<typeof buildRecordedExpenseAccountingEntry>[0]);
+    expect(missingAtRuntime).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'vatRegime' },
+    });
   });
 });
 

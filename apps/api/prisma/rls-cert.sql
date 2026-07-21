@@ -33,6 +33,16 @@ SELECT pg_temp.assert_eq(
   'runtime role cannot hard-delete companies'
 );
 SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.documents', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot hard-delete documents'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.document_versions', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot hard-delete document versions'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.document_analyses', 'UPDATE') THEN 1 ELSE 0 END,
   0,
   'runtime role cannot update document analyses'
@@ -95,57 +105,15 @@ SELECT set_config('app.notification_outbox_version', '2', false);
 -- contrôlées le contournent. La preuve N-1 en fin de fichier réactive le comportement réel.
 SELECT set_config('app.notification_outbox_cutover_bypass', 'certification', false);
 
--- Runtime cleanup for local reruns. Append-only fixtures are removed by the
--- privileged rls-cert-cleanup.sql invoked before and after this certification.
-BEGIN;
-SET LOCAL app.current_company_id = 'rls-co-a';
-DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
-DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
-DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
-DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
-DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
-DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
-DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
-DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
-DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
-DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
-DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
-DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
-DELETE FROM notification_jobs WHERE id IN ('00000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-00000000000c');
-DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
-DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
-DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
-DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
-DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
-DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-COMMIT;
+-- La même certification s'exécute pendant l'expand V1 puis après le cutover V2. Les fixtures
+-- archive doivent donc emprunter exactement la capacité encore autorisée dans chaque protocole.
+SELECT ("activeVersion" = 1) AS document_archive_expand
+  FROM public.document_archive_protocol_state
+ WHERE id = 1
+\gset
 
-BEGIN;
-SET LOCAL app.current_company_id = 'rls-co-b';
-DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
-DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
-DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
-DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
-DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
-DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
-DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
-DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
-DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
-DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
-DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
-DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
-DELETE FROM notification_jobs WHERE id IN ('00000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-00000000000c');
-DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
-DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
-DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
-DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
-DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
-DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-COMMIT;
+-- Fixture cleanup is intentionally privileged and is executed before and after this file by
+-- release.sh. The runtime role must never acquire hard-delete rights merely to make a cert rerunnable.
 
 -- Seed tenant A through RLS WITH CHECK policies.
 BEGIN;
@@ -166,8 +134,13 @@ INSERT INTO customers (id, "companyId", type, name, "addrLine1", "addrZip", "add
 VALUES ('rls-customer-a', 'rls-co-a', 'b2c', 'Client A', '1 rue A', '75001', 'Paris');
 INSERT INTO quotes (id, "companyId", "customerId", status)
 VALUES ('rls-quote-a', 'rls-co-a', 'rls-customer-a', 'sent');
-INSERT INTO invoices (id, "companyId", "customerId", kind, status)
-VALUES ('rls-invoice-a', 'rls-co-a', 'rls-customer-a', 'invoice', 'issued');
+INSERT INTO invoices (
+  id, "companyId", "customerId", kind, status, number, "issuedAt", "dueAt"
+)
+VALUES (
+  'rls-invoice-a', 'rls-co-a', 'rls-customer-a', 'invoice', 'issued',
+  'RLS-A-2026-001', '2026-01-01T00:00:00Z', '2026-01-31T00:00:00Z'
+);
 INSERT INTO line_items (id, "quoteId", position, label, category, qty, "unitPriceHt", "vatRate")
 VALUES ('rls-line-a', 'rls-quote-a', 1, 'Line A', 'labor', 1, 10000, 20);
 INSERT INTO payments (id, "companyId", "invoiceId", amount, method, "receivedAt")
@@ -269,8 +242,18 @@ VALUES (
 );
 INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextValue")
 VALUES ('rls-co-a', 'quote', 2026, 2);
-INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\if :document_archive_expand
+  INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+  VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\else
+  SELECT pg_temp.assert_eq(
+    CASE WHEN public.document_archive_job_enqueue_v2(
+      'rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c'
+    ) THEN 1 ELSE 0 END,
+    1,
+    'tenant A archive job enqueued through V2 capability'
+  );
+\endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",
   status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
@@ -327,8 +310,13 @@ INSERT INTO customers (id, "companyId", type, name, "addrLine1", "addrZip", "add
 VALUES ('rls-customer-b', 'rls-co-b', 'b2c', 'Client B', '2 rue B', '69001', 'Lyon');
 INSERT INTO quotes (id, "companyId", "customerId", status)
 VALUES ('rls-quote-b', 'rls-co-b', 'rls-customer-b', 'sent');
-INSERT INTO invoices (id, "companyId", "customerId", kind, status)
-VALUES ('rls-invoice-b', 'rls-co-b', 'rls-customer-b', 'invoice', 'issued');
+INSERT INTO invoices (
+  id, "companyId", "customerId", kind, status, number, "issuedAt", "dueAt"
+)
+VALUES (
+  'rls-invoice-b', 'rls-co-b', 'rls-customer-b', 'invoice', 'issued',
+  'RLS-B-2026-001', '2026-01-01T00:00:00Z', '2026-01-31T00:00:00Z'
+);
 INSERT INTO line_items (id, "quoteId", position, label, category, qty, "unitPriceHt", "vatRate")
 VALUES ('rls-line-b', 'rls-quote-b', 1, 'Line B', 'labor', 1, 20000, 20);
 INSERT INTO payments (id, "companyId", "invoiceId", amount, method, "receivedAt")
@@ -388,8 +376,18 @@ VALUES (
 );
 INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextValue")
 VALUES ('rls-co-b', 'quote', 2026, 2);
-INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\if :document_archive_expand
+  INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+  VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\else
+  SELECT pg_temp.assert_eq(
+    CASE WHEN public.document_archive_job_enqueue_v2(
+      'rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c'
+    ) THEN 1 ELSE 0 END,
+    1,
+    'tenant B archive job enqueued through V2 capability'
+  );
+\endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",
   status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
@@ -563,8 +561,6 @@ BEGIN
   END;
 END;
 $$;
-DELETE FROM document_versions WHERE id = 'rls-docver-a-validation';
-
 DO $$
 BEGIN
   BEGIN
@@ -671,8 +667,18 @@ BEGIN
     NULL;
   END;
   BEGIN
-    INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-    VALUES ('rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    IF (
+      SELECT "activeVersion" = 1
+        FROM public.document_archive_protocol_state
+       WHERE id = 1
+    ) THEN
+      INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+      VALUES ('rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    ELSE
+      PERFORM public.document_archive_job_enqueue_v2(
+        'rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c'
+      );
+    END IF;
     RAISE EXCEPTION 'RLS cert failed: cross-tenant document archive job insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;

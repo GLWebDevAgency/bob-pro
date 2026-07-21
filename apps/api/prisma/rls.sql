@@ -14,6 +14,7 @@ BEGIN
     'customers',
     'quotes',
     'invoices',
+    'invoice_predecessors',
     'line_items',
     'payments',
     'public_access_tokens',
@@ -26,7 +27,9 @@ BEGIN
     'document_folders',
     'document_folder_deletion_plans',
     'document_versions',
+    'document_invoice_pdf_attestations',
     'document_archive_jobs',
+    'document_archive_job_artifacts',
     'notification_jobs',
     'devices',
     'push_installations',
@@ -190,9 +193,53 @@ CREATE POLICY tenant_isolation ON quotes
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON invoices;
-CREATE POLICY tenant_isolation ON invoices
+DROP POLICY IF EXISTS invoice_select ON invoices;
+DROP POLICY IF EXISTS invoice_insert ON invoices;
+DROP POLICY IF EXISTS invoice_update ON invoices;
+DROP POLICY IF EXISTS invoice_delete_draft ON invoices;
+CREATE POLICY invoice_select ON invoices FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_insert ON invoices FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_update ON invoices FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_delete_draft ON invoices FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND status = 'draft'
+  );
+
+-- Références de pièces antérieures : lecture/insertion strictement tenant et brouillon.
+-- Aucun UPDATE ; DELETE
+-- seulement pendant la vie du brouillon cible (le trigger SQL rend la preuve append-only dès
+-- l'émission et refuse également toute suppression orpheline).
+DROP POLICY IF EXISTS tenant_isolation ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_select ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_insert ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_delete_draft ON invoice_predecessors;
+CREATE POLICY invoice_predecessor_select ON invoice_predecessors FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_predecessor_insert ON invoice_predecessors FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1 FROM invoices i
+       WHERE i.id = invoice_predecessors."invoiceId"
+         AND i."companyId" = invoice_predecessors."companyId"
+         AND i.status = 'draft'
+    )
+  );
+CREATE POLICY invoice_predecessor_delete_draft ON invoice_predecessors FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1 FROM invoices i
+       WHERE i.id = invoice_predecessors."invoiceId"
+         AND i."companyId" = invoice_predecessors."companyId"
+         AND i.status = 'draft'
+    )
+  );
 
 DROP POLICY IF EXISTS tenant_isolation ON payments;
 CREATE POLICY tenant_isolation ON payments
@@ -225,9 +272,39 @@ CREATE POLICY tenant_quote_creation_request_insert ON quote_creation_requests
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON documents;
-CREATE POLICY tenant_isolation ON documents
+DROP POLICY IF EXISTS tenant_document_select ON documents;
+DROP POLICY IF EXISTS tenant_document_insert ON documents;
+DROP POLICY IF EXISTS tenant_document_update ON documents;
+DROP POLICY IF EXISTS generated_invoice_pdf_attestation_select_fence ON documents;
+CREATE POLICY tenant_document_select ON documents FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY tenant_document_insert ON documents FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY tenant_document_update ON documents FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+-- Après activation V2, un PDF de facture généré n'est visible que si son profil a été attesté
+-- depuis ses octets et correspond au snapshot d'audience. AS RESTRICTIVE compose ce fence avec
+-- le tenant policy ci-dessus (AND), il ne peut jamais élargir une lecture.
+CREATE POLICY generated_invoice_pdf_attestation_select_fence ON documents
+  AS RESTRICTIVE FOR SELECT
+  USING (
+    origin <> 'generated'::public."StoredDocumentOrigin"
+    OR kind <> 'invoice_pdf'::public."StoredDocumentKind"
+    OR NOT EXISTS (
+      SELECT 1
+        FROM public.document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 2
+    )
+    OR (
+      "linkedEntityType" = 'invoice'::public."StoredDocumentLinkedEntityType"
+      AND btrim(coalesce("linkedEntityId", '')) <> ''
+      AND public.generated_invoice_pdf_attestation_visible_v2("companyId", id)
+    )
+  );
+-- Pas de policy DELETE : la purge après rétention appartient à une capacité d'administration
+-- distincte. Une dérive future d'ACL ne doit pas rendre le hard-delete accessible au runtime.
 
 DROP POLICY IF EXISTS tenant_isolation ON document_analyses;
 DROP POLICY IF EXISTS tenant_analysis_select ON document_analyses;
@@ -718,9 +795,57 @@ CREATE POLICY realtime_voice_usage_daily_rollup_update ON realtime_voice_usage_d
   );
 
 DROP POLICY IF EXISTS tenant_isolation ON document_archive_jobs;
-CREATE POLICY tenant_isolation ON document_archive_jobs
-  USING ("companyId" = current_setting('app.current_company_id', true))
-  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS document_archive_jobs_tenant_select ON document_archive_jobs;
+DROP POLICY IF EXISTS document_archive_jobs_tenant_insert ON document_archive_jobs;
+DROP POLICY IF EXISTS document_archive_jobs_tenant_update ON document_archive_jobs;
+CREATE POLICY document_archive_jobs_tenant_select ON document_archive_jobs
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+-- Fenêtre expand N/N-1 : l'ancien binaire écrit encore directement dans l'outbox. Ces policies
+-- sont donc doublement bornées par le tenant ET par le rail monotone V1. L'activation V2 change
+-- l'état dans la même transaction que le retrait des ACL : même si un GRANT dérivait plus tard,
+-- les policies resteraient fermées. Le writer N utilise déjà les capacités SECURITY DEFINER V2.
+CREATE POLICY document_archive_jobs_tenant_insert ON document_archive_jobs FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+CREATE POLICY document_archive_jobs_tenant_update ON document_archive_jobs FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+-- Jamais de policy DELETE. Après activation V2, aucune policy INSERT/UPDATE n'est satisfiable et
+-- le runtime ne conserve que enqueue/claim/fail/complete, qui bornent identité, horloge et preuve.
+
+DROP POLICY IF EXISTS document_archive_job_artifacts_tenant_select
+  ON document_archive_job_artifacts;
+CREATE POLICY document_archive_job_artifacts_tenant_select ON document_archive_job_artifacts
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS document_invoice_pdf_attestations_tenant_select
+  ON document_invoice_pdf_attestations;
+CREATE POLICY document_invoice_pdf_attestations_tenant_select
+  ON document_invoice_pdf_attestations FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON notification_jobs;
 DO $$
@@ -1122,13 +1247,48 @@ CREATE POLICY tenant_isolation ON line_items
 
 -- document_versions : rattachées via leur document parent.
 DROP POLICY IF EXISTS tenant_isolation ON document_versions;
-CREATE POLICY tenant_isolation ON document_versions
+DROP POLICY IF EXISTS tenant_document_version_select ON document_versions;
+DROP POLICY IF EXISTS tenant_document_version_insert ON document_versions;
+DROP POLICY IF EXISTS tenant_document_version_update_expand ON document_versions;
+CREATE POLICY tenant_document_version_select ON document_versions FOR SELECT
   USING (
     EXISTS (SELECT 1 FROM documents d WHERE d.id = document_versions."documentId" AND d."companyId" = current_setting('app.current_company_id', true))
-  )
+  );
+CREATE POLICY tenant_document_version_insert ON document_versions FOR INSERT
   WITH CHECK (
     EXISTS (SELECT 1 FROM documents d WHERE d.id = document_versions."documentId" AND d."companyId" = current_setting('app.current_company_id', true))
   );
+-- Compatibilité N-1 strictement temporaire : son UPSERT confirme un retry par un UPDATE no-op.
+-- Le trigger `document_versions_immutable` refuse toute différence ; le protocole V1 ferme en
+-- plus cette policy dès l'activation, avant même le retrait de l'ACL UPDATE.
+CREATE POLICY tenant_document_version_update_expand ON document_versions FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM documents d
+       WHERE d.id = document_versions."documentId"
+         AND d."companyId" = current_setting('app.current_company_id', true)
+    )
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM documents d
+       WHERE d.id = document_versions."documentId"
+         AND d."companyId" = current_setting('app.current_company_id', true)
+    )
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+-- Jamais de policy DELETE ; en V2, la policy UPDATE devient fausse et l'ACL est révoquée.
 
 -- ——— Espace Cabinet V3 — identité JWT + autorisation DB ———
 -- Ces helpers SECURITY DEFINER évitent les récursions de policies sur cabinet_members. Ils ne

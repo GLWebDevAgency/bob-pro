@@ -1,4 +1,4 @@
-import { type DocumentStoragePort, type StoredObject } from '@bob/core';
+import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '@bob/core';
 import { documentSha256 } from './storage';
 
 function copy(bytes: Uint8Array): Uint8Array {
@@ -6,10 +6,20 @@ function copy(bytes: Uint8Array): Uint8Array {
 }
 
 function assertTenantStorageKey(companyId: string, key: string): void {
-  const prefix = `companies/${companyId}/documents/`;
-  if (!key.startsWith(prefix) || key.includes('..') || key.startsWith('/')) {
+  const root = `companies/${companyId}/`;
+  const relative = key.startsWith(root) ? key.slice(root.length) : '';
+  if (
+    (!relative.startsWith('documents/') && !relative.startsWith('chantiers/'))
+    || relative.includes('..')
+    || relative.includes('//')
+    || key.startsWith('/')
+  ) {
     throw new Error('Document storage key outside tenant scope.');
   }
+}
+
+function normalizeContentType(value: string): string {
+  return (value.split(';')[0] ?? '').trim().toLowerCase();
 }
 
 function encodePath(path: string): string {
@@ -33,25 +43,54 @@ export class InMemoryDocumentStorage implements DocumentStoragePort {
     contentType: string;
   }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
-    if (this.objects.has(input.key)) throw new Error('Document object already exists.');
     const digest = documentSha256(input.bytes);
+    const existing = this.objects.get(input.key);
+    if (existing) {
+      if (
+        existing.companyId === input.companyId
+        && existing.sha256 === digest
+        && existing.bytes.byteLength === input.bytes.byteLength
+        && normalizeContentType(existing.contentType) === normalizeContentType(input.contentType)
+      ) {
+        return {
+          key: input.key,
+          sizeBytes: existing.bytes.byteLength,
+          sha256: existing.sha256,
+          contentType: existing.contentType,
+          created: false,
+        };
+      }
+      throw new Error('Document object key collision with different content.');
+    }
     this.objects.set(input.key, {
       companyId: input.companyId,
       bytes: copy(input.bytes),
       contentType: input.contentType,
       sha256: digest,
     });
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: digest };
+    return {
+      key: input.key,
+      sizeBytes: input.bytes.byteLength,
+      sha256: digest,
+      contentType: input.contentType,
+      created: true,
+    };
   }
 
   async get(
     companyId: string,
     key: string,
-  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  ): Promise<LoadedStoredObject | null> {
     assertTenantStorageKey(companyId, key);
     const object = this.objects.get(key);
     if (!object || object.companyId !== companyId) return null;
-    return { bytes: copy(object.bytes), contentType: object.contentType };
+    return {
+      key,
+      bytes: copy(object.bytes),
+      sizeBytes: object.bytes.byteLength,
+      sha256: object.sha256,
+      contentType: object.contentType,
+    };
   }
 
   async getSignedUrl(companyId: string, key: string, ttlSeconds: number): Promise<string> {

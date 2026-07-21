@@ -35,6 +35,7 @@ describe('HealthController readiness contract', () => {
       expect(response).toMatchObject({
         ready: true,
         customers: 4,
+        capabilities: { documentArchiveB2cHttpFence: 'v1' },
         network: { clientIpSource: 'railway-x-real-ip' },
       });
       expect(response).not.toHaveProperty('network.clientIp');

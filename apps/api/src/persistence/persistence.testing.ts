@@ -167,6 +167,8 @@ export class InMemoryPersistence implements Persistence {
     const subscriptionSnapshot = this.subscriptions.snapshot();
     const cabinetSnapshot = this.cabinet.snapshot?.();
     const documentSnapshot = this.documents.snapshot();
+    const documentInvoicePdfAttestationSnapshot =
+      this.documents.snapshotInvoicePdfAttestations();
     const documentAnalysisSnapshot = this.documentAnalyses.snapshot();
     const folderSnapshot = this.documentFolders.snapshot();
     const quoteSnapshot = this.quotes.snapshot();
@@ -191,6 +193,7 @@ export class InMemoryPersistence implements Persistence {
       this.subscriptions.restore(subscriptionSnapshot);
       if (cabinetSnapshot !== undefined) this.cabinet.restore?.(cabinetSnapshot);
       this.documents.restore(documentSnapshot);
+      this.documents.restoreInvoicePdfAttestations(documentInvoicePdfAttestationSnapshot);
       this.documentAnalyses.restore(documentAnalysisSnapshot);
       this.documentFolders.restore(folderSnapshot);
       this.quotes.restore(quoteSnapshot);

@@ -51,6 +51,7 @@ function issuedInvoice(id = 'inv-1', number = 'F-2026-0007'): Invoice {
     terms: terms.value,
     issuedAt: clock.today(),
     at: clock.now(),
+    frenchBillingMode: 'S1',
   });
   if (!issued.ok) throw new Error('issue');
   return invoice;
@@ -151,6 +152,180 @@ describe('IssueInvoice', () => {
       'company:share',
       'invoice:update',
     ]);
+  });
+
+  it('refuse une pièce biens + services sans choix BT-23 avant toute allocation', async () => {
+    const invoice = draftInvoice();
+    const added = invoice.addLine({
+      id: 'line-supply',
+      label: 'Chauffe-eau',
+      category: 'supply',
+      qty: 1,
+      unitPriceHT: 80_000,
+      vatRate: 20,
+    });
+    if (!added.ok) throw new Error('supply line');
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({ invoiceId: invoice.id, terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'operationCategory' },
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
+  });
+
+  it('fige le choix métier explicite sans exposer un code réglementaire au client', async () => {
+    const invoice = draftInvoice();
+    const added = invoice.addLine({
+      id: 'line-supply',
+      label: 'Fourniture intégrée à la pose',
+      category: 'supply',
+      qty: 1,
+      unitPriceHT: 80_000,
+      vatRate: 20,
+    });
+    if (!added.ok) throw new Error('supply line');
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({
+      invoiceId: invoice.id,
+      terms,
+      operationCategory: 'services',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(invoice.frenchBillingModeAtIssuance).toBe('S1');
+    expect(env.counts()).toEqual({ allocations: 1, saves: 1 });
+  });
+
+  it('refuse une unité non représentable en UN/ECE avant toute allocation', async () => {
+    const company = seedCompany();
+    const customer = seedCustomers()[1]!;
+    const composed = Invoice.composeStandalone({
+      id: 'inv-unit-inconnue',
+      companyId: company.id,
+      customerId: customer.id,
+    });
+    if (!composed.ok) throw new Error('invoice');
+    const added = composed.value.addLine({
+      id: 'line-1',
+      label: 'Conditionnement spécifique',
+      category: 'supply',
+      qty: 1,
+      unit: 'palette spéciale',
+      unitPriceHT: 10_000,
+      vatRate: 20,
+    });
+    if (!added.ok) throw new Error('line');
+    const env = makeDeps(composed.value);
+
+    const result = await env.usecase.execute({ invoiceId: composed.value.id, terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'domain', error: { code: 'VALIDATION', field: 'unit' } },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
+  });
+
+  it('refuse de mélanger débours hors champ et prestation avant toute allocation', async () => {
+    const invoice = draftInvoice('inv-debours-mixte');
+    const added = invoice.addLine({
+      id: 'line-debours',
+      label: 'Frais de greffe avancés',
+      category: 'disbursement',
+      qty: 1,
+      unitPriceHT: 5_000,
+      vatRate: 0,
+    });
+    if (!added.ok) throw new Error('disbursement line');
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({ invoiceId: invoice.id, terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [expect.objectContaining({ field: 'lines.disbursement' })],
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
+  });
+
+  it('demande la nature de l’opération pour une pièce 100 % débours puis fige le choix réel', async () => {
+    const company = seedCompany();
+    const customer = seedCustomers()[1]!;
+    const composed = Invoice.composeStandalone({
+      id: 'inv-debours-seul',
+      companyId: company.id,
+      customerId: customer.id,
+    });
+    if (!composed.ok) throw new Error('invoice');
+    const added = composed.value.addLine({
+      id: 'line-debours',
+      label: 'Frais de greffe avancés',
+      category: 'disbursement',
+      qty: 1,
+      unitPriceHT: 5_000,
+      vatRate: 0,
+    });
+    if (!added.ok) throw new Error('disbursement line');
+    const env = makeDeps(composed.value);
+
+    const missingFact = await env.usecase.execute({ invoiceId: composed.value.id, terms });
+    expect(missingFact).toMatchObject({
+      ok: false,
+      error: { kind: 'domain', error: { code: 'VALIDATION', field: 'operationCategory' } },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+
+    const qualified = await env.usecase.execute({
+      invoiceId: composed.value.id,
+      terms,
+      operationCategory: 'services',
+    });
+    expect(qualified.ok).toBe(true);
+    expect(composed.value.frenchBillingModeAtIssuance).toBe('S1');
+    expect(env.counts()).toEqual({ allocations: 1, saves: 1 });
+  });
+
+  it('refuse une catégorie BT-23 runtime inconnue avant le compteur et la sauvegarde', async () => {
+    const invoice = draftInvoice();
+    const added = invoice.addLine({
+      id: 'line-supply',
+      label: 'Fourniture intégrée à la pose',
+      category: 'supply',
+      qty: 1,
+      unitPriceHT: 80_000,
+      vatRate: 20,
+    });
+    if (!added.ok) throw new Error('supply line');
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({
+      invoiceId: invoice.id,
+      terms,
+      operationCategory: 'hybrid' as never,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'operationCategory' },
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
   });
 
   it('renvoie le numéro si le verrou relit une facture déjà émise par une course concurrente', async () => {
@@ -257,6 +432,25 @@ describe('IssueInvoice', () => {
     expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
   });
 
+  it('refuse une société commerciale sans capital avant toute allocation de numéro', async () => {
+    const env = makeDeps(draftInvoice());
+    const withoutCapital = Company.of({ ...seedCompany().toProps(), legalForm: 'SASU' });
+    if (!withoutCapital.ok) throw new Error('company fixture');
+    env.replaceCompany(withoutCapital.value);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'capitalSocialCents' },
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
+  });
+
   it('revalide aussi la clôture sur un replay déjà numéroté, sans exiger les conditions', async () => {
     const env = makeDeps(issuedInvoice());
     const current = seedCompany();
@@ -303,6 +497,49 @@ describe('IssueInvoice', () => {
     expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
   });
 
+  it('refuse un client professionnel sans SIREN avant toute allocation de numéro', async () => {
+    const env = makeDeps(draftInvoice());
+    const original = seedCustomers()[1]!;
+    const { siren: _siren, tvaIntracom: _tvaIntracom, ...withoutSiren } = original.toProps();
+    const professional = Customer.of({ ...withoutSiren, type: 'b2b' });
+    if (!professional.ok) throw new Error('professional customer');
+    env.replaceCustomers([professional.value]);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'customer.siren' }],
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+  });
+
+  it('refuse une adresse de facturation client incomplète avant toute allocation de numéro', async () => {
+    const env = makeDeps(draftInvoice());
+    const original = seedCustomers()[1]!;
+    const incomplete = Customer.of({
+      ...original.toProps(),
+      address: { line1: '', zip: '', city: 'Clamart' },
+    });
+    if (!incomplete.ok) throw new Error('incomplete customer fixture');
+    env.replaceCustomers([incomplete.value]);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'customer.address' },
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).not.toContain('counter:allocate');
+  });
+
   it('A7 : fige période de prestation + adresse de chantier transmises à l’émission', async () => {
     const invoice = draftInvoice();
     const env = makeDeps(invoice);
@@ -345,10 +582,11 @@ describe('IssueInvoice', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('IssueInvoice — A4 : autoliquidation constatée et FIGÉE à l’émission', () => {
   function subcontractingCustomer(withSiren = true): Customer {
-    const { siren, ...withoutSiren } = seedCustomers()[1]!.toProps();
+    const { siren, tvaIntracom, ...withoutSiren } = seedCustomers()[1]!.toProps();
     const r = Customer.of({
       ...withoutSiren,
       ...(withSiren && siren !== undefined ? { siren } : {}),
+      ...(withSiren && tvaIntracom !== undefined ? { tvaIntracom } : {}),
       isSubcontractingBtp: true,
     });
     if (!r.ok) throw new Error('customer');
@@ -395,7 +633,7 @@ describe('IssueInvoice — A4 : autoliquidation constatée et FIGÉE à l’émi
     expect(env.counts().saves).toBe(0);
   });
 
-  it('lignes à 0 % + SIREN preneur → émise, régime « autoliquidation » FIGÉ dans la pièce', async () => {
+  it('lignes à 0 % + TVA réelle preneur → émise, régime « autoliquidation » FIGÉ dans la pièce', async () => {
     const invoice = zeroRatedDraft();
     const env = makeDeps(invoice);
     env.replaceCustomers([subcontractingCustomer()]);
@@ -438,6 +676,7 @@ describe('IssueInvoice — A3 : gel/embargo revérifiés à l’émission', () =
     retractedAt?: string;
     earlyExecution?: boolean;
     quoteMissing?: boolean;
+    electronicAddress?: 'present' | 'missing';
   }) {
     const company = seedCompany();
     const quote = Quote.rehydrate({
@@ -469,6 +708,11 @@ describe('IssueInvoice — A3 : gel/embargo revérifiés à l’émission', () =
       type: options.customerType ?? 'b2c',
       name: 'M. Bernard',
       address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' },
+      ...(options.electronicAddress === 'missing'
+        ? {}
+        : options.customerType === 'b2b'
+          ? { siren: '821503646' }
+          : { email: 'bernard@example.fr' }),
     });
     if (!customerR.ok) throw new Error('customer');
     let saves = 0;
@@ -566,9 +810,36 @@ describe('IssueInvoice — A3 : gel/embargo revérifiés à l’émission', () =
     expect(r.ok).toBe(true);
   });
 
-  it('professionnel (b2b) : aucune des deux gardes ne s’applique', async () => {
-    const env = quoteEnv({ mode: 'deposit', now: '2026-06-03T09:00:00.000Z', customerType: 'b2b' });
+  it('particulier sans e-mail : permet une facture papier/PDF sans inventer un endpoint EM', async () => {
+    const env = quoteEnv({
+      mode: 'deposit',
+      now: '2026-07-15T09:00:00.000Z',
+      electronicAddress: 'missing',
+    });
     const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
     expect(r.ok).toBe(true);
+    expect(env.counts().saves).toBe(1);
+  });
+
+  it('professionnel (b2b) : les gardes consommateur ne bloquent pas une finale ordinaire', async () => {
+    const env = quoteEnv({ mode: 'final', now: '2026-06-03T09:00:00.000Z', customerType: 'b2b' });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+  });
+
+  it('ancien brouillon d’acompte professionnel : refus EXTENDED/PA avant numérotation', async () => {
+    const env = quoteEnv({ mode: 'deposit', now: '2026-07-15T09:00:00.000Z', customerType: 'b2b' });
+
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(r).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'advanceRecovery' },
+      },
+    });
+    expect(env.invoice().number).toBeNull();
+    expect(env.counts().saves).toBe(0);
   });
 });

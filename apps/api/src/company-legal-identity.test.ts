@@ -74,6 +74,9 @@ async function seedCompanyWithoutRegistration(persistence: InMemoryPersistence):
     ...withoutRegistration,
     name: 'FLY SERVICES',
     legalForm: 'SAS',
+    // Le test isole le seul cul-de-sac RCS : le capital, autre prérequis propre aux sociétés,
+    // est déjà connu. Sans cela il prétendrait qu'un champ débloque une fiche encore incomplète.
+    capitalSocialCents: 100_000,
     address: { line1: '19 QUAI DE LA SEINE', zip: '75019', city: 'PARIS' },
   });
   if (!company.ok) throw new Error('fixture: Company.of KO');
@@ -95,6 +98,8 @@ describe('PATCH /company/legal — sortie du cul-de-sac d’émission', () => {
       const canIssue = company.value.assertCanIssue();
       expect(canIssue.ok).toBe(false);
       if (canIssue.ok) return;
+      expect(canIssue.error.code).toBe('VALIDATION');
+      if (canIssue.error.code !== 'VALIDATION') return;
       expect(canIssue.error.field).toBe('rcsOrRm');
     });
   });

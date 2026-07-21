@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { Expense, type Invoice } from '../..';
 import type { ClockPort } from '../ports/services';
-import { GetCashflow } from './get-cashflow';
+import { GetCashflow, type GetCashflowDeps } from './get-cashflow';
+import { Company, type VatRegime } from '../../domain/company/company';
+import { MERCIER_PROPS } from '../fixtures';
+
+function companyPort(vatRegime: VatRegime = 'reel_normal') {
+  const result = Company.of({ ...MERCIER_PROPS, id: 'co-1', vatRegime });
+  if (!result.ok) throw new Error('Fixture company invalide');
+  return { findById: async (id: string) => (id === 'co-1' ? result.value : null) };
+}
 
 function makeSnapshots() {
   let calls = 0;
@@ -118,7 +126,13 @@ describe('GetCashflow', () => {
       }),
     };
 
-    const result = await new GetCashflow({ snapshots, invoices, expenses, clock }).execute({
+    const result = await new GetCashflow({
+      snapshots,
+      invoices,
+      expenses,
+      companies: companyPort(),
+      clock,
+    }).execute({
       companyId: 'co-1',
       scenario: 'optimiste',
       horizon: 30,
@@ -148,5 +162,46 @@ describe('GetCashflow', () => {
         },
       },
     });
+  });
+
+  it('FAIL-CLOSED : pièces disponibles mais régime TVA non injecté => projection indisponible', async () => {
+    const snapshots = makeSnapshots();
+    const depsWithoutCompanies = {
+      snapshots: snapshots.port,
+      invoices: { listByCompany: async () => [] },
+      expenses: { listByCompany: async () => [] },
+    } as unknown as GetCashflowDeps;
+    const r = await new GetCashflow(depsWithoutCompanies).execute({
+      companyId: 'co-1',
+      scenario: 'realiste',
+      horizon: 30,
+    });
+    expect(r).toEqual({ ok: false, error: { kind: 'unavailable', service: 'vat-regime' } });
+  });
+
+  it('franchise en base : la TVA fournisseur n’ampute jamais le disponible comme TVA récupérable', async () => {
+    const expense = Expense.rehydrate({
+      id: 'expense-franchise',
+      companyId: 'co-1',
+      supplierName: 'Fournisseur',
+      supplierSiren: null,
+      documentDate: '2026-07-01',
+      totalTtcCents: 12_000,
+      totalHtCents: 10_000,
+      vatCents: 2_000,
+      vatRatePct: 20,
+      category: 'autre',
+      status: 'to_pay',
+      source: 'manual',
+    });
+    const r = await new GetCashflow({
+      snapshots: {
+        get: async () => ({ bankBalance: 100_000, receivables: 0, charges: 0 }),
+      },
+      invoices: { listByCompany: async () => [] },
+      expenses: { listByCompany: async () => [expense] },
+      companies: companyPort('franchise'),
+    }).execute({ companyId: 'co-1', scenario: 'realiste', horizon: 30 });
+    expect(r.ok && r.value.vatDue).toBe(0);
   });
 });

@@ -48,7 +48,7 @@ describe('Invoice', () => {
     if (!invR.ok) throw new Error('inv');
     const inv = invR.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    expect(inv.issue({ mentions: ['Mention 293'], terms, issuedAt: ISSUED, at: AT }).ok).toBe(true);
+    expect(inv.issue({ mentions: ['Mention 293'], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' }).ok).toBe(true);
     expect(inv.status).toBe('issued');
     expect(inv.dueAt).toBe('2026-07-01');
     expect(inv.mentions).toContain('Mention 293');
@@ -59,7 +59,7 @@ describe('Invoice', () => {
     if (!invR.ok) throw new Error('inv');
     const inv = invR.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     expect(inv.registerPayment(20000, AT).ok).toBe(true);
     expect(inv.status).toBe('partially_paid');
     expect(inv.registerPayment(28840, AT).ok).toBe(true);
@@ -70,7 +70,7 @@ describe('Invoice', () => {
     if (!invR.ok) throw new Error('inv');
     const inv = invR.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     expect(inv.registerPayment(60000, AT).ok).toBe(false); // 60000 > 48840 dû -> rejeté
     expect(inv.status).toBe('issued'); // état inchangé
     expect(inv.registerPayment(48840, AT).ok).toBe(true); // paiement exact accepté
@@ -81,7 +81,7 @@ describe('Invoice', () => {
     if (!invR.ok) throw new Error('inv');
     const inv = invR.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     expect(inv.registerPayment(amount, AT).ok).toBe(false);
     expect(inv.paid).toBe(0);
     expect(inv.status).toBe('issued');
@@ -242,6 +242,27 @@ describe('Invoice', () => {
       },
     });
   });
+
+  it.each([
+    { vatTreatmentAtIssuance: null, frenchBillingModeAtIssuance: 'S1' as const },
+    { vatTreatmentAtIssuance: 'standard' as const, frenchBillingModeAtIssuance: null },
+  ])('refuse un avoir sur une source historique sans faits fiscaux figés (%o)', (missing) => {
+    const legacy = Invoice.rehydrate({
+      ...issuedInvoiceFromQuote('final', 'source-legacy').toSnapshot(),
+      ...missing,
+    });
+
+    expect(Invoice.creditNoteFor(legacy, 'credit-legacy')).toEqual({
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        field: 'invoice',
+        message:
+          'La facture source historique ne possède pas ses faits fiscaux figés. ' +
+          'Sa régularisation doit être qualifiée avant de créer un avoir.',
+      },
+    });
+  });
 });
 
 describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. com. / 242 nonies A CGI)', () => {
@@ -260,6 +281,8 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
       terms,
       issuedAt: ISSUED,
       at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
       servicePeriod: { start: '2026-05-12', end: '2026-05-28' },
       deliveryAddress: '  12 rue des Acacias, 92310 Sèvres  ',
     });
@@ -280,6 +303,7 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
         terms,
         issuedAt: ISSUED,
         at: AT,
+        frenchBillingMode: 'S1',
         servicePeriod: { start: '2026-05-12', end: null },
       }).ok,
     ).toBe(true);
@@ -287,7 +311,7 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
     expect(single.deliveryAddress).toBeNull();
 
     const bare = draftInvoice('inv-a7-bare');
-    expect(bare.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT }).ok).toBe(true);
+    expect(bare.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' }).ok).toBe(true);
     expect(bare.servicePeriod).toBeNull();
     expect(bare.deliveryAddress).toBeNull();
   });
@@ -300,7 +324,7 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
     { start: '2026-05-12', end: '2026-02-30' },
   ])('rejette une période invalide sans muter la facture (%o)', (servicePeriod) => {
     const inv = draftInvoice();
-    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, servicePeriod });
+    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1', servicePeriod });
     expect(issued).toMatchObject({ ok: false, error: { code: 'VALIDATION', field: 'servicePeriod' } });
     expect(inv.status).toBe('draft');
     expect(inv.servicePeriod).toBeNull();
@@ -310,7 +334,7 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
     'rejette une adresse de livraison invalide sans muter la facture',
     (deliveryAddress) => {
       const inv = draftInvoice();
-      const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, deliveryAddress });
+      const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1', deliveryAddress });
       expect(issued).toMatchObject({
         ok: false,
         error: { code: 'VALIDATION', field: 'deliveryAddress' },
@@ -326,6 +350,8 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
       terms,
       issuedAt: ISSUED,
       at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
       servicePeriod: { start: '2026-05-12', end: '2026-05-28' },
       deliveryAddress: '12 rue des Acacias, 92310 Sèvres',
     });
@@ -344,11 +370,12 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
         terms,
         issuedAt: ISSUED,
         at: AT,
+        frenchBillingMode: 'S1',
         servicePeriod: { start: '2026-06-01', end: null },
       }),
     ).toMatchObject({ ok: false, error: { code: 'VALIDATION', field: 'servicePeriod' } });
     // Émission sans nouvelle valeur : la reprise de la source est CONSERVÉE, jamais effacée.
-    expect(credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT }).ok).toBe(true);
+    expect(credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' }).ok).toBe(true);
     expect(credit.value.servicePeriod).toEqual({ start: '2026-05-12', end: '2026-05-28' });
     expect(credit.value.deliveryAddress).toBe('12 rue des Acacias, 92310 Sèvres');
   });
@@ -360,6 +387,8 @@ describe('Invoice — date de prestation et adresse de chantier (A7, L441-9 c. c
       terms,
       issuedAt: ISSUED,
       at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
       servicePeriod: { start: '2026-05-12', end: null },
       deliveryAddress: '12 rue des Acacias, 92310 Sèvres',
     });
@@ -384,7 +413,14 @@ function issuedInvoiceFromQuote(mode: 'final' | 'deposit', id: string): Invoice 
   if (!created.ok) throw new Error('invoice');
   const numbered = created.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
   if (!numbered.ok) throw new Error('number');
-  const issued = created.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  const issued = created.value.issue({
+    mentions: [],
+    terms,
+    issuedAt: ISSUED,
+    at: AT,
+    vatTreatment: 'standard',
+    frenchBillingMode: 'S1',
+  });
   if (!issued.ok) throw new Error('issue');
   return created.value;
 }
@@ -395,7 +431,14 @@ function issuedInvoiceFromQuoteWithPo(quote: Quote, id: string): Invoice {
   if (!created.ok) throw new Error('invoice');
   const numbered = created.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
   if (!numbered.ok) throw new Error('number');
-  const issued = created.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  const issued = created.value.issue({
+    mentions: [],
+    terms,
+    issuedAt: ISSUED,
+    at: AT,
+    vatTreatment: 'standard',
+    frenchBillingMode: 'S1',
+  });
   if (!issued.ok) throw new Error('issue');
   return created.value;
 }
@@ -411,7 +454,7 @@ describe('Invoice — régime de TVA figé à l’émission (A4, art. 283, 2 non
 
   it('fige le régime transmis à l’émission et le restitue au snapshot', () => {
     const inv = draftFromQuote();
-    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'autoliquidation' });
+    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'autoliquidation', frenchBillingMode: 'S5' });
     expect(issued.ok).toBe(true);
     expect(inv.vatTreatmentAtIssuance).toBe('autoliquidation');
     expect(Invoice.rehydrate(inv.toSnapshot()).vatTreatmentAtIssuance).toBe('autoliquidation');
@@ -419,7 +462,7 @@ describe('Invoice — régime de TVA figé à l’émission (A4, art. 283, 2 non
 
   it('appelant antérieur (sans vatTreatment) → null honnête, jamais un régime déduit', () => {
     const inv = draftFromQuote();
-    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    const issued = inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     expect(issued.ok).toBe(true);
     expect(inv.vatTreatmentAtIssuance).toBeNull();
     const { vatTreatmentAtIssuance: _omitted, ...legacy } = inv.toSnapshot();
@@ -428,7 +471,7 @@ describe('Invoice — régime de TVA figé à l’émission (A4, art. 283, 2 non
 
   it('l’AVOIR reprend le régime FIGÉ de sa source (art. 272 CGI) et son émission ne le réécrit pas', () => {
     const source = draftFromQuote('inv-src-a4');
-    const issued = source.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'autoliquidation' });
+    const issued = source.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'autoliquidation', frenchBillingMode: 'S5' });
     expect(issued.ok).toBe(true);
     const credit = Invoice.creditNoteFor(source, 'credit-a4');
     expect(credit.ok).toBe(true);
@@ -437,8 +480,45 @@ describe('Invoice — régime de TVA figé à l’émission (A4, art. 283, 2 non
     const numbered = credit.value.assignNumber(DocNumber.format('A', 2026, 1), AT);
     expect(numbered.ok).toBe(true);
     // Émission de l'avoir avec un régime « courant » différent : IGNORÉ, la source fait foi.
-    const creditIssued = credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'standard' });
+    const creditIssued = credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, vatTreatment: 'standard', frenchBillingMode: 'S5' });
     expect(creditIssued.ok).toBe(true);
     expect(credit.value.vatTreatmentAtIssuance).toBe('autoliquidation');
+  });
+
+  it('refuse au niveau agrégat l’émission d’un ancien brouillon d’avoir sans faits fiscaux source', () => {
+    const source = draftFromQuote('inv-src-legacy-credit');
+    const sourceIssued = source.issue({
+      mentions: [],
+      terms,
+      issuedAt: ISSUED,
+      at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
+    });
+    expect(sourceIssued.ok).toBe(true);
+    const credit = Invoice.creditNoteFor(source, 'credit-legacy-draft');
+    if (!credit.ok) throw new Error('credit');
+    expect(credit.value.assignNumber(DocNumber.format('A', 2026, 2), AT).ok).toBe(true);
+    const legacy = Invoice.rehydrate({
+      ...credit.value.toSnapshot(),
+      vatTreatmentAtIssuance: null,
+      frenchBillingModeAtIssuance: null,
+    });
+
+    expect(legacy.issue({
+      mentions: [],
+      terms,
+      issuedAt: ISSUED,
+      at: AT,
+      frenchBillingMode: 'S1',
+    })).toEqual({
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        field: 'invoice',
+        message: 'Un avoir ne peut être émis sans les faits fiscaux figés de sa facture source.',
+      },
+    });
+    expect(legacy.status).toBe('draft');
   });
 });

@@ -145,13 +145,21 @@ function exactKeys(value: Record<string, unknown>, required: readonly string[], 
   return required.every((key) => key in value) && Object.keys(value).every((key) => allowed.has(key));
 }
 
+function hasAsciiControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function canonicalIdentifier(value: unknown): value is string {
   return (
     typeof value === 'string'
     && value.length > 0
     && value.length <= MAX_ID_LENGTH
     && value === value.trim()
-    && !/[\u0000-\u001f\u007f]/u.test(value)
+    && !hasAsciiControlCharacter(value)
   );
 }
 
@@ -161,7 +169,7 @@ function canonicalSingleLine(value: unknown, max: number, allowEmpty = false): v
     && value.length <= max
     && (allowEmpty || value.length > 0)
     && value === value.trim().replace(/\s+/gu, ' ')
-    && !/[\r\n\u0000-\u001f\u007f]/u.test(value)
+    && !hasAsciiControlCharacter(value)
   );
 }
 

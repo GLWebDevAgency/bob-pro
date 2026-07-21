@@ -1,4 +1,4 @@
-import { PDFDocument } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import type { InvoicePdfData, QuotePdfData } from '@bob/core';
 import {
@@ -310,16 +310,39 @@ describe('Rétractation A3 — pages dédiées, sobriété du corps', () => {
   });
 });
 
-describe('Intouchables — Factur-X (attach + XMP) traverse la refonte à l’identique', () => {
-  it('factur-x.xml attaché (AFRelationship Data) + XMP BASIC présents', async () => {
+describe('Factur-X — hybride PDF/A-3b complet', () => {
+  it('attache le XML en Alternative et porte toutes les structures PDF/A-3b', async () => {
     const bytes = await new PdfRenderer().renderInvoice(baseInvoice, {
       xml: '<rsm:CrossIndustryInvoice>fixture</rsm:CrossIndustryInvoice>',
     });
     const structural = pdfStructuralText(bytes);
     expect(structural).toContain('factur-x.xml');
-    expect(structural).toContain('AFRelationship');
+    expect(structural).toContain('/AFRelationship /Alternative');
     expect(structural).toContain('CrossIndustryInvoice');
-    expect(structural).toContain('<fx:ConformanceLevel>BASIC</fx:ConformanceLevel>');
+    expect(structural).toContain('<fx:ConformanceLevel>EN 16931</fx:ConformanceLevel>');
+    expect(structural).toContain('/S /GTS_PDFA1');
+    expect(structural).toContain('/N 3');
+    expect(structural).toContain('/S /Transparency');
+
+    const doc = await PDFDocument.load(bytes, { updateMetadata: false });
+    const ids = doc.context.trailerInfo.ID;
+    expect(ids).toBeInstanceOf(PDFArray);
+    if (!(ids instanceof PDFArray)) throw new Error('Trailer ID PDF/A absent.');
+    expect(ids.size()).toBe(2);
+    expect(ids.lookup(0, PDFHexString).asString()).toMatch(/^[0-9a-f]{32}$/u);
+    expect(ids.lookup(1, PDFHexString).asString()).toBe(ids.lookup(0, PDFHexString).asString());
+
+    const outputIntents = doc.context.lookup(
+      doc.catalog.get(PDFName.of('OutputIntents')),
+      PDFArray,
+    );
+    expect(outputIntents.size()).toBe(1);
+    const outputIntent = outputIntents.lookup(0, PDFDict);
+    expect(outputIntent.get(PDFName.of('DestOutputProfile'))).toBeDefined();
+    for (const page of doc.getPages()) {
+      const group = doc.context.lookup(page.node.get(PDFName.of('Group')), PDFDict);
+      expect(group.get(PDFName.of('CS'))?.toString()).toBe('/DeviceRGB');
+    }
     // Et le document reste lisible/extrayable comme n'importe quelle pièce.
     expect(await pdfVisibleText(bytes)).toContain('Facture F-2026-0100');
   });

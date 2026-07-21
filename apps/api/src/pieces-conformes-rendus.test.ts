@@ -11,6 +11,7 @@ import { BackendService } from './backend.service';
 import { PdfRenderer } from './documents/pdf-renderer';
 import { pdfVisibleText } from './documents/pdf-text.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -46,13 +47,13 @@ function makeService() {
   const rendered: InvoicePdfData[] = [];
   const renderedQuotes: QuotePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) => {
+    renderInvoice: vi.fn(async (data, facturX) => {
       rendered.push(structuredClone(data));
-      return new TextEncoder().encode(`%PDF-1.7\narchive:${data.number}`);
+      return renderPdfFixture(`archive:${data.number}`, facturX?.xml);
     }),
     renderQuote: vi.fn(async (data) => {
       renderedQuotes.push(structuredClone(data));
-      return new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`);
+      return renderPdfFixture(`quote:${data.number}`);
     }),
   };
   const notificationDelivery = {

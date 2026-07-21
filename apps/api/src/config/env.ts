@@ -167,7 +167,11 @@ const schema = z.object({
   SUPABASE_JWKS_URL: z.string().optional(),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
-  SUPABASE_STORAGE_BUCKET: z.string().default('bob-documents'),
+  SUPABASE_STORAGE_BUCKET: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9][a-z0-9._-]{0,62}$/)
+    .default('bob-documents'),
   SUPABASE_REALTIME_AUDIO_BUCKET: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{1,62}$/)

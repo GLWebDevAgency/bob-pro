@@ -1,17 +1,28 @@
 import { describe, it, expect } from 'vitest';
 import { validateFacturXBasic } from './facturx-validation';
-import { facturXDataFromInvoice, buildFacturXBasicXml, type FacturXInvoiceData } from './facturx';
+import {
+  FR_DISBURSEMENT_OUTSIDE_VAT_SCOPE,
+  FR_VATEX_FRANCHISE,
+  VATEX_EU_NOT_SUBJECT_TO_VAT,
+  facturXDataFromInvoice,
+  buildFacturXBasicXml,
+  type FacturXInvoiceData,
+} from './facturx';
 import { Invoice } from '../billing/invoice/invoice';
 import { Company } from '../company/company';
 import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { type LineInput } from '../billing/shared/line-item';
 import { seedCompany, MERCIER_PROPS } from '../../application/fixtures/index';
+import type { FrenchBillingMode } from './french-billing-mode';
 
 const BUYER = {
   name: 'Client Conformité',
-  // A4 — faits fiscaux du preneur requis : particulier ici, jamais d'autoliquidation.
-  type: 'b2c',
+  // Flux 2 : preneur professionnel français identifié par son SIREN réel.
+  type: 'b2b',
+  siren: '821503646',
+  email: 'client-conformite@example.fr',
+  isInternational: false,
   isSubcontractingBtp: false,
   address: { line1: '10 rue de Rivoli', zip: '75004', city: 'Paris' },
 } as const;
@@ -19,14 +30,21 @@ const BUYER = {
 /** A4 — donneur d'ordre b2b en sous-traitance BTP : pièce autoliquidée (art. 283, 2 nonies CGI). */
 const DONNEUR_ORDRE = {
   name: 'BTP Grand Œuvre',
-  siren: '821503642',
+  siren: '821503646',
+  tvaIntracom: 'FR37821503646',
   type: 'b2b',
+  isInternational: false,
   isSubcontractingBtp: true,
   address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
 } as const;
 
 /** Émet une vraie facture (numéro + totaux figés) à partir d'une société et de lignes. */
-function issuedInvoice(company: Company, lines: Omit<LineInput, 'unit'>[], seq: number): Invoice {
+function issuedInvoice(
+  company: Company,
+  lines: Omit<LineInput, 'unit'>[],
+  seq: number,
+  frenchBillingMode: FrenchBillingMode = 'S1',
+): Invoice {
   const inv = (Invoice.composeStandalone({ id: `inv-${seq}`, companyId: company.id, customerId: 'cust' }) as {
     ok: true;
     value: Invoice;
@@ -34,7 +52,17 @@ function issuedInvoice(company: Company, lines: Omit<LineInput, 'unit'>[], seq: 
   lines.forEach((l, i) => inv.addLine({ id: `l${seq}-${i}`, ...l }));
   inv.assignNumber(DocNumber.format('F', 2026, seq), '2026-06-29T10:00:00Z');
   const terms = (PaymentTerms.of({ days: 30, endOfMonth: false, label: '30 jours' }) as { ok: true; value: PaymentTerms }).value;
-  inv.issue({ mentions: ['TVA sur les débits'], terms, issuedAt: '2026-06-29', at: '2026-06-29T10:00:00Z' });
+  inv.issue({
+    mentions: [
+      'TVA sur les débits',
+      'Escompte pour paiement anticipé : néant.',
+      'Pénalités de retard : taux BCE + 10 points (art. L441-10 du code de commerce). Indemnité forfaitaire de recouvrement : 40 € (art. D441-5 du code de commerce).',
+    ],
+    terms,
+    issuedAt: '2026-06-29',
+    at: '2026-06-29T10:00:00Z',
+    frenchBillingMode,
+  });
   return inv;
 }
 
@@ -47,7 +75,7 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     const res = validateFacturXBasic(data);
     expect(res.violations).toEqual([]);
     expect(res.valid).toBe(true);
-    expect(buildFacturXBasicXml(data)).toContain('urn:factur-x.eu:1p0:basic');
+    expect(buildFacturXBasicXml(data)).toContain('<ram:ID>urn:cen.eu:en16931:2017</ram:ID>');
   });
 
   it('régime réel, multi-taux (20 % + 10 % + 5,5 %) : conforme', () => {
@@ -66,7 +94,7 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     expect(data.vatBreakdown.length).toBe(3);
   });
 
-  it('franchise en base : conforme, sans TVA, catégorie E unique', () => {
+  it('franchise en base : conforme CIUS France, sans TVA, catégorie E + VATEX + identifiant fiscal FC', () => {
     const inv = issuedInvoice(
       franchiseCompany,
       [{ label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 80000, vatRate: 20 }],
@@ -76,6 +104,9 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     const res = validateFacturXBasic(data);
     expect(res.violations).toEqual([]);
     expect(data.taxTotalCents).toBe(0);
+    expect(data.vatBreakdown).toEqual([
+      expect.objectContaining({ category: 'E', exemptionReasonCode: FR_VATEX_FRANCHISE }),
+    ]);
   });
 
   it('A4 — autoliquidation sous-traitance BTP : conforme, catégorie AE unique, TVA 0, mention portée', () => {
@@ -83,6 +114,7 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
       seedCompany(),
       [{ label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 300000, vatRate: 0 }],
       7,
+      'S5',
     );
     const data = facturXDataFromInvoice(inv, seedCompany(), DONNEUR_ORDRE);
     const res = validateFacturXBasic(data);
@@ -100,7 +132,31 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     expect(data.taxTotalCents).toBe(0);
   });
 
-  it('A4 — détecte une pièce AE sans identification fiscale du preneur (BR-AE-02)', () => {
+  it('débours — conforme BR-O : catégorie unique, aucun taux, aucun identifiant TVA', () => {
+    const company = seedCompany();
+    const inv = issuedInvoice(
+      company,
+      [{ label: 'Débours greffe', category: 'disbursement', qty: 1, unitPriceHT: 9900, vatRate: 0 }],
+      10,
+      'S1',
+    );
+    const data = facturXDataFromInvoice(inv, company, BUYER);
+    expect(validateFacturXBasic(data)).toEqual({ valid: true, violations: [] });
+    expect(data.vatBreakdown).toEqual([
+      {
+        category: 'O',
+        basisCents: 9900,
+        vatCents: 0,
+        exemptionReason: FR_DISBURSEMENT_OUTSIDE_VAT_SCOPE,
+        exemptionReasonCode: VATEX_EU_NOT_SUBJECT_TO_VAT,
+      },
+    ]);
+    const xml = buildFacturXBasicXml(data);
+    expect(xml).not.toContain('RateApplicablePercent');
+    expect(xml).not.toContain('schemeID="VA"');
+  });
+
+  it('A4 — refuse de construire une pièce AE sans SIREN du preneur', () => {
     const inv = issuedInvoice(
       seedCompany(),
       [{ label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 300000, vatRate: 0 }],
@@ -109,10 +165,9 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     // Donneur d'ordre SANS SIREN : le BT-48 ne peut pas être dérivé — jamais inventé,
     // la violation est SIGNALÉE (fail-closed) au lieu d'émettre un XML rejetable en silence.
     const { siren: _sirenOmis, ...donneurOrdreSansSiren } = DONNEUR_ORDRE;
-    const data = facturXDataFromInvoice(inv, seedCompany(), donneurOrdreSansSiren);
-    const res = validateFacturXBasic(data);
-    expect(res.valid).toBe(false);
-    expect(res.violations.some((v) => v.rule === 'BR-AE-02')).toBe(true);
+    expect(() => facturXDataFromInvoice(inv, seedCompany(), donneurOrdreSansSiren)).toThrowError(
+      'FACTURX_PROFESSIONAL_BUYER_SIREN_REQUIRED',
+    );
   });
 
   it('détecte une incohérence arithmétique (BR-CO-15)', () => {
@@ -136,6 +191,22 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     };
     const res = validateFacturXBasic(broken);
     expect(res.violations.some((v) => v.rule === 'BR-CO-18')).toBe(true);
+  });
+
+  it('refuse VATEX-FR-FRANCHISE avec une catégorie autre que E (BR-FR-CO-16)', () => {
+    const inv = issuedInvoice(
+      franchiseCompany,
+      [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }],
+      9,
+    );
+    const base = facturXDataFromInvoice(inv, franchiseCompany, BUYER);
+    const broken: FacturXInvoiceData = {
+      ...base,
+      lines: base.lines.map((line) => ({ ...line, vatCategory: 'Z' })),
+      vatBreakdown: base.vatBreakdown.map((breakdown) => ({ ...breakdown, category: 'Z' })),
+    };
+    const res = validateFacturXBasic(broken);
+    expect(res.violations.some((violation) => violation.rule === 'BR-FR-CO-16')).toBe(true);
   });
 
   it('détecte un acompte mal réparti (BR-CO-16)', () => {

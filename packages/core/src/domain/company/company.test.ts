@@ -11,6 +11,7 @@ const baseProps: CompanyProps = {
   vatRegime: 'reel_simpl',
   address: { line1: '1 rue X', zip: '92000', city: 'Nanterre' },
   rcsOrRm: 'RM 92',
+  tvaIntracom: 'FR44732829320',
 };
 
 describe('Company', () => {
@@ -30,9 +31,45 @@ describe('Company', () => {
     const r = Company.of(baseProps);
     if (r.ok) expect(r.value.assertCanIssue().ok).toBe(true);
   });
+  it('refuse aussi un code postal vide avant émission', () => {
+    const r = Company.of({ ...baseProps, address: { line1: '1 rue X', zip: '   ', city: 'Nanterre' } });
+    expect(r.ok && r.value.assertCanIssue()).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'address' },
+    });
+  });
+  it.each(['EURL', 'SASU', 'SARL', 'SAS'] as const)(
+    'refuse l’émission sans capital social pour une %s',
+    (legalForm) => {
+      const r = Company.of({ ...baseProps, legalForm });
+      expect(r.ok && r.value.assertCanIssue()).toMatchObject({
+        ok: false,
+        error: { code: 'VALIDATION', field: 'capitalSocialCents' },
+      });
+    },
+  );
   it('rejette un SIRET incoherent avec le SIREN', () => {
     const r = Company.of({ ...baseProps, siret: '55208131766522' });
     expect(r.ok).toBe(false);
+  });
+  it('normalise la TVA réelle et refuse une clé ou un SIREN incohérents', () => {
+    const valid = Company.of({ ...baseProps, tvaIntracom: ' fr44 732 829 320 ' });
+    expect(valid.ok && valid.value.tvaIntracom).toBe('FR44732829320');
+    expect(Company.of({ ...baseProps, tvaIntracom: 'FR24732829320' })).toMatchObject({
+      ok: false,
+      error: { field: 'tvaIntracom' },
+    });
+    expect(Company.of({ ...baseProps, tvaIntracom: 'FR96552100554' })).toMatchObject({
+      ok: false,
+      error: { field: 'tvaIntracom' },
+    });
+  });
+  it('refuse l’émission avec TVA sans numéro réel mais laisse la franchise honnête', () => {
+    const { tvaIntracom: _vat, ...withoutVat } = baseProps;
+    const standard = Company.of(withoutVat);
+    expect(standard.ok && standard.value.assertCanIssue()).toMatchObject({ ok: false, error: { field: 'tvaIntracom' } });
+    const franchise = Company.of({ ...withoutVat, vatRegime: 'franchise' });
+    expect(franchise.ok && franchise.value.assertCanIssue().ok).toBe(true);
   });
   it('conserve une clientèle confirmée sans en inventer une par défaut', () => {
     const withoutPortfolio = Company.of(baseProps);

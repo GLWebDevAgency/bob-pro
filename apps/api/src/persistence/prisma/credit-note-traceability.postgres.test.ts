@@ -1,11 +1,147 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { CreateCreditNote, Invoice, type InvoiceKind, type InvoiceSnapshot } from '@bob/core';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_CREDIT_NOTE_CERT === 'true';
+
+function passesLuhn(value: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    let digit = Number(value[index]);
+    if (double) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+function appendLuhnDigit(prefix: string): string {
+  for (let digit = 0; digit <= 9; digit += 1) {
+    const candidate = `${prefix}${digit}`;
+    if (passesLuhn(candidate)) return candidate;
+  }
+  throw new Error('unable to build a valid Luhn identifier');
+}
+
+function testLegalIdentity(): { siren: string; siret: string; tvaIntracom: string } {
+  const siren = appendLuhnDigit(String(randomInt(10_000_000, 100_000_000)));
+  const nicPrefix = String(randomInt(0, 10_000)).padStart(4, '0');
+  const siret = appendLuhnDigit(`${siren}${nicPrefix}`);
+  const vatKey = String((12 + 3 * (Number(siren) % 97)) % 97).padStart(2, '0');
+  return { siren, siret, tvaIntracom: `FR${vatKey}${siren}` };
+}
+
+type FiscalFenceMutation =
+  | 'duplicate_credit_source'
+  | 'cross_tenant_fiscal_source'
+  | 'issued_fiscal_mutation'
+  | 'credit_fiscal_mirror';
+
+async function certifyFiscalFence(
+  tx: Prisma.TransactionClient,
+  input: {
+    mutation: FiscalFenceMutation;
+    creditId: string;
+    sourceId: string;
+    foreignSourceId: string;
+    newId: string;
+  },
+): Promise<void> {
+  const definition: { statement: string; sqlState: string; constraint: string } = (() => {
+    switch (input.mutation) {
+      case 'duplicate_credit_source':
+        return {
+          statement: `
+            INSERT INTO public.invoices
+            SELECT (
+              jsonb_populate_record(
+                NULL::public.invoices,
+                to_jsonb(existing_credit)
+                  || jsonb_build_object('id', current_setting('bob.cert_new_id'))
+              )
+            ).*
+              FROM public.invoices AS existing_credit
+             WHERE id = current_setting('bob.cert_credit_id')`,
+          sqlState: '23505',
+          constraint: 'uniq_credit_note_source_invoice',
+        };
+      case 'cross_tenant_fiscal_source':
+        return {
+          statement: `
+            INSERT INTO public.invoices
+            SELECT (
+              jsonb_populate_record(
+                NULL::public.invoices,
+                to_jsonb(existing_credit)
+                  || jsonb_build_object(
+                    'id', current_setting('bob.cert_new_id'),
+                    'sourceInvoiceId', current_setting('bob.cert_foreign_source_id')
+                  )
+              )
+            ).*
+              FROM public.invoices AS existing_credit
+             WHERE id = current_setting('bob.cert_credit_id')`,
+          sqlState: '23503',
+          constraint: 'invoices_credit_note_fiscal_source_tenant',
+        };
+      case 'issued_fiscal_mutation':
+        return {
+          statement: `
+            UPDATE public.invoices
+               SET "frenchBillingModeAtIssuance" = 'M1'
+             WHERE id = current_setting('bob.cert_source_id')`,
+          sqlState: '23514',
+          constraint: 'invoices_issued_fiscal_immutability',
+        };
+      case 'credit_fiscal_mirror':
+        return {
+          statement: `
+            UPDATE public.invoices
+               SET "frenchBillingModeAtIssuance" = 'M1'
+             WHERE id = current_setting('bob.cert_credit_id')`,
+          sqlState: '23514',
+          constraint: 'invoices_credit_note_fiscal_mirror',
+        };
+    }
+  })();
+
+  await tx.$executeRaw`SELECT set_config('bob.cert_credit_id', ${input.creditId}, true)`;
+  await tx.$executeRaw`SELECT set_config('bob.cert_source_id', ${input.sourceId}, true)`;
+  await tx.$executeRaw`SELECT set_config('bob.cert_foreign_source_id', ${input.foreignSourceId}, true)`;
+  await tx.$executeRaw`SELECT set_config('bob.cert_new_id', ${input.newId}, true)`;
+  await tx.$executeRawUnsafe(`
+    DO $credit_note_fiscal_cert$
+    DECLARE
+      caught_state text;
+      caught_constraint text;
+    BEGIN
+      BEGIN
+        ${definition.statement};
+        RAISE EXCEPTION 'CERT_EXPECTED_FISCAL_FENCE_${input.mutation}';
+      EXCEPTION
+        WHEN OTHERS THEN
+          GET STACKED DIAGNOSTICS
+            caught_state = RETURNED_SQLSTATE,
+            caught_constraint = CONSTRAINT_NAME;
+          IF caught_state <> '${definition.sqlState}'
+             OR caught_constraint <> '${definition.constraint}' THEN
+            RAISE EXCEPTION
+              'CERT_WRONG_FISCAL_DIAGNOSTIC mutation=${input.mutation} state=% constraint=%',
+              caught_state,
+              caught_constraint;
+          END IF;
+      END;
+    END
+    $credit_note_fiscal_cert$;
+  `);
+}
 
 describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/FORCE RLS', () => {
   const companyA = `credit-note-a-${randomUUID()}`;
@@ -15,10 +151,17 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
   const sourceFinalA = `source-final-a-${randomUUID()}`;
   const sourceDepositA = `source-deposit-a-${randomUUID()}`;
   const sourceRaceA = `source-race-a-${randomUUID()}`;
+  const sourceLegacyA = `source-legacy-a-${randomUUID()}`;
   const sourceFinalB = `source-final-b-${randomUUID()}`;
+  const sharedQuoteA = `shared-quote-a-${randomUUID()}`;
+  const raceQuoteA = `race-quote-a-${randomUUID()}`;
+  const legacyQuoteA = `legacy-quote-a-${randomUUID()}`;
+  const sharedQuoteB = `shared-quote-b-${randomUUID()}`;
   const creditFinalA = `credit-final-a-${randomUUID()}`;
   const creditDepositA = `credit-deposit-a-${randomUUID()}`;
   const deletableDraftA = `deletable-draft-a-${randomUUID()}`;
+  const identityA = testLegalIdentity();
+  const identityB = testLegalIdentity();
   const runtimeUrl = process.env.DATABASE_URL ?? '';
   const directUrl = process.env.DIRECT_URL ?? '';
   let admin: PrismaClient;
@@ -37,18 +180,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
     persistence = new PrismaPersistence(workers[0]!);
     await Promise.all([admin.$connect(), ...workers.map((worker) => worker.$connect())]);
 
-    for (const [companyId, customerId] of [
-      [companyA, customerA],
-      [companyB, customerB],
+    for (const [companyId, customerId, siren, siret, tvaIntracom] of [
+      [companyA, customerA, identityA.siren, identityA.siret, identityA.tvaIntracom],
+      [companyB, customerB, identityB.siren, identityB.siret, identityB.tvaIntracom],
     ] as const) {
-      const siren = String(randomInt(100_000_000, 999_999_999));
       await admin.company.create({
         data: {
           id: companyId,
           name: `Certification ${companyId}`,
           legalForm: 'EI',
           siren,
-          siret: `${siren}00001`,
+          siret,
+          tvaIntracom,
           trade: 'certification',
           vatRegime: 'reel_normal',
           addrLine1: '1 rue de la Certification',
@@ -68,6 +211,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
         },
       });
     }
+    await admin.quote.createMany({
+      data: [
+        { id: sharedQuoteA, companyId: companyA, customerId: customerA },
+        { id: raceQuoteA, companyId: companyA, customerId: customerA },
+        { id: legacyQuoteA, companyId: companyA, customerId: customerA },
+        { id: sharedQuoteB, companyId: companyB, customerId: customerB },
+      ],
+    });
 
     await persistence.runWithTenant(companyA, async () => {
       await persistIssuedFixture(
@@ -78,6 +229,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
           customerId: customerA,
           kind: 'final',
           number: 'F-2026-0101',
+          parentQuoteId: sharedQuoteA,
         }),
       );
       await persistIssuedFixture(
@@ -88,7 +240,22 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
           customerId: customerA,
           kind: 'final',
           number: 'F-2026-0103',
-          parentQuoteId: 'race-quote',
+          parentQuoteId: raceQuoteA,
+        }),
+      );
+      await persistIssuedFixture(
+        persistence,
+        Invoice.rehydrate({
+          ...issuedInvoice({
+            id: sourceLegacyA,
+            companyId: companyA,
+            customerId: customerA,
+            kind: 'final',
+            number: 'F-2026-0104',
+            parentQuoteId: legacyQuoteA,
+          }).toSnapshot(),
+          vatTreatmentAtIssuance: null,
+          frenchBillingModeAtIssuance: null,
         }),
       );
       await persistIssuedFixture(
@@ -99,6 +266,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
           customerId: customerA,
           kind: 'deposit',
           number: 'F-2026-0102',
+          parentQuoteId: sharedQuoteA,
         }),
       );
     });
@@ -111,38 +279,53 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
           customerId: customerB,
           kind: 'final',
           number: 'F-2026-0201',
+          parentQuoteId: sharedQuoteB,
         }),
       ),
     );
   }, 30_000);
 
   afterAll(async () => {
-    if (admin) {
-      await admin.lineItem
-        .deleteMany({
-          where: { invoice: { companyId: { in: [companyA, companyB] } } },
-        })
-        .catch(() => undefined);
-      await admin.invoice
-        .deleteMany({
-          where: { companyId: { in: [companyA, companyB] } },
-        })
-        .catch(() => undefined);
-      await admin.customer
-        .deleteMany({
-          where: { companyId: { in: [companyA, companyB] } },
-        })
-        .catch(() => undefined);
-      await admin.company
-        .deleteMany({
+    try {
+      if (admin) {
+        await admin.$transaction(async (tx) => {
+          // Les lignes émises sont légalement immuables. DIRECT_URL neutralise les triggers
+          // uniquement dans cette transaction de nettoyage et uniquement sur les fixtures.
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+          await tx.lineItem.deleteMany({
+            where: { invoice: { companyId: { in: [companyA, companyB] } } },
+          });
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+
+          // La FK self-reference sourceInvoiceId est RESTRICT : les avoirs disparaissent avant
+          // leurs sources, puis les devis avant les clients. Aucun échec n'est avalé.
+          await tx.invoice.deleteMany({
+            where: { companyId: { in: [companyA, companyB] }, kind: 'credit_note' },
+          });
+          await tx.invoice.deleteMany({
+            where: { companyId: { in: [companyA, companyB] } },
+          });
+          await tx.quote.deleteMany({
+            where: { companyId: { in: [companyA, companyB] } },
+          });
+          await tx.customer.deleteMany({
+            where: { companyId: { in: [companyA, companyB] } },
+          });
+          await tx.company.deleteMany({
+            where: { id: { in: [companyA, companyB] } },
+          });
+        });
+        const leftovers = await admin.company.count({
           where: { id: { in: [companyA, companyB] } },
-        })
-        .catch(() => undefined);
+        });
+        if (leftovers !== 0) throw new Error(`credit-note certification cleanup incomplete: ${leftovers}`);
+      }
+    } finally {
+      await Promise.allSettled([
+        ...workers.map((worker) => worker.$disconnect()),
+        ...(admin ? [admin.$disconnect()] : []),
+      ]);
     }
-    await Promise.allSettled([
-      ...workers.map((worker) => worker.$disconnect()),
-      ...(admin ? [admin.$disconnect()] : []),
-    ]);
   });
 
   it('certifie les contraintes, index et FORCE RLS de la table source', async () => {
@@ -159,6 +342,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
         lineImmutableTrigger: boolean;
         lineMatchTrigger: boolean;
         migrationApplied: boolean;
+        billingModeValid: boolean;
+        vatTreatmentRequiresIssue: boolean;
+        billingModeRequiresIssue: boolean;
+        fiscalTrigger: boolean;
+        fiscalFunctionHardened: boolean;
+        fiscalMigrationApplied: boolean;
       }>
     >`
       SELECT
@@ -180,29 +369,78 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
         to_regclass('public.uniq_invoice_parent_quote_generated_kind') IS NOT NULL AS "generatedUnique",
         to_regclass('public.uniq_invoice_parent_quote_kind') IS NULL AS "legacyUniqueGone",
         EXISTS (
-          SELECT 1 FROM pg_trigger
-           WHERE tgrelid = 'invoices'::regclass
-             AND tgname = 'invoices_legal_traceability'
-             AND NOT tgisinternal
+          SELECT 1 FROM pg_trigger AS trigger
+           WHERE trigger.tgrelid = 'invoices'::regclass
+             AND trigger.tgname = 'invoices_legal_traceability'
+             AND NOT trigger.tgisinternal
+             AND trigger.tgenabled = 'O'
+             AND trigger.tgfoid = 'enforce_invoice_legal_traceability()'::regprocedure
+             AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE INSERT OR UPDATE%'
         ) AS "legalTrigger",
         EXISTS (
-          SELECT 1 FROM pg_trigger
-           WHERE tgrelid = 'line_items'::regclass
-             AND tgname = 'invoice_lines_issued_immutability'
-             AND NOT tgisinternal
+          SELECT 1 FROM pg_trigger AS trigger
+           WHERE trigger.tgrelid = 'line_items'::regclass
+             AND trigger.tgname = 'invoice_lines_issued_immutability'
+             AND NOT trigger.tgisinternal
+             AND trigger.tgenabled = 'O'
+             AND trigger.tgfoid = 'enforce_issued_invoice_line_immutability()'::regprocedure
+             AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE INSERT OR DELETE OR UPDATE%'
         ) AS "lineImmutableTrigger",
         EXISTS (
-          SELECT 1 FROM pg_trigger
-           WHERE tgrelid = 'line_items'::regclass
-             AND tgname = 'line_credit_note_lines_match'
-             AND NOT tgisinternal
+          SELECT 1 FROM pg_trigger AS trigger
+           WHERE trigger.tgrelid = 'line_items'::regclass
+             AND trigger.tgname = 'line_credit_note_lines_match'
+             AND NOT trigger.tgisinternal
+             AND trigger.tgenabled = 'O'
+             AND trigger.tgfoid = 'verify_credit_note_lines_from_line()'::regprocedure
+             AND pg_get_triggerdef(trigger.oid) LIKE '%AFTER INSERT OR DELETE OR UPDATE%'
         ) AS "lineMatchTrigger",
         EXISTS (
           SELECT 1 FROM _prisma_migrations
            WHERE migration_name = '20260714060000_credit_note_source_traceability'
              AND finished_at IS NOT NULL
              AND rolled_back_at IS NULL
-        ) AS "migrationApplied"
+        ) AS "migrationApplied",
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'invoices'::regclass
+             AND conname = 'invoices_french_billing_mode_valid'
+             AND convalidated
+        ) AS "billingModeValid",
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'invoices'::regclass
+             AND conname = 'invoices_vat_treatment_requires_issue'
+             AND convalidated
+        ) AS "vatTreatmentRequiresIssue",
+        EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'invoices'::regclass
+             AND conname = 'invoices_french_billing_mode_requires_issue'
+             AND convalidated
+        ) AS "billingModeRequiresIssue",
+        EXISTS (
+          SELECT 1 FROM pg_trigger AS trigger
+           WHERE trigger.tgrelid = 'invoices'::regclass
+             AND trigger.tgname = 'invoices_fiscal_traceability'
+             AND NOT trigger.tgisinternal
+             AND trigger.tgenabled = 'O'
+             AND trigger.tgfoid = 'enforce_invoice_fiscal_traceability()'::regprocedure
+             AND pg_get_triggerdef(trigger.oid) LIKE '%BEFORE INSERT OR UPDATE%'
+        ) AS "fiscalTrigger",
+        EXISTS (
+          SELECT 1
+            FROM pg_proc
+           WHERE oid = 'enforce_invoice_fiscal_traceability()'::regprocedure
+             AND NOT prosecdef
+             AND array_to_string(proconfig, ',') LIKE '%search_path=pg_catalog, public%'
+        ) AS "fiscalFunctionHardened",
+        EXISTS (
+          SELECT 1 FROM _prisma_migrations
+           WHERE migration_name = '20260721133100_invoice_french_billing_mode_expand'
+             AND finished_at IS NOT NULL
+             AND rolled_back_at IS NULL
+        ) AS "fiscalMigrationApplied"
       FROM pg_class AS table_class
       WHERE table_class.oid = 'invoices'::regclass
     `;
@@ -218,6 +456,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
       lineImmutableTrigger: true,
       lineMatchTrigger: true,
       migrationApplied: true,
+      billingModeValid: true,
+      vatTreatmentRequiresIssue: true,
+      billingModeRequiresIssue: true,
+      fiscalTrigger: true,
+      fiscalFunctionHardened: true,
+      fiscalMigrationApplied: true,
     });
   });
 
@@ -290,10 +534,34 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
         number: 'F-2026-0101',
         issuedAt: '2026-07-14',
       });
+      expect(await persistence.invoices.findById(creditFinalA)).toMatchObject({
+        vatTreatmentAtIssuance: 'standard',
+        frenchBillingModeAtIssuance: 'S1',
+      });
       const deposit = await persistence.invoices.findById(creditDepositA);
       expect(deposit?.creditNoteSource?.invoiceId).toBe(sourceDepositA);
       expect(deposit?.totals().netToPay).toBe(36_000);
     });
+  });
+
+  it('refuse une source legacy sans faits fiscaux et ne persiste aucun avoir condamné', async () => {
+    await persistence.runWithTenant(companyA, async () => {
+      const result = await new CreateCreditNote({
+        invoices: persistence.invoices,
+        ids: { newId: () => `legacy-credit-${randomUUID()}` },
+      }).execute({ invoiceId: sourceLegacyA });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'domain',
+          error: { code: 'VALIDATION', field: 'invoice' },
+        },
+      });
+    });
+    expect(await admin.invoice.count({
+      where: { companyId: companyA, sourceInvoiceId: sourceLegacyA },
+    })).toBe(0);
   });
 
   it('fait converger deux créations concurrentes sur un seul avoir et une seule identité', async () => {
@@ -328,45 +596,27 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
       ).resolves.toBeNull();
     });
 
-    await expect(
-      workers[0]!.withTenant(companyA, (tx) =>
-        tx.invoice.create({
-          data: {
-            id: `forged-credit-${randomUUID()}`,
-            companyId: companyA,
-            customerId: customerA,
-            kind: 'credit_note',
-            status: 'draft',
-            parentQuoteId: 'shared-quote',
-            sourceInvoiceId: sourceFinalB,
-            sourceInvoiceKind: 'invoice',
-            sourceInvoiceNumber: 'F-2026-0201',
-            sourceInvoiceIssuedAt: new Date('2026-07-14'),
-          },
-        }),
-      ),
-    ).rejects.toThrow();
+    await workers[0]!.withTenant(companyA, (tx) =>
+      certifyFiscalFence(tx, {
+        mutation: 'cross_tenant_fiscal_source',
+        creditId: creditFinalA,
+        sourceId: sourceFinalA,
+        foreignSourceId: sourceFinalB,
+        newId: `forged-credit-${randomUUID()}`,
+      }),
+    );
   });
 
   it('refuse le doublon DB, avoir-sur-avoir et toute mutation de la trace ou de la source émise', async () => {
-    await expect(
-      workers[0]!.withTenant(companyA, (tx) =>
-        tx.invoice.create({
-          data: {
-            id: `duplicate-credit-${randomUUID()}`,
-            companyId: companyA,
-            customerId: customerA,
-            kind: 'credit_note',
-            status: 'draft',
-            parentQuoteId: 'shared-quote',
-            sourceInvoiceId: sourceFinalA,
-            sourceInvoiceKind: 'invoice',
-            sourceInvoiceNumber: 'F-2026-0101',
-            sourceInvoiceIssuedAt: new Date('2026-07-14'),
-          },
-        }),
-      ),
-    ).rejects.toThrow();
+    await workers[0]!.withTenant(companyA, (tx) =>
+      certifyFiscalFence(tx, {
+        mutation: 'duplicate_credit_source',
+        creditId: creditFinalA,
+        sourceId: sourceFinalA,
+        foreignSourceId: sourceFinalB,
+        newId: `duplicate-credit-${randomUUID()}`,
+      }),
+    );
 
     await expect(
       workers[0]!.withTenant(companyA, (tx) =>
@@ -377,11 +627,13 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
             customerId: customerA,
             kind: 'credit_note',
             status: 'draft',
-            parentQuoteId: 'shared-quote',
+            parentQuoteId: sharedQuoteA,
             sourceInvoiceId: creditFinalA,
             sourceInvoiceKind: 'invoice',
             sourceInvoiceNumber: 'A-forged',
             sourceInvoiceIssuedAt: new Date('2026-07-14'),
+            vatTreatmentAtIssuance: 'standard',
+            frenchBillingModeAtIssuance: 'S1',
           },
         }),
       ),
@@ -411,6 +663,24 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
         }),
       ),
     ).rejects.toThrow();
+    await workers[0]!.withTenant(companyA, (tx) =>
+      certifyFiscalFence(tx, {
+        mutation: 'issued_fiscal_mutation',
+        creditId: creditFinalA,
+        sourceId: sourceFinalA,
+        foreignSourceId: sourceFinalB,
+        newId: `unused-${randomUUID()}`,
+      }),
+    );
+    await workers[0]!.withTenant(companyA, (tx) =>
+      certifyFiscalFence(tx, {
+        mutation: 'credit_fiscal_mirror',
+        creditId: creditFinalA,
+        sourceId: sourceFinalA,
+        foreignSourceId: sourceFinalB,
+        newId: `unused-${randomUUID()}`,
+      }),
+    );
     await expect(
       workers[0]!.withTenant(companyA, (tx) =>
         tx.invoice.update({
@@ -449,6 +719,8 @@ async function persistIssuedFixture(persistence: PrismaPersistence, issued: Invo
       mentions: [],
       issuedAt: null,
       dueAt: null,
+      vatTreatmentAtIssuance: null,
+      frenchBillingModeAtIssuance: null,
       // Certifie aussi le cas réel « ajout de ligne + émission dans une seule sauvegarde » :
       // le repository doit publier la ligne avant que le trigger ne fige la pièce.
       lines: [],
@@ -493,9 +765,11 @@ function issuedInvoice(input: {
     mentions: ['Certification'],
     issuedAt: '2026-07-14',
     dueAt: '2026-08-13',
+    vatTreatmentAtIssuance: 'standard',
+    frenchBillingModeAtIssuance: 'S1',
     paid: 0,
     depositPct: deposit ? 30 : null,
-    parentQuoteId: input.parentQuoteId ?? 'shared-quote',
+    parentQuoteId: input.parentQuoteId ?? null,
     depositDeductionCents: 0,
     depositInvoiceId: null,
     sourceInvoiceId: null,

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { type Document } from '../../domain/document/document';
 import { DocumentFolder } from '../../domain/document/document-folder';
-import { type DocumentRepository } from '../ports/document-repository';
-import { type DocumentStoragePort, type StoredObject } from '../ports/document-storage';
+import {
+  isExactInitialDocumentReplay,
+  type DocumentRepository,
+  type InvoicePdfRepresentationAttestation,
+} from '../ports/document-repository';
+import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
 import { type DocumentDownloadUrl, GetDocumentDownloadUrl } from './get-document-download-url';
 import { ListDocuments } from './list-documents';
@@ -54,8 +58,21 @@ const existingFolders = {
 
 class MemoryDocuments implements DocumentRepository {
   readonly map = new Map<string, Document>();
-  async save(d: Document): Promise<void> {
-    this.map.set(d.id, d);
+  lastInvoicePdfAttestation: InvoicePdfRepresentationAttestation | undefined;
+  async attestInvoicePdf(): Promise<boolean> { return true; }
+  async insertInitialOrConfirmExact(
+    d: Document,
+    invoicePdfAttestation?: InvoicePdfRepresentationAttestation,
+  ): ReturnType<DocumentRepository['insertInitialOrConfirmExact']> {
+    this.lastInvoicePdfAttestation = invoicePdfAttestation;
+    const existing = this.map.get(d.id);
+    if (!existing) {
+      this.map.set(d.id, d);
+      return { status: 'inserted', document: d };
+    }
+    return isExactInitialDocumentReplay(existing, d)
+      ? { status: 'exact', document: existing }
+      : { status: 'conflict' };
   }
   async classify(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     return 'not_found';
@@ -85,18 +102,59 @@ class MemoryDocuments implements DocumentRepository {
 }
 
 class MemoryStorage implements DocumentStoragePort {
-  readonly objects = new Map<string, { companyId: string; bytes: Uint8Array; contentType: string }>();
+  readonly objects = new Map<string, { companyId: string; bytes: Uint8Array; contentType: string; sha256: string }>();
   readonly removed: string[] = [];
+  putCount = 0;
+  signedUrlCount = 0;
   constructor(private readonly storedSha = SHA) {}
   async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
-    this.objects.set(input.key, { companyId: input.companyId, bytes: input.bytes, contentType: input.contentType });
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: this.storedSha };
+    this.putCount += 1;
+    const existing = this.objects.get(input.key);
+    if (existing) {
+      if (
+        existing.companyId === input.companyId
+        && existing.sha256 === this.storedSha
+        && existing.bytes.byteLength === input.bytes.byteLength
+        && existing.contentType === input.contentType
+      ) {
+        return {
+          key: input.key,
+          sizeBytes: existing.bytes.byteLength,
+          sha256: existing.sha256,
+          contentType: existing.contentType,
+          created: false,
+        };
+      }
+      throw new Error('collision');
+    }
+    this.objects.set(input.key, {
+      companyId: input.companyId,
+      bytes: input.bytes,
+      contentType: input.contentType,
+      sha256: this.storedSha,
+    });
+    return {
+      key: input.key,
+      sizeBytes: input.bytes.byteLength,
+      sha256: this.storedSha,
+      contentType: input.contentType,
+      created: true,
+    };
   }
-  async get(companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  async get(companyId: string, key: string): Promise<LoadedStoredObject | null> {
     const object = this.objects.get(key);
-    return object && object.companyId === companyId ? { bytes: object.bytes, contentType: object.contentType } : null;
+    return object && object.companyId === companyId
+      ? {
+          key,
+          bytes: object.bytes,
+          sizeBytes: object.bytes.byteLength,
+          sha256: object.sha256,
+          contentType: object.contentType,
+        }
+      : null;
   }
   async getSignedUrl(companyId: string, key: string, ttlSeconds: number): Promise<string> {
+    this.signedUrlCount += 1;
     return `signed://${companyId}/${key}?ttl=${ttlSeconds}`;
   }
   async stat(companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
@@ -136,6 +194,82 @@ function input() {
 }
 
 describe('documents application use cases', () => {
+  it('refuse un PDF de facture généré non attesté avant tout upload', async () => {
+    const documents = new MemoryDocuments();
+    const storage = new MemoryStorage();
+    const invoicePdf = {
+      ...input(),
+      kind: 'invoice_pdf' as const,
+      origin: 'generated' as const,
+      filename: 'facture-F-001.pdf',
+      mimeType: 'application/pdf',
+      linkedEntityType: 'invoice' as const,
+      linkedEntityId: 'inv-1',
+      reason: 'invoice-issued-pdf-only-b2c',
+      storageKey: buildDocumentStorageKey({
+        companyId: 'co-1',
+        documentId: 'doc-1',
+        version: 1,
+        sha256: SHA,
+        filename: 'facture-F-001.pdf',
+        mimeType: 'application/pdf',
+      }),
+    };
+    const result = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    }).execute(invoicePdf);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ kind: 'validation' });
+    }
+    expect(storage.putCount).toBe(0);
+    expect(documents.map.size).toBe(0);
+  });
+
+  it('persiste atomiquement l’attestation binaire exacte du PDF généré', async () => {
+    const documents = new MemoryDocuments();
+    const storage = new MemoryStorage();
+    const invoicePdfAttestation: InvoicePdfRepresentationAttestation = {
+      documentSha256: SHA,
+      profile: 'plain_pdf',
+      embeddedXmlSha256: null,
+      detectorVersion: 1,
+    };
+    const result = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    }).execute({
+      ...input(),
+      kind: 'invoice_pdf',
+      origin: 'generated',
+      filename: 'facture-F-001.pdf',
+      mimeType: 'application/pdf',
+      linkedEntityType: 'invoice',
+      linkedEntityId: 'inv-1',
+      reason: 'invoice-issued-pdf-only-b2c',
+      storageKey: buildDocumentStorageKey({
+        companyId: 'co-1',
+        documentId: 'doc-1',
+        version: 1,
+        sha256: SHA,
+        filename: 'facture-F-001.pdf',
+        mimeType: 'application/pdf',
+      }),
+      invoicePdfAttestation,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(documents.lastInvoicePdfAttestation).toEqual(invoicePdfAttestation);
+  });
+
   it('stocke les bytes, persiste les métadonnées et expose une URL signée', async () => {
     const documents = new MemoryDocuments();
     const storage = new MemoryStorage();
@@ -177,7 +311,7 @@ describe('documents application use cases', () => {
     }
   });
 
-  it('compense le stockage objet si le sha retourné ne correspond pas', async () => {
+  it('refuse une preuve de lecture incohérente sans supprimer une clé déjà publiable', async () => {
     const documents = new MemoryDocuments();
     const storage = new MemoryStorage(OTHER_SHA);
     const stored = await new StoreDocument({
@@ -191,8 +325,61 @@ describe('documents application use cases', () => {
     expect(stored.ok).toBe(false);
     if (!stored.ok) expect(stored.error.kind).toBe('dependency');
     expect(documents.map.size).toBe(0);
-    expect(storage.objects.size).toBe(0);
-    expect(storage.removed).toEqual([input().storageKey]);
+    // Un retry concurrent peut avoir adopté la clé entre put et l'échec : aucune suppression
+    // inline sans fence DB. Une purge différée ne retirera que les objets non référencés.
+    expect(storage.objects.size).toBe(1);
+    expect(storage.removed).toEqual([]);
+  });
+
+  it('adopte exactement un objet orphelin puis rend le retry complet idempotent', async () => {
+    const documents = new MemoryDocuments();
+    const storage = new MemoryStorage();
+    const orphan = input();
+    await storage.put({
+      companyId: orphan.companyId,
+      key: orphan.storageKey,
+      bytes: orphan.bytes,
+      contentType: orphan.mimeType,
+    });
+
+    const useCase = new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    });
+    const adopted = await useCase.execute(orphan);
+    const replayed = await useCase.execute(orphan);
+
+    expect(adopted.ok).toBe(true);
+    expect(replayed.ok).toBe(true);
+    expect(documents.map.size).toBe(1);
+    expect(storage.objects.size).toBe(1);
+    expect(storage.putCount).toBe(3);
+  });
+
+  it('ne signe jamais une URL si l’original a disparu après la persistance', async () => {
+    const documents = new MemoryDocuments();
+    const storage = new MemoryStorage();
+    const stored = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    }).execute(input());
+    expect(stored.ok).toBe(true);
+    storage.objects.delete(input().storageKey);
+
+    const signed = await new GetDocumentDownloadUrl({ documents, storage }).execute({
+      companyId: 'co-1',
+      documentId: 'doc-1',
+      ttlSeconds: 120,
+    });
+
+    expect(signed.ok).toBe(false);
+    expect(storage.signedUrlCount).toBe(0);
   });
 
   it('refuse une cible métier absente avant toute écriture objet ou métadonnée', async () => {

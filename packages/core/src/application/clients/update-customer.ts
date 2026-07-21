@@ -50,7 +50,6 @@ export class UpdateCustomer {
         (invoice) =>
           invoice.customerId === input.id
           && invoice.status !== 'draft'
-          && invoice.status !== 'cancelled',
       );
       if (hasSignedQuote || hasIssuedInvoice) {
         return err(

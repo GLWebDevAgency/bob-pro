@@ -21,7 +21,7 @@ function issuedInvoice(opts: { paid?: number } = {}): Invoice {
   if (!inv.ok) throw new Error('invoice');
   inv.value.addLine(line);
   inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
   if (opts.paid) inv.value.registerPayment(opts.paid, AT);
   return inv.value;
 }

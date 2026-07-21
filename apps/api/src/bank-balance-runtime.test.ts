@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AppError, OcrPort, PaymentGatewayPort, PdfRendererPort, Result } from '@bob/core';
+import {
+  Company,
+  type AppError,
+  type OcrPort,
+  type PaymentGatewayPort,
+  type PdfRendererPort,
+  type Result,
+} from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -14,8 +22,15 @@ function asPrincipal<T>(principal: Principal, fn: () => T): T {
   return requestContext.run({ correlationId: 'bank-balance-test', principal }, fn);
 }
 
-function harness() {
+async function harness() {
   const persistence = new InMemoryPersistence();
+  const company = Company.of({
+    ...MERCIER_PROPS,
+    id: OWNER.companyId!,
+    name: 'Société propriétaire du solde',
+  });
+  if (!company.ok) throw new Error('fixture: société propriétaire invalide');
+  await persistence.companies.save(company.value);
   const service = new BackendService(
     persistence,
     {} as PaymentGatewayPort,
@@ -38,7 +53,7 @@ function harness() {
 
 describe('solde bancaire runtime — vérité tenant et absence de fallback', () => {
   it('alimente la trésorerie avec la valeur exacte confirmée, y compris négative', async () => {
-    const { service } = harness();
+    const { service } = await harness();
     const observedAt = new Date().toISOString();
 
     const recorded = await asPrincipal(OWNER, () =>
@@ -79,7 +94,7 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   });
 
   it('isole strictement les observations bancaires entre propriétaires', async () => {
-    const { service } = harness();
+    const { service } = await harness();
     const observedAt = new Date().toISOString();
     const recorded = await asPrincipal(OWNER, () =>
       service.recordManualBankBalance({
@@ -101,7 +116,7 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   });
 
   it('tenant vierge (aucune observation NI document) : état vide honnête marqué none, jamais une panne', async () => {
-    const { service } = harness();
+    const { service } = await harness();
 
     const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));
 
@@ -115,7 +130,7 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   });
 
   it('tenant vierge : Bob vocal refuse toujours d’annoncer un montant sur bankingSource none', async () => {
-    const { service } = harness();
+    const { service } = await harness();
     const actions = (
       service as unknown as {
         buildBobActions(): { computePayout(): Promise<Result<unknown, AppError>> };
@@ -131,7 +146,7 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   });
 
   it('reste indisponible sans observation dès qu’un document financier existe — jamais une projection d’argent réel posée sur un zéro inventé', async () => {
-    const { service } = harness();
+    const { service } = await harness();
     await asPrincipal(OWNER, () =>
       service.recordExpense({
         supplierName: 'Cedeo',
@@ -148,7 +163,7 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   });
 
   it('avec observation confirmée : la projection est marquée qualified_snapshot', async () => {
-    const { service } = harness();
+    const { service } = await harness();
     await asPrincipal(OWNER, () =>
       service.recordManualBankBalance({
         amountCents: 250_000,

@@ -119,6 +119,23 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
   return { service, p, notificationDelivery, metrics };
 }
 
+/** Provisioning fiscal minimal explicite pour les tests qui enregistrent une dépense sans charger
+ * le dataset de démonstration complet. Le runtime refuse justement d'inventer un régime de TVA. */
+async function seedExpenseCompanyProfiles(
+  p: InMemoryPersistence,
+  companyIds: readonly string[] = [MERCIER_PROPS.id],
+): Promise<void> {
+  for (const companyId of companyIds) {
+    const company = Company.of({
+      ...MERCIER_PROPS,
+      id: companyId,
+      name: companyId === MERCIER_PROPS.id ? MERCIER_PROPS.name : `Société ${companyId}`,
+    });
+    if (!company.ok) throw new Error(`fixture: société ${companyId} invalide`);
+    await p.companies.save(company.value);
+  }
+}
+
 /** Exécute fn avec un Principal explicite (comme le guard en requête réelle) — sync ou async. */
 function asPrincipal<T>(principal: Principal | null, fn: () => T): T {
   return requestContext.run({ correlationId: 'test', ...(principal ? { principal } : {}) }, fn);
@@ -186,7 +203,8 @@ async function closeCompanyWithoutRevokingTokens(p: InMemoryPersistence): Promis
 
 describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + décaissement 401/512)', () => {
   it('règle la dépense : statut paid, écriture expense:{id}:paid au journal de banque (401/512), idempotent', async () => {
-    const { service } = makeService();
+    const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     await asPrincipal(MERCIER, async () => {
       const recorded = await service.recordExpense({
         supplierName: 'Cedeo',
@@ -244,7 +262,8 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + déca
   });
 
   it('anti-IDOR : la dépense d’un autre tenant est INTROUVABLE (not_found, jamais une fuite d’existence)', async () => {
-    const { service } = makeService();
+    const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     const recorded = await asPrincipal(MERCIER, () =>
       service.recordExpense({
         supplierName: 'Cedeo',
@@ -272,6 +291,7 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + déca
 describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle achats (E1, idempotent)', () => {
   it("impose le tenant authentifié même si un appel interne forge companyId à l'exécution", async () => {
     const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     const forgedInput = {
       supplierName: 'Cedeo',
       documentDate: todayUtc(),
@@ -290,7 +310,8 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
   });
 
   it('la dépense enregistrée poste son écriture d’ACHAT 6xx/44566/401 au journal purchases', async () => {
-    const { service } = makeService();
+    const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     await asPrincipal(MERCIER, async () => {
       const recorded = await service.recordExpense({
         supplierName: 'Leroy Merlin',
@@ -326,6 +347,7 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
 
   it('converge sous double appel et après réponse perdue : une Expense, une E1, un seul id', async () => {
     const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     await asPrincipal(MERCIER, async () => {
       const request = {
         supplierName: 'Cedeo',
@@ -364,6 +386,7 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
 
   it('rollback explicitement le candidat qui perd la publication concurrente', async () => {
     const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     await asPrincipal(MERCIER, async () => {
       const base = {
         supplierName: 'Cedeo',
@@ -401,6 +424,7 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
 
   it('espace la même clé brute par tenant et refuse les clés non bornées', async () => {
     const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p, [MERCIER_PROPS.id, INTRUS.companyId!]);
     const request = {
       supplierName: 'Cedeo',
       documentDate: todayUtc(),
@@ -627,6 +651,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(r.value.card.title).toBe('Ta position de TVA');
       // LE même chiffre que le use case pur : 20 000 cents de TVA contenue dans l'encaissement total.
       const expected = deriveVatPosition({
+        vatRegime: 'reel_normal',
         invoices: [
           {
             kind: 'final',
@@ -863,7 +888,8 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
   });
 
   it('contexte Comptabilité : explique une écriture canonique et la masque à un autre tenant', async () => {
-    const { service } = makeService();
+    const { service, p } = makeService();
+    await seedExpenseCompanyProfiles(p);
     const recorded = await asPrincipal(MERCIER, () =>
       service.recordExpense({
         supplierName: 'Fournitures Atelier',
@@ -1014,6 +1040,18 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       });
       expect(recorded.ok).toBe(true);
       if (!recorded.ok) return;
+
+      // Horloge volontairement non figée : le début du run et l'intention `planned` ont des
+      // timestamps distincts. L'expiration publique doit rester strictement identique après
+      // relecture du journal, dont l'entrée `planned` est la seule source de vérité durable.
+      const clockEpoch = Date.now();
+      let clockReads = 0;
+      Object.defineProperty(service, 'clock', {
+        value: {
+          now: () => new Date(clockEpoch + clockReads++).toISOString(),
+          today: () => new Date(clockEpoch).toISOString().slice(0, 10),
+        },
+      });
 
       // ① Dry-run : palier accounting = PLANCHER — toujours proposé, jamais exécuté d'office.
       const proposed = await service.askBob(

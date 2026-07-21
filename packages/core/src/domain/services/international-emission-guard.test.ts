@@ -30,8 +30,8 @@ describe('internationalProEmissionGuard (B6 — fail-closed, pas d’override)',
   it('b2g international → BLOQUÉ (professionnel aussi)', () => {
     expect(internationalProEmissionGuard(customer({ type: 'b2g', isInternational: true })).ok).toBe(false);
   });
-  it('b2c international → autorisé (TVA française applicable au particulier)', () => {
-    expect(internationalProEmissionGuard(customer({ type: 'b2c', isInternational: true })).ok).toBe(true);
+  it('b2c international → bloqué tant que pays et régime OSS ne sont pas modélisés', () => {
+    expect(internationalProEmissionGuard(customer({ type: 'b2c', isInternational: true })).ok).toBe(false);
   });
   it('b2b français → autorisé', () => {
     expect(internationalProEmissionGuard(customer()).ok).toBe(true);

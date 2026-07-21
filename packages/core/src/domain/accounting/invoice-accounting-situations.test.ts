@@ -42,7 +42,14 @@ function chart() {
 
 function issueIt(invoice: Invoice, sequence = 1): Invoice {
   invoice.assignNumber(DocNumber.format('F', 2026, sequence), AT);
-  const issued = invoice.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  const issued = invoice.issue({
+    mentions: [],
+    terms,
+    issuedAt: ISSUED,
+    at: AT,
+    vatTreatment: 'standard',
+    frenchBillingMode: 'S1',
+  });
   if (!issued.ok) throw new Error('issue');
   return invoice;
 }
@@ -87,6 +94,12 @@ describe('invoice-accounting — situations B2 et retenue B5', () => {
     const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-3', {
       depositDeduction: { amountCents: 97680, invoiceId: null },
       situationDeductionCents: 48840,
+      situationBilledHtCents: 44400,
+      situationBilledByQuoteLineCents: { l1: 24000, l2: 20400 },
+      precedingInvoices: [
+        { invoiceId: 'dep-1', kind: 'deposit', number: 'F-2026-0001', issuedAt: ISSUED },
+        { invoiceId: 'sit-1', kind: 'situation', number: 'F-2026-0002', issuedAt: ISSUED },
+      ],
     });
     if (!final.ok) throw new Error('final');
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-3', invoice: issueIt(final.value, 3), chart: chart() });
@@ -126,7 +139,7 @@ describe('invoice-accounting — situations B2 et retenue B5', () => {
     const creditNote = Invoice.creditNoteFor(issued, 'cn-1');
     if (!creditNote.ok) throw new Error('credit note');
     creditNote.value.assignNumber(DocNumber.format('A', 2026, 1), AT);
-    creditNote.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    creditNote.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: issued.frenchBillingModeAtIssuance ?? 'S1' });
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-5', invoice: creditNote.value, chart: chart() });
     expect(r.ok && r.value !== null).toBe(true);
     if (r.ok && r.value !== null) {
@@ -137,39 +150,44 @@ describe('invoice-accounting — situations B2 et retenue B5', () => {
       expect(credit411?.creditCents).toBe(46398);
     }
   });
-  it('finale SOLDÉE PAR SITUATIONS SEULES (100 %, sans acompte) : AUCUNE écriture — ok(null), jamais une erreur', () => {
-    // Scénario du finding : devis 148 000 HT / 162 800 TTC, une situation de 100 % émise,
-    // puis finale de solde à 0 — le CA et la TVA sont déjà constatés par la situation.
+  it('finale SOLDÉE PAR SITUATIONS SEULES (100 %) : refuse une pièce fiscale à zéro', () => {
     const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-6', {
       depositDeduction: { amountCents: 162800, invoiceId: null },
       situationDeductionCents: 162800,
+      situationBilledHtCents: 148000,
+      situationBilledByQuoteLineCents: { l1: 80000, l2: 68000 },
+      precedingInvoices: [
+        { invoiceId: 'sit-100', kind: 'situation', number: 'F-2026-0001', issuedAt: ISSUED },
+      ],
     });
-    if (!final.ok) throw new Error('final');
-    expect(final.value.totals().netToPay).toBe(0);
-    const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-6', invoice: issueIt(final.value, 6), chart: chart() });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value).toBeNull();
+    expect(final.ok).toBe(false);
+    if (!final.ok && final.error.code === 'VALIDATION') {
+      expect(final.error.field).toBe('situationBilledHtCents');
+    }
   });
-  it('avoir MIROIR d’une finale soldée par situations seules : lui aussi sans écriture (ok(null))', () => {
+  it('une finale à zéro refusée ne peut donc jamais produire un avoir fantôme', () => {
     const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-7', {
       depositDeduction: { amountCents: 162800, invoiceId: null },
       situationDeductionCents: 162800,
+      situationBilledHtCents: 148000,
+      situationBilledByQuoteLineCents: { l1: 80000, l2: 68000 },
+      precedingInvoices: [
+        { invoiceId: 'sit-100', kind: 'situation', number: 'F-2026-0001', issuedAt: ISSUED },
+      ],
     });
-    if (!final.ok) throw new Error('final');
-    const issued = issueIt(final.value, 7);
-    const creditNote = Invoice.creditNoteFor(issued, 'cn-2');
-    if (!creditNote.ok) throw new Error('credit note');
-    creditNote.value.assignNumber(DocNumber.format('A', 2026, 2), AT);
-    creditNote.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
-    const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-7', invoice: creditNote.value, chart: chart() });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value).toBeNull();
+    expect(final.ok).toBe(false);
   });
   it('cas SYMÉTRIQUE — finale couverte à 100 % par acompte + situations : écriture NON vide (reprise 4191)', () => {
     // Acompte 48 840 + situations 113 960 = TTC 162 800 → netToPay 0 MAIS reprise 4191 > 0.
     const final = Invoice.fromSignedQuote(signedQuote({ depositPct: 30 }), 'final', 'inv-8', {
       depositDeduction: { amountCents: 162800, invoiceId: null },
       situationDeductionCents: 113960,
+      situationBilledHtCents: 103600,
+      situationBilledByQuoteLineCents: { l1: 56000, l2: 47600 },
+      precedingInvoices: [
+        { invoiceId: 'dep-1', kind: 'deposit', number: 'F-2026-0001', issuedAt: ISSUED },
+        { invoiceId: 'sit-1', kind: 'situation', number: 'F-2026-0002', issuedAt: ISSUED },
+      ],
     });
     if (!final.ok) throw new Error('final');
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-8', invoice: issueIt(final.value, 8), chart: chart() });

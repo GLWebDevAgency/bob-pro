@@ -114,6 +114,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     // Effacement explicite (null) ; un champ omis reste inchangé.
     const erased = await client.updateCompanyLegal({ mediateurConso: null });
     expect(erased.ok && erased.value.mediateurConso).toBeUndefined();
+
+    const vat = await client.updateCompanyLegal({ tvaIntracom: ' fr44 732829320 ' });
+    expect(vat.ok && vat.value.tvaIntracom).toBe('FR44732829320');
   });
 
   it('A7 (adaptateur démo) : période de prestation + adresse de chantier figées à l’émission', async () => {
@@ -135,6 +138,51 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
       deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
     });
     expect(issued.ok).toBe(true);
+  });
+
+  it('BT-23 local vertical : question → choix manuel/voix → proposition → émission réelle', async () => {
+    const client = makeClient();
+    const quotes = await client.listQuotes();
+    expect(quotes.ok).toBe(true);
+    if (!quotes.ok) return;
+    const mixedSigned = quotes.value.find((quote) =>
+      quote.status === 'signed'
+      && quote.lines.some((line) => line.category === 'supply')
+      && quote.lines.some((line) => line.category === 'labor'));
+    expect(mixedSigned).toBeTruthy();
+    if (!mixedSigned) return;
+    const generated = await client.generateInvoice({ quoteId: mixedSigned.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+
+    const question = await client.askBob({
+      message: `Émets la facture ${generated.value.invoiceId}`,
+    });
+    expect(question.ok && question.value.kind).toBe('answer');
+    expect(question.ok && question.value.ask?.[0]?.id).toBe(
+      'emettre_facture.operationCategory',
+    );
+    const followUp = question.ok ? question.value.ask?.[0]?.options[0]?.followUp : undefined;
+    expect(followUp).toBeTruthy();
+    if (!followUp) return;
+
+    const proposal = await client.askBob({ message: followUp });
+    expect(proposal.ok && proposal.value.kind).toBe('proposed');
+    expect(proposal.ok && proposal.value.pending?.args).toMatchObject({
+      invoiceId: generated.value.invoiceId,
+      operationCategory: 'services',
+    });
+    if (!proposal.ok || !proposal.value.pending) return;
+
+    const confirmed = await client.confirmBob(proposal.value.pending);
+    expect(confirmed.ok && confirmed.value.kind).toBe('done');
+    const invoices = await client.listInvoices();
+    expect(invoices.ok).toBe(true);
+    expect(
+      invoices.ok
+        ? invoices.value.find((invoice) => invoice.id === generated.value.invoiceId)?.status
+        : null,
+    ).toBe('issued');
   });
 
   it('DELETE /account (démo) : confirmationText EXACT (nom de la société seedée) → clôture, mêmes règles que le serveur', async () => {
@@ -285,7 +333,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     }
   });
 
-  it('déroule le flux Devis -> facture -> paiement hors-ligne', async () => {
+  it('déroule le flux Devis -> facture finale -> paiement hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({
       customerId: 'cust-martin',
@@ -306,7 +354,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(sent.ok && sent.value.deliveryStatus).toBe('skipped');
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
 
-    const gen = await client.generateInvoice({ quoteId, mode: 'deposit' });
+    // Le profil Factur-X EN16931 ne sait pas reprendre un acompte professionnel sans le profil
+    // Extended : le flux générique certifié utilise donc ici la finale, sans contourner la garde.
+    const gen = await client.generateInvoice({ quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
 
@@ -314,20 +364,23 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(draftPreview.ok && draftPreview.value.available).toBe(true);
     if (!draftPreview.ok || !draftPreview.value.available) return;
     expect(draftPreview.value.reference).toBe('a-emettre');
-    expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
+    expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '707', '706', '44571']);
 
-    const issued = await client.issueInvoice({ invoiceId: gen.value.invoiceId });
-    // Le seed démo a émis F-2026-0001 (mairie ÉCHUE, A2-C10) puis F-2026-0002 (acompte
-    // Martin) : la numérotation SANS TROU continue à 0003.
-    expect(issued.ok && issued.value.number).toBe('F-2026-0003');
+    const issued = await client.issueInvoice({
+      invoiceId: gen.value.invoiceId,
+      operationCategory: 'services',
+    });
+    // Le seed démo n'invente plus d'acompte professionnel incompatible avec le profil Standard :
+    // seule la mairie occupe 0001, la numérotation sans trou continue donc à 0002.
+    expect(issued.ok && issued.value.number).toBe('F-2026-0002');
 
     const preview = await client.invoiceAccountingPreview(gen.value.invoiceId);
     expect(preview.ok).toBe(true);
     if (!preview.ok || !preview.value.available) return;
     expect(preview.value.available).toBe(true);
-    expect(preview.value.totalDebitCents).toBe(48840);
-    expect(preview.value.totalCreditCents).toBe(48840);
-    expect(preview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
+    expect(preview.value.totalDebitCents).toBe(162800);
+    expect(preview.value.totalCreditCents).toBe(162800);
+    expect(preview.value.lines.map((line) => line.account)).toEqual(['411', '707', '706', '44571']);
 
     const entries = await client.listAccountingEntries();
     expect(entries.ok).toBe(true);
@@ -335,13 +388,13 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     // Le seed démo (C16) porte sa propre écriture : on cible celle du flux du test.
     const entry = entries.value.find((e) => e.sourceId === gen.value.invoiceId);
     expect(entry).toBeDefined();
-    expect(entry?.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
+    expect(entry?.lines.map((line) => line.account)).toEqual(['411', '707', '706', '44571']);
 
     const paid = await client.registerPayment({
       invoiceId: gen.value.invoiceId,
-      amount: 48840,
+      amount: 162800,
       method: 'transfer',
-      idempotencyKey: 'test:payment:deposit',
+      idempotencyKey: 'test:payment:final',
     });
     expect(paid.ok && paid.value.status).toBe('paid');
     if (paid.ok) expect(paid.value.paymentId).toBeTruthy();
@@ -365,9 +418,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
 
     const replay = await client.registerPayment({
       invoiceId: gen.value.invoiceId,
-      amount: 48840,
+      amount: 162800,
       method: 'transfer',
-      idempotencyKey: 'test:payment:deposit',
+      idempotencyKey: 'test:payment:final',
     });
     expect(replay.ok && replay.value.paymentId).toBe(paid.ok ? paid.value.paymentId : null);
     const replayEntries = await client.listAccountingEntries();
@@ -380,12 +433,13 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.filename).toBe('732829320FEC20261231.txt');
     expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
     expect(fec.value.descriptionContent).toContain('Codes journaux');
-    // Le FEC embarque AUSSI les écritures du seed démo : facture échue 0001 (mairie),
-    // acompte 0002 + son paiement, ET le cycle achats (4 achats AC + 2 décaissements BQ
-    // des dépenses justifiées — la ligne HISTORIQUE Brico Dépôt reste honnêtement sans
-    // décaissement tant qu'elle n'est pas régularisée) : 11 écritures, 29 lignes.
-    expect(fec.value.entryCount).toBe(11);
-    expect(fec.value.rowCount).toBe(29);
+    // Le FEC embarque AUSSI les écritures du seed démo : facture échue 0001 (mairie) et le
+    // cycle achats (4 achats AC + 2 décaissements BQ des dépenses justifiées — la ligne
+    // HISTORIQUE Brico Dépôt reste sans décaissement tant qu'elle n'est pas régularisée).
+    // L'ancien acompte B2B de démonstration a disparu : le seed ne contourne plus le plancher
+    // Factur-X Standard. Avec la facture finale du test : 9 écritures, 25 lignes réelles.
+    expect(fec.value.entryCount).toBe(9);
+    expect(fec.value.rowCount).toBe(25);
     const rows = fec.value.content.trimEnd().split('\n');
     expect(rows[0]?.split('\t')).toEqual([
       'JournalCode',
@@ -428,7 +482,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const gen = await client.generateInvoice({ quoteId: created.value.quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
-    expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
+    expect((await client.issueInvoice({
+      invoiceId: gen.value.invoiceId,
+      operationCategory: 'services',
+    })).ok).toBe(true);
 
     const preview = await client.paymentAccountingPreview({
       invoiceId: gen.value.invoiceId,
@@ -1302,7 +1359,8 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     const updated = await client.updateCustomer(created.value.id, {
       name: 'SARL Petit & Fils',
       type: 'b2b',
-      siren: '123456789',
+      siren: '732829320',
+      tvaIntracom: 'FR44732829320',
       contactName: 'Mme Petit',
       email: 'contact@petit.fr',
       address: { line1: '4 rue du Test', zip: '75001', city: 'Paris' },
@@ -1315,7 +1373,8 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect(list.value.find((c) => c.id === created.value.id)).toMatchObject({
       name: 'SARL Petit & Fils',
       type: 'b2b',
-      siren: '123456789',
+      siren: '732829320',
+      tvaIntracom: 'FR44732829320',
       contactName: 'Mme Petit',
       address: { line1: '4 rue du Test', zip: '75001', city: 'Paris' },
     });
@@ -1436,7 +1495,8 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
   it('askBob propose (plancher) puis confirmBob exécute EN JOURNALISANT — le journal est lisible on-device', async () => {
     const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
 
-    // Pièce réelle : devis signé -> facture émise F-2026-0003 (le seed occupe 0001-0002).
+    // Pièce réelle : devis signé -> facture émise ; le test parle avec son numéro réellement
+    // alloué, sans dépendre du nombre de pièces seedées.
     const created = await client.createQuote({
       customerId: 'cust-martin',
       lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
@@ -1449,10 +1509,18 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     const gen = await client.generateInvoice({ quoteId: created.value.quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
-    expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
+    const issued = await client.issueInvoice({
+      invoiceId: gen.value.invoiceId,
+      operationCategory: 'services',
+    });
+    expect(issued.ok).toBe(true);
+    if (!issued.ok) return;
 
     // ask : action sensible -> TOUJOURS proposée (plancher comptable), même avec l'autonomie max locale.
-    const asked = await client.askBob({ message: 'encaisse la facture F-2026-0003', autonomy: 'auto' });
+    const asked = await client.askBob({
+      message: `encaisse la facture ${issued.value.number}`,
+      autonomy: 'auto',
+    });
     expect(asked.ok).toBe(true);
     if (!asked.ok) return;
     expect(asked.value.kind).toBe('proposed');
@@ -2028,26 +2096,20 @@ describe('C-EXP6b — réception e-facture (adaptateur démo, parité serveur)',
     }
   });
 
-  it('AUTOLIQUIDATION approuvée → ZÉRO 44566 ; refus sans motif impossible ; mal adressée bloquée avec les 2 SIREN', async () => {
+  it('AUTOLIQUIDATION fail-closed ; refus sans motif impossible ; mal adressée bloquée avec les 2 SIREN', async () => {
     const client = new LocalBobClient({ clock: new FixtureClock('2026-07-01') });
 
-    // Autoliquidation : TVA non déductible, catégorie sous-traitance proposée, zéro 44566 posté.
+    // Autoliquidation : le moteur d'écritures miroir n'est pas encore complet. Import ET
+    // approbation restent donc fermés — jamais une fausse dépense « sans TVA » qui perdrait la
+    // dette/créance d'autoliquidation.
     const aeXml = buildFacturXBasicXml(autoliquidationData());
     const aeReview = await client.importFacturXExpense({ xml: aeXml });
-    expect(aeReview.ok).toBe(true);
-    if (!aeReview.ok) return;
-    expect(aeReview.value.draft.vatNonDeductible).toBe(true);
-    expect(aeReview.value.draft.categoryGuess).toBe('sous_traitance');
+    expect(aeReview.ok).toBe(false);
+    if (!aeReview.ok && aeReview.error.kind === 'validation') {
+      expect(aeReview.error.issues[0]?.field).toBe('facturx.autoliquidation_non_geree');
+    }
     const aeOutcome = await client.confirmFacturXExpense({ xml: aeXml, decision: { action: 'approve' } });
-    expect(aeOutcome.ok).toBe(true);
-    if (!aeOutcome.ok || aeOutcome.value.status !== 'approved') return;
-    const aeExpenseId = aeOutcome.value.expenseId;
-    const entries = await client.listAccountingEntries();
-    expect(entries.ok).toBe(true);
-    if (!entries.ok) return;
-    const purchase = entries.value.find((e) => e.id === `expense:${aeExpenseId}:recorded`);
-    expect(purchase).toBeDefined();
-    expect(purchase?.lines.some((l) => l.account === '44566')).toBe(false); // le piège P21 neutralisé
+    expect(aeOutcome.ok).toBe(false);
 
     // Refus sans motif = IMPOSSIBLE (machine InboundEinvoice).
     const sansMotif = await client.confirmFacturXExpense({

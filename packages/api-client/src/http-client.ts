@@ -372,6 +372,7 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
 
 /** B4/B6/B7 — champs ADDITIFS de la fiche (serveurs antérieurs : absents ⇒ normalisés). */
 const CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS = [
+  'tvaIntracom',
   'paymentTerms',
   'billingChannel',
   'isInternational',
@@ -505,6 +506,8 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   }
   if (value.isInternational !== undefined && typeof value.isInternational !== 'boolean')
     return null;
+  if (value.tvaIntracom !== undefined && value.tvaIntracom !== null && typeof value.tvaIntracom !== 'string')
+    return null;
   if (
     value.paymentTermsLabel !== undefined &&
     value.paymentTermsLabel !== null &&
@@ -518,6 +521,7 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
     ...(value as unknown as CustomerListItem),
     paymentTerms,
     billingChannel,
+    tvaIntracom: (value.tvaIntracom as string | null | undefined) ?? null,
     isInternational: value.isInternational === true,
     paymentTermsLabel: (value.paymentTermsLabel as string | null | undefined) ?? null,
     isSubcontractingBtp: value.isSubcontractingBtp === true,
@@ -545,6 +549,7 @@ function customerClientBody(
     name: input.name,
     address: { ...input.address },
     ...(input.siren !== undefined ? { siren: input.siren } : {}),
+    ...(input.tvaIntracom !== undefined ? { tvaIntracom: input.tvaIntracom } : {}),
     ...(input.email !== undefined ? { email: input.email } : {}),
     ...(input.phone !== undefined ? { phone: input.phone } : {}),
     ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
@@ -2013,6 +2018,7 @@ export class HttpBobClient implements BobClient {
     email?: string | null;
     phone?: string | null;
     rcsOrRm?: string | null;
+    tvaIntracom?: string | null;
     address?: { line1: string; zip: string; city: string };
   }) {
     return this.req<CompanyProps>('PATCH', '/company/legal', input);

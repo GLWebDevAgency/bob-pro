@@ -1186,6 +1186,13 @@ describe('HttpBobClient', () => {
       if (u === 'https://api.bob.test/invoices/inv-9/draft' && method === 'DELETE') {
         return new Response(JSON.stringify({ deleted: true }), { headers: { 'content-type': 'application/json' } });
       }
+      if (u === 'https://api.bob.test/invoices/inv-9/issue' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          invoiceId: 'inv-9',
+          operationCategory: 'services',
+        });
+        return new Response(JSON.stringify({ number: 'F-2026-0009' }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1202,6 +1209,12 @@ describe('HttpBobClient', () => {
 
     const deleted = await client.deleteDraftInvoice('inv-9');
     expect(deleted.ok && deleted.value).toEqual({ deleted: true });
+
+    const issued = await client.issueInvoice({
+      invoiceId: 'inv-9',
+      operationCategory: 'services',
+    });
+    expect(issued.ok && issued.value).toEqual({ number: 'F-2026-0009' });
   });
 
   it('P0 R4 : signature-link et sign frappent les routes exactes avec le corps exact', async () => {
@@ -1570,7 +1583,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     const input = {
       name: 'SARL Nguyen',
       type: 'b2b' as const,
-      siren: '123456789',
+      siren: '732829320',
+      tvaIntracom: 'FR44732829320',
       contactName: 'Mme Nguyen',
       address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
     };
@@ -1622,6 +1636,7 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       value: [
         {
           ...item,
+          tvaIntracom: null,
           paymentTerms: null,
           billingChannel: null,
           isInternational: false,
@@ -1647,6 +1662,7 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       outstandingCents: 0,
       customerCreditCents: 0,
       siren: '130025265',
+      tvaIntracom: null,
       avgDelayDays: null,
       paidOnTimeRatio: null,
       paymentHistoryStatus: 'insufficient_history',

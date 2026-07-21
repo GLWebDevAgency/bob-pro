@@ -38,6 +38,7 @@ présente dans le code, non branchée ou non prouvée sur le chemin réel n'est 
 | O5 | Voice Trace rend la qualité pilotable | Chaque tour produit une trace corrélée ; p50/p95, interruptions, erreurs et dégradations sont observables sans audio ni secret dans les logs. |
 | O6 | Zéro donnée fabriquée en production | Écrans, API, calculs et réponses Bob utilisent la base du tenant ; absence et erreur sont affichées honnêtement. |
 | O7 | Release reproductible | Le commit publié passe build, tests, migrations, boot avec l'environnement cible, smoke tests et QA sur appareils réels. |
+| O8 | Facturation électronique légalement opérante | Une PA réelle est intégrée derrière un port, les flux sortants/entrants/statuts/e-reporting sont réconciliés et aucune promesse 2026 ne repose sur un stub. |
 
 ## 3. Périmètre du train
 
@@ -57,6 +58,9 @@ présente dans le code, non branchée ou non prouvée sur le chemin réel n'est 
   artefacts de production ;
 - accès anticipé sans abonnement payant dans la première version publique, avec état vide honnête
   pour les factures d'abonnement.
+- choix d'une PA externe portable ; B2Brouter eDocSync est le candidat prioritaire soumis au gate
+  `G-PA-01` de [sa spec](SPEC_CONNECTEUR_PA_B2BROUTER.md). Une diffusion publique portant la
+  promesse « conforme 2026 » exige que cette intégration soit certifiée.
 
 ### 3.2 Explicitement différé
 
@@ -142,6 +146,43 @@ le device, le réseau, le commit et la distribution doivent accompagner le verdi
   réconciliés avec le serveur.
 - Le compte propriétaire voit uniquement les données persistées de sa société sous RLS forcée.
 
+### 4.6 Factur-X, règlement et archivage
+
+1. Une facture professionnelle éligible produit un Factur-X **EN16931** PDF/A-3b ; une facture
+   B2C produit un PDF seul et rejoint un flux e-reporting PA distinct. Aucun endpoint ou identifiant
+   fiscal n'est inventé pour transformer un B2C en B2B.
+2. Le profil, la nature BT-23, le traitement TVA, les antécédents, les lignes sources et les
+   totaux payables sont des faits d'émission persistés. Un rechargement SQL restitue exactement
+   le même XML, PDF, payable et schéma comptable.
+3. Les situations facturent de vraies bases de ligne. La finale ne porte que les bases
+   résiduelles et toutes les références BG-3 ; les situations ne sont jamais déduites une
+   seconde fois. Un marché facturé à 100 % ne produit pas une finale à zéro.
+4. La retenue de garantie sépare la créance légale, le payable immédiat et l'allocation des
+   encaissements entre comptes `411` et `4117`. La somme des allocations doit égaler le paiement.
+5. Une reprise d'acompte dans une finale professionnelle reste fail-closed avant numérotation
+   tant que le profil Factur-X EXTENDED et la chaîne PA `386 → finale → 503` ne sont pas
+   certifiés. Le produit ne présente pas ce parcours comme disponible pendant cette fermeture.
+6. L'archive B2B/B2G attend PDF + XML ; l'archive B2C attend PDF seul. Le périmètre d'un job est
+   immuable et la base recalcule sa preuve. Cette preuve relationnelle n'est pas qualifiée WORM
+   tant que l'object-lock ou l'archive probante PA n'est pas certifié.
+7. L’activation Archive V2 suit deux trains : le premier ferme les sorties HTTP B2C avec un
+   marqueur readiness compatible N-1 ; le second applique le schéma, rescane les octets réels,
+   atteste les PDF historiques sous le tenant exact, retire N-1 puis active V2 de façon monotone.
+8. Le scanner pré-activation inventorie Storage↔SQL dans les deux sens, refuse les orphelins et
+   écarts taille/SHA/MIME/version, et exécute Mustang + FNFE sur chaque paire professionnelle.
+   Son mode par défaut est sans écriture ; son mode apply ne peut écrire que le lot atomique
+   d’attestations exactes et ne supprime jamais un original.
+9. Le scanner de release tourne dans un service Railway one-shot isolé, jamais sur GitHub. Sa preuve
+   append-only est liée au SHA, au déploiement, à l’identité de base et au bucket ; GitHub ne reçoit
+   qu’une enveloppe allowlistée sans donnée métier. Après activation, le mode V2 relit intégralement
+   les octets, rejoue les validateurs externes, vérifie les rails relationnels et la baseline du SHA
+   d’activation, puis détecte tout remplacement d’un original après sa version immuable sans
+   restaurer la capacité historique. Un déclencheur Storage et un verrou global ferment la course
+   audit/cutover ; le scan V1 exige un second snapshot et l’activation refait Storage↔SQL sous
+   verrou. Le rapport détaillé reste append-only, sous RLS forcée sans policy, et réservé au rôle
+   privilégié. Les rôles Data API n’ont ni mutation des singletons, ni accès aux tables privées,
+   ni EXECUTE sur l’inventaire fermé des RPC archive.
+
 ## 5. Séquence d'exécution imposée
 
 1. Graver ce cap, l'ADR fournisseur et le DoD.
@@ -152,6 +193,10 @@ le device, le réseau, le commit et la distribution doivent accompagner le verdi
 5. Intégrer et pousser `main`, puis inventorier/sauvegarder/supprimer les worktrees obsolètes.
 6. Créer **une seule branche courte** depuis le nouveau `main` pour GPT Realtime + Voice Trace.
 7. Livrer des tranches verticales démontrables, intégrer sur `main`, supprimer la branche, répéter.
+
+Le cadrage contractuel et l'accès sandbox PA peuvent avancer en parallèle sans ouvrir une seconde
+lane d'écriture. L'implémentation du connecteur suit une branche courte dédiée après consolidation
+du tronc ; elle devient bloquante avant toute promesse publique de transmission automatique.
 
 Pendant qu'un agent écrit, l'autre relit et challenge en lecture seule. La passation du bâton est
 explicite. Un worktree séparé n'est créé que pour une isolation indispensable et disparaît dès
@@ -197,6 +242,46 @@ l'intégration.
 - [ ] CGU/confidentialité/support, crash reporting, alertes et runbook sont actifs.
 - [ ] Zéro P0/P1 ouvert ; les limites restantes sont écrites et non présentées comme fonctionnelles.
 
+### 6.4 Plateforme Agréée
+
+- [ ] Le gate fournisseur `G-PA-01` est documenté et signé ; la présence sur une liste ou une page
+      commerciale ne remplace pas le contrat, le DPA, le SLA et la preuve sandbox.
+- [ ] Provisioning/Annuaire, B2B, B2C, international, avoir, acompte, réception, refus, paiement et
+      reprise après panne passent la matrice de la spec PA.
+- [ ] Webhooks signés, outbox/inbox, idempotence, réconciliation et RLS sont certifiés.
+- [ ] Le document légal exact et son hash sont conservés dans Bob ; aucun 2xx ne devient un succès
+      avant relecture du statut et des erreurs asynchrones.
+- [ ] Sans connecteur certifié, les textes restent factuels (« Factur-X généré », « PA à connecter »)
+      et ne promettent ni e-reporting automatique ni conformité 2026 complète.
+
+### 6.5 Factur-X et règlement
+
+- [ ] Les corpus XSD/Schematron FNFE-MPE et les validateurs tiers sont versionnés, hashés,
+      réellement exercés et bloquent la CI sur XML **et** PDF/A-3b.
+- [ ] Une facture rechargée depuis PostgreSQL reproduit les faits d'émission, antécédents,
+      lignes sources, totaux payables et allocations de paiement au centime.
+- [ ] Finale après plusieurs situations, retenue partielle, avoir d'acompte et séparation B2C
+      passent les tests domaine, API, persistance et PostgreSQL réel.
+- [ ] Aucun acompte professionnel ne peut conduire à une finale annoncée comme disponible mais
+      impossible à émettre ; la capacité reste fermée jusqu'à sa certification EXTENDED/PA.
+- [ ] Les preuves d'archive distinguent explicitement cohérence DB et conservation WORM des
+      octets ; aucune copie produit ou support ne confond les deux.
+- [ ] Train 0 prouvé sur toutes les répliques (`documentArchiveB2cHttpFence=v1`, mono-SHA), puis
+      migrations expand et activation V2 seulement après retrait complet de N-1.
+- [ ] Préflight audience exécuté avant l’expand : aucune facture émise legacy sans audience revue,
+      et aucune audience `NULL` tolérée sur un schéma déjà étendu.
+- [ ] Scanner pré-activation exécuté sur le bucket et la base cibles : snapshot read-only,
+      Storage↔SQL bidirectionnel, octets réellement relus, attestations atomiques via app-role,
+      second snapshot stable, Mustang/FNFE historiques, preuve DB append-only et enveloppe Railway
+      corrélée ;
+      `p0Issues=0` au rapport final, aucun original ou secret dans les artefacts GitHub.
+- [ ] Après activation, le scanner V2 relit les mêmes octets et validateurs sans pouvoir écrire
+      d’attestation ; sa baseline, son rapport privé et son SHA d’activation sont cohérents, le
+      déclencheur `storage.objects` et le verrou audit/cutover sont certifiés sur PostgreSQL réel.
+- [ ] Le bucket runtime est identique au bucket audité ; sous les verrous d’activation, zéro
+      orphelin Storage et zéro référence SQL sans objet. Les ACL Supabase `anon/authenticated/
+      service_role`, RLS forcée des tables privées et allowlist RPC sont certifiées sur PostgreSQL.
+
 ## 7. Registre de preuve
 
 Chaque objectif passe par quatre états seulement : `specified`, `implemented`, `certified`,
@@ -206,12 +291,13 @@ remplace jamais ce registre.
 | Objectif | État au 2026-07-21 | Prochaine preuve attendue |
 | --- | --- | --- |
 | O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
-| O2 — Factur-X/TVA | implemented | suites complètes + PostgreSQL + validateur externe + checkout propre |
+| O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés | suites globales + scanner Railway sur Storage cible + train 0/1 + checkout propre |
 | O3 — GPT Realtime | specified | contrat homogène OpenAI + test sans clé Mistral + QA device |
 | O4 — mission continue | specified | scénario devis E2E voix/tap sur vrais use cases |
 | O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
 | O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
 | O7 — release reproductible | specified | pipeline au commit candidat + smoke prod/staging |
+| O8 — Plateforme Agréée réelle | specified | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié |
 
 ## 8. Changement de cap
 

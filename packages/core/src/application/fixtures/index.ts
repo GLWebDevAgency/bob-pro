@@ -15,6 +15,7 @@ export const MERCIER_PROPS: CompanyProps = {
   apeCode: '4322A',
   trade: 'plombier',
   vatRegime: 'reel_simpl',
+  tvaIntracom: 'FR44732829320',
   rcsOrRm: 'RM 92',
   address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
   iban: 'FR7630006000011234567890189',
@@ -30,15 +31,15 @@ export const CUSTOMER_PROPS: Omit<CustomerProps, 'companyId'>[] = [
   // Mme Durand — b2c, à jour (facture F-2026-104 de 1 180 € payée le 12 juin, acompte 590 €, devis signé 1 770 €).
   { id: 'cust-durand', type: 'b2c', name: 'Mme Durand', address: { line1: '12 rue des Lilas', zip: '92310', city: 'Sèvres' }, email: 'm.durand@email.fr', phone: '06 12 34 56 78', paymentTermsLabel: 'Paiement à réception' },
   // SARL Martin Rénovation — b2b, 2 480 € en retard dont F-2026-088 (1 240 €, en retard 9 j) ; paie à 22 j.
-  { id: 'cust-martin', type: 'b2b', name: 'SARL Martin Rénovation', siren: '821503642', address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' }, email: 'contact@martin-renov.fr', phone: '01 45 22 10 90', paymentTermsLabel: 'Paiement à 30 jours' },
+  { id: 'cust-martin', type: 'b2b', name: 'SARL Martin Rénovation', siren: '821503646', tvaIntracom: 'FR37821503646', address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' }, email: 'contact@martin-renov.fr', phone: '01 45 22 10 90', paymentTermsLabel: 'Paiement à 30 jours' },
   // Mairie de Sèvres — b2g, 1 850 € en attente (facture Chorus F-2026-090 transmise, marché entretien).
-  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sèvres', siren: '217504028', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sèvres' }, email: 'marches@ville-sevres.fr', phone: '01 41 14 10 10', paymentTermsLabel: 'Mandat administratif' },
+  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sèvres', siren: '217504026', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sèvres' }, email: 'marches@ville-sevres.fr', phone: '01 41 14 10 10', paymentTermsLabel: 'Mandat administratif' },
   // Boulangerie Lefèvre — b2b, contrat entretien annuel, à jour (F-2026-077 et F-2026-055 payées).
-  { id: 'cust-lefevre', type: 'b2b', name: 'Boulangerie Lefèvre', siren: '402118553', address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' }, email: 'boulangerie.lefevre@email.fr', phone: '06 88 77 66 55', paymentTermsLabel: 'Paiement à 15 jours' },
+  { id: 'cust-lefevre', type: 'b2b', name: 'Boulangerie Lefèvre', siren: '402118558', address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' }, email: 'boulangerie.lefevre@email.fr', phone: '06 88 77 66 55', paymentTermsLabel: 'Paiement à 15 jours' },
   // M. Bernard — b2c, devis chauffe-eau 200 L (1 480 €) en attente, aucun encours.
   { id: 'cust-bernard', type: 'b2c', name: 'M. Bernard', address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' }, email: 'p.bernard@email.fr', phone: '06 33 22 11 00', paymentTermsLabel: 'Paiement à réception' },
   // Camping Les Pins — b2b, nouveau client (0 €), facturation électronique à configurer.
-  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '789220117', address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' }, email: 'contact@camping-lespins.fr', phone: '04 94 00 11 22', paymentTermsLabel: 'À définir' },
+  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '789220118', address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' }, email: 'contact@camping-lespins.fr', phone: '04 94 00 11 22', paymentTermsLabel: 'À définir' },
 ];
 
 /** Snapshot de trésorerie du proto (« le solde ment » : 6 820 € banque mais TVA + charges à venir). */

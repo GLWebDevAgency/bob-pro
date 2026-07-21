@@ -197,7 +197,7 @@ const QUOTE_TONE: Record<QuoteStatus, PieceTone> = {
   expired: 'danger',
 };
 
-/** SIREN lisible : 821503642 → « SIREN 821 503 642 ». */
+/** SIREN lisible : 821503646 → « SIREN 821 503 642 ». */
 export function formatSiren(siren: string): string {
   const v = siren.replace(/\s/g, '');
   return `SIREN ${v.slice(0, 3)} ${v.slice(3, 6)} ${v.slice(6, 9)}`;

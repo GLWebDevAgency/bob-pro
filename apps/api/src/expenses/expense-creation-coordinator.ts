@@ -56,6 +56,7 @@ export interface ExpenseCreationCoordinatorOutput<T> {
 
 export type ExpenseCreationCoordinatorPersistence = Pick<
   Persistence,
+  | 'companies'
   | 'expenses'
   | 'expenseCreationRequests'
   | 'accountingEntries'
@@ -239,6 +240,7 @@ export class ExpenseCreationCoordinator {
     const { persistence } = this.deps;
     const recorded = await new RecordExpense({
       expenses: persistence.expenses,
+      companies: persistence.companies,
       ids: this.deps.ids,
       clock: this.deps.clock,
       ...(this.deps.chantierTargets ? { chantierTargets: this.deps.chantierTargets } : {}),
@@ -261,6 +263,7 @@ export class ExpenseCreationCoordinator {
     const accounting = await new RecordExpenseAccountingEntries({
       expenses: persistence.expenses,
       entries: persistence.accountingEntries,
+      companies: persistence.companies,
       charts: persistence.chartOfAccounts,
     }).execute({ expenseId });
     if (!accounting.ok) abort(accounting.error);

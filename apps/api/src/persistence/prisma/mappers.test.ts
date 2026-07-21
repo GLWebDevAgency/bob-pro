@@ -7,11 +7,16 @@ import {
   expensePropsToPersistence,
   expenseRowToProps,
   invoiceRowToSnapshot,
+  invoicePredecessorRowToSnapshot,
+  invoicePredecessorToCreate,
   lineRowToQuoteLine,
+  paymentRowToRecordInput,
+  paymentToPersistence,
   quoteLineToCreate,
   quoteRowToSnapshot,
   signatureProofToPersistence,
 } from './mappers';
+import { Payment } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 
 /**
@@ -262,7 +267,8 @@ describe('customer mappers — aucune métrique synthétique persistée', () => 
     companyId: 'company-1',
     type: 'b2b',
     name: 'Client réel',
-    siren: '123456789',
+    siren: '732829320',
+    tvaIntracom: null,
     isInternational: false,
     addrLine1: '1 rue du Test',
     addrZip: '75001',
@@ -395,6 +401,7 @@ describe('expense payment mappers — preuve BDD ou historique explicite', () =>
 describe('B3 — remise de ligne : round-trip colonnes ↔ QuoteLine', () => {
   const lineRow = {
     id: 'line-1',
+    sourceQuoteLineId: null as string | null,
     label: 'Rénovation fournil',
     category: 'labor',
     qty: 1,
@@ -427,6 +434,15 @@ describe('B3 — remise de ligne : round-trip colonnes ↔ QuoteLine', () => {
     });
   });
 
+  it('préserve le lien exact vers la ligne du devis, absent sinon', () => {
+    const derived = lineRowToQuoteLine({ ...lineRow, sourceQuoteLineId: 'quote-line-42' });
+    expect(derived.sourceQuoteLineId).toBe('quote-line-42');
+    expect(quoteLineToCreate(derived, { invoiceId: 'i-1' }, 0).sourceQuoteLineId)
+      .toBe('quote-line-42');
+    expect(quoteLineToCreate(lineRowToQuoteLine(lineRow), { quoteId: 'q-1' }, 0).sourceQuoteLineId)
+      .toBeNull();
+  });
+
   it('corruption (percent ET amount) : échec de lecture EXPLICITE, jamais une remise réinventée', () => {
     expect(() =>
       lineRowToQuoteLine({ ...lineRow, discountPercent: 10, discountAmountCents: 500 }),
@@ -440,7 +456,8 @@ describe('B4/canal — customer mappers : conditions de paiement + canal de fact
     companyId: 'company-1',
     type: 'b2b',
     name: 'Boulangerie Lefèvre',
-    siren: '402118553',
+    siren: '402118558',
+    tvaIntracom: null,
     isInternational: false,
     addrLine1: '3 place du Marché',
     addrZip: '92310',
@@ -500,6 +517,81 @@ describe('B4/canal — customer mappers : conditions de paiement + canal de fact
   });
 });
 
+describe('règlement V2 — mappers paiement et prédécesseurs', () => {
+  it('round-trip exact d’une ventilation 411/4117 explicite', () => {
+    const recorded = Payment.record({
+      id: 'payment-v2',
+      companyId: 'company-1',
+      invoiceId: 'invoice-1',
+      amount: 10_000,
+      method: 'transfer',
+      receivedAt: '2026-07-21T10:30:00.000Z',
+      idempotencyKey: 'payment-v2-key',
+      ordinaryReceivableCents: 7_500,
+      retentionReceivableCents: 2_500,
+    });
+    if (!recorded.ok) throw new Error('fixture payment V2 invalide');
+
+    const row = paymentToPersistence(recorded.value);
+    expect(paymentRowToRecordInput(row)).toEqual({
+      id: 'payment-v2',
+      companyId: 'company-1',
+      invoiceId: 'invoice-1',
+      amount: 10_000,
+      method: 'transfer',
+      receivedAt: '2026-07-21T10:30:00.000Z',
+      idempotencyKey: 'payment-v2-key',
+      ordinaryReceivableCents: 7_500,
+      retentionReceivableCents: 2_500,
+    });
+  });
+
+  it('legacy NULL/NULL relit l’écriture historique 100 % 411, jamais une moitié incomplète', () => {
+    const legacy = {
+      id: 'payment-v1',
+      companyId: 'company-1',
+      invoiceId: 'invoice-1',
+      amount: 10_000,
+      method: 'cash',
+      receivedAt: new Date('2026-07-20T09:00:00.000Z'),
+      idempotencyKey: null,
+      ordinaryReceivableCents: null,
+      retentionReceivableCents: null,
+    };
+    expect(paymentRowToRecordInput(legacy)).toMatchObject({
+      ordinaryReceivableCents: 10_000,
+      retentionReceivableCents: 0,
+    });
+    expect(() => paymentRowToRecordInput({ ...legacy, retentionReceivableCents: 0 }))
+      .toThrow(/partial allocation/);
+  });
+
+  it('round-trip ordonné d’un snapshot de situation antérieure', () => {
+    const source = {
+      invoiceId: 'situation-2',
+      kind: 'situation' as const,
+      number: 'F-2026-0042',
+      issuedAt: '2026-07-19',
+    };
+    const row = invoicePredecessorToCreate(
+      source,
+      { companyId: 'company-1', invoiceId: 'final-1' },
+      1,
+    );
+    expect(row).toMatchObject({
+      companyId: 'company-1',
+      invoiceId: 'final-1',
+      sourceInvoiceId: 'situation-2',
+      kind: 'situation',
+      number: 'F-2026-0042',
+      position: 1,
+    });
+    expect(invoicePredecessorRowToSnapshot(row)).toEqual(source);
+    expect(() => invoicePredecessorRowToSnapshot({ ...row, kind: 'invoice' }))
+      .toThrow(/unsupported kind/);
+  });
+});
+
 describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments de totaux', () => {
   const invoiceRow = {
     id: 'inv-1',
@@ -521,11 +613,13 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     sourceInvoiceIssuedAt: null,
     depositDeductionCents: 0,
     depositInvoiceId: null,
+    settlementSemanticsVersion: 2,
     paidCents: 0,
     totalsHt: 300_000,
     totalsVat: 60_000,
     totalsTtc: 360_000,
     totalsNetToPay: 342_000,
+    totalsDuePayableCents: 360_000 as number | null,
     vatByRate: { '20': 60_000 },
     legalMentions: [],
     totalsGrossHt: null as number | null,
@@ -540,11 +634,13 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     transmissionDepositedAt: new Date('2026-07-21T00:00:00.000Z') as Date | null,
     transmissionAcceptedAt: null as Date | null,
     vatTreatmentAtIssuance: 'standard',
+    frenchBillingModeAtIssuance: 'S1',
     purchaseOrderNumber: null,
     purchaseOrderReceivedAt: null,
     purchaseOrderDocumentId: null,
     revision: 1,
     lines: [],
+    precedingInvoices: [],
   };
 
   it('situation émise avec retenue : faits + complément de totaux réhydratés', () => {
@@ -555,29 +651,37 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     expect(snapshot.frozenTotals).toMatchObject({
       ht: 300_000,
       netToPay: 342_000,
+      duePayableCents: 360_000,
       retenueGarantieCents: 18_000,
     });
     // Compléments ABSENTS quand NULL — les totaux des pièces antérieures restent identiques.
     expect(snapshot.frozenTotals).not.toHaveProperty('grossHt');
     expect(snapshot.frozenTotals).not.toHaveProperty('discountCents');
     expect(snapshot.transmission).toEqual({ depositedAt: '2026-07-21', acceptedAt: null });
+    expect(snapshot.frenchBillingModeAtIssuance).toBe('S1');
   });
 
   it('ligne historique : aucun fait inventé (nulls honnêtes, transmission absente)', () => {
     const snapshot = invoiceRowToSnapshot({
       ...invoiceRow,
       kind: 'invoice',
+      settlementSemanticsVersion: 1,
+      totalsDuePayableCents: null,
       situationOrder: null,
       retenueGarantiePct: null,
       totalsRetenueGarantieCents: null,
       transmissionDepositedAt: null,
+      frenchBillingModeAtIssuance: null,
     });
     expect(snapshot.situationOrder).toBeNull();
     expect(snapshot.retenueGarantiePct).toBeNull();
     expect(snapshot.globalDiscount).toBeNull();
     expect(snapshot.urgentRepair).toBeNull();
     expect(snapshot.transmission).toBeNull();
+    expect(snapshot.frenchBillingModeAtIssuance).toBeNull();
     expect(snapshot.frozenTotals).not.toHaveProperty('retenueGarantieCents');
+    expect(snapshot.frozenTotals).not.toHaveProperty('duePayableCents');
+    expect(snapshot.settlementSemanticsVersion).toBe(1);
   });
 
   it('remise globale en montant + urgence : réhydratées exactement', () => {
@@ -588,6 +692,7 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
       globalDiscountAmountCents: 20_000,
       retenueGarantiePct: null,
       totalsRetenueGarantieCents: null,
+      totalsDuePayableCents: 342_000,
       totalsGrossHt: 320_000,
       totalsDiscountCents: 20_000,
       urgentRepairRequestedAt: new Date('2026-07-19T08:30:00.000Z'),
@@ -595,5 +700,42 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     expect(snapshot.globalDiscount).toEqual({ type: 'amount', cents: 20_000 });
     expect(snapshot.urgentRepair).toEqual({ requestedAt: '2026-07-19T08:30:00.000Z' });
     expect(snapshot.frozenTotals).toMatchObject({ grossHt: 320_000, discountCents: 20_000 });
+  });
+
+  it('finale V2 : créance légale et antécédents ordonnés survivent au mapper', () => {
+    const snapshot = invoiceRowToSnapshot({
+      ...invoiceRow,
+      kind: 'invoice',
+      situationOrder: null,
+      precedingInvoices: [
+        {
+          sourceInvoiceId: 'deposit-1',
+          kind: 'deposit_invoice',
+          number: 'F-2026-0039',
+          issuedAt: new Date('2026-07-10T00:00:00.000Z'),
+          position: 0,
+        },
+        {
+          sourceInvoiceId: 'situation-2',
+          kind: 'situation',
+          number: 'F-2026-0042',
+          issuedAt: new Date('2026-07-19T00:00:00.000Z'),
+          position: 1,
+        },
+      ],
+    });
+    expect(snapshot.settlementSemanticsVersion).toBe(2);
+    expect(snapshot.frozenTotals?.duePayableCents).toBe(360_000);
+    expect(snapshot.precedingInvoices).toEqual([
+      { invoiceId: 'deposit-1', kind: 'deposit', number: 'F-2026-0039', issuedAt: '2026-07-10' },
+      { invoiceId: 'situation-2', kind: 'situation', number: 'F-2026-0042', issuedAt: '2026-07-19' },
+    ]);
+  });
+
+  it('version de règlement hors contrat : corruption explicite, jamais rabattue sur V1', () => {
+    expect(() => invoiceRowToSnapshot({ ...invoiceRow, settlementSemanticsVersion: 3 }))
+      .toThrow(/Corrupted settlement semantics/);
+    expect(() => invoiceRowToSnapshot({ ...invoiceRow, totalsDuePayableCents: 360_001 }))
+      .toThrow(/due payable must equal net to pay plus retention/);
   });
 });

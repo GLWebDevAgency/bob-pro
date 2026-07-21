@@ -2,6 +2,7 @@ import { type Result, ok, err } from '../../shared-kernel/result';
 import { type DocumentRepository } from '../ports/document-repository';
 import { type DocumentStoragePort } from '../ports/document-storage';
 import { type AppError, appForbidden, appNotFound } from '../result';
+import { loadVerifiedStoredObject } from './verified-stored-object';
 
 export interface DocumentDownloadUrl {
   url: string;
@@ -34,6 +35,14 @@ export class GetDocumentDownloadUrl {
     if (!document) return err(appNotFound('document', input.documentId));
     if (document.status !== 'active') return err(appForbidden('Document supprimé.'));
     const props = document.toProps();
+    const verified = await loadVerifiedStoredObject(this.deps.storage, {
+      companyId: input.companyId,
+      key: props.storageKey,
+      sizeBytes: props.byteSize,
+      sha256: props.sha256,
+      contentType: props.mimeType,
+    });
+    if (!verified.ok) return verified;
     try {
       const url = await this.deps.storage.getSignedUrl(input.companyId, props.storageKey, ttlSeconds);
       return ok({

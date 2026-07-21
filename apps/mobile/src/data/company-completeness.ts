@@ -7,8 +7,8 @@
  * Réutilise `Company.assertCanIssue()` (@bob/core, déjà testé, déjà LA référence de complétude
  * utilisée pour l'e-invoicing dans `einvoice-for.ts`) — zéro logique de complétude dupliquée.
  * `name`/`siret`/`legalForm`/`trade`/`vatRegime` sont non-optionnels sur `CompanyProps` (posés
- * une fois pour toutes à l'inscription, cf. `POST /onboarding/company`) : en pratique, seuls
- * `rcsOrRm` et l'adresse peuvent manquer — exactement ce qu'`assertCanIssue` vérifie.
+ * une fois pour toutes à l'inscription, cf. `POST /onboarding/company`). `assertCanIssue`
+ * vérifie l'immatriculation, l'adresse et, hors franchise, le numéro de TVA réellement attribué.
  */
 import { Company, type CompanyProps } from '@bob/core';
 

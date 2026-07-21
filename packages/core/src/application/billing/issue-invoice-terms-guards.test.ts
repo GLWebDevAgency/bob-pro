@@ -23,7 +23,7 @@ const baseCustomer: CustomerProps = {
   companyId: company.id,
   type: 'b2b',
   name: 'SARL Martin',
-  siren: '821503642',
+  siren: '821503646',
   address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
 };
 

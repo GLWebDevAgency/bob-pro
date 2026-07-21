@@ -54,6 +54,7 @@ export function buildCustomerReplacementPayload(
     name: customer.name,
     address: { ...customer.address },
     ...(customer.siren !== null ? { siren: customer.siren } : {}),
+    ...(customer.tvaIntracom != null ? { tvaIntracom: customer.tvaIntracom } : {}),
     ...(customer.email !== null ? { email: customer.email } : {}),
     ...(customer.phone !== null ? { phone: customer.phone } : {}),
     ...(customer.contactName !== null && customer.contactName !== ''

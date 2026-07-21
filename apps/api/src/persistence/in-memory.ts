@@ -21,6 +21,7 @@ import {
   type QuoteRepository,
   type InvoiceRepository,
   type DocumentRepository,
+  isExactInitialDocumentReplay,
   type DocumentFolderRepository,
   type DocumentFolderMembership,
   type DocumentFolderWriteResult,
@@ -43,10 +44,12 @@ import {
   type CounterKey,
 } from '@bob/core';
 import type { ServerCompanyRepository } from './persistence';
-import type {
-  DocumentArchiveJob,
-  DocumentArchiveJobRepository,
-  EnqueueDocumentArchiveJobInput,
+import {
+  documentArchiveIntegrityProofSha256,
+  isValidDocumentArchiveIntegrityProof,
+  type DocumentArchiveJob,
+  type DocumentArchiveJobRepository,
+  type EnqueueDocumentArchiveJobInput,
 } from './document-archive-jobs';
 import {
   NotificationDedupeConflictError,
@@ -263,15 +266,130 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
 
 export class InMemoryDocumentRepository implements DocumentRepository {
   private readonly map = new Map<string, Document>();
+  private readonly invoicePdfAttestations = new Map<
+    string,
+    import('@bob/core').AttestInvoicePdfInput
+  >();
   snapshot(): ReturnType<Document['toProps']>[] {
     return [...this.map.values()].map((document) => document.toProps());
+  }
+  snapshotInvoicePdfAttestations(): import('@bob/core').AttestInvoicePdfInput[] {
+    return [...this.invoicePdfAttestations.values()].map((value) => ({ ...value }));
   }
   restore(snapshot: ReturnType<Document['toProps']>[]): void {
     this.map.clear();
     for (const props of snapshot) this.map.set(props.id, Document.rehydrate(props));
   }
-  async save(d: Document): Promise<void> {
+  restoreInvoicePdfAttestations(
+    snapshot: import('@bob/core').AttestInvoicePdfInput[],
+  ): void {
+    this.invoicePdfAttestations.clear();
+    for (const attestation of snapshot) {
+      this.invoicePdfAttestations.set(
+        `${attestation.documentId}:${attestation.versionId}`,
+        { ...attestation },
+      );
+    }
+  }
+  /** Fixture explicite : ce repository n'est assemblé que par persistence.testing.ts. */
+  seed(d: Document): this {
     this.map.set(d.id, d);
+    return this;
+  }
+  /** Injection de corruption réservée aux tests d'immuabilité. Le nom volontairement
+   *  bruyant interdit de confondre cette porte avec une mutation de production. */
+  forceReplaceForTesting(d: Document): void {
+    this.map.set(d.id, d);
+  }
+  /** Mutation interne ÉTROITE du double pour le dossier et son latch de validation. Le check
+   *  puis l'écriture sont synchrones : deux appels de la même révision ne gagnent jamais tous
+   *  les deux. Toute autre variation (archive, libellé, tags, lien métier) est refusée. */
+  replaceFolderMembershipIfRevision(
+    d: Document,
+    expectedRevision: number,
+  ): 'saved' | 'revision_conflict' | 'not_found' {
+    const existing = this.map.get(d.id);
+    if (!existing || existing.companyId !== d.companyId || existing.status !== 'active') {
+      return 'not_found';
+    }
+    if (existing.revision !== expectedRevision) return 'revision_conflict';
+    const before = existing.toProps();
+    const after = d.toProps();
+    const {
+      folderId: _beforeFolder,
+      reviewedAt: _beforeReviewed,
+      revision: _beforeRevision,
+      ...preservedBefore
+    } = before;
+    const {
+      folderId: _afterFolder,
+      reviewedAt: _afterReviewed,
+      revision: _afterRevision,
+      ...preservedAfter
+    } = after;
+    if (JSON.stringify(preservedBefore) !== JSON.stringify(preservedAfter)) {
+      throw new Error('InMemoryDocumentRepository: non-folder document facts changed.');
+    }
+    this.map.set(d.id, d);
+    return 'saved';
+  }
+  async attestInvoicePdf(input: import('@bob/core').AttestInvoicePdfInput): Promise<boolean> {
+    const document = this.map.get(input.documentId);
+    if (!document) return false;
+    const props = document.toProps();
+    const version = props.versions.find((candidate) => candidate.id === input.versionId);
+    if (
+      props.companyId !== input.companyId
+      || props.kind !== 'invoice_pdf'
+      || props.origin !== 'generated'
+      || props.status !== 'active'
+      || props.linkedEntityType !== 'invoice'
+      || props.mimeType !== 'application/pdf'
+      || version?.version !== 1
+      || props.sha256 !== input.documentSha256
+      || version.sha256 !== input.documentSha256
+    ) return false;
+    const key = `${input.documentId}:${input.versionId}`;
+    const existing = this.invoicePdfAttestations.get(key);
+    if (existing) return JSON.stringify(existing) === JSON.stringify(input);
+    this.invoicePdfAttestations.set(key, { ...input });
+    return true;
+  }
+
+  async insertInitialOrConfirmExact(
+    d: Document,
+    invoicePdfAttestation?: import('@bob/core').InvoicePdfRepresentationAttestation,
+  ): Promise<import('@bob/core').InitialDocumentInsertResult> {
+    const existing = this.map.get(d.id);
+    if (!existing) {
+      this.map.set(d.id, d);
+      if (invoicePdfAttestation !== undefined) {
+        const props = d.toProps();
+        const accepted = await this.attestInvoicePdf({
+          companyId: props.companyId,
+          documentId: props.id,
+          versionId: props.versions[0]!.id,
+          ...invoicePdfAttestation,
+        });
+        if (!accepted) {
+          this.map.delete(d.id);
+          throw new Error('Invoice PDF representation attestation rejected.');
+        }
+      }
+      return { status: 'inserted', document: d };
+    }
+    if (!isExactInitialDocumentReplay(existing, d)) return { status: 'conflict' };
+    if (invoicePdfAttestation !== undefined) {
+      const props = d.toProps();
+      const accepted = await this.attestInvoicePdf({
+        companyId: props.companyId,
+        documentId: props.id,
+        versionId: props.versions[0]!.id,
+        ...invoicePdfAttestation,
+      });
+      if (!accepted) throw new Error('Invoice PDF representation attestation rejected.');
+    }
+    return { status: 'exact', document: existing };
   }
   /** Rejoue LES DEUX opérations de domaine (classify puis markReviewed, latch) — la révision
    *  persistée correspond exactement à la DocumentView retournée par le use case. */
@@ -532,21 +650,32 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
       const reviewed = next.markReviewed(input.reviewedAt);
       if (!reviewed.ok) return { status: 'revision_conflict' };
     }
-    await this.documents.save(next);
-    return { status: 'saved', revision: next.revision };
+    const write = this.documents.replaceFolderMembershipIfRevision(next, input.expectedRevision);
+    return write === 'saved'
+      ? { status: 'saved', revision: next.revision }
+      : { status: write };
   }
 }
 
 export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobRepository {
   private readonly map = new Map<string, DocumentArchiveJob>();
 
+  private clone(job: DocumentArchiveJob): DocumentArchiveJob {
+    return {
+      ...job,
+      integrityProof: job.integrityProof === null
+        ? null
+        : { ...job.integrityProof, artifacts: job.integrityProof.artifacts.map((artifact) => ({ ...artifact })) },
+    };
+  }
+
   snapshot(): DocumentArchiveJob[] {
-    return [...this.map.values()].map((job) => ({ ...job }));
+    return [...this.map.values()].map((job) => this.clone(job));
   }
 
   restore(snapshot: readonly DocumentArchiveJob[]): void {
     this.map.clear();
-    for (const job of snapshot) this.map.set(job.id, { ...job });
+    for (const job of snapshot) this.map.set(job.id, this.clone(job));
   }
 
   async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
@@ -556,16 +685,22 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
         job.pieceId === input.pieceId &&
         job.reason === input.reason,
     );
-    if (existing) {
-      if (existing.status !== 'done') {
-        this.map.set(existing.id, {
-          ...existing,
-          status: 'pending',
-          nextAttemptAt: input.now,
-          updatedAt: input.now,
-        });
-      }
-      return;
+    // Parité Prisma : le premier ordre et son calendrier gagnent. Un retry d'enqueue ne doit
+    // réarmer ni un échec programmé, ni un lease, ni une terminaison prouvée.
+    if (existing) return;
+    const invoiceReasons = new Set<DocumentArchiveJob['reason']>([
+      'invoice-issued',
+      'invoice-issued-pdf-only-b2c',
+    ]);
+    const conflictingInvoiceScope = [...this.map.values()].some(
+      (job) =>
+        job.companyId === input.companyId
+        && job.pieceId === input.pieceId
+        && invoiceReasons.has(job.reason)
+        && invoiceReasons.has(input.reason),
+    );
+    if (conflictingInvoiceScope) {
+      throw new Error('Invoice archive scope is immutable once enqueued.');
     }
     this.map.set(input.id, {
       id: input.id,
@@ -575,7 +710,11 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
       status: 'pending',
       attempts: 0,
       nextAttemptAt: input.now,
+      leaseToken: null,
       lastError: null,
+      integrityProof: null,
+      integrityProofSha256: null,
+      completedAt: null,
       createdAt: input.now,
       updatedAt: input.now,
     });
@@ -592,42 +731,134 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
         candidate.pieceId === pieceId &&
         candidate.reason === reason,
     );
-    return job ? { ...job } : null;
+    return job ? this.clone(job) : null;
   }
 
   async countIncomplete(companyId: string, reason: DocumentArchiveJob['reason']): Promise<number> {
     return [...this.map.values()].filter(
-      (job) => job.companyId === companyId && job.reason === reason && job.status !== 'done',
+      (job) =>
+        job.companyId === companyId
+        && job.reason === reason
+        && (job.status !== 'done' || job.integrityProof === null),
     ).length;
   }
 
   async listDue(companyId: string, now: string, limit: number): Promise<DocumentArchiveJob[]> {
     return [...this.map.values()]
       .filter((job) => job.companyId === companyId)
-      .filter((job) => job.status === 'pending' || job.status === 'failed')
+      .filter(
+        (job) =>
+          job.status === 'pending'
+          || job.status === 'failed'
+          || (job.status === 'done' && job.integrityProof === null),
+      )
       .filter((job) => job.nextAttemptAt <= now)
       .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))
       .slice(0, limit)
-      .map((job) => ({ ...job }));
+      .map((job) => this.clone(job));
   }
 
-  async markDone(id: string, at: string): Promise<void> {
+  async claimForArchive(
+    id: string,
+    companyId: string,
+    expectedUpdatedAt: string,
+    now: string,
+    leaseUntil: string,
+    leaseToken: string,
+  ): Promise<{ outcome: 'claimed'; job: DocumentArchiveJob } | { outcome: 'skipped' }> {
     const job = this.map.get(id);
-    if (job) this.map.set(id, { ...job, status: 'done', lastError: null, updatedAt: at });
-  }
-
-  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
-    const job = this.map.get(id);
-    if (job) {
-      this.map.set(id, {
-        ...job,
-        status: 'failed',
-        attempts: job.attempts + 1,
-        nextAttemptAt,
-        lastError: error.slice(0, 2000),
-        updatedAt: at,
-      });
+    const leaseMs = Date.parse(leaseUntil) - Date.parse(now);
+    if (!Number.isFinite(leaseMs) || leaseMs <= 0 || leaseMs > 30 * 60_000) {
+      throw new Error('Durée de lease archive invalide.');
     }
+    if (
+      !job
+      || job.companyId !== companyId
+      || job.updatedAt !== expectedUpdatedAt
+      || job.nextAttemptAt > now
+      || job.integrityProof !== null
+      || (job.status !== 'pending' && job.status !== 'failed' && job.status !== 'done')
+    ) {
+      return { outcome: 'skipped' };
+    }
+    const claimed: DocumentArchiveJob = {
+      ...job,
+      status: job.status === 'done' ? 'failed' : job.status,
+      leaseToken,
+      nextAttemptAt: leaseUntil,
+      updatedAt: now,
+    };
+    this.map.set(id, claimed);
+    return { outcome: 'claimed', job: this.clone(claimed) };
+  }
+
+  async markDone(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    proof: import('./document-archive-jobs').DocumentArchiveIntegrityProof,
+    proofSha256: string,
+    at: string,
+  ): Promise<boolean> {
+    const job = this.map.get(id);
+    if (
+      !job
+      || job.companyId !== companyId
+      || job.leaseToken !== leaseToken
+      || job.nextAttemptAt <= at
+      || (job.status !== 'pending' && job.status !== 'failed')
+      || proof.companyId !== companyId
+      || proof.pieceId !== job.pieceId
+      || proof.reason !== job.reason
+      || !isValidDocumentArchiveIntegrityProof(proof)
+      || documentArchiveIntegrityProofSha256(proof) !== proofSha256
+    ) {
+      return false;
+    }
+    this.map.set(id, {
+      ...job,
+      status: 'done',
+      leaseToken: null,
+      lastError: null,
+      integrityProof: { ...proof, artifacts: proof.artifacts.map((artifact) => ({ ...artifact })) },
+      integrityProofSha256: proofSha256,
+      completedAt: at,
+      updatedAt: at,
+    });
+    return true;
+  }
+
+  async markFailed(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    at: string,
+    nextAttemptAt: string,
+    error: string,
+  ): Promise<boolean> {
+    const job = this.map.get(id);
+    if (
+      !job
+      || job.companyId !== companyId
+      || job.leaseToken !== leaseToken
+      || job.nextAttemptAt <= at
+      || (job.status !== 'pending' && job.status !== 'failed')
+    ) {
+      return false;
+    }
+    this.map.set(id, {
+      ...job,
+      status: 'failed',
+      attempts: job.attempts + 1,
+      leaseToken: null,
+      nextAttemptAt,
+      lastError: error.slice(0, 2000),
+      integrityProof: null,
+      integrityProofSha256: null,
+      completedAt: null,
+      updatedAt: at,
+    });
+    return true;
   }
 }
 

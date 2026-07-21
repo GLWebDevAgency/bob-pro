@@ -172,6 +172,30 @@ describe('HttpBobClient — identité légale (A6 capital, A2 médiateur conso)'
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('transmet la TVA réellement saisie sans fabriquer de valeur depuis le SIREN', async () => {
+    const updatedCompany = {
+      id: 'company-owner',
+      legalForm: 'EI',
+      siren: '732829320',
+      tvaIntracom: 'FR44732829320',
+    };
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ tvaIntracom: 'FR44732829320' });
+      return new Response(JSON.stringify(updatedCompany), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    const result = await client.updateCompanyLegal({ tvaIntracom: 'FR44732829320' });
+    expect(result.ok && result.value.tvaIntracom).toBe('FR44732829320');
+  });
+
   it('ne transforme pas un refus serveur (EI sans capital) en confirmation locale', async () => {
     vi.stubGlobal(
       'fetch',

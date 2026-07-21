@@ -49,6 +49,7 @@ function makeEnv(
     quotes?: Quote[];
     invoices?: Invoice[];
     customerType?: 'b2c' | 'b2b' | 'b2g';
+    customerMissing?: boolean;
     now?: string;
   } = {},
 ) {
@@ -68,7 +69,7 @@ function makeEnv(
     invoices: {
       listByCompany: async (companyId) => invoices.filter((i) => i.companyId === companyId),
     },
-    customers: { listByCompany: async () => [customerR.value] },
+    customers: { listByCompany: async () => (input.customerMissing ? [] : [customerR.value]) },
     clock: {
       now: () => input.now ?? '2026-08-01T09:00:00.000Z',
       today: () => (input.now ?? '2026-08-01T09:00:00.000Z').slice(0, 10),
@@ -90,6 +91,8 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
         totalTtcCents: 120000,
         depositPct: 30,
         depositInvoiced: false,
+        depositAvailable: false,
+        depositUnavailableReason: expect.stringContaining('Factur-X EXTENDED'),
         purchaseOrder: PO,
         finalBlockedUntil: null,
       },
@@ -139,6 +142,17 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
     if (r.ok) expect(r.value).toEqual([]);
   });
 
+  it('refuse une option orpheline plutôt que d’inventer le nom ou le canal fiscal du client', async () => {
+    const usecase = makeEnv({ customerMissing: true });
+
+    const result = await usecase.execute({ companyId: 'co-1' });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'customer-reference' },
+    });
+  });
+
   // ── A3 : le gel de rétractation est ANNONCÉ par la liste (finalBlockedUntil) ──
   // Devis signé le 10/07/2026 (vendredi) → J+14 = 24/07 (vendredi) → délai jusqu'au 25/07 00:00 Paris.
 
@@ -146,7 +160,11 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
     const usecase = makeEnv({ customerType: 'b2c', now: '2026-07-15T09:00:00.000Z' });
     const r = await usecase.execute({ companyId: 'co-1' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value[0]?.finalBlockedUntil).toBe('2026-07-25');
+    if (r.ok) {
+      expect(r.value[0]?.finalBlockedUntil).toBe('2026-07-25');
+      expect(r.value[0]?.depositAvailable).toBe(true);
+      expect(r.value[0]?.depositUnavailableReason).toBeNull();
+    }
   });
 
   it('A3 : b2c après le délai → null (déblocage automatique)', async () => {

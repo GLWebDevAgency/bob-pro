@@ -29,6 +29,9 @@ async function createKerbrat(client: LocalBobClient): Promise<string> {
   const created = await client.createCustomer({
     name: 'Kerbrat SARL',
     type: 'b2b',
+    // L'émission française exige l'identifiant BT-49 réel d'un client professionnel. Le test
+    // de conditions de paiement ne doit pas contourner ce prérequis avec une fiche incomplète.
+    siren: '732829320',
     address: { line1: '4 rue du Port', zip: '29200', city: 'Brest' },
   });
   if (!created.ok) throw new Error('fixage du décor : createCustomer KO');

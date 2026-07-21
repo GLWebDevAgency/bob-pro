@@ -19,6 +19,7 @@ import {
   type QuotePdfData,
 } from '@bob/core';
 import { loadPdfFontBytes } from './pdf-fonts';
+import { applyPdfA3bEnvelope } from './pdfa3';
 
 export const PDF_RENDERER = Symbol('PDF_RENDERER');
 
@@ -881,7 +882,15 @@ function drawLinesTable(ctx: Ctx, lines: PdfLine[]): void {
       drawRun(ctx.page, chunk, COL_DESIGNATION_X, textY, fonts.text600, 9, { color: INK800 });
       textY -= 11;
     }
-    drawRight(ctx.page, `${line.qty}`, COL_QTY_R, top - 16, fonts.text600, 9, { color: INK800 });
+    drawRight(
+      ctx.page,
+      `${line.qty}${line.unit ? ` ${line.unit}` : ''}`,
+      COL_QTY_R,
+      top - 16,
+      fonts.text600,
+      9,
+      { color: INK800 },
+    );
     drawAmountRight(ctx.page, money(line.unitPriceHT), COL_PU_R, top - 16, fonts.text600, 9, {
       color: INK800,
     });
@@ -1274,11 +1283,10 @@ function drawRetractationPages(ctx: Ctx, retractation: { noticeLines: string[]; 
 /* ── Renderer ─────────────────────────────────────────────────────────────── */
 
 /**
- * Paquet XMP déclarant le fichier comme Factur-X (profil BASIC) — reconnaissance par les
- * plateformes e-invoicing. NB : la conformité PDF/A-3 stricte (polices embarquées, OutputIntent sRGB)
- * exige un post-traitement (Ghostscript/veraPDF) en prod ; ici le XML CII et l'association de fichier
- * sont corrects, ce qui est l'essentiel du payload e-invoicing. Les polices TTF désormais embarquées
- * (fontkit, subset) RAPPROCHENT du PDF/A-3 sans toucher à ce payload.
+ * Paquet XMP déclarant le fichier comme Factur-X (profil EN16931) — reconnaissance par les
+ * plateformes e-invoicing. L'enveloppe PDF/A-3b est appliquée avant la sauvegarde par
+ * `applyPdfA3bEnvelope` (polices embarquées, profil sRGB officiel, OutputIntent, trailer ID et
+ * groupe de transparence par page) : aucun post-traitement ou binaire système n'est requis.
  */
 function facturXXmp(): string {
   return `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
@@ -1292,7 +1300,7 @@ function facturXXmp(): string {
    <fx:DocumentType>INVOICE</fx:DocumentType>
    <fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>
    <fx:Version>1.0</fx:Version>
-   <fx:ConformanceLevel>BASIC</fx:ConformanceLevel>
+   <fx:ConformanceLevel>EN 16931</fx:ConformanceLevel>
   </rdf:Description>
   <rdf:Description rdf:about="" xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/" xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#" xmlns:pdfaProperty="http://www.aiim.org/pdfa/ns/property#">
    <pdfaExtension:schemas>
@@ -1343,7 +1351,12 @@ export class PdfRenderer implements PdfRendererPort {
     // A5 — une pièce rectificative s'intitule « Avoir », jamais « Facture » : le titre suit
     // data.kind (le domaine ne fabrique que des avoirs TOTAUX, Invoice.creditNoteFor).
     const isCreditNote = data.kind === 'credit_note';
-    const pieceTitle = `${isCreditNote ? 'Avoir' : 'Facture'} ${data.number}`;
+    const pieceLabel = isCreditNote
+      ? 'Avoir'
+      : data.kind === 'deposit'
+        ? 'Facture d’acompte'
+        : 'Facture';
+    const pieceTitle = `${pieceLabel} ${data.number}`;
 
     const ctx: Ctx = {
       doc,
@@ -1536,18 +1549,24 @@ export class PdfRenderer implements PdfRendererPort {
     stampFooters(ctx);
 
     if (facturX) {
-      // Pièce jointe associée : factur-x.xml (AFRelationship Data) — fait du PDF un hybride Factur-X.
+      // Pièce jointe associée : le profil EN16931 impose la relation Alternative
+      // (Data est réservé aux profils MINIMUM/BASIC-WL).
       const xmlBytes = new TextEncoder().encode(facturX.xml);
       const now = new Date();
       await doc.attach(xmlBytes, 'factur-x.xml', {
         mimeType: 'application/xml',
         description: 'Facture electronique Factur-X (CII)',
-        afRelationship: AFRelationship.Data,
+        afRelationship: AFRelationship.Alternative,
         creationDate: now,
         modificationDate: now,
       });
       const metaStream = doc.context.stream(facturXXmp(), { Type: 'Metadata', Subtype: 'XML' });
       doc.catalog.set(PDFName.of('Metadata'), doc.context.register(metaStream));
+      applyPdfA3bEnvelope(doc, {
+        facturXXml: facturX.xml,
+        title: pieceTitle,
+        createdAt: now,
+      });
     }
 
     return doc.save();

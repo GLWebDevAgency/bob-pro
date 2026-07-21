@@ -40,6 +40,7 @@ export interface LegalIdentityEditSheetProps {
 
 const valuesOf = (company: CompanyProps): LegalIdentityValues => ({
   rcsOrRm: company.rcsOrRm ?? '',
+  tvaIntracom: company.tvaIntracom ?? '',
   line1: company.address.line1 ?? '',
   zip: company.address.zip ?? '',
   city: company.address.city ?? '',
@@ -56,6 +57,7 @@ export function LegalIdentityEditSheet({
   const current = valuesOf(company);
   const [values, setValues] = useState<LegalIdentityValues>(current);
   const [touched, setTouched] = useState(false);
+  const legalContext = { siren: company.siren, vatRequired: company.vatRegime !== 'franchise' };
 
   useEffect(() => {
     if (visible) {
@@ -68,9 +70,11 @@ export function LegalIdentityEditSheet({
   }, [visible]);
 
   const say = (key: I18nKey) => t(key, { personality });
-  const errors = legalIdentityErrors(values);
+  const errors = legalIdentityErrors(values, legalContext);
   const busy = updateLegal.isPending;
-  const canSave = canSaveLegalIdentity(values) && buildLegalIdentityPatch(current, values) !== null;
+  const canSave =
+    canSaveLegalIdentity(values, legalContext) &&
+    buildLegalIdentityPatch(current, values, legalContext) !== null;
 
   // Hypothèse dérivée dans le DOMAINE — l'écran ne calcule rien. La ville proposée est celle du
   // siège SAISIE (pas celle en base) : si l'utilisateur corrige sa ville, l'hypothèse suit.
@@ -90,7 +94,7 @@ export function LegalIdentityEditSheet({
   };
 
   const handleSave = async (): Promise<void> => {
-    const patch = buildLegalIdentityPatch(current, values);
+    const patch = buildLegalIdentityPatch(current, values, legalContext);
     if (patch === null || busy) return;
     try {
       await updateLegal.mutateAsync(patch);
@@ -164,6 +168,48 @@ export function LegalIdentityEditSheet({
           {say('reglages.legalSheetRcsInvalid')}
         </Text>
       ) : null}
+
+      <Text
+        style={[
+          font('sub', 600),
+          { fontSize: 13.5, color: colors.ink800, marginBottom: 6, marginTop: 4 },
+        ]}
+      >
+        {say('reglages.legalSheetTvaLabel')}
+      </Text>
+      <TextInput
+        value={values.tvaIntracom}
+        onChangeText={(next) => {
+          setValues((v) => ({ ...v, tvaIntracom: next }));
+          setTouched(true);
+        }}
+        onBlur={() => setTouched(true)}
+        editable={!busy}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        placeholder={say('reglages.legalSheetTvaPlaceholder')}
+        placeholderTextColor={colors.slate400}
+        accessibilityLabel={say('reglages.legalSheetTvaLabel')}
+        style={fieldStyle(touched && errors.tvaIntracom)}
+      />
+      <Text
+        style={[
+          font('meta', touched && errors.tvaIntracom ? 600 : 500),
+          {
+            color: touched && errors.tvaIntracom ? semantic.danger : colors.slate400,
+            lineHeight: 17,
+            marginBottom: 10,
+          },
+        ]}
+      >
+        {say(
+          touched && errors.tvaIntracom
+            ? 'reglages.legalSheetTvaInvalid'
+            : legalContext.vatRequired
+              ? 'reglages.legalSheetTvaRequiredHint'
+              : 'reglages.legalSheetTvaOptionalHint',
+        )}
+      </Text>
 
       {/* Hypothèse RCS — encart PROPOSÉ, jamais appliqué tout seul. */}
       {showRcsSuggestion && suggestion?.value ? (

@@ -3,7 +3,7 @@ import { View, Share, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
-import { formatDateOnlyFr } from '@bob/core';
+import { formatDateOnlyFr, type FrenchOperationCategory } from '@bob/core';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { DeleteIconButton, LegalHint, QuestionSheet, Sheet, font, useTheme } from '@bob/ui';
@@ -48,6 +48,14 @@ import { SignOnsiteSheet } from './SignOnsiteSheet';
 import { SituationSheet } from './SituationSheet';
 import { resolveCollectAccountingPreview } from './collect-accounting-preview';
 import { isPaymentLinkEligible } from '../lib/payment-link-affordance';
+import {
+  EMPTY_INVOICE_ISSUE_DECISION,
+  INVOICE_OPERATION_CATEGORIES,
+  invoiceIssueDecisionInput,
+  isOperationCategoryRequiredError,
+  mergeInvoiceIssueDecision,
+  parseInvoiceOperationCategoryChoice,
+} from './invoice-operation-category.logic';
 
 /**
  * Gate « entreprise complète » (RÈGLE PRODUIT) : l'app reste utilisable sans fiche entreprise
@@ -398,6 +406,10 @@ export const QuoteActions = forwardRef<
     setLocalLinked((prev) => reconcileLinkedInvoicesEcho(prev, linkedInvoices));
   }, [linkedInvoices.hasDepositInvoice, linkedInvoices.hasFinalInvoice]);
   const linked: QuoteLinkedInvoices = mergeLinkedInvoices(linkedInvoices, localLinked);
+  // La reprise d'avance structurée concerne le chemin B2B/B2G. Tant qu'EXTENDED + PA ne sont
+  // pas certifiés, seul le B2C (PDF/e-reporting distinct) peut ouvrir le choix d'acompte.
+  // `null` reste fail-closed : une fiche client absente ne rend jamais l'action disponible.
+  const depositPathAvailable = customerType === 'b2c';
   useImperativeHandle(
     ref,
     () => ({
@@ -798,6 +810,22 @@ export const QuoteActions = forwardRef<
         </Text>
       </View>
     ) : null;
+    // Ancien acompte professionnel déjà présent : il reste visible et archivable, mais la
+    // finale n'est pas proposée tant que sa reprise structurée n'est pas certifiée.
+    if (!depositPathAvailable && linked.hasDepositInvoice) {
+      return (
+        <View style={{ gap: 8 }}>
+          <Badge
+            label={t('piece.advanceRecoveryUnavailableTitle', { personality })}
+            tone="warning"
+          />
+          <Text style={[font('meta'), { color: colors.slate500, lineHeight: 18 }]}>
+            {t('piece.advanceRecoveryUnavailableBody', { personality })}
+          </Text>
+          {errorSheet}
+        </View>
+      );
+    }
     // État (c) : la finale existe déjà — plus rien à générer.
     if (invoiceCtaState === 'final_draft_pending' || invoiceCtaState === 'final_exists') {
       return (
@@ -852,7 +880,7 @@ export const QuoteActions = forwardRef<
     // si le devis SIGNÉ en porte un (arbitrage 1 : le % est celui du contrat signé, jamais un autre).
     const choiceOptions = [
       { value: 'final', label: 'Facture de 100 %' },
-      ...(quote.depositPct !== null
+      ...(depositPathAvailable && quote.depositPct !== null
         ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
         : []),
       // B2 : la situation vit dans le MÊME choix que l'acompte et la finale — un seul geste,
@@ -930,6 +958,60 @@ export function InvoiceActions({
   // jamais un « Oups » générique en cul-de-sac après un override déjà confirmé côté brouillon.
   const [embargoPrompt, setEmbargoPrompt] = useState<EmbargoPrompt | null>(null);
   const [embargoStage, setEmbargoStage] = useState<'choice' | 'confirm'>('choice');
+  // BT-23 : quand biens et services coexistent, le serveur refuse AVANT tout numéro et demande
+  // ce fait métier. La décision reste ouverte et séquentielle ; elle est réutilisée si l'embargo
+  // L221-10 exige ensuite un second passage, sinon le replay perdrait la qualification fiscale.
+  const [operationCategoryOpen, setOperationCategoryOpen] = useState(false);
+  const [issueDecision, setIssueDecision] = useState(EMPTY_INVOICE_ISSUE_DECISION);
+
+  const clearIssueDecision = (): void => {
+    setIssueDecision(EMPTY_INVOICE_ISSUE_DECISION);
+    setOperationCategoryOpen(false);
+    setEmbargoPrompt(null);
+    setEmbargoStage('choice');
+  };
+
+  const attemptIssue = async (input: {
+    operationCategory?: FrenchOperationCategory;
+    embargoOverride?: boolean;
+  }): Promise<void> => {
+    const nextDecision = mergeInvoiceIssueDecision(issueDecision, input);
+    try {
+      await issue.mutateAsync({
+        invoiceId: invoice.id,
+        ...invoiceIssueDecisionInput(nextDecision),
+      });
+      clearIssueDecision();
+      if (nextDecision.embargoOverride) {
+        showError(
+          t('legal.embargoSheet.title', { personality }),
+          t('legal.embargoOverride.traced', { personality }),
+        );
+      }
+    } catch (error) {
+      if (isOperationCategoryRequiredError(error)) {
+        setIssueDecision(nextDecision);
+        // Une seule décision à la fois : l'éventuelle feuille embargo disparaît avant BT-23.
+        setEmbargoPrompt(null);
+        setEmbargoStage('choice');
+        setOperationCategoryOpen(true);
+        return;
+      }
+      const prompt = embargoPromptOf(
+        error,
+        invoice.kind === 'deposit' ? 'deposit' : 'final',
+      );
+      if (prompt === null) {
+        clearIssueDecision();
+        showError('Oups', appErrorMessage(error));
+        return;
+      }
+      setIssueDecision(nextDecision);
+      setOperationCategoryOpen(false);
+      setEmbargoStage('choice');
+      setEmbargoPrompt(prompt);
+    }
+  };
 
   /** DÉFAUT légal : programme le message client (le devis parent porte la fenêtre embargo). */
   const scheduleEmbargoDefault = () =>
@@ -940,7 +1022,7 @@ export function InvoiceActions({
           throw { kind: 'unavailable', service: 'embargo-scheduled-payment' };
         }
         const scheduled = await scheduleEmbargo.mutateAsync(invoice.parentQuoteId);
-        setEmbargoPrompt(null);
+        clearIssueDecision();
         showError(
           t('legal.embargoSheet.title', { personality }),
           t('legal.embargoSchedule.confirmed', {
@@ -957,16 +1039,7 @@ export function InvoiceActions({
   /** OVERRIDE responsabilisé : rejoue l'ÉMISSION avec le flag explicite — tracé serveur. */
   const overrideEmbargoIssue = () =>
     run('issue', async () => {
-      try {
-        await issue.mutateAsync({ invoiceId: invoice.id, embargoOverride: true });
-        setEmbargoPrompt(null);
-        showError(
-          t('legal.embargoSheet.title', { personality }),
-          t('legal.embargoOverride.traced', { personality }),
-        );
-      } catch (e) {
-        showError('Oups', appErrorMessage(e));
-      }
+      await attemptIssue({ embargoOverride: true });
     });
 
   const embargoSheet = (
@@ -976,13 +1049,34 @@ export function InvoiceActions({
       busyDefault={busy === 'schedule'}
       busyOverride={busy === 'issue'}
       disabled={!!busy}
-      onClose={() => {
-        setEmbargoPrompt(null);
-        setEmbargoStage('choice');
-      }}
+      onClose={clearIssueDecision}
       onDefault={() => void scheduleEmbargoDefault()}
       onOverride={() => void overrideEmbargoIssue()}
       onStage={setEmbargoStage}
+    />
+  );
+  const operationCategorySheet = (
+    <QuestionSheet
+      visible={operationCategoryOpen}
+      header={t('piece.operationCategory.title', { personality })}
+      question={t('piece.operationCategory.question', { personality })}
+      options={INVOICE_OPERATION_CATEGORIES.map((value) => ({
+        value,
+        label: t(`piece.operationCategory.${value}` as const, { personality }),
+      }))}
+      confirmLabel={t('piece.operationCategory.confirm', { personality })}
+      otherLabel={t('piece.operationCategory.cancel', { personality })}
+      onClose={clearIssueDecision}
+      onOther={clearIssueDecision}
+      onSelect={(values) => {
+        const category = parseInvoiceOperationCategoryChoice(values[0]);
+        if (category === null) {
+          showError('Oups', t('piece.operationCategory.invalid', { personality }));
+          return;
+        }
+        setOperationCategoryOpen(false);
+        void run('issue', () => attemptIssue({ operationCategory: category }));
+      }}
     />
   );
   // Gate entreprise complète — même doctrine que QuoteActions (voir companyIncompleteGateSpec) :
@@ -1069,22 +1163,7 @@ export function InvoiceActions({
                 });
                 if (ok)
                   await run('issue', async () => {
-                    try {
-                      await issue.mutateAsync({ invoiceId: invoice.id });
-                    } catch (e) {
-                      // Embargo L221-10 : le refus devient l'invite deux étages (défaut =
-                      // programmer, override responsabilisé) — parité avec la génération.
-                      const prompt = embargoPromptOf(
-                        e,
-                        invoice.kind === 'deposit' ? 'deposit' : 'final',
-                      );
-                      if (prompt === null) {
-                        showError('Oups', appErrorMessage(e));
-                        return;
-                      }
-                      setEmbargoStage('choice');
-                      setEmbargoPrompt(prompt);
-                    }
+                    await attemptIssue({});
                   });
               })()
             }
@@ -1118,6 +1197,7 @@ export function InvoiceActions({
         />
       </View>
       {embargoSheet}
+      {operationCategorySheet}
       <GateSheet gate={gate} onClose={() => setGate(null)} />
       {errorSheet}
       </>

@@ -55,12 +55,13 @@ function makeEnv(quote: Quote) {
     companyId: company.id,
     type: 'b2b',
     name: 'SARL Martin',
-    siren: '821503642',
+    siren: '821503646',
     address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
   });
   if (!customerR.ok) throw new Error('customer');
   const invoices = new Map<string, Invoice>();
   let seq = 100;
+  let allocations = 0;
   const invoiceRepo: InvoiceRepository = {
     findById: async (id) => invoices.get(id) ?? null,
     lockById: async (id) => invoices.get(id) ?? null,
@@ -98,6 +99,7 @@ function makeEnv(quote: Quote) {
     },
     counters: {
       allocate: async () => {
+        allocations += 1;
         seq += 1;
         return { sequence: seq, formatted: DocNumber.format('F', 2026, seq) };
       },
@@ -110,12 +112,19 @@ function makeEnv(quote: Quote) {
     if (issue) {
       const assigned = invoice.assignNumber(DocNumber.format('F', 2026, sequence), AT);
       if (!assigned.ok) throw new Error('number');
-      const issued = invoice.issue({ mentions: [], terms: domainTerms, issuedAt: '2026-08-01', at: AT });
+      const issued = invoice.issue({
+        mentions: [],
+        terms: domainTerms,
+        issuedAt: '2026-08-01',
+        at: AT,
+        vatTreatment: 'standard',
+        frenchBillingMode: 'S1',
+      });
       if (!issued.ok) throw new Error('issue seed');
     }
     invoices.set(invoice.id, invoice);
   };
-  return { usecase, invoices, seed };
+  return { usecase, invoices, seed, allocations: () => allocations };
 }
 
 function situation(quote: Quote, id: string, order: number, targetHtCents: number): Invoice {
@@ -141,7 +150,7 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     if (!final.ok) throw new Error('final');
     seed(final.value, true, 1); // finale émise à 100 % (aucune pièce émise avant elle)
 
-    const r = await usecase.execute({ invoiceId: 'sit-dormant', terms });
+    const r = await usecase.execute({ invoiceId: 'sit-dormant', terms, operationCategory: 'services' });
     expect(r.ok).toBe(false);
     expect(validationMessage(r)).toContain('soldé');
   });
@@ -156,7 +165,7 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     if (!final.ok) throw new Error('final');
     seed(final.value, true, 1);
 
-    const r = await usecase.execute({ invoiceId: 'dep-dormant', terms });
+    const r = await usecase.execute({ invoiceId: 'dep-dormant', terms, operationCategory: 'services' });
     expect(r.ok).toBe(false);
   });
 
@@ -167,9 +176,9 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     seed(situation(quote, 'sit-a', 1, 88800), false, 0);
     seed(situation(quote, 'sit-b', 2, 88800), false, 0);
 
-    const first = await usecase.execute({ invoiceId: 'sit-a', terms });
+    const first = await usecase.execute({ invoiceId: 'sit-a', terms, operationCategory: 'services' });
     expect(first.ok).toBe(true);
-    const second = await usecase.execute({ invoiceId: 'sit-b', terms });
+    const second = await usecase.execute({ invoiceId: 'sit-b', terms, operationCategory: 'services' });
     expect(second.ok).toBe(false);
     expect(validationMessage(second)).toContain('Cumul');
   });
@@ -184,7 +193,7 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     // …puis une situation de 30 % est émise : la déduction figée (0) est fausse.
     seed(situation(quote, 'sit-1', 1, 44400), true, 1);
 
-    const r = await usecase.execute({ invoiceId: 'fin-1', terms });
+    const r = await usecase.execute({ invoiceId: 'fin-1', terms, operationCategory: 'services' });
     expect(r.ok).toBe(false);
     expect(validationMessage(r)).toContain('régénère');
   });
@@ -197,13 +206,88 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     const final = Invoice.fromSignedQuote(quote, 'final', 'fin-1', {
       depositDeduction: { amountCents: 48840, invoiceId: 'sit-1' },
       situationDeductionCents: 48840,
+      situationBilledHtCents: 44400,
+      situationBilledByQuoteLineCents: { l1: 24000, l2: 20400 },
+      precedingInvoices: [
+        { invoiceId: 'sit-1', kind: 'situation', number: 'F-2026-0001', issuedAt: '2026-08-01' },
+      ],
     });
     if (!final.ok) throw new Error('final');
     seed(final.value, false, 0);
 
-    const r = await usecase.execute({ invoiceId: 'fin-1', terms });
+    const r = await usecase.execute({ invoiceId: 'fin-1', terms, operationCategory: 'services' });
     expect(r.ok).toBe(true);
     expect(invoices.get('fin-1')!.status).toBe('issued');
+  });
+
+  it('ancien brouillon final : refuse un cumul TVA arrondi faux avant allocation du numéro', async () => {
+    const quote = signedQuote({
+      lines: [
+        { id: 'l1', label: 'Petit poste', category: 'labor', qty: 1, unitPriceHT: 6, vatRate: 20 },
+      ],
+    });
+    const { usecase, seed, allocations } = makeEnv(quote);
+    const first = situation(quote, 'sit-rounding', 1, 3);
+    seed(first, true, 1);
+    const final = Invoice.fromSignedQuote(quote, 'final', 'fin-rounding', {
+      depositDeduction: { amountCents: first.totals().ttc, invoiceId: first.id },
+      situationDeductionCents: first.totals().ttc,
+      situationBilledHtCents: first.totals().ht,
+      situationBilledByQuoteLineCents: { l1: 3 },
+      precedingInvoices: [
+        { invoiceId: first.id, kind: 'situation', number: 'F-2026-0001', issuedAt: '2026-08-01' },
+      ],
+    });
+    if (!final.ok) throw new Error('final');
+    seed(final.value, false, 0);
+
+    const result = await usecase.execute({
+      invoiceId: final.value.id,
+      terms,
+      operationCategory: 'services',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'situationVatClosure' },
+      },
+    });
+    expect(allocations()).toBe(0);
+    expect(final.value.number).toBeNull();
+  });
+
+  it('finale après acompte : blocage EXTENDED avant toute allocation de numéro', async () => {
+    const quote = signedQuote();
+    const { usecase, seed, allocations } = makeEnv(quote);
+    const deposit = Invoice.fromSignedQuote(quote, 'deposit', 'dep-1');
+    if (!deposit.ok) throw new Error('deposit');
+    seed(deposit.value, true, 1);
+    const final = Invoice.fromSignedQuote(quote, 'final', 'fin-after-deposit', {
+      depositDeduction: { amountCents: 48840, invoiceId: 'dep-1' },
+      precedingInvoices: [
+        { invoiceId: 'dep-1', kind: 'deposit', number: 'F-2026-0001', issuedAt: '2026-08-01' },
+      ],
+    });
+    if (!final.ok) throw new Error('final');
+    seed(final.value, false, 0);
+
+    const result = await usecase.execute({
+      invoiceId: final.value.id,
+      terms,
+      operationCategory: 'services',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'advanceRecovery' },
+      },
+    });
+    expect(allocations()).toBe(0);
+    expect(final.value.number).toBeNull();
   });
 
   it('situation exactement DANS le reste facturable : émission OK (la garde ne sur-bloque pas)', async () => {
@@ -212,7 +296,7 @@ describe('IssueInvoice — revérification du cumul B2 à l’émission (P0 brou
     seed(situation(quote, 'sit-1', 1, 44400), true, 1); // 30 % émis
     seed(situation(quote, 'sit-2', 2, 103600), false, 0); // 70 % en brouillon — pile le reste
 
-    const r = await usecase.execute({ invoiceId: 'sit-2', terms });
+    const r = await usecase.execute({ invoiceId: 'sit-2', terms, operationCategory: 'services' });
     expect(r.ok).toBe(true);
   });
 });

@@ -34,6 +34,8 @@ export interface CustomerListItem {
   customerCreditCents: number;
   /** SIREN si personne morale (b2b/b2g) — null pour un particulier (fiche C13 : partyLine adaptatif). */
   siren: string | null;
+  /** N° TVA français réel de la fiche ; null = jamais fourni/confirmé. */
+  tvaIntracom?: string | null;
   /** Délai moyen constaté ; null signifie explicitement « non calculable ». */
   avgDelayDays: number | null;
   paidOnTimeRatio: number | null;
@@ -123,6 +125,7 @@ export class ListCustomers {
         outstandingCents: metrics.outstandingCents,
         customerCreditCents: metrics.customerCreditCents,
         siren: customer.siren ?? null,
+        tvaIntracom: customer.tvaIntracom ?? null,
         avgDelayDays: metrics.avgDelayDays,
         paidOnTimeRatio: metrics.paidOnTimeRatio,
         paymentHistoryStatus: metrics.paymentHistoryStatus,

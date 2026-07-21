@@ -119,6 +119,7 @@ describe('A2/A6 — PATCH /company/legal (BackendService.updateCompanyLegal)', (
         // Identité bloquant l'émission (art. R123-237 c. com.) : non touchée ici non plus.
         rcsOrRmChanged: false,
         addressChanged: false,
+        tvaIntracomChanged: false,
       });
 
       const reread = await service.getCompanyMe();
@@ -276,6 +277,24 @@ describe('POST /invoices/:id/issue — contrôleur (corps A7 optionnel, allowlis
       { champInconnu: 1 },
     ]) {
       await expect(value.issue('inv-1', body)).rejects.toMatchObject({ status: 422 });
+    }
+    expect(issueInvoice).toHaveBeenCalledTimes(1);
+  });
+
+  it('BT-23 — transmet uniquement une nature métier autorisée, jamais un code réglementaire', async () => {
+    const issueInvoice = vi.fn(async () => ({ ok: true as const, value: { number: 'F-2026-0001' } }));
+    const value = controller({ issueInvoice } as never);
+
+    await value.issue('inv-1', { operationCategory: 'services' });
+    expect(issueInvoice).toHaveBeenCalledWith({
+      invoiceId: 'inv-1',
+      operationCategory: 'services',
+    });
+
+    for (const operationCategory of ['S1', 'hybrid', '', 1, null]) {
+      await expect(value.issue('inv-1', { operationCategory })).rejects.toMatchObject({
+        status: 422,
+      });
     }
     expect(issueInvoice).toHaveBeenCalledTimes(1);
   });

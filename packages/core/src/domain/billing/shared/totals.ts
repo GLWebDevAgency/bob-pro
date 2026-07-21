@@ -3,7 +3,12 @@ export interface Totals {
   vatByRate: Record<string, number>; // cle = taux ("10"), valeur = TVA en centimes
   vat: number;
   ttc: number;
-  netToPay: number; // = ttc, ou acompte si depositPct, ou solde/situation après déductions
+  /** Montant à régler immédiatement dans l'UX. Une retenue de garantie peut le rendre inférieur
+   * à la créance légale, sans jamais diminuer cette dernière ni simuler un paiement. */
+  netToPay: number;
+  /** Créance légale totale de CETTE pièce (BT-115). Absent sur les snapshots historiques :
+   * `netToPay` reste alors le fallback de lecture, mais tout nouvel émetteur la fige. */
+  duePayableCents?: number;
   /**
    * B3 — présents UNIQUEMENT quand une remise existe (les totaux des pièces antérieures restent
    * identiques au centime, snapshots figés compris) : HT brut avant remises et total remisé.

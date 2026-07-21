@@ -366,6 +366,7 @@ describe.skipIf(!RUN_MUTATION_CERT)(
       }>>`
         SELECT "minimumVersion", "highestVersion"
           FROM realtime_mistral_conversation_key_version_floors
+         WHERE "keySpace" = ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE}
       `;
       if (CERT_BASE_VERSION === 1) {
         if (ranges.length !== 0) {

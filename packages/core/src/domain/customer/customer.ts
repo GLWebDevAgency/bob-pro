@@ -2,6 +2,8 @@ import { type DomainResult, err, ok } from '../../shared-kernel/result';
 import { type Address } from '../../shared-kernel/contact';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { validateProPaymentTermsCeiling } from '../services/payment-terms-legal';
+import { validateFrenchVatId } from '../../shared-kernel/french-vat-id';
+import { Siren } from '../../shared-kernel/identifiers';
 
 export type CustomerType = 'b2c' | 'b2b' | 'b2g';
 
@@ -106,6 +108,8 @@ export interface CustomerProps {
   type: CustomerType;
   name: string;
   siren?: string;
+  /** N° TVA français réellement fourni par le client/annuaire. Jamais dérivé du SIREN. */
+  tvaIntracom?: string;
   address: Address;
   email?: string;
   phone?: string;
@@ -140,8 +144,28 @@ export class Customer {
       || typeof p.address.city !== 'string'
     )
       return err({ code: 'VALIDATION', field: 'address', message: 'Adresse client invalide.' });
-    if (p.siren !== undefined && !/^\d{9}$/.test(p.siren))
-      return err({ code: 'VALIDATION', field: 'siren', message: 'SIREN invalide : 9 chiffres requis.' });
+    let siren: string | undefined;
+    if (p.siren !== undefined) {
+      const parsedSiren = Siren.of(p.siren);
+      if (!parsedSiren.ok) return parsedSiren;
+      siren = parsedSiren.value.value;
+    }
+    let tvaIntracom: string | undefined;
+    if (p.tvaIntracom !== undefined) {
+      if (siren === undefined) {
+        return err({ code: 'VALIDATION', field: 'tvaIntracom', message: 'Un SIREN est requis avec le numéro de TVA français.' });
+      }
+      const vat = validateFrenchVatId(p.tvaIntracom, siren);
+      if (!vat.ok) return vat;
+      tvaIntracom = vat.value;
+    }
+    const email = p.email?.trim().toLowerCase();
+    if (
+      email !== undefined
+      && (email.length === 0 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
+    ) {
+      return err({ code: 'VALIDATION', field: 'email', message: 'Adresse électronique invalide.' });
+    }
     if (p.contactName !== undefined && p.contactName.trim().length > 200)
       return err({ code: 'VALIDATION', field: 'contactName', message: 'Nom du contact limité à 200 caractères.' });
     // B4 — conditions de paiement du client : structure (PaymentTerms) + plafond légal L441-10
@@ -176,8 +200,9 @@ export class Customer {
       type: p.type,
       name: p.name.trim(),
       address: { ...p.address },
-      ...(p.siren !== undefined ? { siren: p.siren } : {}),
-      ...(p.email !== undefined ? { email: p.email } : {}),
+      ...(siren !== undefined ? { siren } : {}),
+      ...(tvaIntracom !== undefined ? { tvaIntracom } : {}),
+      ...(email !== undefined ? { email } : {}),
       ...(p.phone !== undefined ? { phone: p.phone } : {}),
       ...(contactName ? { contactName } : {}),
       ...(p.paymentTermsLabel !== undefined ? { paymentTermsLabel: p.paymentTermsLabel } : {}),
@@ -204,6 +229,9 @@ export class Customer {
   get siren(): string | undefined {
     return this.p.siren;
   }
+  get tvaIntracom(): string | undefined {
+    return this.p.tvaIntracom;
+  }
   get email(): string | undefined {
     return this.p.email;
   }
@@ -223,6 +251,27 @@ export class Customer {
   }
   get address(): Address {
     return { ...this.p.address };
+  }
+
+  /**
+   * Une fiche client peut volontairement être créée avec une identité minimale afin de ne pas
+   * bloquer la prospection. En revanche, une facture numérotée doit porter une adresse de
+   * facturation réelle et complète. Cette garde est donc appelée par l'émission, pas par `of` :
+   * elle bloque avant le compteur sans inventer ni compléter silencieusement une adresse.
+   */
+  assertBillingAddressComplete(): DomainResult<void> {
+    if (
+      this.p.address.line1.trim().length === 0
+      || this.p.address.zip.trim().length === 0
+      || this.p.address.city.trim().length === 0
+    ) {
+      return err({
+        code: 'VALIDATION',
+        field: 'customer.address',
+        message: 'Adresse de facturation complète du client requise avant émission.',
+      });
+    }
+    return ok(undefined);
   }
   get isSubcontractingBtp(): boolean {
     return this.p.isSubcontractingBtp === true;

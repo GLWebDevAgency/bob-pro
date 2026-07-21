@@ -1,5 +1,4 @@
 import {
-  frenchVatNumber,
   nafToTrade,
   natureJuridiqueToLegalForm,
   type CompanyLookupPort,
@@ -135,7 +134,9 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
       legalForm: natureJuridiqueToLegalForm(natureJuridique),
       dateCreation,
       address,
-      tvaIntracom: tva ?? (/^\d{9}$/.test(siren) ? frenchVatNumber(siren) : null),
+      // L'algorithme de clé ne prouve pas qu'un numéro a été attribué. On conserve uniquement
+      // la valeur réellement renvoyée par la source officielle ; absence = null.
+      tvaIntracom: tva,
       rge: Boolean(r.complements?.est_rge),
     };
 

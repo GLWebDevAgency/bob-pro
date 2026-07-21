@@ -34,7 +34,9 @@ interface DocumentStoragePort {
   remove(companyId: string, key: string): Promise<void>;             // purge légale uniquement (post-retention)
 }
 interface DocumentRepository {
-  save(d: Document): Promise<void>;
+  insertInitialOrConfirmExact(d: Document):
+    Promise<{ status: 'inserted' | 'exact'; document: Document } | { status: 'conflict' }>;
+  // Mutations de métadonnées étroites et CAS : classify, markReviewed, rename.
   findById(companyId: string, id: string): Promise<Document | null>;
   findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]>;
   listByCompany(companyId: string): Promise<Document[]>;
@@ -115,4 +117,3 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 **Anti-cannibalisation (règle d'or, Codex)** : l'add-on autonomie change le **MODE d'exécution**, pas le **PÉRIMÈTRE métier**. Un Solo+auto (19€) = un Solo plus fluide (moins de confirmations sur l'interne réversible), **jamais** un Business low-cost (ni relances auto, ni prévisionnel, ni paiement en ligne, ni équipe, ni audit). Garde-fous : quotas par palier + outils Pro/Business exclusifs + plancher de sécurité (§8).
 
 **Anti-complexité (risque #1 de Codex)** : chaque palier = **une phrase** (ci-dessus). Le Module Autonomie = **un seul interrupteur** (« Bob agit plus vite, dans les limites de ton plan ») à 2 crans (+2€ confirmer-envoi / +5€ auto). Wording : « accélération contrôlée », jamais « tout automatique ».
-

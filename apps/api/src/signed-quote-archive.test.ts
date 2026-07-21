@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import { SignQuote } from '@bob/core';
 import type { OcrPort, PaymentGatewayPort, PdfRendererPort, QuotePdfData } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { documentSha256 } from './documents/storage';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -32,15 +34,14 @@ function makeService() {
   const persistence = new InMemoryPersistence();
   const renderedQuotes: QuotePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) =>
-      new TextEncoder().encode(`%PDF-1.7\ninvoice:${data.number}`),
-    ),
+    renderInvoice: vi.fn(async (data, facturX) =>
+      renderPdfFixture(`invoice:${data.number}`, facturX?.xml)),
     // Les octets encodent numéro + signataire + mentions : toute dérive de l'état courant
     // (médiateur, régime TVA…) produirait des octets DIFFÉRENTS — l'immutabilité est observable.
     renderQuote: vi.fn(async (data) => {
       renderedQuotes.push(structuredClone(data));
-      return new TextEncoder().encode(
-        `%PDF-1.7\nquote:${data.number}:${data.signedBy ?? 'non-signe'}:${data.mentions.join('|')}`,
+      return renderPdfFixture(
+        `quote:${data.number}:${data.signedBy ?? 'non-signe'}:${data.mentions.join('|')}`,
       );
     }),
   };
@@ -76,7 +77,7 @@ function makeService() {
     undefined,
     storage,
   );
-  return { persistence, renderedQuotes, renderer, service, storage };
+  return { logger, persistence, renderedQuotes, renderer, service, storage };
 }
 
 async function createSentQuote(
@@ -112,6 +113,35 @@ async function viewToken(service: BackendService, quoteId: string): Promise<stri
   const link = await service.createQuoteViewLink(quoteId);
   if (!link.ok) throw new Error('fixture: createQuoteViewLink KO');
   return decodeURIComponent(link.value.viewUrl.split('/view/')[1]!);
+}
+
+/**
+ * Fait avancer explicitement le harness au-delà du backoff d'un job échoué.
+ *
+ * Un nouvel `enqueue` avec la même clé métier ne doit jamais court-circuiter le calendrier de
+ * retry : PostgreSQL conserve le premier ordre (ON CONFLICT DO NOTHING). Le test manipule donc
+ * uniquement l'horloge persistée de l'adapter in-memory, comme le ferait le passage du temps en
+ * production, sans changer l'identité ni le contenu de l'ordre durable.
+ */
+function expireArchiveBackoffForTesting(
+  persistence: InMemoryPersistence,
+  quoteId: string,
+): void {
+  const snapshot = persistence.documentArchiveJobs.snapshot();
+  const matching = snapshot.filter(
+    (job) =>
+      job.companyId === MERCIER_PROPS.id
+      && job.pieceId === quoteId
+      && job.reason === 'quote-signed',
+  );
+  expect(matching).toHaveLength(1);
+  persistence.documentArchiveJobs.restore(
+    snapshot.map((job) =>
+      job === matching[0]
+        ? { ...job, nextAttemptAt: '1970-01-01T00:00:00.000Z' }
+        : job,
+    ),
+  );
 }
 
 describe('A8 — signature sur place : le contrat est figé', () => {
@@ -150,9 +180,9 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       if (stored === null) return;
       expect(documentSha256(stored.bytes)).toBe(archive.sha256);
       expect(stored.bytes.byteLength).toBe(archive.byteSize);
-      const originalText = new TextDecoder().decode(stored.bytes);
-      expect(originalText).toContain('Mme Durand');
-      expect(originalText).toContain('CM2C');
+      const originalPdf = await PDFDocument.load(stored.bytes);
+      expect(originalPdf.getSubject()).toContain('Mme Durand');
+      expect(originalPdf.getSubject()).toContain('CM2C');
 
       // L'archive est complète : la donnée peut évoluer pour les PROCHAINES pièces…
       const changed = await service.updateCompanyLegal({
@@ -166,14 +196,14 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       expect(pdf.ok).toBe(true);
       if (!pdf.ok) return;
       expect(pdf.value).toEqual(stored.bytes);
-      const servedText = new TextDecoder().decode(pdf.value);
-      expect(servedText).toContain('CM2C');
-      expect(servedText).not.toContain('MEDIATION PRO');
+      const servedPdf = await PDFDocument.load(pdf.value);
+      expect(servedPdf.getSubject()).toContain('CM2C');
+      expect(servedPdf.getSubject()).not.toContain('MEDIATION PRO');
       expect(vi.mocked(renderer.renderQuote).mock.calls.length).toBe(rendersBefore);
     });
   });
 
-  it('rejoue l’archivage sans jamais créer un second original (idempotence du job)', async () => {
+  it('un ré-enqueue après preuve ne réarme jamais le job ni ne crée un second original', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, service } = makeService();
     await persistence.seed();
@@ -183,8 +213,15 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(signed.ok).toBe(true);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
+      const completed = await persistence.documentArchiveJobs.findByPiece(
+        MERCIER_PROPS.id,
+        quoteId,
+        'quote-signed',
+      );
+      expect(completed?.integrityProof).not.toBeNull();
 
-      // Rejouer un ordre (reprise worker) : l'original existant est conservé tel quel.
+      // Un nouvel id de commande pour la même clé métier est un retry d'enqueue, pas une
+      // autorisation de réexécuter une terminaison probante append-only.
       await persistence.documentArchiveJobs.enqueue({
         id: 'job-replay',
         companyId: MERCIER_PROPS.id,
@@ -195,7 +232,12 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       const run = await service.runDocumentArchiveJobs();
       expect(run.ok).toBe(true);
       if (!run.ok) return;
-      expect(run.value.failed).toBe(0);
+      expect(run.value).toEqual({ scanned: 0, archived: 0, failed: 0 });
+      expect(await persistence.documentArchiveJobs.findByPiece(
+        MERCIER_PROPS.id,
+        quoteId,
+        'quote-signed',
+      )).toEqual(completed);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
     });
   });
@@ -230,6 +272,168 @@ describe('A8 — signature sur place : le contrat est figé', () => {
       const retry = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
       expect(retry.ok).toBe(true);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
+    });
+  });
+});
+
+describe('A8 — worker d’archive : terminaison fenced et observable', () => {
+  it('réarme immédiatement le job si sa preuve est générée mais refusée à la finalisation', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { logger, persistence, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const quoteId = await createSentQuote(service);
+      const pausedWorker = vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValueOnce({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
+      });
+      const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
+      expect(signed.ok).toBe(true);
+      pausedWorker.mockRestore();
+
+      vi.spyOn(persistence.documentArchiveJobs, 'markDone').mockResolvedValueOnce(false);
+      const markFailed = vi.spyOn(persistence.documentArchiveJobs, 'markFailed');
+
+      const run = await service.runDocumentArchiveJobs();
+
+      expect(run).toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 0, failed: 1 },
+      });
+      expect(markFailed).toHaveBeenCalledWith(
+        expect.any(String),
+        MERCIER_PROPS.id,
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        '[archive-completion-rejected-after-proof]',
+      );
+      expect(
+        await persistence.documentArchiveJobs.findByPiece(
+          MERCIER_PROPS.id,
+          quoteId,
+          'quote-signed',
+        ),
+      ).toMatchObject({
+        status: 'failed',
+        attempts: 1,
+        leaseToken: null,
+        lastError: '[archive-completion-rejected-after-proof]',
+        integrityProof: null,
+      });
+      expect(logger.audit).toHaveBeenCalledWith(
+        'document.archive_job.completion_rejected',
+        expect.objectContaining({
+          companyId: MERCIER_PROPS.id,
+          pieceId: quoteId,
+          reason: 'quote-signed',
+          outcome: 'retry_scheduled',
+        }),
+      );
+    });
+  });
+
+  it('ne compte pas un faux échec si un worker concurrent a déjà persisté la même preuve', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { logger, persistence, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const quoteId = await createSentQuote(service);
+      const pausedWorker = vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValueOnce({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
+      });
+      const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
+      expect(signed.ok).toBe(true);
+      pausedWorker.mockRestore();
+
+      const originalMarkDone = persistence.documentArchiveJobs.markDone.bind(
+        persistence.documentArchiveJobs,
+      );
+      vi.spyOn(persistence.documentArchiveJobs, 'markDone').mockImplementationOnce(
+        async (...args) => {
+          // Simule précisément l'autre worker qui termine entre notre rendu et notre CAS :
+          // l'état durable est `done`, mais notre appel observe un refus de fence.
+          expect(await originalMarkDone(...args)).toBe(true);
+          return false;
+        },
+      );
+      const markFailed = vi.spyOn(persistence.documentArchiveJobs, 'markFailed');
+
+      const run = await service.runDocumentArchiveJobs();
+
+      expect(run).toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 0, failed: 0 },
+      });
+      expect(markFailed).toHaveBeenCalledOnce();
+      expect(
+        await persistence.documentArchiveJobs.findByPiece(
+          MERCIER_PROPS.id,
+          quoteId,
+          'quote-signed',
+        ),
+      ).toMatchObject({
+        status: 'done',
+        attempts: 0,
+        leaseToken: null,
+        lastError: null,
+      });
+      expect(logger.audit).toHaveBeenCalledWith(
+        'document.archive_job.completion_cas_lost',
+        expect.objectContaining({
+          companyId: MERCIER_PROPS.id,
+          pieceId: quoteId,
+          reason: 'quote-signed',
+          outcome: 'concurrent_completion_observed',
+          currentStatus: 'done',
+        }),
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  });
+
+  it('journalise explicitement un lease perdu sans preuve au lieu de disparaître silencieusement', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { logger, persistence, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const quoteId = await createSentQuote(service);
+      const pausedWorker = vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValueOnce({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
+      });
+      const signed = await service.signQuote({ quoteId, signerName: 'Mme Durand' });
+      expect(signed.ok).toBe(true);
+      pausedWorker.mockRestore();
+
+      vi.spyOn(persistence.documentArchiveJobs, 'markDone').mockResolvedValueOnce(false);
+      vi.spyOn(persistence.documentArchiveJobs, 'markFailed').mockResolvedValueOnce(false);
+
+      const run = await service.runDocumentArchiveJobs();
+
+      expect(run).toEqual({
+        ok: true,
+        value: { scanned: 1, archived: 0, failed: 0 },
+      });
+      expect(logger.audit).toHaveBeenCalledWith(
+        'document.archive_job.completion_cas_lost',
+        expect.objectContaining({
+          companyId: MERCIER_PROPS.id,
+          pieceId: quoteId,
+          reason: 'quote-signed',
+          outcome: 'lease_lost_without_completion',
+          currentStatus: 'pending',
+          integrityProofSha256: null,
+        }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('lease perdu sans preuve persistée'),
+        'documents',
+      );
     });
   });
 });
@@ -337,14 +541,14 @@ describe('A8 — barrière de complétude', () => {
         },
       });
 
-      // Réparation : l'ordre est rejoué (worker/cron), l'original est figé, la barrière tombe.
-      await persistence.documentArchiveJobs.enqueue({
-        id: 'job-repair',
-        companyId: MERCIER_PROPS.id,
-        pieceId: quoteId,
-        reason: 'quote-signed',
-        now: new Date().toISOString(),
+      // Le backoff interdit un rejeu immédiat ; après son expiration, le worker reprend le même
+      // ordre durable, fige l'original et fait tomber la barrière.
+      const beforeRetry = await service.runDocumentArchiveJobs();
+      expect(beforeRetry).toEqual({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
       });
+      expireArchiveBackoffForTesting(persistence, quoteId);
       const run = await service.runDocumentArchiveJobs();
       expect(run.ok).toBe(true);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);
@@ -396,15 +600,14 @@ describe('A8 — barrière de complétude', () => {
       expect(neutral.ok).toBe(true);
       if (!neutral.ok) return;
 
-      // Réparation de l'archive : la barrière tombe, la couleur peut changer (forward-only —
-      // le contrat archivé reste servi octet à octet, cf. test « le contrat est figé »).
-      await persistence.documentArchiveJobs.enqueue({
-        id: 'job-repair-accent',
-        companyId: MERCIER_PROPS.id,
-        pieceId: quoteId,
-        reason: 'quote-signed',
-        now: new Date().toISOString(),
+      // À l'expiration du backoff, le même ordre est repris : la barrière tombe et la couleur
+      // peut changer (forward-only — l'original reste servi octet à octet).
+      const beforeRetry = await service.runDocumentArchiveJobs();
+      expect(beforeRetry).toEqual({
+        ok: true,
+        value: { scanned: 0, archived: 0, failed: 0 },
       });
+      expireArchiveBackoffForTesting(persistence, quoteId);
       const run = await service.runDocumentArchiveJobs();
       expect(run.ok).toBe(true);
       expect(await signedQuoteArchive(persistence, quoteId)).toHaveLength(1);

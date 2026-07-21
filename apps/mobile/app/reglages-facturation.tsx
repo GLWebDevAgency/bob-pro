@@ -287,8 +287,8 @@ export default function ReglagesFacturation() {
               </Text>
             </View>
 
-            {/* ── Identité sur les factures — n° RCS/RM et adresse ÉDITABLES (PATCH
-                /company/legal) : ce sont les 2 exigences de Company.assertCanIssue(). Sans elles
+            {/* ── Identité sur les factures — n° RCS/RM, TVA et adresse ÉDITABLES (PATCH
+                /company/legal) : ce sont les exigences de Company.assertCanIssue(). Sans elles
                 l'émission est bloquée, et sans CET écran le gate était un cul-de-sac. ── */}
             <SectionHeader title={t('reglages.sectionIdentity', { personality })} />
             {/* Bandeau d'alerte UNIQUEMENT quand l'émission est réellement bloquée — même

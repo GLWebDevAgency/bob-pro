@@ -8,13 +8,34 @@ import {
 } from '../../domain/services/project-cashflow';
 import { type CashflowSnapshotPort } from '../ports/services';
 import { type ClockPort } from '../ports/services';
-import { type ExpenseRepository, type InvoiceRepository } from '../ports/repositories';
+import { type CompanyRepository, type ExpenseRepository, type InvoiceRepository } from '../ports/repositories';
 import { deriveVatPosition } from '../argent/derive-vat-position';
 import { type Expense } from '../../domain/expense/expense';
 import { addDays, parisDateOnly } from '../../shared-kernel/time';
 
 const SCENARIOS: readonly Scenario[] = ['optimiste', 'realiste', 'prudent'];
 const HORIZONS: readonly Horizon[] = [7, 30, 60, 90];
+
+type GetCashflowCommonDeps = {
+  snapshots: CashflowSnapshotPort;
+  expenses?: Pick<ExpenseRepository, 'listByCompany'>;
+  /** Obligatoire avec invoices+expenses pour une projection bornée par les échéances. */
+  clock?: ClockPort;
+};
+
+export type GetCashflowDeps = GetCashflowCommonDeps & (
+  | {
+      /** Fournir les factures active la position TVA dérivée des pièces réelles. */
+      invoices: Pick<InvoiceRepository, 'listByCompany'>;
+      /** Dès lors, le régime tenant est structurellement obligatoire. */
+      companies: Pick<CompanyRepository, 'findById'>;
+    }
+  | {
+      /** Compatibilité d'un snapshot externe déjà qualifié, sans dérivation documentaire. */
+      invoices?: undefined;
+      companies?: Pick<CompanyRepository, 'findById'>;
+    }
+);
 
 function parseScenario(value: unknown): Result<Scenario, AppError> {
   if (typeof value === 'string' && SCENARIOS.includes(value as Scenario))
@@ -42,17 +63,7 @@ function parseHorizon(value: unknown): Result<Horizon, AppError> {
 }
 
 export class GetCashflow {
-  constructor(
-    private readonly deps: {
-      snapshots: CashflowSnapshotPort;
-      expenses?: Pick<ExpenseRepository, 'listByCompany'>;
-      /** Fournir les factures = position de TVA RÉELLE (deriveVatPosition, chantier 2) ;
-       *  sans elles, repli sur le vatDue du snapshot (compat implémentations amont). */
-      invoices?: Pick<InvoiceRepository, 'listByCompany'>;
-      /** Obligatoire avec invoices+expenses pour une projection bornée par les échéances. */
-      clock?: ClockPort;
-    },
-  ) {}
+  constructor(private readonly deps: GetCashflowDeps) {}
 
   async execute(input: {
     companyId: string;
@@ -77,9 +88,17 @@ export class GetCashflow {
       ? await this.deps.invoices.listByCompany(input.companyId)
       : [];
     if (this.deps.invoices) {
+      if (!this.deps.companies) {
+        return err({ kind: 'unavailable', service: 'vat-regime' });
+      }
+      const company = await this.deps.companies.findById(input.companyId);
+      if (!company || company.id !== input.companyId) {
+        return err({ kind: 'unavailable', service: 'vat-regime' });
+      }
       // TVA à provisionner DÉRIVÉE (collectée sur ENCAISSEMENTS − déductible mentionnée) :
       // le même chiffre ampute la dispo, calibre la réserve du payout ET alimente le KPI.
-      vatDue = deriveVatPosition({
+      const vatPosition = deriveVatPosition({
+        vatRegime: company.vatRegime,
         invoices: invoiceList.map((i) => ({
           kind: i.kind,
           status: i.status,
@@ -87,7 +106,9 @@ export class GetCashflow {
           paid: i.paid,
         })),
         expenses: expenseList.map((e) => ({ vatCents: e.toProps().vatCents })),
-      }).netDueCents;
+      });
+      if (vatPosition === null) return err({ kind: 'unavailable', service: 'vat-position' });
+      vatDue = vatPosition.netDueCents;
     }
 
     let datedBasis:

@@ -4,13 +4,21 @@ import { type AppError, appDomain, appNotFound } from '../result';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { buildMentions, operationNatureOf } from '../../domain/services/build-mentions';
 import { internationalProEmissionGuard } from '../../domain/services/international-emission-guard';
+import { professionalAdvanceRecoveryGuard } from '../../domain/compliance/professional-advance-recovery';
 import { validateProPaymentTermsCeiling } from '../../domain/services/payment-terms-legal';
 import { retenueGarantieMention } from '../../domain/services/retenue-garantie';
 import {
   billedTtcCents,
   quoteBillingEngagement,
+  validateSituationVatClosure,
 } from '../../domain/services/quote-billing-engagement';
 import { type VatTreatment } from '../../domain/billing/invoice/invoice';
+import {
+  resolveFrenchBillingModeAtIssuance,
+  type FrenchBillingMode,
+  type FrenchOperationCategory,
+} from '../../domain/compliance/french-billing-mode';
+import { billingUnitToUneceCode } from '../../domain/compliance/billing-unit';
 import {
   deriveRetractation,
   offPremisesEmbargoOverrideRisk,
@@ -37,6 +45,8 @@ import { TxDomainError } from './tx-error';
 
 export interface IssueInvoiceInput {
   invoiceId: string;
+  /** BT-23 — fait utilisateur demandé seulement quand l'accessorité des lignes est ambiguë. */
+  operationCategory?: FrenchOperationCategory;
   /**
    * B4 — conditions de paiement CHOISIES EXPLICITEMENT pour CETTE pièce (priorité 1). Absent :
    * l'échéance est dérivée des conditions du CLIENT (Customer.paymentTerms, priorité 2), puis
@@ -146,6 +156,9 @@ export class IssueInvoice {
         // Déjà numérotée (retry réseau ou course gagnée par une autre émission) -> réponse idempotente.
         if (invoice.number) return invoice.number;
 
+        const issuerReady = company.assertCanIssue();
+        if (!issuerReady.ok) throw new TxAppError(appDomain(issuerReady.error));
+
         // Le snapshot client utilisé pour les mentions est lui aussi relu dans la transaction,
         // après la facture fraîche. Une ligne corrompue/cross-tenant est refusée avant le compteur.
         const customer = await this.deps.customers.findById(invoice.customerId);
@@ -154,6 +167,54 @@ export class IssueInvoice {
             code: 'VALIDATION',
             field: 'customer',
             message: 'Client introuvable.',
+          });
+        }
+
+        // La création d'une fiche client reste possible avec une identité minimale, mais une
+        // facture légale ne peut jamais consommer un numéro avec une adresse acheteur vide.
+        // Cette garde précède toutes les allocations et protège PDF + Factur-X de la même façon.
+        const customerBillingAddress = customer.assertBillingAddressComplete();
+        if (!customerBillingAddress.ok) {
+          throw new TxAppError(appDomain(customerBillingAddress.error));
+        }
+
+        // La pièce légale conserve chaque unité humaine. Toute unité présente doit donc avoir
+        // un code UN/ECE exact avant numérotation ; un fallback C62 après émission mentirait.
+        for (const line of invoice.lines) {
+          const mappedUnit = billingUnitToUneceCode(line.unit);
+          if (!mappedUnit.ok) throw new TxAppError(appDomain(mappedUnit.error));
+        }
+
+        // EN 16931 BR-O-11/12 interdit de mélanger une opération hors champ (débours) avec une
+        // catégorie TVA dans la même facture structurée. Tant que Bob ne produit pas un profil
+        // étendu certifié pour ce cas français, on refuse honnêtement et on demande deux pièces.
+        const hasDisbursement = invoice.lines.some((line) => line.category === 'disbursement');
+        const hasNonDisbursement = invoice.lines.some((line) => line.category !== 'disbursement');
+        if (hasDisbursement && hasNonDisbursement) {
+          throw new TxAppError({
+            kind: 'validation',
+            issues: [
+              {
+                field: 'lines.disbursement',
+                message:
+                  'Les débours hors TVA ne peuvent pas être mélangés à une prestation dans ' +
+                  'cette facture électronique. Crée une pièce séparée pour les débours.',
+              },
+            ],
+          });
+        }
+        if (
+          hasDisbursement
+          && invoice.lines.some((line) => line.category === 'disbursement' && line.vatRate !== 0)
+        ) {
+          throw new TxAppError({
+            kind: 'validation',
+            issues: [
+              {
+                field: 'lines.disbursement',
+                message: 'Un débours hors base de TVA doit porter un taux de 0 %.',
+              },
+            ],
           });
         }
         // B6 — client PROFESSIONNEL établi hors de France : émission refusée AVANT le compteur
@@ -361,8 +422,52 @@ export class IssueInvoice {
                   'déduire exactement l’acompte et les situations émis.',
               });
             }
+            const emittedSituations = emittedSisters.filter(
+              (sister) => sister.kind === 'situation',
+            );
+            const vatClosure = validateSituationVatClosure({
+              marketTotals: quote.totals(),
+              emittedSituations,
+              finalInvoice: invoice,
+            });
+            if (!vatClosure.ok) throw new TxDomainError(vatClosure.error);
           }
         }
+
+        // Ferme aussi les anciens brouillons : la garde de génération empêche les nouveaux
+        // acomptes professionnels, mais seule l'émission transactionnelle garantit qu'un draft
+        // historique ne consomme aucun numéro. Placée après les gardes du contrat, elle ne masque
+        // jamais un embargo ou une rétractation B2C. Le B2C suit son chemin PDF/e-reporting.
+        const advancePath = professionalAdvanceRecoveryGuard({
+          customerType: customer.type,
+          invoiceKind: invoice.kind,
+          advanceDeductionCents: invoice.advanceDeductionCents,
+        });
+        if (!advancePath.ok) throw new TxDomainError(advancePath.error);
+
+        // France 2026 — une facture électronique doit porter un endpoint réel pour le vendeur
+        // ET l'acheteur (BT-34/BT-49). Pour un professionnel français, le CIUS impose en plus
+        // BAR/B2B + SIREN/0225 : un e-mail ne peut pas remplacer le SIREN. Pour un particulier,
+        // l'e-mail validé par Customer.of est l'endpoint EM. Refus AVANT le compteur : jamais
+        // de numéro consommé pour une pièce dont le XML réglementaire serait invalide, jamais
+        // d'identifiant synthétique pour contourner le contrôle.
+        if (customer.requiresSirenForEinvoice() && customer.siren === undefined) {
+          throw new TxAppError({
+            kind: 'validation',
+            issues: [
+              {
+                field: 'customer.siren',
+                message:
+                  'Le SIREN du client professionnel est requis avant émission pour la ' +
+                  'facturation électronique française (endpoint BT-49 / scheme 0225).',
+              },
+            ],
+          });
+        }
+        // Un particulier sans e-mail peut recevoir une facture PDF/papier : il relève de
+        // l'e-reporting, pas du routage e-invoicing B2B. Son endpoint EM reste absent, jamais
+        // remplacé par une adresse synthétique. Le canal de transmission le contrôlera si un
+        // envoi électronique est effectivement demandé.
 
         // A4 — régime de TVA CONSTATÉ à l'émission (company + customer relus dans cette même
         // transaction) puis FIGÉ dans la pièce (Invoice.issue). Préséance franchise >
@@ -399,22 +504,50 @@ export class IssueInvoice {
               ],
             });
           }
-          // BR-AE-2 (EN 16931) : une pièce AE DOIT identifier le preneur par son n° de TVA —
-          // dérivé du SIREN. Sans SIREN client, la pièce serait invalide en e-invoicing :
-          // refus à l'émission (jamais un identifiant inventé, jamais une violation masquée).
-          if (!customer.siren) {
+          // BR-AE-2 (EN 16931) : une pièce AE DOIT identifier vendeur ET preneur par leurs
+          // numéros de TVA réellement fournis. Un SIREN ne prouve pas qu'un numéro a été attribué.
+          if (!customer.tvaIntracom) {
             throw new TxAppError({
               kind: 'validation',
               issues: [
                 {
-                  field: 'customer',
+                  field: 'customer.tvaIntracom',
                   message:
-                    'Sous-traitance BTP (autoliquidation) : le SIREN du client professionnel ' +
+                    'Sous-traitance BTP (autoliquidation) : le numéro de TVA réel du client ' +
                     'est requis pour émettre (identification du preneur, EN 16931 BR-AE-2).',
                 },
               ],
             });
           }
+        }
+
+        // BT-23 France — décision AVANT allocation du numéro. L'avoir reprend strictement
+        // le fait figé de sa source ; une pièce nouvelle le résout depuis les faits réels.
+        let frenchBillingMode: FrenchBillingMode;
+        if (invoice.kind === 'credit_note') {
+          const inherited = invoice.frenchBillingModeAtIssuance;
+          if (inherited === null) {
+            throw new TxDomainError({
+              code: 'VALIDATION',
+              field: 'frenchBillingMode',
+              message:
+                'La facture source historique ne contient pas son cadre de facturation français : émission de l’avoir refusée.',
+            });
+          }
+          frenchBillingMode = inherited;
+        } else {
+          const resolvedMode = resolveFrenchBillingModeAtIssuance({
+            kind: invoice.kind,
+            vatTreatment,
+            lineCategories: invoice.lines.map((line) => line.category),
+            ...(input.operationCategory === undefined
+              ? {}
+              : { operationCategory: input.operationCategory }),
+            depositDeductionCents: invoice.depositDeductionCents,
+            situationDeductionCents: invoice.situationDeductionCents,
+          });
+          if (!resolvedMode.ok) throw new TxDomainError(resolvedMode.error);
+          frenchBillingMode = resolvedMode.value;
         }
 
         // Un avoir tire sa propre séquence sans trou (A-AAAA-XXXX) — jamais celle des factures.
@@ -467,6 +600,7 @@ export class IssueInvoice {
           // A4 : régime de TVA constaté ci-dessus, figé dans la pièce (un avoir garde celui
           // repris de sa source — Invoice.issue l'ignore alors, art. 272 CGI).
           vatTreatment,
+          frenchBillingMode,
         });
         if (!issued.ok) throw new TxDomainError(issued.error);
         await this.deps.invoices.save(invoice);
