@@ -3,7 +3,10 @@ import {
   normalizeOpenAiNativeSpokenTranscriptV1,
   OPENAI_NATIVE_RESPONSE_LIMITS,
 } from './openai-native-response-protocol';
-import { OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION } from './openai-native-speech-delivery';
+import {
+  OPENAI_NATIVE_SPEECH_POLICY_VERSION,
+  OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION,
+} from './openai-native-speech-delivery';
 
 const POSTGRES_INT_MAX = 2_147_483_647;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -19,6 +22,8 @@ export interface OpenAiNativeSpeechProofBinding {
   readonly turnId: string;
   readonly contextRevision: number;
   readonly contextDigest: string;
+  readonly speechPolicyVersion: typeof OPENAI_NATIVE_SPEECH_POLICY_VERSION;
+  readonly speechScenarioId: 'generic_help_v1' | 'generic_unknown_v1';
 }
 
 export interface OpenAiNativeSpeechPreparationProof {
@@ -56,6 +61,9 @@ function assertProofInput(input: ProofInput): void {
     || !UUID.test(input.binding.turnId)
     || !validPositiveInteger(input.binding.contextRevision)
     || !SHA256_HEX.test(input.binding.contextDigest)
+    || input.binding.speechPolicyVersion !== OPENAI_NATIVE_SPEECH_POLICY_VERSION
+    || (input.binding.speechScenarioId !== 'generic_help_v1'
+      && input.binding.speechScenarioId !== 'generic_unknown_v1')
   ) throw new Error('Invalid OpenAI native speech proof input.');
 }
 
@@ -83,6 +91,8 @@ function proofHmac(input: ProofInput, domain: string, value: string): string {
   updateLengthPrefixed(mac, 'turnId', input.binding.turnId);
   updateLengthPrefixed(mac, 'contextRevision', input.binding.contextRevision);
   updateLengthPrefixed(mac, 'contextDigest', input.binding.contextDigest);
+  updateLengthPrefixed(mac, 'speechPolicyVersion', input.binding.speechPolicyVersion);
+  updateLengthPrefixed(mac, 'speechScenarioId', input.binding.speechScenarioId);
   updateLengthPrefixed(mac, 'value', value);
   return mac.digest('hex');
 }

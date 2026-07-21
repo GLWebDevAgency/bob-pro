@@ -14,6 +14,8 @@ const BINDING: OpenAiNativeSpeechProofBinding = Object.freeze({
   turnId: '33333333-3333-4333-8333-333333333333',
   contextRevision: 7,
   contextDigest: 'a'.repeat(64),
+  speechPolicyVersion: 1,
+  speechScenarioId: 'generic_help_v1',
 });
 
 function base() {
@@ -41,7 +43,7 @@ describe('OpenAI native speech proof v1', () => {
     })).not.toBe(canonical);
   });
 
-  it('lie la preuve au tenant, à la livraison, au contexte et à la version de clé', () => {
+  it('lie la preuve au tenant, à la livraison, au contexte, à la policy et à la version de clé', () => {
     const original = createOpenAiNativeSpeechTranscriptHmac({
       ...base(),
       transcript: 'Tout est prêt.',
@@ -53,6 +55,7 @@ describe('OpenAI native speech proof v1', () => {
         binding: { ...BINDING, deliveryId: '44444444-4444-4444-8444-444444444444' },
       },
       { ...base(), binding: { ...BINDING, contextRevision: 8 } },
+      { ...base(), binding: { ...BINDING, speechScenarioId: 'generic_unknown_v1' as const } },
       { ...base(), proofKeyVersion: 5 },
     ];
     for (const variant of variants) {
@@ -80,7 +83,7 @@ describe('OpenAI native speech proof v1', () => {
       proof.requestNonceHmac,
       responseIdHmac,
     ])).toHaveLength(4);
-    expect(proof).toMatchObject({ proofFormatVersion: 1, proofKeyVersion: 4 });
+    expect(proof).toMatchObject({ proofFormatVersion: 2, proofKeyVersion: 4 });
     expect(JSON.stringify(proof)).not.toContain('Reste dû');
     expect(JSON.stringify(proof)).not.toContain('request_nonce');
   });

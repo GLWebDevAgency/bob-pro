@@ -7,7 +7,8 @@
  */
 
 export const OPENAI_NATIVE_SPEECH_DELIVERY_VERSION = 1 as const;
-export const OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION = 1 as const;
+export const OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION = 2 as const;
+export const OPENAI_NATIVE_SPEECH_POLICY_VERSION = 1 as const;
 export const OPENAI_NATIVE_SPEECH_SLO_FORMAT_VERSION = 1 as const;
 export const OPENAI_NATIVE_SPEECH_DELIVERY_MAX_TTL_MS = 5 * 60 * 1_000;
 export const OPENAI_NATIVE_SPEECH_STOPPED_EVENT_TO_FIRST_INBOUND_RTP_MAX_MS = 60_000;
@@ -94,6 +95,8 @@ export interface OpenAiNativeSpeechDeliveryPreparation {
   readonly contextDigest: string;
   readonly sidebandOwnerEpoch: number;
   readonly sidebandOwnerTokenHmac: string;
+  readonly speechPolicyVersion: typeof OPENAI_NATIVE_SPEECH_POLICY_VERSION;
+  readonly speechScenarioId: 'generic_help_v1' | 'generic_unknown_v1';
   /** Version du format de normalisation/dérivation, indépendante de la version de clé. */
   readonly proofFormatVersion: typeof OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION;
   /** Version de clé de preuve ; indépendante de la version de machine et du contrôle. */
@@ -303,6 +306,8 @@ const STATE_KEYS: readonly (keyof OpenAiNativeSpeechDeliveryState)[] = [
   'contextDigest',
   'sidebandOwnerEpoch',
   'sidebandOwnerTokenHmac',
+  'speechPolicyVersion',
+  'speechScenarioId',
   'proofFormatVersion',
   'proofKeyVersion',
   'canonicalSpeechHmac',
@@ -479,6 +484,9 @@ function assertPreparation(
     || !isHmac(input.contextDigest)
     || !isSafeIntegerBetween(input.sidebandOwnerEpoch, 1, POSTGRES_INT_MAX)
     || !isHmac(input.sidebandOwnerTokenHmac)
+    || input.speechPolicyVersion !== OPENAI_NATIVE_SPEECH_POLICY_VERSION
+    || (input.speechScenarioId !== 'generic_help_v1'
+      && input.speechScenarioId !== 'generic_unknown_v1')
     || input.proofFormatVersion !== OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION
     || !isSafeIntegerBetween(input.proofKeyVersion, 1, POSTGRES_INT_MAX)
     || !isHmac(input.canonicalSpeechHmac)
@@ -512,6 +520,8 @@ export function createOpenAiNativeSpeechDelivery(
     contextDigest: input.contextDigest,
     sidebandOwnerEpoch: input.sidebandOwnerEpoch,
     sidebandOwnerTokenHmac: input.sidebandOwnerTokenHmac,
+    speechPolicyVersion: input.speechPolicyVersion,
+    speechScenarioId: input.speechScenarioId,
     proofFormatVersion: input.proofFormatVersion,
     proofKeyVersion: input.proofKeyVersion,
     canonicalSpeechHmac: input.canonicalSpeechHmac,
