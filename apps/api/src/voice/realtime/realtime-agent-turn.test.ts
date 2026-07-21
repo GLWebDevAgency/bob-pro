@@ -4,6 +4,7 @@ import type { AppError, Result } from '@bob/core';
 import { getPrincipal } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
 import {
+  classifyRealtimeAgentSpeechPurpose,
   RealtimeBobAgentTurnAdapter,
   realtimeAgentContextVersion,
   type RealtimeBobAgentExecutor,
@@ -78,6 +79,9 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       status: 'ready',
       canonicalSpeech: 'Réponse canonique.',
       navigate: '/devis/new',
+      speechPurpose: 'navigation',
+      speechSource: 'card_body',
+      hasTenantContext: true,
     });
     expect(h.runWithTenant).toHaveBeenCalledWith('company-1', expect.any(Function));
     expect(h.askBob).toHaveBeenCalledWith(
@@ -125,9 +129,25 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       kind: 'proposed',
       canonicalSpeech: 'Je prépare la relance. Tu veux que je le fasse ?',
       proposalId: '00000000-0000-4000-8000-000000000001',
+      speechPurpose: 'action_proposal',
+      speechSource: 'spoken_prompt',
+      hasTenantContext: true,
     });
     expect(result).not.toHaveProperty('navigate');
     expect(JSON.stringify(result)).not.toContain('private-id');
+  });
+
+  it('qualifie explicitement la provenance et ferme les réponses ambiguës sur business_answer', () => {
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), false))
+      .toBe('generic_assistance');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'unknown', naturalBody: 'Avec plaisir.' }), false))
+      .toBe('business_answer');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), true))
+      .toBe('business_answer');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ choices: [{ label: 'A', value: 'a' }] }), false))
+      .toBe('structured_choice');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ kind: 'done' }), false))
+      .toBe('action_result');
   });
 
   it('rend une erreur publique bornée sans exposer la cause interne', async () => {

@@ -102,6 +102,9 @@ function readyOutcome(): RealtimeAgentTurnOutcome {
     turnId: BRAIN_TURN_ID,
     canonicalSpeech: 'Cette facture reste à encaisser.',
     kind: 'answer',
+    speechPurpose: 'business_answer',
+    speechSource: 'card_body',
+    hasTenantContext: true,
     contextVersion: AGENT_CONTEXT_VERSION,
   };
 }

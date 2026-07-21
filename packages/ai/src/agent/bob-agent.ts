@@ -1209,6 +1209,27 @@ export interface AskOptions extends Omit<AgentAskPayload, 'message'> {
   signal?: AbortSignal;
 }
 
+const BOB_GENERIC_CAPABILITY_CATALOG = [
+  '· Facturation — « fais un devis pour Martin », « crée une facture pour Martin », « relance mes clients »',
+  '· Dépenses — « scanne ce ticket », « ajoute une dépense Leroy Merlin »',
+  '· Fiscal — « combien de TVA je dois ? », « mes échéances à venir », « suis-je prêt pour la facturation électronique ? »',
+  '· Pilotage — « comment va mon activité ? », « qui me doit de l’argent ? », « combien je peux me verser ? »',
+].join('\n');
+
+/**
+ * Gabarits génériques déterministes. Ils ne contiennent aucune donnée tenant ; le routeur
+ * acoustique les compare exactement avant d'autoriser un scénario natif à faible risque.
+ */
+export const BOB_GENERIC_ASSISTANCE_SPEECH = Object.freeze({
+  help:
+    'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n'
+    + BOB_GENERIC_CAPABILITY_CATALOG,
+  unknown:
+    'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). '
+    + 'Voici ce que je sais faire :\n'
+    + BOB_GENERIC_CAPABILITY_CATALOG,
+} as const);
+
 /**
  * Cerveau agentique de Bob. Mappe une demande en langage naturel vers un OUTIL (= use case),
  * applique la politique de confirmation (autonomie), puis exécute. Parité totale : tout ce que
@@ -1437,17 +1458,6 @@ export class BobAgent {
     return result;
   }
 
-  /** DÉCOUVRABILITÉ (S9) : catalogue des capacités PAR DOMAINE, un exemple parlé chacun —
-   * les exemples sont des commandes CANONIQUES qui matchent detectIntent à coup sûr. */
-  private capabilityCatalog(): string {
-    return [
-      '· Facturation — « fais un devis pour Martin », « encaisse la facture 2026-014 », « relance les retards »',
-      '· Dépenses — « scanne ce ticket », « j’ai payé Leroy Merlin hier par carte »',
-      '· Fiscal — « combien de TVA je dois ? », « mes échéances à venir », « prêt pour 2026 ? »',
-      '· Pilotage — « comment va mon activité ? », « qui me doit de l’argent ? », « combien je peux me verser ? »',
-    ].join('\n');
-  }
-
   private unknownRun(model: string): AgentRun {
     return {
       kind: 'answer',
@@ -1456,10 +1466,7 @@ export class BobAgent {
       plan: ['Comprendre la demande'],
       card: {
         title: 'Bob',
-        body:
-          'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
-          'Voici ce que je sais faire :\n' +
-          this.capabilityCatalog(),
+        body: BOB_GENERIC_ASSISTANCE_SPEECH.unknown,
       },
     };
   }
@@ -1474,9 +1481,7 @@ export class BobAgent {
       plan: ['Présenter les capacités'],
       card: {
         title: 'Ce que je sais faire',
-        body:
-          'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n' +
-          this.capabilityCatalog(),
+        body: BOB_GENERIC_ASSISTANCE_SPEECH.help,
       },
     };
   }

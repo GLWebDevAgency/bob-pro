@@ -10,6 +10,10 @@ import {
 import type { AppError, Result } from '@bob/core';
 import { requestContext } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
+import type {
+  OpenAiNativeSpeechPurpose,
+  OpenAiNativeSpeechSource,
+} from './openai-native-speech-risk';
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
 
@@ -41,6 +45,10 @@ export interface RealtimeAgentTurnReady {
   readonly turnId: string;
   readonly canonicalSpeech: string;
   readonly kind: AgentRun['kind'];
+  /** Provenance déterministe utilisée par le routeur acoustique ; jamais fournie par le LLM. */
+  readonly speechPurpose: OpenAiNativeSpeechPurpose;
+  readonly speechSource: OpenAiNativeSpeechSource;
+  readonly hasTenantContext: boolean;
   readonly contextVersion: RealtimeAgentContextVersion;
   readonly navigate?: string;
   readonly proposalId?: string;
@@ -109,15 +117,29 @@ function sameContextVersion(
 
 const CONTEXT_UNAVAILABLE_SPEECH = 'Je ne peux pas vérifier le contexte de cet écran. Rien n’a été exécuté.';
 
-function canonicalSpeech(run: AgentRun): string {
-  const value = run.spokenPrompt ?? run.naturalBody ?? run.card.body ?? run.card.title;
-  return value
+interface SelectedCanonicalSpeech {
+  readonly text: string;
+  readonly source: OpenAiNativeSpeechSource;
+}
+
+function canonicalSpeech(run: AgentRun): SelectedCanonicalSpeech {
+  const selected = run.spokenPrompt !== undefined
+    ? { value: run.spokenPrompt, source: 'spoken_prompt' as const }
+    : run.naturalBody !== undefined
+      ? { value: run.naturalBody, source: 'natural_body' as const }
+      : run.card.body !== undefined
+        ? { value: run.card.body, source: 'card_body' as const }
+        : { value: run.card.title, source: 'card_title' as const };
+  return {
+    text: selected.value
     // Les contrôles n'ont aucune valeur vocale et pourraient modifier la trame sideband.
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, MAX_CANONICAL_SPEECH_CHARS);
+    .slice(0, MAX_CANONICAL_SPEECH_CHARS),
+    source: selected.source,
+  };
 }
 
 function safeFailureSpeech(error: AppError): string {
@@ -128,6 +150,26 @@ function safeFailureSpeech(error: AppError): string {
     return "Je ne peux pas traiter cette demande dans cet espace. Tu peux continuer manuellement dans l’application.";
   }
   return "Je rencontre un souci temporaire. Rien n’a été exécuté.";
+}
+
+export function classifyRealtimeAgentSpeechPurpose(
+  run: AgentRun,
+  hasScreenContext: boolean,
+): OpenAiNativeSpeechPurpose {
+  if (run.kind === 'proposed' || run.pending !== undefined) return 'action_proposal';
+  if (run.kind === 'done') return 'action_result';
+  if (run.navigate !== undefined) return 'navigation';
+  if ((run.ask?.length ?? 0) > 0 || (run.choices?.length ?? 0) > 0) {
+    return 'structured_choice';
+  }
+  // Seuls les gabarits d'aide générique, sans contexte tenant et sans naturalisation LLM,
+  // peuvent demander le chemin conversationnel. Tout autre answer est un fait métier potentiel.
+  if (
+    !hasScreenContext
+    && run.naturalBody === undefined
+    && (run.intent === 'aide' || run.intent === 'unknown')
+  ) return 'generic_assistance';
+  return 'business_answer';
 }
 
 /**
@@ -197,15 +239,18 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     if (!result.ok) return { status: 'failed', canonicalSpeech: safeFailureSpeech(result.error) };
 
     const speech = canonicalSpeech(result.value);
-    if (!speech) {
+    if (!speech.text) {
       return { status: 'failed', canonicalSpeech: 'Je n’ai pas de réponse fiable à te donner pour le moment.' };
     }
     const pending = result.value.pending;
     return {
       status: 'ready',
       turnId: randomUUID(),
-      canonicalSpeech: speech,
+      canonicalSpeech: speech.text,
       kind: result.value.kind,
+      speechPurpose: classifyRealtimeAgentSpeechPurpose(result.value, input.context !== undefined),
+      speechSource: speech.source,
+      hasTenantContext: input.context !== undefined,
       contextVersion: input.contextFence.expected,
       ...(isAllowedAgentNavigationRoute(result.value.navigate)
         ? { navigate: result.value.navigate }

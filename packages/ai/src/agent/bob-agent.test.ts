@@ -1872,7 +1872,7 @@ describe('BobAgent — découvrabilité (S9 : aide + catalogue par domaines)', (
     expect(r.value.card.body).toContain('Dépenses');
     expect(r.value.card.body).toContain('Fiscal');
     expect(r.value.card.body).toContain('Pilotage');
-    expect(r.value.card.body).toContain('encaisse la facture 2026-014');
+    expect(r.value.card.body).toContain('crée une facture pour Martin');
     // Un mode d'emploi, pas un refus : la phrase d'écartement hors-périmètre n'apparaît pas.
     expect(r.value.card.body).not.toContain('hors de ce périmètre');
   });
