@@ -8,14 +8,14 @@ import { VoiceTraceRecorder, voiceTurnStitchesToTranscript } from './voice-trace
 
 const SPOKEN = 'facture Martin quinze mille euros';
 
-function harness(startMs = 1_700_000_000_000) {
+function harness(startMs = 1_700_000_000_000, logger = new AppLogger()) {
   const persistence = new InMemoryPersistence();
   const traces = persistence.voiceTraces as unknown as InMemoryVoiceTraceRepository;
   const reporter: ErrorReporter = { captureException: vi.fn() };
   let clockMs = startMs;
   const recorder = new VoiceTraceRecorder(
     persistence as unknown as Persistence,
-    new AppLogger(),
+    logger,
     reporter,
     () => clockMs,
   );
@@ -29,7 +29,9 @@ function harness(startMs = 1_700_000_000_000) {
   };
 }
 
-function transcription(overrides: Partial<Parameters<VoiceTraceRecorder['noteTranscription']>[0]> = {}) {
+function transcription(
+  overrides: Partial<Parameters<VoiceTraceRecorder['noteTranscription']>[0]> = {},
+) {
   return {
     companyId: 'co_1',
     userId: 'usr_1',
@@ -205,6 +207,54 @@ describe('VoiceTraceRecorder — les trois niveaux d’alerte', () => {
     expect(trace?.reason).toContain('voice-stt');
   });
 
+  it('conserve le diagnostic sensible en base RLS mais ne le laisse jamais sortir dans les logs', async () => {
+    const logger = new AppLogger();
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const secret = 'Client Dupont — facture 12 000 EUR';
+    const { recorder, traces } = harness(1_700_000_000_000, logger);
+
+    recorder.noteTranscription(
+      transcription({
+        transcript: null,
+        error: { kind: 'dependency', port: 'voice-stt', cause: secret },
+      }),
+    );
+    await recorder.flush();
+
+    expect(traces.list()[0]?.reason).toContain(secret);
+    const logged = JSON.stringify(errorLog.mock.calls);
+    expect(logged).toContain('dependency');
+    expect(logged).toContain('voice-stt');
+    expect(logged).not.toContain('Dupont');
+    expect(logged).not.toContain('12 000');
+  });
+
+  it('journalise le nombre de validations sans exposer leurs champs ou messages libres', async () => {
+    const logger = new AppLogger();
+    const warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const secret = 'Montant privé de Martin : 18 450 EUR';
+    const { recorder, traces } = harness(1_700_000_000_000, logger);
+
+    recorder.noteTranscription(transcription());
+    recorder.notePlanning(
+      planning({
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'invoice.amount', message: secret }],
+        },
+        reply: null,
+      }),
+    );
+    await recorder.flush();
+
+    expect(traces.list()[0]?.reason).toContain(secret);
+    const logged = JSON.stringify(warnLog.mock.calls);
+    expect(logged).toContain('validationIssueCount');
+    expect(logged).not.toContain('invoice.amount');
+    expect(logged).not.toContain('Martin');
+    expect(logged).not.toContain('18 450');
+  });
+
   it('une dégradation assumée (unavailable) reste un refus, pas une anomalie', async () => {
     const { recorder, traces } = harness();
     recorder.noteTranscription(transcription());
@@ -237,7 +287,9 @@ describe('VoiceTraceRecorder — raccord du tour et frontière avec le texte', (
   afterEach(() => vi.unstubAllEnvs());
 
   it('raccorde même si le client préfixe le transcript', () => {
-    expect(voiceTurnStitchesToTranscript(SPOKEN, `Contexte : écran factures. ${SPOKEN}`)).toBe(true);
+    expect(voiceTurnStitchesToTranscript(SPOKEN, `Contexte : écran factures. ${SPOKEN}`)).toBe(
+      true,
+    );
   });
 
   it('ne raccorde pas deux textes étrangers', () => {
@@ -276,7 +328,9 @@ describe('VoiceTraceRecorder — raccord du tour et frontière avec le texte', (
     const { recorder, traces } = harness();
     recorder.noteTranscription(transcription());
     recorder.noteTranscription(transcription({ userId: 'usr_2', transcript: 'devis Dupont' }));
-    recorder.notePlanning(planning({ userId: 'usr_2', message: 'devis Dupont', tool: 'creer_devis' }));
+    recorder.notePlanning(
+      planning({ userId: 'usr_2', message: 'devis Dupont', tool: 'creer_devis' }),
+    );
     await recorder.flush();
     const rows = traces.list();
     expect(rows.find((row) => row.userId === 'usr_1')?.outcome).toBe('heard');
@@ -305,7 +359,8 @@ describe('VoiceTraceRecorder — la trace s’efface devant l’usage', () => {
 
   it('se coupe et alerte après 5 échecs consécutifs, sans marteler la base', async () => {
     const persistence = new InMemoryPersistence();
-    persistence.voiceTraces.openTurn = () => Promise.reject(new Error('base indisponible'));
+    const secret = 'Échec stockage facture Dupont 12 000 EUR';
+    persistence.voiceTraces.openTurn = () => Promise.reject(new Error(secret));
     const reporter: ErrorReporter = { captureException: vi.fn() };
     let clockMs = 1_700_000_000_000;
     const recorder = new VoiceTraceRecorder(
@@ -320,6 +375,11 @@ describe('VoiceTraceRecorder — la trace s’efface devant l’usage', () => {
       await recorder.flush();
     }
     expect(reporter.captureException).toHaveBeenCalledTimes(1);
+    const reported = vi.mocked(reporter.captureException).mock.calls[0]?.[0];
+    expect(reported).toBeInstanceOf(Error);
+    expect((reported as Error).name).toBe('VoiceTracePersistenceError');
+    expect((reported as Error).message).toBe('voice-trace-write');
+    expect((reported as Error).message).not.toContain('Dupont');
 
     const calls = vi.mocked(persistence.voiceTraces.openTurn).mock?.calls?.length;
     recorder.noteTranscription(transcription());

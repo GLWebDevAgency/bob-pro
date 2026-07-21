@@ -69,6 +69,9 @@ jobs:
       # crée la fixture minimale `storage.objects` et une preuve liée à GITHUB_SHA, afin que le
       # vrai script d'activation soit exercé ensuite. Le garde du test refuse tout hôte distant.
       DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'
+      # Bucket canonique de la fixture Storage éphémère. La preuve d'audit et le script de
+      # cutover consomment cette même valeur : aucune hypothèse implicite ne peut diverger.
+      SUPABASE_STORAGE_BUCKET: documents
       # Clés déterministes réservées à la base PostgreSQL éphémère de CI. Elles arment le même
       # protocole prepare/retire que la production sans dépendre d'un secret externe.
       BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'

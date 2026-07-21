@@ -573,7 +573,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Avoir légal — certification PostgreSQL/F
     const sourceId = `source-vat-${randomUUID()}`;
     const creditId = `credit-vat-${randomUUID()}`;
     await persistence.runWithTenant(companyA, async () => {
-      await persistence.invoices.save(
+      await persistIssuedFixture(
+        persistence,
         issuedInvoice({
           id: sourceId,
           companyId: companyA,

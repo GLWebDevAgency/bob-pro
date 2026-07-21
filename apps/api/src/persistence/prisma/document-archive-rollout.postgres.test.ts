@@ -54,7 +54,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     const activationInventoryDigest = '1'.repeat(64);
     const activationReportSha256 = '2'.repeat(64);
     const activationValidatorEvidenceDigest = '3'.repeat(64);
-    const activationStorageBucket = 'documents';
+    const activationStorageBucket = process.env.SUPABASE_STORAGE_BUCKET ?? 'documents';
     const validatorVersions = {
       representationDetector: 1,
       mustang: '2.24.0',
