@@ -19,11 +19,14 @@ import {
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import {
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
+  MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   REALTIME_AGENT_TURN,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
+import { REALTIME_REAPER_DIRECTORY } from './realtime-reaper.scheduler';
 import type { RealtimeVoiceSettings } from './realtime.types';
+import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
 import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
@@ -402,5 +405,50 @@ describe('RealtimeVoiceModule — maintenance durable OpenAI native', () => {
       | undefined;
     expect(factory?.({ createOpenAiNativeSpeechMaintenance: create })).toBe(create.mock.results[0]?.value);
     expect(create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('RealtimeVoiceModule — annuaire durable du reaper admission', () => {
+  it('compose le port PostgreSQL séparé sans ScheduledTenantDirectory', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const directory = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === REALTIME_REAPER_DIRECTORY);
+    expect(directory).toMatchObject({ inject: [PERSISTENCE] });
+
+    const created = {
+      listDueCompanyIds: vi.fn(), renewClaim: vi.fn(), acknowledgeClaim: vi.fn(),
+    };
+    const create = vi.fn(() => created);
+    const factory = (directory as FactoryProvider | undefined)?.useFactory as
+      | ((persistence: Pick<Persistence, 'createRealtimeReaperDirectory'>) => unknown)
+      | undefined;
+    expect(factory?.({ createRealtimeReaperDirectory: create })).toBe(created);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('conserve aussi l’autorité de terminaison Mistral en mode drain-only', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const termination = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === MISTRAL_REALTIME_TERMINATION_AUTHORITY);
+    const factory = (termination as FactoryProvider | undefined)?.useFactory as
+      | ((settings: RealtimeVoiceSettings) => MistralRealtimeTerminationAuthority | null)
+      | undefined;
+
+    expect(factory?.({ enabled: false, provider: 'mistral' } as RealtimeVoiceSettings))
+      .toBeInstanceOf(MistralRealtimeTerminationAuthority);
+    expect(factory?.({ enabled: false, provider: 'openai' } as RealtimeVoiceSettings))
+      .toBeNull();
   });
 });

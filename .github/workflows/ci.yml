@@ -133,6 +133,12 @@ jobs:
             sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           sh apps/api/scripts/release.sh
+      - name: Certify Bob Live admission and fair reaper on ephemeral PostgreSQL
+        env:
+          RUN_POSTGRES_REALTIME_ADMISSION_CERT: 'true'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/realtime-admission.postgres.test.ts
       - name: Certify Mistral durable authority on the ephemeral mixed-key range
         run: |
           BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \

@@ -63,6 +63,8 @@ import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-c
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
 import { PrismaOpenAiNativeSpeechMaintenance } from '../../voice/realtime/openai-native-speech-maintenance.prisma';
 import type { OpenAiNativeSpeechMaintenancePort } from '../../voice/realtime/openai-native-speech-maintenance';
+import { PrismaRealtimeReaperDirectory } from '../../voice/realtime/realtime-reaper-directory.prisma';
+import type { RealtimeReaperDirectoryPort } from '../../voice/realtime/realtime-reaper-directory';
 import { PrismaStripeBillingRepository } from './stripe-billing.repository';
 import type { MistralConversationPersistenceKeyRing } from '../../voice/realtime/mistral-conversation-outbox-seal';
 import {
@@ -150,6 +152,10 @@ export class PrismaPersistence implements Persistence {
 
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
     return new PrismaOpenAiNativeSpeechMaintenance(this.prisma);
+  }
+
+  createRealtimeReaperDirectory(): RealtimeReaperDirectoryPort {
+    return new PrismaRealtimeReaperDirectory(this.prisma);
   }
 
   createMistralRealtimeIngressTicketAuthority(

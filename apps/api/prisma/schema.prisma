@@ -1933,6 +1933,43 @@ model RealtimeNativeSpeechMaintenanceCursor {
   @@map("realtime_native_speech_maintenance_cursors")
 }
 
+/// Projection conservative du prochain travail reaper. Les triggers N-1/N ne déplacent un minimum
+/// que vers le passé ; le reaper tenanté réconcilie ensuite la valeur exacte sous advisory lock.
+model RealtimeReaperTenantSchedule {
+  companyId          String    @id @db.Text
+  oldestAdmissionAt  DateTime? @db.Timestamptz(6)
+  nextLeaseDueAt     DateTime? @db.Timestamptz(6)
+  revision           BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_reaper_tenant_schedule")
+}
+
+/// Curseur technique du reaper provider-neutral. Les pages dues sont louées et ACKées par une
+/// fonction SECURITY DEFINER minimale ; aucun repository applicatif n'accède directement ici.
+model RealtimeReaperDirectoryCursor {
+  singleton                      Boolean   @id @default(true)
+  afterAdmissionCompanyId        String?   @db.Text
+  cycleUpperAdmissionCompanyId   String?   @db.Text
+  cycleAdmissionCutoffAt         DateTime? @db.Timestamptz(6)
+  afterLeaseCompanyId            String?   @db.Text
+  cycleUpperLeaseCompanyId       String?   @db.Text
+  cycleLeaseCutoffAt             DateTime? @db.Timestamptz(6)
+  preferLease                    Boolean   @default(true)
+  pendingCompanyIds              String[]  @default([])
+  pendingAfterAdmissionCompanyId String?  @db.Text
+  pendingAfterLeaseCompanyId     String?  @db.Text
+  pendingAdmissionHasMore        Boolean?
+  pendingLeaseHasMore            Boolean?
+  pendingPreferLease             Boolean?
+  claimId                        String?   @db.Uuid
+  claimExpiresAt                 DateTime? @db.Timestamptz(6)
+  revision                       BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_reaper_directory_cursor")
+}
+
 /// Action UI opaque, chiffrée et liée par XOR à une seule preuve de livraison acoustique. Le
 /// défaut `audited_artifact`/v1 conserve byte-for-byte les writers historiques ; le domaine
 /// `provider_stream`/v2 reste séparé. Une grant ne peut jamais être modifiée.

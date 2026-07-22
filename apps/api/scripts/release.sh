@@ -1428,6 +1428,246 @@ $$;
 SQL
 }
 
+ensure_realtime_reaper_directory_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SELECT format(
+  'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  'bob_realtime_reaper_directory'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_reaper_directory'
+) \gexec
+
+ALTER ROLE bob_realtime_reaper_directory
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+DO $$
+DECLARE authority pg_catalog.pg_roles%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT authority
+    FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_reaper_directory';
+  IF authority.rolcanlogin OR authority.rolsuper OR authority.rolcreatedb
+     OR authority.rolcreaterole OR authority.rolinherit OR authority.rolreplication
+     OR authority.rolbypassrls THEN
+    RAISE EXCEPTION 'Realtime reaper directory role privilege drift';
+  END IF;
+END;
+$$;
+
+SELECT format('REVOKE %I FROM %I CASCADE', parent.rolname, 'bob_realtime_reaper_directory')
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS parent ON parent.oid = membership.roleid
+ WHERE membership.member = 'bob_realtime_reaper_directory'::regrole
+\gexec
+SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_reaper_directory', member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
+   AND member.rolname <> current_user
+\gexec
+
+GRANT bob_realtime_reaper_directory TO CURRENT_USER
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SQL
+}
+
+provision_realtime_reaper_directory() {
+  ensure_realtime_reaper_directory_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+       'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+       'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+       'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+     )
+       AND function.proowner NOT IN (
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
+         'bob_realtime_reaper_directory'::regrole
+       )
+  ) THEN
+    RAISE EXCEPTION 'Realtime reaper directory function has an unexpected owner';
+  END IF;
+END;
+$$;
+
+GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_reaper_directory;
+SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_reaper_directory', function.oid::regprocedure)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+   'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+   'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+   'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+ )
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+
+SET LOCAL ROLE bob_realtime_reaper_directory;
+REVOKE ALL ON FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() FROM PUBLIC;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SECURITY DEFINER;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SECURITY DEFINER;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SECURITY DEFINER;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SECURITY DEFINER;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET search_path = pg_catalog;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET search_path = pg_catalog;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET search_path = pg_catalog;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SET row_security = on;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET row_security = on;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET row_security = on;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET row_security = on;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET statement_timeout = '4s';
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1()
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET lock_timeout = '1s';
+
+SELECT format('REVOKE ALL ON FUNCTION %s FROM %I CASCADE',
+              function.oid::regprocedure, grantee.rolname)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid IN (
+   'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+   'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+   'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+   'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+ )
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+SELECT format('GRANT EXECUTE ON FUNCTION %s TO %I', function.oid::regprocedure, :'app_role')
+  FROM pg_catalog.pg_proc AS function
+ WHERE :'app_role' <> ''
+   AND function.oid IN (
+     'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+     'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+     'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure
+   )
+\gexec
+RESET ROLE;
+
+REVOKE CREATE ON SCHEMA public FROM bob_realtime_reaper_directory;
+GRANT USAGE ON SCHEMA public TO bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_admission_events FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_session_leases FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_mistral_conversation_bootstrap_tickets
+  FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_mistral_conversation_missions
+  FROM bob_realtime_reaper_directory;
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM bob_realtime_reaper_directory CASCADE',
+  attribute.attname, attribute.attrelid::regclass
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid IN (
+   'public.realtime_admission_events'::regclass,
+   'public.realtime_session_leases'::regclass,
+   'public.realtime_mistral_conversation_bootstrap_tickets'::regclass,
+   'public.realtime_mistral_conversation_missions'::regclass
+ )
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_realtime_reaper_directory'::regrole
+\gexec
+-- Le rôle global ne voit plus aucune source tenantée. Les triggers ne font qu'abaisser la
+-- projection depuis leurs transition tables ; la réconciliation exacte reste tenantée.
+
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_tenant_schedule FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_reaper_tenant_schedule FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_reaper_tenant_schedule'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON TABLE public.realtime_reaper_tenant_schedule TO bob_realtime_reaper_directory;
+SELECT format(
+  'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_reaper_tenant_schedule TO %I',
+  :'app_role'
+)
+ WHERE :'app_role' <> ''
+\gexec
+
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_directory_cursor FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.realtime_reaper_directory_cursor'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_reaper_directory_cursor FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_reaper_directory_cursor'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT, UPDATE ON TABLE public.realtime_reaper_directory_cursor
+  TO bob_realtime_reaper_directory;
+
+SELECT format('REVOKE %I FROM %I CASCADE', owner.rolname, member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = membership.roleid
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE owner.rolname = 'bob_realtime_reaper_directory'
+   AND member.rolname = :'app_role'
+\gexec
+SQL
+}
+
+certify_realtime_reaper_release_metadata() {
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/realtime-reaper-release-cert.sql
+}
+
 certify_cabinet_worker_scope() {
   : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
   : "${CABINET_INVITATION_WORKER_ENABLED:?CABINET_INVITATION_WORKER_ENABLED is required}"
@@ -1541,6 +1781,7 @@ pnpm --filter '@bob/api...' run build
 # Révoque tout ancien SET ROLE runtime avant même que la migration SECURITY DEFINER soit visible.
 ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
+ensure_realtime_reaper_directory_role
 pnpm --filter @bob/api exec prisma migrate deploy
 node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_generated_legal_storage_fence
@@ -1549,7 +1790,9 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
 provision_openai_native_maintenance_directory
+provision_realtime_reaper_directory
 certify_openai_native_release_metadata
+certify_realtime_reaper_release_metadata
 certify_document_archive_evidence_privacy
 
 trap cleanup_release_on_exit EXIT

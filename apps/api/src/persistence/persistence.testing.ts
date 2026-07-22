@@ -51,6 +51,10 @@ import {
   DisabledOpenAiNativeSpeechMaintenance,
   type OpenAiNativeSpeechMaintenancePort,
 } from '../voice/realtime/openai-native-speech-maintenance';
+import {
+  DisabledRealtimeReaperDirectory,
+  type RealtimeReaperDirectoryPort,
+} from '../voice/realtime/realtime-reaper-directory';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
@@ -142,6 +146,9 @@ export class InMemoryPersistence implements Persistence {
   }
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
     return new DisabledOpenAiNativeSpeechMaintenance();
+  }
+  createRealtimeReaperDirectory(): RealtimeReaperDirectoryPort {
+    return new DisabledRealtimeReaperDirectory();
   }
   createMistralRealtimeIngressTicketAuthority(
     _policy: MistralRealtimeIngressTicketPolicy,

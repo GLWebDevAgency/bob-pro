@@ -48,6 +48,7 @@ BEGIN
     'document_counters',
     'realtime_admission_events',
     'realtime_session_leases',
+    'realtime_reaper_tenant_schedule',
     'realtime_mistral_ingress_tickets',
     'realtime_mistral_conversation_bootstrap_tickets',
     'realtime_mistral_conversation_missions',
@@ -345,11 +346,19 @@ DROP POLICY IF EXISTS tenant_isolation ON realtime_admission_events;
 CREATE POLICY tenant_isolation ON realtime_admission_events
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS realtime_admission_event_reaper_directory_select
+  ON realtime_admission_events;
+DROP POLICY IF EXISTS realtime_admission_event_reaper_schedule_select
+  ON realtime_admission_events;
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_session_leases;
 CREATE POLICY tenant_isolation ON realtime_session_leases
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS realtime_session_lease_reaper_directory_select
+  ON realtime_session_leases;
+DROP POLICY IF EXISTS realtime_session_lease_reaper_schedule_select
+  ON realtime_session_leases;
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_ingress_tickets;
 CREATE POLICY tenant_isolation ON realtime_mistral_ingress_tickets
@@ -749,6 +758,88 @@ CREATE POLICY realtime_speech_artifact_update ON realtime_speech_artifacts
   FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Annuaire provider-neutral du reaper admission. Le rôle propriétaire NOLOGIN est provisionné et
+-- ses ACL sont normalisées par release.sh après chaque replay RLS.
+-- Les fonctions appartiennent après la première release au rôle NOLOGIN directory. Leur ACL ne
+-- peut donc être normalisée ici par un DIRECT_URL BYPASSRLS non-superuser/non-INHERIT. Le
+-- provisionnement owner-scoped qui suit immédiatement ce replay les révoque et les certifie.
+REVOKE ALL ON TABLE public.realtime_reaper_tenant_schedule FROM PUBLIC;
+REVOKE ALL ON TABLE public.realtime_reaper_directory_cursor FROM PUBLIC;
+ALTER TABLE public.realtime_reaper_tenant_schedule ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_tenant_schedule FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_directory_cursor ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_directory_cursor FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_authority
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_select
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_insert
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_update
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_delete
+  ON public.realtime_reaper_tenant_schedule;
+CREATE POLICY realtime_reaper_tenant_schedule_authority
+  ON public.realtime_reaper_tenant_schedule FOR ALL
+  USING (
+    current_user = 'bob_realtime_reaper_directory'
+    OR current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner
+        FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+    ))
+  )
+  WITH CHECK (
+    current_user = 'bob_realtime_reaper_directory'
+    OR current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner
+        FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+    ))
+  );
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_select
+  ON public.realtime_reaper_tenant_schedule FOR SELECT
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_insert
+  ON public.realtime_reaper_tenant_schedule FOR INSERT
+  WITH CHECK ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_update
+  ON public.realtime_reaper_tenant_schedule FOR UPDATE
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''))
+  WITH CHECK ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_delete
+  ON public.realtime_reaper_tenant_schedule FOR DELETE
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+DROP POLICY IF EXISTS realtime_reaper_directory_cursor_select
+  ON public.realtime_reaper_directory_cursor;
+DROP POLICY IF EXISTS realtime_reaper_directory_cursor_update
+  ON public.realtime_reaper_directory_cursor;
+CREATE POLICY realtime_reaper_directory_cursor_select
+  ON public.realtime_reaper_directory_cursor FOR SELECT
+  USING (current_user = 'bob_realtime_reaper_directory');
+CREATE POLICY realtime_reaper_directory_cursor_update
+  ON public.realtime_reaper_directory_cursor FOR UPDATE
+  USING (current_user = 'bob_realtime_reaper_directory')
+  WITH CHECK (current_user = 'bob_realtime_reaper_directory');
+DO $$
+DECLARE
+  exposed_role TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_tenant_schedule FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_directory_cursor FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
 
 -- Preuve OpenAI RTP native : CAS tenanté et DELETE de rétention doublement borné. Le seul helper
 -- global exposable ne renvoie que les identifiants des tenants ayant du travail déjà dû.

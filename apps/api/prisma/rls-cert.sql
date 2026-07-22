@@ -30,6 +30,66 @@ SELECT pg_temp.assert_eq(
 SELECT pg_temp.assert_eq(
   (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
      FROM pg_class
+    WHERE oid = 'public.realtime_reaper_tenant_schedule'::regclass),
+  1,
+  'realtime reaper tenant schedule has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_reaper_tenant_schedule'),
+  5,
+  'realtime reaper tenant schedule exposes exactly five policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS required(privilege_name)
+    WHERE has_table_privilege(
+      current_user, 'public.realtime_reaper_tenant_schedule', required.privilege_name
+    )),
+  4,
+  'runtime role can reconcile only its tenant reaper schedule'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_reaper_tenant_schedule',
+    'TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot truncate, reference or retarget the reaper schedule'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_reaper_directory_cursor',
+    'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot access the global reaper cursor'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.sync_realtime_reaper_tenant_schedule_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke the schedule trigger authority directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM unnest(ARRAY[
+       'public.list_realtime_reaper_tenants_v1(integer,uuid)',
+       'public.ack_realtime_reaper_tenants_v1(uuid)',
+       'public.renew_realtime_reaper_tenants_claim_v1(uuid)'
+     ]) AS capability(signature)
+    WHERE has_function_privilege(current_user, capability.signature, 'EXECUTE')),
+  3,
+  'runtime role receives the three bounded reaper directory capabilities'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
     WHERE oid = 'public.realtime_native_speech_deliveries'::regclass),
   1,
   'native speech delivery has enabled and forced RLS'
@@ -281,6 +341,71 @@ SELECT pg_temp.assert_eq(
       )),
   0,
   'runtime role has no inherited native cursor column privilege'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_reaper_directory_cursor'::regclass),
+  1,
+  'realtime reaper directory cursor has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_reaper_directory_cursor'
+      AND policyname IN (
+        'realtime_reaper_directory_cursor_select',
+        'realtime_reaper_directory_cursor_update'
+      )
+      AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_realtime_reaper_directory%'),
+  2,
+  'realtime reaper cursor exposes exactly two directory-only policies'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.list_realtime_reaper_tenants_v1(integer,uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke the bounded realtime reaper directory'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.ack_realtime_reaper_tenants_v1(uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can ACK only its opaque realtime reaper claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.renew_realtime_reaper_tenants_claim_v1(uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can heartbeat only its opaque realtime reaper claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN pg_has_role(current_user, 'bob_realtime_reaper_directory', 'SET')
+    THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot SET ROLE to realtime reaper directory owner'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user, 'public.realtime_reaper_directory_cursor',
+    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot read or mutate realtime reaper cursor directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_attribute AS attribute
+    WHERE attribute.attrelid = 'public.realtime_reaper_directory_cursor'::regclass
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege(
+        current_user, attribute.attrelid, attribute.attnum,
+        'SELECT,INSERT,UPDATE,REFERENCES'
+      )),
+  0,
+  'runtime role has no inherited realtime reaper cursor column privilege'
 );
 SELECT pg_temp.assert_eq(
   CASE WHEN has_function_privilege(
@@ -1051,6 +1176,79 @@ VALUES (
   CURRENT_TIMESTAMP + INTERVAL '15 minutes', 1, 1, '{"screen":{"name":"RLS","instanceId":"rls"},"entities":[],"capabilities":[]}'::jsonb,
   repeat('e', 64), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
 );
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule
+    WHERE "companyId" = 'rls-co-a'
+      AND "oldestAdmissionAt" IS NOT DISTINCT FROM (
+        SELECT min("admittedAt") FROM realtime_admission_events
+         WHERE "companyId" = 'rls-co-a'
+      )
+      AND "nextLeaseDueAt" IS NOT DISTINCT FROM (
+        SELECT min(LEAST("leaseExpiresAt", "hardExpiresAt"))
+          FROM realtime_session_leases
+         WHERE "companyId" = 'rls-co-a' AND state IN ('reserved', 'active', 'reaping')
+      )),
+  1,
+  'realtime schedule tenant A is materialized from its exact source minima'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_reaper_tenant_schedule (
+      "companyId", "oldestAdmissionAt", "nextLeaseDueAt", revision
+    ) VALUES (
+      'rls-co-b', CURRENT_TIMESTAMP - INTERVAL '1 hour', NULL, 0
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+SET LOCAL app.current_company_id = 'rls-co-b';
+INSERT INTO realtime_reaper_tenant_schedule (
+  "companyId", "oldestAdmissionAt", "nextLeaseDueAt", revision
+) VALUES (
+  'rls-co-b', CURRENT_TIMESTAMP - INTERVAL '1 hour',
+  CURRENT_TIMESTAMP - INTERVAL '30 minutes', 0
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b'),
+  1,
+  'realtime schedule tenant B can be reconciled in its own context'
+);
+SET LOCAL app.current_company_id = 'rls-co-a';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule),
+  1,
+  'tenant A sees only its own realtime schedule after B exists'
+);
+DO $$
+DECLARE
+  affected BIGINT;
+BEGIN
+  UPDATE realtime_reaper_tenant_schedule
+     SET revision = revision + 1
+   WHERE "companyId" = 'rls-co-b';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 0 THEN
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule update affected %', affected;
+  END IF;
+  DELETE FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 0 THEN
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule delete affected %', affected;
+  END IF;
+
+  UPDATE realtime_reaper_tenant_schedule
+     SET revision = revision + 1
+   WHERE "companyId" = 'rls-co-a';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 1 THEN
+    RAISE EXCEPTION 'RLS cert failed: own reaper schedule update affected %', affected;
+  END IF;
+END;
+$$;
 INSERT INTO realtime_mistral_ingress_tickets (
   id, "companyId", "subjectHash", "subjectKeyVersion", "sessionId", "ticketHash", protocol,
   state, plan, "contextSchemaVersion", "contextRevision", "contextDigest",
@@ -1101,6 +1299,16 @@ SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 0, 'tenant B cannot see tenant A realtime event');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 0, 'tenant B cannot see tenant A realtime lease');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 0, 'tenant B cannot see tenant A Mistral ticket');
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-a'),
+  0,
+  'tenant B cannot see tenant A realtime schedule after global discovery'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b'),
+  1,
+  'tenant B still sees its own realtime schedule after global discovery'
+);
 ROLLBACK;
 
 -- Bob Live durable : séquence globale DB, quatrième fence, preuve acoustique sans contenu,

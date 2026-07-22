@@ -12,7 +12,6 @@ import {
 import { allowedCorsOrigins } from '../../config/cors';
 import { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
-import { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
 import { PersistenceModule } from '../../persistence/persistence.module';
 import type { Persistence } from '../../persistence/persistence';
 import { PERSISTENCE } from '../../persistence/persistence-token';
@@ -23,7 +22,7 @@ import {
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
-  REALTIME_REAPER_TENANT_DIRECTORY,
+  REALTIME_REAPER_DIRECTORY,
   RealtimeAdmissionReaperScheduler,
 } from './realtime-reaper.scheduler';
 import {
@@ -210,10 +209,34 @@ const mistralRealtimeTerminationAuthorityProvider: Provider = {
   provide: MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   inject: [REALTIME_VOICE_SETTINGS],
   useFactory: (settings: RealtimeVoiceSettings) =>
-    settings.enabled && settings.provider === 'mistral'
+    settings.provider === 'mistral'
       ? new MistralRealtimeTerminationAuthority()
       : null,
 };
+
+/**
+ * Le kill-switch ferme les nouvelles admissions, jamais le drain des appels déjà persistés.
+ * L'adapter du provider sélectionné reste donc enregistré même lorsque `enabled=false` ; retirer
+ * ses credentials avant zéro lease relève du protocole de bascule C4, pas de ce switch runtime.
+ */
+export function buildRealtimeProviderTerminationRegistry(
+  settings: RealtimeVoiceSettings,
+  openAi: OpenAiRealtimeCallProvider,
+  mistral: MistralRealtimeTerminationAuthority | null,
+  conversation: MistralConversationTerminalReplayRuntime | null,
+): RealtimeProviderTerminationRegistry {
+  const adapters = [];
+  if (settings.provider === 'openai') {
+    adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
+  }
+  if (mistral || conversation) {
+    adapters.push(new MistralConversationTerminationRouter(
+      mistral,
+      conversation?.termination ?? null,
+    ));
+  }
+  return new RealtimeProviderTerminationRegistry(adapters);
+}
 
 const providerTerminationRegistryProvider: Provider = {
   provide: REALTIME_PROVIDER_TERMINATION_REGISTRY,
@@ -228,19 +251,7 @@ const providerTerminationRegistryProvider: Provider = {
     openAi: OpenAiRealtimeCallProvider,
     mistral: MistralRealtimeTerminationAuthority | null,
     conversation: MistralConversationTerminalReplayRuntime | null,
-  ) => {
-    const adapters = [];
-    if (settings.enabled && settings.provider === 'openai') {
-      adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
-    }
-    if (mistral || conversation) {
-      adapters.push(new MistralConversationTerminationRouter(
-        mistral,
-        conversation?.termination ?? null,
-      ));
-    }
-    return new RealtimeProviderTerminationRegistry(adapters);
-  },
+  ) => buildRealtimeProviderTerminationRegistry(settings, openAi, mistral, conversation),
 };
 
 const admissionProvider: Provider = {
@@ -501,11 +512,10 @@ const realtimeEntitlementProvider: Provider = {
     ),
 };
 
-const reaperTenantDirectoryProvider: Provider = {
-  provide: REALTIME_REAPER_TENANT_DIRECTORY,
-  inject: [PERSISTENCE, AppLogger],
-  useFactory: (persistence: Persistence, logger: AppLogger) =>
-    new ScheduledTenantDirectory(persistence, logger),
+const realtimeReaperDirectoryProvider: Provider = {
+  provide: REALTIME_REAPER_DIRECTORY,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createRealtimeReaperDirectory(),
 };
 
 const openAiNativeSpeechMaintenanceProvider: Provider = {
@@ -565,7 +575,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,
-    reaperTenantDirectoryProvider,
+    realtimeReaperDirectoryProvider,
     openAiNativeSpeechMaintenanceProvider,
     realtimeSpeechDeliveryProvider,
     realtimeSpeechSourcePolicyProvider,

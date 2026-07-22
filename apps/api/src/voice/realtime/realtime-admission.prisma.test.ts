@@ -47,7 +47,14 @@ function claimed(databaseNow: Date) {
 
 function harness(queryResults: readonly unknown[]) {
   const queries = [...queryResults];
-  const queryRaw = vi.fn(async () => {
+  const queryRaw = vi.fn(async (strings: readonly string[]) => {
+    const sql = strings.join('');
+    if (sql.includes("set_config('statement_timeout'")) {
+      return [{ statementTimeout: '3s', lockTimeout: '1s' }];
+    }
+    if (sql.includes('realtime_reaper_tenant_schedule') && sql.includes('FOR UPDATE')) {
+      return [];
+    }
     if (queries.length === 0) throw new Error('Unexpected SQL query.');
     return queries.shift();
   });
@@ -57,10 +64,18 @@ function harness(queryResults: readonly unknown[]) {
     _companyId: string,
     operation: (client: Prisma.TransactionClient) => Promise<unknown>,
   ) => operation(tx));
+  const withIsolatedTenant = vi.fn(async (
+    _companyId: string,
+    operation: (client: Prisma.TransactionClient) => Promise<unknown>,
+  ) => operation(tx));
   return {
-    value: new PrismaRealtimeAdmission({ withTenant } as unknown as PrismaService, policy),
+    value: new PrismaRealtimeAdmission(
+      { withTenant, withIsolatedTenant } as unknown as PrismaService,
+      policy,
+    ),
     queryRaw,
     executeRaw,
+    withIsolatedTenant,
   };
 }
 
@@ -97,12 +112,17 @@ describe('PrismaRealtimeAdmission — preuve hard-expired', () => {
         },
       })],
     });
-    const claimSql = sqlAt(h.queryRaw, 1);
+    const claimSql = sqlAt(h.queryRaw, 2);
     expect(claimSql).toContain('clock_timestamp() AS "databaseNow"');
     expect(claimSql).toContain('AND version =');
     expect(claimSql).toContain('AND "providerId" =');
     expect(claimSql).toContain('AND "providerCallId" =');
-    expect(h.executeRaw).toHaveBeenCalledTimes(4);
+    expect(h.executeRaw).toHaveBeenCalledTimes(5);
+    expect(h.withIsolatedTenant).toHaveBeenCalledWith(
+      COMPANY,
+      expect.any(Function),
+      { maxWaitMs: 1_000, timeoutMs: 4_000 },
+    );
   });
 
   it('laisse la preuve à null quand seul le heartbeat est expiré avant le hard cap', async () => {

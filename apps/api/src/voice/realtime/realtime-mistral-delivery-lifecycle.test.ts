@@ -34,7 +34,14 @@ function prismaHarness(input: {
 }) {
   const queries = [...(input.queries ?? [])];
   const executions = [...(input.executions ?? [])];
-  const queryRaw = vi.fn(async () => {
+  const queryRaw = vi.fn(async (strings: readonly string[]) => {
+    const sql = strings.join('');
+    if (sql.includes("set_config('statement_timeout'")) {
+      return [{ statementTimeout: '3s', lockTimeout: '1s' }];
+    }
+    if (sql.includes('realtime_reaper_tenant_schedule') && sql.includes('FOR UPDATE')) {
+      return [];
+    }
     if (queries.length === 0) throw new Error('Unexpected query.');
     return queries.shift();
   });
@@ -47,8 +54,12 @@ function prismaHarness(input: {
     _companyId: string,
     operation: (client: Prisma.TransactionClient) => Promise<unknown>,
   ) => operation(tx));
+  const withIsolatedTenant = vi.fn(async (
+    _companyId: string,
+    operation: (client: Prisma.TransactionClient) => Promise<unknown>,
+  ) => operation(tx));
   return {
-    prisma: { withTenant } as unknown as PrismaService,
+    prisma: { withTenant, withIsolatedTenant } as unknown as PrismaService,
     queryRaw,
     executeRaw,
   };
@@ -224,18 +235,22 @@ describe('Bob Live Mistral — cycle terminaison puis livraison', () => {
     const h = prismaHarness({
       queries: [[]],
       // tenant lock, journal, reserved stale, completed Mistral drain
-      executions: [0, 0, 0, 1],
+      executions: [0, 0, 0, 1, 1],
     });
     const admission = new PrismaRealtimeAdmission(h.prisma, admissionPolicy);
 
     await expect(admission.claimExpired({ companyId: COMPANY, limit: 10 }))
       .resolves.toEqual({ ok: true, claims: [] });
 
-    expect(h.executeRaw).toHaveBeenCalledTimes(4);
+    expect(h.executeRaw).toHaveBeenCalledTimes(5);
     const terminalCleanup = sqlAt(h.executeRaw, 3);
-    expect(terminalCleanup).toMatch(/USING realtime_mistral_ingress_tickets AS ticket/u);
+    expect(terminalCleanup).toMatch(/JOIN realtime_mistral_ingress_tickets AS ticket/u);
     expect(terminalCleanup).toMatch(/ticket\.state IN \('completed', 'abandoned'\)/u);
     expect(terminalCleanup).toMatch(/ticket\."providerTermination" = 'confirmed'/u);
-    expect(sqlAt(h.queryRaw, 0)).toMatch(/FOR UPDATE SKIP LOCKED/u);
+    expect(terminalCleanup).toMatch(/FOR UPDATE OF lease SKIP LOCKED/u);
+    expect(terminalCleanup).toMatch(/LIMIT \?/u);
+    expect(terminalCleanup).toMatch(/DELETE FROM realtime_session_leases AS lease USING candidates/u);
+    expect(sqlAt(h.queryRaw, 0)).toMatch(/set_config\('statement_timeout'/u);
+    expect(sqlAt(h.queryRaw, 1)).toMatch(/FOR UPDATE SKIP LOCKED/u);
   });
 });

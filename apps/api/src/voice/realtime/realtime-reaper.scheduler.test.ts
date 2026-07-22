@@ -3,16 +3,18 @@ import type { AppLogger } from '../../observability/logger';
 import type { RealtimeAdmissionPort, RealtimeReapingClaim } from './realtime-admission';
 import {
   RealtimeAdmissionReaperScheduler,
-  type RealtimeReaperTenantDirectory,
 } from './realtime-reaper.scheduler';
+import type { RealtimeReaperDirectoryPort } from './realtime-reaper-directory';
 import {
   RealtimeProviderTerminationRegistry,
   realtimeProviderTerminationAdapter,
 } from './realtime-provider-registry';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import { buildRealtimeProviderTerminationRegistry } from './realtime.module';
 
 const NOW = Date.parse('2026-07-14T10:00:00.000Z');
+const DIRECTORY_CLAIM_ID = '10000000-0000-4000-8000-000000000001';
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -79,14 +81,28 @@ function settings(
 function scheduler(input: {
   admission: RealtimeAdmissionPort;
   provider?: OpenAiRealtimeCallProvider | RealtimeProviderTerminationRegistry;
-  tenants?: RealtimeReaperTenantDirectory;
+  directory?: RealtimeReaperDirectoryPort;
   enabled?: boolean;
   selectedProvider?: RealtimeVoiceSettings['provider'];
+  options?: Partial<{
+    maxTenantsPerSweep: number;
+    maxClaimsPerTenant: number;
+    maxConcurrentTenants: number;
+    maxConcurrentHangups: number;
+    shutdownGraceMs: number;
+  }>;
 }) {
   return new RealtimeAdmissionReaperScheduler(
     input.admission,
     input.provider ?? providerStub(),
-    input.tenants ?? { listCompanyIds: async () => ['company-a'] },
+    input.directory ?? {
+      listDueCompanyIds: async () => ({
+        status: 'succeeded', companyIds: ['company-a'], hasMore: false,
+        claimId: DIRECTORY_CLAIM_ID,
+      }),
+      renewClaim: async () => ({ status: 'succeeded', renewed: true }),
+      acknowledgeClaim: async () => ({ status: 'succeeded', acknowledged: true }),
+    },
     settings(input.enabled ?? true, input.selectedProvider ?? 'openai'),
     loggerStub(),
     {
@@ -94,6 +110,7 @@ function scheduler(input: {
       maxClaimsPerTenant: 2,
       maxConcurrentTenants: 2,
       maxConcurrentHangups: 2,
+      ...input.options,
     },
   );
 }
@@ -207,6 +224,34 @@ describe('Bob Live — reaper multi-réplique', () => {
     });
   });
 
+  it('continue le drain OpenAI quand le kill-switch ferme les nouvelles admissions', async () => {
+    const reaping = claim();
+    const hangupCall = vi.fn(async () => undefined);
+    const completeReaping = vi.fn(async () => ({ ok: true as const, reason: null }));
+    const admission = admissionStub({
+      claimExpired: vi.fn(async () => ({ ok: true as const, claims: [reaping] })),
+      completeReaping,
+    });
+    const drainSettings = settings(false, 'openai');
+    const providers = buildRealtimeProviderTerminationRegistry(
+      drainSettings,
+      providerStub(hangupCall),
+      null,
+      null,
+    );
+
+    const result = await scheduler({
+      admission,
+      provider: providers,
+      enabled: false,
+      selectedProvider: 'openai',
+    }).sweep();
+
+    expect(result).toMatchObject({ claims: 1, terminated: 1, failures: 0 });
+    expect(hangupCall).toHaveBeenCalledWith(reaping.providerCallId);
+    expect(completeReaping).toHaveBeenCalledOnce();
+  });
+
   it('conserve le fence quand le provider échoue et distingue une admission indisponible', async () => {
     const claims = [claim('company-a', '1')];
     const completeReaping = vi.fn(async () => ({ ok: true as const, reason: null }));
@@ -219,14 +264,28 @@ describe('Bob Live — reaper multi-réplique', () => {
     const provider = providerStub(vi.fn(async () => {
       throw new Error('provider unavailable');
     }));
+    const acknowledgeClaim = vi.fn(async () => ({
+      status: 'succeeded' as const, acknowledged: true,
+    }));
     const result = await scheduler({
       admission,
       provider,
-      tenants: { listCompanyIds: async () => ['company-a', 'company-b'] },
+      directory: {
+        listDueCompanyIds: async () => ({
+          status: 'succeeded', companyIds: ['company-a', 'company-b'], hasMore: false,
+          claimId: DIRECTORY_CLAIM_ID,
+        }),
+        renewClaim: async () => ({ status: 'succeeded', renewed: true }),
+        acknowledgeClaim,
+      },
     }).sweep();
 
     expect(result).toMatchObject({ tenants: 2, claims: 1, terminated: 0, failures: 2, unavailableTenants: 1 });
     expect(completeReaping).not.toHaveBeenCalled();
+    // L'ACK porte sur le scan, pas sur la réussite métier : les leases/events non traités restent
+    // dus et seront repris au cycle suivant sans affamer les tenants placés après eux.
+    expect(acknowledgeClaim).toHaveBeenCalledWith({ claimId: DIRECTORY_CLAIM_ID });
+    expect(result.claimUnacknowledged).toBe(false);
   });
 
   it('route chaque claim selon son provider persisté, même si les call ids sont identiques', async () => {
@@ -299,16 +358,23 @@ describe('Bob Live — reaper multi-réplique', () => {
     expect(completeReaping).not.toHaveBeenCalled();
   });
 
-  it('déduplique, filtre et borne les tenants avant tout claim', async () => {
+  it('renouvelle la page avant chaque tenant et ne l’acquitte qu’après le traitement intégral', async () => {
     const claimExpired = vi.fn(async () => ({ ok: true as const, claims: [] }));
     const admission = admissionStub({ claimExpired });
+    const renewClaim = vi.fn(async () => ({ status: 'succeeded' as const, renewed: true }));
+    const acknowledgeClaim = vi.fn(async () => ({
+      status: 'succeeded' as const, acknowledged: true,
+    }));
     const reaper = new RealtimeAdmissionReaperScheduler(
       admission,
       providerStub(),
       {
-        listCompanyIds: async () => [
-          'company-a', 'company-a', 'invalid/tenant', 'company-b', 'company-c',
-        ],
+        listDueCompanyIds: async () => ({
+          status: 'succeeded', companyIds: ['company-a', 'company-b'], hasMore: true,
+          claimId: DIRECTORY_CLAIM_ID,
+        }),
+        renewClaim,
+        acknowledgeClaim,
       },
       settings(),
       loggerStub(),
@@ -316,23 +382,113 @@ describe('Bob Live — reaper multi-réplique', () => {
     );
     const result = await reaper.sweep();
     expect(result.tenants).toBe(2);
+    expect(result.discoverySaturated).toBe(true);
     expect(claimExpired).toHaveBeenCalledTimes(2);
     expect(claimExpired).toHaveBeenNthCalledWith(1, { companyId: 'company-a', limit: 1 });
     expect(claimExpired).toHaveBeenNthCalledWith(2, { companyId: 'company-b', limit: 1 });
+    expect(renewClaim).toHaveBeenCalledTimes(2);
+    expect(acknowledgeClaim).toHaveBeenCalledWith({ claimId: DIRECTORY_CLAIM_ID });
   });
 
-  it('évite les sweeps locaux chevauchants et reste inerte quand Bob Live est désactivé', async () => {
-    const tenantGate = deferred();
-    const tenants = { listCompanyIds: vi.fn(() => tenantGate.promise.then(() => ['company-a'])) };
-    const admission = admissionStub();
-    const reaper = scheduler({ admission, tenants });
-    const first = reaper.sweep();
-    await vi.waitFor(() => expect(tenants.listCompanyIds).toHaveBeenCalledOnce());
-    await expect(reaper.sweep()).resolves.toMatchObject({ skipped: true });
-    tenantGate.resolve();
-    await expect(first).resolves.toMatchObject({ skipped: false });
+  it('abandonne la page sans traitement ni ACK dès que son claim est perdu', async () => {
+    const claimExpired = vi.fn(async () => ({ ok: true as const, claims: [] }));
+    const acknowledgeClaim = vi.fn(async () => ({
+      status: 'succeeded' as const, acknowledged: true,
+    }));
+    const result = await scheduler({
+      admission: admissionStub({ claimExpired }),
+      directory: {
+        listDueCompanyIds: async () => ({
+          status: 'succeeded', companyIds: ['company-a', 'company-b'], hasMore: true,
+          claimId: DIRECTORY_CLAIM_ID,
+        }),
+        renewClaim: async () => ({ status: 'succeeded', renewed: false }),
+        acknowledgeClaim,
+      },
+    }).sweep();
 
-    const disabled = scheduler({ admission, tenants: { listCompanyIds: vi.fn() }, enabled: false });
-    await expect(disabled.sweep()).resolves.toMatchObject({ skipped: true, tenants: 0 });
+    expect(result).toMatchObject({
+      tenants: 2,
+      failures: 1,
+      claimUnacknowledged: true,
+      discoverySaturated: true,
+    });
+    expect(claimExpired).not.toHaveBeenCalled();
+    expect(acknowledgeClaim).not.toHaveBeenCalled();
+  });
+
+  it('signale un ACK indisponible après traitement sans rejouer localement la mutation', async () => {
+    const claimExpired = vi.fn(async () => ({ ok: true as const, claims: [] }));
+    const acknowledgeClaim = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const result = await scheduler({
+      admission: admissionStub({ claimExpired }),
+      directory: {
+        listDueCompanyIds: async () => ({
+          status: 'succeeded', companyIds: ['company-a'], hasMore: false,
+          claimId: DIRECTORY_CLAIM_ID,
+        }),
+        renewClaim: async () => ({ status: 'succeeded', renewed: true }),
+        acknowledgeClaim,
+      },
+    }).sweep();
+
+    expect(result).toMatchObject({ tenants: 1, failures: 1, claimUnacknowledged: true });
+    expect(claimExpired).toHaveBeenCalledOnce();
+    expect(acknowledgeClaim).toHaveBeenCalledOnce();
+  });
+
+  it('n’acquitte jamais une page interrompue par l’arrêt du processus', async () => {
+    const tenantGate = deferred();
+    const claimExpired = vi.fn(async () => {
+      await tenantGate.promise;
+      return { ok: true as const, claims: [] };
+    });
+    const acknowledgeClaim = vi.fn(async () => ({
+      status: 'succeeded' as const, acknowledged: true,
+    }));
+    const reaper = scheduler({
+      admission: admissionStub({ claimExpired }),
+      directory: {
+        listDueCompanyIds: async () => ({
+          status: 'succeeded', companyIds: ['company-a', 'company-b'], hasMore: true,
+          claimId: DIRECTORY_CLAIM_ID,
+        }),
+        renewClaim: async () => ({ status: 'succeeded', renewed: true }),
+        acknowledgeClaim,
+      },
+      options: { maxConcurrentTenants: 1, shutdownGraceMs: 20 },
+    });
+    const running = reaper.sweep();
+    await vi.waitFor(() => expect(claimExpired).toHaveBeenCalledOnce());
+
+    await reaper.onApplicationShutdown();
+    tenantGate.resolve();
+    await expect(running).resolves.toMatchObject({
+      tenants: 2,
+      claimUnacknowledged: true,
+    });
+    expect(claimExpired).toHaveBeenCalledOnce();
+    expect(acknowledgeClaim).not.toHaveBeenCalled();
+  });
+
+  it('évite les sweeps locaux chevauchants', async () => {
+    const directoryGate = deferred();
+    const directory: RealtimeReaperDirectoryPort = {
+      listDueCompanyIds: vi.fn(() => directoryGate.promise.then(() => ({
+        status: 'succeeded' as const, companyIds: ['company-a'], hasMore: false,
+        claimId: DIRECTORY_CLAIM_ID,
+      }))),
+      renewClaim: vi.fn(async () => ({ status: 'succeeded' as const, renewed: true })),
+      acknowledgeClaim: vi.fn(async () => ({
+        status: 'succeeded' as const, acknowledged: true,
+      })),
+    };
+    const admission = admissionStub();
+    const reaper = scheduler({ admission, directory });
+    const first = reaper.sweep();
+    await vi.waitFor(() => expect(directory.listDueCompanyIds).toHaveBeenCalledOnce());
+    await expect(reaper.sweep()).resolves.toMatchObject({ skipped: true });
+    directoryGate.resolve();
+    await expect(first).resolves.toMatchObject({ skipped: false });
   });
 });
