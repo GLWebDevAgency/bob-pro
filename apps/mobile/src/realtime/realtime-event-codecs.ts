@@ -27,7 +27,7 @@ export type DecodedRealtimeEvent =
   | { type: 'response_started'; controlReference?: RealtimeAgentControlReference }
   | { type: 'speech_started' }
   | { type: 'speech_stopped' }
-  | { type: 'audio_signal' }
+  | { type: 'audio_signal'; source: 'delta' | 'buffer_started' }
   | { type: 'audio_stopped' }
   | { type: 'audio_cleared' }
   | { type: 'response_done'; status: 'completed' | 'cancelled' | 'failed' | 'incomplete' }
@@ -137,11 +137,16 @@ export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
       return { type: 'speech_started' };
     case 'input_audio_buffer.speech_stopped':
       return { type: 'speech_stopped' };
-    case 'response.output_audio.delta':
+    case 'response.output_audio.delta': {
+      const responseId = providerResponseId(event.response_id);
+      return responseId
+        ? withProviderResponseId({ type: 'audio_signal', source: 'delta' }, responseId)
+        : { type: 'protocol_error', code: 'invalid_response_id' };
+    }
     case 'output_audio_buffer.started': {
       const responseId = providerResponseId(event.response_id);
       return responseId
-        ? withProviderResponseId({ type: 'audio_signal' }, responseId)
+        ? withProviderResponseId({ type: 'audio_signal', source: 'buffer_started' }, responseId)
         : { type: 'protocol_error', code: 'invalid_response_id' };
     }
     case 'output_audio_buffer.stopped': {

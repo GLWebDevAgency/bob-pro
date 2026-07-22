@@ -34,9 +34,13 @@ class FakeEventSource {
 }
 
 class FakeTrack {
-  readonly kind = 'audio';
+  readonly kind: 'audio' | 'video';
   enabled = true;
   stopCalls = 0;
+
+  constructor(kind: 'audio' | 'video' = 'audio') {
+    this.kind = kind;
+  }
 
   stop(): void {
     this.stopCalls += 1;
@@ -179,12 +183,17 @@ class FakePeer extends FakeEventSource {
       this.emit('iceconnectionstatechange');
     }
   }
-  receiveRemoteTrack(track = new FakeTrack()): { track: FakeTrack; transceiver: FakeTransceiver } {
-    const transceiver = new FakeTransceiver(track, 'recvonly');
+  receiveRemoteTrack(input: {
+    track?: FakeTrack;
+    transceiver?: FakeTransceiver;
+    receiver?: FakeTransceiver['receiver'] | null;
+  } = {}): { track: FakeTrack; transceiver: FakeTransceiver } {
+    const track = input.track ?? new FakeTrack();
+    const transceiver = input.transceiver ?? this.transceiver ?? new FakeTransceiver(track, 'recvonly');
     transceiver.receiver.track = track;
     this.emit('track', {
       track,
-      receiver: transceiver.receiver,
+      receiver: input.receiver === undefined ? transceiver.receiver : input.receiver,
       transceiver,
       streams: [],
     });
@@ -216,7 +225,7 @@ function runtimeHarness(
         closeChannelOnRemote: options.closeChannelOnRemote === true,
         localDescriptionGate: options.localDescriptionGate,
         remoteDescriptionGate: options.remoteDescriptionGate,
-        offerSdp: options.offerSdp ?? SEND_ONLY_OFFER_SDP,
+        offerSdp: options.offerSdp ?? SEND_ONLY_SDP,
       });
       peers.push(peer);
       return peer;
@@ -233,7 +242,7 @@ function runtimeHarness(
   return { peers, getUserMedia: getUserMediaMock, runtime };
 }
 
-const SEND_ONLY_OFFER_SDP = [
+const SEND_ONLY_SDP = [
   'v=0',
   'm=audio 9 UDP/TLS/RTP/SAVPF 111',
   'a=sendonly',
@@ -241,7 +250,7 @@ const SEND_ONLY_OFFER_SDP = [
   '',
 ].join('\r\n');
 
-const RECEIVE_ONLY_ANSWER_SDP = [
+const RECEIVE_ONLY_SDP = [
   'v=0',
   'm=audio 9 UDP/TLS/RTP/SAVPF 111',
   'a=recvonly',
@@ -249,7 +258,7 @@ const RECEIVE_ONLY_ANSWER_SDP = [
   '',
 ].join('\r\n');
 
-const HOSTILE_SEND_RECV_ANSWER_SDP = [
+const SEND_RECV_SDP = [
   'v=0',
   'm=audio 9 UDP/TLS/RTP/SAVPF 111',
   'a=sendrecv',
@@ -268,6 +277,12 @@ const realtimeConfig = {
   speechDelivery: 'audited-signed-url-v1' as const,
 };
 
+const nativeRealtimeConfig = {
+  ...realtimeConfig,
+  configVersion: 'bob-live-provider-neutral-v4',
+  speechDelivery: 'openai-native-webrtc-v1' as const,
+};
+
 function speechSourcePolicy(sessionHandle: string) {
   return {
     mode: 'signed-url-v1' as const,
@@ -276,9 +291,12 @@ function speechSourcePolicy(sessionHandle: string) {
   };
 }
 
-function client(answerSdp = RECEIVE_ONLY_ANSWER_SDP): BobClient {
+function client(
+  answerSdp = RECEIVE_ONLY_SDP,
+  config: RealtimeWebRtcNegotiation = realtimeConfig,
+): BobClient {
   return {
-    realtimeVoiceConfig: vi.fn(async () => ({ ok: true, value: realtimeConfig })),
+    realtimeVoiceConfig: vi.fn(async () => ({ ok: true, value: config })),
     createRealtimeVoiceCall: vi.fn(async (input: { sdp: string; sessionHandle?: string }) => ({
       ok: true,
       value: {
@@ -286,14 +304,18 @@ function client(answerSdp = RECEIVE_ONLY_ANSWER_SDP): BobClient {
         answerSdp,
         sessionHandle: input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
         hardExpiresAt: new Date(Date.now() + 900_000).toISOString(),
-        model: realtimeConfig.model,
-        voice: realtimeConfig.voice,
-        configVersion: realtimeConfig.configVersion,
-        maxSessionSeconds: realtimeConfig.maxSessionSeconds,
-        speechDelivery: realtimeConfig.speechDelivery,
-        speechSourcePolicy: speechSourcePolicy(
-          input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
-        ),
+        model: config.model,
+        voice: config.voice,
+        configVersion: config.configVersion,
+        maxSessionSeconds: config.maxSessionSeconds,
+        speechDelivery: config.speechDelivery,
+        ...(config.speechDelivery === 'audited-signed-url-v1'
+          ? {
+              speechSourcePolicy: speechSourcePolicy(
+                input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
+              ),
+            }
+          : {}),
       },
     })),
     hangupRealtimeVoiceCall: vi.fn(async () => ({ ok: true, value: { ended: true as const } })),
@@ -557,6 +579,11 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     expect(value.getSessionHandle()).toMatch(/^[0-9a-f-]{36}$/i);
     expect(bobClient.realtimeVoiceConfig).not.toHaveBeenCalled();
     expect(value.getProcessAudioLease()).not.toBeNull();
+    expect(value.capabilities).toEqual({
+      fullDuplex: false,
+      bargeIn: true,
+      remoteAudio: false,
+    });
     expect(value.getSpeechSourcePolicy()).toEqual(
       speechSourcePolicy(value.getSessionHandle()!),
     );
@@ -575,7 +602,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       speechDelivery: realtimeConfig.speechDelivery,
     });
     expect(bootstrapInput && 'sdp' in bootstrapInput ? bootstrapInput.sdp : null)
-      .toBe(SEND_ONLY_OFFER_SDP);
+      .toBe(SEND_ONLY_SDP);
     value.setMicrophoneEnabled(true);
     expect(stream.track.enabled).toBe(true);
   });
@@ -599,7 +626,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
 
   it('refuse une answer SDP qui autorise un downlink avant de l appliquer au peer', async () => {
     const stream = new FakeStream();
-    const bobClient = client(HOSTILE_SEND_RECV_ANSWER_SDP);
+    const bobClient = client(SEND_RECV_SDP);
     const harness = runtimeHarness(async () => stream);
     const value = transport(bobClient, harness);
     const errors: string[] = [];
@@ -640,7 +667,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     await waitUntil(() => vi.mocked(bobClient.hangupRealtimeVoiceCall).mock.calls.length === 1);
 
     expect(hostile.track.stopCalls).toBe(1);
-    expect(hostile.transceiver.stopCalls).toBe(1);
+    expect(hostile.transceiver.stopCalls).toBe(0);
     expect(harness.peers[0]!.channel.readyState).toBe('closed');
     expect(value.state).toMatchObject({ phase: 'closed', fallbackReason: 'provider_error' });
     expect(errors).toContain('provider_downlink_rejected');
@@ -666,7 +693,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     await waitUntil(() => vi.mocked(bobClient.hangupRealtimeVoiceCall).mock.calls.length === 1);
 
     expect(hostile.track.stopCalls).toBe(1);
-    expect(hostile.transceiver.stopCalls).toBe(1);
+    expect(hostile.transceiver.stopCalls).toBe(0);
     expect(harness.peers[0]!.channel.readyState).toBe('closed');
     expect(value.state).toMatchObject({ phase: 'closed', fallbackReason: 'provider_error' });
     expect(errors).toContain('provider_downlink_rejected');
@@ -690,7 +717,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
     const hostile = stalePeer.receiveRemoteTrack();
 
     expect(hostile.track.stopCalls).toBe(1);
-    expect(hostile.transceiver.stopCalls).toBe(1);
+    expect(hostile.transceiver.stopCalls).toBe(0);
     expect(value.state.phase).toBe('ready');
     expect(harness.peers).toHaveLength(2);
     expect(errors).not.toContain('provider_downlink_rejected');
@@ -764,7 +791,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       ok: true,
       value: {
         transport: 'webrtc',
-        answerSdp: RECEIVE_ONLY_ANSWER_SDP,
+        answerSdp: RECEIVE_ONLY_SDP,
         sessionHandle: handle!,
         hardExpiresAt: new Date(Date.now() + 900_000).toISOString(),
         model: realtimeConfig.model,
@@ -1054,5 +1081,373 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
 
     await waitUntil(() => value.state.phase === 'closed');
     expect(value.state.fallbackReason).toBe('provider_error');
+  });
+});
+
+describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
+  function nativeHarness(): {
+    bobClient: BobClient;
+    harness: RuntimeHarness;
+    value: RealtimeWebRtcTransport;
+  } {
+    const bobClient = client(SEND_RECV_SDP, nativeRealtimeConfig);
+    const harness = runtimeHarness(
+      async () => new FakeStream(),
+      { offerSdp: SEND_RECV_SDP },
+    );
+    return {
+      bobClient,
+      harness,
+      value: transport(bobClient, harness, nativeRealtimeConfig),
+    };
+  }
+
+  it('négocie exactement une m-line sendrecv et n ouvre la piste qu au buffer.started', async () => {
+    const { bobClient, harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+
+    expect(value.capabilities).toEqual({
+      fullDuplex: true,
+      bargeIn: true,
+      remoteAudio: true,
+    });
+    expect(value.getSpeechSourcePolicy()).toBeNull();
+    expect(peer.addTransceiverInit).toMatchObject({ direction: 'sendrecv' });
+    expect(peer.createOfferOptions).toEqual({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: false,
+    });
+    const bootstrapInput = vi.mocked(bobClient.createRealtimeVoiceCall).mock.calls[0]?.[0];
+    expect(bootstrapInput).toMatchObject({
+      speechDelivery: 'openai-native-webrtc-v1',
+      configVersion: nativeRealtimeConfig.configVersion,
+      sdp: SEND_RECV_SDP,
+    });
+
+    const remote = peer.receiveRemoteTrack();
+    expect(remote.transceiver).toBe(peer.transceiver);
+    expect(remote.track.enabled).toBe(false);
+    peer.channel.receive({ type: 'input_audio_buffer.speech_started' });
+    peer.channel.receive({ type: 'input_audio_buffer.speech_stopped' });
+    peer.channel.receive({ type: 'response.created', response: { id: 'resp_native' } });
+    peer.channel.receive({ type: 'response.output_audio.delta', response_id: 'resp_native', delta: 'opaque' });
+    expect(remote.track.enabled).toBe(false);
+    expect(value.state.phase).toBe('ready');
+    expect(value.metricsSnapshot().speechStoppedEventToFirstAudioSignalMs).toBeNull();
+
+    peer.channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_native' });
+    expect(remote.track.enabled).toBe(true);
+    expect(value.state.phase).toBe('bob_speaking');
+    expect(value.metricsSnapshot().speechStoppedEventToFirstAudioSignalMs).not.toBeNull();
+
+    // OpenAI peut terminer la génération avant que le buffer appareil soit drainé.
+    peer.channel.receive({
+      type: 'response.done',
+      response: { id: 'resp_native', status: 'completed' },
+    });
+    expect(remote.track.enabled).toBe(true);
+    expect(value.state.phase).toBe('bob_speaking');
+    peer.channel.receive({ type: 'output_audio_buffer.stopped', response_id: 'resp_native' });
+    expect(remote.track.enabled).toBe(false);
+    expect(value.state.phase).toBe('ready');
+  });
+
+  it('refuse une answer non sendrecv avant de l appliquer au peer natif', async () => {
+    const bobClient = client(RECEIVE_ONLY_SDP, nativeRealtimeConfig);
+    const harness = runtimeHarness(
+      async () => new FakeStream(),
+      { offerSdp: SEND_RECV_SDP },
+    );
+    const value = transport(bobClient, harness, nativeRealtimeConfig);
+
+    await expect(value.connect()).rejects.toMatchObject({ reason: 'provider_error' });
+
+    expect(harness.peers[0]!.setRemoteDescriptionCalls).toBe(0);
+    expect(value.state).toMatchObject({ phase: 'closed', fallbackReason: 'provider_error' });
+  });
+
+  it('termine une réponse tool-call sans audio et accepte immédiatement la suivante', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    const remote = peer.receiveRemoteTrack();
+
+    peer.channel.receive({ type: 'response.created', response: { id: 'resp_tool_only' } });
+    peer.channel.receive({
+      type: 'response.done',
+      response: { id: 'resp_tool_only', status: 'completed' },
+    });
+    expect(value.state.phase).toBe('ready');
+    expect(remote.track.enabled).toBe(false);
+
+    peer.channel.receive({ type: 'response.created', response: { id: 'resp_after_tool' } });
+    peer.channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_after_tool' });
+    expect(value.state.phase).toBe('bob_speaking');
+    expect(remote.track.enabled).toBe(true);
+  });
+
+  it('ne publie aucun controlReference legacy depuis le contrat natif V1', async () => {
+    const { harness, value } = nativeHarness();
+    const candidates: unknown[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'agent_control_candidate') candidates.push(event.reference);
+    });
+    await value.connect();
+    const peer = harness.peers[0]!;
+    peer.receiveRemoteTrack();
+    peer.channel.receive({
+      type: 'response.created',
+      response: {
+        id: 'resp_native_no_legacy_control',
+        metadata: {
+          bob_response_nonce: 'a'.repeat(32),
+          bob_turn_id: '00000000-0000-4000-8000-000000000010',
+          bob_turn_kind: 'done',
+          bob_context_revision: '7',
+          bob_context_digest: 'b'.repeat(64),
+        },
+      },
+    });
+    peer.channel.receive({
+      type: 'response.done',
+      response: { id: 'resp_native_no_legacy_control', status: 'completed' },
+    });
+
+    expect(candidates).toEqual([]);
+    expect(value.state.phase).toBe('ready');
+  });
+
+  it.each([
+    [
+      'deux m-lines audio',
+      `${SEND_RECV_SDP}m=audio 0 UDP/TLS/RTP/SAVPF 111\r\na=inactive\r\n`,
+    ],
+    [
+      'une m-line vidéo active',
+      `${SEND_RECV_SDP}m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendrecv\r\n`,
+    ],
+  ] as const)('refuse une offre native avec %s', async (_label, offerSdp) => {
+    const bobClient = client(SEND_RECV_SDP, nativeRealtimeConfig);
+    const harness = runtimeHarness(async () => new FakeStream(), { offerSdp });
+    const value = transport(bobClient, harness, nativeRealtimeConfig);
+
+    await expect(value.connect()).rejects.toMatchObject({ reason: 'bootstrap_failed' });
+
+    expect(bobClient.createRealtimeVoiceCall).not.toHaveBeenCalled();
+    expect(value.state.phase).toBe('closed');
+  });
+
+  it.each([
+    ['vidéo', (peer: FakePeer) => peer.receiveRemoteTrack({ track: new FakeTrack('video') })],
+    ['transceiver inattendue', (peer: FakePeer) => {
+      const track = new FakeTrack();
+      return peer.receiveRemoteTrack({
+        track,
+        transceiver: new FakeTransceiver(track, 'recvonly'),
+      });
+    }],
+  ] as const)('neutralise une piste %s et ferme uniquement sa génération', async (_label, inject) => {
+    const { bobClient, harness, value } = nativeHarness();
+    await value.connect();
+    const rejected = inject(harness.peers[0]!);
+
+    await waitUntil(() => value.state.phase === 'closed');
+
+    expect(rejected.track.enabled).toBe(false);
+    expect(rejected.track.stopCalls).toBe(1);
+    expect(value.state.fallbackReason).toBe('provider_error');
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+  });
+
+  it('refuse une deuxième piste distante au lieu de remplacer silencieusement la première', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    const accepted = peer.receiveRemoteTrack();
+    const duplicate = peer.receiveRemoteTrack();
+
+    await waitUntil(() => value.state.phase === 'closed');
+
+    expect(duplicate.track.enabled).toBe(false);
+    expect(duplicate.track.stopCalls).toBe(1);
+    expect(accepted.track.enabled).toBe(false);
+    expect(accepted.track.stopCalls).toBe(1);
+    expect(value.state.fallbackReason).toBe('provider_error');
+  });
+
+  it('neutralise une track tardive sans jamais fermer le peer natif reconnecté', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const stalePeer = harness.peers[0]!;
+    await value.close('fallback');
+    await value.connect();
+    expect(value.state.phase).toBe('ready');
+
+    const stale = stalePeer.receiveRemoteTrack();
+
+    expect(stale.track.enabled).toBe(false);
+    expect(stale.track.stopCalls).toBe(1);
+    expect(stale.transceiver.stopCalls).toBe(0);
+    expect(value.state.phase).toBe('ready');
+    expect(harness.peers).toHaveLength(2);
+  });
+
+  it('mute localement avant le réseau et envoie cancel puis clear au plus une fois', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    const remote = peer.receiveRemoteTrack();
+    const channel = peer.channel;
+    channel.receive({ type: 'response.created', response: { id: 'resp_barge' } });
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_barge' });
+    expect(remote.track.enabled).toBe(true);
+
+    const originalSend = channel.send.bind(channel);
+    const enabledAtSend: boolean[] = [];
+    let reentered = false;
+    vi.spyOn(channel, 'send').mockImplementation((payload: string) => {
+      enabledAtSend.push(remote.track.enabled);
+      originalSend(payload);
+      if (!reentered) {
+        reentered = true;
+        expect(value.interrupt('tap')).toBe(true);
+      }
+    });
+
+    expect(value.interrupt('user_speech')).toBe(true);
+    expect(value.interrupt('tap')).toBe(true);
+    expect(remote.track.enabled).toBe(false);
+    expect(enabledAtSend).toEqual([false, false]);
+    expect(channel.sent.map((event) => event.type)).toEqual([
+      'response.cancel',
+      'output_audio_buffer.clear',
+    ]);
+
+    // Des signaux tardifs de la réponse coupée ne peuvent jamais rouvrir la piste.
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_barge' });
+    expect(remote.track.enabled).toBe(false);
+    channel.receive({ type: 'output_audio_buffer.cleared', response_id: 'resp_barge' });
+    channel.receive({ type: 'response.created', response: { id: 'resp_next' } });
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_next' });
+    expect(remote.track.enabled).toBe(true);
+    channel.receive({ type: 'output_audio_buffer.stopped', response_id: 'resp_barge' });
+    channel.receive({ type: 'output_audio_buffer.cleared', response_id: 'resp_barge' });
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_barge' });
+    expect(remote.track.enabled).toBe(true);
+
+    expect(value.interrupt('tap')).toBe(true);
+    expect(remote.track.enabled).toBe(false);
+    channel.receive({ type: 'response.created', response: { id: 'resp_barge' } });
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_barge' });
+    expect(remote.track.enabled).toBe(false);
+    expect(channel.sent.map((event) => event.type)).toEqual([
+      'response.cancel',
+      'output_audio_buffer.clear',
+      'response.cancel',
+      'output_audio_buffer.clear',
+    ]);
+  });
+
+  it('échoue fermé sans retry si output_audio_buffer.clear ne part pas', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    const remote = peer.receiveRemoteTrack();
+    const channel = peer.channel;
+    channel.receive({ type: 'response.created', response: { id: 'resp_clear_failure' } });
+    channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_clear_failure' });
+
+    const originalSend = channel.send.bind(channel);
+    let clearAttempts = 0;
+    let remoteEnabledWhenNetworkWasCalled: boolean | null = null;
+    vi.spyOn(channel, 'send').mockImplementation((payload: string) => {
+      const decoded = JSON.parse(payload) as { type?: string };
+      remoteEnabledWhenNetworkWasCalled = remote.track.enabled;
+      if (decoded.type === 'output_audio_buffer.clear') {
+        clearAttempts += 1;
+        throw new Error('data channel write failed');
+      }
+      originalSend(payload);
+    });
+
+    expect(value.interrupt('tap')).toBe(true);
+    await waitUntil(() => value.state.phase === 'closed');
+
+    expect(remoteEnabledWhenNetworkWasCalled).toBe(false);
+    expect(clearAttempts).toBe(1);
+    expect(channel.sent.map((event) => event.type)).toEqual(['response.cancel']);
+    expect(value.interrupt('tap')).toBe(false);
+    expect(clearAttempts).toBe(1);
+    expect(value.state.fallbackReason).toBe('provider_error');
+  });
+
+  it('mesure le RTP entrant natif sans fermer la conversation', async () => {
+    vi.useFakeTimers();
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    peer.receiveRemoteTrack();
+    peer.setInboundPackets(0);
+    peer.channel.receive({ type: 'input_audio_buffer.speech_started' });
+    peer.channel.receive({ type: 'input_audio_buffer.speech_stopped' });
+    await Promise.resolve();
+    peer.channel.receive({ type: 'response.created', response: { id: 'resp_stats' } });
+    peer.channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_stats' });
+    peer.setInboundPackets(4);
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(value.state.phase).toBe('bob_speaking');
+    expect(value.metricsSnapshot().speechStoppedToFirstInboundRtpMs).not.toBeNull();
+    expect(value.metricsSnapshot()).toMatchObject({ jitterMs: 4, packetsLost: 0 });
+    expect(value.state.fallbackReason).toBeNull();
+  });
+
+  it('neutralise la piste distante synchroniquement puis la stoppe avant le peer', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const peer = harness.peers[0]!;
+    const remote = peer.receiveRemoteTrack();
+    peer.channel.receive({ type: 'response.created', response: { id: 'resp_close' } });
+    peer.channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_close' });
+    expect(remote.track.enabled).toBe(true);
+
+    const order: string[] = [];
+    const originalRemoteStop = remote.track.stop.bind(remote.track);
+    vi.spyOn(remote.track, 'stop').mockImplementation(() => {
+      order.push('remote-track');
+      originalRemoteStop();
+    });
+    const originalPeerClose = peer.close.bind(peer);
+    vi.spyOn(peer, 'close').mockImplementation(() => {
+      order.push('peer');
+      originalPeerClose();
+    });
+
+    const closing = value.close('user');
+    expect(remote.track.enabled).toBe(false);
+    await closing;
+
+    expect(order).toEqual(['remote-track', 'peer']);
+    expect(processAudioSession.snapshot().active).toBeNull();
+  });
+
+  it('conserve le lease et permet un retry si le stop de la piste distante échoue', async () => {
+    const { harness, value } = nativeHarness();
+    await value.connect();
+    const remote = harness.peers[0]!.receiveRemoteTrack();
+    vi.spyOn(remote.track, 'stop').mockImplementationOnce(() => {
+      throw new Error('remote stop failed');
+    });
+
+    await expect(value.close('fallback')).rejects.toMatchObject({ reason: 'provider_error' });
+    expect(value.state.phase).toBe('closing');
+    expect(processAudioSession.snapshot().active).toMatchObject({ owner: 'bob-live-webrtc' });
+
+    await expect(value.close('fallback')).resolves.toBeUndefined();
+    expect(remote.track.stopCalls).toBe(1);
+    expect(value.state.phase).toBe('closed');
+    expect(processAudioSession.snapshot().active).toBeNull();
   });
 });

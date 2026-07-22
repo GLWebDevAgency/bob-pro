@@ -8,7 +8,7 @@ describe('Bob Live — codecs événements Realtime', () => {
       delta: 'audio-base64-confidentiel',
       response_id: 'provider-id',
     }));
-    expect(decoded).toEqual({ type: 'audio_signal' });
+    expect(decoded).toEqual({ type: 'audio_signal', source: 'delta' });
     expect(JSON.stringify(decoded)).not.toContain('audio-base64-confidentiel');
     expect(JSON.stringify(decoded)).not.toContain('provider-id');
   });
@@ -95,7 +95,7 @@ describe('Bob Live — codecs événements Realtime', () => {
     expect(decodeRealtimeServerEvent({
       type: 'output_audio_buffer.started',
       response_id: 'provider-secret',
-    })).toEqual({ type: 'audio_signal' });
+    })).toEqual({ type: 'audio_signal', source: 'buffer_started' });
     expect(decodeRealtimeServerEvent({
       type: 'output_audio_buffer.stopped',
       response_id: 'resp_stopped',
