@@ -78,6 +78,7 @@ import {
 } from './mistral-conversation-terminal-replay';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
 import { DisabledMistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
+import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import {
   ActiveMistralRealtimeIngressRuntime,
   DisabledMistralRealtimeIngressRuntime,
@@ -89,6 +90,7 @@ import {
   MISTRAL_CONVERSATION_RESUME_AUTHORITY,
   MISTRAL_CONVERSATION_BOOTSTRAP_AUTHORITY,
   MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
+  OPENAI_NATIVE_SPEECH_MAINTENANCE,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
   REALTIME_AGENT_TURN,
@@ -506,6 +508,12 @@ const reaperTenantDirectoryProvider: Provider = {
     new ScheduledTenantDirectory(persistence, logger),
 };
 
+const openAiNativeSpeechMaintenanceProvider: Provider = {
+  provide: OPENAI_NATIVE_SPEECH_MAINTENANCE,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createOpenAiNativeSpeechMaintenance(),
+};
+
 const realtimeSpeechDeliveryProvider: Provider = {
   provide: RealtimeSpeechDeliveryService,
   inject: [PERSISTENCE, AppLogger, REALTIME_SPEECH_RUNTIME],
@@ -558,11 +566,13 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeEntitlementProvider,
     sidebandProvider,
     reaperTenantDirectoryProvider,
+    openAiNativeSpeechMaintenanceProvider,
     realtimeSpeechDeliveryProvider,
     realtimeSpeechSourcePolicyProvider,
     mistralRealtimeIngressRuntimeProvider,
     RealtimeAdmissionReaperScheduler,
     MistralConversationBootstrapReaperScheduler,
+    OpenAiNativeSpeechMaintenanceScheduler,
     RealtimeVoiceService,
   ],
   exports: [MISTRAL_REALTIME_INGRESS_RUNTIME],

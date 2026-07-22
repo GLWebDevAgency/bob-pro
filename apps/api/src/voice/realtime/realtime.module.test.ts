@@ -18,9 +18,11 @@ import {
 } from './realtime-mistral-ingress-ticket';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import {
+  OPENAI_NATIVE_SPEECH_MAINTENANCE,
   REALTIME_AGENT_TURN,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
+import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import type { RealtimeVoiceSettings } from './realtime.types';
 import {
   buildMistralConversationBootstrapReaperOptions,
@@ -375,4 +377,30 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
       ).toBe(provider);
     },
   );
+});
+
+describe('RealtimeVoiceModule — maintenance durable OpenAI native', () => {
+  it('compose une capacité DB séparée depuis Persistence sans annuaire de jobs configuré', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const maintenance = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === OPENAI_NATIVE_SPEECH_MAINTENANCE);
+    expect(maintenance).toMatchObject({ inject: [PERSISTENCE] });
+    expect(providers).toContain(OpenAiNativeSpeechMaintenanceScheduler);
+
+    const create = vi.fn(() => ({
+      listDueCompanyIds: vi.fn(), acknowledgeDueCompanyIds: vi.fn(),
+      renewDueCompanyIdsClaim: vi.fn(), reapExpired: vi.fn(), purgeRetained: vi.fn(),
+    }));
+    const factory = (maintenance as FactoryProvider | undefined)?.useFactory as
+      | ((persistence: Pick<Persistence, 'createOpenAiNativeSpeechMaintenance'>) => unknown)
+      | undefined;
+    expect(factory?.({ createOpenAiNativeSpeechMaintenance: create })).toBe(create.mock.results[0]?.value);
+    expect(create).toHaveBeenCalledOnce();
+  });
 });

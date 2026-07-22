@@ -36,9 +36,47 @@ SELECT pg_temp.assert_eq(
 );
 SELECT pg_temp.assert_eq(
   (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'realtime_native_speech_maintenance_cursors'),
+  2,
+  'native maintenance cursor exposes no extra policy'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
     WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'),
-  3,
-  'native speech delivery exposes exactly three policies'
+  6,
+  'native speech delivery exposes exactly six policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_native_speech_maintenance_cursors'::regclass),
+  1,
+  'native maintenance cursor has enabled and forced RLS during rolling deploy'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'realtime_native_speech_maintenance_cursors'
+      AND policyname IN (
+        'realtime_native_speech_maintenance_cursor_directory_select',
+        'realtime_native_speech_maintenance_cursor_directory_update'
+      )
+      AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_openai_native_maintenance_directory%'),
+  2,
+  'native maintenance cursor exposes exactly two directory-only policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_due_directory_select'
+      AND cmd = 'SELECT' AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_openai_native_maintenance_directory%'
+      AND qual LIKE '%expiresAt%'
+      AND qual LIKE '%retentionExpiresAt%'),
+  1,
+  'native speech due-directory policy exact'
 );
 SELECT pg_temp.assert_eq(
   (SELECT count(*) FROM pg_policies
@@ -60,6 +98,24 @@ SELECT pg_temp.assert_eq(
       AND policyname = 'realtime_native_speech_delivery_update' AND cmd = 'UPDATE'),
   1,
   'native speech delivery update policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_delete_tenant'
+      AND cmd = 'DELETE' AND permissive = 'PERMISSIVE'),
+  1,
+  'native speech delivery delete tenant policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_delete_retention_fence'
+      AND cmd = 'DELETE' AND permissive = 'RESTRICTIVE'
+      AND qual LIKE '%retentionExpiresAt%'
+      AND qual LIKE '%realtime_control_grants%'),
+  1,
+  'native speech delivery restrictive retention policy exact'
 );
 SELECT pg_temp.assert_eq(
   (SELECT count(*)
@@ -84,6 +140,16 @@ SELECT pg_temp.assert_eq(
   'native speech delivery rejects non-finite machine timestamps'
 );
 SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_constraint
+    WHERE conrelid = 'public.realtime_control_grants'::regclass
+      AND conname = 'realtime_control_grants_provider_stream_v1_disabled_check'
+      AND convalidated
+      AND pg_get_constraintdef(oid) LIKE '%provider_stream%'),
+  1,
+  'native provider_stream controls remain physically disabled in V1'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'SELECT') THEN 1 ELSE 0 END,
   1,
   'runtime role can read native speech deliveries'
@@ -99,13 +165,18 @@ SELECT pg_temp.assert_eq(
   'runtime role can perform native speech CAS updates'
 );
 SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'DELETE') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke the tenant and retention fenced native purge'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(
     current_user,
     'public.realtime_native_speech_deliveries',
-    'DELETE, TRUNCATE, REFERENCES, TRIGGER'
+    'TRUNCATE, REFERENCES, TRIGGER'
   ) THEN 1 ELSE 0 END,
   0,
-  'runtime role cannot delete, truncate, reference or retarget native speech deliveries'
+  'runtime role cannot truncate, reference or retarget native speech deliveries'
 );
 SELECT pg_temp.assert_eq(
   CASE WHEN has_function_privilege(
@@ -133,6 +204,83 @@ SELECT pg_temp.assert_eq(
   ) THEN 1 ELSE 0 END,
   0,
   'runtime role cannot invoke native speech SLO guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_delivery_delete_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech delete guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.deny_realtime_native_delivery_truncate_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech truncate guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke only the bounded native due-directory capability'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can ACK only its opaque native maintenance claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can heartbeat only its opaque native maintenance claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN pg_has_role(
+    current_user,
+    'bob_openai_native_maintenance_directory',
+    'SET'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot SET ROLE to the native maintenance directory owner'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_native_speech_maintenance_cursors',
+    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot read or mutate native maintenance cursors directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_attribute AS attribute
+    WHERE attribute.attrelid =
+      'public.realtime_native_speech_maintenance_cursors'::regclass
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+      AND has_column_privilege(
+        current_user, attribute.attrelid, attribute.attnum,
+        'SELECT,INSERT,UPDATE,REFERENCES'
+      )),
+  0,
+  'runtime role has no inherited native cursor column privilege'
 );
 SELECT pg_temp.assert_eq(
   CASE WHEN has_function_privilege(

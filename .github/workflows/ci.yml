@@ -48,18 +48,18 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: bobpro
+          POSTGRES_DB: bob_ephemeral_ci
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bobpro"
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_ci
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
@@ -155,6 +155,13 @@ jobs:
         env:
           RUN_POSTGRES_DEVICE_REBIND_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
+      - name: Certify OpenAI native delivery concurrency and retention on ephemeral PostgreSQL
+        env:
+          RUN_POSTGRES_OPENAI_NATIVE_DELIVERY_CERT: 'true'
+          OPENAI_NATIVE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
 
   mistral-key-rotation-certification:
     # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. La certification

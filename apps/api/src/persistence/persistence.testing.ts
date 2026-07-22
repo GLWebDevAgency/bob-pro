@@ -47,6 +47,10 @@ import {
   DisabledRealtimeControlRepository,
   type RealtimeControlRepositoryPort,
 } from '../voice/realtime/realtime-control.repository';
+import {
+  DisabledOpenAiNativeSpeechMaintenance,
+  type OpenAiNativeSpeechMaintenancePort,
+} from '../voice/realtime/openai-native-speech-maintenance';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
@@ -135,6 +139,9 @@ export class InMemoryPersistence implements Persistence {
   }
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {
     return new DisabledRealtimeControlRepository();
+  }
+  createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
+    return new DisabledOpenAiNativeSpeechMaintenance();
   }
   createMistralRealtimeIngressTicketAuthority(
     _policy: MistralRealtimeIngressTicketPolicy,

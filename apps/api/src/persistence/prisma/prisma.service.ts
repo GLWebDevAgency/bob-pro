@@ -6,6 +6,11 @@ import { PrismaClient, Prisma } from '@prisma/client';
 const txStorage = new AsyncLocalStorage<Prisma.TransactionClient>();
 const NOTIFICATION_OUTBOX_VERSION = '2';
 
+export interface IsolatedTransactionOptions {
+  readonly maxWaitMs: number;
+  readonly timeoutMs: number;
+}
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
   async onModuleInit(): Promise<void> {
@@ -61,10 +66,31 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   withIsolatedTenant<T>(
     companyId: string,
     fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: IsolatedTransactionOptions,
   ): Promise<T> {
     return this.$transaction(async (tx) => {
       await this.setCompanyContext(tx, companyId);
       return txStorage.run(tx, () => fn(tx));
+    }, options === undefined ? undefined : {
+      maxWait: options.maxWaitMs,
+      timeout: options.timeoutMs,
+    });
+  }
+
+  /**
+   * Ouvre une transaction globale indépendante sans poser d'identité tenant.
+   *
+   * Réservé aux capacités globales minimales qui installent elles-mêmes leurs timeouts SQL avant
+   * toute lecture. Le callback reçoit seulement le client transactionnel : aucun repository
+   * tenanté ne doit être appelé depuis cette autorité.
+   */
+  withIsolatedGlobal<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: IsolatedTransactionOptions,
+  ): Promise<T> {
+    return this.$transaction(fn, options === undefined ? undefined : {
+      maxWait: options.maxWaitMs,
+      timeout: options.timeoutMs,
     });
   }
 

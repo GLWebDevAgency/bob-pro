@@ -750,13 +750,74 @@ CREATE POLICY realtime_speech_artifact_update ON realtime_speech_artifacts
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
--- Preuve OpenAI RTP native : CAS tenanté uniquement. Aucun DELETE runtime et aucun helper
--- SECURITY DEFINER directement exécutable ; les triggers restent l'unique voie d'autorité.
+-- Preuve OpenAI RTP native : CAS tenanté et DELETE de rétention doublement borné. Le seul helper
+-- global exposable ne renvoie que les identifiants des tenants ayant du travail déjà dû.
 REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
   TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(
+  TEXT, INTEGER, UUID
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  FROM PUBLIC;
+REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM PUBLIC;
+ALTER TABLE public.realtime_native_speech_maintenance_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_native_speech_maintenance_cursors FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS realtime_native_speech_maintenance_cursor_directory_select
+  ON public.realtime_native_speech_maintenance_cursors;
+DROP POLICY IF EXISTS realtime_native_speech_maintenance_cursor_directory_update
+  ON public.realtime_native_speech_maintenance_cursors;
+CREATE POLICY realtime_native_speech_maintenance_cursor_directory_select
+  ON public.realtime_native_speech_maintenance_cursors
+  FOR SELECT
+  USING (current_user = 'bob_openai_native_maintenance_directory');
+CREATE POLICY realtime_native_speech_maintenance_cursor_directory_update
+  ON public.realtime_native_speech_maintenance_cursors
+  FOR UPDATE
+  USING (current_user = 'bob_openai_native_maintenance_directory')
+  WITH CHECK (current_user = 'bob_openai_native_maintenance_directory');
+-- L'ACL de l'annuaire global est normalisée par provision_openai_native_maintenance_directory,
+-- sous son owner NOLOGIN exact, immédiatement après ce replay RLS dans release.sh.
+DO $$
+DECLARE
+  exposed_role TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_native_speech_maintenance_cursors FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
 REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
   TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
   TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
@@ -773,6 +834,9 @@ DROP POLICY IF EXISTS tenant_isolation ON realtime_native_speech_deliveries;
 DROP POLICY IF EXISTS realtime_native_speech_delivery_select ON realtime_native_speech_deliveries;
 DROP POLICY IF EXISTS realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries;
 DROP POLICY IF EXISTS realtime_native_speech_delivery_update ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_due_directory_select ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_delete_tenant ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_delete_retention_fence ON realtime_native_speech_deliveries;
 CREATE POLICY realtime_native_speech_delivery_select ON realtime_native_speech_deliveries
   FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
 CREATE POLICY realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries
@@ -781,6 +845,39 @@ CREATE POLICY realtime_native_speech_delivery_update ON realtime_native_speech_d
   FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_due_directory_select
+  ON realtime_native_speech_deliveries
+  FOR SELECT
+  USING (
+    current_user = 'bob_openai_native_maintenance_directory'
+    AND (
+      (
+        phase NOT IN ('delivered', 'cancelled', 'failed', 'expired')
+        AND "expiresAt" <= statement_timestamp()
+      )
+      OR (
+        phase IN ('delivered', 'cancelled', 'failed', 'expired')
+        AND "retentionExpiresAt" <= statement_timestamp()
+      )
+    )
+  );
+CREATE POLICY realtime_native_speech_delivery_delete_tenant ON realtime_native_speech_deliveries
+  FOR DELETE
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_delete_retention_fence
+  ON realtime_native_speech_deliveries
+  AS RESTRICTIVE
+  FOR DELETE
+  USING (
+    phase IN ('delivered', 'cancelled', 'failed', 'expired')
+    AND "retentionExpiresAt" <= statement_timestamp()
+    AND NOT EXISTS (
+      SELECT 1
+        FROM realtime_control_grants AS control_grant
+       WHERE control_grant."companyId" = realtime_native_speech_deliveries."companyId"
+         AND control_grant."nativeDeliveryId" = realtime_native_speech_deliveries."deliveryId"
+    )
+  );
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_control_grants;
 DROP POLICY IF EXISTS realtime_control_grant_select ON realtime_control_grants;

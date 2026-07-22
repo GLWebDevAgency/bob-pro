@@ -1909,6 +1909,30 @@ model RealtimeNativeSpeechDelivery {
   @@map("realtime_native_speech_deliveries")
 }
 
+/// Curseur global purement technique du scan keyset de maintenance. Le runtime ne possède aucun
+/// droit direct sur cette table ; seul le helper SECURITY DEFINER borné peut lire/avancer ses deux
+/// lignes. `@@ignore` empêche toute dérive vers un accès Prisma applicatif.
+model RealtimeNativeSpeechMaintenanceCursor {
+  lane            String    @id @db.Text
+  afterDueAt      DateTime? @db.Timestamptz(6)
+  afterCompanyId  String?   @db.Text
+  afterDeliveryId String?   @db.Uuid
+  cycleUpperDueAt      DateTime? @db.Timestamptz(6)
+  cycleUpperCompanyId  String?   @db.Text
+  cycleUpperDeliveryId String?   @db.Uuid
+  pendingCompanyIds      String[]  @default([])
+  pendingAfterDueAt      DateTime? @db.Timestamptz(6)
+  pendingAfterCompanyId  String?   @db.Text
+  pendingAfterDeliveryId String?   @db.Uuid
+  pendingHasMore         Boolean?
+  claimId                String?   @db.Uuid
+  claimExpiresAt         DateTime? @db.Timestamptz(6)
+  revision        BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_native_speech_maintenance_cursors")
+}
+
 /// Action UI opaque, chiffrée et liée par XOR à une seule preuve de livraison acoustique. Le
 /// défaut `audited_artifact`/v1 conserve byte-for-byte les writers historiques ; le domaine
 /// `provider_stream`/v2 reste séparé. Une grant ne peut jamais être modifiée.

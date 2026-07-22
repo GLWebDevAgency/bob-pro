@@ -50,6 +50,7 @@ import type { RealtimeSidebandOwnerPort } from '../voice/realtime/realtime-sideb
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../voice/realtime/realtime-speech-delivery.repository';
 import type { RealtimeSpeechArtifactRepositoryPort } from '../voice/realtime/realtime-speech-publisher';
 import type { RealtimeVoiceUsageRepositoryPort } from '../voice/realtime/realtime-voice-usage';
+import type { OpenAiNativeSpeechMaintenancePort } from '../voice/realtime/openai-native-speech-maintenance';
 import type { AgentJournalRepository } from './agent-journal';
 import type { DeviceRepository } from './devices';
 import type { DocumentAnalysisStore } from './document-analyses';
@@ -141,6 +142,8 @@ export interface Persistence {
   createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort;
   createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort;
   createRealtimeControlRepository(): RealtimeControlRepositoryPort;
+  /** Capacité DB-only séparée des repositories request-time de Bob Live. */
+  createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort;
   createMistralRealtimeIngressTicketAuthority(
     policy: MistralRealtimeIngressTicketPolicy,
     identityKeys: MistralRealtimeIngressIdentityKeyRing,
