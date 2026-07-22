@@ -27,7 +27,10 @@ import {
   RealtimeProviderCallCompensatedError,
   RealtimeProviderCleanupError,
 } from './openai-realtime-call.adapter';
-import { buildOpenAiRealtimeSessionConfig } from './realtime-session-config';
+import {
+  buildOpenAiNativeRealtimeSessionConfig,
+  buildOpenAiRealtimeSessionConfig,
+} from './realtime-session-config';
 import {
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
@@ -786,7 +789,9 @@ export class RealtimeVoiceService {
     let lifecycle: RealtimeCallLifecycle | null = null;
     try {
       if (signal?.aborted) throw new Error('bootstrap_aborted');
-      const session = buildOpenAiRealtimeSessionConfig(this.settings);
+      const session = parsed.value.speechDelivery === 'openai-native-webrtc-v1'
+        ? buildOpenAiNativeRealtimeSessionConfig(this.settings)
+        : buildOpenAiRealtimeSessionConfig(this.settings);
       created = await this.provider.createCall({
         offerSdp: parsed.value.sdp,
         safetyIdentifier: safetyIdentifier(this.settings.safetySecret, principal.userId),

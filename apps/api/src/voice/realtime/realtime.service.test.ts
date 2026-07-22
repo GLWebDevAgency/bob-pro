@@ -913,7 +913,7 @@ describe('RealtimeVoiceService', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('produit un bootstrap WebRTC sans clé durable et avec outils désactivés', async () => {
+  it('reste en livraison auditée texte avec le provider OpenAI tant que speechDelivery ne demande pas native', async () => {
     const provider: OpenAiRealtimeCallProvider = {
       createCall: successfulProviderCreate('rtc_12345678'),
       hangupCall: vi.fn(async () => undefined),
@@ -960,6 +960,8 @@ describe('RealtimeVoiceService', () => {
     expect(call?.safetyIdentifier).not.toContain('user-1');
     expect(call?.session).toMatchObject({
       model: 'gpt-realtime-2.1',
+      output_modalities: ['text'],
+      max_output_tokens: 1,
       tools: [],
       tool_choice: 'none',
       audio: {
@@ -1069,6 +1071,21 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
     expect(policyForSession).not.toHaveBeenCalled();
     expect(provider.createCall).toHaveBeenCalledOnce();
+    const call = vi.mocked(provider.createCall).mock.calls[0]?.[0];
+    expect(call?.session).toMatchObject({
+      output_modalities: ['audio'],
+      max_output_tokens: 4_096,
+      tools: [],
+      tool_choice: 'none',
+      audio: {
+        input: {
+          turn_detection: {
+            create_response: false,
+            interrupt_response: false,
+          },
+        },
+      },
+    });
   });
 
   it('refuse un bootstrap dont delivery/version ne correspondent pas au config négocié', async () => {

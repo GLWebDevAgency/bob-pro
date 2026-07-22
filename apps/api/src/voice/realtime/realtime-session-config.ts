@@ -1,4 +1,8 @@
-import type { OpenAiRealtimeSessionConfig, RealtimeVoiceSettings } from './realtime.types';
+import type {
+  OpenAiAuditedRealtimeSessionConfig,
+  OpenAiNativeRealtimeSessionConfig,
+  RealtimeVoiceSettings,
+} from './realtime.types';
 
 /**
  * Prompt de bootstrap sans donnée métier ni PII. Le contexte d'écran et les outils seront
@@ -16,9 +20,23 @@ export const BOB_REALTIME_TRANSCRIPTION_PROMPT = [
   'Vocabulaire attendu : devis, facture, acompte, TVA, trésorerie, dépense, relance, client, chantier et document.',
 ].join(' ');
 
+/**
+ * Prompt dédié à la restitution native. Il ne contient aucune donnée utilisateur et ne confère
+ * aucune autorité métier au provider : le texte à prononcer est injecté dans une réponse OOB par
+ * le serveur, après ses propres contrôles de contexte et de sécurité.
+ */
+export const BOB_REALTIME_NATIVE_BOOTSTRAP_INSTRUCTIONS = [
+  'Tu es uniquement la voix française de Bob Pro.',
+  'Ne réponds jamais de ta propre initiative et ne prends aucune décision.',
+  'Prononce exactement et uniquement les réponses hors conversation explicitement approuvées par le serveur Bob.',
+  'N’ajoute, ne retire et ne reformule aucun chiffre, nom, date, engagement, action ou avertissement.',
+  'N’appelle aucun outil et n’exécute aucune action.',
+  'Sans réponse hors conversation explicitement créée par le serveur, reste silencieux.',
+].join(' ');
+
 export function buildOpenAiRealtimeSessionConfig(
   settings: Pick<RealtimeVoiceSettings, 'model' | 'voice'>,
-): OpenAiRealtimeSessionConfig {
+): OpenAiAuditedRealtimeSessionConfig {
   return {
     type: 'realtime',
     model: settings.model,
@@ -56,6 +74,48 @@ export function buildOpenAiRealtimeSessionConfig(
       },
     },
     max_output_tokens: 1,
+    tools: [],
+    tool_choice: 'none',
+    tracing: null,
+  };
+}
+
+export function buildOpenAiNativeRealtimeSessionConfig(
+  settings: Pick<RealtimeVoiceSettings, 'model' | 'voice'>,
+): OpenAiNativeRealtimeSessionConfig {
+  return {
+    type: 'realtime',
+    model: settings.model,
+    // La piste descendante est nécessaire au plein duplex natif. Le VAD ne crée pourtant aucune
+    // réponse : seul le sideband pourra déclencher une réponse OOB canonique et approuvée.
+    output_modalities: ['audio'],
+    instructions: BOB_REALTIME_NATIVE_BOOTSTRAP_INSTRUCTIONS,
+    include: [],
+    truncation: 'auto',
+    audio: {
+      input: {
+        format: { type: 'audio/pcm', rate: 24_000 },
+        noise_reduction: { type: 'near_field' },
+        transcription: {
+          model: 'gpt-4o-mini-transcribe',
+          language: 'fr',
+          prompt: BOB_REALTIME_TRANSCRIPTION_PROMPT,
+        },
+        turn_detection: {
+          type: 'semantic_vad',
+          eagerness: 'auto',
+          create_response: false,
+          // Les réponses OOB sont interrompues explicitement via response.cancel puis clear.
+          interrupt_response: false,
+        },
+      },
+      output: {
+        format: { type: 'audio/pcm', rate: 24_000 },
+        voice: settings.voice,
+        speed: 1,
+      },
+    },
+    max_output_tokens: 4_096,
     tools: [],
     tool_choice: 'none',
     tracing: null,

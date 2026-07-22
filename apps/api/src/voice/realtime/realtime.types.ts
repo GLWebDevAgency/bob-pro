@@ -246,11 +246,9 @@ export interface OpenAiRealtimeCallProvider {
   hangupCall(callId: string): Promise<void>;
 }
 
-export interface OpenAiRealtimeSessionConfig {
+interface OpenAiRealtimeSessionConfigCommon {
   type: 'realtime';
   model: string;
-  /** Le provider ne produit jamais la voix Bob. `text` neutralise la piste audio descendante. */
-  output_modalities: ['text'];
   instructions: string;
   include: [];
   truncation: 'auto';
@@ -267,7 +265,7 @@ export interface OpenAiRealtimeSessionConfig {
         type: 'semantic_vad';
         eagerness: 'auto';
         create_response: false;
-        interrupt_response: true;
+        interrupt_response: boolean;
       };
     };
     output: {
@@ -276,8 +274,43 @@ export interface OpenAiRealtimeSessionConfig {
       speed: 1;
     };
   };
-  max_output_tokens: number;
   tools: [];
   tool_choice: 'none';
   tracing: null;
 }
+
+/**
+ * Le provider ne produit jamais la voix Bob dans le parcours audité. `text` neutralise la piste
+ * audio descendante ; le VAD peut interrompre une éventuelle réponse ouverte par un client N-1.
+ */
+export interface OpenAiAuditedRealtimeSessionConfig extends OpenAiRealtimeSessionConfigCommon {
+  output_modalities: ['text'];
+  audio: OpenAiRealtimeSessionConfigCommon['audio'] & {
+    input: OpenAiRealtimeSessionConfigCommon['audio']['input'] & {
+      turn_detection: OpenAiRealtimeSessionConfigCommon['audio']['input']['turn_detection'] & {
+        interrupt_response: true;
+      };
+    };
+  };
+  max_output_tokens: 1;
+}
+
+/**
+ * Le transport natif reçoit une piste audio, mais ne répond jamais automatiquement : seule une
+ * réponse OOB canonique et approuvée par le serveur peut être créée par le sideband.
+ */
+export interface OpenAiNativeRealtimeSessionConfig extends OpenAiRealtimeSessionConfigCommon {
+  output_modalities: ['audio'];
+  audio: OpenAiRealtimeSessionConfigCommon['audio'] & {
+    input: OpenAiRealtimeSessionConfigCommon['audio']['input'] & {
+      turn_detection: OpenAiRealtimeSessionConfigCommon['audio']['input']['turn_detection'] & {
+        interrupt_response: false;
+      };
+    };
+  };
+  max_output_tokens: 4_096;
+}
+
+export type OpenAiRealtimeSessionConfig =
+  | OpenAiAuditedRealtimeSessionConfig
+  | OpenAiNativeRealtimeSessionConfig;
