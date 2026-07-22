@@ -51,6 +51,23 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     });
   }
 
+  /**
+   * Ouvre toujours une transaction tenantée indépendante, même depuis une transaction ambiante.
+   *
+   * Réservé aux autorités durables qui doivent absorber leur propre échec sans empoisonner la
+   * transaction HTTP appelante (leases, CAS, accusés de réception). L'appelant ne doit donc jamais
+   * dépendre d'une écriture non commitée de la transaction ambiante.
+   */
+  withIsolatedTenant<T>(
+    companyId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await this.setCompanyContext(tx, companyId);
+      return txStorage.run(tx, () => fn(tx));
+    });
+  }
+
   private async setCompanyContext(tx: Prisma.TransactionClient, companyId: string): Promise<void> {
     await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
     // Fence de protocole, pas une autorisation : les policies vérifient toujours companyId.
@@ -71,10 +88,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
    * que soit le contexte asynchrone d'où le drain est déclenché.
    */
   detachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await this.setCompanyContext(tx, companyId);
-      return txStorage.run(tx, fn);
-    });
+    return this.withIsolatedTenant(companyId, () => fn());
   }
 
   /** Pose uniquement l'identité authentifiée. Utile pour lister les memberships de l'utilisateur. */
