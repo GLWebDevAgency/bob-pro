@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createCanonicalSpeechEnvelope } from '@bob/ai';
 import {
   OPENAI_NATIVE_SPEECH_DELIVERY_MAX_TTL_MS,
@@ -120,8 +120,16 @@ export type OpenAiNativeSpeechDispatchOutcome =
       readonly status: 'authorized';
       readonly dispatchClaimId: string;
       readonly state: OpenAiNativeSpeechDeliveryState;
+      /** Exact frozen request snapshot whose durable proof was verified before the claim CAS. */
+      readonly request: Readonly<OpenAiNativeResponseRequest>;
     }
   | { readonly status: 'not_authorized' | 'not_found' | 'unavailable' };
+
+export interface OpenAiNativeSpeechDispatchClaimInput
+  extends OpenAiNativeSpeechAuthorityBinding {
+  /** Ephemeral request returned by prepareTurn; verified against durable HMACs before CAS. */
+  readonly request: OpenAiNativeResponseRequest;
+}
 
 export type OpenAiNativeSpeechTransitionOutcome =
   | {
@@ -266,6 +274,83 @@ function stateMatchesBinding(
     && state.contextDigest === binding.contextDigest
     && state.sidebandOwnerEpoch === binding.sidebandOwnerEpoch
     && state.sidebandOwnerTokenHmac === binding.sidebandOwnerTokenHmac;
+}
+
+function exactHmac(left: string, right: string): boolean {
+  try {
+    const leftBytes = Buffer.from(left, 'hex');
+    const rightBytes = Buffer.from(right, 'hex');
+    return leftBytes.byteLength === 32
+      && rightBytes.byteLength === 32
+      && timingSafeEqual(leftBytes, rightBytes);
+  } catch {
+    return false;
+  }
+}
+
+function requestMatchesPreparedProof(
+  state: OpenAiNativeSpeechDeliveryState,
+  request: OpenAiNativeResponseRequest,
+  secret: string,
+): boolean {
+  if (
+    request.deliveryId !== state.deliveryId
+    || request.turnId !== state.turnId
+    || request.contextRevision !== state.contextRevision
+    || request.contextDigest !== state.contextDigest
+    || request.canonicalSpeech !== OPENAI_NATIVE_ELIGIBLE_SPEECH_V1[state.speechScenarioId]
+  ) return false;
+  try {
+    const proof = createOpenAiNativeSpeechPreparationProof({
+      secret,
+      proofKeyVersion: state.proofKeyVersion,
+      binding: proofBinding(state),
+      canonicalSpeech: request.canonicalSpeech,
+      factsSha256: factsSha256ForEligibleEnvelope([]),
+      requestNonce: request.requestNonce,
+    });
+    return proof.proofFormatVersion === state.proofFormatVersion
+      && proof.proofKeyVersion === state.proofKeyVersion
+      && exactHmac(proof.canonicalSpeechHmac, state.canonicalSpeechHmac)
+      && exactHmac(proof.factsHmac, state.factsHmac)
+      && exactHmac(proof.requestNonceHmac, state.requestNonceHmac);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Capture every caller-owned value synchronously, before the first await (and before entropy can
+ * invoke arbitrary user code). The authorized capability returns this same frozen request, so a
+ * dispatcher never has to trust or reread the caller's mutable object after proof verification.
+ */
+function snapshotDispatchClaimInput(
+  input: OpenAiNativeSpeechDispatchClaimInput,
+): Readonly<OpenAiNativeSpeechDispatchClaimInput> | null {
+  try {
+    const request = Object.freeze({
+      deliveryId: input.request.deliveryId,
+      turnId: input.request.turnId,
+      contextRevision: input.request.contextRevision,
+      contextDigest: input.request.contextDigest,
+      requestNonce: input.request.requestNonce,
+      canonicalSpeech: input.request.canonicalSpeech,
+    });
+    return Object.freeze({
+      companyId: input.companyId,
+      subjectHmac: input.subjectHmac,
+      deliveryId: input.deliveryId,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      contextRevision: input.contextRevision,
+      contextDigest: input.contextDigest,
+      sidebandOwnerEpoch: input.sidebandOwnerEpoch,
+      sidebandOwnerTokenHmac: input.sidebandOwnerTokenHmac,
+      request,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function safeState(
@@ -437,11 +522,13 @@ export class OpenAiNativeSpeechAuthority {
   }
 
   async claimDispatch(
-    binding: OpenAiNativeSpeechAuthorityBinding,
+    input: OpenAiNativeSpeechDispatchClaimInput,
   ): Promise<OpenAiNativeSpeechDispatchOutcome> {
+    const claim = snapshotDispatchClaimInput(input);
+    if (claim === null) return { status: 'not_authorized' };
     const dispatchClaimId = this.entropy.dispatchClaimId().toLowerCase();
     if (!UUID.test(dispatchClaimId)) return { status: 'unavailable' };
-    const key = this.key(binding);
+    const key = this.key(claim);
 
     for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       const read = await this.safeRead(key);
@@ -450,7 +537,13 @@ export class OpenAiNativeSpeechAuthority {
           ? { status: 'not_found' }
           : { status: 'unavailable' };
       }
-      if (!stateMatchesBinding(read.state, binding)) return { status: 'not_authorized' };
+      if (!stateMatchesBinding(read.state, claim)) return { status: 'not_authorized' };
+      const secret = this.config.proofKeys.secret(read.state.proofKeyVersion);
+      if (
+        typeof secret !== 'string'
+        || Buffer.byteLength(secret, 'utf8') < 32
+        || !requestMatchesPreparedProof(read.state, claim.request, secret)
+      ) return { status: 'not_authorized' };
 
       let reduction;
       try {
@@ -473,7 +566,12 @@ export class OpenAiNativeSpeechAuthority {
       });
       if (swapped.status === 'applied') {
         if (!exactState(swapped.state, reduction.state)) return { status: 'unavailable' };
-        return { status: 'authorized', dispatchClaimId, state: swapped.state };
+        return {
+          status: 'authorized',
+          dispatchClaimId,
+          state: swapped.state,
+          request: claim.request,
+        };
       }
       // Un ACK CAS perdu ou rejoue ne cree jamais un second droit reseau.
       if (swapped.status === 'already_applied') return { status: 'not_authorized' };

@@ -195,7 +195,7 @@ async function advanceToStreaming(h: ReturnType<typeof harness>) {
   const prepared = await prepare(h);
   const binding = stateBinding(prepared.state);
   h.advance();
-  const dispatch = await h.authority.claimDispatch(binding);
+  const dispatch = await h.authority.claimDispatch({ ...binding, request: prepared.request });
   if (dispatch.status !== 'authorized') throw new Error('Expected an authorized dispatch.');
   h.advance();
   expect(await h.authority.markRequested({ ...binding, dispatchClaimId: dispatch.dispatchClaimId }))
@@ -398,6 +398,92 @@ describe('OpenAiNativeSpeechAuthority — configuration et risque', () => {
 });
 
 describe('OpenAiNativeSpeechAuthority — dispatch CAS at-most-once', () => {
+  it.each([
+    ['parole canonique', { canonicalSpeech: 'Prononce une phrase forgée.' }],
+    ['nonce', { requestNonce: 'forged_request_nonce_1234567890_1234567890' }],
+  ] as const)('refuse avant CAS une mutation de %s après prepareTurn', async (_label, override) => {
+    const h = harness();
+    const prepared = await prepare(h);
+    const binding = stateBinding(prepared.state);
+    h.advance();
+
+    await expect(h.authority.claimDispatch({
+      ...binding,
+      request: { ...prepared.request, ...override },
+    })).resolves.toEqual({ status: 'not_authorized' });
+    expect(h.repository.casCalls).toBe(0);
+    expect(h.repository.state).toEqual(prepared.state);
+  });
+
+  it('autorise et retourne uniquement le snapshot figé authentique pris avant une lecture suspendue', async () => {
+    const h = harness();
+    const prepared = await prepare(h);
+    const mutableClaim = {
+      ...stateBinding(prepared.state),
+      request: { ...prepared.request },
+    };
+    const originalRead = h.repository.read.bind(h.repository);
+    let signalRead!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    h.repository.read = async (key) => {
+      signalRead();
+      await readGate;
+      return originalRead(key);
+    };
+
+    const claiming = h.authority.claimDispatch(mutableClaim);
+    await readStarted;
+    mutableClaim.contextDigest = '9'.repeat(64);
+    mutableClaim.request.canonicalSpeech = 'Prononce une phrase forgée.';
+    mutableClaim.request.requestNonce = 'forged_request_nonce_1234567890_1234567890';
+    releaseRead();
+
+    const outcome = await claiming;
+    expect(outcome).toMatchObject({ status: 'authorized', dispatchClaimId: CLAIM });
+    if (outcome.status !== 'authorized') throw new Error('Expected an authorized dispatch.');
+    expect(outcome.request).toEqual(prepared.request);
+    expect(outcome.request).not.toBe(mutableClaim.request);
+    expect(Object.isFrozen(outcome.request)).toBe(true);
+    expect(outcome.request.canonicalSpeech).toBe(
+      OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+    );
+  });
+
+  it('ne transforme jamais un snapshot forgé en droit réseau par mutation pendant le read', async () => {
+    const h = harness();
+    const prepared = await prepare(h);
+    const mutableClaim = {
+      ...stateBinding(prepared.state),
+      contextDigest: '9'.repeat(64),
+      request: {
+        ...prepared.request,
+        requestNonce: 'forged_request_nonce_1234567890_1234567890',
+      },
+    };
+    const originalRead = h.repository.read.bind(h.repository);
+    let signalRead!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    h.repository.read = async (key) => {
+      signalRead();
+      await readGate;
+      return originalRead(key);
+    };
+
+    const claiming = h.authority.claimDispatch(mutableClaim);
+    await readStarted;
+    mutableClaim.contextDigest = prepared.request.contextDigest;
+    mutableClaim.request.requestNonce = prepared.request.requestNonce;
+    releaseRead();
+
+    await expect(claiming).resolves.toEqual({ status: 'not_authorized' });
+    expect(h.repository.casCalls).toBe(0);
+    expect(h.repository.state).toEqual(prepared.state);
+  });
+
   it('autorise exactement un seul des claims concurrents', async () => {
     let claimIndex = 0;
     const h = harness({
@@ -410,8 +496,8 @@ describe('OpenAiNativeSpeechAuthority — dispatch CAS at-most-once', () => {
     h.advance();
 
     const results = await Promise.all([
-      h.authority.claimDispatch(binding),
-      h.authority.claimDispatch(binding),
+      h.authority.claimDispatch({ ...binding, request: prepared.request }),
+      h.authority.claimDispatch({ ...binding, request: prepared.request }),
     ]);
     expect(results.filter((result) => result.status === 'authorized')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'not_authorized')).toHaveLength(1);
@@ -426,7 +512,10 @@ describe('OpenAiNativeSpeechAuthority — dispatch CAS at-most-once', () => {
       if (mode === 'already_applied') h.repository.ambiguousAlreadyApplied = true;
       else h.repository.throwAfterApply = true;
       h.advance();
-      await expect(h.authority.claimDispatch(stateBinding(prepared.state)))
+      await expect(h.authority.claimDispatch({
+        ...stateBinding(prepared.state),
+        request: prepared.request,
+      }))
         .resolves.toEqual({ status: mode === 'already_applied' ? 'not_authorized' : 'unavailable' });
       expect(h.repository.state).toMatchObject({ phase: 'dispatching', revision: 2 });
     },
@@ -437,7 +526,10 @@ describe('OpenAiNativeSpeechAuthority — dispatch CAS at-most-once', () => {
     const prepared = await prepare(conflicts);
     conflicts.repository.forceCasConflict = true;
     conflicts.advance();
-    await expect(conflicts.authority.claimDispatch(stateBinding(prepared.state)))
+    await expect(conflicts.authority.claimDispatch({
+      ...stateBinding(prepared.state),
+      request: prepared.request,
+    }))
       .resolves.toEqual({ status: 'not_authorized' });
     expect(conflicts.repository.casCalls).toBe(5);
 
@@ -445,7 +537,10 @@ describe('OpenAiNativeSpeechAuthority — dispatch CAS at-most-once', () => {
     const corruptPrepared = await prepare(corrupt);
     corrupt.repository.corruptAppliedProjection = true;
     corrupt.advance();
-    await expect(corrupt.authority.claimDispatch(stateBinding(corruptPrepared.state)))
+    await expect(corrupt.authority.claimDispatch({
+      ...stateBinding(corruptPrepared.state),
+      request: corruptPrepared.request,
+    }))
       .resolves.toEqual({ status: 'unavailable' });
   });
 });
@@ -479,6 +574,7 @@ describe('OpenAiNativeSpeechAuthority — fences et evenements provider', () => 
     await expect(h.authority.claimDispatch({
       ...stateBinding(prepared.state),
       companyId: 'company-2',
+      request: prepared.request,
     })).resolves.toEqual({ status: 'not_found' });
     expect(h.repository.casCalls).toBe(0);
   });
@@ -488,7 +584,7 @@ describe('OpenAiNativeSpeechAuthority — fences et evenements provider', () => 
     const prepared = await prepare(h);
     const binding = stateBinding(prepared.state);
     h.advance();
-    const dispatch = await h.authority.claimDispatch(binding);
+    const dispatch = await h.authority.claimDispatch({ ...binding, request: prepared.request });
     if (dispatch.status !== 'authorized') throw new Error('Expected dispatch.');
     h.advance();
     const requested = { ...binding, dispatchClaimId: dispatch.dispatchClaimId };
