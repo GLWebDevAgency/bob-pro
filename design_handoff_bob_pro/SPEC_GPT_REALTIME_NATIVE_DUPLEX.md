@@ -129,22 +129,22 @@ prepared → dispatching → requested → accepted
 
 ## 6. Critères d'acceptation binaires — code et contrats
 
-- [ ] Le config public et le bootstrap discriminent exactement les deux modes de livraison.
+- [x] Le config public et le bootstrap discriminent exactement les deux modes de livraison.
 - [ ] Une session OpenAI native démarre avec une seule clé OpenAI et n'appelle jamais Mistral.
-- [ ] `output_modalities=['audio']`, `create_response=false`, aucun outil et budget borné sont
+- [x] `output_modalities=['audio']`, `create_response=false`, aucun outil et budget borné sont
       vérifiés par tests de contrat provider.
-- [ ] Le sideband rejette réponse inconnue, metadata divergente, sortie texte, outil, réponse
+- [x] Le sideband rejette réponse inconnue, metadata divergente, sortie texte, outil, réponse
       concurrente et événement malformé.
-- [ ] Le dispatch `response.create` est durable et at-most-once, y compris après résultat réseau
+- [x] Le dispatch `response.create` est durable et at-most-once, y compris après résultat réseau
       ambigu ou reprise de processus.
-- [ ] Les ordres inversés `response.done` / `output_audio_buffer.stopped` convergent vers le même
+- [x] Les ordres inversés `response.done` / `output_audio_buffer.stopped` convergent vers le même
       état terminal sans double contrôle.
-- [ ] Transcript absent/divergent, contexte obsolète, perte d'owner ou usage indisponible ne
+- [x] Transcript absent/divergent, contexte obsolète, perte d'owner ou usage indisponible ne
       produisent ni livraison, ni historique complet, ni contrôle.
 - [ ] Le contrôle durable accepte une liaison XOR artefact/livraison native et reste one-shot,
       tenant-scopé, contextuel et anti-rejeu.
-- [ ] Le bootstrap OpenAI ne dépend pas du stockage audio signé ni du TTS Mistral.
-- [ ] Le bootstrap Mistral et son artefact audité restent inchangés par tests de régression.
+- [x] Le bootstrap OpenAI ne dépend pas du stockage audio signé ni du TTS Mistral.
+- [x] Le bootstrap Mistral et son artefact audité restent inchangés par tests de régression.
 - [ ] Le mobile OpenAI négocie un unique média audio `sendrecv`, accepte une seule piste distante
       audio et arrête toute piste vidéo, dupliquée ou obsolète.
 - [ ] Le RTP entrant alimente les métriques sans fermer la session ; le micro reste actif pendant
@@ -161,7 +161,7 @@ prepared → dispatching → requested → accepted
 - [x] Une page n'avance qu'après ACK de son claim courant ; lease vivant, renouvellement, reprise
       après expiration et refus d'un ancien claim sont explicites et fail-closed.
 - [x] `provider_stream/v2` est impossible en V1 tant que sa purge de graphe n'existe pas.
-- [ ] Aucun flag de production n'est activé par le lot.
+- [x] Aucun flag de production n'est activé par le lot.
 
 ## 7. Certification bloquante avant activation
 

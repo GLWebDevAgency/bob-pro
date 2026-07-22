@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FactoryProvider, Provider } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ModuleRef } from '@nestjs/core';
-import { loadEnv } from '../../config/env';
+import { loadEnv, type Env } from '../../config/env';
 import type { Persistence } from '../../persistence/persistence';
 import { PERSISTENCE } from '../../persistence/persistence-token';
 import type { MistralConversationDurableAuthority } from './mistral-conversation-gateway-v2';
@@ -18,18 +18,25 @@ import {
 } from './realtime-mistral-ingress-ticket';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import {
+  REALTIME_DURABLE_CONTROLS,
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   REALTIME_AGENT_TURN,
+  REALTIME_SIDEBAND,
+  REALTIME_SPEECH_SOURCE_POLICY,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
+import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
 import { REALTIME_REAPER_DIRECTORY } from './realtime-reaper.scheduler';
 import type { RealtimeVoiceSettings } from './realtime.types';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import { DisabledRealtimeDurableControlAuthority } from './realtime-control';
+import { RealtimeVoiceUsageWriter } from './realtime-voice-usage';
 import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
+  buildRealtimeSpeechRuntime,
   RealtimeVoiceModule,
 } from './realtime.module';
 
@@ -50,6 +57,22 @@ function isRealtimeAgentTurnFactoryProvider(
     && typeof provider.useFactory === 'function';
 }
 
+function moduleFactory(token: unknown): FactoryProvider {
+  const providers = Reflect.getMetadata(
+    MODULE_METADATA.PROVIDERS,
+    RealtimeVoiceModule,
+  ) as Provider[];
+  const provider = providers.find((candidate) =>
+    typeof candidate === 'object'
+    && candidate !== null
+    && 'provide' in candidate
+    && candidate.provide === token);
+  if (!provider || !('useFactory' in provider) || typeof provider.useFactory !== 'function') {
+    throw new Error('RealtimeVoiceModule factory provider is unavailable.');
+  }
+  return provider as FactoryProvider;
+}
+
 function validMistralEnvironment(): void {
   vi.stubEnv('DEMO_MODE', 'true');
   vi.stubEnv('BOB_LIVE_ENABLED', 'true');
@@ -67,6 +90,58 @@ function validMistralEnvironment(): void {
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
+}
+
+function validSpeechRuntimeEnvironment(provider: 'openai' | 'mistral'): Env {
+  validMistralEnvironment();
+  vi.stubEnv('BOB_LIVE_PROVIDER', provider);
+  vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'audited-signed-url-v1');
+  vi.stubEnv('SUPABASE_URL', 'https://bob-live-test.supabase.co');
+  vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'test-service-role-key');
+  if (provider === 'openai') vi.stubEnv('OPENAI_API_KEY', 'test-openai-key');
+  return loadEnv();
+}
+
+function speechPersistenceFixture(): {
+  readonly persistence: Persistence;
+  readonly owner: ReturnType<Persistence['createRealtimeSidebandOwner']>;
+  readonly factories: Readonly<Record<
+  | 'owner'
+  | 'usage'
+  | 'nativeDelivery'
+  | 'auditedDelivery'
+  | 'controls'
+  | 'artifact',
+  ReturnType<typeof vi.fn>
+  >>;
+} {
+  const owner = {} as ReturnType<Persistence['createRealtimeSidebandOwner']>;
+  const factories = {
+    owner: vi.fn(() => owner),
+    usage: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeVoiceUsageRepository']>)),
+    nativeDelivery: vi.fn(() => (
+      {} as ReturnType<Persistence['createOpenAiNativeSpeechDeliveryRepository']>
+    )),
+    auditedDelivery: vi.fn(() => (
+      {} as ReturnType<Persistence['createRealtimeSpeechDeliveryRepository']>
+    )),
+    controls: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeControlRepository']>)),
+    artifact: vi.fn(() => (
+      {} as ReturnType<Persistence['createRealtimeSpeechArtifactRepository']>
+    )),
+  };
+  return {
+    owner,
+    factories,
+    persistence: {
+      createRealtimeSidebandOwner: factories.owner,
+      createRealtimeVoiceUsageRepository: factories.usage,
+      createOpenAiNativeSpeechDeliveryRepository: factories.nativeDelivery,
+      createRealtimeSpeechDeliveryRepository: factories.auditedDelivery,
+      createRealtimeControlRepository: factories.controls,
+      createRealtimeSpeechArtifactRepository: factories.artifact,
+    } as unknown as Persistence,
+  };
 }
 
 function durable(): MistralConversationDurableAuthority {
@@ -345,6 +420,135 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
     expect(authorities.assertCurrentKeyVersion).toHaveBeenCalledOnce();
     expect(authorities.durable.open).not.toHaveBeenCalled();
   });
+});
+
+describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  type SpeechRuntime = NonNullable<ReturnType<typeof buildRealtimeSpeechRuntime>>;
+  type SidebandFactory = (
+    settings: RealtimeVoiceSettings,
+    callProvider: unknown,
+    metrics: unknown,
+    logger: unknown,
+    speech: SpeechRuntime | null,
+  ) => unknown;
+  type WiredSpeech = {
+    readonly owner?: unknown;
+    readonly audited?: unknown;
+    readonly native?: { readonly authority?: unknown; readonly usage?: unknown };
+  };
+
+  function sidebandSpeech(runtime: SpeechRuntime): WiredSpeech | undefined {
+    const factory = moduleFactory(REALTIME_SIDEBAND).useFactory as unknown as SidebandFactory;
+    const manager = factory(
+      {} as RealtimeVoiceSettings,
+      {},
+      {},
+      {},
+      runtime,
+    );
+    return (manager as { readonly speech?: WiredSpeech }).speech;
+  }
+
+  it('compose OpenAI natif sans stockage Supabase, TTS ni audit acoustique', () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+      SUPABASE_URL: undefined,
+      SUPABASE_SERVICE_ROLE_KEY: undefined,
+      BOB_LIVE_LOCAL_AUDIT_BASE_URL: undefined,
+      BOB_LIVE_LOCAL_AUDIT_TOKEN: undefined,
+    };
+    // Les builders historiques lisent process.env : les rendre indisponibles prouve que la branche
+    // native ne les sollicite pas, même si la configuration Env lui est injectée directement.
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', '');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', '');
+    const fixture = speechPersistenceFixture();
+
+    const runtime = buildRealtimeSpeechRuntime(fixture.persistence, env);
+
+    if (!runtime?.native) throw new Error('Native speech runtime was not composed.');
+    expect(runtime.owner).toBe(fixture.owner);
+    expect(runtime.usage).toBeInstanceOf(RealtimeVoiceUsageWriter);
+    expect(runtime.native.authority).toBeInstanceOf(OpenAiNativeSpeechAuthority);
+    expect(runtime.audited).toBeUndefined();
+    expect(fixture.factories.owner).toHaveBeenCalledOnce();
+    expect(fixture.factories.usage).toHaveBeenCalledOnce();
+    expect(fixture.factories.nativeDelivery).toHaveBeenCalledOnce();
+    expect(fixture.factories.auditedDelivery).not.toHaveBeenCalled();
+    expect(fixture.factories.controls).not.toHaveBeenCalled();
+    expect(fixture.factories.artifact).not.toHaveBeenCalled();
+
+    const wired = sidebandSpeech(runtime);
+    expect(wired?.owner).toBe(runtime.owner);
+    expect(wired?.native).toEqual({
+      authority: runtime.native.authority,
+      usage: runtime.usage,
+    });
+    expect(wired?.audited).toBeUndefined();
+
+    const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
+      (speech: SpeechRuntime | null) => unknown;
+    const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
+      (speech: SpeechRuntime | null) => unknown;
+    expect(controlsFactory(runtime)).toBeInstanceOf(DisabledRealtimeDurableControlAuthority);
+    expect(sourcePolicyFactory(runtime)).toBeNull();
+  });
+
+  it.each(['openai', 'mistral'] as const)(
+    'conserve la chaîne auditée complète et exclusive avec %s',
+    (provider) => {
+      const env = validSpeechRuntimeEnvironment(provider);
+      const fixture = speechPersistenceFixture();
+
+      const runtime = buildRealtimeSpeechRuntime(fixture.persistence, env);
+
+      if (!runtime?.audited) throw new Error('Audited speech runtime was not composed.');
+      expect(runtime.native).toBeUndefined();
+      expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+      expect(fixture.factories.auditedDelivery).toHaveBeenCalledOnce();
+      expect(fixture.factories.controls).toHaveBeenCalledOnce();
+      expect(fixture.factories.artifact).toHaveBeenCalledOnce();
+
+      const wired = sidebandSpeech(runtime);
+      expect(wired?.owner).toBe(runtime.owner);
+      expect(wired?.audited).toEqual({
+        publisher: runtime.audited.publisher,
+        cancellation: runtime.audited.deliveryRepository,
+        controls: runtime.audited.controls,
+      });
+      expect(wired?.native).toBeUndefined();
+
+      const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
+        (speech: SpeechRuntime | null) => unknown;
+      const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
+        (speech: SpeechRuntime | null) => unknown;
+      expect(controlsFactory(runtime)).toBe(runtime.audited.controls);
+      expect(sourcePolicyFactory(runtime)).toBe(runtime.audited.sourcePolicy);
+    },
+  );
+
+  it.each(['openai', 'mistral'] as const)(
+    'reste fail-closed avant toute construction de port en mode audité %s incomplet',
+    (provider) => {
+      const configured = validSpeechRuntimeEnvironment(provider);
+      const env: Env = {
+        ...configured,
+        SUPABASE_URL: undefined,
+        SUPABASE_SERVICE_ROLE_KEY: undefined,
+      };
+      const fixture = speechPersistenceFixture();
+
+      expect(() => buildRealtimeSpeechRuntime(fixture.persistence, env))
+        .toThrow('Bob Live audited speech runtime is incompletely configured.');
+      expect(fixture.factories.owner).not.toHaveBeenCalled();
+      expect(fixture.factories.usage).not.toHaveBeenCalled();
+      expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+      expect(fixture.factories.auditedDelivery).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {

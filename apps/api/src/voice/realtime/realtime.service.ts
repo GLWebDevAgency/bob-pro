@@ -833,6 +833,9 @@ export class RealtimeVoiceService {
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle: lease.sessionId,
+        speechDelivery: parsed.value.speechDelivery,
+        plan: entitlement.plan,
+        subjectKeyVersion: this.settings.subjectKeyVersion,
         session,
         lifecycle,
         turn: {

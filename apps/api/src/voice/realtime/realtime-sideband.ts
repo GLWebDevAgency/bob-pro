@@ -5,11 +5,25 @@ import {
   type AgentHistoryTurn,
   type AgentRunKind,
 } from '@bob/ai';
+import type { PlanTier } from '@bob/core';
 import WebSocket, { type ClientOptions, type RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
 import type { RealtimeCallTerminationOutcome } from './realtime-call-lifecycle';
 import type { RealtimeAgentTurnOutcome } from './realtime-agent-turn';
+import {
+  OpenAiNativeResponseDispatcher,
+  type OpenAiNativeResponseDispatcherCallbacks,
+  type OpenAiNativeResponseFatalReason,
+  type OpenAiNativeResponseSessionFencePort,
+  type OpenAiNativeServerCancelAndClearCommand,
+  type OpenAiNativeServerCancelAndClearResult,
+} from './openai-native-response-dispatcher';
+import type {
+  OpenAiNativeSpeechAuthority,
+  OpenAiNativeSpeechAuthorityBinding,
+} from './openai-native-speech-authority';
+import { OpenAiNativeResponseUsageAdapter } from './openai-native-response-usage';
 import type {
   RealtimeSidebandContextVersion,
   RealtimeSidebandOwnerIdentity,
@@ -27,6 +41,7 @@ import type {
   OpenAiRealtimeSessionConfig,
   RealtimeVoiceSettings,
 } from './realtime.types';
+import type { RealtimeVoiceUsageWriterPort } from './realtime-voice-usage';
 
 const CALL_ID = /^rtc_[A-Za-z0-9_-]{1,200}$/u;
 const PROVIDER_ITEM_ID = /^[A-Za-z0-9_-]{1,200}$/u;
@@ -43,6 +58,8 @@ const CONTROL_CONTEXT_REVALIDATION_TIMEOUT_MS = 1_000;
 const CONTROL_APPROVAL_TTL_MS = 15_000;
 const MAX_CONTROL_TURNS = 64;
 const MAX_CONTROL_WAITERS = 8;
+const DURABLE_CLEANUP_MAX_TIMEOUT_MS = 2_000;
+const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
 interface SidebandSocket {
   readonly readyState: number;
@@ -57,11 +74,21 @@ interface SidebandSocket {
 
 export type RealtimeSidebandSocketFactory = (url: string, options: ClientOptions) => SidebandSocket;
 
-export interface RealtimeSidebandSpeechDependencies {
-  readonly owner: RealtimeSidebandOwnerPort;
+export interface RealtimeSidebandAuditedSpeechDependencies {
   readonly publisher: Pick<RealtimeSpeechPublisher, 'publish'>;
   readonly cancellation: Pick<RealtimeSpeechDeliveryRepositoryPort, 'cancel'>;
   readonly controls: Pick<RealtimeDurableControlAuthority, 'issue'>;
+}
+
+export interface RealtimeSidebandNativeSpeechDependencies {
+  readonly authority: OpenAiNativeSpeechAuthority;
+  readonly usage: RealtimeVoiceUsageWriterPort;
+}
+
+export interface RealtimeSidebandSpeechDependencies {
+  readonly owner: RealtimeSidebandOwnerPort;
+  readonly audited?: RealtimeSidebandAuditedSpeechDependencies;
+  readonly native?: RealtimeSidebandNativeSpeechDependencies;
   readonly entropy?: {
     readonly ownerToken: () => string;
     readonly cancellationId: () => string;
@@ -73,6 +100,9 @@ export interface RealtimeSidebandAttachInput {
   userId: string;
   companyId: string;
   sessionHandle?: string;
+  speechDelivery: 'audited-signed-url-v1' | 'openai-native-webrtc-v1';
+  plan: PlanTier;
+  subjectKeyVersion: number;
   session: OpenAiRealtimeSessionConfig;
   lifecycle?: {
     activate(): Promise<void>;
@@ -184,6 +214,24 @@ interface PendingSpeech {
   readonly controller: AbortController;
   artifactId: string | null;
   delivered: boolean;
+}
+
+interface PendingNativeSpeech {
+  readonly generation: number;
+  readonly deliveryId: string;
+  readonly turnId: string;
+  readonly userTranscript: string;
+  readonly canonicalSpeech: string;
+  readonly kind: string;
+  readonly context: RealtimeSidebandContextVersion;
+  readonly dispatcher: OpenAiNativeResponseDispatcher;
+  responseId: string | null;
+}
+
+interface DecodedSidebandWireEvent {
+  readonly event: DecodedSidebandEvent;
+  readonly rawEvent: Record<string, unknown> | null;
+  readonly rawWire: Buffer | null;
 }
 
 interface ApprovedControlRecord {
@@ -303,51 +351,61 @@ function decodeEvent(
   raw: RawData,
   isBinary: boolean,
   expected: OpenAiRealtimeSessionConfig,
-): DecodedSidebandEvent {
-  if (isBinary) return { type: 'malformed_event' };
+): DecodedSidebandWireEvent {
+  const malformed = (): DecodedSidebandWireEvent => ({
+    event: { type: 'malformed_event' },
+    rawEvent: null,
+    rawWire: null,
+  });
+  if (isBinary) return malformed();
   const bytes = rawBytes(raw);
-  if (bytes.byteLength > MAX_SIDEBAND_EVENT_BYTES) return { type: 'malformed_event' };
+  if (bytes.byteLength > MAX_SIDEBAND_EVENT_BYTES) return malformed();
   let value: unknown;
   try {
     value = JSON.parse(bytes.toString('utf8'));
   } catch {
-    return { type: 'malformed_event' };
+    return malformed();
   }
   const event = record(value);
-  if (!event || typeof event.type !== 'string') return { type: 'malformed_event' };
+  if (!event || typeof event.type !== 'string') return malformed();
+  const decoded = (decodedEvent: DecodedSidebandEvent): DecodedSidebandWireEvent => ({
+    event: decodedEvent,
+    rawEvent: event,
+    rawWire: bytes,
+  });
   if (event.type === 'session.updated') {
-    return { type: 'session_updated', policyMatches: sessionPolicyMatches(event.session, expected) };
+    return decoded({ type: 'session_updated', policyMatches: sessionPolicyMatches(event.session, expected) });
   }
   if (event.type === 'input_audio_buffer.committed') {
-    return { type: 'input_committed', itemId: safeProviderItemId(event.item_id) };
+    return decoded({ type: 'input_committed', itemId: safeProviderItemId(event.item_id) });
   }
-  if (event.type === 'input_audio_buffer.speech_started') return { type: 'speech_started' };
+  if (event.type === 'input_audio_buffer.speech_started') return decoded({ type: 'speech_started' });
   if (event.type === 'conversation.item.input_audio_transcription.completed') {
     const transcript = typeof event.transcript === 'string'
       && event.transcript.trim().length > 0
       && event.transcript.length <= MAX_TRANSCRIPT_CHARS
       ? event.transcript
       : null;
-    return { type: 'transcript_completed', itemId: safeProviderItemId(event.item_id), transcript };
+    return decoded({ type: 'transcript_completed', itemId: safeProviderItemId(event.item_id), transcript });
   }
   if (event.type === 'conversation.item.input_audio_transcription.failed') {
-    return { type: 'transcript_failed', itemId: safeProviderItemId(event.item_id) };
+    return decoded({ type: 'transcript_failed', itemId: safeProviderItemId(event.item_id) });
   }
   const conversation = conversationItemEvent(event);
-  if (conversation) return conversation;
-  if (isUnexpectedToolEvent(event)) return { type: 'unexpected_tool_call' };
+  if (conversation) return decoded(conversation);
+  if (isUnexpectedToolEvent(event)) return decoded({ type: 'unexpected_tool_call' });
   if (event.type === 'error') {
     const error = record(event.error);
-    return {
+    return decoded({
       type: 'provider_error',
       errorType: safeProviderErrorToken(error?.type),
       code: safeProviderErrorToken(error?.code),
-    };
+    });
   }
   if (event.type.startsWith('response.') || event.type.startsWith('output_audio_buffer.')) {
-    return { type: 'forbidden_provider_output' };
+    return decoded({ type: 'forbidden_provider_output' });
   }
-  return { type: 'ignored' };
+  return decoded({ type: 'ignored' });
 }
 
 function websocketUrl(baseUrl: string, callId: string): string {
@@ -383,6 +441,44 @@ function principalKey(input: { userId: string; companyId: string }): string {
 
 function tokenHash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+async function boundedCleanup<T>(work: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const guarded = work.catch(() => null);
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), Math.min(timeoutMs, DURABLE_CLEANUP_MAX_TIMEOUT_MS));
+  });
+  try {
+    return await Promise.race([guarded, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function sessionMatchesSpeechDelivery(
+  session: OpenAiRealtimeSessionConfig,
+  speechDelivery: RealtimeSidebandAttachInput['speechDelivery'],
+): boolean {
+  return speechDelivery === 'openai-native-webrtc-v1'
+    ? session.output_modalities.length === 1 && session.output_modalities[0] === 'audio'
+    : session.output_modalities.length === 1 && session.output_modalities[0] === 'text';
+}
+
+function providerResponseRouteHint(event: Record<string, unknown>): {
+  readonly deliveryId: string | null;
+  readonly responseId: string | null;
+} {
+  const response = record(event.response);
+  const metadata = record(response?.metadata);
+  const error = record(event.error);
+  const deliveryId = typeof metadata?.bob_delivery_id === 'string' && UUID.test(metadata.bob_delivery_id)
+    ? metadata.bob_delivery_id.toLowerCase()
+    : null;
+  const responseId = safeProviderItemId(
+    event.response_id ?? response?.id ?? error?.response_id,
+  );
+  return { deliveryId, responseId };
 }
 
 function validContext(revision: number, digest: string): boolean {
@@ -446,6 +542,8 @@ class ManagedSidebandSession {
   private countedActive = false;
   private closed = false;
   private finalized = false;
+  private providerIngressFenced = false;
+  private providerSocketTerminated = false;
   private closing: Promise<RealtimeCallTerminationOutcome> | null = null;
   private bootstrapTimer: ReturnType<typeof setTimeout> | null = null;
   private lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -460,9 +558,15 @@ class ManagedSidebandSession {
   private readonly controlValidationControllers = new Set<AbortController>();
   private history: AgentHistoryTurn[] = [];
   private turnAbort: AbortController | null = null;
+  private turnCleanup: Promise<void> = Promise.resolve();
   private currentSpeech: PendingSpeech | null = null;
+  private currentNativeSpeech: PendingNativeSpeech | null = null;
+  private readonly nativeSpeechByDeliveryId = new Map<string, PendingNativeSpeech>();
+  private readonly nativeSpeechByResponseId = new Map<string, PendingNativeSpeech>();
   private owner: RealtimeSidebandOwnerIdentity | null = null;
   private appliedContext: RealtimeSidebandContextVersion | null = null;
+  private contextTransitionPending = false;
+  private highestContextRevision = 0;
   private turnGeneration = 0;
   private contextApplicationGeneration = 0;
   private turns = 0;
@@ -473,6 +577,9 @@ class ManagedSidebandSession {
     readonly sessionHandle: string,
     private readonly socket: SidebandSocket,
     private readonly session: OpenAiRealtimeSessionConfig,
+    private readonly speechDelivery: RealtimeSidebandAttachInput['speechDelivery'],
+    private readonly plan: PlanTier,
+    private readonly subjectKeyVersion: number,
     private readonly timeoutMs: number,
     private readonly maxSessionSeconds: number,
     private readonly ownerLeaseSeconds: number,
@@ -480,9 +587,8 @@ class ManagedSidebandSession {
     private readonly ownerInstanceHash: string,
     private readonly ownerTokenHash: string,
     private readonly ownerPort: RealtimeSidebandOwnerPort,
-    private readonly publisher: Pick<RealtimeSpeechPublisher, 'publish'>,
-    private readonly cancellation: Pick<RealtimeSpeechDeliveryRepositoryPort, 'cancel'>,
-    private readonly controls: Pick<RealtimeDurableControlAuthority, 'issue'>,
+    private readonly audited: RealtimeSidebandAuditedSpeechDependencies | null,
+    private readonly native: RealtimeSidebandNativeSpeechDependencies | null,
     private readonly cancellationId: () => string,
     private readonly activateLease: () => Promise<void>,
     private readonly terminateCall: (
@@ -545,8 +651,9 @@ class ManagedSidebandSession {
         }
       });
       this.socket.on('message', (data, isBinary) => {
-        if (this.finalized) return;
-        const event = decodeEvent(data, isBinary, this.session);
+        if (this.finalized || this.providerIngressFenced) return;
+        const decoded = decodeEvent(data, isBinary, this.session);
+        const { event } = decoded;
         if (event.type === 'session_updated') {
           if (!event.policyMatches) {
             this.rejectSecurity('session_policy_drift');
@@ -568,7 +675,7 @@ class ManagedSidebandSession {
           return;
         }
         if (event.type === 'speech_started') {
-          if (this.isReady()) this.interruptCurrentTurn('barge_in');
+          if (this.isReady()) void this.interruptCurrentTurn('barge_in');
           return;
         }
         if (event.type === 'transcript_completed' || event.type === 'user_text_item') {
@@ -586,6 +693,12 @@ class ManagedSidebandSession {
           return;
         }
         if (event.type === 'forbidden_provider_output') {
+          if (
+            this.speechDelivery === 'openai-native-webrtc-v1'
+            && decoded.rawEvent !== null
+            && decoded.rawWire !== null
+            && this.routeNativeProviderEvent(decoded.rawEvent, decoded.rawWire)
+          ) return;
           this.rejectSecurity('unauthorized_response');
           return;
         }
@@ -603,6 +716,12 @@ class ManagedSidebandSession {
           return;
         }
         if (event.type === 'provider_error') {
+          if (
+            this.speechDelivery === 'openai-native-webrtc-v1'
+            && decoded.rawEvent !== null
+            && decoded.rawWire !== null
+            && this.routeNativeProviderEvent(decoded.rawEvent, decoded.rawWire)
+          ) return;
           if (!this.settled) {
             fail('sideband_provider_error');
             return;
@@ -623,6 +742,7 @@ class ManagedSidebandSession {
         }
       });
       this.socket.on('close', () => {
+        this.providerSocketTerminated = true;
         if (!this.settled) {
           fail('sideband_closed_before_ready');
           return;
@@ -637,10 +757,53 @@ class ManagedSidebandSession {
     });
   }
 
+  private routeNativeProviderEvent(
+    rawEvent: Record<string, unknown>,
+    rawWire: Buffer,
+  ): boolean {
+    const hint = providerResponseRouteHint(rawEvent);
+    const byDelivery = hint.deliveryId === null
+      ? null
+      : this.nativeSpeechByDeliveryId.get(hint.deliveryId) ?? null;
+    const byResponse = hint.responseId === null
+      ? null
+      : this.nativeSpeechByResponseId.get(hint.responseId) ?? null;
+    if (byDelivery && byResponse && byDelivery !== byResponse) {
+      this.rejectSecurity('unauthorized_response');
+      return true;
+    }
+    const pending = byDelivery ?? byResponse ?? (
+      rawEvent.type === 'error' ? this.currentNativeSpeech : null
+    );
+    if (!pending) return false;
+    const handled = pending.dispatcher.handleWireEvent(rawWire);
+    if (handled.status === 'fatal') return true;
+    if (hint.responseId !== null) {
+      if (pending.responseId !== null && pending.responseId !== hint.responseId) {
+        this.rejectSecurity('unauthorized_response');
+        return true;
+      }
+      pending.responseId = hint.responseId;
+      this.nativeSpeechByResponseId.set(hint.responseId, pending);
+    }
+    if (rawEvent.type === 'response.done') {
+      void pending.dispatcher.settled().catch(() => {
+        this.hardFenceAndScheduleTermination('internal_error');
+      });
+    }
+    return true;
+  }
+
   contextChanged(revision: number, digest: string): void {
     if (!validContext(revision, digest)) return;
-    if (this.appliedContext && revision <= this.appliedContext.revision) return;
-    this.interruptCurrentTurn('context_changed');
+    if (revision <= this.highestContextRevision) return;
+    this.highestContextRevision = revision;
+    // Ferme la lecture et les contrôles sur l'ancien écran avant la première opération async.
+    // Le microphone client doit déjà être fermé jusqu'à l'ACK, mais le serveur ne lui fait jamais
+    // confiance pour empêcher un tour lancé dans la fenêtre de changement de contexte.
+    this.contextTransitionPending = true;
+    this.appliedContext = null;
+    void this.interruptCurrentTurn('context_changed');
     const owner = this.owner;
     if (!owner || !this.isReady()) return;
     const generation = ++this.contextApplicationGeneration;
@@ -652,6 +815,7 @@ class ManagedSidebandSession {
         return;
       }
       this.appliedContext = { revision, digest };
+      this.contextTransitionPending = false;
       this.history = [];
     }, () => {
       if (generation !== this.contextApplicationGeneration || this.closed || this.finalized) return;
@@ -748,11 +912,15 @@ class ManagedSidebandSession {
 
   forceDispose(): void {
     if (this.finalized) return;
+    this.providerIngressFenced = true;
     this.closed = true;
     this.turnAbort?.abort();
     this.currentSpeech?.controller.abort();
     if (this.owner) void this.ownerPort.release(this.owner).catch(() => undefined);
-    try { this.socket.terminate(); } catch { /* déjà fermée */ }
+    try {
+      this.socket.terminate();
+      this.providerSocketTerminated = true;
+    } catch { /* déjà fermée */ }
     this.finalize();
   }
 
@@ -768,6 +936,10 @@ class ManagedSidebandSession {
 
   private rejectSecurity(reason: Parameters<ManagedSidebandSession['onSecurityRejection']>[0]): void {
     this.onSecurityRejection(reason);
+    if (this.speechDelivery === 'openai-native-webrtc-v1') {
+      this.hardFenceAndScheduleTermination('protocol_violation');
+      return;
+    }
     void this.close('kill_switch').catch(() => undefined);
   }
 
@@ -787,6 +959,7 @@ class ManagedSidebandSession {
         const applied = await this.ownerPort.applyContext(acquired.owner, acquired.currentContext);
         if (applied.status !== 'applied') throw new Error(`sideband_context_${applied.status}`);
         this.appliedContext = acquired.currentContext;
+        this.highestContextRevision = acquired.currentContext.revision;
       }
     } catch (error) {
       if (this.owner) await this.ownerPort.release(this.owner).catch(() => undefined);
@@ -851,13 +1024,16 @@ class ManagedSidebandSession {
       this.rejectSecurity('turn_budget_exceeded');
       return;
     }
-    if (!this.appliedContext) {
+    if (this.contextTransitionPending || !this.appliedContext) {
       this.onSecurityRejection('context_fence_rejected');
       return;
     }
 
-    this.interruptCurrentTurn('superseded');
+    // Le ticket est pris avant le premier await : deux transcripts reçus dans le même tick ne
+    // peuvent donc jamais lancer deux cerveaux avec des AbortSignal encore valides.
     const generation = ++this.turnGeneration;
+    await this.interruptCurrentTurn('superseded', false);
+    if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     const controller = new AbortController();
     this.turnAbort = controller;
     const brainStartedAt = performance.now();
@@ -885,14 +1061,19 @@ class ManagedSidebandSession {
   }
 
   private async processTranscriptFailure(inputItemId: string): Promise<void> {
-    if (!this.rememberProcessedInput(inputItemId) || !this.appliedContext) return;
+    if (
+      !this.rememberProcessedInput(inputItemId)
+      || this.contextTransitionPending
+      || !this.appliedContext
+    ) return;
     this.turns += 1;
     if (this.turns > MAX_TURNS_PER_SESSION) {
       this.rejectSecurity('turn_budget_exceeded');
       return;
     }
-    this.interruptCurrentTurn('superseded');
     const generation = ++this.turnGeneration;
+    await this.interruptCurrentTurn('superseded', false);
+    if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     await this.publishOutcome({
       status: 'failed',
       canonicalSpeech: "Je n’ai pas bien entendu. Tu peux répéter en une phrase courte ?",
@@ -916,6 +1097,16 @@ class ManagedSidebandSession {
       this.onSecurityRejection('context_fence_rejected');
       return;
     }
+    if (this.speechDelivery === 'openai-native-webrtc-v1') {
+      await this.publishNativeOutcome(outcome, userTranscript, generation, owner, context, turnId);
+      return;
+    }
+    const audited = this.audited;
+    if (!audited) {
+      this.onProviderError('speech_publish_failed');
+      void this.close('kill_switch').catch(() => undefined);
+      return;
+    }
     const controller = new AbortController();
     const pending: PendingSpeech = {
       generation,
@@ -933,7 +1124,7 @@ class ManagedSidebandSession {
     const startedAt = performance.now();
     let published: RealtimeSpeechPublishOutcome;
     try {
-      published = await this.publisher.publish({
+      published = await audited.publisher.publish({
         companyId: owner.companyId,
         subjectHash: owner.subjectHash,
         sessionId: owner.sessionId,
@@ -974,7 +1165,7 @@ class ManagedSidebandSession {
       if (pending.control) {
         let sealed: Awaited<ReturnType<RealtimeDurableControlAuthority['issue']>>;
         try {
-          sealed = await this.controls.issue({
+          sealed = await audited.controls.issue({
             companyId: owner.companyId,
             subjectHash: owner.subjectHash,
             sessionId: owner.sessionId,
@@ -1023,20 +1214,242 @@ class ManagedSidebandSession {
     }
   }
 
-  private interruptCurrentTurn(reason: RealtimeSpeechCancellationReason): void {
+  private async publishNativeOutcome(
+    outcome: Exclude<RealtimeAgentTurnOutcome, { status: 'aborted' }>,
+    userTranscript: string,
+    generation: number,
+    owner: RealtimeSidebandOwnerIdentity,
+    context: RealtimeSidebandContextVersion,
+    turnId: string,
+  ): Promise<void> {
+    const native = this.native;
+    if (!native || outcome.status !== 'ready') {
+      this.onProviderError('speech_publish_failed');
+      void this.close('kill_switch').catch(() => undefined);
+      return;
+    }
+    let prepared: Awaited<ReturnType<OpenAiNativeSpeechAuthority['prepareTurn']>>;
+    try {
+      prepared = await native.authority.prepareTurn({
+        companyId: owner.companyId,
+        subjectHmac: owner.subjectHash,
+        sessionId: owner.sessionId,
+        turnId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        sidebandOwnerEpoch: owner.ownerEpoch,
+        sidebandOwnerTokenHmac: owner.ownerTokenHash,
+        canonicalSpeech: outcome.canonicalSpeech,
+        model: this.session.model,
+        voice: this.session.audio.output.voice,
+        risk: {
+          purpose: outcome.speechPurpose,
+          source: outcome.speechSource,
+          runKind: outcome.kind,
+          hasTenantContext: outcome.hasTenantContext,
+          hasControl: outcome.navigate !== undefined || outcome.proposalId !== undefined,
+        },
+      });
+    } catch {
+      prepared = { status: 'unavailable' };
+    }
+    const staleAfterPreparation = this.closed
+      || this.finalized
+      || generation !== this.turnGeneration
+      || this.owner !== owner
+      || !this.contextMatches(context.revision, context.digest);
+    if (staleAfterPreparation) {
+      if (prepared.status === 'prepared') {
+        await this.cancelPreparedNativeTurn(native.authority, {
+          companyId: owner.companyId,
+          subjectHmac: owner.subjectHash,
+          deliveryId: prepared.state.deliveryId,
+          sessionId: owner.sessionId,
+          turnId,
+          contextRevision: context.revision,
+          contextDigest: context.digest,
+          sidebandOwnerEpoch: owner.ownerEpoch,
+          sidebandOwnerTokenHmac: owner.ownerTokenHash,
+        });
+      }
+      return;
+    }
+    if (prepared.status !== 'prepared') {
+      // Le contrat v4 natif ne possède aucun fallback audité par tour. Une réponse sensible ou
+      // improuvable reste donc silencieuse et termine la session jusqu'au protocole hybride v5.
+      this.onProviderError('speech_publish_failed');
+      void this.close('kill_switch').catch(() => undefined);
+      return;
+    }
+    const binding = Object.freeze({
+      companyId: owner.companyId,
+      subjectHmac: owner.subjectHash,
+      deliveryId: prepared.state.deliveryId,
+      sessionId: owner.sessionId,
+      turnId,
+      contextRevision: context.revision,
+      contextDigest: context.digest,
+      sidebandOwnerEpoch: owner.ownerEpoch,
+      sidebandOwnerTokenHmac: owner.ownerTokenHash,
+    });
+    let usage: OpenAiNativeResponseUsageAdapter;
+    try {
+      usage = new OpenAiNativeResponseUsageAdapter(native.usage, {
+        companyId: owner.companyId,
+        subjectHash: owner.subjectHash,
+        subjectKeyVersion: this.subjectKeyVersion,
+        sessionId: owner.sessionId,
+        plan: this.plan,
+        occurredAt: new Date(prepared.state.createdAtMs).toISOString(),
+      });
+    } catch {
+      await this.cancelPreparedNativeTurn(native.authority, binding);
+      this.onProviderError('speech_publish_failed');
+      void this.close('kill_switch').catch(() => undefined);
+      return;
+    }
+    const pendingRef: { current: PendingNativeSpeech | null } = { current: null };
+    const callbacks: OpenAiNativeResponseDispatcherCallbacks = {
+      onStreaming: ({ responseId }) => {
+        const pending = pendingRef.current;
+        if (!pending) return;
+        if (this.nativeSpeechByDeliveryId.get(prepared.state.deliveryId) !== pending) return;
+        pending.responseId = responseId;
+        this.nativeSpeechByResponseId.set(responseId, pending);
+      },
+      onCompleted: () => {
+        // `completed` est une preuve provider, pas une preuve acoustique. L'historique et les
+        // contrôles restent fermés jusqu'au futur ACK mobile natif durable.
+      },
+      onCancelled: () => {
+        const pending = pendingRef.current;
+        if (!pending) return;
+        if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+      },
+      onFatal: () => {
+        const pending = pendingRef.current;
+        if (!pending) return;
+        if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+        this.onProviderError('speech_publish_failed');
+      },
+    };
+    const fence: OpenAiNativeResponseSessionFencePort = {
+      fenceAndClose: ({ reason }) => this.hardFenceAndScheduleTermination(reason),
+      emergencyRevokeAndTerminate: ({ reason }) => this.hardFenceAndScheduleTermination(reason),
+    };
+    const dispatcher = new OpenAiNativeResponseDispatcher(
+      native.authority,
+      this.socket,
+      WebSocket.OPEN,
+      usage,
+      fence,
+      callbacks,
+    );
+    const pending: PendingNativeSpeech = {
+      generation,
+      deliveryId: prepared.state.deliveryId,
+      turnId,
+      userTranscript,
+      canonicalSpeech: outcome.canonicalSpeech,
+      kind: outcome.kind,
+      context,
+      dispatcher,
+      responseId: null,
+    };
+    pendingRef.current = pending;
+    this.currentNativeSpeech = pending;
+    this.nativeSpeechByDeliveryId.set(pending.deliveryId, pending);
+    const startedAt = performance.now();
+    const started = await dispatcher.start({ prepared, binding });
+    this.metrics.bobLiveRenderDispatchDuration.observe(
+      { outcome: started.status === 'started' ? 'ok' : 'rejected' },
+      (performance.now() - startedAt) / 1_000,
+    );
+    const stale = this.closed
+      || this.finalized
+      || generation !== this.turnGeneration
+      || this.currentNativeSpeech !== pending;
+    if (started.status === 'started' && !stale) return;
+    if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+    if (started.status === 'started') {
+      await dispatcher.interruptForServerOrigin(
+        'superseded',
+        (command) => this.sendNativeCancelAndClear(command),
+      );
+      return;
+    }
+    if (started.status !== 'fatal') {
+      this.onProviderError('speech_publish_failed');
+      void this.close('kill_switch').catch(() => undefined);
+    }
+  }
+
+  private async cancelPreparedNativeTurn(
+    authority: OpenAiNativeSpeechAuthority,
+    binding: OpenAiNativeSpeechAuthorityBinding,
+  ): Promise<void> {
+    let cancellationId: string;
+    try {
+      cancellationId = this.cancellationId().toLowerCase();
+    } catch {
+      this.hardFenceAndScheduleTermination('internal_error');
+      return;
+    }
+    if (!UUID.test(cancellationId)) {
+      this.hardFenceAndScheduleTermination('internal_error');
+      return;
+    }
+    const cancelled = await boundedCleanup(authority.cancel({
+      ...binding,
+      cancellationId,
+      reason: 'superseded',
+    }), this.timeoutMs);
+    if (cancelled?.status === 'applied' || cancelled?.status === 'idempotent') return;
+    this.hardFenceAndScheduleTermination('cancellation_failed');
+  }
+
+  private async interruptCurrentTurn(
+    reason: RealtimeSpeechCancellationReason,
+    invalidateGeneration = true,
+  ): Promise<void> {
     const wasThinking = this.turnAbort !== null;
     const speech = this.currentSpeech;
+    const nativeSpeech = this.currentNativeSpeech;
     this.invalidateUnconsumedControls();
-    this.turnGeneration += 1;
+    if (invalidateGeneration) this.turnGeneration += 1;
     this.turnAbort?.abort();
     this.turnAbort = null;
     if (wasThinking) this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: 'thinking' });
-    if (!speech) return;
-    this.currentSpeech = null;
-    speech.controller.abort();
-    this.rejectControlTurn(speech.turnId);
-    this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: speech.kind });
-    if (speech.artifactId) void this.cancelArtifact(speech, reason);
+    const pending: Promise<unknown>[] = [];
+    if (speech) {
+      this.currentSpeech = null;
+      speech.controller.abort();
+      this.rejectControlTurn(speech.turnId);
+      this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: speech.kind });
+      if (speech.artifactId) pending.push(this.cancelArtifact(speech, reason));
+    }
+    if (nativeSpeech) {
+      this.currentNativeSpeech = null;
+      this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: nativeSpeech.kind });
+      if (reason === 'barge_in' || reason === 'user_cancel') {
+        pending.push(nativeSpeech.dispatcher.markMobileInterruption(
+          reason === 'barge_in' ? 'user_speech' : 'tap',
+        ));
+      } else if (
+        reason === 'context_changed'
+        || reason === 'superseded'
+        || reason === 'session_end'
+      ) {
+        pending.push(nativeSpeech.dispatcher.interruptForServerOrigin(
+          reason,
+          (command) => this.sendNativeCancelAndClear(command),
+        ));
+      }
+    }
+    const previousCleanup = this.turnCleanup;
+    const cleanup = Promise.allSettled([previousCleanup, ...pending]).then(() => undefined);
+    this.turnCleanup = cleanup;
+    await cleanup;
   }
 
   private async cancelArtifact(
@@ -1050,8 +1463,14 @@ class ManagedSidebandSession {
       void this.close('kill_switch').catch(() => undefined);
       return;
     }
-    try {
-      const result = await this.cancellation.cancel({
+    const cancellation = this.audited?.cancellation;
+    if (!cancellation) {
+      this.onProviderError('speech_cancel_failed');
+      void this.close('kill_switch').catch(() => undefined);
+      return;
+    }
+    const result = await boundedCleanup(
+      cancellation.cancel({
         companyId: this.owner.companyId,
         subjectHash: this.owner.subjectHash,
         sessionId: this.owner.sessionId,
@@ -1059,13 +1478,64 @@ class ManagedSidebandSession {
         artifactId: speech.artifactId,
         cancellationId: id,
         reason,
-      });
-      if (result.status === 'cancelled' || result.status === 'terminal') return;
-    } catch {
-      // Même traitement fail-closed ci-dessous.
-    }
+      }),
+      this.timeoutMs,
+    );
+    if (result?.status === 'cancelled' || result?.status === 'terminal') return;
     this.onProviderError('speech_cancel_failed');
     void this.close('kill_switch').catch(() => undefined);
+  }
+
+  private async sendNativeCancelAndClear(
+    command: OpenAiNativeServerCancelAndClearCommand,
+  ): Promise<OpenAiNativeServerCancelAndClearResult> {
+    if (
+      !command.closeIfAmbiguous
+      || this.providerIngressFenced
+      || this.socket.readyState !== WebSocket.OPEN
+    ) return { status: 'ambiguous' };
+    for (const event of command.events) {
+      const sent = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const finish = (value: boolean): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        };
+        const timer = setTimeout(() => finish(false), this.timeoutMs);
+        try {
+          this.socket.send(JSON.stringify(event), (error) => finish(error === undefined));
+        } catch {
+          finish(false);
+        }
+      });
+      if (!sent) return { status: 'ambiguous' };
+    }
+    return { status: 'sent' };
+  }
+
+  private hardFenceAndScheduleTermination(
+    _reason: Exclude<OpenAiNativeResponseFatalReason, 'session_fence_failed'>,
+  ): ReturnType<OpenAiNativeResponseSessionFencePort['fenceAndClose']> {
+    this.providerIngressFenced = true;
+    this.turnAbort?.abort();
+    this.turnAbort = null;
+    this.currentNativeSpeech = null;
+    let socketFenced = this.providerSocketTerminated || this.socket.readyState === WebSocket.CLOSED;
+    if (!socketFenced) {
+      try {
+        this.socket.terminate();
+        socketFenced = true;
+      } catch {
+        socketFenced = false;
+      }
+    }
+    this.providerSocketTerminated = socketFenced;
+    void this.close('kill_switch').catch(() => undefined);
+    return socketFenced
+      ? { status: this.closed || this.finalized ? 'already_closed' : 'applied' }
+      : { status: 'failed' };
   }
 
   private async terminate(
@@ -1073,7 +1543,7 @@ class ManagedSidebandSession {
   ): Promise<RealtimeCallTerminationOutcome> {
     this.closed = true;
     this.contextApplicationGeneration += 1;
-    this.interruptCurrentTurn(cancellationReasonForClose(reason));
+    await this.interruptCurrentTurn(cancellationReasonForClose(reason));
     const owner = this.owner;
     this.owner = null;
     if (owner) await this.ownerPort.release(owner).catch(() => undefined);
@@ -1262,7 +1732,12 @@ class ManagedSidebandSession {
     this.turnAbort = null;
     this.currentSpeech?.controller.abort();
     this.currentSpeech = null;
+    this.currentNativeSpeech = null;
+    this.nativeSpeechByDeliveryId.clear();
+    this.nativeSpeechByResponseId.clear();
     this.owner = null;
+    this.appliedContext = null;
+    this.contextTransitionPending = false;
     for (const controller of this.controlValidationControllers) controller.abort();
     this.controlValidationControllers.clear();
     this.approvedControls.clear();
@@ -1276,9 +1751,10 @@ class ManagedSidebandSession {
 }
 
 /**
- * Contrôle sideband exclusivement serveur. Le fournisseur ne reçoit jamais de `response.create`
- * et tout événement de sortie texte/audio déclenche le kill-switch. La parole descendante vient
- * uniquement du RealtimeSpeechPublisher audité et de son artefact privé durable.
+ * Contrôle sideband exclusivement serveur avec une seule autorité acoustique par session.
+ * En mode audité, toute sortie fournisseur reste interdite et la parole vient de l’artefact privé.
+ * En mode natif, seul le dispatcher corrélé peut créer et accepter la réponse OpenAI ; toute autre
+ * sortie déclenche le kill-switch. Aucun des deux chemins ne peut retomber implicitement sur l’autre.
  */
 export class RealtimeSidebandManager implements RealtimeSidebandControl, OnApplicationShutdown {
   private readonly sessionsByPrincipal = new Map<string, ManagedSidebandSession>();
@@ -1306,6 +1782,19 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     if (!this.speech || !input.sessionHandle || !UUID.test(input.sessionHandle)) {
       throw new Error('sideband_speech_not_configured');
     }
+    if (
+      !sessionMatchesSpeechDelivery(input.session, input.speechDelivery)
+      || !PLAN_TIERS.has(input.plan)
+      || !Number.isSafeInteger(input.subjectKeyVersion)
+      || input.subjectKeyVersion < 1
+      || input.subjectKeyVersion > 2_147_483_647
+      || (
+        input.speechDelivery === 'audited-signed-url-v1'
+          ? this.speech.audited === undefined
+          : this.speech.native === undefined
+            || typeof this.speech.native.usage.recordBatch !== 'function'
+      )
+    ) throw new Error('sideband_speech_not_configured');
     if (this.shuttingDown) throw new Error('sideband_closed_before_ready');
     const ownerToken = this.entropy.ownerToken();
     if (ownerToken.length < 32 || ownerToken.length > 128) throw new Error('sideband_owner_entropy_invalid');
@@ -1325,6 +1814,9 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       input.sessionHandle.toLowerCase(),
       socket,
       input.session,
+      input.speechDelivery,
+      input.plan,
+      input.subjectKeyVersion,
       this.settings.sidebandTimeoutMs,
       this.settings.maxSessionSeconds,
       ownerLeaseSeconds,
@@ -1332,9 +1824,8 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       this.instanceHash,
       tokenHash(ownerToken),
       this.speech.owner,
-      this.speech.publisher,
-      this.speech.cancellation,
-      this.speech.controls,
+      this.speech.audited ?? null,
+      this.speech.native ?? null,
       this.entropy.cancellationId,
       () => input.lifecycle?.activate() ?? Promise.resolve(),
       (reason) => input.lifecycle?.terminate(reason)
@@ -1372,7 +1863,12 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
         || !managed.isReady()
       ) throw new Error('sideband_superseded');
       this.metrics.bobLiveSidebandConnections.inc({ outcome: 'ok' });
-      this.logger.audit('bob.live.sideband.ready', { transport: 'webrtc', output: 'audited_private_artifact' });
+      this.logger.audit('bob.live.sideband.ready', {
+        transport: 'webrtc',
+        output: input.speechDelivery === 'openai-native-webrtc-v1'
+          ? 'openai_native_provider_stream'
+          : 'audited_private_artifact',
+      });
     } catch (error) {
       await managed.close('kill_switch').catch(() => undefined);
       managed.forceDispose();

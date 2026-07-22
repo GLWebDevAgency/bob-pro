@@ -3,9 +3,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClientOptions, RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
-import { buildOpenAiRealtimeSessionConfig } from './realtime-session-config';
+import {
+  buildOpenAiNativeRealtimeSessionConfig,
+  buildOpenAiRealtimeSessionConfig,
+} from './realtime-session-config';
+import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
+import {
+  OPENAI_NATIVE_ELIGIBLE_SPEECH_V1,
+} from './openai-native-speech-risk';
+import type {
+  OpenAiNativeSpeechDeliveryCompareAndSwapInput,
+  OpenAiNativeSpeechDeliveryCompareAndSwapResult,
+  OpenAiNativeSpeechDeliveryKey,
+  OpenAiNativeSpeechDeliveryPrepareResult,
+  OpenAiNativeSpeechDeliveryReadResult,
+  OpenAiNativeSpeechDeliveryRepositoryPort,
+  OpenAiNativeSpeechDeliveryState,
+} from './openai-native-speech-delivery';
 import {
   RealtimeSidebandManager,
+  type RealtimeSidebandAuditedSpeechDependencies,
   type RealtimeSidebandSocketFactory,
   type RealtimeSidebandSpeechDependencies,
 } from './realtime-sideband';
@@ -14,6 +31,7 @@ import type {
   RealtimeSidebandOwnerPort,
 } from './realtime-sideband-owner';
 import type { RealtimeSpeechPublisherInput } from './realtime-speech-publisher';
+import type { RealtimeVoiceUsageWriterPort } from './realtime-voice-usage';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 
 const SESSION = '00000000-0000-4000-8000-000000000001';
@@ -24,6 +42,11 @@ const CONTEXT = 'a'.repeat(64);
 const OWNER_TOKEN = 'b'.repeat(64);
 const OWNER_INSTANCE = 'c'.repeat(64);
 const SUBJECT = 'd'.repeat(64);
+const NATIVE_DELIVERY = '00000000-0000-4000-8000-000000000040';
+const NATIVE_CLAIM = '00000000-0000-4000-8000-000000000041';
+const NATIVE_RESPONSE = 'resp_native_1';
+const NATIVE_ITEM = 'item_native_1';
+const NATIVE_PROOF_SECRET = 'native-proof-secret-with-more-than-thirty-two-characters';
 
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
@@ -48,6 +71,11 @@ const SETTINGS: RealtimeVoiceSettings = {
   mistralV2InitialBootstrapEnabled: false,
 };
 
+const NATIVE_SETTINGS: RealtimeVoiceSettings = {
+  ...SETTINGS,
+  speechDelivery: 'openai-native-webrtc-v1',
+};
+
 const OWNER: RealtimeSidebandOwnerIdentity = {
   companyId: 'company-1',
   subjectHash: SUBJECT,
@@ -57,6 +85,62 @@ const OWNER: RealtimeSidebandOwnerIdentity = {
   ownerEpoch: 3,
 };
 
+class NativeMemoryRepository implements OpenAiNativeSpeechDeliveryRepositoryPort {
+  readonly states = new Map<string, OpenAiNativeSpeechDeliveryState>();
+
+  async prepare(
+    state: OpenAiNativeSpeechDeliveryState,
+  ): Promise<OpenAiNativeSpeechDeliveryPrepareResult> {
+    const existing = this.states.get(state.deliveryId);
+    if (!existing) {
+      this.states.set(state.deliveryId, state);
+      return { status: 'created', state };
+    }
+    return JSON.stringify(existing) === JSON.stringify(state)
+      ? { status: 'already_prepared', state: existing }
+      : { status: 'conflict' };
+  }
+
+  async read(key: OpenAiNativeSpeechDeliveryKey): Promise<OpenAiNativeSpeechDeliveryReadResult> {
+    const state = this.states.get(key.deliveryId);
+    return state?.companyId === key.companyId
+      ? { status: 'found', state }
+      : { status: 'not_found' };
+  }
+
+  async compareAndSwap(
+    input: OpenAiNativeSpeechDeliveryCompareAndSwapInput,
+  ): Promise<OpenAiNativeSpeechDeliveryCompareAndSwapResult> {
+    const current = this.states.get(input.key.deliveryId);
+    if (!current || current.companyId !== input.key.companyId) return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) {
+      return JSON.stringify(current) === JSON.stringify(input.next)
+        ? { status: 'already_applied', state: current }
+        : { status: 'conflict' };
+    }
+    this.states.set(input.key.deliveryId, input.next);
+    return { status: 'applied', state: input.next };
+  }
+}
+
+function nativeAuthority(repository: NativeMemoryRepository): OpenAiNativeSpeechAuthority {
+  return new OpenAiNativeSpeechAuthority(
+    repository,
+    {
+      proofKeys: {
+        currentVersion: 1,
+        secret: (version) => version === 1 ? NATIVE_PROOF_SECRET : null,
+      },
+    },
+    {
+      deliveryId: () => NATIVE_DELIVERY,
+      requestNonce: () => 'native-request-nonce-with-more-than-thirty-two-characters',
+      dispatchClaimId: () => NATIVE_CLAIM,
+    },
+    () => Date.parse('2026-07-22T12:00:00.000Z'),
+  );
+}
+
 class FakeSocket extends EventEmitter {
   readyState = 0;
   readonly sent: string[] = [];
@@ -64,7 +148,8 @@ class FakeSocket extends EventEmitter {
   terminated = false;
 
   constructor(
-    private readonly effectiveSession = buildOpenAiRealtimeSessionConfig(SETTINGS),
+    private readonly effectiveSession: ReturnType<typeof buildOpenAiRealtimeSessionConfig>
+      | ReturnType<typeof buildOpenAiNativeRealtimeSessionConfig> = buildOpenAiRealtimeSessionConfig(SETTINGS),
     private readonly autoSessionUpdated = true,
   ) {
     super();
@@ -113,6 +198,11 @@ interface Harness {
   readonly issueControl: ReturnType<typeof vi.fn>;
   readonly provider: OpenAiRealtimeCallProvider;
   readonly terminate: ReturnType<typeof vi.fn>;
+  readonly settings: RealtimeVoiceSettings;
+  readonly nativeRepository: NativeMemoryRepository | null;
+  readonly nativeUsageBatch: ReturnType<typeof vi.fn<NonNullable<
+  RealtimeVoiceUsageWriterPort['recordBatch']
+  >>> | null;
 }
 
 function loggerStub(): AppLogger {
@@ -125,13 +215,21 @@ function harness(options: {
   publish?: (input: RealtimeSpeechPublisherInput) => Promise<unknown>;
   ownerAcquire?: () => Promise<unknown>;
   ownerRenew?: () => Promise<unknown>;
+  ownerApplyContext?: RealtimeSidebandOwnerPort['applyContext'];
+  cancel?: RealtimeSidebandAuditedSpeechDependencies['cancellation']['cancel'];
   contextCurrent?: boolean;
-  issueControl?: RealtimeSidebandSpeechDependencies['controls']['issue'];
+  issueControl?: RealtimeSidebandAuditedSpeechDependencies['controls']['issue'];
+  nativeUsageBatch?: NonNullable<RealtimeVoiceUsageWriterPort['recordBatch']>;
+  nativeAtomicUsage?: boolean;
 } = {}): Harness {
+  const settings = options.settings ?? SETTINGS;
+  const isNative = settings.speechDelivery === 'openai-native-webrtc-v1';
   const sockets: Harness['sockets'] = [];
   const factory = ((url: string, clientOptions: ClientOptions) => {
     const socket = new FakeSocket(
-      buildOpenAiRealtimeSessionConfig(options.settings ?? SETTINGS),
+      isNative
+        ? buildOpenAiNativeRealtimeSessionConfig(settings)
+        : buildOpenAiRealtimeSessionConfig(settings),
       options.autoSessionUpdated ?? true,
     );
     sockets.push({ url, options: clientOptions, socket });
@@ -146,7 +244,7 @@ function harness(options: {
       leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
     }))),
     renew: vi.fn(options.ownerRenew ?? (async () => ({ status: 'renewed' as const }))),
-    applyContext: vi.fn(async () => ({ status: 'applied' as const })),
+    applyContext: vi.fn(options.ownerApplyContext ?? (async () => ({ status: 'applied' as const }))),
     readCurrentContext: vi.fn(async () => ({
       status: 'current' as const,
       context: { revision: 1, digest: CONTEXT },
@@ -158,18 +256,47 @@ function harness(options: {
     artifactId: ARTIFACT,
     sequence: 1,
   })));
-  const cancel = vi.fn(async () => ({ status: 'cancelled' as const, idempotent: false }));
+  const cancel = vi.fn(options.cancel ?? (async () => ({
+    status: 'cancelled' as const,
+    idempotent: false,
+  })));
   const issueControl = vi.fn(options.issueControl ?? (async () => ({
     status: 'issued' as const,
     grantId: '00000000-0000-4000-8000-000000000098',
   })));
+  const nativeRepository = isNative ? new NativeMemoryRepository() : null;
+  const nativeUsageBatch = isNative
+    ? vi.fn<NonNullable<RealtimeVoiceUsageWriterPort['recordBatch']>>().mockImplementation(
+        options.nativeUsageBatch ?? (async () => ({
+          status: 'recorded' as const,
+          eventIds: [
+            '00000000-0000-4000-8000-000000000042',
+            '00000000-0000-4000-8000-000000000043',
+          ],
+        })),
+      )
+    : null;
   const speech: RealtimeSidebandSpeechDependencies = {
     owner: owner as unknown as RealtimeSidebandOwnerPort,
-    publisher: { publish: publish as unknown as RealtimeSidebandSpeechDependencies['publisher']['publish'] },
-    cancellation: { cancel: cancel as unknown as RealtimeSidebandSpeechDependencies['cancellation']['cancel'] },
-    controls: {
-      issue: issueControl as unknown as RealtimeSidebandSpeechDependencies['controls']['issue'],
-    },
+    ...(isNative
+      ? {
+          native: {
+            authority: nativeAuthority(nativeRepository!),
+            usage: {
+              record: vi.fn(async () => ({ status: 'unavailable' as const })),
+              ...(options.nativeAtomicUsage === false ? {} : { recordBatch: nativeUsageBatch! }),
+            },
+          },
+        }
+      : {
+          audited: {
+            publisher: { publish: publish as unknown as RealtimeSidebandAuditedSpeechDependencies['publisher']['publish'] },
+            cancellation: { cancel: cancel as unknown as RealtimeSidebandAuditedSpeechDependencies['cancellation']['cancel'] },
+            controls: {
+              issue: issueControl as unknown as RealtimeSidebandAuditedSpeechDependencies['controls']['issue'],
+            },
+          },
+        }),
     entropy: {
       ownerToken: () => 'owner-token-with-more-than-thirty-two-random-characters',
       cancellationId: () => '00000000-0000-4000-8000-000000000099',
@@ -182,7 +309,7 @@ function harness(options: {
   const terminate = vi.fn(async () => 'confirmed' as const);
   return {
     manager: new RealtimeSidebandManager(
-      options.settings ?? SETTINGS,
+      settings,
       provider,
       new Metrics(),
       loggerStub(),
@@ -196,6 +323,9 @@ function harness(options: {
     issueControl,
     provider,
     terminate,
+    settings,
+    nativeRepository,
+    nativeUsageBatch,
   };
 }
 
@@ -212,7 +342,12 @@ async function attach(
     userId: 'user-1',
     companyId: 'company-1',
     sessionHandle: SESSION,
-    session: buildOpenAiRealtimeSessionConfig(SETTINGS),
+    speechDelivery: value.settings.speechDelivery,
+    plan: 'pro',
+    subjectKeyVersion: 1,
+    session: value.settings.speechDelivery === 'openai-native-webrtc-v1'
+      ? buildOpenAiNativeRealtimeSessionConfig(value.settings)
+      : buildOpenAiRealtimeSessionConfig(value.settings),
     lifecycle: { activate: vi.fn(async () => undefined), terminate: value.terminate },
     turn: options.turn ? { run: options.turn as never } : undefined,
     controlContext: {
@@ -236,9 +371,109 @@ function readyOutcome(overrides: Record<string, unknown> = {}) {
     turnId: TURN,
     canonicalSpeech: 'Voici le résumé vérifié.',
     kind: 'answer' as const,
+    speechPurpose: 'business_answer' as const,
+    speechSource: 'card_body' as const,
+    hasTenantContext: true,
     contextVersion: { version: 1 as const, revision: 1, digest: CONTEXT },
     ...overrides,
   };
+}
+
+function nativeReadyOutcome() {
+  return readyOutcome({
+    canonicalSpeech: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+    speechPurpose: 'generic_assistance',
+    speechSource: 'card_body',
+    hasTenantContext: false,
+  });
+}
+
+function nativeResponseCreate(socket: FakeSocket): Record<string, unknown> {
+  const wire = socket.sent
+    .map((entry) => JSON.parse(entry) as Record<string, unknown>)
+    .find((entry) => entry.type === 'response.create');
+  if (!wire) throw new Error('response.create missing');
+  return wire;
+}
+
+function nativeMetadata(socket: FakeSocket): Record<string, unknown> {
+  const response = nativeResponseCreate(socket).response as Record<string, unknown>;
+  return response.metadata as Record<string, unknown>;
+}
+
+function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false): void {
+  const metadata = nativeMetadata(socket);
+  socket.providerEvent({
+    type: 'response.created',
+    response: {
+      id: NATIVE_RESPONSE,
+      status: 'in_progress',
+      conversation_id: null,
+      output_modalities: ['audio'],
+      output: [],
+      metadata,
+    },
+  });
+  socket.providerEvent({
+    type: 'response.output_audio.delta',
+    response_id: NATIVE_RESPONSE,
+    item_id: NATIVE_ITEM,
+    output_index: 0,
+    content_index: 0,
+    delta: 'AQIDBA==',
+  });
+  socket.providerEvent({
+    type: 'response.output_audio.done',
+    response_id: NATIVE_RESPONSE,
+    item_id: NATIVE_ITEM,
+    output_index: 0,
+    content_index: 0,
+  });
+  socket.providerEvent({
+    type: 'response.output_audio_transcript.done',
+    response_id: NATIVE_RESPONSE,
+    item_id: NATIVE_ITEM,
+    output_index: 0,
+    content_index: 0,
+    transcript: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+  });
+  const stopped = {
+    type: 'output_audio_buffer.stopped',
+    response_id: NATIVE_RESPONSE,
+  };
+  const done = {
+    type: 'response.done',
+    response: {
+      id: NATIVE_RESPONSE,
+      status: 'completed',
+      output_modalities: ['audio'],
+      metadata,
+      output: [{
+        id: NATIVE_ITEM,
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{
+          type: 'output_audio',
+          transcript: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+        }],
+      }],
+      usage: {
+        total_tokens: 20,
+        input_tokens: 12,
+        output_tokens: 8,
+        input_token_details: { cached_tokens: 0, text_tokens: 12, audio_tokens: 0 },
+        output_token_details: { text_tokens: 0, audio_tokens: 8 },
+      },
+    },
+  };
+  if (stoppedFirst) {
+    socket.providerEvent(stopped);
+    socket.providerEvent(done);
+  } else {
+    socket.providerEvent(done);
+    socket.providerEvent(stopped);
+  }
 }
 
 afterEach(() => {
@@ -488,6 +723,69 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     await value.manager.onApplicationShutdown();
   });
 
+  it('ferme immédiatement l’ancien contexte pendant son application durable', async () => {
+    let resolveContext!: () => void;
+    let contextApplied = false;
+    const contextPending = new Promise<void>((resolve) => { resolveContext = resolve; });
+    const turn = vi.fn(async () => readyOutcome());
+    const value = harness({
+      ownerApplyContext: async (_owner, context) => {
+        if (context.revision === 1) return { status: 'applied' as const };
+        await contextPending;
+        contextApplied = true;
+        return { status: 'applied' as const };
+      },
+    });
+    await attach(value, { turn });
+
+    value.manager.contextChanged({
+      userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
+      revision: 2, digest: 'e'.repeat(64),
+    });
+    await vi.waitFor(() => expect(value.owner.applyContext).toHaveBeenCalledTimes(2));
+    finalTranscript(value.sockets[0]!.socket, 'item_during_context_transition');
+    await Promise.resolve();
+    expect(turn).not.toHaveBeenCalled();
+
+    resolveContext();
+    await vi.waitFor(() => expect(contextApplied).toBe(true));
+    finalTranscript(value.sockets[0]!.socket, 'item_after_context_transition');
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('ne lance que le dernier cerveau lorsque deux transcripts arrivent dans le même tick', async () => {
+    const turn = vi.fn(async () => readyOutcome());
+    const value = harness();
+    await attach(value, { turn });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'item_concurrent_a', 'Première demande.');
+    finalTranscript(socket, 'item_concurrent_b', 'Deuxième demande.');
+
+    await vi.waitFor(() => expect(turn).toHaveBeenCalledOnce());
+    expect(turn).toHaveBeenCalledWith(expect.objectContaining({ transcript: 'Deuxième demande.' }));
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('borne une annulation auditée indisponible avant le hangup', async () => {
+    const value = harness({
+      settings: { ...SETTINGS, sidebandTimeoutMs: 25 },
+      cancel: async () => new Promise<never>(() => undefined),
+    });
+    await attach(value, { turn: async () => readyOutcome() });
+    finalTranscript(value.sockets[0]!.socket, 'item_cancel_timeout');
+    await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
+
+    await expect(value.manager.closeSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+    })).resolves.toBe('confirmed');
+    expect(value.cancel).toHaveBeenCalledOnce();
+    expect(value.terminate).toHaveBeenCalledWith('user');
+  });
+
   it('échoue fermé si l’owner durable est occupé ou absent', async () => {
     const value = harness({ ownerAcquire: async () => ({ status: 'busy' as const }) });
     await expect(attach(value)).rejects.toThrow('sideband_owner_busy');
@@ -558,7 +856,163 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
+      speechDelivery: 'audited-signed-url-v1',
+      plan: 'pro',
+      subjectKeyVersion: 1,
       session: buildOpenAiRealtimeSessionConfig(SETTINGS),
     })).rejects.toThrow('sideband_speech_not_configured');
+  });
+});
+
+describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durable', () => {
+  it('refuse le runtime natif avant ouverture si la métrologie atomique manque', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS, nativeAtomicUsage: false });
+    await expect(attach(value)).rejects.toThrow('sideband_speech_not_configured');
+    expect(value.sockets).toHaveLength(0);
+  });
+
+  it.each([false, true])(
+    'émet une seule réponse OOB, persiste l’usage et converge avec stoppedFirst=%s',
+    async (stoppedFirst) => {
+      const value = harness({ settings: NATIVE_SETTINGS });
+      await attach(value, { turn: async () => nativeReadyOutcome() });
+      const socket = value.sockets[0]!.socket;
+
+      finalTranscript(socket, 'native-input-1', 'Aide-moi.');
+      await vi.waitFor(() => expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+        'session.update',
+        'response.create',
+      ]));
+      expect(value.publish).not.toHaveBeenCalled();
+
+      emitNativeSuccessfulResponse(socket, stoppedFirst);
+      await vi.waitFor(() => expect(value.nativeUsageBatch).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+        .toBe('completed'));
+      expect(value.nativeUsageBatch?.mock.calls[0]?.[0].map((measure) => measure.kind)).toEqual([
+        'realtime_tokens_in',
+        'realtime_tokens_out',
+      ]);
+      expect(value.terminate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuse sans response.create une parole métier qui exige le chemin audité v5', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: async () => readyOutcome() });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-sensitive', 'Résume ma facture.');
+    await vi.waitFor(() => expect(value.terminate).toHaveBeenCalledWith('kill_switch'));
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual(['session.update']);
+    expect(value.nativeUsageBatch).not.toHaveBeenCalled();
+    expect(value.publish).not.toHaveBeenCalled();
+  });
+
+  it('annule sans dispatch une preuve préparée devenue obsolète pendant le changement de contexte', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    const repository = value.nativeRepository!;
+    const originalPrepare = repository.prepare.bind(repository);
+    let releasePrepare!: () => void;
+    const prepare = vi.spyOn(repository, 'prepare').mockImplementation((state) => (
+      new Promise((resolve) => {
+        releasePrepare = () => { void originalPrepare(state).then(resolve); };
+      })
+    ));
+    await attach(value, { turn: async () => nativeReadyOutcome() });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-stale', 'Aide-moi.');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    releasePrepare();
+
+    await vi.waitFor(() => expect(repository.states.get(NATIVE_DELIVERY)?.phase).toBe('cancelled'));
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual(['session.update']);
+    expect(value.terminate).not.toHaveBeenCalled();
+  });
+
+  it('traite le barge-in comme une interruption mobile sans doubler cancel et clear côté serveur', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: async () => nativeReadyOutcome() });
+    const socket = value.sockets[0]!.socket;
+    finalTranscript(socket, 'native-input-barge', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+
+    socket.providerEvent({ type: 'input_audio_buffer.speech_started' });
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('cancelled'));
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      'session.update',
+      'response.create',
+    ]);
+  });
+
+  it('annule et purge exactement une fois côté serveur lors d’un changement de contexte', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: async () => nativeReadyOutcome() });
+    const socket = value.sockets[0]!.socket;
+    finalTranscript(socket, 'native-input-context', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    const metadata = nativeMetadata(socket);
+    socket.providerEvent({
+      type: 'response.created',
+      response: {
+        id: NATIVE_RESPONSE,
+        status: 'in_progress',
+        conversation_id: null,
+        output_modalities: ['audio'],
+        output: [],
+        metadata,
+      },
+    });
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('accepted'));
+
+    value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('cancelled'));
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      'session.update',
+      'response.create',
+      'response.cancel',
+      'output_audio_buffer.clear',
+    ]);
+    expect(value.terminate).not.toHaveBeenCalled();
+  });
+
+  it('hard-fence une réponse fournisseur qui ne correspond à aucune livraison préparée', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value);
+    const socket = value.sockets[0]!.socket;
+    socket.providerEvent({
+      type: 'response.created',
+      response: {
+        id: 'resp_rogue',
+        status: 'in_progress',
+        conversation_id: null,
+        output_modalities: ['audio'],
+        output: [],
+        metadata: {
+          bob_delivery_id: '00000000-0000-4000-8000-000000000099',
+        },
+      },
+    });
+    expect(socket.terminated).toBe(true);
+    await vi.waitFor(() => expect(value.terminate).toHaveBeenCalledWith('kill_switch'));
+    expect(socket.terminated || socket.closeReason === 'bob_kill_switch').toBe(true);
   });
 });

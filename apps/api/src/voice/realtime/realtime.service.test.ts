@@ -1036,11 +1036,12 @@ describe('RealtimeVoiceService', () => {
     const policyForSession = vi.fn(() => {
       throw new Error('la policy signée ne doit pas être appelée');
     });
+    const sideband = sidebandStub();
     const service = new RealtimeVoiceService(
       { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
       provider,
       admission(),
-      sidebandStub(),
+      sideband,
       new Metrics(),
       loggerStub(),
       undefined,
@@ -1071,6 +1072,11 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
     expect(policyForSession).not.toHaveBeenCalled();
     expect(provider.createCall).toHaveBeenCalledOnce();
+    expect(sideband.attach).toHaveBeenCalledWith(expect.objectContaining({
+      speechDelivery: 'openai-native-webrtc-v1',
+      plan: 'business',
+      subjectKeyVersion: SETTINGS.subjectKeyVersion,
+    }));
     const call = vi.mocked(provider.createCall).mock.calls[0]?.[0];
     expect(call?.session).toMatchObject({
       output_modalities: ['audio'],
