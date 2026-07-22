@@ -156,6 +156,28 @@ latence de bout en bout.
 | Cohorte 100 | 100 comptes représentatifs | 25 VU soutenus, 75 burst | 10 → 25 → 50 | 50 Live 1 h + mixte 2 h |
 | Cohorte 1 000 | 1 000 comptes représentatifs | 100 VU soutenus, 250 burst | 50 → 100 → 250 | 250 Live 1 h + mixte 4 h |
 
+Chaque run embarque un `capacity-profile.json` signé et lié au SHA. Il fixe la topologie, les pools,
+les plafonds par réplique (`liveSockets`, RSS, FD, event-loop lag), les lots et le jitter de
+renouvellement, ainsi que le budget fournisseur. Le profil est refusé si une valeur est implicite,
+illimitée ou incompatible avec la formule de budget DB de l'ADR-0006. Le coût déclenche une alerte
+à 80 % du budget et ferme les nouvelles admissions à 100 %, sans interrompre les sessions déjà
+admises. Le plafond local sockets/FD/RSS doit laisser au moins 30 % de marge mesurée au pic, y
+compris lorsque le load balancer concentre le palier entier sur une réplique ; sinon la topologie
+doit limiter ou redistribuer le trafic avant certification.
+
+Les autorités singleton PostgreSQL sont acceptées seulement si, sur chacun des trois runs :
+
+- attente de verrou p95 ≤ 10 ms et p99 ≤ 50 ms ;
+- zéro deadlock et zéro transaction abandonnée ;
+- transaction de claim/finalisation p95 ≤ 50 ms et p99 ≤ 100 ms ;
+- débit soutenu mesuré avec une marge ≥ 2× le pic observé du profil.
+
+Un dépassement bloque la release et exige partitionnement en slots/chunks ou réduction du palier ;
+une moyenne globale ne peut pas masquer un dépassement d'une autorité singleton. L'event-loop lag
+par réplique reste p95 ≤ 50 ms et p99 ≤ 100 ms. Les renouvellements d'owners utilisent des lots
+bornés à 100 et un jitter uniforme d'au moins 20 % de la période de renouvellement ; une autre
+valeur exige un profil signé justifiant par mesure une charge PostgreSQL inférieure ou égale.
+
 Répartition minimale du trafic mixte : 55 % lectures, 15 % cycle Live/contexte/contrôle, 15 %
 écritures idempotentes, 5 % mutations financières confirmées, 5 % upload/OCR et 5 % jobs.
 La part Live exécute des missions représentatives complètes — navigation, recherche dans les
@@ -211,6 +233,9 @@ maximum de sessions Live ; il interdit explicitement d'interpréter « cohorte 1
 - [ ] HTTP courant p95 ≤ 500 ms/p99 ≤ 1 s ; écriture critique p95 ≤ 750 ms/p99 ≤ 2 s.
 - [ ] 5xx + timeouts ≤ 0,1 % ; setup Live admis ≥ 99,5 % ; zéro erreur silencieuse.
 - [ ] CPU DB/API ≤ 70 % soutenu, mémoire ≤ 75 % sans pente, pool DB ≤ 80 %, marge mesurée ≥ 30 %.
+- [ ] Le profil signé contient tous les plafonds locaux, pools, budgets et paramètres de
+      renouvellement ; lock-wait, deadlock, durée de transaction, headroom singleton et event-loop
+      respectent les seuils explicites ci-dessus sur chaque run.
 - [ ] Zéro fuite tenant, exécution fantôme, double mutation, perte de contrôle ou reprise d'un audio
       annulé.
 - [ ] Les huit missions Jarvis sont exécutées sur chaque palier Live avec reçus issus du journal
