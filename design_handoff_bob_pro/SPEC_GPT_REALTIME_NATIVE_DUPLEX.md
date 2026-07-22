@@ -2,6 +2,11 @@
 
 **Statut** : en implémentation, non activable en production avant certification physique.
 
+**Décision du 22 juillet 2026** : le chemin natif reste limité aux paroles génériques à faible
+risque. Le Jarvis métier OpenAI cible le contrat hybride et l'autorité « une seule voix par tour »
+définis dans `SPEC_OPENAI_HYBRID_SPEECH.md`. Le présent lot construit et éprouve le transport natif ;
+il ne doit pas être interprété comme une autorisation de prononcer nativement des faits métier.
+
 ## 1. Résultat produit
 
 Quand Bob Live sélectionne OpenAI, le même appel GPT Realtime reçoit le microphone et restitue la
