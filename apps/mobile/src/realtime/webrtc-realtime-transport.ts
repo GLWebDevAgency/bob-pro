@@ -144,6 +144,8 @@ interface AttemptResources {
 export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   /** WebRTC n'est ici que l'oreille/VAD : la bouche est le canal acoustique audité composé. */
   readonly capabilities = { fullDuplex: true, bargeIn: true, remoteAudio: false } as const;
+  /** Le chemin WebRTC natif reste une conversation continue ; le duplex RTP vient au lot suivant. */
+  readonly completionMode = 'continuous' as const;
   private currentState: RealtimeTransportState = INITIAL_REALTIME_STATE;
   private readonly listeners = new Set<(event: RealtimeTransportEvent) => void>();
   private readonly metrics = new RealtimeMetricsTracker();
@@ -339,7 +341,13 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       resources.sessionHandle = requestedSessionHandle;
       this.sessionHandle = requestedSessionHandle;
       const bootstrap = await this.client.createRealtimeVoiceCall(
-        { sdp: offerSdp, sessionHandle: requestedSessionHandle },
+        {
+          transport: 'webrtc',
+          sdp: offerSdp,
+          sessionHandle: requestedSessionHandle,
+          configVersion: config.configVersion,
+          speechDelivery: config.speechDelivery,
+        },
         bootstrapAbort.signal,
       );
       this.assertGeneration(generation);
@@ -351,10 +359,13 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         || bootstrap.value.model !== config.model
         || bootstrap.value.voice !== config.voice
         || bootstrap.value.maxSessionSeconds !== config.maxSessionSeconds
+        || bootstrap.value.speechDelivery !== config.speechDelivery
       ) {
         throw new RealtimeTransportError('bootstrap_failed');
       }
-      this.speechSourcePolicy = bootstrap.value.speechSourcePolicy;
+      this.speechSourcePolicy = bootstrap.value.speechDelivery === 'audited-signed-url-v1'
+        ? bootstrap.value.speechSourcePolicy
+        : null;
       const hardExpiryDelayMs = Date.parse(bootstrap.value.hardExpiresAt) - Date.now();
       if (!Number.isFinite(hardExpiryDelayMs) || hardExpiryDelayMs <= 0) {
         throw new RealtimeTransportError('bootstrap_failed');

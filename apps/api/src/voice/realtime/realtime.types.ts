@@ -1,11 +1,13 @@
 import type { MistralConversationSessionEndReason } from '@bob/ai';
 import { resolveBobLiveEnv, type BobLiveAuditProviderId, type BobLiveProviderId, type Env } from '../../config/env';
 
-export const BOB_REALTIME_CONFIG_VERSION = 'bob-live-provider-neutral-v3';
+export const BOB_REALTIME_CONFIG_VERSION = 'bob-live-provider-neutral-v4';
+export const BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
 
 export interface RealtimeVoiceSettings {
   enabled: boolean;
   provider: BobLiveProviderId;
+  speechDelivery: 'audited-signed-url-v1' | 'openai-native-webrtc-v1';
   model: string;
   voice: 'marin' | 'cedar';
   baseUrl: string;
@@ -32,6 +34,7 @@ export function realtimeVoiceSettingsFromEnv(env: Env): RealtimeVoiceSettings {
   return {
     enabled: live.enabled,
     provider: live.provider,
+    speechDelivery: live.speechDelivery,
     model: live.providerModel,
     voice: env.OPENAI_REALTIME_VOICE,
     baseUrl: live.providerBaseUrl,
@@ -59,19 +62,37 @@ export function realtimeVoiceSettingsFromEnv(env: Env): RealtimeVoiceSettings {
 
 export type RealtimeVoiceTransport = 'webrtc' | 'mistral-pcm';
 
-export interface RealtimeVoicePublicConfig {
+interface RealtimeVoicePublicConfigCommon {
   available: boolean;
   availabilityReason?: 'disabled' | 'not_entitled' | 'entitlement_unavailable';
-  transport: RealtimeVoiceTransport;
   model: string;
   voice: 'marin' | 'cedar';
   configVersion: string;
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
+}
+
+export interface RealtimeVoiceNativePublicConfig extends RealtimeVoicePublicConfigCommon {
+  transport: 'webrtc';
+  speechDelivery: 'openai-native-webrtc-v1';
+}
+
+export interface RealtimeVoiceAuditedWebRtcPublicConfig extends RealtimeVoicePublicConfigCommon {
+  transport: 'webrtc';
   speechDelivery: 'audited-signed-url-v1';
-  /** Présent uniquement pour le transport Mistral ; permet un rollout v1/v2 sans heuristique. */
+}
+
+export interface RealtimeVoiceMistralPublicConfig extends RealtimeVoicePublicConfigCommon {
+  transport: 'mistral-pcm';
+  speechDelivery: 'audited-signed-url-v1';
+  /** Permet un rollout v1/v2 sans heuristique ; absent pour le serveur N-1. */
   protocol?: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
 }
+
+export type RealtimeVoicePublicConfig =
+  | RealtimeVoiceNativePublicConfig
+  | RealtimeVoiceAuditedWebRtcPublicConfig
+  | RealtimeVoiceMistralPublicConfig;
 
 interface RealtimeCallBootstrapCommon {
   sessionHandle: string;
@@ -80,15 +101,38 @@ interface RealtimeCallBootstrapCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+}
+
+interface RealtimeAuditedCallBootstrapCommon extends RealtimeCallBootstrapCommon {
+  speechDelivery: 'audited-signed-url-v1';
   speechSourcePolicy: import('./realtime-speech-storage').RealtimeSpeechSourcePolicy;
 }
 
-export interface OpenAiRealtimeCallBootstrap extends RealtimeCallBootstrapCommon {
+interface RealtimeLegacyAuditedCallBootstrapCommon extends RealtimeCallBootstrapCommon {
+  /** Réponse wire v3 : le client N-1 ne connaît pas encore ce discriminant. */
+  speechDelivery?: never;
+  speechSourcePolicy: import('./realtime-speech-storage').RealtimeSpeechSourcePolicy;
+}
+
+export interface OpenAiNativeRealtimeCallBootstrap extends RealtimeCallBootstrapCommon {
   transport: 'webrtc';
+  speechDelivery: 'openai-native-webrtc-v1';
   answerSdp: string;
 }
 
-export interface MistralRealtimeCallBootstrap extends RealtimeCallBootstrapCommon {
+export type OpenAiAuditedRealtimeCallBootstrap = (
+  | RealtimeAuditedCallBootstrapCommon
+  | RealtimeLegacyAuditedCallBootstrapCommon
+) & {
+  transport: 'webrtc';
+  answerSdp: string;
+};
+
+export type OpenAiRealtimeCallBootstrap =
+  | OpenAiNativeRealtimeCallBootstrap
+  | OpenAiAuditedRealtimeCallBootstrap;
+
+interface MistralRealtimeCallBootstrapBody {
   transport: 'mistral-pcm';
   websocketUrl: string;
   companyId: string;
@@ -100,8 +144,13 @@ export interface MistralRealtimeCallBootstrap extends RealtimeCallBootstrapCommo
   contextDigest: string;
 }
 
+export type MistralRealtimeCallBootstrap = (
+  | RealtimeAuditedCallBootstrapCommon
+  | RealtimeLegacyAuditedCallBootstrapCommon
+) & MistralRealtimeCallBootstrapBody;
+
 /** Canary serveur v2 : session durable push-to-talk, sans annonce publique ni tour actif. */
-export interface MistralConversationInitialCallBootstrap extends RealtimeCallBootstrapCommon {
+interface MistralConversationInitialCallBootstrapBody {
   transport: 'mistral-pcm';
   websocketUrl: string;
   companyId: string;
@@ -114,6 +163,11 @@ export interface MistralConversationInitialCallBootstrap extends RealtimeCallBoo
   routeMode: 'push_to_talk';
   fullDuplexCertified: false;
 }
+
+export type MistralConversationInitialCallBootstrap = (
+  | RealtimeAuditedCallBootstrapCommon
+  | RealtimeLegacyAuditedCallBootstrapCommon
+) & MistralConversationInitialCallBootstrapBody;
 
 export type RealtimeCallBootstrap =
   | OpenAiRealtimeCallBootstrap

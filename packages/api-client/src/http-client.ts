@@ -194,6 +194,8 @@ const QUOTE_CREATION_TIMEOUT_MS = 20_000;
 const AGENT_TURN_TIMEOUT_MS = 50_000;
 // Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const REALTIME_CONFIG_VERSION_CURRENT = 'bob-live-provider-neutral-v4';
+const REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
 const REALTIME_SPEECH_REQUEST_TIMEOUT_MS = 5_000;
 const REALTIME_SPEECH_RESPONSE_MAX_BYTES = 16 * 1024;
@@ -1161,7 +1163,24 @@ function invalidRealtimeSpeechInput<T>(
 
 function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
   if (!isRecord(value)) return null;
+  const hasAvailabilityReason = Object.hasOwn(value, 'availabilityReason');
+  const hasProtocol = Object.hasOwn(value, 'protocol');
+  const commonKeys = [
+    'available',
+    'transport',
+    'model',
+    'voice',
+    'configVersion',
+    'requiresDevelopmentBuild',
+    'maxSessionSeconds',
+    'speechDelivery',
+  ] as const;
   if (
+    !hasExactKeys(value, [
+      ...commonKeys,
+      ...(hasAvailabilityReason ? ['availabilityReason'] : []),
+      ...(hasProtocol ? ['protocol'] : []),
+    ]) ||
     typeof value.available !== 'boolean' ||
     (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm') ||
     typeof value.model !== 'string' ||
@@ -1175,13 +1194,15 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     !Number.isInteger(value.maxSessionSeconds) ||
     value.maxSessionSeconds < 60 ||
     value.maxSessionSeconds > 900 ||
-    value.speechDelivery !== 'audited-signed-url-v1' ||
-    (value.transport === 'webrtc' && value.protocol !== undefined) ||
+    (value.speechDelivery !== 'openai-native-webrtc-v1' &&
+      value.speechDelivery !== 'audited-signed-url-v1') ||
+    (value.speechDelivery === 'openai-native-webrtc-v1' && value.transport !== 'webrtc') ||
+    (value.transport === 'webrtc' && hasProtocol) ||
     (value.transport === 'mistral-pcm' &&
-      value.protocol !== undefined &&
+      hasProtocol &&
       value.protocol !== 'bob.mistral-pcm.v1' &&
       value.protocol !== 'bob.mistral-pcm.v2') ||
-    (value.availabilityReason !== undefined &&
+    (hasAvailabilityReason &&
       value.availabilityReason !== 'disabled' &&
       value.availabilityReason !== 'not_entitled' &&
       value.availabilityReason !== 'entitlement_unavailable')
@@ -1193,18 +1214,32 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     value.availabilityReason === 'entitlement_unavailable'
       ? value.availabilityReason
       : null;
-  return {
+  const common = {
     available: value.available,
-    ...(availabilityReason === null ? {} : { availabilityReason }),
-    transport: value.transport,
+    ...(availabilityReason === null
+      ? {}
+      : {
+          availabilityReason: availabilityReason as
+            | 'disabled'
+            | 'not_entitled'
+            | 'entitlement_unavailable',
+        }),
     model: value.model,
     voice: value.voice,
     configVersion: value.configVersion,
     requiresDevelopmentBuild: true,
     maxSessionSeconds: value.maxSessionSeconds,
+  } as const;
+  if (value.transport === 'webrtc') {
+    return value.speechDelivery === 'openai-native-webrtc-v1'
+      ? { ...common, transport: 'webrtc', speechDelivery: 'openai-native-webrtc-v1' }
+      : { ...common, transport: 'webrtc', speechDelivery: 'audited-signed-url-v1' };
+  }
+  return {
+    ...common,
+    transport: 'mistral-pcm',
     speechDelivery: 'audited-signed-url-v1',
-    ...(value.transport === 'mistral-pcm' &&
-      (value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
+    ...((value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
       ? { protocol: value.protocol }
       : {}),
   };
@@ -1285,8 +1320,16 @@ function decodeRealtimeVoiceCall(
   value: unknown,
   expectedCompanyId: string,
   expectedApiBaseUrl: string,
+  expectedConfigVersion: string,
+  expectedSpeechDelivery: RealtimeVoiceCallInput['speechDelivery'],
 ): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
+  const legacyWire =
+    expectedConfigVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
+    && expectedSpeechDelivery === 'audited-signed-url-v1';
+  const currentWire = expectedConfigVersion === REALTIME_CONFIG_VERSION_CURRENT;
+  if (!legacyWire && !currentWire) return null;
+  const hasSpeechDelivery = Object.hasOwn(value, 'speechDelivery');
   const commonKeys = [
     'transport',
     'sessionHandle',
@@ -1295,10 +1338,11 @@ function decodeRealtimeVoiceCall(
     'voice',
     'configVersion',
     'maxSessionSeconds',
-    'speechSourcePolicy',
   ] as const;
   if (
-    typeof value.sessionHandle !== 'string' ||
+    (legacyWire && hasSpeechDelivery)
+    || (currentWire && !hasSpeechDelivery)
+    || typeof value.sessionHandle !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.sessionHandle,
     ) ||
@@ -1309,19 +1353,18 @@ function decodeRealtimeVoiceCall(
     (value.voice !== 'marin' && value.voice !== 'cedar') ||
     typeof value.configVersion !== 'string' ||
     !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    value.configVersion !== expectedConfigVersion ||
     typeof value.maxSessionSeconds !== 'number' ||
     !Number.isInteger(value.maxSessionSeconds) ||
     value.maxSessionSeconds < 60 ||
-    value.maxSessionSeconds > 900
+    value.maxSessionSeconds > 900 ||
+    (currentWire && value.speechDelivery !== expectedSpeechDelivery)
   )
     return null;
 
-  const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
-    value.speechSourcePolicy,
-    expectedCompanyId,
-    value.sessionHandle,
-  );
-  if (!speechSourcePolicy) return null;
+  const wireCommonKeys = currentWire
+    ? [...commonKeys, 'speechDelivery'] as const
+    : commonKeys;
 
   const common = {
     sessionHandle: value.sessionHandle,
@@ -1330,26 +1373,67 @@ function decodeRealtimeVoiceCall(
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
-    speechSourcePolicy,
   } as const;
 
   if (value.transport === 'webrtc') {
+    if (value.speechDelivery === 'openai-native-webrtc-v1') {
+      if (
+        !currentWire ||
+        !hasExactKeys(value, [...wireCommonKeys, 'answerSdp']) ||
+        typeof value.answerSdp !== 'string' ||
+        value.answerSdp.length < 16 ||
+        value.answerSdp.length > 256 * 1024 ||
+        !value.answerSdp.startsWith('v=0')
+      )
+        return null;
+      return {
+        transport: 'webrtc',
+        speechDelivery: 'openai-native-webrtc-v1',
+        answerSdp: value.answerSdp,
+        ...common,
+      };
+    }
     if (
-      !hasExactKeys(value, [...commonKeys, 'answerSdp']) ||
+      !hasExactKeys(value, [...wireCommonKeys, 'speechSourcePolicy', 'answerSdp']) ||
       typeof value.answerSdp !== 'string' ||
       value.answerSdp.length < 16 ||
       value.answerSdp.length > 256 * 1024 ||
       !value.answerSdp.startsWith('v=0')
     )
       return null;
-    return { transport: 'webrtc', answerSdp: value.answerSdp, ...common };
+    const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+      value.speechSourcePolicy,
+      expectedCompanyId,
+      value.sessionHandle,
+    );
+    if (!speechSourcePolicy) return null;
+    return {
+      transport: 'webrtc',
+      speechDelivery: 'audited-signed-url-v1',
+      speechSourcePolicy,
+      answerSdp: value.answerSdp,
+      ...common,
+    };
   }
 
   if (value.transport === 'mistral-pcm') {
+    if (currentWire && value.speechDelivery !== 'audited-signed-url-v1') return null;
+    const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+      value.speechSourcePolicy,
+      expectedCompanyId,
+      value.sessionHandle,
+    );
+    if (!speechSourcePolicy) return null;
+    const auditedCommon = {
+      ...common,
+      speechDelivery: 'audited-signed-url-v1' as const,
+      speechSourcePolicy,
+    };
     if (value.protocol === 'bob.mistral-pcm.v2') {
       if (
         !hasExactKeys(value, [
-          ...commonKeys,
+          ...wireCommonKeys,
+          'speechSourcePolicy',
           'websocketUrl',
           'companyId',
           'ticket',
@@ -1389,12 +1473,13 @@ function decodeRealtimeVoiceCall(
         contextDigest: value.contextDigest,
         routeMode: value.routeMode,
         fullDuplexCertified: value.fullDuplexCertified,
-        ...common,
+        ...auditedCommon,
       };
     }
     if (
       !hasExactKeys(value, [
-        ...commonKeys,
+        ...wireCommonKeys,
+        'speechSourcePolicy',
         'websocketUrl',
         'companyId',
         'ticket',
@@ -1430,7 +1515,7 @@ function decodeRealtimeVoiceCall(
       maxAudioBytes: value.maxAudioBytes,
       contextRevision: value.contextRevision,
       contextDigest: value.contextDigest,
-      ...common,
+      ...auditedCommon,
     };
   }
   return null;
@@ -2083,15 +2168,37 @@ export class HttpBobClient implements BobClient {
     );
   }
   createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
+    const currentWire = input.configVersion === REALTIME_CONFIG_VERSION_CURRENT;
+    const legacyWire =
+      input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
+      && input.speechDelivery === 'audited-signed-url-v1';
+    if (!currentWire && !legacyWire) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
+        'configVersion',
+        'Version Bob Live non prise en charge par ce client.',
+      );
+    }
     const body =
       input.transport === 'mistral-pcm'
         ? {
             context: input.context,
+            ...(currentWire
+              ? {
+                  configVersion: input.configVersion,
+                  speechDelivery: input.speechDelivery,
+                }
+              : {}),
             ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           }
         : {
             sdp: input.sdp,
+            ...(currentWire
+              ? {
+                  configVersion: input.configVersion,
+                  speechDelivery: input.speechDelivery,
+                }
+              : {}),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           };
     return this.req<RealtimeVoiceCall>(
@@ -2099,7 +2206,13 @@ export class HttpBobClient implements BobClient {
       '/voice/realtime/calls',
       body,
       undefined,
-      (value) => decodeRealtimeVoiceCall(value, this.companyId, this.opts.baseUrl),
+      (value) => decodeRealtimeVoiceCall(
+        value,
+        this.companyId,
+        this.opts.baseUrl,
+        input.configVersion,
+        input.speechDelivery,
+      ),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );

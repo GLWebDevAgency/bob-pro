@@ -138,6 +138,7 @@ function bootstrapMatchesNegotiation(
     call.model === negotiation.model &&
     call.voice === negotiation.voice &&
     call.configVersion === negotiation.configVersion &&
+    call.speechDelivery === negotiation.speechDelivery &&
     call.maxSessionSeconds === negotiation.maxSessionSeconds &&
     call.contextRevision === 1 &&
     /^[a-f0-9]{64}$/u.test(call.contextDigest) &&
@@ -289,6 +290,8 @@ export class MistralRealtimeTransport
         {
           transport: 'mistral-pcm',
           context: { version: 1, revision: 1, context },
+          configVersion: this.negotiation.configVersion,
+          speechDelivery: this.negotiation.speechDelivery,
           sessionHandle: requestedSessionHandle,
         },
         bootstrapAbort.signal,

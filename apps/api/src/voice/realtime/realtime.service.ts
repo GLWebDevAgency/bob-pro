@@ -50,6 +50,7 @@ import {
 } from './realtime-agent-turn';
 import {
   BOB_REALTIME_CONFIG_VERSION,
+  BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
   type OpenAiRealtimeCallProvider,
   type RealtimeVoiceBootstrapReconciliation,
   type RealtimeCallBootstrap,
@@ -100,6 +101,61 @@ const REALTIME_CONTEXT_DIGEST = /^[a-f0-9]{64}$/;
 const MISTRAL_CONVERSATION_MAX_EPOCH = 0x7fff_ffff;
 const MISTRAL_CONVERSATION_CURSOR_END = 0x1_0000_0000;
 
+type RealtimeBootstrapWireBinding =
+  | {
+      wireContract: 'v4';
+      configVersion: typeof BOB_REALTIME_CONFIG_VERSION;
+      speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
+    }
+  | {
+      wireContract: 'v3-legacy';
+      configVersion: typeof BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE;
+      speechDelivery: 'audited-signed-url-v1';
+    };
+
+function parseRealtimeBootstrapWireBinding(
+  record: Record<string, unknown>,
+): Result<RealtimeBootstrapWireBinding, AppError> {
+  const hasConfigVersion = Object.hasOwn(record, 'configVersion');
+  const hasSpeechDelivery = Object.hasOwn(record, 'speechDelivery');
+  if (!hasConfigVersion && !hasSpeechDelivery) {
+    return ok({
+      wireContract: 'v3-legacy',
+      configVersion: BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
+      speechDelivery: 'audited-signed-url-v1',
+    });
+  }
+  if (!hasConfigVersion || !hasSpeechDelivery) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'body', message: 'Version et livraison Bob Live doivent être fournies ensemble.' }],
+      },
+    };
+  }
+  if (record.configVersion !== BOB_REALTIME_CONFIG_VERSION) {
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'configVersion', message: 'Version Bob Live incompatible.' }] },
+    };
+  }
+  if (
+    record.speechDelivery !== 'openai-native-webrtc-v1'
+    && record.speechDelivery !== 'audited-signed-url-v1'
+  ) {
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'speechDelivery', message: 'Livraison audio incompatible.' }] },
+    };
+  }
+  return ok({
+    wireContract: 'v4',
+    configVersion: BOB_REALTIME_CONFIG_VERSION,
+    speechDelivery: record.speechDelivery,
+  });
+}
+
 export function safetyIdentifier(secret: string, userId: string): string {
   const digest = createHmac('sha256', secret)
     .update(`bob-pro:openai-safety:v1:${userId}`, 'utf8')
@@ -109,12 +165,22 @@ export function safetyIdentifier(secret: string, userId: string): string {
 
 export function parseRealtimeCallBody(
   body: unknown,
-): Result<{ sdp: string; sessionHandle?: string }, AppError> {
+): Result<{
+  sdp: string;
+  sessionHandle?: string;
+} & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
   }
   const record = body as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'sdp' && key !== 'sessionHandle')) {
+  if (
+    Object.keys(record).some((key) => (
+      key !== 'sdp'
+      && key !== 'sessionHandle'
+      && key !== 'configVersion'
+      && key !== 'speechDelivery'
+    ))
+  ) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] } };
   }
   const sdp = record.sdp;
@@ -138,7 +204,13 @@ export function parseRealtimeCallBody(
       error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
     };
   }
-  return ok({ sdp, ...(sessionHandle === undefined ? {} : { sessionHandle }) });
+  const binding = parseRealtimeBootstrapWireBinding(record);
+  if (!binding.ok) return binding;
+  return ok({
+    sdp,
+    ...binding.value,
+    ...(sessionHandle === undefined ? {} : { sessionHandle }),
+  });
 }
 
 export function parseMistralRealtimeCallBody(
@@ -147,7 +219,7 @@ export function parseMistralRealtimeCallBody(
   sessionHandle?: string;
   protocol: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
   context: { version: 1; revision: number; context: unknown };
-}, AppError> {
+} & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
   }
@@ -155,6 +227,7 @@ export function parseMistralRealtimeCallBody(
   if (
     Object.keys(record).some((key) => (
       key !== 'sessionHandle' && key !== 'context' && key !== 'protocol'
+      && key !== 'configVersion' && key !== 'speechDelivery'
     ))
     || !Object.hasOwn(record, 'context')
   ) {
@@ -172,6 +245,14 @@ export function parseMistralRealtimeCallBody(
       },
     };
   }
+  const binding = parseRealtimeBootstrapWireBinding(record);
+  if (!binding.ok) return binding;
+  if (binding.value.speechDelivery !== 'audited-signed-url-v1') {
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'speechDelivery', message: 'Livraison audio Mistral incompatible.' }] },
+    };
+  }
   const sessionHandle = record.sessionHandle;
   if (sessionHandle !== undefined && (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))) {
     return {
@@ -182,6 +263,7 @@ export function parseMistralRealtimeCallBody(
   return ok({
     protocol,
     context: context.value,
+    ...binding.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
   });
 }
@@ -592,23 +674,29 @@ export class RealtimeVoiceService {
         this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'preflight_error', plan: 'unknown' });
       }
     }
-    return {
+    const common = {
       available,
       ...(availabilityReason === undefined ? {} : { availabilityReason }),
-      transport: this.settings.provider === 'mistral' ? 'mistral-pcm' : 'webrtc',
       model: this.settings.model,
       voice: this.settings.voice,
       configVersion: BOB_REALTIME_CONFIG_VERSION,
       requiresDevelopmentBuild: true,
       maxSessionSeconds: this.settings.maxSessionSeconds,
-      speechDelivery: 'audited-signed-url-v1',
-      ...(this.settings.provider === 'mistral'
-        ? {
-            protocol: mistralV2LiveAvailable
-              ? MISTRAL_CONVERSATION_PROTOCOL
-              : ('bob.mistral-pcm.v1' as const),
-          }
-        : {}),
+    } as const;
+    if (this.settings.provider === 'mistral') {
+      return {
+        ...common,
+        transport: 'mistral-pcm',
+        speechDelivery: 'audited-signed-url-v1',
+        protocol: mistralV2LiveAvailable
+          ? MISTRAL_CONVERSATION_PROTOCOL
+          : ('bob.mistral-pcm.v1' as const),
+      };
+    }
+    return {
+      ...common,
+      transport: 'webrtc',
+      speechDelivery: this.settings.speechDelivery,
     };
   }
 
@@ -620,6 +708,12 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
+    if (parsed.value.speechDelivery !== this.settings.speechDelivery) {
+      return this.finishError('validation', startedAt, {
+        kind: 'validation',
+        issues: [{ field: 'speechDelivery', message: 'Contrat audio différent du config négocié.' }],
+      });
+    }
 
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
@@ -670,20 +764,22 @@ export class RealtimeVoiceService {
     }
 
     const lease = admission.lease;
-    let speechSourcePolicy: RealtimeSpeechSourcePolicy;
-    try {
-      if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');
-      speechSourcePolicy = this.speechSourcePolicy.policyForSession(
-        principal.companyId,
-        lease.sessionId,
-      );
-    } catch {
-      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
-      return this.finishError(
-        'speech_unavailable',
-        startedAt,
-        appUnavailable('bob-live-speech', 5),
-      );
+    let speechSourcePolicy: RealtimeSpeechSourcePolicy | null = null;
+    if (parsed.value.speechDelivery === 'audited-signed-url-v1') {
+      try {
+        if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');
+        speechSourcePolicy = this.speechSourcePolicy.policyForSession(
+          principal.companyId,
+          lease.sessionId,
+        );
+      } catch {
+        await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+        return this.finishError(
+          'speech_unavailable',
+          startedAt,
+          appUnavailable('bob-live-speech', 5),
+        );
+      }
     }
     let created: Awaited<ReturnType<OpenAiRealtimeCallProvider['createCall']>> | null = null;
     let registeredProviderCallId: string | null = null;
@@ -791,7 +887,7 @@ export class RealtimeVoiceService {
         transport: 'webrtc',
         ms: Math.round(elapsedSeconds * 1_000),
       });
-      return ok({
+      const bootstrap = {
         transport: 'webrtc',
         answerSdp: created.answerSdp,
         sessionHandle: lease.sessionId,
@@ -800,6 +896,19 @@ export class RealtimeVoiceService {
         voice: this.settings.voice,
         configVersion: BOB_REALTIME_CONFIG_VERSION,
         maxSessionSeconds: this.settings.maxSessionSeconds,
+      } as const;
+      if (parsed.value.speechDelivery === 'openai-native-webrtc-v1') {
+        return ok({
+          ...bootstrap,
+          speechDelivery: 'openai-native-webrtc-v1',
+        });
+      }
+      if (speechSourcePolicy === null) throw new Error('speech_source_policy_missing');
+      return ok({
+        ...bootstrap,
+        ...(parsed.value.wireContract === 'v4'
+          ? { speechDelivery: 'audited-signed-url-v1' as const }
+          : {}),
         speechSourcePolicy,
       });
     } catch (error) {
@@ -1444,6 +1553,9 @@ export class RealtimeVoiceService {
         voice: this.settings.voice,
         configVersion: BOB_REALTIME_CONFIG_VERSION,
         maxSessionSeconds: this.settings.maxSessionSeconds,
+        ...(parsed.value.wireContract === 'v4'
+          ? { speechDelivery: 'audited-signed-url-v1' as const }
+          : {}),
         speechSourcePolicy,
       });
     }
@@ -1496,6 +1608,9 @@ export class RealtimeVoiceService {
       voice: this.settings.voice,
       configVersion: BOB_REALTIME_CONFIG_VERSION,
       maxSessionSeconds: this.settings.maxSessionSeconds,
+      ...(parsed.value.wireContract === 'v4'
+        ? { speechDelivery: 'audited-signed-url-v1' as const }
+        : {}),
       speechSourcePolicy,
     });
   }

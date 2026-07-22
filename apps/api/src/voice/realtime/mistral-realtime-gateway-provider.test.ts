@@ -5,6 +5,7 @@ import type { RealtimeVoiceSettings } from './realtime.types';
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
   provider: 'mistral',
+  speechDelivery: 'audited-signed-url-v1',
   model: 'voxtral-mini-transcribe-realtime-2602',
   voice: 'marin',
   baseUrl: 'wss://api.mistral.ai',

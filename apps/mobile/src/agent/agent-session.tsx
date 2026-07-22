@@ -40,6 +40,7 @@ import {
 import { clearWizardHint, setWizardHint } from './wizard-hints';
 import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
 import { RealtimeAuditedConversationTransport } from '../realtime/realtime-audited-conversation-transport';
+import { composeRealtimeConversationTransport } from '../realtime/realtime-conversation-transport-factory';
 import { ExpoRealtimeAuditedSpeechPlayback } from '../realtime/expo-realtime-audited-speech-playback';
 import { RealtimeResilienceOrchestrator } from '../realtime/realtime-resilience-orchestrator';
 import {
@@ -211,17 +212,21 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
                     })
                   : null;
               if (uplink === null) throw new RealtimeTransportError('backend_disabled');
-              const transport = new RealtimeAuditedConversationTransport(uplink, {
-                client,
-                currentFence,
-                createIdentifier: randomUUID,
-                createPlayback: ({ audioLease, speechSourcePolicy }) => (
-                  new ExpoRealtimeAuditedSpeechPlayback({
-                    audioLease,
-                    speechSourcePolicy,
-                  })
-                ),
-              });
+              const transport = composeRealtimeConversationTransport(
+                negotiation,
+                uplink,
+                (auditedUplink) => new RealtimeAuditedConversationTransport(auditedUplink, {
+                  client,
+                  currentFence,
+                  createIdentifier: randomUUID,
+                  createPlayback: ({ audioLease, speechSourcePolicy }) => (
+                    new ExpoRealtimeAuditedSpeechPlayback({
+                      audioLease,
+                      speechSourcePolicy,
+                    })
+                  ),
+                }),
+              );
               onPrimaryCreated(transport);
               return transport;
             },

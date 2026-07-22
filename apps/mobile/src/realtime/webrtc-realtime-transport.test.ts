@@ -290,6 +290,7 @@ function client(answerSdp = RECEIVE_ONLY_ANSWER_SDP): BobClient {
         voice: realtimeConfig.voice,
         configVersion: realtimeConfig.configVersion,
         maxSessionSeconds: realtimeConfig.maxSessionSeconds,
+        speechDelivery: realtimeConfig.speechDelivery,
         speechSourcePolicy: speechSourcePolicy(
           input.sessionHandle ?? '00000000-0000-4000-8000-000000000001',
         ),
@@ -568,6 +569,11 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       offerToReceiveVideo: false,
     });
     const bootstrapInput = vi.mocked(bobClient.createRealtimeVoiceCall).mock.calls[0]?.[0];
+    expect(bootstrapInput).toMatchObject({
+      transport: 'webrtc',
+      configVersion: realtimeConfig.configVersion,
+      speechDelivery: realtimeConfig.speechDelivery,
+    });
     expect(bootstrapInput && 'sdp' in bootstrapInput ? bootstrapInput.sdp : null)
       .toBe(SEND_ONLY_OFFER_SDP);
     value.setMicrophoneEnabled(true);
@@ -765,6 +771,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
         voice: realtimeConfig.voice,
         configVersion: realtimeConfig.configVersion,
         maxSessionSeconds: realtimeConfig.maxSessionSeconds,
+        speechDelivery: realtimeConfig.speechDelivery,
         speechSourcePolicy: speechSourcePolicy(handle!),
       },
     });

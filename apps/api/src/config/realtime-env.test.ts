@@ -76,6 +76,7 @@ describe('Bob Live — validation de la politique d’admission', () => {
       OPENAI_REALTIME_HEARTBEAT_SECONDS: 10,
       OPENAI_REALTIME_REAPER_LEASE_SECONDS: 30,
       BOB_LIVE_SUBJECT_KEY_VERSION: 1,
+      BOB_LIVE_SPEECH_DELIVERY: 'audited-signed-url-v1',
       OPENAI_REALTIME_PROOF_KEY_VERSION: 1,
       OPENAI_REALTIME_CONTROL_ENCRYPTION_KEY_VERSION: 1,
       SUPABASE_REALTIME_AUDIO_BUCKET: 'bob-live-audio',
@@ -422,10 +423,24 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(resolveBobLiveEnv(env)).toMatchObject({
       enabled: true,
       provider: 'openai',
+      speechDelivery: 'audited-signed-url-v1',
       providerModel: 'gpt-realtime-2.1',
       providerBaseUrl: 'https://api.openai.com/v1',
       auditProvider: 'local-whisper',
     });
+  });
+
+  it('garde la livraison auditée par défaut et bloque le RTP natif avant certification runtime', () => {
+    validRealtimeEnv();
+    expect(resolveBobLiveEnv(loadEnv()).speechDelivery).toBe('audited-signed-url-v1');
+
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'openai-native-webrtc-v1');
+    expect(() => loadEnv()).toThrow(/bloqué tant que le duplex natif n’est pas certifié/i);
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'openai-native-webrtc-v1');
+    expect(() => loadEnv()).toThrow(/exige BOB_LIVE_PROVIDER=openai/i);
   });
 
   it.each(['openai', 'mistral'] as const)(

@@ -5,6 +5,15 @@ const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
 const BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS = 32;
 
+/**
+ * Verrou de compilation du downlink OpenAI natif.
+ *
+ * La valeur ne passe a `true` qu'apres livraison du sendrecv, du barge-in local et de la
+ * certification device. Une variable d'environnement ne peut donc pas activer un chemin
+ * acoustique incomplet par erreur.
+ */
+export const OPENAI_NATIVE_WEBRTC_RUNTIME_READY = false;
+
 /** Normalisation commune aux parseurs et aux composition roots qui lisent encore process.env. */
 export function normalizeOptionalEnvironmentString(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -45,6 +54,11 @@ const schema = z.object({
   // utiliser BOB_LIVE_* afin de pouvoir sélectionner Mistral sans clé OpenAI.
   BOB_LIVE_ENABLED: z.enum(['true', 'false']).optional(),
   BOB_LIVE_PROVIDER: z.enum(['openai', 'mistral']).default('openai'),
+  // Rollout acoustique distinct du fournisseur. Le défaut audité conserve le chemin N-1 ;
+  // le RTP natif reste un choix explicite tant que son duplex device n'est pas certifié.
+  BOB_LIVE_SPEECH_DELIVERY: z
+    .enum(['audited-signed-url-v1', 'openai-native-webrtc-v1'])
+    .default('audited-signed-url-v1'),
   BOB_LIVE_SUBJECT_HMAC_SECRET: z.string().trim().min(32).optional(),
   BOB_LIVE_SUBJECT_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).default(1),
   // Objet JSON {"version":"secret-HMAC"}. Le format UTF-8 historique reste accepté afin qu'une
@@ -265,6 +279,7 @@ export type Env = z.infer<typeof schema>;
 
 export type BobLiveProviderId = 'openai' | 'mistral';
 export type BobLiveAuditProviderId = 'openai' | 'local-whisper';
+export type BobLiveSpeechDelivery = 'audited-signed-url-v1' | 'openai-native-webrtc-v1';
 
 /**
  * Vue canonique de la configuration Bob Live. Les alias historiques ne sortent jamais de cette
@@ -274,6 +289,7 @@ export type BobLiveAuditProviderId = 'openai' | 'local-whisper';
 export interface ResolvedBobLiveEnv {
   enabled: boolean;
   provider: BobLiveProviderId;
+  speechDelivery: BobLiveSpeechDelivery;
   providerModel: string;
   providerBaseUrl: string;
   providerTimeoutMs: number;
@@ -579,6 +595,7 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
   return {
     enabled: (env.BOB_LIVE_ENABLED ?? env.OPENAI_REALTIME_ENABLED) === 'true',
     provider,
+    speechDelivery: env.BOB_LIVE_SPEECH_DELIVERY,
     providerModel,
     providerBaseUrl:
       provider === 'mistral'
@@ -790,6 +807,19 @@ export function loadEnv(): Env {
     );
   }
   const bobLive = resolveBobLiveEnv(parsed.data);
+  if (bobLive.provider !== 'openai' && bobLive.speechDelivery !== 'audited-signed-url-v1') {
+    throw new Error(
+      'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 exige BOB_LIVE_PROVIDER=openai.',
+    );
+  }
+  if (
+    bobLive.speechDelivery === 'openai-native-webrtc-v1'
+    && !OPENAI_NATIVE_WEBRTC_RUNTIME_READY
+  ) {
+    throw new Error(
+      'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 est bloqué tant que le duplex natif n’est pas certifié.',
+    );
+  }
   const mistralV2PersistenceConfigured =
     parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
     || parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined;

@@ -442,22 +442,40 @@ export interface VoiceSynthesisResult {
   model: string;
 }
 
-export interface RealtimeVoiceConfig {
+interface RealtimeVoiceConfigCommon {
   available: boolean;
   availabilityReason?: 'disabled' | 'not_entitled' | 'entitlement_unavailable';
-  transport: 'webrtc' | 'mistral-pcm';
   model: string;
   voice: 'marin' | 'cedar';
   configVersion: string;
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
+}
+
+export interface RealtimeVoiceNativeWebRtcConfig extends RealtimeVoiceConfigCommon {
+  transport: 'webrtc';
+  speechDelivery: 'openai-native-webrtc-v1';
+}
+
+export interface RealtimeVoiceAuditedWebRtcConfig extends RealtimeVoiceConfigCommon {
+  transport: 'webrtc';
+  speechDelivery: 'audited-signed-url-v1';
+}
+
+export interface RealtimeVoiceMistralConfig extends RealtimeVoiceConfigCommon {
+  transport: 'mistral-pcm';
   speechDelivery: 'audited-signed-url-v1';
   /**
-   * Contrat PCM annoncé par le serveur. Absent uniquement pour WebRTC ou pour compatibilité
-   * avec un serveur Mistral antérieur à la négociation v2 ; le mobile traite alors Mistral en v1.
+   * Contrat PCM annoncé par le serveur. Absent pour compatibilité avec un serveur Mistral
+   * antérieur à la négociation v2 ; le mobile traite alors Mistral en v1.
    */
   protocol?: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
 }
+
+export type RealtimeVoiceConfig =
+  | RealtimeVoiceNativeWebRtcConfig
+  | RealtimeVoiceAuditedWebRtcConfig
+  | RealtimeVoiceMistralConfig;
 
 export interface RealtimeVoiceSpeechSourcePolicy {
   mode: 'signed-url-v1';
@@ -472,15 +490,29 @@ interface RealtimeVoiceCallCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+}
+
+interface RealtimeVoiceAuditedCallCommon extends RealtimeVoiceCallCommon {
+  speechDelivery: 'audited-signed-url-v1';
   speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy;
 }
 
-export interface RealtimeVoiceWebRtcCall extends RealtimeVoiceCallCommon {
+export interface RealtimeVoiceNativeWebRtcCall extends RealtimeVoiceCallCommon {
+  transport: 'webrtc';
+  speechDelivery: 'openai-native-webrtc-v1';
+  answerSdp: string;
+}
+
+export interface RealtimeVoiceAuditedWebRtcCall extends RealtimeVoiceAuditedCallCommon {
   transport: 'webrtc';
   answerSdp: string;
 }
 
-export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceCallCommon {
+export type RealtimeVoiceWebRtcCall =
+  | RealtimeVoiceNativeWebRtcCall
+  | RealtimeVoiceAuditedWebRtcCall;
+
+export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceAuditedCallCommon {
   transport: 'mistral-pcm';
   websocketUrl: string;
   companyId: string;
@@ -492,7 +524,7 @@ export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceCallCommon {
   contextDigest: string;
 }
 
-export interface RealtimeVoiceMistralConversationCall extends RealtimeVoiceCallCommon {
+export interface RealtimeVoiceMistralConversationCall extends RealtimeVoiceAuditedCallCommon {
   transport: 'mistral-pcm';
   websocketUrl: string;
   companyId: string;
@@ -583,17 +615,27 @@ export interface RealtimeVoiceContextUpdate {
 }
 
 export type RealtimeVoiceCallInput =
-  | { transport?: 'webrtc'; sdp: string; sessionHandle?: string }
+  | {
+      transport?: 'webrtc';
+      sdp: string;
+      configVersion: string;
+      speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
+      sessionHandle?: string;
+    }
   | {
       transport: 'mistral-pcm';
       protocol?: 'bob.mistral-pcm.v1';
       context: RealtimeVoiceContextUpdate;
+      configVersion: string;
+      speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
     }
   | {
       transport: 'mistral-pcm';
       protocol: 'bob.mistral-pcm.v2';
       context: RealtimeVoiceContextUpdate;
+      configVersion: string;
+      speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
     };
 

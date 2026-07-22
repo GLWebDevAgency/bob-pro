@@ -28,6 +28,7 @@ const SUBJECT = 'd'.repeat(64);
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
   provider: 'openai',
+  speechDelivery: 'audited-signed-url-v1',
   model: 'gpt-realtime-2.1',
   voice: 'marin',
   baseUrl: 'https://api.openai.com/v1',
