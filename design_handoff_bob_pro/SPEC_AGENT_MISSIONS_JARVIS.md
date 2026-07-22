@@ -215,6 +215,9 @@ type QuoteMissionDecisionV1 =
       readonly kind: 'existing_draft';
       readonly decisionId: string;
       readonly choiceSetRevision: number;
+      readonly expectedDraftSessionId: string;
+      readonly expectedDraftSlotRevision: number;
+      readonly expectedDraftContentRevision: number;
       readonly choices: readonly [
         { readonly choiceId: string; readonly action: 'resume_existing' },
         { readonly choiceId: string; readonly action: 'request_discard' },
@@ -255,8 +258,10 @@ Contraintes :
 - `draft` référence le slot exact observé, sans dupliquer son contenu ;
 - un `draft.sessionId` ou `expectedDraftSessionId` est un identifiant applicatif opaque validé par
   le parseur `QuoteDraftPayloadV1`, jamais forcé en UUID ;
-- le hash du jeu de choix couvre, dans l'ordre, mission, révision, `decisionId`, `choiceId`, action
-  ou `customerId` ; un ancien « le deuxième » ne peut jamais viser une nouvelle liste.
+- le hash du jeu de choix couvre, dans l'ordre, mission, révision, `decisionId`, les trois fences
+  du brouillon lorsqu'il s'agit d'une décision de brouillon, puis `choiceId` et action ou
+  `customerId` ; un ancien « le deuxième » ou « reprendre » ne peut jamais viser une nouvelle
+  liste ni un brouillon remplacé.
 
 Formats d'identifiants normatifs :
 
@@ -370,6 +375,24 @@ client brute, noms, emails, texte d'écran, transcript, audio, prompt et répons
 « reprendre » émet `draft_resume_selected`. L'invariant reste : une transition, une révision, un
 événement.
 
+L'enveloppe est elle aussi une union cohérente, pas une collection de champs nullables validés
+isolément :
+
+- `screen_acknowledged` est `system`, porte session + contexte appliqués et aucun `turnId` ;
+- `mission_expired` est `system` et ne porte aucun tuple Realtime ;
+- les autres commandes utilisateur sont `user_voice` ou `user_tap` ; `user_voice` porte le tuple
+  session + turn + contexte complet, tandis qu'un tap porte soit session + contexte sans turn,
+  soit aucun tuple Realtime lorsqu'aucune session Live n'est ouverte ;
+- les quatre révisions draft sont regroupées par couples avant/après. Une transition sans mutation
+  répète exactement les deux révisions ; `draft_discard_confirmed` impose slot `N→N+1` et contenu
+  frais `0` ; `customer_selected` impose slot `N→N+1` et contenu `C→C+1` ;
+- `mission_started(no_slot)` est le seul event qui accepte un couple avant nul et produit
+  `slot=1/content=0`. Les outcomes `empty_slot_adopted` et `draft_conflict` portent le slot observé
+  inchangé avant/après ;
+- toute combinaison event/acteur/contexte/révisions hors de cette table est rejetée avant
+  persistance. Le writer construit l'enveloppe à partir de la transition pure et des lignes
+  verrouillées ; il n'accepte jamais ces preuves depuis le body HTTP ou le LLM.
+
 Le runtime n'a aucun droit `UPDATE`, `DELETE` ou `TRUNCATE` sur les événements. Un trigger
 d'immuabilité couvre aussi les propriétaires de table ; la purge passe par une fonction dédiée,
 bornée et non accessible aux rôles Data API.
@@ -406,7 +429,9 @@ conservée dans M1.
 2. Slot de la même mission/draft : reprendre à sa révision exacte.
 3. Slot différent mais non significatif : il ne peut être adopté/remplacé que par une règle pure
    testée et un CAS exact ; aucune heuristique UI.
-4. Slot significatif différent : présenter `Reprendre` et `Abandonner et créer`.
+4. Slot significatif différent : présenter `Reprendre` et `Abandonner et créer`. Le jeu de choix
+   scelle dès sa création les trois fences du slot observé ; une décision ne peut jamais adopter le
+   slot qui se trouve simplement « courant » au moment du clic ou de la réponse vocale.
 5. Choisir l'abandon ne supprime rien ; une seconde confirmation explicite est exigée.
 6. La confirmation remplace le payload **dans la même ligne** par `upsert(expectedRevision=N)` et
    obtient `revision=N+1`. La mission n'appelle jamais `delete` puis `create` : remettre la révision
