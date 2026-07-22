@@ -55,6 +55,10 @@ import {
   DisabledRealtimeReaperDirectory,
   type RealtimeReaperDirectoryPort,
 } from '../voice/realtime/realtime-reaper-directory';
+import {
+  DisabledRealtimeGlobalCapacityInspector,
+  type RealtimeGlobalCapacityInspector,
+} from '../voice/realtime/realtime-capacity';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
@@ -128,6 +132,9 @@ export class InMemoryPersistence implements Persistence {
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new InMemoryRealtimeAdmission(policy);
+  }
+  createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
+    return new DisabledRealtimeGlobalCapacityInspector();
   }
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
     return new DisabledRealtimeSpeechDeliveryRepository();

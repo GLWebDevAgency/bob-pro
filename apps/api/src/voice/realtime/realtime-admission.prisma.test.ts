@@ -10,6 +10,10 @@ const SESSION = '11111111-1111-4111-8111-111111111111';
 const PROVIDER_SESSION = 'mistral_session_1';
 const HARD_EXPIRES_AT = new Date('2026-07-14T10:00:00.000Z');
 const policy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 3,
   userLimitPerHour: 30,
   tenantLimitPerMinute: 50,

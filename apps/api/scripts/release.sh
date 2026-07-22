@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 : "${DATABASE_URL:?DATABASE_URL runtime app-role is required}"
 : "${DIRECT_URL:?DIRECT_URL privileged migration URL is required}"
+: "${APP_DATABASE_ROLE:?APP_DATABASE_ROLE runtime role name is required}"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 
@@ -102,6 +103,12 @@ certify_openai_native_release_metadata() {
   psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" \
     -f apps/api/prisma/openai-native-release-cert.sql
+}
+
+certify_realtime_global_capacity_release_metadata() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/realtime-global-capacity-release-cert.sql
 }
 
 certify_document_archive_evidence_privacy() {
@@ -357,6 +364,7 @@ REVOKE TRUNCATE ON TABLE
   public.realtime_mistral_conversation_commands,
   public.realtime_session_leases
 FROM :"app_role";
+REVOKE ALL ON TABLE public.realtime_global_capacity FROM :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
 -- suffisent pas : un futur changement de policy ne doit pas reactiver leur mutation.
 REVOKE UPDATE, DELETE ON TABLE
@@ -1782,6 +1790,7 @@ pnpm --filter '@bob/api...' run build
 ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
+DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 pnpm --filter @bob/api exec prisma migrate deploy
 node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_generated_legal_storage_fence
@@ -1791,8 +1800,16 @@ grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
+DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \
+  sh apps/api/scripts/realtime-capacity-release.sh provision
+# Toute la suite de certification s'exécute admissions fermées. Un échec ne peut donc jamais
+# laisser une autorité active après une release incomplète ; l'activation réelle est le dernier
+# geste atomique, après retrait des fixtures et de leurs traps.
+DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
+  sh apps/api/scripts/realtime-capacity-release.sh configure
 certify_openai_native_release_metadata
 certify_realtime_reaper_release_metadata
+certify_realtime_global_capacity_release_metadata
 certify_document_archive_evidence_privacy
 
 trap cleanup_release_on_exit EXIT
@@ -1838,4 +1855,7 @@ DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
 cleanup_rls_cert
 trap - EXIT HUP INT TERM
 
+# Dernier geste de la release : active la configuration exacte demandée, ou laisse explicitement
+# l'autorité fermée. Aucun test susceptible d'échouer n'est exécuté après cette transition.
+DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
 echo "Bob Pro API release checks passed"

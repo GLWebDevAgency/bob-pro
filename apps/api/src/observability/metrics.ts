@@ -16,6 +16,13 @@ export class Metrics {
   readonly bobLiveRateLimited: Counter<string>;
   readonly bobLiveSidebandConnections: Counter<string>;
   readonly bobLiveSessionsActive: Gauge<string>;
+  /** Jauges PostgreSQL globales : agréger par max entre répliques, jamais par somme. */
+  readonly bobLiveCapacityUsed: Gauge<string>;
+  readonly bobLiveCapacityGlobalLimit: Gauge<string>;
+  readonly bobLiveCapacityProviderLimit: Gauge<string>;
+  readonly bobLiveCapacityConfigVersion: Gauge<string>;
+  readonly bobLiveCapacitySnapshotAge: Gauge<string>;
+  readonly bobLiveCapacityInspections: Counter<string>;
   readonly bobLiveSecurityRejections: Counter<string>;
   readonly bobLiveTurns: Counter<string>;
   readonly bobLiveBrainDuration: Histogram<string>;
@@ -100,6 +107,37 @@ export class Metrics {
       name: 'bob_live_sessions_active',
       help: 'Sessions Bob Live actives observées par leur canal de contrôle serveur',
       labelNames: ['transport'],
+      registers: [this.registry],
+    });
+    this.bobLiveCapacityUsed = new Gauge({
+      name: 'bob_live_capacity_durable_used',
+      help: 'Leases Bob Live durables comptées par PostgreSQL ; agréger les répliques par max.',
+      registers: [this.registry],
+    });
+    this.bobLiveCapacityGlobalLimit = new Gauge({
+      name: 'bob_live_capacity_global_limit',
+      help: 'Plafond global Bob Live attesté par PostgreSQL ; agréger les répliques par max.',
+      registers: [this.registry],
+    });
+    this.bobLiveCapacityProviderLimit = new Gauge({
+      name: 'bob_live_capacity_provider_limit',
+      help: 'Quota fournisseur déclaré et attesté ; agréger les répliques par max.',
+      registers: [this.registry],
+    });
+    this.bobLiveCapacityConfigVersion = new Gauge({
+      name: 'bob_live_capacity_config_version',
+      help: 'Version de configuration capacité attestée par PostgreSQL.',
+      registers: [this.registry],
+    });
+    this.bobLiveCapacitySnapshotAge = new Gauge({
+      name: 'bob_live_capacity_snapshot_age_seconds',
+      help: 'Âge de la dernière mutation du compteur durable, sans identité métier.',
+      registers: [this.registry],
+    });
+    this.bobLiveCapacityInspections = new Counter({
+      name: 'bob_live_capacity_inspections_total',
+      help: 'Résultat des inspections de cohérence de la capacité globale.',
+      labelNames: ['outcome'],
       registers: [this.registry],
     });
     this.bobLiveSecurityRejections = new Counter({

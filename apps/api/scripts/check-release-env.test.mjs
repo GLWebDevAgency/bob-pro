@@ -69,6 +69,42 @@ test('autorise la release V1 en accès anticipé quand Stripe est entièrement a
   assert.match(result.stdout, /release-env-ok/u);
 });
 
+test('refuse une capacité Bob Live partielle et certifie le groupe complet', () => {
+  const partial = runReleaseGate({ BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50' });
+  assert.notEqual(partial.status, 0);
+  assert.match(partial.stderr, /BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS is required/u);
+
+  const complete = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '60',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.equal(complete.status, 0, complete.stderr);
+});
+
+test('refuse un plafond Bob Live supérieur au fournisseur ou au gateway Mistral', () => {
+  const providerOverflow = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '51',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.notEqual(providerOverflow.status, 0);
+  assert.match(providerOverflow.stderr, /greater than or equal to the global limit/u);
+
+  const gatewayOverflow = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_PROVIDER: 'mistral',
+    BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '40',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '60',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.notEqual(gatewayOverflow.status, 0);
+  assert.match(gatewayOverflow.stderr, /must not exceed BOB_LIVE_GATEWAY_MAX_CONNECTIONS/u);
+});
+
 test('traite sept variables Stripe vides comme un paiement non provisionné', () => {
   const result = runReleaseGate({
     STRIPE_SECRET_KEY: '',

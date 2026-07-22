@@ -111,6 +111,15 @@ const schema = z.object({
   BOB_LIVE_MAX_CALLS_PER_HOUR: z.coerce.number().int().min(1).max(500).optional(),
   BOB_LIVE_MAX_TENANT_CALLS_PER_MINUTE: z.coerce.number().int().min(1).max(5_000).optional(),
   BOB_LIVE_MAX_TENANT_CALLS_PER_HOUR: z.coerce.number().int().min(1).max(100_000).optional(),
+  // Plafond physique partagé par toutes les répliques. Il n'a volontairement aucun défaut :
+  // activer Bob Live sans budget de concurrence explicite doit faire échouer le démarrage.
+  BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: z.coerce.number().int().min(1).max(1_000).optional(),
+  // Valeur contractuelle confirmée dans le compte du fournisseur. Elle n'est jamais déduite
+  // d'un événement temps réel et borne le plafond Bob ci-dessus.
+  BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: z.coerce.number().int().min(1).max(10_000).optional(),
+  // Incrément manuel obligatoire à chaque changement provider/modèle/plafond. PostgreSQL et
+  // chaque réplique doivent attester exactement la même version avant toute admission.
+  BOB_LIVE_CAPACITY_CONFIG_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   BOB_LIVE_RESERVATION_TTL_SECONDS: z.coerce.number().int().min(10).max(30).optional(),
   BOB_LIVE_ACTIVE_LEASE_SECONDS: z.coerce.number().int().min(20).max(120).optional(),
   BOB_LIVE_HEARTBEAT_SECONDS: z.coerce.number().int().min(5).max(60).optional(),
@@ -283,6 +292,13 @@ export interface ResolvedBobLiveEnv {
   maxCallsPerHour: number;
   maxTenantCallsPerMinute: number;
   maxTenantCallsPerHour: number;
+  globalCapacity: Readonly<{
+    providerId: BobLiveProviderId;
+    providerModel: string;
+    globalMaxSessions: number;
+    providerMaxSessions: number;
+    configVersion: number;
+  }> | null;
   reservationTtlSeconds: number;
   activeLeaseSeconds: number;
   heartbeatSeconds: number;
@@ -525,14 +541,45 @@ export function resolveMistralV2IdentityEncryptionKeyRing(
 
 export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
   const provider = env.BOB_LIVE_PROVIDER;
+  const providerModel =
+    provider === 'mistral' ? env.MISTRAL_REALTIME_STT_MODEL : env.OPENAI_REALTIME_MODEL;
+  const capacityValues = [
+    env.BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS,
+    env.BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS,
+    env.BOB_LIVE_CAPACITY_CONFIG_VERSION,
+  ] as const;
+  const configuredCapacityValues = capacityValues.filter((value) => value !== undefined).length;
+  if (configuredCapacityValues !== 0 && configuredCapacityValues !== capacityValues.length) {
+    throw new Error(
+      'Configuration capacité Bob Live partielle : plafond global, plafond fournisseur et version sont indissociables.',
+    );
+  }
+  const globalCapacity = configuredCapacityValues === capacityValues.length
+    ? Object.freeze({
+        providerId: provider,
+        providerModel,
+        globalMaxSessions: env.BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS as number,
+        providerMaxSessions: env.BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS as number,
+        configVersion: env.BOB_LIVE_CAPACITY_CONFIG_VERSION as number,
+      })
+    : null;
+  if (globalCapacity && globalCapacity.globalMaxSessions > globalCapacity.providerMaxSessions) {
+    throw new Error('Le plafond global Bob Live ne peut pas dépasser le plafond du fournisseur.');
+  }
+  if (
+    globalCapacity
+    && provider === 'mistral'
+    && globalCapacity.globalMaxSessions > env.BOB_LIVE_GATEWAY_MAX_CONNECTIONS
+  ) {
+    throw new Error('Le plafond global Bob Live ne peut pas dépasser la capacité du gateway Mistral.');
+  }
   const proofSecret = env.BOB_LIVE_PROOF_SECRET ?? env.OPENAI_REALTIME_PROOF_SECRET ?? null;
   const proofKeyVersion = env.BOB_LIVE_PROOF_KEY_VERSION ?? env.OPENAI_REALTIME_PROOF_KEY_VERSION;
   const subjectHmacKeyRing = resolveBobLiveSubjectHmacKeyRing(env);
   return {
     enabled: (env.BOB_LIVE_ENABLED ?? env.OPENAI_REALTIME_ENABLED) === 'true',
     provider,
-    providerModel:
-      provider === 'mistral' ? env.MISTRAL_REALTIME_STT_MODEL : env.OPENAI_REALTIME_MODEL,
+    providerModel,
     providerBaseUrl:
       provider === 'mistral'
         ? env.MISTRAL_REALTIME_BASE_URL.replace(/\/$/u, '')
@@ -563,6 +610,7 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
       env.BOB_LIVE_MAX_TENANT_CALLS_PER_MINUTE ?? env.OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE,
     maxTenantCallsPerHour:
       env.BOB_LIVE_MAX_TENANT_CALLS_PER_HOUR ?? env.OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR,
+    globalCapacity,
     reservationTtlSeconds:
       env.BOB_LIVE_RESERVATION_TTL_SECONDS ?? env.OPENAI_REALTIME_RESERVATION_TTL_SECONDS,
     activeLeaseSeconds:
@@ -792,6 +840,7 @@ export function loadEnv(): Env {
       explicitProviderNeutralConfig && !parsed.data.BOB_LIVE_USAGE_HMAC_SECRET
         ? 'BOB_LIVE_USAGE_HMAC_SECRET'
         : null,
+      bobLive.globalCapacity === null ? 'BOB_LIVE_CAPACITY_CONFIG_GROUP' : null,
       !bobLive.controlEncryptionSecret ? 'BOB_LIVE_CONTROL_ENCRYPTION_SECRET' : null,
       bobLive.auditProvider === 'local-whisper' && !bobLive.localAuditBaseUrl
         ? 'BOB_LIVE_LOCAL_AUDIT_BASE_URL'

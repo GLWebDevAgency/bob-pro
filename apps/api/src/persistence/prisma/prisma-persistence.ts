@@ -45,6 +45,8 @@ import type {
   RealtimeAdmissionPort,
 } from '../../voice/realtime/realtime-admission';
 import { PrismaRealtimeAdmission } from '../../voice/realtime/realtime-admission.prisma';
+import { PrismaRealtimeGlobalCapacityInspector } from '../../voice/realtime/realtime-capacity.prisma';
+import type { RealtimeGlobalCapacityInspector } from '../../voice/realtime/realtime-capacity';
 import { PrismaRealtimeSpeechDeliveryRepository } from '../../voice/realtime/realtime-speech-delivery.prisma';
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../../voice/realtime/realtime-speech-delivery.repository';
 import { PrismaRealtimeSidebandOwner } from '../../voice/realtime/realtime-sideband-owner.prisma';
@@ -128,6 +130,10 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new PrismaRealtimeAdmission(this.prisma, policy);
+  }
+
+  createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
+    return new PrismaRealtimeGlobalCapacityInspector(this.prisma);
   }
 
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {

@@ -80,6 +80,14 @@ jobs:
       BOB_LIVE_SUBJECT_KEY_VERSION: '1'
       BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      # Autorité éphémère large pour les certificats historiques. Le dernier step la draine puis
+      # la reconfigure à N=5 afin de prouver séparément la course exacte N/N+1 multi-clients.
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: openai
+      OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -168,6 +176,42 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
+      - name: Certify Bob Live global N/N+1 capacity and rollback on ephemeral PostgreSQL
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          BOB_LIVE_ENABLED=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          RUN_POSTGRES_REALTIME_CAPACITY_CERT=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            pnpm --filter @bob/api exec vitest run \
+              src/voice/realtime/realtime-capacity.postgres.test.ts
+      - name: Close Bob Live capacity after PostgreSQL certificates
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Bob Live capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
 
   mistral-key-rotation-certification:
     # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. La certification
@@ -205,6 +249,14 @@ jobs:
       BOB_LIVE_SUBJECT_KEY_VERSION: '1'
       BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      # Cette base isolée exécute des writers de compatibilité Mistral N-1 : elle doit donc ouvrir
+      # explicitement l'autorité physique, sans jamais dépendre d'un plafond implicite.
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: mistral
+      BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '1000'
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -233,6 +285,27 @@ jobs:
             node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
           pnpm --filter @bob/api exec vitest run \
             src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
+      - name: Close isolated Mistral capacity after rotation certificate
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Mistral capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
 
   facturx-conformance:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'

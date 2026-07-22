@@ -20,6 +20,7 @@ import {
   OpenAiRealtimeCallAdapter,
 } from './openai-realtime-call.adapter';
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
+import { RealtimeGlobalCapacityMonitor } from './realtime-capacity-monitor';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
   REALTIME_REAPER_DIRECTORY,
@@ -92,6 +93,7 @@ import {
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_GLOBAL_CAPACITY_INSPECTOR,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -194,6 +196,29 @@ export function buildRealtimeSpeechRuntime(
 const settingsProvider: Provider = {
   provide: REALTIME_VOICE_SETTINGS,
   useFactory: (): RealtimeVoiceSettings => realtimeVoiceSettingsFromEnv(loadEnv()),
+};
+
+const realtimeGlobalCapacityInspectorProvider: Provider = {
+  provide: REALTIME_GLOBAL_CAPACITY_INSPECTOR,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createRealtimeGlobalCapacityInspector(),
+};
+
+const realtimeGlobalCapacityMonitorProvider: Provider = {
+  provide: RealtimeGlobalCapacityMonitor,
+  inject: [REALTIME_VOICE_SETTINGS, REALTIME_GLOBAL_CAPACITY_INSPECTOR, Metrics, AppLogger],
+  useFactory: (
+    settings: RealtimeVoiceSettings,
+    inspector: ReturnType<Persistence['createRealtimeGlobalCapacityInspector']>,
+    metrics: Metrics,
+    logger: AppLogger,
+  ) => new RealtimeGlobalCapacityMonitor(
+    settings.enabled,
+    resolveBobLiveEnv(loadEnv()).globalCapacity,
+    inspector,
+    metrics,
+    logger,
+  ),
 };
 
 const openAiProvider: Provider = {
@@ -564,6 +589,8 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,
     admissionProvider,
+    realtimeGlobalCapacityInspectorProvider,
+    realtimeGlobalCapacityMonitorProvider,
     mistralIngressTicketProvider,
     realtimeSpeechRuntimeProvider,
     realtimeDurableControlProvider,

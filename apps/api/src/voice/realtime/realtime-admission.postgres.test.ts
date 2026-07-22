@@ -101,6 +101,10 @@ async function resetRealtimeReaperCursor(admin: PrismaClient): Promise<void> {
 }
 
 const policy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 2,
   userLimitPerHour: 3,
   tenantLimitPerMinute: 100,

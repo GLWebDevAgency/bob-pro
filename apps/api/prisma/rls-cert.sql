@@ -1138,6 +1138,14 @@ END;
 $$;
 COMMIT;
 
+-- Les releases gardent l'autorité de capacité fermée pendant leurs autres certifications. Les
+-- sondes mutantes Bob Live ne sont exécutées que lorsqu'une capacité éphémère a explicitement été
+-- activée ; l'autorité fermée est néanmoins prouvée via son inspector agrégé.
+SELECT (mode = 'active') AS bob_live_capacity_active
+  FROM inspect_realtime_global_capacity_v1()
+\gset
+\if :bob_live_capacity_active
+
 -- Bob Live : quotas et bail ne contiennent qu'un subject HMAC/token hashés et restent tenant-scoped.
 -- La transaction est annulée pour conserver une certification réexécutable.
 BEGIN;
@@ -1554,6 +1562,41 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 0
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 0, 'tenant B cannot see tenant A usage');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_daily), 0, 'tenant B cannot see tenant A rollup');
 ROLLBACK;
+
+\else
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM inspect_realtime_global_capacity_v1() WHERE mode = 'closed'),
+  1,
+  'closed Bob Live capacity is explicit while lease mutation probes are skipped'
+);
+BEGIN;
+SET LOCAL app.current_company_id = 'rls-co-a';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM preflight_realtime_global_capacity_v1('openai', 'closed-cert', 1, 1, 1)
+    WHERE status = 'unavailable' AND "retryAt" IS NULL),
+  1,
+  'closed Bob Live capacity refuses preflight'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "reservedAt", "leaseExpiresAt", "hardExpiresAt", "updatedAt", version
+    ) VALUES (
+      'rls-co-a', repeat('9', 64), '00000000-0000-4000-8000-00000000b0f1', repeat('8', 64),
+      'reserved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '15 seconds',
+      CURRENT_TIMESTAMP + INTERVAL '15 minutes', CURRENT_TIMESTAMP, 1
+    );
+    RAISE EXCEPTION 'RLS cert failed: closed capacity accepted a direct lease writer';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+END;
+$$;
+ROLLBACK;
+\endif
 
 -- Registre d'idempotence Expense : tenant-scoped, insert-only et sans clé brute. La transaction
 -- est volontairement annulée pour que la certification reste réexécutable sans policy DELETE.

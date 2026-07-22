@@ -5,8 +5,8 @@ profils de charge sur le SHA et la topologie exacts de release.
 
 | Lot | État au 22 juillet 2026 | Autorise une cohorte ? |
 |---|---|---|
-| C1 — maintenance équitable | En certification PostgreSQL | Non |
-| C2 — plafond global distribué | Non implémenté | Non |
+| C1 — maintenance équitable | Livré et certifié PostgreSQL 17 (15/15) | Non, seul |
+| C2 — plafond global distribué | Implémenté ; certificat local PostgreSQL 17 vert (8/8), CI distante à rejouer | Non, seul |
 | C3 — charge et soak | Non exécuté | Non |
 | C4 — drain mono-provider | Non certifié | Non si la release change de provider |
 
@@ -77,32 +77,32 @@ ou un tenant bruyant ne peut jamais retarder la terminaison d'une vraie session 
 
 ### Critères binaires C1
 
-- [ ] Aucun chemin runtime du reaper n'appelle `ScheduledTenantDirectory` ou `companies.list()`.
-- [ ] Chaque lane ne matérialise qu'une occurrence par tenant et au plus `limit + 1` ; les plans
+- [x] Aucun chemin runtime du reaper n'appelle `ScheduledTenantDirectory` ou `companies.list()`.
+- [x] Chaque lane ne matérialise qu'une occurrence par tenant et au plus `limit + 1` ; les plans
       PostgreSQL naturels restent sous la borne et ne lisent jamais les historiques. Les requêtes
       restent indexables par le PK keyset ou l'index partiel de leur lane ; définition, validité et
       readiness exactes des deux indexes partiels sont certifiées séparément dans le catalogue
       (le planner peut légitimement préférer un scan de la seule projection à faible cardinalité).
-- [ ] Deux schedulers concurrents ne traitent jamais simultanément la même page vivante.
-- [ ] Sans ACK, la page est relivrée après expiration ; avec ACK, le curseur avance exactement une
+- [x] Deux schedulers concurrents ne traitent jamais simultanément la même page vivante.
+- [x] Sans ACK, la page est relivrée après expiration ; avec ACK, le curseur avance exactement une
       fois ; un ancien claim ne peut ni renouveler ni ACKer.
-- [ ] Plus de 100 tenants dus sont tous atteints sans famine, y compris sous arrivée continue.
-- [ ] Un tenant possédant des centaines d'événements ne compte qu'une fois par cycle, et une
+- [x] Plus de 100 tenants dus sont tous atteints sans famine, y compris sous arrivée continue.
+- [x] Un tenant possédant des centaines d'événements ne compte qu'une fois par cycle, et une
       lease due apparaît dès la première page même sous backlog massif d'admission.
-- [ ] Un tenant ou provider indisponible reste rejouable mais ne bloque jamais l'avancement du
+- [x] Un tenant ou provider indisponible reste rejouable mais ne bloque jamais l'avancement du
       curseur vers les autres tenants de la page et du cycle.
-- [ ] Toute transaction globale et tenantée porte `statement_timeout`, `lock_timeout` et une borne
+- [x] Toute transaction globale et tenantée porte `statement_timeout`, `lock_timeout` et une borne
       côté Prisma ; aucune terminaison provider n'est exécutée sous transaction.
-- [ ] Le kill-switch ferme les nouvelles admissions sans désenregistrer l'adapter de terminaison
+- [x] Le kill-switch ferme les nouvelles admissions sans désenregistrer l'adapter de terminaison
       du provider sélectionné ; les leases déjà persistées restent drainables jusqu'au zéro.
-- [ ] RLS, ownership, ACL, fonctions, indexes et curseur sont certifiés sur PostgreSQL réel.
-- [ ] Le certificat de release est metadata-only, `READ ONLY` et sans fixture ni DDL.
-- [ ] La projection A/B est certifiée fonctionnellement sous FORCE RLS, DML cross-tenant refusé.
-- [ ] Le certificat CI/RLS utilise uniquement des fixtures transactionnelles annulées sur un
+- [x] RLS, ownership, ACL, fonctions, indexes et curseur sont certifiés sur PostgreSQL réel.
+- [x] Le certificat de release est metadata-only, `READ ONLY` et sans fixture ni DDL.
+- [x] La projection A/B est certifiée fonctionnellement sous FORCE RLS, DML cross-tenant refusé.
+- [x] Le certificat CI/RLS utilise uniquement des fixtures transactionnelles annulées sur un
       PostgreSQL isolé ; il ne modifie jamais le curseur d'une release en activité.
-- [ ] Une vraie course trigger conservatif/réconciliation exacte à deux connexions PostgreSQL ne
+- [x] Une vraie course trigger conservatif/réconciliation exacte à deux connexions PostgreSQL ne
       perd jamais l'échéance la plus ancienne.
-- [ ] Découvrir globalement un tenant ne confère aucun droit de lecture ou mutation hors de son
+- [x] Découvrir globalement un tenant ne confère aucun droit de lecture ou mutation hors de son
       contexte tenant.
 
 ## 4. Lot C2 — admission globale distribuée
@@ -111,19 +111,32 @@ Une réservation consomme atomiquement une place globale avant création de l'ap
 place reste liée au lease durable et est rendue par release, expiration ou reaper. Le plafond est
 configuré explicitement par environnement et son absence en mode Live est un échec de boot.
 
+L'autorité est une ligne singleton FORCE RLS, possédée par un rôle `NOLOGIN` non assumable par le
+runtime. Deux triggers `AFTER ... FOR EACH STATEMENT`, activés `ALWAYS`, projettent les INSERT et
+DELETE de leases dans la même transaction. Ils protègent également un binaire N-1 qui ignorerait
+le preflight. `TRUNCATE` est interdit et la FK société → lease est `ON DELETE RESTRICT` : une place
+ne peut pas être rendue tant qu'un appel provider pourrait encore vivre.
+
+Le groupe `GLOBAL_MAX / PROVIDER_MAX / CONFIG_VERSION` est tout-ou-rien. Toute reconfiguration
+différente exige `closed`, drain à zéro et version strictement supérieure. Une release ferme
+l'autorité avant ses preuves, certifie projection/ownership/ACL en `REPEATABLE READ READ ONLY`,
+retire ses fixtures puis exécute l'activation réelle comme dernier geste mutationnel.
+
 La saturation renvoie un motif `global_capacity` avec un `retryAt` borné ; elle n'appelle jamais le
 provider. La jauge active est dérivée de l'autorité durable et les événements provider
 `rate_limits.updated` alimentent la métrologie sans devenir seuls juges de l'admission.
 
 ### Critères binaires C2
 
-- [ ] N réservations concurrentes sur plusieurs repositories ne dépassent jamais le plafond N.
-- [ ] La N+1e réservation est refusée avant tout appel au provider sélectionné et expose un retry
+- [x] N réservations concurrentes sur plusieurs repositories ne dépassent jamais le plafond N.
+- [x] La N+1e réservation est refusée avant tout appel au provider sélectionné et expose un retry
       explicite.
-- [ ] Crash entre réservation et création provider : la place est récupérée après TTL.
-- [ ] Release, reaper et répétition idempotente ne décrémentent jamais deux fois.
-- [ ] Les quotas user/tenant et la limite globale restent tous testés en courses PostgreSQL.
-- [ ] Le démarrage Live échoue fermé si plafond, quota provider ou configuration de mesure sont
+- [x] Crash entre réservation et création provider : la place est récupérée après TTL.
+- [x] Release, reaper et répétition idempotente ne décrémentent jamais deux fois.
+- [x] Les quotas user/tenant et la limite globale restent tous testés en courses PostgreSQL.
+- [x] Une fermeture de release concurrente d'une admission déjà préflightée converge sans deadlock,
+      conserve exactement la lease commitée puis peut rouvrir la même configuration.
+- [x] Le démarrage Live échoue fermé si plafond, quota provider ou configuration de mesure sont
       partiels.
 
 ## 5. Lot C3 — harness et gates de publication
@@ -144,6 +157,28 @@ données réelles, désambiguïsation, composition de plusieurs use cases, diff 
 pas uniquement l'ouverture/fermeture d'un transport audio.
 Cette spec certifie la capacité des missions déjà acceptées individuellement ; elle ne vaut pas
 encore certification fonctionnelle exhaustive de la parité Jarvis sur toute l'application.
+
+### Missions Jarvis obligatoires dans C3
+
+Le harnais ne considère pas une mission réussie parce qu'un LLM a produit du texte. Il exige les
+effets réels relus dans la base, via les mêmes use cases que le geste manuel, avec journal d'outil,
+révisions et confirmations exactes.
+
+| Mission | Entrée naturelle minimale | Preuve de fin |
+|---|---|---|
+| Devis complet d'une traite | client + plusieurs prestations + quantités/prix + échéance | client réel résolu, catalogue proposé/désambiguïsé, brouillon exact, diff confirmé, devis relu |
+| Devis progressif multi-écrans | « crée un devis », puis réponses au fil du wizard | mission conservée après chaque navigation/ACK écran, aucune reprise à zéro |
+| Facture depuis devis | devis réel puis conditions de règlement | lien source immuable, totaux/TVA réels, confirmation financière unique |
+| Nouveau client | identité partielle puis complément demandé | aucune invention, doublon détecté, création idempotente et fiche relue |
+| Catalogue | recherche approximative puis « le deuxième » ou « ajoute un nouveau » | candidats réels ordonnés, choix voix/tap équivalent, aucune sélection silencieuse |
+| Briefing écran/home | « explique tout ce qui est en attente » | agrégation bornée d'entités réelles, navigation ciblée sans mutation |
+| Notification | lecture, ouverture, proposition de relance | contexte facture/client rechargé, action destructive/communication confirmée |
+| Interruption/reprise | barge-in pendant réponse puis correction d'une donnée | audio stoppé, ancien tour fenced, même mission/revision reprise sans double action |
+
+Pour chaque mission, Bob extrait d'abord tous les faits fournis. Il ne pose une question que pour
+une donnée indispensable absente, une ambiguïté réelle ou une confirmation réglementaire. Une
+réponse vocale et un choix tactile alimentent la même machine à états ; navigation et changement
+d'écran ne terminent jamais implicitement la mission.
 
 ### Gates bloquants
 

@@ -54,6 +54,9 @@ function validMistralEnvironment(): void {
   vi.stubEnv('DEMO_MODE', 'true');
   vi.stubEnv('BOB_LIVE_ENABLED', 'true');
   vi.stubEnv('BOB_LIVE_PROVIDER', 'mistral');
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '100');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '100');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('MISTRAL_API_KEY', 'test-mistral-key');
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', 'i'.repeat(32));
   vi.stubEnv('BOB_LIVE_SUBJECT_KEY_VERSION', '1');

@@ -119,6 +119,45 @@ if (!(process.env.MISTRAL_API_KEY ?? '').trim() && !(process.env.ANTHROPIC_API_K
   fail('MISTRAL_API_KEY or ANTHROPIC_API_KEY is required for live OCR');
 }
 
+const bobLiveEnabled = (process.env.BOB_LIVE_ENABLED ?? process.env.OPENAI_REALTIME_ENABLED ?? 'false') === 'true';
+const capacityVariables = [
+  'BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS',
+  'BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS',
+  'BOB_LIVE_CAPACITY_CONFIG_VERSION',
+];
+const configuredCapacityVariables = capacityVariables.filter(
+  (name) => (process.env[name] ?? '').trim().length > 0,
+);
+if (configuredCapacityVariables.length > 0 && configuredCapacityVariables.length !== capacityVariables.length) {
+  for (const name of capacityVariables) {
+    if (!(process.env[name] ?? '').trim()) fail(`${name} is required when Bob Live capacity is configured`);
+  }
+}
+if (bobLiveEnabled && configuredCapacityVariables.length !== capacityVariables.length) {
+  for (const name of capacityVariables) {
+    if (!(process.env[name] ?? '').trim()) fail(`${name} is required when Bob Live is enabled`);
+  }
+}
+if (configuredCapacityVariables.length === capacityVariables.length) {
+  const globalMax = Number(process.env.BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS);
+  const providerMax = Number(process.env.BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS);
+  const configVersion = Number(process.env.BOB_LIVE_CAPACITY_CONFIG_VERSION);
+  if (!Number.isInteger(globalMax) || globalMax < 1 || globalMax > 1_000) {
+    fail('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS must be an integer between 1 and 1000');
+  }
+  if (!Number.isInteger(providerMax) || providerMax < globalMax || providerMax > 10_000) {
+    fail('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS must be an integer greater than or equal to the global limit');
+  }
+  if (!Number.isInteger(configVersion) || configVersion < 1 || configVersion > 2_147_483_647) {
+    fail('BOB_LIVE_CAPACITY_CONFIG_VERSION must be a PostgreSQL positive integer');
+  }
+  const provider = process.env.BOB_LIVE_PROVIDER ?? 'openai';
+  const gatewayMax = Number(process.env.BOB_LIVE_GATEWAY_MAX_CONNECTIONS ?? '500');
+  if (provider === 'mistral' && (!Number.isInteger(gatewayMax) || globalMax > gatewayMax)) {
+    fail('Bob Live global limit must not exceed BOB_LIVE_GATEWAY_MAX_CONNECTIONS for Mistral');
+  }
+}
+
 const mistralV2TerminalReplay =
   process.env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED ?? 'false';
 if (!['true', 'false'].includes(mistralV2TerminalReplay)) {

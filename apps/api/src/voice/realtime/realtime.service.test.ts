@@ -66,6 +66,10 @@ const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
 };
 
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 3,
   userLimitPerHour: 30,
   tenantLimitPerMinute: 50,
@@ -1119,6 +1123,50 @@ describe('RealtimeVoiceService', () => {
 
     expect(first.ok).toBe(true);
     expect(second).toMatchObject({ ok: false, error: { kind: 'rate_limited' } });
+    expect(provider.createCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuse la capacité globale avant tout second appel fournisseur', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_capacity_1'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const bounded = new InMemoryRealtimeAdmission({
+      ...ADMISSION_POLICY,
+      globalCapacity: {
+        providerId: 'openai',
+        providerModel: 'gpt-realtime-2.1',
+        globalMaxSessions: 1,
+        providerMaxSessions: 2,
+        configVersion: 9,
+      },
+    });
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      bounded,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    const first = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const second = await runAsPrincipal(
+      () => service.createCall({ sdp: OFFER_SDP }),
+      { userId: 'user-2', companyId: 'company-1' },
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-admission' },
+    });
     expect(provider.createCall).toHaveBeenCalledTimes(1);
   });
 

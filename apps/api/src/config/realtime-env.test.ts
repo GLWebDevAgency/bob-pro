@@ -25,6 +25,9 @@ function validRealtimeEnv(): void {
   vi.stubEnv('OPENAI_REALTIME_ACTIVE_LEASE_SECONDS', '30');
   vi.stubEnv('OPENAI_REALTIME_HEARTBEAT_SECONDS', '10');
   vi.stubEnv('OPENAI_REALTIME_REAPER_LEASE_SECONDS', '30');
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
@@ -39,6 +42,9 @@ function validMistralRealtimeEnv(): void {
   vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'p'.repeat(32));
   vi.stubEnv('BOB_LIVE_USAGE_HMAC_SECRET', 'u'.repeat(32));
   vi.stubEnv('BOB_LIVE_CONTROL_ENCRYPTION_SECRET', 'c'.repeat(32));
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
@@ -74,6 +80,34 @@ describe('Bob Live — validation de la politique d’admission', () => {
       OPENAI_REALTIME_CONTROL_ENCRYPTION_KEY_VERSION: 1,
       SUPABASE_REALTIME_AUDIO_BUCKET: 'bob-live-audio',
     });
+  });
+
+  it('exige le groupe capacité complet et l’expose comme un seul contrat typé', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', undefined);
+    expect(() => loadEnv()).toThrow(/capacité Bob Live partielle/i);
+
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '60');
+    expect(resolveBobLiveEnv(loadEnv()).globalCapacity).toEqual({
+      providerId: 'openai',
+      providerModel: 'gpt-realtime-2.1',
+      globalMaxSessions: 50,
+      providerMaxSessions: 60,
+      configVersion: 1,
+    });
+  });
+
+  it('refuse un plafond Bob supérieur au fournisseur ou au gateway Mistral', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '51');
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+    expect(() => loadEnv()).toThrow(/dépasser le plafond du fournisseur/i);
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '501');
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '600');
+    expect(() => loadEnv()).toThrow(/dépasser la capacité du gateway Mistral/i);
   });
 
   it('refuse quota horaire inférieur au quota minute', () => {

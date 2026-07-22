@@ -1420,7 +1420,7 @@ model RealtimeAdmissionEvent {
 /// créé ; seule son empreinte SHA-256 permet les transitions CAS reserve/bind/activate/renew/release.
 model RealtimeSessionLease {
   companyId                   String    @db.Text
-  company                     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  company                     Company   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   subjectHash                 String    @db.Char(64)
   sessionId                   String    @unique(map: "realtime_session_leases_session_id_key") @db.Uuid
   leaseTokenHash              String    @unique(map: "realtime_session_leases_token_hash_key") @db.Char(64)
@@ -1461,6 +1461,25 @@ model RealtimeSessionLease {
   @@index([state, leaseExpiresAt], map: "realtime_session_leases_global_reaper_idx")
   @@index([hardExpiresAt], map: "realtime_session_leases_hard_expiry_idx")
   @@map("realtime_session_leases")
+}
+
+/// Autorité globale privée de capacité Bob Live. Le runtime ne reçoit aucun accès SQL direct :
+/// préflight et métrologie passent exclusivement par deux fonctions SECURITY DEFINER bornées.
+model RealtimeGlobalCapacity {
+  id                  Int       @id @default(1)
+  mode                String    @default("tracking") @db.Text
+  providerId          String?   @db.Text
+  providerModel       String?   @db.Text
+  globalMaxSessions   Int?
+  providerMaxSessions Int?
+  configVersion       Int?
+  retryAfterSeconds   Int?
+  usedSessions        Int
+  revision            BigInt    @default(0)
+  activatedAt         DateTime? @db.Timestamptz(6)
+  updatedAt           DateTime  @db.Timestamptz(6)
+
+  @@map("realtime_global_capacity")
 }
 
 /// Capacité one-shot du WSS PCM Mistral. Le ticket 256 bits et le userId restent absents de la

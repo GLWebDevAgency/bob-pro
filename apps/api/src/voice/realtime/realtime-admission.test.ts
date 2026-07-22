@@ -14,6 +14,10 @@ const SUBJECT_A = 'a'.repeat(64);
 const SUBJECT_B = 'b'.repeat(64);
 
 const policy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 2,
   userLimitPerHour: 3,
   tenantLimitPerMinute: 4,
@@ -51,6 +55,49 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(() => validateRealtimeAdmissionPolicy({ ...policy, userLimitPerHour: 1 })).toThrow(/hourly quota/i);
     expect(() => validateRealtimeAdmissionPolicy({ ...policy, tenantLimitPerMinute: 1 })).toThrow(/tenant minute/i);
     expect(() => validateRealtimeAdmissionPolicy({ ...policy, heartbeatSeconds: 30 })).toThrow(/heartbeat/i);
+  });
+
+  it('refuse sans autorité globale et borne N+1 entre tenants', async () => {
+    const disabled = new InMemoryRealtimeAdmission({ ...policy, globalCapacity: null });
+    await expect(disabled.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      maxSessionSeconds: 900,
+    })).resolves.toMatchObject({ allowed: false, denial: 'unavailable' });
+
+    const boundedPolicy: RealtimeAdmissionPolicy = {
+      ...policy,
+      globalCapacity: {
+        providerId: 'openai',
+        providerModel: 'gpt-realtime-2.1',
+        globalMaxSessions: 2,
+        providerMaxSessions: 3,
+        configVersion: 7,
+      },
+    };
+    const bounded = new InMemoryRealtimeAdmission(boundedPolicy, Date.now, entropy());
+    const first = allowed(await bounded.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      maxSessionSeconds: 900,
+    }));
+    allowed(await bounded.reserve({
+      companyId: COMPANY_B,
+      subjectHash: SUBJECT_B,
+      maxSessionSeconds: 900,
+    }));
+    await expect(bounded.reserve({
+      companyId: 'company-c',
+      subjectHash: 'c'.repeat(64),
+      maxSessionSeconds: 900,
+    })).resolves.toMatchObject({ allowed: false, denial: 'global_capacity' });
+
+    await bounded.release({ ...first, providerTermination: 'not_created' });
+    await expect(bounded.reserve({
+      companyId: 'company-c',
+      subjectHash: 'c'.repeat(64),
+      maxSessionSeconds: 900,
+    })).resolves.toMatchObject({ allowed: true, denial: null });
   });
 
   it('réserve un bail unique sans conserver userId ni token brut', async () => {
