@@ -1,0 +1,230 @@
+# Système de motion et d'interaction
+
+> Statut : **Proposed**
+> IDs liés : G04, G05, G06, G08, G09, G13, G14, G15, G21, G22
+> Autorité : spécification future ; les composants et tokens runtime actuels restent la baseline
+
+## Objectif
+
+Fournir une grammaire unique afin qu'un builder n'invente ni durée, ni easing, ni haptique dans un
+écran. Le système décrit une intention ; l'implémentation native conserve la liberté nécessaire
+pour suivre le geste, les conventions plateforme et les préférences d'accessibilité.
+
+## Règles fondamentales
+
+1. Un effet répond à causalité, continuité, statut, priorité, relation ou personnalité.
+2. L'interaction reçoit un feedback dans le premier frame perceptible.
+3. Une animation ne bloque pas un tap ni un résultat backend.
+4. Une transition peut être interrompue et redirigée.
+5. L'entrée est généralement plus lente que la sortie.
+6. Une seule animation dominante à la fois.
+7. Les animations répétitives ne rejouent pas au retour sur un écran.
+8. L'état final exact est accessible même pendant l'interpolation.
+9. Le mode Reduced Motion conserve toute l'information.
+10. Le contenu déjà au repos n'est jamais caché à opacité zéro pour créer un spectacle d'entrée.
+
+La règle historique « pas d'opacité zéro à l'entrée » s'applique au contenu nominal déjà présent.
+Elle n'interdit pas l'apparition d'un nouvel objet, d'un toast ou d'une carte créée par une action.
+
+## Taxonomie
+
+| Famille | Usage | Exemples |
+| --- | --- | --- |
+| `feedback` | Réponse immédiate au geste. | Pression, sélection, drag. |
+| `enter` | Nouvel élément causé par l'action ou la donnée. | Message, ligne, toast. |
+| `exit` | Élément retiré ou terminé. | Notification lue, carte classée. |
+| `replace` | Deux contenus frères occupent la même place. | Filtre, segment, onglet interne. |
+| `layout` | Position ou taille change sans perdre l'identité. | Accordéon, tri, carte enrichie. |
+| `navigate` | Relation entre destinations. | Push, modal, zoom, sheet. |
+| `status` | État asynchrone. | Pending, success, error, reconnect. |
+| `ambient` | Présence non bloquante, réellement active. | Halo Bob, connexion en cours. |
+
+## Tokens temporels proposés
+
+| Token | Cible | Usage | Interdit pour |
+| --- | ---: | --- | --- |
+| `motion.instant` | 0 ms | Reduced Motion ou synchronisation immédiate. | Masquer une latence réelle. |
+| `motion.feedbackIn` | 80 ms | Press-down, focus, début de sélection. | Transition de contenu. |
+| `motion.feedbackOut` | 160 ms | Relâchement, retour de focus. | Page entière. |
+| `motion.exitFast` | 140 ms | Petit élément qui disparaît. | Destruction nécessitant compréhension. |
+| `motion.enterFast` | 180 ms | Badge, bouton contextuel, toast. | Page ou sheet. |
+| `motion.enter` | 240 ms | Carte/message/section nouvellement créée. | Liste complète à chaque visite. |
+| `motion.replace` | 280 ms | Fade-through, segment, filtre. | Push parent→enfant. |
+| `motion.page` | 320 ms | Transition custom lorsque le natif ne convient pas. | Remplacer un push natif correct. |
+| `motion.hero` | 420 ms max | Objet → détail ou document → aperçu. | Interaction fréquente sans continuité. |
+| `motion.ambient` | 1 800–2 400 ms | Respiration lente et rare. | Loading critique ou statut trompeur. |
+
+Ces valeurs sont des points de départ. Les transitions système et le mouvement directement lié au
+geste n'utilisent pas un timer arbitraire.
+
+`motion.page` et `motion.hero` sont des transitions rares de continuité, pas des « transitions
+fréquentes » au sens du budget performance ≤ 300 ms. Une action répétée, un filtre, un onglet ou une
+navigation courante utilise le natif ou un token ≤ 280 ms. Même rare, page/hero reste profilé et ne
+retarde jamais l'interactivité ; si le protocole `PERF-CALIBRATION` échoue, le token est raccourci ou
+remplacé par le natif/fondu.
+
+## Courbes proposées
+
+| Token | Courbe | Usage |
+| --- | --- | --- |
+| `easing.standard` | `cubic-bezier(0.2, 0, 0, 1)` | Déplacement ou remplacement équilibré. |
+| `easing.enter` | `cubic-bezier(0, 0, 0, 1)` | Entrée décélérée. |
+| `easing.exit` | `cubic-bezier(0.3, 0, 1, 1)` | Sortie accélérée. |
+| `easing.emphasizedEnter` | `cubic-bezier(0.05, 0.7, 0.1, 1)` | Moment hero rare. |
+| `easing.emphasizedExit` | `cubic-bezier(0.3, 0, 0.8, 0.15)` | Sortie d'un hero. |
+
+L'implémentation React Native choisit la représentation compatible. Aucun écran ne copie ces
+valeurs inline.
+
+## Profils de ressort proposés
+
+| Profil | Intention | Point de départ | Usage |
+| --- | --- | --- | --- |
+| `spring.control` | Ferme, presque sans dépassement. | stiffness 300, damping 30 | Bouton, segment, icône. |
+| `spring.surface` | Poids naturel, faible overshoot. | stiffness 260, damping 26 | Sheet, carte, toolbar. |
+| `spring.hero` | Plus ample mais maîtrisé. | stiffness 220, damping 22 | Morph Bob ou objet→détail. |
+| `spring.gesture` | Reprend vitesse et position du doigt. | Calculé depuis la vélocité | Drag/dismiss/settle. |
+
+Les valeurs finales sont calibrées sur appareils ; elles ne deviennent normatives qu'après l'ADR
+runtime et un prototype release.
+
+## Relations et transitions
+
+| Relation | Pattern | Exemple Bob | Reduced Motion |
+| --- | --- | --- | --- |
+| Même objet | Container transform/zoom. | Client → fiche, document → détail. | Crossfade court ou push natif. |
+| Parent → enfant | Push natif/shared axis. | Dossier → document. | Push natif réduit/crossfade système. |
+| Création | Modal verticale ou document qui se construit. | Nouveau devis, scan. | Présentation immédiate/fade. |
+| Choix temporaire | Sheet depuis le bas. | Filtres, dossier, catalogue. | Apparition immédiate/fade. |
+| Destinations sœurs | Fade-through. | Filtres, segments, tabs internes. | Crossfade ou remplacement immédiat. |
+| Ancré à un contrôle | Fade + micro-scale depuis l'ancre. | Menu, popover. | Fade seul. |
+| Changement de statut | Layout transition + symbole. | Payé, classé, lu. | Couleur/symbole/texte immédiats. |
+
+## Press states
+
+### Bouton principal
+
+- press-in 80 ms ;
+- scale cible 0,975 ;
+- légère baisse de luminosité/élévation ;
+- release par `spring.control` ;
+- disabled : aucune compression, contraste accessible ;
+- loading : largeur et label stables si possible, indicateur sémantique ;
+- success : seulement après événement autoritaire ; icône/texte remplacent le progress ;
+- error : retour contrôlé avec message inline, pas de shake prolongé.
+
+### Carte/row
+
+- scale cible 0,99 ou variation d'élévation, jamais 0,94 ;
+- chevron/icône peut avancer de 1–2 dp ;
+- aucune haptique sur chaque simple ouverture de row ;
+- le press ne doit pas modifier la hauteur ni le scroll.
+
+### Icône seule
+
+- surface tactile ≥ 44 pt iOS et cible Android conforme ;
+- feedback porté par la surface entière, pas seulement le glyph ;
+- label accessible décrivant le résultat.
+
+## Haptique
+
+| Sémantique | Haptique proposée | Moment exact | Exclusions |
+| --- | --- | --- | --- |
+| Sélection | `selection` | Segment/chip réellement sélectionné. | Scroll ou survol. |
+| Action significative | `impactLight`/`Soft` | Geste accepté localement. | Chaque row fréquente. |
+| Succès | `notificationSuccess` | ACK/relecture réussie. | Optimisme non confirmé. |
+| Avertissement | `notificationWarning` | État récupérable présenté. | Simple information. |
+| Erreur | `notificationError` | Erreur terminale visible. | Retry automatique silencieux. |
+| Destructif | `impactMedium` puis confirmation | Après choix explicite, avant ou après selon plateforme. | Jamais sans dialogue/undo requis. |
+| Voix | Éventuellement activation/fin | Hors capture si les tests acoustiques l'exigent. | VAD, amplitude, tokens, pulse continu. |
+
+La préférence système et l'indisponibilité matérielle sont toujours respectées. L'information ne
+dépend jamais de l'haptique.
+
+## Entrée, sortie et stagger
+
+- Déplacement maximal standard : 6–12 dp.
+- Scale standard : 0,985 → 1, jamais zoom marqué sur une liste.
+- Stagger : 20–40 ms, maximum 4–6 éléments.
+- Aucun stagger sur un refetch, un retour d'onglet ou une longue liste paginée.
+- Sortie avant réorganisation ; la liste ne saute pas vers la position finale pendant le fade.
+- Le focus accessible suit l'objet logique et non son wrapper animé.
+
+## Layout transitions
+
+Cas obligatoires :
+
+- ajout/suppression de ligne de devis/facture ;
+- carte de priorité terminée ;
+- notification marquée lue ;
+- document classé ou déplacé ;
+- message Assistant enrichi ;
+- changement de scénario financier ;
+- expansion/fermeture d'accordéon ;
+- mutation d'un badge/statut.
+
+Garanties : identités stables, animation annulable, position de scroll conservée, focus non perdu,
+état final exact et fallback instantané.
+
+## Nombres et graphiques
+
+- L'accessibility value expose immédiatement la valeur finale.
+- Le signe, la devise, l'unité et le séparateur ne roulent pas comme des digits décoratifs.
+- L'interpolation n'est déclenchée que par une nouvelle révision de donnée ou un nouveau scénario.
+- Un retour sur l'onglet ne rejoue pas le graphique.
+- L'animation ne traverse pas des valeurs pouvant être interprétées comme réelles.
+- Une alternative tabulaire accompagne toute visualisation exploratoire.
+
+## États asynchrones
+
+```text
+idle → pending → success
+            └→ recoverable_error → pending
+            └→ terminal_error
+            └→ cancelled
+```
+
+- `pending` commence avec l'envoi/acceptation de la commande, pas avec un simple tap décoratif ;
+- un timeout est `unknown/recoverable`, jamais succès ou échec irréversible inventé ;
+- success transforme le contrôle après ACK/relecture ;
+- l'animation success ne retarde pas la navigation demandée ;
+- une erreur conserve les données et précise ce qui est sûr.
+
+## Reduced Motion
+
+| Effet nominal | Variante réduite |
+| --- | --- |
+| Zoom/container | Crossfade ou push système réduit. |
+| Slide partagé | Crossfade sans profondeur. |
+| Scale press | Variation de couleur/élévation, scale 1. |
+| Spring | Timing court ou état final immédiat. |
+| Parallax | Aucun ; position fixe. |
+| Blur animé | Surface opaque stable. |
+| Pulse ambiant | Aucun ; symbole/couleur/texte statiques. |
+| Layout transition | Réorganisation immédiate avec annonce ciblée. |
+| Waveform Bob | Niveau simplifié ou symbole d'état statique. |
+
+Le changement de préférence pendant l'exécution termine proprement l'animation en cours et place
+l'interface dans son état final.
+
+## Budget de concurrence
+
+- Une animation hero maximum.
+- Une boucle ambiante maximum dans le viewport.
+- Pas plus de 6 entrées stagger simultanées.
+- Pas d'animation layout par frame sur une liste entière.
+- Bob Live ne doit pas animer plus de 8–12 primitives audio et 2 halos.
+- Les animations invisibles sont arrêtées à l'arrière-plan et hors focus.
+
+## Critères d'acceptation
+
+- [ ] Tous les composants utilisent des tokens sémantiques, aucune durée inline non justifiée.
+- [ ] Press, loading, success, error et disabled sont filmés et testés.
+- [ ] Chaque animation possède une variante Reduced Motion.
+- [ ] L'interruption au milieu converge vers l'état correct.
+- [ ] Une re-navigation ne rejoue pas les entrées nominales.
+- [ ] Focus et position de scroll survivent aux layout transitions.
+- [ ] Les haptics sont synchronisées à l'événement réel et absentes quand désactivées.
+- [ ] Les montants finaux sont exacts et accessibles pendant l'animation.
+- [ ] Le profiling release satisfait les budgets du document performance.
+- [ ] Le fallback sans Reanimated/Glass/Zoom reste fonctionnel si le capability check échoue.
