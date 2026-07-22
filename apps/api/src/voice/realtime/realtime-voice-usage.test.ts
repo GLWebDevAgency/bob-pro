@@ -37,6 +37,8 @@ describe('RealtimeVoiceUsageWriter', () => {
       () => EVENT_ID,
     );
     await expect(writer.record(validInput())).resolves.toEqual({ status: 'unavailable' });
+    await expect(writer.recordBatch([validInput(), validInput()]))
+      .resolves.toEqual({ status: 'unavailable' });
   });
 
   it('canonise, versionne et HMACe une mesure sans persister la portée brute', async () => {
@@ -178,5 +180,102 @@ describe('RealtimeVoiceUsageWriter', () => {
       () => EVENT_ID,
     );
     await expect(writer.record(validInput())).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('prépare et confie toutes les dimensions à un seul batch repository', async () => {
+    const eventIds = [
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+    ];
+    const record = vi.fn<RealtimeVoiceUsageRepositoryPort['record']>();
+    const recordBatch = vi.fn<NonNullable<RealtimeVoiceUsageRepositoryPort['recordBatch']>>()
+      .mockImplementation(async (inputs) => ({
+        status: 'recorded',
+        eventIds: inputs.map((input) => input.eventId),
+      }));
+    const writer = new RealtimeVoiceUsageWriter(
+      { record, recordBatch },
+      { proofSecret: 'p'.repeat(32), proofKeyVersion: 9 },
+      () => NOW,
+      () => eventIds.shift()!,
+    );
+
+    await expect(writer.recordBatch([
+      { ...validInput(), kind: 'realtime_tokens_in', amount: 12 },
+      { ...validInput(), kind: 'realtime_tokens_out', amount: 8 },
+    ])).resolves.toEqual({
+      status: 'recorded',
+      eventIds: [
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+      ],
+    });
+
+    expect(record).not.toHaveBeenCalled();
+    expect(recordBatch).toHaveBeenCalledOnce();
+    const persisted = recordBatch.mock.calls[0]![0];
+    expect(persisted).toHaveLength(2);
+    expect(persisted.map((measure) => measure.recordedAt))
+      .toEqual(['2026-07-14T08:00:00.000Z', '2026-07-14T08:00:00.000Z']);
+    expect(persisted[0]!.dedupeKeyHmac).not.toBe(persisted[1]!.dedupeKeyHmac);
+  });
+
+  it('valide le lot entier avant persistance et refuse un mélange de tenants', async () => {
+    const recordBatch = vi.fn<NonNullable<RealtimeVoiceUsageRepositoryPort['recordBatch']>>();
+    const ids = [
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666',
+    ];
+    const writer = new RealtimeVoiceUsageWriter(
+      { record: vi.fn(), recordBatch },
+      { proofSecret: 'p'.repeat(32), proofKeyVersion: 1 },
+      () => NOW,
+      () => ids.shift()!,
+    );
+
+    await expect(writer.recordBatch([
+      validInput(),
+      { ...validInput(), amount: Number.NaN },
+    ])).resolves.toEqual({ status: 'rejected' });
+    await expect(writer.recordBatch([
+      validInput(),
+      { ...validInput(), companyId: 'company-2' },
+    ])).resolves.toEqual({ status: 'rejected' });
+    expect(recordBatch).not.toHaveBeenCalled();
+  });
+
+  it('ne retombe jamais vers record lorsque le repository ne sait pas committer atomiquement', async () => {
+    const record = vi.fn<RealtimeVoiceUsageRepositoryPort['record']>();
+    const writer = new RealtimeVoiceUsageWriter(
+      { record },
+      { proofSecret: 'p'.repeat(32), proofKeyVersion: 1 },
+      () => NOW,
+      () => EVENT_ID,
+    );
+
+    await expect(writer.recordBatch([validInput(), validInput()]))
+      .resolves.toEqual({ status: 'unavailable' });
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('ne contacte pas le repository si l’entropie casse au milieu de la préparation', async () => {
+    const recordBatch = vi.fn<NonNullable<RealtimeVoiceUsageRepositoryPort['recordBatch']>>();
+    let calls = 0;
+    const writer = new RealtimeVoiceUsageWriter(
+      { record: vi.fn(), recordBatch },
+      { proofSecret: 'p'.repeat(32), proofKeyVersion: 1 },
+      () => NOW,
+      () => {
+        calls += 1;
+        if (calls === 2) throw new Error('entropy unavailable');
+        return EVENT_ID;
+      },
+    );
+
+    await expect(writer.recordBatch([validInput(), validInput()]))
+      .resolves.toEqual({ status: 'unavailable' });
+    expect(recordBatch).not.toHaveBeenCalled();
   });
 });
