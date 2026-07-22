@@ -7,7 +7,7 @@ profils de charge sur le SHA et la topologie exacts de release.
 |---|---|---|
 | C1 — maintenance équitable | Livré et certifié PostgreSQL 17 (15/15) | Non, seul |
 | C2 — plafond global distribué | Implémenté ; certificat local PostgreSQL 17 vert (8/8), CI distante à rejouer | Non, seul |
-| C3 — charge et soak | Non exécuté | Non |
+| C3 — charge, Jarvis et soak | Contrat de preuve en implémentation ; 0/8 mission exécutée sur cible | Non |
 | C4 — drain mono-provider | Non certifié | Non si la release change de provider |
 
 La fermeture de C1 ne certifie donc ni 100 ni 1 000 comptes : C2 doit fermer la saturation avant
@@ -21,6 +21,12 @@ l'application. La capacité ne se résume donc pas à ouvrir des sockets : une m
 continuer à lire les données réelles, naviguer, composer plusieurs use cases et demander les
 désambiguïsations ou confirmations nécessaires, sans perdre une action ni affaiblir les invariants
 métier sous charge.
+
+La voix est une **interface vers les capacités de l'application**, pas une capacité parallèle. Une
+mission Jarvis n'est finie que lorsque Bob a appelé les mêmes use cases métier que le parcours
+tactile, traversé les écrans nécessaires, conservé son état après chaque navigation, demandé
+uniquement les informations ou confirmations réellement manquantes, puis relu l'effet autoritaire.
+Une réponse parlée correcte sans cet effet réel est un échec.
 
 La cible V1 est **1 000 comptes actifs représentatifs**, avec des paliers à certifier de 50, 100 puis
 250 sessions Live simultanées. Ce contrat ne signifie pas « 1 000 voix simultanées ».
@@ -180,6 +186,25 @@ une donnée indispensable absente, une ambiguïté réelle ou une confirmation r
 réponse vocale et un choix tactile alimentent la même machine à états ; navigation et changement
 d'écran ne terminent jamais implicitement la mission.
 
+### Chaîne de preuve anti-fausse-publication
+
+Le validateur d'un run ne peut produire qu'un verdict de run ; il n'émet jamais une promesse
+publique. Chaque verdict déterministe/GPT, le certificat C1/C2/C4 et chaque échantillon de suivi
+sont ensuite enveloppés et signés par leur workflow protégé, avec SHA, profil, identité du workflow,
+horodatage, digest du preflight et digest des preuves brutes. Runs, prérequis, monitoring et
+publication possèdent quatre clés Ed25519 distinctes : empreinte SPKI, chemin, `keyId`, workflow et
+SHA immuable sont épinglés par rôle. Une clé de run ne peut donc signer ni les prérequis ni le
+certificat final. Le candidat de publication est dérivé uniquement après vérification
+cryptographique de ces enveloppes ; un objet candidat construit en mémoire est refusé, même s'il
+tente d'emprunter la dernière étape de signature.
+
+La publication exige donc deux autorités successives : provenance signée des faits, puis signature
+du certificat dérivé. Le suivi de sept jours commence après le dernier des six runs, porte des
+échantillons horodatés toutes les cinq minutes sans trou, reste lié au même SHA et à la même
+topologie, et se termine dans le passé. Le certificat expose séparément comptes actifs, VU API et
+maximum de sessions Live ; il interdit explicitement d'interpréter « cohorte 1 000 » comme
+« 1 000 voix simultanées ».
+
 ### Gates bloquants
 
 - [ ] Premier audio p50 ≤ 900 ms, p95 ≤ 1 800 ms ; barge-in p50 ≤ 250 ms, p95 ≤ 500 ms.
@@ -188,11 +213,23 @@ d'écran ne terminent jamais implicitement la mission.
 - [ ] CPU DB/API ≤ 70 % soutenu, mémoire ≤ 75 % sans pente, pool DB ≤ 80 %, marge mesurée ≥ 30 %.
 - [ ] Zéro fuite tenant, exécution fantôme, double mutation, perte de contrôle ou reprise d'un audio
       annulé.
+- [ ] Les huit missions Jarvis sont exécutées sur chaque palier Live avec reçus issus du journal
+      serveur/DB : lecture autoritaire, use case exact, idempotence, confirmation, relecture et
+      révisions ; aucune preuve synthétique fournie par le runner n'est acceptée.
+- [ ] Pour toute décision disponible à la voix et au toucher, les deux entrées traversent la même
+      transition métier et aboutissent au même hash de brouillon/entité ; la navigation et le
+      redémarrage de l'app ne perdent pas la mission active.
+- [ ] Le passage GPT utilise un vrai média audio `sendrecv`, une seule sortie distante, un micro
+      encore ouvert pendant la parole de Bob et un barge-in qui coupe localement l'ancien audio
+      avant le `cancel/clear` distant ; le transport historique uplink-only ne satisfait pas ce gate.
 - [ ] Les scénarios N/N+1, crash après réservation, récupération TTL, panne provider, reconnexion
       massive et saturation DB/pool sont injectés et leurs refus/reprises restent bornés.
 - [ ] Trois exécutions propres et reproductibles sur le SHA exact ; suivi des SLO sept jours avant
       élargissement de cohorte.
 - [ ] Chaque preuve conserve SHA, topologie, plafond global, provider, modèle et quotas exacts.
+- [ ] Six verdicts, prérequis et monitoring sont des enveloppes signées vérifiées avant construction
+      du candidat ; un candidat simple, un monitoring futur ou une série contenant un trou sont
+      refusés par tests négatifs.
 
 ## 6. Lot C4 — bascule mono-provider sans lease orpheline
 
