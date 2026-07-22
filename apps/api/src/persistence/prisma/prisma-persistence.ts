@@ -65,6 +65,8 @@ import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-c
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
 import { PrismaOpenAiNativeSpeechMaintenance } from '../../voice/realtime/openai-native-speech-maintenance.prisma';
 import type { OpenAiNativeSpeechMaintenancePort } from '../../voice/realtime/openai-native-speech-maintenance';
+import { PrismaOpenAiNativeSpeechDeliveryRepository } from '../../voice/realtime/openai-native-speech-delivery.prisma';
+import type { OpenAiNativeSpeechDeliveryRepositoryPort } from '../../voice/realtime/openai-native-speech-delivery';
 import { PrismaRealtimeReaperDirectory } from '../../voice/realtime/realtime-reaper-directory.prisma';
 import type { RealtimeReaperDirectoryPort } from '../../voice/realtime/realtime-reaper-directory';
 import { PrismaStripeBillingRepository } from './stripe-billing.repository';
@@ -154,6 +156,10 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {
     return new PrismaRealtimeControlRepository(this.prisma);
+  }
+
+  createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
+    return new PrismaOpenAiNativeSpeechDeliveryRepository(this.prisma);
   }
 
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {

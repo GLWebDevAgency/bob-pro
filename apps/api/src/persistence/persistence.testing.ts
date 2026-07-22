@@ -52,6 +52,10 @@ import {
   type OpenAiNativeSpeechMaintenancePort,
 } from '../voice/realtime/openai-native-speech-maintenance';
 import {
+  DisabledOpenAiNativeSpeechDeliveryRepository,
+  type OpenAiNativeSpeechDeliveryRepositoryPort,
+} from '../voice/realtime/openai-native-speech-delivery';
+import {
   DisabledRealtimeReaperDirectory,
   type RealtimeReaperDirectoryPort,
 } from '../voice/realtime/realtime-reaper-directory';
@@ -150,6 +154,9 @@ export class InMemoryPersistence implements Persistence {
   }
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {
     return new DisabledRealtimeControlRepository();
+  }
+  createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
+    return new DisabledOpenAiNativeSpeechDeliveryRepository();
   }
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
     return new DisabledOpenAiNativeSpeechMaintenance();
