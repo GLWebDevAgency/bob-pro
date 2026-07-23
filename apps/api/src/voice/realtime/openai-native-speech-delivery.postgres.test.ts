@@ -54,6 +54,10 @@ if (RUN_POSTGRES_CERT) {
   }
 }
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const LOCAL_OBSERVATION = Object.freeze({
+  formatVersion: 1 as const,
+  kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
+});
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
   globalCapacity: {
     providerId: 'openai', providerModel: 'gpt-realtime-2.1',
@@ -84,6 +88,8 @@ interface StoredProof {
   readonly speechPolicyVersion: number;
   readonly speechScenarioId: string;
   readonly proofFormatVersion: number;
+  readonly localObservationFormatVersion: number | null;
+  readonly localObservationKind: string | null;
   readonly retentionCurrent: boolean;
   readonly controlCount: number;
 }
@@ -203,6 +209,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         deliveryId: randomUUID(),
         companyId: authority.companyId,
         subjectHmac: authority.subjectHmac,
+        subjectKeyVersion: 1,
         sessionId: authority.lease.sessionId,
         turnId: randomUUID(),
         contextRevision: authority.context.snapshot.revision,
@@ -280,6 +287,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
                delivery."speechPolicyVersion" AS "speechPolicyVersion",
                delivery."speechScenarioId" AS "speechScenarioId",
                delivery."proofFormatVersion" AS "proofFormatVersion",
+               delivery."localObservationFormatVersion" AS "localObservationFormatVersion",
+               delivery."localObservationKind" AS "localObservationKind",
                delivery."retentionExpiresAt" >= delivery."createdAt" + INTERVAL '29 days'
                  AS "retentionCurrent",
                (SELECT COUNT(*)::integer
@@ -367,6 +376,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         deliveryId: randomUUID(),
         companyId,
         subjectHmac: digest(`historical-subject:${suffix}:${label}`),
+        subjectKeyVersion: 1,
         sessionId: randomUUID(),
         turnId: randomUUID(),
         contextRevision: 1,
@@ -431,6 +441,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         turnId: state.turnId,
         contextRevision: state.contextRevision,
         contextDigest: state.contextDigest,
+        localObservation: LOCAL_OBSERVATION,
         slo: null,
         atMs: createdAtMs + 7,
       });
@@ -447,6 +458,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         deliveryId: randomUUID(),
         companyId: tenantId,
         subjectHmac: digest(`historical-live-subject:${suffix}:${label}`),
+        subjectKeyVersion: 1,
         sessionId: randomUUID(),
         turnId: randomUUID(),
         contextRevision: 1,
@@ -511,6 +523,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         deliveryId: state.deliveryId,
         companyId: state.companyId,
         subjectHmac: state.subjectHmac,
+        subjectKeyVersion: state.subjectKeyVersion,
         sessionId: state.sessionId,
         turnId: state.turnId,
         contextRevision: state.contextRevision,
@@ -542,6 +555,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         completedAt: at(state.completedAtMs),
         acknowledgementId: state.acknowledgementId,
         deliveredAt: at(state.deliveredAtMs),
+        localObservationFormatVersion: state.localObservationFormatVersion,
+        localObservationKind: state.localObservationKind,
         sloFormatVersion: state.sloFormatVersion,
         speechStoppedEventToFirstInboundRtpMs: state.speechStoppedEventToFirstInboundRtpMs,
         bargeInStatus: state.bargeInStatus,
@@ -798,12 +813,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const turnCollision = createOpenAiNativeSpeechDelivery({
         ...initial,
+        subjectKeyVersion: initial.subjectKeyVersion ?? 1,
         deliveryId: randomUUID(),
         requestNonceHmac: digest(`nonce:${suffix}:turn-collision`),
       });
       expect(await repositories[0].prepare(turnCollision)).toEqual({ status: 'conflict' });
       const nonceCollision = createOpenAiNativeSpeechDelivery({
         ...initial,
+        subjectKeyVersion: initial.subjectKeyVersion ?? 1,
         deliveryId: randomUUID(),
         turnId: randomUUID(),
       });
@@ -813,6 +830,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const hiddenCollisionBase = await delivery(otherAuthority, 'cross-tenant-collision');
       const hiddenCollision = createOpenAiNativeSpeechDelivery({
         ...hiddenCollisionBase,
+        subjectKeyVersion: hiddenCollisionBase.subjectKeyVersion ?? 1,
         requestNonceHmac: initial.requestNonceHmac,
       });
       expect(await repositories[1].prepare(hiddenCollision)).toEqual({ status: 'unavailable' });
@@ -903,6 +921,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           type: 'ACK_DELIVERY', acknowledgementId, deliveryId: completed.deliveryId,
           sessionId: completed.sessionId, turnId: completed.turnId,
           contextRevision: completed.contextRevision, contextDigest: completed.contextDigest,
+          localObservation: LOCAL_OBSERVATION,
           slo: {
             speechStoppedEventToFirstInboundRtpMs: 701,
             pendingBargeIn: { status: 'complete', durationsMs: [91, 120] },
@@ -913,6 +932,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           type: 'ACK_DELIVERY', acknowledgementId, deliveryId: completed.deliveryId,
           sessionId: completed.sessionId, turnId: completed.turnId,
           contextRevision: completed.contextRevision, contextDigest: completed.contextDigest,
+          localObservation: LOCAL_OBSERVATION,
           slo: {
             speechStoppedEventToFirstInboundRtpMs: 702,
             pendingBargeIn: { status: 'overflowed' },
@@ -940,6 +960,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const winner = race.find((result) => result.status === 'applied');
       if (!winner || !('state' in winner)) throw new Error('ACK/SLO winner unavailable.');
       const beforeReplay = await storedProof(winner.state);
+      expect(beforeReplay).toMatchObject({
+        localObservationFormatVersion: 1,
+        localObservationKind: LOCAL_OBSERVATION.kind,
+      });
       expect(await repositories[0].compareAndSwap({
         key: { companyId, deliveryId: completed.deliveryId },
         expectedRevision: completed.revision,
@@ -952,6 +976,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
          WHERE "companyId" = ${companyId}
            AND "deliveryId" = ${winner.state.deliveryId}::uuid
       `)).rejects.toThrow(/immutable/u);
+      await expect(workers[0].withTenant(companyId, (tx) => tx.$executeRaw`
+        UPDATE realtime_native_speech_deliveries
+           SET "localObservationKind" = 'native_playout_queue_drained_v1'
+         WHERE "companyId" = ${companyId}
+           AND "deliveryId" = ${winner.state.deliveryId}::uuid
+      `)).rejects.toThrow(/check constraint|immutable/u);
       expect((await storedProof(winner.state)).controlCount).toBe(0);
     }, 30_000);
 

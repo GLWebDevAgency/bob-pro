@@ -1869,6 +1869,9 @@ model RealtimeNativeSpeechDelivery {
   companyId                             String                @db.Text
   company                               Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "realtime_native_speech_deliveries_company_fkey")
   subjectHmac                           String                @db.Char(64)
+  /// NULL uniquement pour les lignes N-1 créées avant la rotation durable. Tout nouveau writer
+  /// renseigne une version admise et liée ; aucun backfill ne peut inventer la clé historique.
+  subjectKeyVersion                     Int?
   sessionId                             String                @db.Uuid
   turnId                                String                @db.Uuid
   contextRevision                       Int
@@ -1902,7 +1905,11 @@ model RealtimeNativeSpeechDelivery {
   completedAt                           DateTime?             @db.Timestamptz(3)
   acknowledgementId                     String?               @unique(map: "realtime_native_speech_deliveries_acknowledgement_id_key") @db.Uuid
   deliveredAt                           DateTime?             @db.Timestamptz(3)
-  /// Version du lot acoustique attaché atomiquement au premier ACK. NULL = aucun lot fourni.
+  /// Version de l'observation locale attachée au premier ACK. V1 = RTP distant observé + provider drainé, jamais DAC.
+  localObservationFormatVersion         Int?
+  /// Type allowlisté de l'observation locale ; aucun détail device ni identifiant fournisseur.
+  localObservationKind                  String?               @db.Text
+  /// Version du lot de métrologie attaché atomiquement au premier ACK. NULL = aucun lot fourni.
   sloFormatVersion                      Int?
   /// Réception device de `speech_stopped` au premier paquet RTP entrant, en millisecondes.
   speechStoppedEventToFirstInboundRtpMs Int?
@@ -1925,6 +1932,7 @@ model RealtimeNativeSpeechDelivery {
   @@unique([provider, providerResponseIdHmac], map: "realtime_native_speech_deliveries_provider_response_key")
   @@index([companyId, sessionId, phase, createdAt], map: "realtime_native_speech_deliveries_session_phase_idx")
   @@index([companyId, retentionExpiresAt], map: "realtime_native_speech_deliveries_retention_idx")
+  @@index([subjectKeyVersion], map: "realtime_native_speech_deliveries_subject_key_version_idx")
   @@map("realtime_native_speech_deliveries")
 }
 

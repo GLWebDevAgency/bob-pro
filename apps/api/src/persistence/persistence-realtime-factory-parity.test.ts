@@ -8,6 +8,7 @@ import {
   type OpenAiNativeSpeechDeliveryRepositoryPort,
 } from '../voice/realtime/openai-native-speech-delivery';
 import { PrismaOpenAiNativeSpeechDeliveryRepository } from '../voice/realtime/openai-native-speech-delivery.prisma';
+import { PrismaOpenAiNativeKeyVersionAuthority } from '../voice/realtime/openai-native-proof-key-version.prisma';
 
 type NativeDeliveryFactory = Pick<Persistence, 'createOpenAiNativeSpeechDeliveryRepository'>;
 
@@ -38,5 +39,38 @@ describe('Persistence — parité de la factory OpenAI native request-time', () 
       companyId: 'company-test',
       deliveryId: '00000000-0000-4000-8000-000000000001',
     })).resolves.toEqual({ status: 'unavailable' });
+  });
+});
+
+describe('Persistence — autorité de boot des keyrings OpenAI natifs', () => {
+  const subjectKeys = Object.freeze({
+    currentVersion: 1,
+    versions: Object.freeze([1]),
+    secret: (version: number) => version === 1 ? 's'.repeat(32) : null,
+  });
+  const proofKeys = Object.freeze({
+    currentVersion: 1,
+    versions: Object.freeze([1]),
+    secret: (version: number) => version === 1 ? 'p'.repeat(32) : null,
+  });
+
+  it('branche l’autorité Prisma combinée sur le client réel', () => {
+    const prisma = {} as PrismaService;
+    const persistence = {
+      prisma,
+      createOpenAiNativeKeyVersionAuthority:
+        PrismaPersistence.prototype.createOpenAiNativeKeyVersionAuthority,
+    } as unknown as Pick<Persistence, 'createOpenAiNativeKeyVersionAuthority'>;
+
+    const authority = persistence.createOpenAiNativeKeyVersionAuthority(subjectKeys, proofKeys);
+
+    expect(authority).toBeInstanceOf(PrismaOpenAiNativeKeyVersionAuthority);
+  });
+
+  it('refuse tout double in-memory au boot au lieu de simuler le registre', () => {
+    expect(new InMemoryPersistence().createOpenAiNativeKeyVersionAuthority(
+      subjectKeys,
+      proofKeys,
+    )).toBeNull();
   });
 });

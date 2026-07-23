@@ -1321,6 +1321,19 @@ ROLLBACK;
 
 -- Bob Live durable : séquence globale DB, quatrième fence, preuve acoustique sans contenu,
 -- contrôle one-shot et rollup d'usage par sujet/plan/kind. Tout est annulé en fin de sonde.
+SELECT (
+  EXISTS (
+    SELECT 1 FROM realtime_mistral_conversation_key_version_floors
+     WHERE "keySpace" = 'bob-live-subject-hmac-v1'
+       AND 1 BETWEEN "minimumVersion" AND "highestVersion"
+  )
+  AND EXISTS (
+    SELECT 1 FROM realtime_mistral_conversation_key_version_floors
+     WHERE "keySpace" = 'openai-native-speech-proof-hmac-v1'
+       AND 1 BETWEEN "minimumVersion" AND "highestVersion"
+  )
+) AS openai_native_key_lifecycle_ready
+\gset
 BEGIN;
 SET LOCAL app.current_company_id = 'rls-co-a';
 INSERT INTO realtime_admission_events (id, "companyId", "subjectHash", "sessionId", "admittedAt")
@@ -1345,10 +1358,11 @@ VALUES (
   repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '1 minute', 1,
   1, repeat('4', 64), CURRENT_TIMESTAMP, 1, 2, CURRENT_TIMESTAMP, 1
 );
+\if :openai_native_key_lifecycle_ready
 -- GPT Realtime natif : preuve v2 liée à la politique v1, sans contrôle provider_stream. La
 -- politique applicative V1 n'autorise le RTP que pour ces scénarios génériques exacts.
 INSERT INTO realtime_native_speech_deliveries (
-  "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+  "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
   "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
   "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
   "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
@@ -1356,6 +1370,7 @@ INSERT INTO realtime_native_speech_deliveries (
 )
 VALUES (
   '00000000-0000-4000-8000-00000000c0b3', 'rls-co-a', repeat('a', 64),
+  1,
   '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b4',
   1, repeat('4', 64), 1, repeat('2', 64),
   1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('e', 64),
@@ -1367,7 +1382,7 @@ DO $$
 BEGIN
   BEGIN
     INSERT INTO realtime_native_speech_deliveries (
-      "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+      "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
       "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
       "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
       "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
@@ -1375,6 +1390,7 @@ BEGIN
     )
     VALUES (
       '00000000-0000-4000-0000-00000000c0b7', 'rls-co-a', repeat('a', 64),
+      1,
       '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b7',
       1, repeat('4', 64), 1, repeat('2', 64),
       1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('d', 64),
@@ -1389,7 +1405,7 @@ BEGIN
 
   BEGIN
     INSERT INTO realtime_native_speech_deliveries (
-      "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+      "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
       "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
       "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
       "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
@@ -1397,6 +1413,7 @@ BEGIN
     )
     VALUES (
       '00000000-0000-4000-8000-00000000c0b8', 'rls-co-a', repeat('a', 64),
+      1,
       '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b9',
       1, repeat('4', 64), 1, repeat('2', 64),
       1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('c', 64),
@@ -1461,6 +1478,8 @@ UPDATE realtime_native_speech_deliveries
    SET phase = 'delivered', revision = 8,
        "acknowledgementId" = '00000000-0000-4000-8000-00000000c0b5',
        "deliveredAt" = CURRENT_TIMESTAMP, "terminalAt" = CURRENT_TIMESTAMP,
+       "localObservationFormatVersion" = 1,
+       "localObservationKind" = 'webrtc_remote_rtp_observed_provider_drained_v1',
        "sloFormatVersion" = 1, "speechStoppedEventToFirstInboundRtpMs" = 250,
        "bargeInStatus" = 'complete', "bargeInDurationsMs" = ARRAY[120]::INTEGER[]
  WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 7;
@@ -1476,6 +1495,7 @@ BEGIN
   END;
 END;
 $$;
+\endif
 INSERT INTO realtime_speech_artifacts (
   id, "companyId", "subjectHash", "sessionId", "turnId", "segmentIndex", "renderTokenHash",
   "sidebandOwnerEpoch", "sidebandOwnerTokenHash", state, classification,
@@ -1549,7 +1569,11 @@ VALUES (
   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '35 days'
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_speech_artifacts), 1, 'speech artifact tenant A visible');
+\if :openai_native_key_lifecycle_ready
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 1, 'native speech delivery tenant A visible');
+\else
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 0, 'native speech remains dormant without staged key lifecycle');
+\endif
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_grants), 1, 'control grant tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 1, 'control consumption tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 1, 'voice usage event tenant A visible');

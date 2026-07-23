@@ -11,6 +11,19 @@ export interface RealtimeAgentControlReference {
   readonly contextDigest: string;
 }
 
+/**
+ * Corrélation minimale d'une restitution OpenAI native.
+ *
+ * Le nonce fournisseur est validé à la frontière puis volontairement détruit : il ne doit ni
+ * traverser le transport, ni être journalisé, ni devenir une capacité côté mobile.
+ */
+export interface RealtimeNativeSpeechReference {
+  readonly deliveryId: string;
+  readonly turnId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+}
+
 /** Contrôle autoritatif retourné exclusivement par l'ACK one-shot de notre API. */
 export interface RealtimeAgentControl {
   readonly turnId: string;
@@ -24,13 +37,21 @@ export interface RealtimeAgentControl {
 
 export type DecodedRealtimeEvent =
   | { type: 'session_ready' }
-  | { type: 'response_started'; controlReference?: RealtimeAgentControlReference }
+  | {
+      type: 'response_started';
+      controlReference?: RealtimeAgentControlReference;
+      nativeSpeechReference?: RealtimeNativeSpeechReference;
+    }
   | { type: 'speech_started' }
   | { type: 'speech_stopped' }
   | { type: 'audio_signal'; source: 'delta' | 'buffer_started' }
   | { type: 'audio_stopped' }
   | { type: 'audio_cleared' }
-  | { type: 'response_done'; status: 'completed' | 'cancelled' | 'failed' | 'incomplete' }
+  | {
+      type: 'response_done';
+      status: 'completed' | 'cancelled' | 'failed' | 'incomplete';
+      nativeSpeechReference?: RealtimeNativeSpeechReference;
+    }
   | { type: 'user_transcript'; text: string; final: boolean }
   | { type: 'bob_transcript'; text: string; final: boolean }
   | { type: 'provider_error'; code: string }
@@ -57,6 +78,17 @@ function boundedCode(value: unknown): string {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_RESPONSE_ID = /^[A-Za-z0-9_-]{1,200}$/;
+const SHA_256 = /^[a-f0-9]{64}$/;
+const REQUEST_NONCE = /^[A-Za-z0-9_-]{32,128}$/;
+const OPENAI_NATIVE_RESPONSE_PROTOCOL = 'bob.openai-native-response.v1';
+const NATIVE_METADATA_KEYS = [
+  'bob_protocol',
+  'bob_delivery_id',
+  'bob_turn_id',
+  'bob_context_revision',
+  'bob_context_digest',
+  'bob_request_nonce',
+] as const;
 const PROVIDER_RESPONSE_IDS = new WeakMap<object, string>();
 
 function providerResponseId(value: unknown): string | null {
@@ -107,6 +139,47 @@ function decodeAgentControlReference(response: unknown): RealtimeAgentControlRef
   };
 }
 
+type NativeSpeechReferenceDecode =
+  | { readonly status: 'absent' }
+  | { readonly status: 'invalid' }
+  | { readonly status: 'valid'; readonly reference: RealtimeNativeSpeechReference };
+
+function decodeNativeSpeechReference(response: unknown): NativeSpeechReferenceDecode {
+  const metadata = record(record(response)?.metadata);
+  if (!metadata) return { status: 'absent' };
+  const keys = Object.keys(metadata);
+  // Les références legacy partagent turn/context avec le protocole natif. Seuls ses trois
+  // discriminateurs propres permettent de classer la metadata sans faux positif.
+  const containsNativeKey = keys.some((key) =>
+    key === 'bob_protocol' || key === 'bob_delivery_id' || key === 'bob_request_nonce');
+  if (!containsNativeKey) return { status: 'absent' };
+  if (
+    keys.length !== NATIVE_METADATA_KEYS.length
+    || keys.some((key) => !(NATIVE_METADATA_KEYS as readonly string[]).includes(key))
+    || metadata.bob_protocol !== OPENAI_NATIVE_RESPONSE_PROTOCOL
+    || typeof metadata.bob_delivery_id !== 'string'
+    || !UUID.test(metadata.bob_delivery_id)
+    || typeof metadata.bob_turn_id !== 'string'
+    || !UUID.test(metadata.bob_turn_id)
+    || typeof metadata.bob_context_revision !== 'string'
+    || !/^[1-9][0-9]{0,9}$/.test(metadata.bob_context_revision)
+    || Number(metadata.bob_context_revision) > 2_147_483_647
+    || typeof metadata.bob_context_digest !== 'string'
+    || !SHA_256.test(metadata.bob_context_digest)
+    || typeof metadata.bob_request_nonce !== 'string'
+    || !REQUEST_NONCE.test(metadata.bob_request_nonce)
+  ) return { status: 'invalid' };
+  return {
+    status: 'valid',
+    reference: {
+      deliveryId: metadata.bob_delivery_id.toLowerCase(),
+      turnId: metadata.bob_turn_id.toLowerCase(),
+      contextRevision: Number(metadata.bob_context_revision),
+      contextDigest: metadata.bob_context_digest,
+    },
+  };
+}
+
 /** Décode sans conserver audio base64, SDP, IDs provider ni objets d'usage bruts. */
 export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
   let value: unknown = raw;
@@ -127,9 +200,19 @@ export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
     case 'response.created': {
       const responseId = providerResponseId(record(event.response)?.id);
       if (!responseId) return { type: 'protocol_error', code: 'invalid_response_id' };
+      const nativeSpeech = decodeNativeSpeechReference(event.response);
+      if (nativeSpeech.status === 'invalid') {
+        return { type: 'protocol_error', code: 'invalid_native_speech_metadata' };
+      }
       const controlReference = decodeAgentControlReference(event.response);
       return withProviderResponseId(
-        { type: 'response_started', ...(controlReference ? { controlReference } : {}) },
+        {
+          type: 'response_started',
+          ...(controlReference ? { controlReference } : {}),
+          ...(nativeSpeech.status === 'valid'
+            ? { nativeSpeechReference: nativeSpeech.reference }
+            : {}),
+        },
         responseId,
       );
     }
@@ -165,12 +248,22 @@ export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
       const response = record(event.response);
       const responseId = providerResponseId(response?.id);
       if (!responseId) return { type: 'protocol_error', code: 'invalid_response_id' };
+      const nativeSpeech = decodeNativeSpeechReference(response);
+      if (nativeSpeech.status === 'invalid') {
+        return { type: 'protocol_error', code: 'invalid_native_speech_metadata' };
+      }
       const status = response?.status;
       if (status !== 'completed' && status !== 'cancelled' && status !== 'failed' && status !== 'incomplete') {
         return { type: 'protocol_error', code: 'invalid_response_status' };
       }
       return withProviderResponseId(
-        { type: 'response_done', status },
+        {
+          type: 'response_done',
+          status,
+          ...(nativeSpeech.status === 'valid'
+            ? { nativeSpeechReference: nativeSpeech.reference }
+            : {}),
+        },
         responseId,
       );
     }
@@ -183,12 +276,20 @@ export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
       return text ? { type: 'user_transcript', text, final: true } : { type: 'ignored' };
     }
     case 'response.output_audio_transcript.delta': {
+      const responseId = providerResponseId(event.response_id);
+      if (!responseId) return { type: 'protocol_error', code: 'invalid_response_id' };
       const text = boundedText(event.delta);
-      return text ? { type: 'bob_transcript', text, final: false } : { type: 'ignored' };
+      return text
+        ? withProviderResponseId({ type: 'bob_transcript', text, final: false }, responseId)
+        : { type: 'ignored' };
     }
     case 'response.output_audio_transcript.done': {
+      const responseId = providerResponseId(event.response_id);
+      if (!responseId) return { type: 'protocol_error', code: 'invalid_response_id' };
       const text = boundedText(event.transcript);
-      return text ? { type: 'bob_transcript', text, final: true } : { type: 'ignored' };
+      return text
+        ? withProviderResponseId({ type: 'bob_transcript', text, final: true }, responseId)
+        : { type: 'ignored' };
     }
     case 'error': {
       const error = record(event.error);

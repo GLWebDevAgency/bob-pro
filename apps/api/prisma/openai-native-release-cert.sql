@@ -162,9 +162,9 @@ BEGIN
       FROM (
         VALUES
           ('00_realtime_native_speech_deliveries_guard_v1', 23::smallint,
-           'guard_realtime_native_delivery_v1', 'c8592817ebcb00096a5db8a221d4fa6b'),
+           'guard_realtime_native_delivery_v1', '3709ffccd4c9ebeef50ac6cbd907ba51'),
           ('01_realtime_native_speech_deliveries_slo_guard_v1', 23::smallint,
-           'guard_realtime_native_speech_slo_v1', 'a253a824d26433d83349defc6f3ba24f'),
+           'guard_realtime_native_speech_slo_v1', '1e691b5af9ac02ac2a32c661187890b1'),
           ('02_realtime_native_speech_deliveries_delete_guard_v1', 11::smallint,
            'guard_realtime_native_delivery_delete_v1', '0342ea8af041efc48bc98570df8bab88'),
           ('03_realtime_native_speech_deliveries_truncate_guard_v1', 34::smallint,
@@ -198,9 +198,9 @@ BEGIN
         ('public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)'::regprocedure,
          TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], 'ff12cb80e8571754191c282ea22be058'),
         ('public.guard_realtime_native_delivery_v1()'::regprocedure,
-         TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], 'c8592817ebcb00096a5db8a221d4fa6b'),
+         TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], '3709ffccd4c9ebeef50ac6cbd907ba51'),
         ('public.guard_realtime_native_speech_slo_v1()'::regprocedure,
-         FALSE, ARRAY['search_path=pg_catalog, public']::TEXT[], 'a253a824d26433d83349defc6f3ba24f'),
+         FALSE, ARRAY['search_path=pg_catalog, public']::TEXT[], '1e691b5af9ac02ac2a32c661187890b1'),
         ('public.guard_realtime_native_delivery_delete_v1()'::regprocedure,
          TRUE, ARRAY['search_path=pg_catalog, public', 'row_security=on']::TEXT[], '0342ea8af041efc48bc98570df8bab88'),
         ('public.deny_realtime_native_delivery_truncate_v1()'::regprocedure,
@@ -243,8 +243,150 @@ BEGIN
             OR privilege.is_grantable
             OR privilege.grantee <> function.proowner
           )
-     ) THEN
+  ) THEN
     RAISE EXCEPTION 'OpenAI native delivery helper ACL drift';
+  END IF;
+
+  IF (SELECT count(*)
+        FROM pg_catalog.pg_attribute AS attribute
+       WHERE attribute.attrelid = 'public.realtime_native_speech_deliveries'::regclass
+         AND attribute.attname = 'subjectKeyVersion'
+         AND attribute.atttypid = 'pg_catalog.int4'::regtype
+         AND NOT attribute.attnotnull
+         AND NOT attribute.atthasdef
+         AND attribute.attgenerated = '') <> 1 THEN
+    RAISE EXCEPTION 'OpenAI native subject key version column drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('public.realtime_native_speech_deliveries'::regclass,
+         'realtime_native_speech_deliveries_subject_key_version_check',
+         '2972c3527e2009f686bbd6f03adf5d26'),
+        ('public.realtime_mistral_conversation_key_version_floors'::regclass,
+         'mistral_key_floor_key_space_check',
+         '1c774360bfeb6d229e1784de8ccd7352'),
+        ('public.realtime_mistral_conversation_key_bindings'::regclass,
+         'mistral_key_binding_key_space_check',
+         '1c774360bfeb6d229e1784de8ccd7352')
+      ) AS expected(relation_oid, constraint_name, definition_md5)
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_constraint AS constraint_row
+        WHERE constraint_row.conrelid = expected.relation_oid
+          AND constraint_row.conname = expected.constraint_name
+          AND constraint_row.contype = 'c'
+          AND constraint_row.convalidated
+          AND pg_catalog.md5(pg_catalog.pg_get_constraintdef(constraint_row.oid)) =
+            expected.definition_md5
+     )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native key lifecycle constraint drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('realtime_native_speech_deliveries_subject_key_version_idx',
+         'CREATE INDEX realtime_native_speech_deliveries_subject_key_version_idx ON public.realtime_native_speech_deliveries USING btree ("subjectKeyVersion")'),
+        ('realtime_native_speech_proof_key_retention_idx',
+         'CREATE INDEX realtime_native_speech_proof_key_retention_idx ON public.realtime_native_speech_deliveries USING btree ("proofKeyVersion") WHERE (phase <> ALL (ARRAY[''delivered''::text, ''cancelled''::text, ''failed''::text, ''expired''::text]))')
+      ) AS expected(index_name, index_definition)
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_class AS index_relation
+         JOIN pg_catalog.pg_index AS index_row ON index_row.indexrelid = index_relation.oid
+        WHERE index_relation.relname = expected.index_name
+          AND index_row.indrelid = 'public.realtime_native_speech_deliveries'::regclass
+          AND index_row.indisvalid
+          AND index_row.indisready
+          AND NOT index_row.indisunique
+          AND pg_catalog.pg_get_indexdef(index_row.indexrelid) = expected.index_definition
+     )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native key lifecycle index drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('public.retained_bob_live_subject_hmac_key_bindings()'::regprocedure,
+         'cdea8f78f1171d1b1bba67b6325b4243'),
+        ('public.retained_openai_native_proof_hmac_key_bindings()'::regprocedure,
+         '9cff02acd0457904fa53911a6da4a48a')
+      ) AS expected(function_oid, body_md5)
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_proc AS function
+         JOIN pg_catalog.pg_language AS language ON language.oid = function.prolang
+        WHERE function.oid = expected.function_oid
+          AND function.proowner = pg_catalog.to_regrole(session_user)
+          AND function.prosecdef
+          AND function.proconfig IS NOT DISTINCT FROM ARRAY[
+            'search_path=pg_catalog, public', 'row_security=off'
+          ]::TEXT[]
+          AND function.provolatile = 's'
+          AND function.proparallel = 'u'
+          AND language.lanname = 'sql'
+          AND pg_catalog.md5(function.prosrc) = expected.body_md5
+          AND pg_catalog.pg_get_function_result(function.oid) =
+            'TABLE("keyVersion" integer, "keyFingerprint" text)'
+     )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native retained key authority drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('public.retained_bob_live_subject_hmac_key_bindings()'::regprocedure),
+        ('public.retained_openai_native_proof_hmac_key_bindings()'::regprocedure)
+      ) AS expected(function_oid)
+     WHERE NOT pg_catalog.has_function_privilege(
+       app_role_name, expected.function_oid, 'EXECUTE'
+     )
+        OR EXISTS (
+          SELECT 1
+            FROM pg_catalog.pg_proc AS function
+           CROSS JOIN LATERAL pg_catalog.aclexplode(
+             COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+           ) AS privilege
+           WHERE function.oid = expected.function_oid
+             AND (
+               privilege.privilege_type <> 'EXECUTE'
+               OR privilege.is_grantable
+               OR privilege.grantee NOT IN (
+                 function.proowner, pg_catalog.to_regrole(app_role_name)
+               )
+             )
+        )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native retained key ACL drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('public.realtime_mistral_conversation_key_version_floors'::regclass),
+        ('public.realtime_mistral_conversation_key_bindings'::regclass)
+      ) AS expected(relation_oid)
+     WHERE NOT pg_catalog.has_table_privilege(app_role_name, expected.relation_oid, 'SELECT')
+        OR pg_catalog.has_table_privilege(
+          app_role_name,
+          expected.relation_oid,
+          'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+        )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native key registry ACL drift';
+  END IF;
+
+  IF (SELECT count(*)
+        FROM pg_catalog.pg_constraint AS constraint_row
+       WHERE constraint_row.conrelid =
+         'public.realtime_native_speech_deliveries'::regclass
+         AND constraint_row.conname =
+           'realtime_native_speech_deliveries_local_observation_shape_check'
+         AND constraint_row.contype = 'c'
+         AND constraint_row.convalidated
+         AND pg_catalog.md5(pg_catalog.pg_get_constraintdef(constraint_row.oid)) =
+           '5538a9eb3a7080e2094c480e381894c1') <> 1 THEN
+    RAISE EXCEPTION 'OpenAI native local observation constraint drift';
   END IF;
 
   IF EXISTS (

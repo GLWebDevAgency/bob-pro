@@ -847,6 +847,7 @@ REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
   TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM PUBLIC;

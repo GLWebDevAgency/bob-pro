@@ -143,9 +143,26 @@ changements de route certifiés. Le player Expo semi-duplex reste uniquement le 
 ## 7. ACK et effets UI
 
 L'ACK natif est strict, idempotent et lié à tenant/sujet/session/tour/contexte/propriétaire. Il n'est
-accepté qu'après `response.done=completed`, transcript concordant, arrêt du buffer, persistance de
-l'usage et fin locale observée. Une course temporaire est retryable avec le même acknowledgementId
+accepté qu'après `response.done=completed`, transcript concordant, buffer fournisseur drainé,
+persistance de l'usage et observation locale versionnée. En V1, cette observation est exactement
+`webrtc_remote_rtp_observed_provider_drained_v1` : elle prouve la réception de RTP et la fin d'émission
+OpenAI, mais **pas** que le dernier échantillon a quitté la file de rendu ou a été entendu. Le niveau
+`native_playout_queue_drained_v1` reste réservé et refusé tant qu'un callback natif générationnel ne
+l'établit pas sur iOS et Android. Une course temporaire est retryable avec le même acknowledgementId
 et un nombre d'essais borné.
+
+Si l'ACK précède temporairement le CAS `completed`, le serveur renvoie
+`bob-live-native-acknowledgement-not-ready` avec `Retry-After`; le mobile rejoue strictement le même
+corps et le même identifiant. La notification vers le manager owner reste un fast-path local :
+l'owner réconcilie aussi l'état PostgreSQL dans une fenêtre bornée pour couvrir les déploiements
+multi-répliques. Le transcript OpenAI ne devient jamais une autorité d'affichage ; tant qu'aucun
+endpoint de relecture canonique n'existe, le mobile ne publie aucun transcript natif fournisseur.
+
+L'identité sujet et la preuve audio utilisent deux keyrings dédiées. La version sujet est persistée
+sur chaque nouvelle livraison et doit correspondre exactement à l'ACK ; `NULL` est réservé aux
+lignes historiques N-1. La version preuve est liée en base, de façon append-only, à l'empreinte
+SHA-256 du secret exact. Stage/retire, boot et insert partagent les mêmes verrous PostgreSQL : une
+substitution de matériau sous un numéro existant ou un ancien writer après retire échoue fermé.
 
 Le natif V1 ne livre aucun contrôle. Pour la route auditée, la navigation ou proposition devient
 consommable seulement après lecture complète, ACK durable et revalidation du contexte. La voix et
@@ -178,6 +195,8 @@ le tap alimentent ensuite la même transition AgentMission/use case.
 - [ ] Barge-in → silence : p50 ≤ 250 ms, p95 ≤ 500 ms.
 - [ ] Contrôle livré → effet UI : p95 ≤ 400 ms.
 - [ ] Démarrage et mission OpenAI complète sans `MISTRAL_API_KEY` ni requête Mistral.
+- [x] Rotation sujet/preuve certifiée sur PostgreSQL réel, y compris A/v1 → B/v1, writer N-1 face
+      au retire et boot refusé lorsque le registre durable ne correspond pas aux keyrings.
 - [ ] Sept jours de canary sans double voix, effet prématuré ni fuite inter-tenant.
 
 ## 10. Hors promesse actuelle

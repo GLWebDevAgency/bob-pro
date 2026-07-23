@@ -52,6 +52,10 @@ import type { RealtimeSpeechArtifactRepositoryPort } from '../voice/realtime/rea
 import type { RealtimeVoiceUsageRepositoryPort } from '../voice/realtime/realtime-voice-usage';
 import type { OpenAiNativeSpeechMaintenancePort } from '../voice/realtime/openai-native-speech-maintenance';
 import type { OpenAiNativeSpeechDeliveryRepositoryPort } from '../voice/realtime/openai-native-speech-delivery';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../voice/realtime/openai-native-proof-key-version';
 import type { RealtimeReaperDirectoryPort } from '../voice/realtime/realtime-reaper-directory';
 import type { RealtimeGlobalCapacityInspector } from '../voice/realtime/realtime-capacity';
 import type { AgentJournalRepository } from './agent-journal';
@@ -149,6 +153,11 @@ export interface Persistence {
   createRealtimeControlRepository(): RealtimeControlRepositoryPort;
   /** État request-time durable d'une restitution audio OpenAI native. */
   createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort;
+  /** Préflight DB-only des keyrings sujet + preuve ; aucun double runtime n'est autorisé. */
+  createOpenAiNativeKeyVersionAuthority(
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort | null;
   /** Capacité DB-only séparée des repositories request-time de Bob Live. */
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort;
   /** Annuaire global minimal des seuls leases dus ; aucune mutation tenant ne traverse ce port. */

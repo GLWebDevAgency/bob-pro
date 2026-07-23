@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEnv,
   resolveBobLiveEnv,
+  resolveBobLiveProofKeyRing,
   resolveBobLiveSubjectHmacKeyRing,
   resolveMistralConversationPersistenceKeyRing,
   resolveMistralV2IdentityEncryptionKeyRing,
@@ -242,6 +243,41 @@ describe('Bob Live — validation de la politique d’admission', () => {
     const keyRing = resolveBobLiveSubjectHmacKeyRing(loadEnv());
     expect(keyRing?.secret(1)).toBe(legacy);
     expect(resolveBobLiveEnv(loadEnv()).subjectHmacSecret).toBe(legacy);
+  });
+
+  it('conserve exactement N-1/N pour la preuve native et expose le matériau courant', () => {
+    validRealtimeEnv();
+    const previous = 'proof-previous-byte-exact-2026'.padEnd(40, 'p');
+    const current = 'proof-current-byte-exact-2026'.padEnd(40, 'c');
+    vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', current);
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: previous, 2: current }));
+
+    const env = loadEnv();
+    const keyRing = resolveBobLiveProofKeyRing(env);
+    expect(keyRing?.currentVersion).toBe(2);
+    expect(keyRing?.versions).toEqual([1, 2]);
+    expect(keyRing?.secret(1)).toBe(previous);
+    expect(keyRing?.secret(2)).toBe(current);
+    expect(keyRing?.secret(3)).toBeNull();
+    expect(resolveBobLiveEnv(env).proofSecret).toBe(current);
+  });
+
+  it('refuse une keyring preuve ambiguë, non adjacente ou divergente du secret courant', () => {
+    validRealtimeEnv();
+    const first = 'proof-first-byte-exact-2026'.padEnd(40, 'a');
+    const current = 'proof-current-byte-exact-2026'.padEnd(40, 'b');
+    vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '3');
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', current);
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: first, 3: current }));
+    expect(() => loadEnv()).toThrow(/uniquement N-1\/N/u);
+
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 2: first, 3: first }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 2: first, 3: current }));
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'proof-other-material-2026'.padEnd(40, 'x'));
+    expect(() => loadEnv()).toThrow(/doit correspondre à la version courante/u);
   });
 
   it('refuse le replay v2 sans keyring sujet ou avec une version courante divergente', () => {

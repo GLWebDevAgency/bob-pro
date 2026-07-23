@@ -54,6 +54,11 @@ export class PrismaBobLiveSubjectHmacKeyVersionAuthority {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock_shared(
+          hashtextextended(${BOB_LIVE_SUBJECT_HMAC_KEY_SPACE}, 0)
+        )
+      `;
       const ranges = await tx.$queryRaw<Array<{
         minimumVersion: number;
         highestVersion: number;
@@ -72,7 +77,9 @@ export class PrismaBobLiveSubjectHmacKeyVersionAuthority {
       assertBobLiveSubjectHmacVersion(range.minimumVersion);
       assertBobLiveSubjectHmacVersion(range.highestVersion);
       if (
-        this.keys.currentVersion < range.minimumVersion
+        range.highestVersion < range.minimumVersion
+        || range.highestVersion > range.minimumVersion + 1
+        || this.keys.currentVersion < range.minimumVersion
         || this.keys.currentVersion > range.highestVersion
       ) {
         throw new Error(

@@ -90,6 +90,13 @@ import {
   PrismaBobLiveSubjectHmacKeyVersionAuthority,
 } from '../../voice/realtime/mistral-conversation-subject-key-version.prisma';
 import type { BobLiveSubjectHmacKeyRingAdmission } from '../../voice/realtime/mistral-conversation-subject-key-version';
+import {
+  PrismaOpenAiNativeKeyVersionAuthority,
+} from '../../voice/realtime/openai-native-proof-key-version.prisma';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../../voice/realtime/openai-native-proof-key-version';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -160,6 +167,13 @@ export class PrismaPersistence implements Persistence {
 
   createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
     return new PrismaOpenAiNativeSpeechDeliveryRepository(this.prisma);
+  }
+
+  createOpenAiNativeKeyVersionAuthority(
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort {
+    return new PrismaOpenAiNativeKeyVersionAuthority(this.prisma, subjectKeys, proofKeys);
   }
 
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {

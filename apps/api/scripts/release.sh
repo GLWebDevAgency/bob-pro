@@ -555,6 +555,10 @@ REVOKE ALL ON FUNCTION public.retained_bob_live_subject_hmac_key_bindings()
   FROM :"app_role";
 GRANT EXECUTE ON FUNCTION public.retained_bob_live_subject_hmac_key_bindings()
   TO :"app_role";
+REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
+  FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
+  TO :"app_role";
 -- Le runtime invoque uniquement les deux capacités SECURITY DEFINER bornées. Il ne peut jamais
 -- endosser le rôle propriétaire NOLOGIN ni atteindre ses ACL de table sous-jacentes.
 REVOKE bob_mistral_bootstrap_reaper FROM :"app_role" CASCADE;
@@ -1796,6 +1800,7 @@ node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_generated_legal_storage_fence
 provision_mistral_bootstrap_reaper
 node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
 provision_openai_native_maintenance_directory

@@ -10,6 +10,9 @@ export const OPENAI_NATIVE_SPEECH_DELIVERY_VERSION = 1 as const;
 export const OPENAI_NATIVE_SPEECH_PROOF_FORMAT_VERSION = 2 as const;
 export const OPENAI_NATIVE_SPEECH_POLICY_VERSION = 1 as const;
 export const OPENAI_NATIVE_SPEECH_SLO_FORMAT_VERSION = 1 as const;
+export const OPENAI_NATIVE_LOCAL_OBSERVATION_FORMAT_VERSION = 1 as const;
+export const OPENAI_NATIVE_LOCAL_OBSERVATION_KIND =
+  'webrtc_remote_rtp_observed_provider_drained_v1' as const;
 export const OPENAI_NATIVE_SPEECH_DELIVERY_MAX_TTL_MS = 5 * 60 * 1_000;
 export const OPENAI_NATIVE_SPEECH_STOPPED_EVENT_TO_FIRST_INBOUND_RTP_MAX_MS = 60_000;
 export const OPENAI_NATIVE_BARGE_IN_MAX_MS = 10_000;
@@ -66,6 +69,16 @@ export interface OpenAiNativeSpeechSlo {
   readonly pendingBargeIn?: OpenAiNativePendingBargeInSlo;
 }
 
+/**
+ * Observation locale disponible en V1. Elle atteste seulement qu'un RTP distant a ete observe par
+ * le mobile et que le provider a ensuite signale son buffer draine. Elle ne prouve ni fin de DAC,
+ * ni audibilite humaine. Un vrai callback de playout exigera un nouveau format et une migration.
+ */
+export interface OpenAiNativeLocalObservation {
+  readonly formatVersion: typeof OPENAI_NATIVE_LOCAL_OBSERVATION_FORMAT_VERSION;
+  readonly kind: typeof OPENAI_NATIVE_LOCAL_OBSERVATION_KIND;
+}
+
 export type OpenAiNativeSpeechDeliveryErrorCode =
   | 'invalid_preparation'
   | 'invalid_state'
@@ -88,6 +101,8 @@ export interface OpenAiNativeSpeechDeliveryPreparation {
   readonly deliveryId: string;
   readonly companyId: string;
   readonly subjectHmac: string;
+  /** Version du HMAC sujet ; le hash seul ne permet pas une rotation vérifiable. */
+  readonly subjectKeyVersion: number;
   readonly sessionId: string;
   readonly turnId: string;
   readonly contextRevision: number;
@@ -114,8 +129,19 @@ export interface OpenAiNativeSpeechDeliveryPreparation {
  * Projection plate pour un stockage CAS. Les champs nullable sont intentionnels : ils rendent le
  * mapping SQL exact sans perdre les invariants, tous reverifies par `assert...State`.
  */
-export interface OpenAiNativeSpeechDeliveryState
-  extends OpenAiNativeSpeechDeliveryPreparation {
+type OpenAiNativeSpeechDeliveryPersistedPreparation = Omit<
+  OpenAiNativeSpeechDeliveryPreparation,
+  'subjectKeyVersion'
+> & {
+  /**
+   * Compatibilite expand/contract : les lignes creees avant la migration n'ont aucune version
+   * prouvable. Elles restent lisibles, mais une nouvelle preparation ne peut jamais etre legacy.
+   */
+  readonly subjectKeyVersion: number | null;
+};
+
+export type OpenAiNativeSpeechDeliveryState =
+  OpenAiNativeSpeechDeliveryPersistedPreparation & {
   readonly version: typeof OPENAI_NATIVE_SPEECH_DELIVERY_VERSION;
   readonly revision: number;
   readonly phase: OpenAiNativeSpeechDeliveryPhase;
@@ -131,6 +157,9 @@ export interface OpenAiNativeSpeechDeliveryState
   readonly completedAtMs: number | null;
   readonly acknowledgementId: string | null;
   readonly deliveredAtMs: number | null;
+  readonly localObservationFormatVersion:
+    typeof OPENAI_NATIVE_LOCAL_OBSERVATION_FORMAT_VERSION | null;
+  readonly localObservationKind: typeof OPENAI_NATIVE_LOCAL_OBSERVATION_KIND | null;
   /** Version nullable pour distinguer un ACK sans SLO d'un format connu. */
   readonly sloFormatVersion: typeof OPENAI_NATIVE_SPEECH_SLO_FORMAT_VERSION | null;
   readonly speechStoppedEventToFirstInboundRtpMs: number | null;
@@ -141,7 +170,7 @@ export interface OpenAiNativeSpeechDeliveryState
   readonly failureId: string | null;
   readonly failureReason: OpenAiNativeSpeechFailureReason | null;
   readonly terminalAtMs: number | null;
-}
+};
 
 export interface OpenAiNativeSpeechDeliveryAcknowledgementBinding {
   readonly deliveryId: string;
@@ -187,6 +216,7 @@ export type OpenAiNativeSpeechDeliveryEvent =
   | ({
       readonly type: 'ACK_DELIVERY';
       readonly acknowledgementId: string;
+      readonly localObservation: OpenAiNativeLocalObservation;
       /** `null` signifie exactement que le corps ACK ne portait aucun lot SLO. */
       readonly slo: OpenAiNativeSpeechSlo | null;
       readonly atMs: number;
@@ -299,6 +329,7 @@ const STATE_KEYS: readonly (keyof OpenAiNativeSpeechDeliveryState)[] = [
   'deliveryId',
   'companyId',
   'subjectHmac',
+  'subjectKeyVersion',
   'sessionId',
   'turnId',
   'contextRevision',
@@ -329,6 +360,8 @@ const STATE_KEYS: readonly (keyof OpenAiNativeSpeechDeliveryState)[] = [
   'completedAtMs',
   'acknowledgementId',
   'deliveredAtMs',
+  'localObservationFormatVersion',
+  'localObservationKind',
   'sloFormatVersion',
   'speechStoppedEventToFirstInboundRtpMs',
   'bargeInStatus',
@@ -350,6 +383,7 @@ const EVENT_KEYS: Readonly<Record<OpenAiNativeSpeechDeliveryEvent['type'], reado
   ACK_DELIVERY: [
     'type',
     'acknowledgementId',
+    'localObservation',
     'deliveryId',
     'sessionId',
     'turnId',
@@ -433,6 +467,33 @@ function assertSpeechSlo(slo: OpenAiNativeSpeechSlo): void {
   ) fail('invalid_event');
 }
 
+/**
+ * Garde wire partagee par l'endpoint mobile et la machine durable. Un lot SLO est toujours
+ * allowliste et borne avant toute lecture ou ecriture ; les champs inconnus ne sont jamais
+ * silencieusement ignores.
+ */
+export function isOpenAiNativeSpeechSlo(value: unknown): value is OpenAiNativeSpeechSlo {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  try {
+    assertSpeechSlo(value as OpenAiNativeSpeechSlo);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isOpenAiNativeLocalObservation(
+  value: unknown,
+): value is OpenAiNativeLocalObservation {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && hasExactKeys(value, ['formatVersion', 'kind'])
+    && (value as OpenAiNativeLocalObservation).formatVersion
+      === OPENAI_NATIVE_LOCAL_OBSERVATION_FORMAT_VERSION
+    && (value as OpenAiNativeLocalObservation).kind === OPENAI_NATIVE_LOCAL_OBSERVATION_KIND;
+}
+
 function stateSloIsValid(state: OpenAiNativeSpeechDeliveryState): boolean {
   if (!Array.isArray(state.bargeInDurationsMs)) return false;
   if (state.sloFormatVersion === null) {
@@ -464,6 +525,11 @@ function stateHasNoSlo(state: OpenAiNativeSpeechDeliveryState): boolean {
     && state.bargeInDurationsMs.length === 0;
 }
 
+function stateHasNoLocalObservation(state: OpenAiNativeSpeechDeliveryState): boolean {
+  return state.localObservationFormatVersion === null
+    && state.localObservationKind === null;
+}
+
 function isTerminalPhase(
   phase: OpenAiNativeSpeechDeliveryPhase,
 ): phase is OpenAiNativeSpeechDeliveryTerminalPhase {
@@ -471,12 +537,17 @@ function isTerminalPhase(
 }
 
 function assertPreparation(
-  input: OpenAiNativeSpeechDeliveryPreparation,
+  input: OpenAiNativeSpeechDeliveryPersistedPreparation,
+  allowLegacySubjectKeyVersion: boolean,
 ): void {
   if (
     !isUuid(input.deliveryId)
     || !TENANT_ID.test(input.companyId)
     || !isHmac(input.subjectHmac)
+    || !(
+      isSafeIntegerBetween(input.subjectKeyVersion, 1, POSTGRES_INT_MAX)
+      || (allowLegacySubjectKeyVersion && input.subjectKeyVersion === null)
+    )
     || !isUuid(input.sessionId)
     || !isUuid(input.turnId)
     || !isSafeIntegerBetween(input.contextRevision, 1, POSTGRES_INT_MAX)
@@ -505,7 +576,7 @@ function assertPreparation(
 export function createOpenAiNativeSpeechDelivery(
   input: OpenAiNativeSpeechDeliveryPreparation,
 ): OpenAiNativeSpeechDeliveryState {
-  assertPreparation(input);
+  assertPreparation(input, false);
   return {
     version: OPENAI_NATIVE_SPEECH_DELIVERY_VERSION,
     revision: 1,
@@ -513,6 +584,7 @@ export function createOpenAiNativeSpeechDelivery(
     deliveryId: input.deliveryId,
     companyId: input.companyId,
     subjectHmac: input.subjectHmac,
+    subjectKeyVersion: input.subjectKeyVersion,
     sessionId: input.sessionId,
     turnId: input.turnId,
     contextRevision: input.contextRevision,
@@ -543,6 +615,8 @@ export function createOpenAiNativeSpeechDelivery(
     completedAtMs: null,
     acknowledgementId: null,
     deliveredAtMs: null,
+    localObservationFormatVersion: null,
+    localObservationKind: null,
     sloFormatVersion: null,
     speechStoppedEventToFirstInboundRtpMs: null,
     bargeInStatus: null,
@@ -607,6 +681,8 @@ function timestampsAreMonotone(state: OpenAiNativeSpeechDeliveryState): boolean 
 function terminalFieldsAreEmpty(state: OpenAiNativeSpeechDeliveryState): boolean {
   return state.acknowledgementId === null
     && state.deliveredAtMs === null
+    && state.localObservationFormatVersion === null
+    && state.localObservationKind === null
     && stateHasNoSlo(state)
     && state.cancellationId === null
     && state.cancellationReason === null
@@ -673,7 +749,7 @@ export function assertOpenAiNativeSpeechDeliveryState(
   state: OpenAiNativeSpeechDeliveryState,
 ): void {
   try {
-    assertPreparation(state);
+    assertPreparation(state, true);
   } catch {
     fail('invalid_state');
   }
@@ -693,6 +769,13 @@ export function assertOpenAiNativeSpeechDeliveryState(
     || (state.providerResponseIdHmac !== null && !isHmac(state.providerResponseIdHmac))
     || (state.outputTranscriptHmac !== null && !isHmac(state.outputTranscriptHmac))
     || (state.acknowledgementId !== null && !isUuid(state.acknowledgementId))
+    || !(
+      (state.localObservationFormatVersion === null && state.localObservationKind === null)
+      || (
+        state.localObservationFormatVersion === OPENAI_NATIVE_LOCAL_OBSERVATION_FORMAT_VERSION
+        && state.localObservationKind === OPENAI_NATIVE_LOCAL_OBSERVATION_KIND
+      )
+    )
     || (state.cancellationId !== null && !isUuid(state.cancellationId))
     || (state.failureId !== null && !isUuid(state.failureId))
     || !stateSloIsValid(state)
@@ -779,6 +862,8 @@ export function assertOpenAiNativeSpeechDeliveryState(
   }
 
   if (state.phase === 'delivered') {
+    // Le couple NULL/NULL reste lisible pendant l'expand N-1/N. Aucun event de la nouvelle version
+    // ne peut toutefois le produire : ACK_DELIVERY exige toujours l'observation proxy V1 exacte.
     if (state.revision !== 8
       || !hasProgressionThrough(state, 'streaming') || !hasCompleted
       || !isUuid(state.acknowledgementId)
@@ -798,6 +883,7 @@ export function assertOpenAiNativeSpeechDeliveryState(
       || state.terminalAtMs === null
       || state.terminalAtMs >= state.expiresAtMs
       || state.acknowledgementId !== null || state.deliveredAtMs !== null
+      || !stateHasNoLocalObservation(state)
       || !stateHasNoSlo(state)
       || state.failureId !== null || state.failureReason !== null) fail('invalid_state');
     return;
@@ -811,6 +897,7 @@ export function assertOpenAiNativeSpeechDeliveryState(
       || state.terminalAtMs === null
       || state.terminalAtMs >= state.expiresAtMs
       || state.acknowledgementId !== null || state.deliveredAtMs !== null
+      || !stateHasNoLocalObservation(state)
       || !stateHasNoSlo(state)
       || state.cancellationId !== null || state.cancellationReason !== null) fail('invalid_state');
     return;
@@ -821,6 +908,7 @@ export function assertOpenAiNativeSpeechDeliveryState(
       || !progressionPrefixIsValid(state)
       || state.terminalAtMs === null || state.terminalAtMs < state.expiresAtMs
       || state.acknowledgementId !== null || state.deliveredAtMs !== null
+      || !stateHasNoLocalObservation(state)
       || !stateHasNoSlo(state)
       || state.cancellationId !== null || state.cancellationReason !== null
       || state.failureId !== null || state.failureReason !== null) fail('invalid_state');
@@ -853,6 +941,7 @@ function assertEvent(event: OpenAiNativeSpeechDeliveryEvent): void {
       break;
     case 'ACK_DELIVERY':
       if (!isUuid(event.acknowledgementId)
+        || !isOpenAiNativeLocalObservation(event.localObservation)
         || !isUuid(event.deliveryId)
         || !isUuid(event.sessionId)
         || !isUuid(event.turnId)
@@ -887,6 +976,14 @@ function sameAcknowledgementBinding(
     && state.contextDigest === event.contextDigest;
 }
 
+function sameLocalObservation(
+  state: OpenAiNativeSpeechDeliveryState,
+  observation: OpenAiNativeLocalObservation,
+): boolean {
+  return state.localObservationFormatVersion === observation.formatVersion
+    && state.localObservationKind === observation.kind;
+}
+
 function sameSlo(
   state: OpenAiNativeSpeechDeliveryState,
   slo: OpenAiNativeSpeechSlo | null,
@@ -910,6 +1007,7 @@ function exactTerminalReplay(
     if (
       state.acknowledgementId !== event.acknowledgementId
       || !sameAcknowledgementBinding(state, event)
+      || !sameLocalObservation(state, event.localObservation)
       || !sameSlo(state, event.slo)
     ) {
       fail('acknowledgement_conflict');
@@ -1084,6 +1182,8 @@ export function transitionOpenAiNativeSpeechDelivery(
         phase: 'delivered',
         acknowledgementId: event.acknowledgementId,
         deliveredAtMs: event.atMs,
+        localObservationFormatVersion: event.localObservation.formatVersion,
+        localObservationKind: event.localObservation.kind,
         sloFormatVersion: event.slo === null ? null : OPENAI_NATIVE_SPEECH_SLO_FORMAT_VERSION,
         speechStoppedEventToFirstInboundRtpMs: event.slo?.speechStoppedEventToFirstInboundRtpMs ?? null,
         bargeInStatus,
@@ -1092,7 +1192,7 @@ export function transitionOpenAiNativeSpeechDelivery(
       });
       }
     case 'CANCEL':
-      // `completed` reste revocable jusqu'a l'ACK acoustique exact.
+      // `completed` reste revocable jusqu'a l'ACK de livraison native exact.
       return applied(state, {
         phase: 'cancelled',
         cancellationId: event.cancellationId,

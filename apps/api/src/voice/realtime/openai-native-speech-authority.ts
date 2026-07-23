@@ -6,6 +6,8 @@ import {
   OpenAiNativeSpeechDeliveryError,
   assertOpenAiNativeSpeechDeliveryState,
   createOpenAiNativeSpeechDelivery,
+  isOpenAiNativeLocalObservation,
+  isOpenAiNativeSpeechSlo,
   openAiNativeSpeechDeliveryKey,
   transitionOpenAiNativeSpeechDelivery,
   type OpenAiNativeSpeechCancellationReason,
@@ -18,6 +20,7 @@ import {
   type OpenAiNativeSpeechDeliveryRepositoryPort,
   type OpenAiNativeSpeechDeliveryState,
   type OpenAiNativeSpeechFailureReason,
+  type OpenAiNativeLocalObservation,
   type OpenAiNativeSpeechSlo,
 } from './openai-native-speech-delivery';
 import {
@@ -40,6 +43,8 @@ const MIN_TTL_MS = 10_000;
 const MAX_CAS_ATTEMPTS = 5;
 const MAX_PREPARE_ATTEMPTS = 3;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const HMAC_SHA256 = /^[a-f0-9]{64}$/u;
+const TENANT_ID = /^[A-Za-z0-9-]{1,64}$/u;
 const RISK_KEYS = [
   'purpose',
   'source',
@@ -94,6 +99,7 @@ export interface OpenAiNativeSpeechAuthorityBinding {
 type PreparationBinding = Omit<OpenAiNativeSpeechAuthorityBinding, 'deliveryId'>;
 
 export interface OpenAiNativeSpeechTurnPreparationInput extends PreparationBinding {
+  readonly subjectKeyVersion: number;
   readonly canonicalSpeech: string;
   readonly model: string;
   readonly voice: string;
@@ -155,8 +161,68 @@ export interface OpenAiNativeSpeechResponseDoneInput
 export interface OpenAiNativeSpeechAcknowledgementInput
   extends OpenAiNativeSpeechAuthorityBinding {
   readonly acknowledgementId: string;
+  readonly localObservation: OpenAiNativeLocalObservation;
   readonly slo: OpenAiNativeSpeechSlo | null;
 }
+
+/**
+ * Capability etroite exposee au service HTTP mobile. L'owner sideband reste un secret serveur :
+ * l'autorite le relit dans la preuve durable au lieu de l'accepter depuis le wire.
+ */
+interface OpenAiNativeSpeechMobileAcknowledgementFields {
+  readonly companyId: string;
+  readonly deliveryId: string;
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly acknowledgementId: string;
+  readonly localObservation: OpenAiNativeLocalObservation;
+  readonly slo: OpenAiNativeSpeechSlo | null;
+}
+
+/**
+ * Le service HTTP passe toute la keyring sujet sous forme de HMAC deja derives afin que
+ * l'autorite fasse une seule lecture durable. La forme singuliere reste acceptee uniquement pour
+ * les adapters internes V1 ; elle suit exactement le meme chemin et ne declenche jamais une
+ * seconde lecture.
+ */
+export interface OpenAiNativeSpeechMobileAcknowledgementInput
+  extends OpenAiNativeSpeechMobileAcknowledgementFields {
+  /** Forme production : toutes les versions configurées, courant d'abord. */
+  readonly subjectHmacCandidates?: readonly Readonly<{
+    readonly version: number;
+    readonly subjectHmac: string;
+  }>[];
+  /** Compatibilité legacy interne : utilisable uniquement pour une ligne N-1 sans version. */
+  readonly subjectHmac?: string;
+}
+
+export type OpenAiNativeSpeechMobileAcknowledgementOutcome =
+  | {
+      readonly status: 'applied' | 'idempotent';
+      readonly state: OpenAiNativeSpeechDeliveryState;
+    }
+  | { readonly status: 'not_ready' | 'not_found' | 'conflict' | 'unavailable' };
+
+/**
+ * Relecture owner-only après une complétion fournisseur. Elle rend le fast-path HTTP optionnel :
+ * l'ACK peut être écrit par une autre réplique et l'owner sideband relit ensuite PostgreSQL.
+ */
+export type OpenAiNativeSpeechOwnerReconciliationOutcome =
+  | {
+      readonly status: 'delivered';
+      readonly acknowledgementId: string;
+      readonly state: OpenAiNativeSpeechDeliveryState;
+    }
+  | {
+      readonly status:
+        | 'pending'
+        | 'terminal_without_proof'
+        | 'not_found'
+        | 'rejected'
+        | 'unavailable';
+    };
 
 export interface OpenAiNativeSpeechCancellationInput
   extends OpenAiNativeSpeechAuthorityBinding {
@@ -353,6 +419,249 @@ function snapshotDispatchClaimInput(
   }
 }
 
+const MOBILE_ACKNOWLEDGEMENT_COMMON_KEYS = [
+  'companyId',
+  'deliveryId',
+  'sessionId',
+  'turnId',
+  'contextRevision',
+  'contextDigest',
+  'acknowledgementId',
+  'localObservation',
+  'slo',
+] as const;
+const MOBILE_ACKNOWLEDGEMENT_CANDIDATE_KEYS = [
+  ...MOBILE_ACKNOWLEDGEMENT_COMMON_KEYS,
+  'subjectHmacCandidates',
+] as const;
+const MOBILE_ACKNOWLEDGEMENT_SINGLE_KEYS = [
+  ...MOBILE_ACKNOWLEDGEMENT_COMMON_KEYS,
+  'subjectHmac',
+] as const;
+const MAX_SUBJECT_HMAC_CANDIDATES = 32;
+
+interface OpenAiNativeSpeechMobileAcknowledgementSnapshot
+  extends OpenAiNativeSpeechMobileAcknowledgementFields {
+  readonly subjectHmacCandidates: readonly Readonly<{
+    readonly version: number | null;
+    readonly subjectHmac: string;
+  }>[];
+}
+
+function hasExactObjectKeys(value: object, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function copyExactSubjectHmacCandidates(
+  value: unknown,
+  legacySingle: boolean,
+): OpenAiNativeSpeechMobileAcknowledgementSnapshot['subjectHmacCandidates'] | null {
+  if (!Array.isArray(value)) return null;
+  const length = value.length;
+  if (
+    !Number.isSafeInteger(length)
+    || length < 1
+    || length > MAX_SUBJECT_HMAC_CANDIDATES
+  ) return null;
+
+  // Refuse trous, proprietes/symboles annexes et tableaux exotiques : la liste authentifiee est
+  // une valeur exacte et bornee, pas un conteneur extensible controle par l'appelant.
+  const ownKeys = Reflect.ownKeys(value);
+  if (
+    ownKeys.length !== length + 1
+    || !ownKeys.includes('length')
+    || Array.from({ length }, (_, index) => String(index))
+      .some((key) => !ownKeys.includes(key))
+  ) return null;
+
+  const copy: Array<Readonly<{ version: number | null; subjectHmac: string }>> = [];
+  for (let index = 0; index < length; index += 1) {
+    const candidate = value[index];
+    if (legacySingle) {
+      if (typeof candidate !== 'string' || !HMAC_SHA256.test(candidate)) return null;
+      copy.push(Object.freeze({ version: null, subjectHmac: candidate }));
+      continue;
+    }
+    if (
+      typeof candidate !== 'object'
+      || candidate === null
+      || Array.isArray(candidate)
+      || !hasExactObjectKeys(candidate, ['version', 'subjectHmac'])
+    ) return null;
+    const record = candidate as Record<string, unknown>;
+    if (
+      !validVersion(record.version)
+      || typeof record.subjectHmac !== 'string'
+      || !HMAC_SHA256.test(record.subjectHmac)
+    ) return null;
+    copy.push(Object.freeze({
+      version: record.version as number,
+      subjectHmac: record.subjectHmac,
+    }));
+  }
+  if (
+    new Set(copy.map((candidate) => candidate.version)).size !== copy.length
+    || new Set(copy.map((candidate) => candidate.subjectHmac)).size !== copy.length
+  ) return null;
+  return Object.freeze(copy);
+}
+
+function cloneSpeechSlo(slo: OpenAiNativeSpeechSlo): OpenAiNativeSpeechSlo {
+  const pending = slo.pendingBargeIn;
+  return Object.freeze({
+    ...(slo.speechStoppedEventToFirstInboundRtpMs === undefined
+      ? {}
+      : { speechStoppedEventToFirstInboundRtpMs: slo.speechStoppedEventToFirstInboundRtpMs }),
+    ...(pending === undefined
+      ? {}
+      : {
+          pendingBargeIn: pending.status === 'overflowed'
+            ? Object.freeze({ status: 'overflowed' as const })
+            : Object.freeze({
+                status: 'complete' as const,
+                durationsMs: Object.freeze([...pending.durationsMs]),
+              }),
+        }),
+  });
+}
+
+/** Capture et valide chaque valeur appelee avant la premiere lecture durable. */
+function snapshotMobileAcknowledgementInput(
+  input: OpenAiNativeSpeechMobileAcknowledgementInput,
+): Readonly<OpenAiNativeSpeechMobileAcknowledgementSnapshot> | null {
+  try {
+    if (
+      typeof input !== 'object'
+      || input === null
+    ) return null;
+    const hasCandidates = hasExactObjectKeys(input, MOBILE_ACKNOWLEDGEMENT_CANDIDATE_KEYS);
+    const hasSingle = hasExactObjectKeys(input, MOBILE_ACKNOWLEDGEMENT_SINGLE_KEYS);
+    if (hasCandidates === hasSingle) return null;
+    const record = input as unknown as Record<string, unknown>;
+    // Chaque getter est lu une seule fois avant le premier await. Le service HTTP fournit des
+    // objets geles, mais l'autorite reste robuste face a un autre adapter interne mutable.
+    const companyId = record.companyId;
+    const subjectHmacCandidates = copyExactSubjectHmacCandidates(
+      hasCandidates ? record.subjectHmacCandidates : [record.subjectHmac],
+      hasSingle,
+    );
+    const deliveryId = record.deliveryId;
+    const sessionId = record.sessionId;
+    const turnId = record.turnId;
+    const contextRevision = record.contextRevision;
+    const contextDigest = record.contextDigest;
+    const acknowledgementId = record.acknowledgementId;
+    const localObservation = record.localObservation;
+    const slo = record.slo;
+    if (
+      typeof companyId !== 'string'
+      || !TENANT_ID.test(companyId)
+      || subjectHmacCandidates === null
+      || typeof deliveryId !== 'string'
+      || !UUID.test(deliveryId.toLowerCase())
+      || typeof sessionId !== 'string'
+      || !UUID.test(sessionId.toLowerCase())
+      || typeof turnId !== 'string'
+      || !UUID.test(turnId.toLowerCase())
+      || !validVersion(contextRevision)
+      || typeof contextDigest !== 'string'
+      || !HMAC_SHA256.test(contextDigest)
+      || typeof acknowledgementId !== 'string'
+      || !UUID.test(acknowledgementId.toLowerCase())
+      || !isOpenAiNativeLocalObservation(localObservation)
+      || (slo !== null && !isOpenAiNativeSpeechSlo(slo))
+    ) return null;
+    return Object.freeze({
+      companyId,
+      subjectHmacCandidates,
+      deliveryId: deliveryId.toLowerCase(),
+      sessionId: sessionId.toLowerCase(),
+      turnId: turnId.toLowerCase(),
+      contextRevision,
+      contextDigest,
+      acknowledgementId: acknowledgementId.toLowerCase(),
+      localObservation: Object.freeze({
+        formatVersion: localObservation.formatVersion,
+        kind: localObservation.kind,
+      }),
+      slo: slo === null ? null : cloneSpeechSlo(slo),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function stateMatchesMobileAcknowledgement(
+  state: OpenAiNativeSpeechDeliveryState,
+  input: OpenAiNativeSpeechMobileAcknowledgementSnapshot,
+): boolean {
+  let subjectMatches = false;
+  for (const candidate of input.subjectHmacCandidates) {
+    // Une ligne versionnee n'accepte que le matériau associé à sa version durable. Le parcours
+    // complet est réservé aux lignes N-1 dont la version ne peut pas être inventée.
+    const versionMatches = state.subjectKeyVersion === null
+      || candidate.version === state.subjectKeyVersion;
+    const hmacMatches = exactHmac(state.subjectHmac, candidate.subjectHmac);
+    subjectMatches = (versionMatches && hmacMatches) || subjectMatches;
+  }
+  return state.companyId === input.companyId
+    && subjectMatches
+    && state.deliveryId === input.deliveryId
+    && state.sessionId === input.sessionId
+    && state.turnId === input.turnId
+    && state.contextRevision === input.contextRevision
+    && state.contextDigest === input.contextDigest;
+}
+
+const OWNER_RECONCILIATION_KEYS = [
+  'companyId',
+  'subjectHmac',
+  'deliveryId',
+  'sessionId',
+  'turnId',
+  'contextRevision',
+  'contextDigest',
+  'sidebandOwnerEpoch',
+  'sidebandOwnerTokenHmac',
+] as const;
+
+function snapshotOwnerReconciliationBinding(
+  input: OpenAiNativeSpeechAuthorityBinding,
+): Readonly<OpenAiNativeSpeechAuthorityBinding> | null {
+  try {
+    if (
+      typeof input !== 'object'
+      || input === null
+      || !hasExactObjectKeys(input, OWNER_RECONCILIATION_KEYS)
+    ) return null;
+    const snapshot = Object.freeze({
+      companyId: input.companyId,
+      subjectHmac: input.subjectHmac,
+      deliveryId: input.deliveryId.toLowerCase(),
+      sessionId: input.sessionId.toLowerCase(),
+      turnId: input.turnId.toLowerCase(),
+      contextRevision: input.contextRevision,
+      contextDigest: input.contextDigest,
+      sidebandOwnerEpoch: input.sidebandOwnerEpoch,
+      sidebandOwnerTokenHmac: input.sidebandOwnerTokenHmac,
+    });
+    return TENANT_ID.test(snapshot.companyId)
+      && HMAC_SHA256.test(snapshot.subjectHmac)
+      && UUID.test(snapshot.deliveryId)
+      && UUID.test(snapshot.sessionId)
+      && UUID.test(snapshot.turnId)
+      && validVersion(snapshot.contextRevision)
+      && HMAC_SHA256.test(snapshot.contextDigest)
+      && validVersion(snapshot.sidebandOwnerEpoch)
+      && HMAC_SHA256.test(snapshot.sidebandOwnerTokenHmac)
+      ? snapshot
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function safeState(
   state: OpenAiNativeSpeechDeliveryState,
   key: OpenAiNativeSpeechDeliveryKey,
@@ -467,6 +776,7 @@ export class OpenAiNativeSpeechAuthority {
       state = createOpenAiNativeSpeechDelivery({
         ...binding,
         subjectHmac: input.subjectHmac,
+        subjectKeyVersion: input.subjectKeyVersion,
         sidebandOwnerEpoch: input.sidebandOwnerEpoch,
         sidebandOwnerTokenHmac: input.sidebandOwnerTokenHmac,
         proofFormatVersion: proof.proofFormatVersion,
@@ -668,9 +978,133 @@ export class OpenAiNativeSpeechAuthority {
       turnId: input.turnId,
       contextRevision: input.contextRevision,
       contextDigest: input.contextDigest,
+      localObservation: input.localObservation,
       slo: input.slo,
       atMs: this.now(),
-    }));
+    }), { terminalReplayDoesNotRequireProofKey: true });
+  }
+
+  /**
+   * Acquitte une livraison native observee par le mobile sans jamais faire confiance a un owner
+   * sideband fourni par le client. Le mismatch d'identite ou de binding est volontairement
+   * indistinguable d'une absence afin de ne pas transformer l'endpoint en oracle inter-tenant.
+   */
+  async acknowledgeMobileDelivery(
+    input: OpenAiNativeSpeechMobileAcknowledgementInput,
+  ): Promise<OpenAiNativeSpeechMobileAcknowledgementOutcome> {
+    const acknowledgement = snapshotMobileAcknowledgementInput(input);
+    if (acknowledgement === null) return { status: 'not_found' };
+    const key = this.key(acknowledgement);
+
+    const read = await this.safeRead(key);
+    if (read.status !== 'found') {
+      return read.status === 'not_found'
+        ? { status: 'not_found' }
+        : { status: 'unavailable' };
+    }
+    if (!stateMatchesMobileAcknowledgement(read.state, acknowledgement)) {
+      return { status: 'not_found' };
+    }
+
+    if (
+      read.state.phase !== 'completed'
+      && read.state.phase !== 'delivered'
+      && read.state.phase !== 'cancelled'
+      && read.state.phase !== 'failed'
+      && read.state.phase !== 'expired'
+    ) return { status: 'not_ready' };
+
+    // Une transition completed -> delivered reste liee a sa key de preuve. En revanche, un
+    // terminal est deja une autorite immuable : son replay exact ou son conflit se determinent
+    // uniquement depuis la preuve durable, y compris apres retrait legitime de l'ancienne key.
+    if (read.state.phase === 'completed') {
+      const secret = this.config.proofKeys.secret(read.state.proofKeyVersion);
+      if (typeof secret !== 'string' || Buffer.byteLength(secret, 'utf8') < 32) {
+        return { status: 'unavailable' };
+      }
+    }
+
+    let reduction;
+    try {
+      reduction = transitionOpenAiNativeSpeechDelivery(read.state, {
+        type: 'ACK_DELIVERY',
+        acknowledgementId: acknowledgement.acknowledgementId,
+        deliveryId: acknowledgement.deliveryId,
+        sessionId: acknowledgement.sessionId,
+        turnId: acknowledgement.turnId,
+        contextRevision: acknowledgement.contextRevision,
+        contextDigest: acknowledgement.contextDigest,
+        localObservation: acknowledgement.localObservation,
+        slo: acknowledgement.slo,
+        atMs: this.now(),
+      });
+    } catch (error) {
+      return error instanceof OpenAiNativeSpeechDeliveryError
+        ? { status: 'conflict' }
+        : { status: 'unavailable' };
+    }
+    if (reduction.status === 'idempotent') {
+      return { status: 'idempotent', state: reduction.state };
+    }
+
+    // Un seul CAS : l'adapter reconnait deja `already_applied`. Un conflit concurrent est rendu
+    // retryable au client avec le meme acknowledgementId, sans boucle PostgreSQL interne.
+    const swapped = await this.safeCompareAndSwap({
+      key,
+      expectedRevision: read.state.revision,
+      next: reduction.state,
+    });
+    if (swapped.status === 'applied' || swapped.status === 'already_applied') {
+      if (!exactState(swapped.state, reduction.state)) return { status: 'unavailable' };
+      return {
+        status: swapped.status === 'applied' ? 'applied' : 'idempotent',
+        state: swapped.state,
+      };
+    }
+    if (swapped.status === 'not_found') return { status: 'not_found' };
+    return { status: 'unavailable' };
+  }
+
+  /**
+   * Réconcilie une livraison depuis l'unique owner sideband. Aucun texte n'est relu en base :
+   * l'owner ne publiera que son `canonicalSpeech` local, après cette preuve durable exacte.
+   */
+  async reconcileOwnerDelivery(
+    input: OpenAiNativeSpeechAuthorityBinding,
+  ): Promise<OpenAiNativeSpeechOwnerReconciliationOutcome> {
+    const binding = snapshotOwnerReconciliationBinding(input);
+    if (binding === null) return { status: 'rejected' };
+    const read = await this.safeRead(this.key(binding));
+    if (read.status !== 'found') return read;
+    if (!stateMatchesBinding(read.state, binding)) return { status: 'rejected' };
+
+    if (read.state.phase === 'delivered') {
+      // NULL/NULL est uniquement une forme N-1 lisible pendant l'expand. Ce n'est jamais une
+      // preuve de lecture V1 et ne doit pas être promu en historique canonique.
+      if (
+        read.state.acknowledgementId === null
+        || read.state.localObservationFormatVersion === null
+        || read.state.localObservationKind === null
+      ) return { status: 'terminal_without_proof' };
+      return {
+        status: 'delivered',
+        acknowledgementId: read.state.acknowledgementId,
+        state: read.state,
+      };
+    }
+    if (
+      read.state.phase === 'cancelled'
+      || read.state.phase === 'failed'
+      || read.state.phase === 'expired'
+    ) return { status: 'terminal_without_proof' };
+
+    // Les appels en vol (completed inclus) restent lies a leur ancienne key jusqu'au drain. Un
+    // retrait premature echoue ferme et aucune histoire/UI n'est publiee.
+    const secret = this.config.proofKeys.secret(read.state.proofKeyVersion);
+    if (typeof secret !== 'string' || Buffer.byteLength(secret, 'utf8') < 32) {
+      return { status: 'unavailable' };
+    }
+    return { status: 'pending' };
   }
 
   cancel(
@@ -705,6 +1139,9 @@ export class OpenAiNativeSpeechAuthority {
       state: OpenAiNativeSpeechDeliveryState,
       secret: string,
     ) => OpenAiNativeSpeechDeliveryEvent,
+    options: Readonly<{
+      terminalReplayDoesNotRequireProofKey?: boolean;
+    }> = {},
   ): Promise<OpenAiNativeSpeechTransitionOutcome> {
     const key = this.key(binding);
     for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
@@ -716,15 +1153,27 @@ export class OpenAiNativeSpeechAuthority {
       }
       if (!stateMatchesBinding(read.state, binding)) return { status: 'rejected' };
 
-      const secret = this.config.proofKeys.secret(read.state.proofKeyVersion);
-      if (typeof secret !== 'string' || Buffer.byteLength(secret, 'utf8') < 32) {
+      const terminalWithoutKey = options.terminalReplayDoesNotRequireProofKey === true
+        && (
+          read.state.phase === 'delivered'
+          || read.state.phase === 'cancelled'
+          || read.state.phase === 'failed'
+          || read.state.phase === 'expired'
+        );
+      const proofSecret = terminalWithoutKey
+        ? ''
+        : this.config.proofKeys.secret(read.state.proofKeyVersion);
+      if (
+        !terminalWithoutKey
+        && (typeof proofSecret !== 'string' || Buffer.byteLength(proofSecret, 'utf8') < 32)
+      ) {
         return { status: 'unavailable' };
       }
       let reduction;
       try {
         reduction = transitionOpenAiNativeSpeechDelivery(
           read.state,
-          derive(read.state, secret),
+          derive(read.state, proofSecret ?? ''),
         );
       } catch (error) {
         return error instanceof OpenAiNativeSpeechDeliveryError

@@ -8,6 +8,7 @@ import type { RealtimeVoiceService } from './realtime.service';
 import type { RealtimeCallBootstrap, RealtimeVoiceResumeTicket } from './realtime.types';
 import type { RealtimeApprovedAgentControl } from './realtime-sideband';
 import type { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
+import type { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
 
 function responseStub() {
   const response = { setHeader: vi.fn(), status: vi.fn() };
@@ -340,5 +341,160 @@ describe('RealtimeVoiceController', () => {
       responseStub(),
     );
     expect(speechDelivered).not.toHaveBeenCalled();
+  });
+
+  it('notifie le sideband seulement après l’ACK natif durable sans ouvrir le contrôle audité', async () => {
+    const sessionHandle = '10000000-0000-4000-8000-000000000001';
+    const turnId = '20000000-0000-4000-8000-000000000002';
+    const deliveryId = '30000000-0000-4000-8000-000000000003';
+    const acknowledgementId = '40000000-0000-4000-8000-000000000004';
+    const contextDigest = 'a'.repeat(64);
+    let receivedSignal: AbortSignal | undefined;
+    const acknowledge = vi.fn(async (
+      _session: unknown,
+      _turn: unknown,
+      _delivery: unknown,
+      _body: unknown,
+      signal?: AbortSignal,
+    ) => {
+      receivedSignal = signal;
+      return {
+        ok: true as const,
+        value: {
+          deliveryId,
+          turnId,
+          acknowledgementId,
+          contextRevision: 7,
+          contextDigest,
+          idempotent: false,
+        },
+      };
+    });
+    const speechDelivered = vi.fn();
+    const nativeSpeechDelivered = vi.fn();
+    const controller = new RealtimeVoiceController(
+      serviceStub({}),
+      undefined,
+      {
+        speechDelivered,
+        nativeSpeechDelivered,
+      } as unknown as import('./realtime-sideband').RealtimeSidebandControl,
+      { acknowledge } as unknown as OpenAiNativeSpeechAcknowledgementService,
+    );
+    const request = new EventEmitter();
+    const response = responseStub();
+    const body = {
+      acknowledgementId,
+      contextRevision: 7,
+      contextDigest,
+      localObservation: {
+        formatVersion: 1,
+        kind: 'webrtc_remote_rtp_observed_provider_drained_v1',
+      },
+      slo: { speechStoppedEventToFirstInboundRtpMs: 701 },
+    };
+
+    await expect(requestContext.run(
+      {
+        correlationId: 'test-native-speech-delivery-sideband',
+        principal: { userId: 'user-1', companyId: 'company-1' },
+      },
+      () => controller.acknowledgeNativeSpeechDelivery(
+        sessionHandle,
+        turnId,
+        deliveryId,
+        body,
+        request as never,
+        response,
+      ),
+    )).resolves.toEqual({
+      deliveryId,
+      turnId,
+      acknowledgementId,
+      contextRevision: 7,
+      contextDigest,
+      idempotent: false,
+    });
+    expect(acknowledge).toHaveBeenCalledWith(
+      sessionHandle,
+      turnId,
+      deliveryId,
+      body,
+      receivedSignal,
+    );
+    expect(receivedSignal).toBeDefined();
+    expect(speechDelivered).not.toHaveBeenCalled();
+    expect(nativeSpeechDelivered).toHaveBeenCalledWith({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle,
+      deliveryId,
+      turnId,
+      acknowledgementId,
+      contextRevision: 7,
+      contextDigest,
+    });
+    expect(acknowledge.mock.invocationCallOrder[0])
+      .toBeLessThan(nativeSpeechDelivered.mock.invocationCallOrder[0]!);
+    expect(request.listenerCount('aborted')).toBe(0);
+  });
+
+  it('propage l’abandon et Retry-After sur l’ACK natif indisponible', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const acknowledge = vi.fn(async (
+      _session: unknown,
+      _turn: unknown,
+      _delivery: unknown,
+      _body: unknown,
+      signal?: AbortSignal,
+    ) => {
+      receivedSignal = signal;
+      await gate;
+      return {
+        ok: false as const,
+        error: {
+          kind: 'unavailable' as const,
+          service: 'bob-live-native-acknowledgement',
+          retryAfterSeconds: 1,
+        },
+      };
+    });
+    const nativeSpeechDelivered = vi.fn();
+    const controller = new RealtimeVoiceController(
+      serviceStub({}),
+      undefined,
+      { nativeSpeechDelivered } as unknown as import('./realtime-sideband').RealtimeSidebandControl,
+      { acknowledge } as unknown as OpenAiNativeSpeechAcknowledgementService,
+    );
+    const request = new EventEmitter();
+    const response = responseStub();
+    const pending = controller.acknowledgeNativeSpeechDelivery(
+      '10000000-0000-4000-8000-000000000001',
+      '20000000-0000-4000-8000-000000000002',
+      '30000000-0000-4000-8000-000000000003',
+      {
+        acknowledgementId: '40000000-0000-4000-8000-000000000004',
+        contextRevision: 7,
+        contextDigest: 'a'.repeat(64),
+        localObservation: {
+          formatVersion: 1,
+          kind: 'webrtc_remote_rtp_observed_provider_drained_v1',
+        },
+        slo: { speechStoppedEventToFirstInboundRtpMs: 701 },
+      },
+      request as never,
+      response,
+    );
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+    request.emit('aborted');
+    finish();
+
+    expect(receivedSignal?.aborted).toBe(true);
+    await expect(pending).rejects.toBeInstanceOf(HttpException);
+    expect(response.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    expect(nativeSpeechDelivered).not.toHaveBeenCalled();
+    expect(request.listenerCount('aborted')).toBe(0);
   });
 });

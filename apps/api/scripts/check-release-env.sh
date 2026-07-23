@@ -72,6 +72,110 @@ function url(name) {
   }
 }
 
+function canonicalPostgresVersion(name, fallback = undefined) {
+  const raw = process.env[name] ?? fallback;
+  if (
+    typeof raw !== 'string'
+    || !/^[1-9][0-9]{0,9}$/.test(raw)
+    || !Number.isSafeInteger(Number(raw))
+    || Number(raw) > 2_147_483_647
+  ) {
+    fail(`${name} must be a canonical PostgreSQL positive integer`);
+    return null;
+  }
+  return raw;
+}
+
+function parseAsciiKeyring({
+  name,
+  currentVersionName,
+  currentVersionFallback,
+  maximumKeys,
+  adjacentOnly = false,
+  legacySecretNames = [],
+}) {
+  const currentVersion = canonicalPostgresVersion(
+    currentVersionName,
+    currentVersionFallback,
+  );
+  const raw = process.env[name];
+  if (typeof raw !== 'string' || raw.length < 1 || raw.length > 4_096) {
+    fail(`${name} size is invalid`);
+    return null;
+  }
+
+  let keyring;
+  try {
+    keyring = JSON.parse(raw);
+  } catch {
+    fail(`${name} must be valid JSON`);
+    return null;
+  }
+  if (
+    !keyring
+    || typeof keyring !== 'object'
+    || Array.isArray(keyring)
+    || Object.getPrototypeOf(keyring) !== Object.prototype
+  ) {
+    fail(`${name} must be an object`);
+    return null;
+  }
+
+  const entries = Object.entries(keyring);
+  const seenSecrets = new Set();
+  let valid = true;
+  if (entries.length < 1 || entries.length > maximumKeys) {
+    fail(`${name} must contain between 1 and ${maximumKeys} keys`);
+    valid = false;
+  }
+  for (const [keyVersion, secret] of entries) {
+    if (
+      !/^[1-9][0-9]{0,9}$/.test(keyVersion)
+      || !Number.isSafeInteger(Number(keyVersion))
+      || Number(keyVersion) > 2_147_483_647
+      || typeof secret !== 'string'
+      || Buffer.byteLength(secret, 'utf8') < 32
+      || Buffer.byteLength(secret, 'utf8') > 512
+      || secret.includes('[')
+      || secret.includes(']')
+      || [...secret].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint < 0x21 || codePoint > 0x7e;
+      })
+      || seenSecrets.has(secret)
+    ) {
+      fail(`${name} contains an invalid version or secret`);
+      valid = false;
+      break;
+    }
+    seenSecrets.add(secret);
+  }
+  if (!valid || currentVersion === null) return null;
+
+  const versions = entries.map(([version]) => Number(version)).sort((left, right) => left - right);
+  const currentSecret = keyring[currentVersion];
+  if (typeof currentSecret !== 'string') {
+    fail(`${name} must contain its current version`);
+    return null;
+  }
+  if (
+    adjacentOnly
+    && (
+      versions.at(-1) !== Number(currentVersion)
+      || (versions.length === 2 && versions[1] !== versions[0] + 1)
+    )
+  ) {
+    fail(`${name} must contain current N and optional adjacent N-1 only`);
+  }
+  const legacyCurrentSecret = legacySecretNames
+    .map((legacyName) => process.env[legacyName])
+    .find((secret) => secret !== undefined) ?? null;
+  if (legacyCurrentSecret !== null && legacyCurrentSecret !== currentSecret) {
+    fail(`${name} current secret must match its legacy current-secret variable`);
+  }
+  return Object.freeze({ secrets: Object.freeze([...seenSecrets]), currentVersion });
+}
+
 for (const name of required) present(name);
 
 // Accès anticipé V1 : Stripe est soit entièrement absent, soit entièrement certifié. Les
@@ -120,6 +224,33 @@ if (!(process.env.MISTRAL_API_KEY ?? '').trim() && !(process.env.ANTHROPIC_API_K
 }
 
 const bobLiveEnabled = (process.env.BOB_LIVE_ENABLED ?? process.env.OPENAI_REALTIME_ENABLED ?? 'false') === 'true';
+const bobLiveSpeechDelivery = process.env.BOB_LIVE_SPEECH_DELIVERY ?? 'audited-signed-url-v1';
+const proofKeyringConfigured = process.env.BOB_LIVE_PROOF_KEYRING !== undefined;
+if (bobLiveSpeechDelivery === 'openai-native-webrtc-v1' && !proofKeyringConfigured) {
+  fail('BOB_LIVE_PROOF_KEYRING is required for OpenAI native speech delivery');
+}
+if (proofKeyringConfigured) {
+  const proofKeyring = parseAsciiKeyring({
+    name: 'BOB_LIVE_PROOF_KEYRING',
+    currentVersionName: 'BOB_LIVE_PROOF_KEY_VERSION',
+    maximumKeys: 2,
+    adjacentOnly: true,
+    legacySecretNames: ['BOB_LIVE_PROOF_SECRET', 'OPENAI_REALTIME_PROOF_SECRET'],
+  });
+  const subjectKeyring = parseAsciiKeyring({
+    name: 'BOB_LIVE_SUBJECT_HMAC_KEYRING',
+    currentVersionName: 'BOB_LIVE_SUBJECT_KEY_VERSION',
+    currentVersionFallback: '1',
+    maximumKeys: 32,
+    legacySecretNames: ['BOB_LIVE_SUBJECT_HMAC_SECRET', 'OPENAI_REALTIME_SAFETY_SECRET'],
+  });
+  if (proofKeyring && subjectKeyring) {
+    const allSecrets = [...proofKeyring.secrets, ...subjectKeyring.secrets];
+    if (new Set(allSecrets).size !== allSecrets.length) {
+      fail('Bob Live subject and proof key material must be dedicated');
+    }
+  }
+}
 const capacityVariables = [
   'BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS',
   'BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS',
@@ -251,6 +382,7 @@ if (mistralV2TerminalReplay === 'true') {
 for (const name of [
   'RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT',
   'RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT',
+  'RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT',
 ]) {
   const value = process.env[name];
   if (value !== undefined && value !== 'false') {

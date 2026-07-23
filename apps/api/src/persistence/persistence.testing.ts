@@ -68,6 +68,10 @@ import type { MistralConversationTerminalReplayAuthorities } from '../voice/real
 import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
 import type { MistralConversationBootstrapReaperPort } from '../voice/realtime/mistral-conversation-bootstrap-reaper';
 import type { BobLiveSubjectHmacKeyRingAdmission } from '../voice/realtime/mistral-conversation-subject-key-version';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../voice/realtime/openai-native-proof-key-version';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -157,6 +161,13 @@ export class InMemoryPersistence implements Persistence {
   }
   createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
     return new DisabledOpenAiNativeSpeechDeliveryRepository();
+  }
+  createOpenAiNativeKeyVersionAuthority(
+    _subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    _proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort | null {
+    // Le harness mémoire ne peut pas attester un registre append-only PostgreSQL.
+    return null;
   }
   createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
     return new DisabledOpenAiNativeSpeechMaintenance();

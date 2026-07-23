@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { decodeRealtimeServerEvent } from './realtime-event-codecs';
+import { decodeRealtimeServerEvent, realtimeProviderResponseId } from './realtime-event-codecs';
+
+const NATIVE_METADATA = Object.freeze({
+  bob_protocol: 'bob.openai-native-response.v1',
+  bob_delivery_id: '00000000-0000-4000-8000-000000000021',
+  bob_turn_id: '00000000-0000-4000-8000-000000000022',
+  bob_context_revision: '7',
+  bob_context_digest: 'c'.repeat(64),
+  bob_request_nonce: 'n'.repeat(32),
+});
 
 describe('Bob Live — codecs événements Realtime', () => {
   it('décode seulement les signaux nécessaires sans conserver les deltas audio', () => {
@@ -16,6 +25,7 @@ describe('Bob Live — codecs événements Realtime', () => {
   it('borne les transcriptions et les codes erreurs', () => {
     const transcript = decodeRealtimeServerEvent({
       type: 'response.output_audio_transcript.delta',
+      response_id: 'response_transcript',
       delta: 'a'.repeat(5_000),
     });
     expect(transcript).toMatchObject({ type: 'bob_transcript', final: false });
@@ -81,6 +91,53 @@ describe('Bob Live — codecs événements Realtime', () => {
         },
       },
     })).toEqual({ type: 'response_started' });
+  });
+
+  it('décode la corrélation native exacte sans jamais exposer son nonce fournisseur', () => {
+    const created = decodeRealtimeServerEvent({
+      type: 'response.created',
+      response: { id: 'resp_native', metadata: NATIVE_METADATA },
+    });
+    expect(created).toEqual({
+      type: 'response_started',
+      nativeSpeechReference: {
+        deliveryId: NATIVE_METADATA.bob_delivery_id,
+        turnId: NATIVE_METADATA.bob_turn_id,
+        contextRevision: 7,
+        contextDigest: NATIVE_METADATA.bob_context_digest,
+      },
+    });
+    expect(realtimeProviderResponseId(created)).toBe('resp_native');
+    expect(JSON.stringify(created)).not.toContain(NATIVE_METADATA.bob_request_nonce);
+
+    const done = decodeRealtimeServerEvent({
+      type: 'response.done',
+      response: { id: 'resp_native', status: 'completed', metadata: NATIVE_METADATA },
+    });
+    expect(done).toMatchObject({
+      type: 'response_done',
+      status: 'completed',
+      nativeSpeechReference: { deliveryId: NATIVE_METADATA.bob_delivery_id },
+    });
+    expect(JSON.stringify(done)).not.toContain(NATIVE_METADATA.bob_request_nonce);
+  });
+
+  it.each([
+    ['incomplète', { ...NATIVE_METADATA, bob_request_nonce: undefined }],
+    ['enrichie', { ...NATIVE_METADATA, injected_effect: '/evil' }],
+    ['mauvais protocole', { ...NATIVE_METADATA, bob_protocol: 'bob.other.v1' }],
+  ])('refuse une metadata native %s', (_label, metadata) => {
+    expect(decodeRealtimeServerEvent({
+      type: 'response.created',
+      response: { id: 'resp_native', metadata },
+    })).toEqual({ type: 'protocol_error', code: 'invalid_native_speech_metadata' });
+  });
+
+  it('exige la corrélation provider sur chaque transcript Bob', () => {
+    expect(decodeRealtimeServerEvent({
+      type: 'response.output_audio_transcript.done',
+      transcript: 'Réponse Bob',
+    })).toEqual({ type: 'protocol_error', code: 'invalid_response_id' });
   });
 
   it('décode l’accusé de purge audio sans conserver d’identifiant provider', () => {

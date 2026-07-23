@@ -43,6 +43,7 @@ function prismaReturning(
     keyFingerprint: CURRENT_FINGERPRINT,
   }];
   const tx = {
+    $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async (strings: TemplateStringsArray) => {
       const sql = strings.join('?');
       if (sql.includes('retained_bob_live_subject_hmac_key_bindings')) {
@@ -126,6 +127,7 @@ describe('PrismaBobLiveSubjectHmacKeyVersionAuthority', () => {
 
     await expect(authority.assertCurrentVersion()).resolves.toBeUndefined();
     expect(transaction).toHaveBeenCalledOnce();
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
     expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
   });
 

@@ -4,6 +4,7 @@ import { sentryDsnRejectionReason } from '@bob/core';
 const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
 const BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS = 32;
+const BOB_LIVE_PROOF_MAX_VERSIONED_KEYS = 2;
 
 /**
  * Verrou de compilation du downlink OpenAI natif.
@@ -67,6 +68,9 @@ const schema = z.object({
   BOB_LIVE_SUBJECT_HMAC_KEYRING: z.string().trim().min(1).max(4_096).optional(),
   BOB_LIVE_PROOF_SECRET: z.string().trim().min(32).optional(),
   BOB_LIVE_PROOF_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
+  // Objet JSON {"version":"secret-HMAC"}. La preuve native ne conserve que N-1/N ; chaque
+  // matériau est ensuite lié append-only à sa version dans PostgreSQL avant le boot.
+  BOB_LIVE_PROOF_KEYRING: z.string().trim().min(1).max(4_096).optional(),
   BOB_LIVE_USAGE_HMAC_SECRET: z.string().trim().min(32).optional(),
   BOB_LIVE_USAGE_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   BOB_LIVE_CONTROL_ENCRYPTION_SECRET: z.string().trim().min(32).optional(),
@@ -300,6 +304,7 @@ export interface ResolvedBobLiveEnv {
   subjectHmacKeyRing: ResolvedBobLiveSubjectHmacKeyRing | null;
   proofSecret: string | null;
   proofKeyVersion: number;
+  proofKeyRing: ResolvedBobLiveProofKeyRing | null;
   usageHmacSecret: string | null;
   usageKeyVersion: number;
   controlEncryptionSecret: string | null;
@@ -350,6 +355,13 @@ export interface ResolvedBobLiveSubjectHmacKeyRing {
   readonly currentVersion: number;
   readonly versions: readonly number[];
   /** Les chaînes sont immuables ; seules les versions explicitement retenues sont résolues. */
+  secret(version: number): string | null;
+}
+
+export interface ResolvedBobLiveProofKeyRing {
+  readonly currentVersion: number;
+  readonly versions: readonly number[];
+  /** Chaine UTF-8 exacte transmise a createHmac ; aucune normalisation implicite. */
   secret(version: number): string | null;
 }
 
@@ -425,6 +437,89 @@ export function resolveBobLiveSubjectHmacKeyRing(
     );
   }
   const versions = Object.freeze([...secrets.keys()].sort((left, right) => left - right));
+  return Object.freeze({
+    currentVersion,
+    versions,
+    secret: (version: number) => secrets.get(version) ?? null,
+  });
+}
+
+function parseBobLiveProofSecrets(raw: string): ReadonlyMap<number, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('BOB_LIVE_PROOF_KEYRING doit être un objet JSON valide.');
+  }
+  if (
+    parsed === null
+    || typeof parsed !== 'object'
+    || Array.isArray(parsed)
+    || Object.getPrototypeOf(parsed) !== Object.prototype
+  ) throw new Error('BOB_LIVE_PROOF_KEYRING doit être un objet JSON.');
+
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > BOB_LIVE_PROOF_MAX_VERSIONED_KEYS) {
+    throw new Error(
+      `BOB_LIVE_PROOF_KEYRING doit contenir entre 1 et ${BOB_LIVE_PROOF_MAX_VERSIONED_KEYS} clés.`,
+    );
+  }
+  const secrets = new Map<number, string>();
+  const seenSecrets = new Set<string>();
+  for (const [rawVersion, rawSecret] of entries) {
+    const version = Number(rawVersion);
+    if (
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
+      || !Number.isSafeInteger(version)
+      || version > 2_147_483_647
+      || typeof rawSecret !== 'string'
+      || Buffer.byteLength(rawSecret, 'utf8') < 32
+      || Buffer.byteLength(rawSecret, 'utf8') > 512
+      || rawSecret.includes('[')
+      || rawSecret.includes(']')
+      || [...rawSecret].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint < 0x21 || codePoint > 0x7e;
+      })
+      || seenSecrets.has(rawSecret)
+    ) throw new Error('BOB_LIVE_PROOF_KEYRING contient une version ou une clé invalide.');
+    secrets.set(version, rawSecret);
+    seenSecrets.add(rawSecret);
+  }
+  return secrets;
+}
+
+export function resolveBobLiveProofKeyRing(env: Env): ResolvedBobLiveProofKeyRing | null {
+  const currentVersion = env.BOB_LIVE_PROOF_KEY_VERSION ?? env.OPENAI_REALTIME_PROOF_KEY_VERSION;
+  const legacyCurrentSecret =
+    env.BOB_LIVE_PROOF_SECRET ?? env.OPENAI_REALTIME_PROOF_SECRET ?? null;
+  const raw = env.BOB_LIVE_PROOF_KEYRING;
+  if (raw === undefined) {
+    if (legacyCurrentSecret === null) return null;
+    return Object.freeze({
+      currentVersion,
+      versions: Object.freeze([currentVersion]),
+      secret: (version: number) => version === currentVersion ? legacyCurrentSecret : null,
+    });
+  }
+
+  const secrets = parseBobLiveProofSecrets(raw);
+  const versions = Object.freeze([...secrets.keys()].sort((left, right) => left - right));
+  const currentSecret = secrets.get(currentVersion);
+  if (!currentSecret) {
+    throw new Error('La version courante preuve Bob Live doit exister dans son keyring HMAC.');
+  }
+  if (
+    versions.at(-1) !== currentVersion
+    || (versions.length === 2 && versions[1] !== versions[0]! + 1)
+  ) {
+    throw new Error('BOB_LIVE_PROOF_KEYRING doit contenir uniquement N-1/N avec N courant.');
+  }
+  if (legacyCurrentSecret !== null && legacyCurrentSecret !== currentSecret) {
+    throw new Error(
+      'BOB_LIVE_PROOF_SECRET doit correspondre à la version courante du keyring preuve.',
+    );
+  }
   return Object.freeze({
     currentVersion,
     versions,
@@ -589,9 +684,10 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
   ) {
     throw new Error('Le plafond global Bob Live ne peut pas dépasser la capacité du gateway Mistral.');
   }
-  const proofSecret = env.BOB_LIVE_PROOF_SECRET ?? env.OPENAI_REALTIME_PROOF_SECRET ?? null;
   const proofKeyVersion = env.BOB_LIVE_PROOF_KEY_VERSION ?? env.OPENAI_REALTIME_PROOF_KEY_VERSION;
   const subjectHmacKeyRing = resolveBobLiveSubjectHmacKeyRing(env);
+  const proofKeyRing = resolveBobLiveProofKeyRing(env);
+  const proofSecret = proofKeyRing?.secret(proofKeyVersion) ?? null;
   return {
     enabled: (env.BOB_LIVE_ENABLED ?? env.OPENAI_REALTIME_ENABLED) === 'true',
     provider,
@@ -609,6 +705,7 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
     subjectHmacKeyRing,
     proofSecret,
     proofKeyVersion,
+    proofKeyRing,
     // Compatibilité des anciens déploiements OpenAI. Toute configuration BOB_LIVE_* explicite
     // exige ci-dessous une clé usage dédiée afin qu'une rotation de preuve audio ne casse pas les retries.
     usageHmacSecret: env.BOB_LIVE_USAGE_HMAC_SECRET ?? proofSecret,
@@ -820,6 +917,12 @@ export function loadEnv(): Env {
       'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 est bloqué tant que le duplex natif n’est pas certifié.',
     );
   }
+  if (
+    bobLive.speechDelivery === 'openai-native-webrtc-v1'
+    && parsed.data.BOB_LIVE_PROOF_KEYRING === undefined
+  ) {
+    throw new Error('La restitution OpenAI native exige BOB_LIVE_PROOF_KEYRING.');
+  }
   const mistralV2PersistenceConfigured =
     parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
     || parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined;
@@ -904,9 +1007,14 @@ export function loadEnv(): Env {
       if (!secret) throw new Error(`Clé HMAC sujet Bob Live ${version} indisponible.`);
       return secret;
     }) ?? [];
+    const proofSecrets = bobLive.proofKeyRing?.versions.map((version) => {
+      const secret = bobLive.proofKeyRing?.secret(version);
+      if (!secret) throw new Error(`Clé HMAC preuve Bob Live ${version} indisponible.`);
+      return secret;
+    }) ?? [];
     const dedicatedSecrets = [
       ...subjectHmacSecrets,
-      bobLive.proofSecret,
+      ...proofSecrets,
       bobLive.controlEncryptionSecret,
       ...(parsed.data.BOB_LIVE_USAGE_HMAC_SECRET ? [parsed.data.BOB_LIVE_USAGE_HMAC_SECRET] : []),
       ...(bobLive.localAuditToken ? [bobLive.localAuditToken] : []),

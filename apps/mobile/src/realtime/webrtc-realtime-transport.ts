@@ -1,6 +1,8 @@
 import type {
   BobClient,
   RealtimeVoiceConfig,
+  RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  RealtimeVoiceNativeSpeechDeliveryInput,
   RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
 import { randomUUID } from 'expo-crypto';
@@ -13,7 +15,9 @@ import {
   decodeRealtimeServerEvent,
   realtimeProviderResponseId,
   type RealtimeAgentControlReference,
+  type RealtimeNativeSpeechReference,
 } from './realtime-event-codecs';
+import type { RealtimePublishedContextFence } from './realtime-control-gate';
 import { RealtimeMetricsTracker } from './realtime-metrics';
 import { INITIAL_REALTIME_STATE, reduceRealtimeState, type RealtimeMachineEvent } from './realtime-session-machine';
 import {
@@ -33,6 +37,25 @@ const RTP_PROBE_INTERVAL_MS = 100;
 const RTP_PROBE_BUDGET_MS = 2_500;
 const MAX_USER_TEXT_CHARS = 2_000;
 const MAX_PROVIDER_RESPONSES_PER_SESSION = 1_024;
+const NATIVE_SPEECH_ACK_MAX_ATTEMPTS = 3;
+const NATIVE_SPEECH_ACK_RETRY_DELAYS_MS = [100, 250] as const;
+const NATIVE_SPEECH_ACK_ELIGIBILITY_TIMEOUT_MS = 3_000;
+// Le drain du buffer provider ne prouve pas que la queue jitter/DAC du mobile est vide. Une
+// courte grâce évite de rogner la fin d'une phrase, mais elle reste bornée pour qu'aucun ancien
+// tour ne garde la piste ouverte indéfiniment.
+const NATIVE_PROVIDER_DRAINED_TAIL_MS = 1_500;
+// Après `output_audio_buffer.stopped`, `response.done` est une trame de contrôle attendue quasi
+// immédiatement. Cinq secondes couvrent largement une livraison mobile ralentie sans tolérer un
+// tour orphelin. Dans l'autre ordre, une réponse courte peut encore finir de jouer : trente
+// secondes préservent ce playout légitime tout en fermant enfin si `stopped` n'arrive jamais.
+const NATIVE_RESPONSE_DONE_WATCHDOG_MS = 5_000;
+const NATIVE_AUDIO_STOPPED_WATCHDOG_MS = 30_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA_256 = /^[a-f0-9]{64}$/;
+const NATIVE_LOCAL_OBSERVATION = Object.freeze({
+  formatVersion: 1 as const,
+  kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
+});
 
 type SdpDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
 
@@ -153,6 +176,25 @@ interface AttemptResources {
   remoteAudioTrack: MediaStreamTrack | null;
 }
 
+interface NativeSpeechAcknowledgementAttempt {
+  readonly transportGeneration: number;
+  readonly responseId: string;
+  readonly reference: RealtimeNativeSpeechReference;
+  readonly acknowledgementId: string;
+  readonly input: RealtimeVoiceNativeSpeechDeliveryInput;
+  readonly abort: AbortController;
+}
+
+type NativeSpeechAcknowledgementCall =
+  | {
+      readonly kind: 'result';
+      readonly result: Awaited<ReturnType<BobClient['acknowledgeRealtimeVoiceNativeSpeechDelivery']>>;
+    }
+  | { readonly kind: 'thrown' }
+  | { readonly kind: 'aborted' };
+
+type NativeResponseTerminalWatchdog = 'response_done' | 'audio_stopped';
+
 export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   readonly capabilities: VoiceConversationTransport['capabilities'];
   readonly completionMode = 'continuous' as const;
@@ -198,7 +240,22 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private responseClearAttempted = false;
   private responseHadAudio = false;
   private responseAudioStopped = false;
+  private publishedContextFence: RealtimePublishedContextFence | null = null;
+  private activeNativeSpeechReference: RealtimeNativeSpeechReference | null = null;
+  private activeNativeTranscript: string | null = null;
+  private activeResponseInboundRtpObserved = false;
+  private activeResponseFirstInboundRtpMs: number | null = null;
+  private nativeSpeechObservationValid = true;
+  private pendingNativeSpeechAcknowledgement: NativeSpeechAcknowledgementAttempt | null = null;
+  private nativeSpeechAckEligibilityTimer: ReturnType<typeof setTimeout> | null = null;
+  private nativeProviderDrainedTailTimer: ReturnType<typeof setTimeout> | null = null;
+  private nativeProviderDrainedTailEpoch = 0;
+  private nativeResponseTerminalTimer: ReturnType<typeof setTimeout> | null = null;
+  private nativeResponseTerminalEpoch = 0;
+  private nativeResponseTerminalKind: NativeResponseTerminalWatchdog | null = null;
+  private nativeResponseTerminalResponseId: string | null = null;
   private readonly seenProviderResponseIds = new Set<string>();
+  private readonly seenNativeSpeechDeliveryIds = new Set<string>();
   private bootstrapAbort: AbortController | null = null;
   private sessionHandle: string | null = null;
   private speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy | null = null;
@@ -261,6 +318,10 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       remoteAudioTrack: null,
     };
     if (input.signal?.aborted) throw new RealtimeTransportError('aborted');
+    // Une instance est réutilisable : aucun timer de la connexion précédente ne peut survivre
+    // au nouveau peer ni agir sur sa piste distante.
+    this.cancelNativeProviderDrainedTail(true);
+    this.clearNativeResponseTerminalWatchdog();
     const generation = ++this.generation;
     // Le contexte écran durable doit être acquitté par le serveur avant toute trame micro.
     // Chaque nouveau peer repart fermé, même si la session précédente avait été activée.
@@ -277,8 +338,16 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.remoteAudioTrackGeneration = 0;
     this.responseHadAudio = false;
     this.responseAudioStopped = false;
+    this.publishedContextFence = null;
+    this.activeNativeSpeechReference = null;
+    this.activeNativeTranscript = null;
+    this.activeResponseInboundRtpObserved = false;
+    this.activeResponseFirstInboundRtpMs = null;
+    this.nativeSpeechObservationValid = true;
+    this.cancelNativeSpeechAcknowledgement();
     this.resetResponseInterruptionState();
     this.seenProviderResponseIds.clear();
+    this.seenNativeSpeechDeliveryIds.clear();
     this.connectivityState = null;
     this.speechSourcePolicy = null;
     this.lastInboundPackets = 0;
@@ -450,6 +519,13 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   sendUserText(text: string): boolean {
     const value = text.trim();
     if (!value || value.length > MAX_USER_TEXT_CHARS || !this.isChannelOpen()) return false;
+    if (this.nativeDownlink) {
+      // Le contrat ACK V1 exige une origine SLO `speech_stopped` réellement observée. Un tour
+      // texte n'en possède aucune : le refuser avant le réseau vaut mieux que fabriquer un temps
+      // de départ ou laisser une réponse native impossible à acquitter.
+      this.emit({ type: 'error', code: 'native_text_input_not_supported' });
+      return false;
+    }
     // Autorite serveur : le mobile ajoute uniquement le tour utilisateur. Le sideband Bob
     // decide ensuite si/quand une reponse peut etre creee, apres contexte et garde-fous.
     return this.send({
@@ -468,14 +544,55 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     if (this.microphoneTrack) this.microphoneTrack.enabled = enabled;
   }
 
+  async synchronizePublishedContext(fence: RealtimePublishedContextFence): Promise<boolean> {
+    const sessionHandle = this.sessionHandle;
+    if (
+      sessionHandle === null
+      || !UUID.test(fence.sessionHandle)
+      || fence.sessionHandle.toLowerCase() !== sessionHandle.toLowerCase()
+      || !Number.isSafeInteger(fence.contextRevision)
+      || fence.contextRevision < 1
+      || fence.contextRevision > 2_147_483_647
+      || !SHA_256.test(fence.contextDigest)
+    ) return false;
+
+    const canonicalFence = Object.freeze({
+      sessionHandle: sessionHandle.toLowerCase(),
+      contextRevision: fence.contextRevision,
+      contextDigest: fence.contextDigest,
+    });
+    const previous = this.publishedContextFence;
+    const contextChanged = previous !== null
+      && (
+        previous.contextRevision !== canonicalFence.contextRevision
+        || previous.contextDigest !== canonicalFence.contextDigest
+      );
+    if (contextChanged && this.nativeDownlink) {
+      if (this.responseActive) {
+        // Une navigation rend toute observation du tour précédent impropre à un ACK. La coupure
+        // locale précède la mise à jour de la fence ; un HTTP 200 tardif restera donc sans effet.
+        this.interrupt('navigation');
+      } else {
+        // Une queue locale conservée après l'ACK appartient elle aussi à l'ancien écran. La
+        // couper ne dépend pas de `responseActive`, déjà faux après le reçu durable.
+        this.cancelNativeProviderDrainedTail(true);
+        this.clearNativeResponseTerminalWatchdog();
+      }
+    }
+    this.publishedContextFence = canonicalFence;
+    return true;
+  }
+
   interrupt(_reason: 'user_speech' | 'tap' | 'navigation'): boolean {
+    this.cancelNativeProviderDrainedTail(true);
+    this.clearNativeResponseTerminalWatchdog();
     if (!this.responseActive) return false;
     // Le premier geste coupe la piste locale AVANT toute écriture réseau. Les appels
     // réentrants ou répétés voient ensuite les latches et ne peuvent jamais doubler les
     // commandes provider pour une même réponse.
     if (this.responseLocallyMuted) return true;
     this.responseLocallyMuted = true;
-    this.setRemoteAudioEnabled(false);
+    this.invalidateNativeSpeechObservation();
     this.metrics.markBargeIn();
     this.pendingAgentControlReference = null;
     // `response.done` précède `output_audio_buffer.stopped` en WebRTC. Si toute la réponse est
@@ -514,10 +631,16 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.pendingConnectAbort?.abort();
       return this.closingPromise;
     }
-    if (this.currentState.phase === 'closed') return Promise.resolve();
+    if (this.currentState.phase === 'closed') {
+      this.cancelNativeProviderDrainedTail(true);
+      this.clearNativeResponseTerminalWatchdog();
+      return Promise.resolve();
+    }
     // Neutraliser la sortie avec la génération encore autoritative, avant de fencer tous les
     // callbacks du peer. Aucun paquet mis en file ne reste audible pendant le teardown.
-    this.setRemoteAudioEnabled(false);
+    this.cancelNativeProviderDrainedTail(true);
+    this.clearNativeResponseTerminalWatchdog();
+    this.invalidateNativeSpeechObservation();
     ++this.generation;
     this.transition({ type: 'CLOSE' });
     this.bootstrapAbort?.abort();
@@ -554,6 +677,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.remoteAudioActive = false;
     this.responseHadAudio = false;
     this.responseAudioStopped = false;
+    this.publishedContextFence = null;
+    this.activeNativeSpeechReference = null;
+    this.activeNativeTranscript = null;
+    this.activeResponseInboundRtpObserved = false;
+    this.activeResponseFirstInboundRtpMs = null;
+    this.nativeSpeechObservationValid = false;
     this.resetResponseInterruptionState();
     this.connectivityState = null;
     const closing = Promise.resolve().then(async (): Promise<void> => {
@@ -762,7 +891,15 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       return;
     }
     if (peer.connectionState === 'disconnected' || peer.iceConnectionState === 'disconnected') {
+      // Une reprise ICE ne prouve pas que les paquets déjà observés appartiennent encore à la
+      // même lecture continue. Le tour courant ne pourra donc plus être acquitté.
+      const mustFenceNativeResponse = this.nativeDownlink && this.responseActive;
+      this.invalidateNativeSpeechObservation();
       this.emitConnectivity('disconnected');
+      if (mustFenceNativeResponse) {
+        this.setRemoteAudioEnabled(false);
+        void this.degradeAndClose('provider_error', generation);
+      }
       return;
     }
     if (
@@ -852,7 +989,33 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           void this.degradeAndClose('provider_error', this.currentState.generation);
           break;
         }
+        const nativeSpeechReference = event.nativeSpeechReference ?? null;
+        if (
+          (this.nativeDownlink && (
+            nativeSpeechReference === null
+            || !this.nativeSpeechReferenceMatchesPublishedFence(nativeSpeechReference)
+          ))
+          || (!this.nativeDownlink && nativeSpeechReference !== null)
+        ) {
+          this.emit({ type: 'error', code: 'native_speech_context_mismatch' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        if (
+          nativeSpeechReference !== null
+          && (
+            this.seenNativeSpeechDeliveryIds.has(nativeSpeechReference.deliveryId)
+            || this.seenNativeSpeechDeliveryIds.size >= MAX_PROVIDER_RESPONSES_PER_SESSION
+          )
+        ) {
+          this.emit({ type: 'error', code: 'native_speech_delivery_replay' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
         this.seenProviderResponseIds.add(responseId);
+        if (nativeSpeechReference !== null) {
+          this.seenNativeSpeechDeliveryIds.add(nativeSpeechReference.deliveryId);
+        }
         this.activeProviderResponseId = responseId;
         this.responseActive = true;
         this.responseGenerationDone = false;
@@ -860,19 +1023,36 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.remoteAudioActive = false;
         this.responseHadAudio = false;
         this.responseAudioStopped = false;
+        this.activeNativeSpeechReference = nativeSpeechReference;
+        this.activeNativeTranscript = null;
+        this.activeResponseInboundRtpObserved = false;
+        this.activeResponseFirstInboundRtpMs = null;
+        this.nativeSpeechObservationValid = true;
+        this.cancelNativeSpeechAcknowledgement();
+        this.cancelNativeProviderDrainedTail(true);
+        this.clearNativeResponseTerminalWatchdog();
         this.resetResponseInterruptionState();
+        // Une ancienne queue RTP peut encore contenir quelques échantillons après le signal de
+        // drain fournisseur. Le nouveau tour la neutralise avant de rouvrir explicitement la piste
+        // sur son propre `buffer.started`.
         this.setRemoteAudioEnabled(false);
         // Le contrat natif V1 ne possède encore aucun ACK mobile autoritatif. Même des
         // metadata legacy syntaxiquement valides ne peuvent donc produire un effet UI.
         this.pendingAgentControlReference = !this.nativeDownlink && event.controlReference
           ? { responseId, reference: event.controlReference }
           : null;
-        if (this.rtpProbeActive) this.rtpProbeResponseObserved = true;
         this.metrics.markResponseStarted();
         break;
       }
       case 'speech_started':
-        if (this.responseActive) this.interrupt('user_speech');
+        // Une queue locale préservée après l'ACK proxy du tour précédent ne doit jamais parler
+        // par-dessus l'utilisateur. Cette coupure locale précède toute commande réseau.
+        if (this.responseActive) {
+          this.interrupt('user_speech');
+        } else if (this.nativeDownlink) {
+          this.cancelNativeProviderDrainedTail(true);
+          this.clearNativeResponseTerminalWatchdog();
+        }
         this.transition({ type: 'USER_SPEECH_STARTED' });
         break;
       case 'speech_stopped':
@@ -882,7 +1062,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.transition({ type: 'USER_SPEECH_STOPPED' });
         break;
       case 'audio_signal': {
-        if (realtimeProviderResponseId(event) !== this.activeProviderResponseId) break;
+        if (!this.acceptCurrentResponseEvent(event)) break;
         this.responseActive = true;
         // Un delta natif annonce de la génération, pas du son rendu. Il ne doit ni ouvrir la
         // piste ni satisfaire le SLO "premier audio" avant l'accusé exact du buffer de sortie.
@@ -892,53 +1072,138 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.remoteAudioActive = true;
         this.responseHadAudio = true;
         this.responseAudioStopped = false;
+        if (this.nativeDownlink && event.source === 'buffer_started') {
+          // Le baseline doit être échantillonné APRÈS le `buffer.started` de cette réponse. Un
+          // compteur relevé à `speech_stopped` peut encore progresser à cause de la queue RTP du
+          // tour précédent et fabriquer une fausse preuve pour le suivant. Cette fenêtre est
+          // réarmée même si le délai provider a dépassé le budget initial ; l'origine SLO reste
+          // le `speech_stopped` mémorisé par RealtimeMetricsTracker.
+          this.startRtpProbe(this.currentState.generation, true);
+        }
         this.setRemoteAudioEnabled(!this.responseLocallyMuted);
         this.transition({ type: 'BOB_AUDIO_STARTED' });
         if (!hadFirstAudioSignal) this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
         break;
       }
       case 'audio_stopped':
-        if (realtimeProviderResponseId(event) !== this.activeProviderResponseId) break;
+        if (!this.acceptCurrentResponseEvent(event)) break;
         this.remoteAudioActive = false;
         this.responseAudioStopped = true;
-        this.setRemoteAudioEnabled(false);
+        // `output_audio_buffer.stopped` atteste le drain du buffer SERVEUR uniquement. Couper la
+        // piste ici peut tronquer la queue jitter/DAC locale. Elle reste ouverte en natif jusqu'au
+        // prochain tour, au barge-in ou au teardown ; les chemins annulés restent toujours muets.
+        if (!this.nativeDownlink) this.setRemoteAudioEnabled(false);
+        if (this.nativeDownlink) {
+          void this.collectStats(this.currentState.generation, false);
+        }
         if (this.responseGenerationDone) {
-          this.completeActiveResponse(true);
+          this.clearNativeResponseTerminalWatchdog();
+          if (
+            this.nativeDownlink
+            && this.responseHadAudio
+            && this.responseStatus === 'completed'
+          ) {
+            this.maybeAcknowledgeNativeSpeech();
+          } else {
+            this.completeActiveResponse(this.responseStatus === 'completed');
+          }
+        } else if (this.nativeDownlink && this.responseHadAudio) {
+          this.armNativeResponseTerminalWatchdog('response_done');
         }
         break;
       case 'audio_cleared':
-        if (realtimeProviderResponseId(event) !== this.activeProviderResponseId) break;
+        if (!this.acceptCurrentResponseEvent(event)) break;
+        this.clearNativeResponseTerminalWatchdog();
         this.remoteAudioActive = false;
         this.responseAudioStopped = true;
         this.setRemoteAudioEnabled(false);
         this.metrics.markAudioCleared();
+        this.invalidateNativeSpeechObservation();
         this.completeActiveResponse(false);
         break;
       case 'response_done':
-        if (realtimeProviderResponseId(event) !== this.activeProviderResponseId) break;
+        if (!this.acceptCurrentResponseEvent(event)) break;
+        if (
+          this.nativeDownlink
+          && (
+            event.nativeSpeechReference === undefined
+            || this.activeNativeSpeechReference === null
+            || !this.sameNativeSpeechReference(
+              event.nativeSpeechReference,
+              this.activeNativeSpeechReference,
+            )
+          )
+        ) {
+          this.emit({ type: 'error', code: 'native_speech_metadata_mismatch' });
+          this.invalidateNativeSpeechObservation();
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
         if (event.status === 'failed' || event.status === 'incomplete') {
+          this.clearNativeResponseTerminalWatchdog();
           this.setRemoteAudioEnabled(false);
           this.pendingAgentControlReference = null;
+          this.invalidateNativeSpeechObservation();
           this.emit({ type: 'error', code: `response_${event.status}` });
           void this.degradeAndClose('provider_error', this.currentState.generation);
           break;
         }
         this.responseGenerationDone = true;
         this.responseStatus = event.status;
-        if (event.status === 'cancelled') this.pendingAgentControlReference = null;
+        if (event.status === 'cancelled') {
+          this.clearNativeResponseTerminalWatchdog();
+          // Une annulation n'est pas un drain heureux : aucune queue locale de cette réponse ne
+          // doit survivre, quelle que soit l'origine fournisseur de l'annulation.
+          this.setRemoteAudioEnabled(false);
+          this.pendingAgentControlReference = null;
+          this.invalidateNativeSpeechObservation();
+          // `cancelled` est le terminal de génération. La piste est déjà muette : attendre en
+          // plus `stopped` ou `cleared` laisserait le transport bloqué si le provider l'omet.
+          this.completeActiveResponse(false);
+          break;
+        }
         this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
         if (!this.responseHadAudio || this.responseAudioStopped) {
-          this.completeActiveResponse(true);
+          this.clearNativeResponseTerminalWatchdog();
+          if (
+            this.nativeDownlink
+            && this.responseHadAudio
+            && event.status === 'completed'
+          ) {
+            this.maybeAcknowledgeNativeSpeech();
+          } else {
+            this.completeActiveResponse(true);
+          }
+        } else if (this.nativeDownlink && event.status === 'completed') {
+          this.armNativeResponseTerminalWatchdog('audio_stopped');
         }
         break;
       case 'user_transcript':
         this.emit(event);
         break;
       case 'bob_transcript':
-        this.emit(event);
+        if (!this.acceptCurrentResponseEvent(event)) break;
+        if (!this.nativeDownlink) {
+          this.emit(event);
+          break;
+        }
+        if (event.final) {
+          if (this.activeNativeTranscript !== null && this.activeNativeTranscript !== event.text) {
+            this.emit({ type: 'error', code: 'native_speech_transcript_conflict' });
+            this.invalidateNativeSpeechObservation();
+            void this.degradeAndClose('provider_error', this.currentState.generation);
+            break;
+          }
+          this.activeNativeTranscript = event.text;
+          this.maybeAcknowledgeNativeSpeech();
+        }
         break;
       case 'provider_error':
         this.emit({ type: 'error', code: event.code });
+        if (this.nativeDownlink && this.responseActive) {
+          this.invalidateNativeSpeechObservation();
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+        }
         break;
       case 'protocol_error':
         this.emit({ type: 'error', code: event.code });
@@ -951,13 +1216,315 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     }
   }
 
-  private completeActiveResponse(allowControl: boolean): void {
+  private acceptCurrentResponseEvent(event: ReturnType<typeof decodeRealtimeServerEvent>): boolean {
+    const responseId = realtimeProviderResponseId(event);
+    if (responseId !== null && responseId === this.activeProviderResponseId) return true;
+    // Un événement retardé d'une réponse déjà connue reste inerte. Un identifiant jamais créé
+    // sur ce canal signale en revanche une rupture de corrélation et ferme la session.
+    if (responseId !== null && this.seenProviderResponseIds.has(responseId)) return false;
+    this.emit({ type: 'error', code: 'unknown_provider_response' });
+    this.invalidateNativeSpeechObservation();
+    void this.degradeAndClose('provider_error', this.currentState.generation);
+    return false;
+  }
+
+  private sameNativeSpeechReference(
+    left: RealtimeNativeSpeechReference,
+    right: RealtimeNativeSpeechReference,
+  ): boolean {
+    return left.deliveryId === right.deliveryId
+      && left.turnId === right.turnId
+      && left.contextRevision === right.contextRevision
+      && left.contextDigest === right.contextDigest;
+  }
+
+  private nativeSpeechReferenceMatchesPublishedFence(
+    reference: RealtimeNativeSpeechReference,
+  ): boolean {
+    const fence = this.publishedContextFence;
+    const sessionHandle = this.sessionHandle;
+    return fence !== null
+      && sessionHandle !== null
+      && fence.sessionHandle === sessionHandle.toLowerCase()
+      && fence.contextRevision === reference.contextRevision
+      && fence.contextDigest === reference.contextDigest;
+  }
+
+  private maybeAcknowledgeNativeSpeech(): void {
+    if (!this.nativeDownlink || !this.responseActive || !this.nativeSpeechObservationValid) return;
+    if (this.pendingNativeSpeechAcknowledgement !== null) return;
+    const responseId = this.activeProviderResponseId;
+    const reference = this.activeNativeSpeechReference;
+    const transcript = this.activeNativeTranscript;
+    const firstInboundRtpMs = this.activeResponseFirstInboundRtpMs;
+    const providerDrained = this.responseGenerationDone
+      && this.responseStatus === 'completed'
+      && this.responseAudioStopped
+      && this.responseHadAudio;
+    if (!providerDrained) return;
+    if (responseId === null) {
+      this.failNativeSpeechAcknowledgement('native_speech_response_binding_missing');
+      return;
+    }
+    if (
+      reference === null
+      || transcript === null
+      || !this.activeResponseInboundRtpObserved
+      || firstInboundRtpMs === null
+      || !Number.isSafeInteger(firstInboundRtpMs)
+      || firstInboundRtpMs < 0
+      || firstInboundRtpMs > 60_000
+      || !this.nativeSpeechReferenceMatchesPublishedFence(reference)
+      || this.sessionHandle === null
+      || !UUID.test(this.sessionHandle)
+      || this.responseLocallyMuted
+    ) {
+      this.armNativeSpeechAckEligibilityTimeout(responseId);
+      return;
+    }
+
+    let acknowledgementId: string;
+    try {
+      acknowledgementId = randomUUID().toLowerCase();
+    } catch {
+      this.failNativeSpeechAcknowledgement('native_speech_ack_identifier_failed');
+      return;
+    }
+    if (!UUID.test(acknowledgementId)) {
+      this.failNativeSpeechAcknowledgement('native_speech_ack_identifier_failed');
+      return;
+    }
+    const input: RealtimeVoiceNativeSpeechDeliveryInput = Object.freeze({
+      acknowledgementId,
+      contextRevision: reference.contextRevision,
+      contextDigest: reference.contextDigest,
+      slo: Object.freeze({
+        speechStoppedEventToFirstInboundRtpMs: firstInboundRtpMs,
+      }),
+      localObservation: NATIVE_LOCAL_OBSERVATION,
+    });
+    const attempt: NativeSpeechAcknowledgementAttempt = Object.freeze({
+      transportGeneration: this.generation,
+      responseId,
+      reference,
+      acknowledgementId,
+      input,
+      abort: new AbortController(),
+    });
+    this.clearNativeSpeechAckEligibilityTimer();
+    this.pendingNativeSpeechAcknowledgement = attempt;
+    void this.runNativeSpeechAcknowledgement(attempt);
+  }
+
+  private async runNativeSpeechAcknowledgement(
+    attempt: NativeSpeechAcknowledgementAttempt,
+  ): Promise<void> {
+    for (let index = 0; index < NATIVE_SPEECH_ACK_MAX_ATTEMPTS; index += 1) {
+      const call = await this.callNativeSpeechAcknowledgement(attempt);
+      if (call.kind === 'aborted' || !this.isCurrentNativeSpeechAcknowledgement(attempt)) return;
+      if (call.kind === 'result' && call.result.ok) {
+        if (!this.nativeSpeechAcknowledgementMatches(call.result.value, attempt)) {
+          this.failNativeSpeechAcknowledgement('native_speech_ack_receipt_mismatch', attempt);
+          return;
+        }
+        // Le transcript fournisseur reste une preuve de concordance transport, jamais l'autorité
+        // de l'UI. La V1 ne possède pas encore de relecture canonique serveur : publier ce texte,
+        // même après un ACK durable, donnerait à une trame provider le dernier mot sur l'historique.
+        // Le reçu valide seulement la livraison ; aucun transcript n'est donc émis ici.
+        this.pendingNativeSpeechAcknowledgement = null;
+        this.completeActiveResponse(false, true);
+        return;
+      }
+
+      const retryable = call.kind === 'thrown'
+        || (
+          call.kind === 'result'
+          && !call.result.ok
+          && this.isRetryableNativeSpeechAckError(call.result)
+        );
+      if (!retryable || index === NATIVE_SPEECH_ACK_MAX_ATTEMPTS - 1) {
+        this.failNativeSpeechAcknowledgement(
+          retryable ? 'native_speech_ack_unavailable' : 'native_speech_ack_rejected',
+          attempt,
+        );
+        return;
+      }
+      const continued = await this.waitForNativeSpeechAckRetry(
+        attempt,
+        this.nativeSpeechAcknowledgementRetryDelayMs(call, index),
+      );
+      if (!continued) return;
+    }
+  }
+
+  private callNativeSpeechAcknowledgement(
+    attempt: NativeSpeechAcknowledgementAttempt,
+  ): Promise<NativeSpeechAcknowledgementCall> {
+    if (attempt.abort.signal.aborted) return Promise.resolve({ kind: 'aborted' });
+    const sessionHandle = this.sessionHandle;
+    if (sessionHandle === null) return Promise.resolve({ kind: 'aborted' });
+    const operation: Promise<NativeSpeechAcknowledgementCall> = Promise.resolve()
+      .then(() => this.client.acknowledgeRealtimeVoiceNativeSpeechDelivery(
+        sessionHandle,
+        attempt.reference.turnId,
+        attempt.reference.deliveryId,
+        attempt.input,
+        attempt.abort.signal,
+      ))
+      .then(
+        (result) => ({ kind: 'result' as const, result }),
+        () => ({ kind: 'thrown' as const }),
+      );
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: NativeSpeechAcknowledgementCall): void => {
+        if (settled) return;
+        settled = true;
+        attempt.abort.signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+      const onAbort = (): void => finish({ kind: 'aborted' });
+      attempt.abort.signal.addEventListener('abort', onAbort, { once: true });
+      void operation.then(finish);
+      if (attempt.abort.signal.aborted) onAbort();
+    });
+  }
+
+  private waitForNativeSpeechAckRetry(
+    attempt: NativeSpeechAcknowledgementAttempt,
+    delayMs: number,
+  ): Promise<boolean> {
+    if (!this.isCurrentNativeSpeechAcknowledgement(attempt)) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (continued: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        attempt.abort.signal.removeEventListener('abort', onAbort);
+        resolve(continued);
+      };
+      const onAbort = (): void => finish(false);
+      const timer = setTimeout(() => finish(this.isCurrentNativeSpeechAcknowledgement(attempt)), delayMs);
+      attempt.abort.signal.addEventListener('abort', onAbort, { once: true });
+      if (attempt.abort.signal.aborted) onAbort();
+    });
+  }
+
+  private isRetryableNativeSpeechAckError(
+    result: Exclude<
+      Awaited<ReturnType<BobClient['acknowledgeRealtimeVoiceNativeSpeechDelivery']>>,
+      { readonly ok: true }
+    >,
+  ): boolean {
+    return result.error.kind === 'unavailable'
+      || (result.error.kind === 'dependency' && result.error.port === 'api');
+  }
+
+  private nativeSpeechAcknowledgementRetryDelayMs(
+    call: Exclude<NativeSpeechAcknowledgementCall, { readonly kind: 'aborted' }>,
+    attemptIndex: number,
+  ): number {
+    const fallbackMs = NATIVE_SPEECH_ACK_RETRY_DELAYS_MS[attemptIndex] ?? 250;
+    if (
+      call.kind !== 'result'
+      || call.result.ok
+      || call.result.error.kind !== 'unavailable'
+      || call.result.error.retryAfterSeconds === undefined
+    ) return fallbackMs;
+    // Le codec HTTP borne ce champ à 0..86 400 s. Attendre au moins Retry-After évite qu'un
+    // `not_ready` (ACK arrivé avant le CAS fournisseur -> completed) provoque une rafale.
+    return Math.max(fallbackMs, call.result.error.retryAfterSeconds * 1_000);
+  }
+
+  private nativeSpeechAcknowledgementMatches(
+    receipt: RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+    attempt: NativeSpeechAcknowledgementAttempt,
+  ): boolean {
+    return receipt.deliveryId === attempt.reference.deliveryId
+      && receipt.turnId === attempt.reference.turnId
+      && receipt.acknowledgementId === attempt.acknowledgementId
+      && receipt.contextRevision === attempt.reference.contextRevision
+      && receipt.contextDigest === attempt.reference.contextDigest
+      && typeof receipt.idempotent === 'boolean';
+  }
+
+  private isCurrentNativeSpeechAcknowledgement(
+    attempt: NativeSpeechAcknowledgementAttempt,
+  ): boolean {
+    return this.pendingNativeSpeechAcknowledgement === attempt
+      && !attempt.abort.signal.aborted
+      && attempt.transportGeneration === this.generation
+      && attempt.responseId === this.activeProviderResponseId
+      && this.responseActive
+      && this.nativeSpeechObservationValid
+      && this.activeNativeSpeechReference !== null
+      && this.sameNativeSpeechReference(attempt.reference, this.activeNativeSpeechReference)
+      && this.nativeSpeechReferenceMatchesPublishedFence(attempt.reference);
+  }
+
+  private armNativeSpeechAckEligibilityTimeout(responseId: string): void {
+    if (this.nativeSpeechAckEligibilityTimer !== null) return;
+    const generation = this.generation;
+    this.nativeSpeechAckEligibilityTimer = setTimeout(() => {
+      this.nativeSpeechAckEligibilityTimer = null;
+      if (
+        generation !== this.generation
+        || responseId !== this.activeProviderResponseId
+        || !this.responseActive
+        || this.pendingNativeSpeechAcknowledgement !== null
+      ) return;
+      this.failNativeSpeechAcknowledgement('native_speech_observation_incomplete');
+    }, NATIVE_SPEECH_ACK_ELIGIBILITY_TIMEOUT_MS);
+  }
+
+  private clearNativeSpeechAckEligibilityTimer(): void {
+    if (this.nativeSpeechAckEligibilityTimer !== null) {
+      clearTimeout(this.nativeSpeechAckEligibilityTimer);
+      this.nativeSpeechAckEligibilityTimer = null;
+    }
+  }
+
+  private cancelNativeSpeechAcknowledgement(): void {
+    this.clearNativeSpeechAckEligibilityTimer();
+    const pending = this.pendingNativeSpeechAcknowledgement;
+    this.pendingNativeSpeechAcknowledgement = null;
+    pending?.abort.abort();
+  }
+
+  private invalidateNativeSpeechObservation(): void {
+    this.nativeSpeechObservationValid = false;
+    this.activeNativeTranscript = null;
+    this.activeResponseInboundRtpObserved = false;
+    this.activeResponseFirstInboundRtpMs = null;
+    this.cancelNativeSpeechAcknowledgement();
+  }
+
+  private failNativeSpeechAcknowledgement(
+    code: string,
+    attempt?: NativeSpeechAcknowledgementAttempt,
+  ): void {
+    if (attempt !== undefined && !this.isCurrentNativeSpeechAcknowledgement(attempt)) return;
+    this.emit({ type: 'error', code });
+    this.invalidateNativeSpeechObservation();
+    void this.degradeAndClose('provider_error', this.currentState.generation);
+  }
+
+  private completeActiveResponse(
+    allowControl: boolean,
+    preserveNativeProviderDrainedTail = false,
+  ): void {
     const responseId = this.activeProviderResponseId;
     const controlReference = allowControl
       && this.responseStatus === 'completed'
       && this.pendingAgentControlReference?.responseId === responseId
       ? this.pendingAgentControlReference.reference
       : null;
+    const preserveProviderTail = preserveNativeProviderDrainedTail
+      && this.nativeDownlink
+      && !this.responseLocallyMuted;
+    this.cancelNativeSpeechAcknowledgement();
+    this.clearNativeResponseTerminalWatchdog();
     this.responseActive = false;
     this.responseGenerationDone = false;
     this.activeProviderResponseId = null;
@@ -966,7 +1533,13 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.remoteAudioActive = false;
     this.responseHadAudio = false;
     this.responseAudioStopped = false;
-    this.setRemoteAudioEnabled(false);
+    this.activeNativeSpeechReference = null;
+    this.activeNativeTranscript = null;
+    this.activeResponseInboundRtpObserved = false;
+    this.activeResponseFirstInboundRtpMs = null;
+    this.nativeSpeechObservationValid = false;
+    if (preserveProviderTail) this.armNativeProviderDrainedTail();
+    else this.cancelNativeProviderDrainedTail(true);
     this.resetResponseInterruptionState();
     this.transition({ type: 'RESPONSE_DONE' });
     this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
@@ -993,17 +1566,92 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     }
   }
 
+  private armNativeProviderDrainedTail(): void {
+    this.cancelNativeProviderDrainedTail(false);
+    const generation = this.generation;
+    const epoch = this.nativeProviderDrainedTailEpoch;
+    this.nativeProviderDrainedTailTimer = setTimeout(() => {
+      if (
+        generation !== this.generation
+        || epoch !== this.nativeProviderDrainedTailEpoch
+      ) return;
+      this.nativeProviderDrainedTailTimer = null;
+      this.setRemoteAudioEnabled(false);
+    }, NATIVE_PROVIDER_DRAINED_TAIL_MS);
+  }
+
+  private cancelNativeProviderDrainedTail(mute: boolean): void {
+    this.nativeProviderDrainedTailEpoch += 1;
+    if (this.nativeProviderDrainedTailTimer !== null) {
+      clearTimeout(this.nativeProviderDrainedTailTimer);
+      this.nativeProviderDrainedTailTimer = null;
+    }
+    if (mute) this.setRemoteAudioEnabled(false);
+  }
+
+  private armNativeResponseTerminalWatchdog(kind: NativeResponseTerminalWatchdog): void {
+    const responseId = this.activeProviderResponseId;
+    if (!this.nativeDownlink || responseId === null || !this.responseActive) return;
+    // Un doublon provider ne doit jamais repousser l'échéance du premier terminal manquant.
+    if (
+      this.nativeResponseTerminalTimer !== null
+      && this.nativeResponseTerminalKind === kind
+      && this.nativeResponseTerminalResponseId === responseId
+    ) return;
+    this.clearNativeResponseTerminalWatchdog();
+    const generation = this.generation;
+    const epoch = this.nativeResponseTerminalEpoch;
+    const delayMs = kind === 'response_done'
+      ? NATIVE_RESPONSE_DONE_WATCHDOG_MS
+      : NATIVE_AUDIO_STOPPED_WATCHDOG_MS;
+    this.nativeResponseTerminalTimer = setTimeout(() => {
+      if (
+        generation !== this.generation
+        || epoch !== this.nativeResponseTerminalEpoch
+        || responseId !== this.activeProviderResponseId
+        || !this.responseActive
+      ) return;
+      const terminalStillMissing = kind === 'response_done'
+        ? this.responseAudioStopped && !this.responseGenerationDone
+        : this.responseGenerationDone
+          && this.responseStatus === 'completed'
+          && this.responseHadAudio
+          && !this.responseAudioStopped;
+      if (!terminalStillMissing) return;
+      this.nativeResponseTerminalTimer = null;
+      this.nativeResponseTerminalKind = null;
+      this.nativeResponseTerminalResponseId = null;
+      this.failNativeSpeechAcknowledgement(
+        kind === 'response_done'
+          ? 'native_speech_response_done_timeout'
+          : 'native_speech_audio_stopped_timeout',
+      );
+    }, delayMs);
+    this.nativeResponseTerminalKind = kind;
+    this.nativeResponseTerminalResponseId = responseId;
+  }
+
+  private clearNativeResponseTerminalWatchdog(): void {
+    this.nativeResponseTerminalEpoch += 1;
+    if (this.nativeResponseTerminalTimer !== null) {
+      clearTimeout(this.nativeResponseTerminalTimer);
+      this.nativeResponseTerminalTimer = null;
+    }
+    this.nativeResponseTerminalKind = null;
+    this.nativeResponseTerminalResponseId = null;
+  }
+
   private startStats(generation: number): void {
     if (this.statsTimer) clearInterval(this.statsTimer);
     this.statsTimer = setInterval(() => { void this.collectStats(generation, true); }, STATS_INTERVAL_MS);
   }
 
-  private startRtpProbe(generation: number): void {
+  private startRtpProbe(generation: number, responseObserved = false): void {
     if (this.rtpProbeTimer) clearInterval(this.rtpProbeTimer);
     this.rtpProbeDeadlineAt = Date.now() + RTP_PROBE_BUDGET_MS;
     this.rtpProbeActive = true;
     this.rtpProbeBaselineReady = false;
-    this.rtpProbeResponseObserved = false;
+    this.rtpProbeResponseObserved = responseObserved;
     this.rtpProbeEpoch += 1;
     void this.collectStats(generation, false);
     this.rtpProbeTimer = setInterval(() => {
@@ -1090,11 +1738,18 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.rtpProbeActive
         && this.rtpProbeBaselineReady
         && this.rtpProbeResponseObserved
-        && this.remoteAudioActive
+        && this.responseActive
+        && this.responseHadAudio
+        && this.activeProviderResponseId !== null
         && !baselinePrimed
         && inboundPackets > this.rtpProbeBaselinePackets
       ) {
         this.metrics.markFirstInboundRtp();
+        const firstInboundRtpMs = this.metrics.snapshot().speechStoppedToFirstInboundRtpMs;
+        if (firstInboundRtpMs !== null) {
+          this.activeResponseInboundRtpObserved = true;
+          this.activeResponseFirstInboundRtpMs = Math.round(firstInboundRtpMs);
+        }
       }
       this.metrics.updateWebRtcStats({ roundTripTimeMs, jitterMs, packetsLost });
       const snapshot = this.metrics.snapshot();
@@ -1104,6 +1759,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       ) {
         this.emit({ type: 'metrics', metrics: snapshot });
       }
+      this.maybeAcknowledgeNativeSpeech();
     } catch {
       // Stats qualité best-effort ; aucune donnée sensible ni impact sur la conversation.
     } finally {

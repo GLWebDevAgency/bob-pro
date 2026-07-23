@@ -73,6 +73,7 @@ const METADATA = {
 function preparedState(): OpenAiNativeSpeechDeliveryState {
   return createOpenAiNativeSpeechDelivery({
     ...BINDING,
+    subjectKeyVersion: 1,
     speechPolicyVersion: 1,
     speechScenarioId: 'generic_help_v1',
     proofFormatVersion: 2,

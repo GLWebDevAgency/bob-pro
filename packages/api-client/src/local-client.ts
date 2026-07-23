@@ -269,6 +269,8 @@ import type {
   RealtimeVoiceSpeechCancellationInput,
   RealtimeVoiceSpeechDeliveryAcknowledgement,
   RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  RealtimeVoiceNativeSpeechDeliveryInput,
   RealtimeVoiceSpeechFeed,
   RealtimeVoiceSpeechFeedInput,
   SuggestExpenseDefaultsInput,
@@ -1530,6 +1532,16 @@ export class LocalBobClient implements BobClient {
       ok: false,
       error: appForbidden('La livraison vocale Bob Live exige le backend sécurisé.'),
     };
+  }
+
+  async acknowledgeRealtimeVoiceNativeSpeechDelivery(
+    _sessionHandle: string,
+    _turnId: string,
+    _deliveryId: string,
+    _input: RealtimeVoiceNativeSpeechDeliveryInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceNativeSpeechDeliveryAcknowledgement, AppError>> {
+    return err(appUnavailable('bob-live-native-acknowledgement'));
   }
 
   async cancelRealtimeVoiceSpeech(

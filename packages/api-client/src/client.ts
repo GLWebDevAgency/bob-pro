@@ -698,6 +698,44 @@ export interface RealtimeVoiceSpeechDeliveryAcknowledgement {
   controlReference?: RealtimeVoiceControlReference;
 }
 
+export type RealtimeVoiceNativeSpeechPendingBargeInSlo =
+  | { readonly status: 'complete'; readonly durationsMs: readonly number[] }
+  | { readonly status: 'overflowed' };
+
+/** Mesures transport locales bornées ; elles ne contiennent ni texte ni identifiant provider. */
+export interface RealtimeVoiceNativeSpeechSlo {
+  readonly speechStoppedEventToFirstInboundRtpMs: number;
+  readonly pendingBargeIn?: RealtimeVoiceNativeSpeechPendingBargeInSlo;
+}
+
+/**
+ * Observation disponible avec le transport WebRTC V1. Elle atteste seulement que le mobile a
+ * observé du RTP distant puis le signal de drainage du fournisseur. Ce proxy n'est PAS une preuve
+ * de fin de DAC, d'audibilité humaine ni de lecture acoustique complète.
+ */
+export interface RealtimeVoiceNativeSpeechLocalObservation {
+  readonly formatVersion: 1;
+  readonly kind: 'webrtc_remote_rtp_observed_provider_drained_v1';
+}
+
+export interface RealtimeVoiceNativeSpeechDeliveryInput {
+  readonly acknowledgementId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly slo: RealtimeVoiceNativeSpeechSlo;
+  readonly localObservation: RealtimeVoiceNativeSpeechLocalObservation;
+}
+
+/** Reçu Bob durable, sans metadata fournisseur et sans capacité de contrôle implicite. */
+export interface RealtimeVoiceNativeSpeechDeliveryAcknowledgement {
+  readonly deliveryId: string;
+  readonly turnId: string;
+  readonly acknowledgementId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly idempotent: boolean;
+}
+
 export type RealtimeVoiceSpeechCancellationReason =
   'barge_in' | 'user_cancel' | 'context_changed' | 'session_end' | 'superseded' | 'playback_error';
 
@@ -1148,6 +1186,17 @@ export interface BobClient {
     input: RealtimeVoiceSpeechDeliveryInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceSpeechDeliveryAcknowledgement, AppError>>;
+  /**
+   * Acquitte une restitution OpenAI native uniquement après l'observation locale V1. Cette
+   * observation reste un proxy RTP+drainage et ne doit jamais être présentée comme preuve DAC.
+   */
+  acknowledgeRealtimeVoiceNativeSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    deliveryId: string,
+    input: RealtimeVoiceNativeSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceNativeSpeechDeliveryAcknowledgement, AppError>>;
   cancelRealtimeVoiceSpeech(
     sessionHandle: string,
     turnId: string,

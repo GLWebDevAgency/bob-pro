@@ -34,6 +34,10 @@ const OWNER = '3'.repeat(64);
 const SECRET = 'openai-native-authority-proof-secret-v4-0000000000000';
 const REQUEST_NONCE = 'request_nonce_1234567890_1234567890';
 const RESPONSE_ID = 'resp_123';
+const LOCAL_OBSERVATION = Object.freeze({
+  formatVersion: 1 as const,
+  kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
+});
 
 class MemoryRepository implements OpenAiNativeSpeechDeliveryRepositoryPort {
   state: OpenAiNativeSpeechDeliveryState | null = null;
@@ -42,6 +46,7 @@ class MemoryRepository implements OpenAiNativeSpeechDeliveryRepositoryPort {
   casCalls = 0;
   forceCasConflict = false;
   unavailablePrepareCalls = 0;
+  unavailableReadCalls = 0;
   throwPrepareAfterApply = false;
   ambiguousAlreadyApplied = false;
   throwAfterApply = false;
@@ -70,6 +75,10 @@ class MemoryRepository implements OpenAiNativeSpeechDeliveryRepositoryPort {
 
   async read(key: OpenAiNativeSpeechDeliveryKey): Promise<OpenAiNativeSpeechDeliveryReadResult> {
     this.readCalls += 1;
+    if (this.unavailableReadCalls > 0) {
+      this.unavailableReadCalls -= 1;
+      return { status: 'unavailable' };
+    }
     return this.state?.companyId === key.companyId && this.state.deliveryId === key.deliveryId
       ? { status: 'found', state: this.state }
       : { status: 'not_found' };
@@ -126,6 +135,7 @@ function input(
   return {
     companyId: 'company-1',
     subjectHmac: SUBJECT,
+    subjectKeyVersion: 1,
     sessionId: SESSION,
     turnId: TURN,
     contextRevision: 7,
@@ -151,6 +161,31 @@ function stateBinding(state: OpenAiNativeSpeechDeliveryState): OpenAiNativeSpeec
     contextDigest: state.contextDigest,
     sidebandOwnerEpoch: state.sidebandOwnerEpoch,
     sidebandOwnerTokenHmac: state.sidebandOwnerTokenHmac,
+  };
+}
+
+function mobileAcknowledgement(
+  state: OpenAiNativeSpeechDeliveryState,
+  overrides: Partial<Parameters<OpenAiNativeSpeechAuthority['acknowledgeMobileDelivery']>[0]> = {},
+): Parameters<OpenAiNativeSpeechAuthority['acknowledgeMobileDelivery']>[0] {
+  return {
+    companyId: state.companyId,
+    subjectHmacCandidates: Object.freeze([Object.freeze({
+      version: state.subjectKeyVersion ?? 1,
+      subjectHmac: state.subjectHmac,
+    })]),
+    deliveryId: state.deliveryId,
+    sessionId: state.sessionId,
+    turnId: state.turnId,
+    contextRevision: state.contextRevision,
+    contextDigest: state.contextDigest,
+    acknowledgementId: ACK,
+    localObservation: LOCAL_OBSERVATION,
+    slo: {
+      speechStoppedEventToFirstInboundRtpMs: 701,
+      pendingBargeIn: { status: 'complete', durationsMs: [91, 120] },
+    },
+    ...overrides,
   };
 }
 
@@ -653,6 +688,7 @@ describe('OpenAiNativeSpeechAuthority — ACK et terminaux immuables', () => {
     const acknowledgement = {
       ...completed.binding,
       acknowledgementId: ACK,
+      localObservation: LOCAL_OBSERVATION,
       slo: {
         speechStoppedEventToFirstInboundRtpMs: 701,
         pendingBargeIn: { status: 'complete', durationsMs: [91, 120] },
@@ -686,6 +722,360 @@ describe('OpenAiNativeSpeechAuthority — ACK et terminaux immuables', () => {
       ...acknowledgement,
       acknowledgementId: OTHER,
     })).resolves.toEqual({ status: 'rejected' });
+  });
+
+  it('acquitte le reçu mobile sans accepter l’owner secret depuis le wire', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    h.advance();
+
+    const delivered = await h.authority.acknowledgeMobileDelivery(
+      mobileAcknowledgement(completed),
+    );
+
+    expect(delivered).toMatchObject({
+      status: 'applied',
+      state: {
+        phase: 'delivered',
+        acknowledgementId: ACK,
+        speechStoppedEventToFirstInboundRtpMs: 701,
+        bargeInDurationsMs: [91, 120],
+      },
+    });
+    h.advance();
+    await expect(h.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toMatchObject({ status: 'idempotent', state: { phase: 'delivered' } });
+  });
+
+  it('compare une keyring sujet entière après une seule lecture durable et un seul CAS', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    const reads = h.repository.readCalls;
+    const swaps = h.repository.casCalls;
+
+    await expect(h.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed, {
+      subjectHmacCandidates: Object.freeze([
+        Object.freeze({ version: 2, subjectHmac: '9'.repeat(64) }),
+        Object.freeze({ version: 1, subjectHmac: completed.subjectHmac }),
+      ]),
+    }))).resolves.toMatchObject({ status: 'applied', state: { phase: 'delivered' } });
+    expect(h.repository.readCalls - reads).toBe(1);
+    expect(h.repository.casCalls - swaps).toBe(1);
+  });
+
+  it('lie un reçu versionné à sa version exacte mais conserve le scan constant des lignes N-1 NULL', async () => {
+    const versioned = harness();
+    await advanceToCompleted(versioned);
+    const completed = versioned.repository.state!;
+    const casCalls = versioned.repository.casCalls;
+
+    await expect(versioned.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed, {
+      subjectHmacCandidates: Object.freeze([
+        Object.freeze({ version: 2, subjectHmac: completed.subjectHmac }),
+      ]),
+    }))).resolves.toEqual({ status: 'not_found' });
+    expect(versioned.repository.casCalls).toBe(casCalls);
+
+    const legacy = harness();
+    await advanceToCompleted(legacy);
+    legacy.repository.state = Object.freeze({
+      ...legacy.repository.state!,
+      subjectKeyVersion: null,
+    });
+    const legacyCompleted = legacy.repository.state;
+    if (!legacyCompleted) throw new Error('Legacy delivery fixture is unavailable.');
+
+    await expect(legacy.authority.acknowledgeMobileDelivery(mobileAcknowledgement(
+      legacyCompleted,
+      {
+        subjectHmacCandidates: Object.freeze([
+          Object.freeze({ version: 2, subjectHmac: legacyCompleted.subjectHmac }),
+        ]),
+      },
+    ))).resolves.toMatchObject({ status: 'applied', state: { phase: 'delivered' } });
+  });
+
+  it('ne boucle pas en base après un conflit CAS concurrent', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    h.repository.forceCasConflict = true;
+    const reads = h.repository.readCalls;
+    const swaps = h.repository.casCalls;
+
+    await expect(h.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toEqual({ status: 'unavailable' });
+    expect(h.repository.readCalls - reads).toBe(1);
+    expect(h.repository.casCalls - swaps).toBe(1);
+    expect(h.repository.state?.phase).toBe('completed');
+  });
+
+  it('borne à une lecture les absences et indisponibilités, quelle que soit la keyring sujet', async () => {
+    const missing = harness();
+    const missingReads = missing.repository.readCalls;
+    await expect(missing.authority.acknowledgeMobileDelivery({
+      ...mobileAcknowledgement({
+        ...await prepare(missing).then((outcome) => outcome.state),
+        deliveryId: OTHER,
+      }),
+      subjectHmacCandidates: Object.freeze([
+        Object.freeze({ version: 2, subjectHmac: '9'.repeat(64) }),
+        Object.freeze({ version: 1, subjectHmac: SUBJECT }),
+      ]),
+    })).resolves.toEqual({ status: 'not_found' });
+    expect(missing.repository.readCalls - missingReads).toBe(1);
+
+    const unavailable = harness();
+    const prepared = await prepare(unavailable);
+    unavailable.repository.unavailableReadCalls = 1;
+    const unavailableReads = unavailable.repository.readCalls;
+    await expect(unavailable.authority.acknowledgeMobileDelivery({
+      ...mobileAcknowledgement(prepared.state),
+      subjectHmacCandidates: Object.freeze([
+        Object.freeze({ version: 2, subjectHmac: '9'.repeat(64) }),
+        Object.freeze({ version: 1, subjectHmac: SUBJECT }),
+      ]),
+    })).resolves.toEqual({ status: 'unavailable' });
+    expect(unavailable.repository.readCalls - unavailableReads).toBe(1);
+  });
+
+  it.each([
+    ['tenant', { companyId: 'company-2' }],
+    ['sujet', { subjectHmacCandidates: [{ version: 1, subjectHmac: '9'.repeat(64) }] }],
+    ['delivery', { deliveryId: OTHER }],
+    ['session', { sessionId: OTHER }],
+    ['tour', { turnId: OTHER }],
+    ['revision de contexte', { contextRevision: 8 }],
+    ['digest de contexte', { contextDigest: '9'.repeat(64) }],
+  ] as const)('masque en not_found un mismatch mobile de %s', async (_label, override) => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    const casCalls = h.repository.casCalls;
+    h.advance();
+
+    await expect(h.authority.acknowledgeMobileDelivery({
+      ...mobileAcknowledgement(completed),
+      ...override,
+    })).resolves.toEqual({ status: 'not_found' });
+    expect(h.repository.casCalls).toBe(casCalls);
+    expect(h.repository.state?.phase).toBe('completed');
+  });
+
+  it('rend un ACK avant completed explicitement retryable sans mutation', async () => {
+    const incomplete = harness();
+    const prepared = await prepare(incomplete);
+    incomplete.advance();
+    await expect(incomplete.authority.acknowledgeMobileDelivery(
+      mobileAcknowledgement(prepared.state),
+    )).resolves.toEqual({ status: 'not_ready' });
+    expect(incomplete.repository.state?.phase).toBe('prepared');
+    expect(incomplete.repository.casCalls).toBe(0);
+
+    const draining = harness();
+    const streaming = await advanceToStreaming(draining);
+    draining.advance();
+    expect(await draining.authority.responseDone({
+      ...streaming.binding,
+      providerResponseId: RESPONSE_ID,
+      providerTranscript: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1,
+    })).toMatchObject({ status: 'applied', state: { phase: 'draining' } });
+    const beforeAcknowledgement = draining.repository.state!;
+    const casCalls = draining.repository.casCalls;
+    await expect(draining.authority.acknowledgeMobileDelivery(
+      mobileAcknowledgement(beforeAcknowledgement),
+    )).resolves.toEqual({ status: 'not_ready' });
+    expect(draining.repository.state).toBe(beforeAcknowledgement);
+    expect(draining.repository.casCalls).toBe(casCalls);
+  });
+
+  it('conserve un replay divergent après delivered comme conflit fatal', async () => {
+    const completed = harness();
+    await advanceToCompleted(completed);
+    const state = completed.repository.state!;
+    completed.advance();
+    await completed.authority.acknowledgeMobileDelivery(mobileAcknowledgement(state));
+    completed.advance();
+    await expect(completed.authority.acknowledgeMobileDelivery(mobileAcknowledgement(state, {
+      acknowledgementId: OTHER,
+    }))).resolves.toEqual({ status: 'conflict' });
+  });
+
+  it('réconcilie uniquement une preuve durable exacte et traite le legacy NULL comme non prouvé', async () => {
+    const h = harness();
+    const prepared = await prepare(h);
+    await expect(h.authority.reconcileOwnerDelivery(stateBinding(prepared.state)))
+      .resolves.toEqual({ status: 'pending' });
+
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    await expect(h.authority.reconcileOwnerDelivery(stateBinding(completed)))
+      .resolves.toEqual({ status: 'pending' });
+    await h.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed));
+    await expect(h.authority.reconcileOwnerDelivery(stateBinding(completed)))
+      .resolves.toMatchObject({
+        status: 'delivered',
+        acknowledgementId: ACK,
+        state: { phase: 'delivered' },
+      });
+
+    h.repository.state = {
+      ...h.repository.state!,
+      localObservationFormatVersion: null,
+      localObservationKind: null,
+    };
+    await expect(h.authority.reconcileOwnerDelivery(stateBinding(completed)))
+      .resolves.toEqual({ status: 'terminal_without_proof' });
+  });
+
+  it('échoue fermé pendant une rotation preuve tant que l’ancienne clé n’est plus disponible', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    const rotated = new OpenAiNativeSpeechAuthority(
+      h.repository,
+      {
+        proofKeys: {
+          currentVersion: 5,
+          secret: (version) => version === 5
+            ? 'openai-native-authority-proof-secret-v5-0000000000000'
+            : null,
+        },
+      },
+      {
+        deliveryId: () => OTHER,
+        requestNonce: () => REQUEST_NONCE,
+        dispatchClaimId: () => CLAIM,
+      },
+      () => 1_000_100,
+    );
+
+    await expect(rotated.reconcileOwnerDelivery(stateBinding(completed)))
+      .resolves.toEqual({ status: 'unavailable' });
+    await expect(rotated.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toEqual({ status: 'unavailable' });
+    expect(h.repository.state?.phase).toBe('completed');
+
+    await expect(h.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toMatchObject({ status: 'applied', state: { phase: 'delivered' } });
+    await expect(rotated.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toMatchObject({ status: 'idempotent', state: { phase: 'delivered' } });
+    await expect(rotated.acknowledgeMobileDelivery(mobileAcknowledgement(completed, {
+      acknowledgementId: OTHER,
+    }))).resolves.toEqual({ status: 'conflict' });
+    await expect(rotated.reconcileOwnerDelivery(stateBinding(completed)))
+      .resolves.toMatchObject({
+        status: 'delivered',
+        acknowledgementId: ACK,
+        state: { phase: 'delivered' },
+      });
+
+    const ownerAcknowledgement = {
+      ...stateBinding(completed),
+      acknowledgementId: ACK,
+      localObservation: LOCAL_OBSERVATION,
+      slo: mobileAcknowledgement(completed).slo,
+    } as const;
+    await expect(rotated.acknowledgeDelivery(ownerAcknowledgement))
+      .resolves.toMatchObject({ status: 'idempotent', state: { phase: 'delivered' } });
+    await expect(rotated.acknowledgeDelivery({
+      ...ownerAcknowledgement,
+      acknowledgementId: OTHER,
+    })).resolves.toEqual({ status: 'rejected' });
+  });
+
+  it('capture tout le reçu avant la première lecture suspendue', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    const mutable = {
+      ...mobileAcknowledgement(completed),
+      subjectHmacCandidates: [
+        { version: 2, subjectHmac: '9'.repeat(64) },
+        { version: 1, subjectHmac: completed.subjectHmac },
+      ],
+      localObservation: { ...LOCAL_OBSERVATION },
+      slo: {
+        speechStoppedEventToFirstInboundRtpMs: 701,
+        pendingBargeIn: { status: 'complete' as const, durationsMs: [91, 120] },
+      },
+    };
+    const originalRead = h.repository.read.bind(h.repository);
+    let signalRead!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    h.repository.read = async (key) => {
+      signalRead();
+      await readGate;
+      return originalRead(key);
+    };
+    h.advance();
+
+    const acknowledging = h.authority.acknowledgeMobileDelivery(mutable);
+    await readStarted;
+    mutable.acknowledgementId = OTHER;
+    mutable.contextDigest = '9'.repeat(64);
+    mutable.subjectHmacCandidates[1]!.subjectHmac = '8'.repeat(64);
+    mutable.localObservation.kind = 'native_playout_queue_drained_v1' as never;
+    mutable.slo.pendingBargeIn.durationsMs[0] = 9_999;
+    releaseRead();
+
+    await expect(acknowledging).resolves.toMatchObject({
+      status: 'applied',
+      state: {
+        acknowledgementId: ACK,
+        contextDigest: CONTEXT,
+        localObservationKind: LOCAL_OBSERVATION.kind,
+        bargeInDurationsMs: [91, 120],
+      },
+    });
+  });
+
+  it('refuse un lot enrichi avant toute lecture et échoue fermé si la clé historique manque', async () => {
+    const malformed = harness();
+    await advanceToCompleted(malformed);
+    const completed = malformed.repository.state!;
+    const reads = malformed.repository.readCalls;
+    await expect(malformed.authority.acknowledgeMobileDelivery({
+      ...mobileAcknowledgement(completed),
+      slo: { speechStoppedEventToFirstInboundRtpMs: 1, providerSecret: true } as never,
+    })).resolves.toEqual({ status: 'not_found' });
+    expect(malformed.repository.readCalls).toBe(reads);
+
+    malformed.secrets.delete(4);
+    malformed.advance();
+    await expect(malformed.authority.acknowledgeMobileDelivery(mobileAcknowledgement(completed)))
+      .resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('refuse toute liste sujet hostile, ambiguë ou enrichie avant la lecture durable', async () => {
+    const h = harness();
+    await advanceToCompleted(h);
+    const completed = h.repository.state!;
+    const sparse = new Array<string>(1);
+    const enriched = [completed.subjectHmac] as string[] & { extra?: boolean };
+    enriched.extra = true;
+    const candidates: readonly unknown[] = [
+      [],
+      Array.from({ length: 33 }, (_, index) => index.toString(16).padStart(64, '0')),
+      [completed.subjectHmac, completed.subjectHmac],
+      sparse,
+      enriched,
+      ['A'.repeat(64)],
+      { 0: completed.subjectHmac, length: 1 },
+    ];
+
+    for (const subjectHmacCandidates of candidates) {
+      const reads = h.repository.readCalls;
+      await expect(h.authority.acknowledgeMobileDelivery({
+        ...mobileAcknowledgement(completed),
+        subjectHmacCandidates,
+      } as never)).resolves.toEqual({ status: 'not_found' });
+      expect(h.repository.readCalls).toBe(reads);
+    }
   });
 
   it('rend cancel/fail idempotents par leur cle et tous les terminaux immuables', async () => {

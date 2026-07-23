@@ -80,6 +80,9 @@ jobs:
       BOB_LIVE_SUBJECT_KEY_VERSION: '1'
       BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
       # Autorité éphémère large pour les certificats historiques. Le dernier step la draine puis
       # la reconfigure à N=5 afin de prouver séparément la course exacte N/N+1 multi-clients.
       BOB_LIVE_ENABLED: 'true'
@@ -176,6 +179,13 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
+      - name: Certify OpenAI native key lifecycle and writer-retire races on PostgreSQL
+        env:
+          RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'
+          OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts
       - name: Certify Bob Live global N/N+1 capacity and rollback on ephemeral PostgreSQL
         run: |
           BOB_LIVE_ENABLED=false \
@@ -249,6 +259,9 @@ jobs:
       BOB_LIVE_SUBJECT_KEY_VERSION: '1'
       BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
       # Cette base isolée exécute des writers de compatibilité Mistral N-1 : elle doit donc ouvrir
       # explicitement l'autorité physique, sans jamais dépendre d'un plafond implicite.
       BOB_LIVE_ENABLED: 'true'

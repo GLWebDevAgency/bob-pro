@@ -28,6 +28,7 @@ import {
 } from './realtime.tokens';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
+import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
 import { REALTIME_REAPER_DIRECTORY } from './realtime-reaper.scheduler';
 import type { RealtimeVoiceSettings } from './realtime.types';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
@@ -37,6 +38,7 @@ import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
   buildRealtimeSpeechRuntime,
+  buildVerifiedRealtimeSpeechRuntime,
   RealtimeVoiceModule,
 } from './realtime.module';
 
@@ -85,6 +87,8 @@ function validMistralEnvironment(): void {
   vi.stubEnv('BOB_LIVE_SUBJECT_KEY_VERSION', '1');
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: 'i'.repeat(32) }));
   vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'p'.repeat(32));
+  vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '1');
+  vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: 'p'.repeat(32) }));
   vi.stubEnv('BOB_LIVE_USAGE_HMAC_SECRET', 'u'.repeat(32));
   vi.stubEnv('BOB_LIVE_CONTROL_ENCRYPTION_SECRET', 'c'.repeat(32));
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
@@ -108,6 +112,7 @@ function speechPersistenceFixture(): {
   readonly factories: Readonly<Record<
   | 'owner'
   | 'usage'
+  | 'keyVersions'
   | 'nativeDelivery'
   | 'auditedDelivery'
   | 'controls'
@@ -119,6 +124,7 @@ function speechPersistenceFixture(): {
   const factories = {
     owner: vi.fn(() => owner),
     usage: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeVoiceUsageRepository']>)),
+    keyVersions: vi.fn(() => ({ assertCurrentKeyVersions: vi.fn(async () => undefined) })),
     nativeDelivery: vi.fn(() => (
       {} as ReturnType<Persistence['createOpenAiNativeSpeechDeliveryRepository']>
     )),
@@ -136,6 +142,7 @@ function speechPersistenceFixture(): {
     persistence: {
       createRealtimeSidebandOwner: factories.owner,
       createRealtimeVoiceUsageRepository: factories.usage,
+      createOpenAiNativeKeyVersionAuthority: factories.keyVersions,
       createOpenAiNativeSpeechDeliveryRepository: factories.nativeDelivery,
       createRealtimeSpeechDeliveryRepository: factories.auditedDelivery,
       createRealtimeControlRepository: factories.controls,
@@ -495,7 +502,78 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
       (speech: SpeechRuntime | null) => unknown;
     expect(controlsFactory(runtime)).toBeInstanceOf(DisabledRealtimeDurableControlAuthority);
     expect(sourcePolicyFactory(runtime)).toBeNull();
+
+    // Le flag natif reste volontairement bloqué tant que la certification device n'est pas verte.
+    // Le provider est néanmoins composé avec l'autorité native injectée et demeure désactivé.
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'audited-signed-url-v1');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
+    const acknowledgementFactory = moduleFactory(
+      OpenAiNativeSpeechAcknowledgementService,
+    ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+    const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
+    expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
+    expect((acknowledgements as { readonly authority?: unknown }).authority)
+      .toBe(runtime.native.authority);
+    // Le service ne conserve volontairement pas l'objet de configuration (il contient la keyring
+    // sujet). Prouver le bit effectif évite aussi de réintroduire les secrets dans son instance.
+    expect((acknowledgements as { readonly enabled?: boolean }).enabled).toBe(false);
   });
+
+  it('admet sujet et preuve dans PostgreSQL avant de construire le runtime natif', async () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+      SUPABASE_URL: undefined,
+      SUPABASE_SERVICE_ROLE_KEY: undefined,
+      BOB_LIVE_LOCAL_AUDIT_BASE_URL: undefined,
+      BOB_LIVE_LOCAL_AUDIT_TOKEN: undefined,
+    };
+    const fixture = speechPersistenceFixture();
+    const assertCurrentKeyVersions = vi.fn(async () => undefined);
+    fixture.factories.keyVersions.mockReturnValue({ assertCurrentKeyVersions });
+
+    const runtime = await buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env);
+
+    expect(runtime?.native).toBeDefined();
+    expect(fixture.factories.keyVersions).toHaveBeenCalledOnce();
+    expect(assertCurrentKeyVersions).toHaveBeenCalledOnce();
+    expect(fixture.factories.keyVersions.mock.invocationCallOrder[0])
+      .toBeLessThan(assertCurrentKeyVersions.mock.invocationCallOrder[0] as number);
+    expect(assertCurrentKeyVersions.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.factories.nativeDelivery.mock.invocationCallOrder[0] as number);
+  });
+
+  it('refuse le runtime natif si la persistance ne fournit pas son autorité de versions', async () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+    };
+    const fixture = speechPersistenceFixture();
+    fixture.factories.keyVersions.mockReturnValue(null);
+
+    await expect(buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env))
+      .rejects.toThrow('PostgreSQL key authority is unavailable');
+    expect(fixture.factories.owner).not.toHaveBeenCalled();
+    expect(fixture.factories.usage).not.toHaveBeenCalled();
+    expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each(['openai', 'mistral'] as const)(
+    'ne sollicite pas le registre natif pour la restitution auditée %s',
+    async (provider) => {
+      const fixture = speechPersistenceFixture();
+
+      await expect(buildVerifiedRealtimeSpeechRuntime(
+        fixture.persistence,
+        validSpeechRuntimeEnvironment(provider),
+      )).resolves.not.toBeNull();
+
+      expect(fixture.factories.keyVersions).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['openai', 'mistral'] as const)(
     'conserve la chaîne auditée complète et exclusive avec %s',
@@ -527,6 +605,13 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
         (speech: SpeechRuntime | null) => unknown;
       expect(controlsFactory(runtime)).toBe(runtime.audited.controls);
       expect(sourcePolicyFactory(runtime)).toBe(runtime.audited.sourcePolicy);
+
+      const acknowledgementFactory = moduleFactory(
+        OpenAiNativeSpeechAcknowledgementService,
+      ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+      const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
+      expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
+      expect((acknowledgements as { readonly authority?: unknown }).authority).toBeNull();
     },
   );
 

@@ -22,6 +22,7 @@ import { WithoutTenantPersistenceTransaction } from '../../persistence/tenant-pe
 import type { RealtimeSidebandControl } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
+import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
 import { REALTIME_SIDEBAND } from './realtime.tokens';
 
 interface AbortAwareRequest {
@@ -40,6 +41,7 @@ export class RealtimeVoiceController {
     private readonly realtime: RealtimeVoiceService,
     @Optional() private readonly speech?: RealtimeSpeechDeliveryService,
     @Optional() @Inject(REALTIME_SIDEBAND) private readonly sideband?: RealtimeSidebandControl,
+    @Optional() private readonly nativeAcknowledgements?: OpenAiNativeSpeechAcknowledgementService,
   ) {}
 
   @Get('config')
@@ -286,6 +288,70 @@ export class RealtimeVoiceController {
           sessionHandle,
           artifactId,
           ...acknowledgement.controlReference,
+        });
+      }
+      return acknowledgement;
+    } finally {
+      request.removeListener('aborted', abort);
+    }
+  }
+
+  @Post('calls/:sessionHandle/turns/:turnId/native-speech/:deliveryId/deliveries')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
+  @Header('Vary', 'Authorization')
+  @Header('Referrer-Policy', 'no-referrer')
+  async acknowledgeNativeSpeechDelivery(
+    @Param('sessionHandle') sessionHandle: string,
+    @Param('turnId') turnId: string,
+    @Param('deliveryId') deliveryId: string,
+    @Body() body: unknown,
+    @Req() request: AbortAwareRequest,
+    @Res({ passthrough: true }) response: HeaderResponse,
+  ) {
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    request.once('aborted', abort);
+    try {
+      const result = this.nativeAcknowledgements
+        ? await this.nativeAcknowledgements.acknowledge(
+            sessionHandle,
+            turnId,
+            deliveryId,
+            body,
+            controller.signal,
+          )
+        : {
+            ok: false as const,
+            error: {
+              kind: 'unavailable' as const,
+              service: 'bob-live-native-acknowledgement',
+              retryAfterSeconds: 1,
+            },
+          };
+      this.applyRetryAfter(result, response);
+      const acknowledgement = unwrap(result);
+      const principal = getPrincipal();
+      if (
+        principal?.userId
+        && principal.companyId
+        && this.sideband?.nativeSpeechDelivered
+      ) {
+        // Le sideband n'est notifie qu'APRES le CAS durable `completed -> delivered`.
+        // Le reçu mobile reste un proxy RTP + drain fournisseur et n'ouvre aucun contrôle.
+        this.sideband.nativeSpeechDelivered({
+          userId: principal.userId,
+          companyId: principal.companyId,
+          sessionHandle,
+          deliveryId: acknowledgement.deliveryId,
+          turnId: acknowledgement.turnId,
+          acknowledgementId: acknowledgement.acknowledgementId,
+          contextRevision: acknowledgement.contextRevision,
+          contextDigest: acknowledgement.contextDigest,
         });
       }
       return acknowledgement;

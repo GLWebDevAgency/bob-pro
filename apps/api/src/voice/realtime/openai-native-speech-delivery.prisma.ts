@@ -14,6 +14,7 @@ import {
 const POSTGRES_INT_MAX = 2_147_483_647;
 const PREPARATION_CLOCK_SKEW_MS = 60_000;
 const MAX_RETENTION_MS = 31 * 24 * 60 * 60 * 1_000;
+const DELIVERY_TRANSACTION_OPTIONS = { maxWaitMs: 1_000, timeoutMs: 4_000 } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const TENANT_ID = /^[A-Za-z0-9-]{1,64}$/u;
 
@@ -25,6 +26,7 @@ interface NativeDeliveryRow {
   readonly deliveryId: string;
   readonly companyId: string;
   readonly subjectHmac: string;
+  readonly subjectKeyVersion: number | null;
   readonly sessionId: string;
   readonly turnId: string;
   readonly contextRevision: number;
@@ -56,6 +58,8 @@ interface NativeDeliveryRow {
   readonly completedAt: Date | null;
   readonly acknowledgementId: string | null;
   readonly deliveredAt: Date | null;
+  readonly localObservationFormatVersion: number | null;
+  readonly localObservationKind: string | null;
   readonly sloFormatVersion: number | null;
   readonly speechStoppedEventToFirstInboundRtpMs: number | null;
   readonly bargeInStatus: string | null;
@@ -71,7 +75,7 @@ interface NativeDeliveryRow {
 }
 
 const DELIVERY_COLUMNS = Prisma.sql`
-  "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+  "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
   "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
   "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
   "requestNonceHmac", "proofFormatVersion", "proofKeyVersion",
@@ -79,6 +83,7 @@ const DELIVERY_COLUMNS = Prisma.sql`
   "dispatchClaimId", "dispatchingAt", "requestedAt", "providerResponseIdHmac",
   "acceptedAt", "streamingAt", "responseDoneAt", "outputStoppedAt",
   "outputTranscriptHmac", "completedAt", "acknowledgementId", "deliveredAt",
+  "localObservationFormatVersion", "localObservationKind",
   "sloFormatVersion", "speechStoppedEventToFirstInboundRtpMs", "bargeInStatus",
   "bargeInDurationsMs", "cancellationId", "cancellationReason", "failureId",
   "failureReason", "terminalAt", "createdAt", "expiresAt", "retentionExpiresAt"
@@ -132,6 +137,7 @@ function mapRow(row: NativeDeliveryRow): OpenAiNativeSpeechDeliveryState | null 
     deliveryId: row.deliveryId.toLowerCase(),
     companyId: row.companyId,
     subjectHmac: row.subjectHmac.trim(),
+    subjectKeyVersion: row.subjectKeyVersion,
     sessionId: row.sessionId.toLowerCase(),
     turnId: row.turnId.toLowerCase(),
     contextRevision: row.contextRevision,
@@ -165,6 +171,11 @@ function mapRow(row: NativeDeliveryRow): OpenAiNativeSpeechDeliveryState | null 
     completedAtMs: timestamp(row.completedAt),
     acknowledgementId: row.acknowledgementId?.toLowerCase() ?? null,
     deliveredAtMs: timestamp(row.deliveredAt),
+    localObservationFormatVersion:
+      row.localObservationFormatVersion as
+        OpenAiNativeSpeechDeliveryState['localObservationFormatVersion'],
+    localObservationKind:
+      row.localObservationKind as OpenAiNativeSpeechDeliveryState['localObservationKind'],
     sloFormatVersion:
       row.sloFormatVersion as OpenAiNativeSpeechDeliveryState['sloFormatVersion'],
     speechStoppedEventToFirstInboundRtpMs: row.speechStoppedEventToFirstInboundRtpMs,
@@ -250,7 +261,7 @@ function latestTimelineAtMs(state: OpenAiNativeSpeechDeliveryState): number {
 }
 
 /**
- * Autorité PostgreSQL de la preuve acoustique OpenAI native.
+ * Autorité PostgreSQL de la livraison OpenAI native.
  *
  * Chaque geste ouvre sa transaction tenantée. Un replay exact est relu et retourné sans UPDATE ;
  * aucune capacité provider_stream n'est créée ou exposée par cet adapter V1.
@@ -262,7 +273,12 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
   async prepare(
     state: OpenAiNativeSpeechDeliveryState,
   ): Promise<OpenAiNativeSpeechDeliveryPrepareResult> {
-    if (!validState(state) || state.phase !== 'prepared' || state.revision !== 1) {
+    if (
+      !validState(state)
+      || state.subjectKeyVersion === null
+      || state.phase !== 'prepared'
+      || state.revision !== 1
+    ) {
       return { status: 'unavailable' };
     }
     try {
@@ -300,7 +316,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
 
         const [inserted] = await tx.$queryRaw<NativeDeliveryRow[]>(Prisma.sql`
           INSERT INTO realtime_native_speech_deliveries (
-            "deliveryId", "companyId", "subjectHmac", "sessionId", "turnId",
+            "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
             "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
             "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
             "requestNonceHmac", "proofFormatVersion", "proofKeyVersion",
@@ -308,11 +324,13 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
             "dispatchClaimId", "dispatchingAt", "requestedAt", "providerResponseIdHmac",
             "acceptedAt", "streamingAt", "responseDoneAt", "outputStoppedAt",
             "outputTranscriptHmac", "completedAt", "acknowledgementId", "deliveredAt",
+            "localObservationFormatVersion", "localObservationKind",
             "sloFormatVersion", "speechStoppedEventToFirstInboundRtpMs", "bargeInStatus",
             "bargeInDurationsMs", "cancellationId", "cancellationReason", "failureId",
             "failureReason", "terminalAt", "createdAt", "expiresAt", "retentionExpiresAt"
           ) VALUES (
             ${state.deliveryId}::uuid, ${state.companyId}, ${state.subjectHmac},
+            ${state.subjectKeyVersion},
             ${state.sessionId}::uuid, ${state.turnId}::uuid, ${state.contextRevision},
             ${state.contextDigest}, ${state.sidebandOwnerEpoch}, ${state.sidebandOwnerTokenHmac},
             ${state.speechPolicyVersion}, ${state.speechScenarioId},
@@ -320,6 +338,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
             ${state.proofFormatVersion}, ${state.proofKeyVersion}, ${state.provider},
             ${state.model}, ${state.voice}, ${state.version}, ${state.revision}, ${state.phase},
             NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL,
             NULL, NULL, NULL, ARRAY[]::integer[], NULL, NULL, NULL, NULL, NULL,
             ${new Date(state.createdAtMs)}, ${new Date(state.expiresAtMs)},
             clock_timestamp() + INTERVAL '30 days'
@@ -338,7 +357,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
           throw new Error('openai_native_delivery_projection_mismatch');
         }
         return { status: 'created' as const, state: persisted };
-      });
+      }, DELIVERY_TRANSACTION_OPTIONS);
     } catch {
       return { status: 'unavailable' };
     }
@@ -356,7 +375,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
         return state
           ? { status: 'found' as const, state }
           : { status: 'unavailable' as const };
-      });
+      }, DELIVERY_TRANSACTION_OPTIONS);
     } catch {
       return { status: 'unavailable' };
     }
@@ -385,6 +404,8 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
                  "completedAt" = ${date(next.completedAtMs)},
                  "acknowledgementId" = ${next.acknowledgementId}::uuid,
                  "deliveredAt" = ${date(next.deliveredAtMs)},
+                 "localObservationFormatVersion" = ${next.localObservationFormatVersion},
+                 "localObservationKind" = ${next.localObservationKind},
                  "sloFormatVersion" = ${next.sloFormatVersion},
                  "speechStoppedEventToFirstInboundRtpMs" = ${next.speechStoppedEventToFirstInboundRtpMs},
                  "bargeInStatus" = ${next.bargeInStatus},
@@ -398,6 +419,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
              AND "deliveryId" = ${key.deliveryId}::uuid
              AND revision = ${input.expectedRevision}
              AND "subjectHmac" = ${next.subjectHmac}
+             AND "subjectKeyVersion" IS NOT DISTINCT FROM ${next.subjectKeyVersion}
              AND "sessionId" = ${next.sessionId}::uuid
              AND "turnId" = ${next.turnId}::uuid
              AND "contextRevision" = ${next.contextRevision}
@@ -440,7 +462,7 @@ implements OpenAiNativeSpeechDeliveryRepositoryPort {
         return sameState(current, next)
           ? { status: 'already_applied' as const, state: current }
           : { status: 'conflict' as const };
-      });
+      }, DELIVERY_TRANSACTION_OPTIONS);
     } catch {
       return { status: 'unavailable' };
     }

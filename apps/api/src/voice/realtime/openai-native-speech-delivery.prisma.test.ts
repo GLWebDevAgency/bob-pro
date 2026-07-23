@@ -15,6 +15,7 @@ const SESSION = '00000000-0000-4000-8000-000000000002';
 const TURN = '00000000-0000-4000-8000-000000000003';
 const CLAIM = '00000000-0000-4000-8000-000000000004';
 const OTHER_DELIVERY = '00000000-0000-4000-8000-000000000005';
+const ACKNOWLEDGEMENT = '00000000-0000-4000-8000-000000000006';
 const DATABASE_NOW = new Date('2026-07-21T10:00:00.000Z');
 const CREATED_AT_MS = DATABASE_NOW.getTime() - 1_000;
 const EXPIRES_AT_MS = DATABASE_NOW.getTime() + 4 * 60_000;
@@ -24,6 +25,11 @@ const OWNER_HMAC = '3'.repeat(64);
 const SPEECH_HMAC = '4'.repeat(64);
 const FACTS_HMAC = '5'.repeat(64);
 const NONCE_HMAC = '6'.repeat(64);
+const RESPONSE_HMAC = '7'.repeat(64);
+const LOCAL_OBSERVATION = Object.freeze({
+  formatVersion: 1 as const,
+  kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
+});
 
 function preparation(
   overrides: Partial<OpenAiNativeSpeechDeliveryPreparation> = {},
@@ -32,6 +38,7 @@ function preparation(
     deliveryId: DELIVERY,
     companyId: COMPANY,
     subjectHmac: SUBJECT_HMAC,
+    subjectKeyVersion: 1,
     sessionId: SESSION,
     turnId: TURN,
     contextRevision: 7,
@@ -68,6 +75,36 @@ function claimed(state = prepared()): OpenAiNativeSpeechDeliveryState {
   });
 }
 
+function completed(state = prepared()): OpenAiNativeSpeechDeliveryState {
+  let next = claimed(state);
+  next = reduceOpenAiNativeSpeechDelivery(next, {
+    type: 'MARK_REQUESTED',
+    dispatchClaimId: CLAIM,
+    atMs: DATABASE_NOW.getTime() + 2_000,
+  });
+  next = reduceOpenAiNativeSpeechDelivery(next, {
+    type: 'ACCEPT_RESPONSE',
+    providerResponseIdHmac: RESPONSE_HMAC,
+    atMs: DATABASE_NOW.getTime() + 3_000,
+  });
+  next = reduceOpenAiNativeSpeechDelivery(next, {
+    type: 'START_STREAMING',
+    providerResponseIdHmac: RESPONSE_HMAC,
+    atMs: DATABASE_NOW.getTime() + 4_000,
+  });
+  next = reduceOpenAiNativeSpeechDelivery(next, {
+    type: 'RESPONSE_DONE',
+    providerResponseIdHmac: RESPONSE_HMAC,
+    outputTranscriptHmac: SPEECH_HMAC,
+    atMs: DATABASE_NOW.getTime() + 5_000,
+  });
+  return reduceOpenAiNativeSpeechDelivery(next, {
+    type: 'OUTPUT_STOPPED',
+    providerResponseIdHmac: RESPONSE_HMAC,
+    atMs: DATABASE_NOW.getTime() + 6_000,
+  });
+}
+
 function rowFromState(
   state: OpenAiNativeSpeechDeliveryState,
   overrides: Record<string, unknown> = {},
@@ -76,6 +113,7 @@ function rowFromState(
     deliveryId: state.deliveryId,
     companyId: state.companyId,
     subjectHmac: state.subjectHmac,
+    subjectKeyVersion: state.subjectKeyVersion,
     sessionId: state.sessionId,
     turnId: state.turnId,
     contextRevision: state.contextRevision,
@@ -107,6 +145,8 @@ function rowFromState(
     completedAt: state.completedAtMs === null ? null : new Date(state.completedAtMs),
     acknowledgementId: state.acknowledgementId,
     deliveredAt: state.deliveredAtMs === null ? null : new Date(state.deliveredAtMs),
+    localObservationFormatVersion: state.localObservationFormatVersion,
+    localObservationKind: state.localObservationKind,
     sloFormatVersion: state.sloFormatVersion,
     speechStoppedEventToFirstInboundRtpMs: state.speechStoppedEventToFirstInboundRtpMs,
     bargeInStatus: state.bargeInStatus,
@@ -136,6 +176,7 @@ function harness(results: readonly unknown[]) {
   const withIsolatedTenant = vi.fn(async (
     _companyId: string,
     operation: (client: Prisma.TransactionClient) => Promise<unknown>,
+    _options?: unknown,
   ) => {
     try {
       return await operation(tx);
@@ -172,7 +213,11 @@ describe('PrismaOpenAiNativeSpeechDeliveryRepository — prepare', () => {
     ]);
 
     await expect(h.repository.prepare(state)).resolves.toEqual({ status: 'created', state });
-    expect(h.withIsolatedTenant).toHaveBeenCalledWith(COMPANY, expect.any(Function));
+    expect(h.withIsolatedTenant).toHaveBeenCalledWith(
+      COMPANY,
+      expect.any(Function),
+      { maxWaitMs: 1_000, timeoutMs: 4_000 },
+    );
     expect(h.queryRaw).toHaveBeenCalledTimes(3);
 
     const fence = queryAt(h.queryRaw, 1);
@@ -310,6 +355,38 @@ describe('PrismaOpenAiNativeSpeechDeliveryRepository — CAS', () => {
     expect(h.queryRaw).toHaveBeenCalledTimes(2);
     expect(queryAt(h.queryRaw, 0).sql).toMatch(/^UPDATE/u);
     expect(queryAt(h.queryRaw, 1).sql).toMatch(/^SELECT/u);
+  });
+
+  it('persiste atomiquement l’observation RTP V1 et sa métrologie avec le premier ACK', async () => {
+    const initial = completed();
+    const next = reduceOpenAiNativeSpeechDelivery(initial, {
+      type: 'ACK_DELIVERY',
+      acknowledgementId: ACKNOWLEDGEMENT,
+      deliveryId: initial.deliveryId,
+      sessionId: initial.sessionId,
+      turnId: initial.turnId,
+      contextRevision: initial.contextRevision,
+      contextDigest: initial.contextDigest,
+      localObservation: LOCAL_OBSERVATION,
+      slo: { speechStoppedEventToFirstInboundRtpMs: 701 },
+      atMs: DATABASE_NOW.getTime() + 7_000,
+    });
+    const h = harness([[rowFromState(next)]]);
+
+    await expect(h.repository.compareAndSwap({
+      key: { companyId: COMPANY, deliveryId: DELIVERY },
+      expectedRevision: initial.revision,
+      next,
+    })).resolves.toEqual({ status: 'applied', state: next });
+
+    const update = queryAt(h.queryRaw, 0);
+    expect(update.sql).toContain('"localObservationFormatVersion" =');
+    expect(update.sql).toContain('"localObservationKind" =');
+    expect(update.values).toEqual(expect.arrayContaining([
+      1,
+      LOCAL_OBSERVATION.kind,
+      701,
+    ]));
   });
 
   it('distingue conflit, absence et entrées impossibles sans fabriquer de succès', async () => {

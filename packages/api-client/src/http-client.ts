@@ -114,6 +114,8 @@ import type {
   RealtimeVoiceSpeechCancellationReason,
   RealtimeVoiceSpeechDeliveryAcknowledgement,
   RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  RealtimeVoiceNativeSpeechDeliveryInput,
   RealtimeVoiceSpeechFeed,
   RealtimeVoiceSpeechFeedInput,
   RealtimeVoiceSpeechMimeType,
@@ -175,6 +177,10 @@ import {
   decodeQuoteDraftSlot,
   type QuoteDraftEnvelopeWire,
 } from './quote-draft-codec';
+import {
+  decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  encodeRealtimeVoiceNativeSpeechDeliveryInput,
+} from './realtime-native-speech-ack-codec';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -2474,6 +2480,59 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/deliveries`,
       { deliveryId: input.deliveryId, audioSha256: input.audioSha256 },
       (status, value) => decodeRealtimeVoiceSpeechDelivery(status, value, turnId),
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceNativeSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    deliveryId: string,
+    input: RealtimeVoiceNativeSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ) {
+    if (typeof sessionHandle !== 'string' || !UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof turnId !== 'string' || !UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'turnId',
+        'Le tour Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof deliveryId !== 'string' || !UUID_PATTERN.test(deliveryId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'deliveryId',
+        'La livraison vocale native Bob Live doit être un UUID.',
+      );
+    }
+    const encoded = encodeRealtimeVoiceNativeSpeechDeliveryInput(input);
+    if (encoded === null) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'nativeSpeechAcknowledgement',
+        'L’acquittement vocal natif Bob Live est incomplet ou hors bornes.',
+      );
+    }
+
+    const canonicalTurnId = turnId.toLowerCase();
+    const canonicalDeliveryId = deliveryId.toLowerCase();
+    return this.reqRealtimeSpeech<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle.toLowerCase())}/turns/${encodeURIComponent(canonicalTurnId)}/native-speech/${encodeURIComponent(canonicalDeliveryId)}/deliveries`,
+      encoded,
+      (status, value) => decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement(
+        status,
+        value,
+        {
+          deliveryId: canonicalDeliveryId,
+          turnId: canonicalTurnId,
+          acknowledgementId: encoded.acknowledgementId,
+          contextRevision: encoded.contextRevision,
+          contextDigest: encoded.contextDigest,
+        },
+      ),
       signal,
     );
   }

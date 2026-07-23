@@ -12,11 +12,17 @@ const [
   retentionIndex,
   fenceAdd,
   fenceValidate,
+  localObservationMigration,
   rls,
   metadataCert,
   ci,
   postgresCert,
   maintenanceAdapter,
+  proofRotationCert,
+  keyLifecycleMigration,
+  nativeKeyManager,
+  realtimeModule,
+  keyLifecyclePostgresCert,
 ] = await Promise.all([
   readFile(new URL('scripts/release.sh', root), 'utf8'),
   readFile(
@@ -68,6 +74,13 @@ const [
     ),
     'utf8',
   ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260722050000_openai_native_local_observation/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
   readFile(new URL('prisma/rls.sql', root), 'utf8'),
   readFile(new URL('prisma/openai-native-release-cert.sql', root), 'utf8'),
   readFile(new URL('../../.github/workflows/ci.yml', root), 'utf8'),
@@ -76,6 +89,20 @@ const [
     'utf8',
   ),
   readFile(new URL('src/voice/realtime/openai-native-speech-maintenance.prisma.ts', root), 'utf8'),
+  readFile(new URL('prisma/openai-native-proof-key-rotation-cert.sql', root), 'utf8'),
+  readFile(
+    new URL(
+      'prisma/migrations/20260722060000_openai_native_key_lifecycle/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
+  readFile(new URL('scripts/manage-bob-live-native-key-versions.mjs', root), 'utf8'),
+  readFile(new URL('src/voice/realtime/realtime.module.ts', root), 'utf8'),
+  readFile(
+    new URL('src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts', root),
+    'utf8',
+  ),
 ]);
 const indexes = [reaperIndex, tenantRetentionIndex, expiryIndex, retentionIndex].join('\n');
 
@@ -104,6 +131,42 @@ test('la release live exécute une certification metadata-only après migration,
   );
 });
 
+test('la release stage atomiquement les deux keyspaces avant les ACL, le boot et le certificat', () => {
+  const markers = [
+    'prisma migrate deploy',
+    'manage-bob-live-native-key-versions.mjs stage',
+    'grant_app_role',
+    ' -f apps/api/prisma/rls.sql',
+    'certify_openai_native_release_metadata',
+  ].map((marker) => release.lastIndexOf(marker));
+  assert.ok(markers.every((index) => index >= 0));
+  assert.deepEqual(markers, [...markers].sort((left, right) => left - right));
+  assert.match(nativeKeyManager, /createHash\('sha256'\)\.update\(secret, 'utf8'\)\.digest\('hex'\)/u);
+  assert.match(nativeKeyManager, /ON CONFLICT \("keySpace", "keyVersion"\) DO NOTHING/u);
+  assert.match(nativeKeyManager, /material mismatch/u);
+  assert.match(nativeKeyManager, /cannot initialize after an unregistered native delivery/u);
+  assert.match(
+    realtimeModule,
+    /createOpenAiNativeKeyVersionAuthority[\s\S]*await keyVersions\.assertCurrentKeyVersions\(\)[\s\S]*buildRealtimeSpeechRuntime/u,
+  );
+});
+
+test('la migration native reste expand-compatible et clôt les courses writer/retire', () => {
+  assert.match(keyLifecycleMigration, /ADD COLUMN "subjectKeyVersion" INTEGER/u);
+  assert.doesNotMatch(
+    keyLifecycleMigration,
+    /ADD COLUMN "subjectKeyVersion" INTEGER\s+(?:NOT NULL|DEFAULT)/u,
+  );
+  assert.match(
+    keyLifecycleMigration,
+    /pg_advisory_xact_lock_shared[\s\S]*bob-live-subject-hmac-v1[\s\S]*pg_advisory_xact_lock_shared[\s\S]*openai-native-speech-proof-hmac-v1/u,
+  );
+  assert.match(keyLifecycleMigration, /NEW\."subjectKeyVersion" IS NULL/u);
+  assert.match(keyLifecycleMigration, /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
+  assert.match(keyLifecycleMigration, /OPENAI_NATIVE_PROOF_KEY_VERSION_RETAINED/u);
+  assert.match(keyLifecycleMigration, /retained_openai_native_proof_hmac_key_bindings/u);
+});
+
 test('la certification mutationnelle native reste confinée au PostgreSQL éphémère de CI', () => {
   assert.match(ci, /RUN_POSTGRES_OPENAI_NATIVE_DELIVERY_CERT: 'true'/u);
   assert.match(ci, /OPENAI_NATIVE_CERT_DATABASE_KIND: ephemeral/u);
@@ -120,10 +183,21 @@ test('la certification mutationnelle native reste confinée au PostgreSQL éphé
     /DIRECT_URL: postgresql:\/\/postgres:postgres@localhost:5432\/bob_ephemeral_ci/u,
   );
   assert.match(ci, /openai-native-speech-delivery\.postgres\.test\.ts/u);
+  assert.match(ci, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'/u);
+  assert.match(ci, /OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral/u);
+  assert.match(ci, /openai-native-key-version-lifecycle\.postgres\.test\.ts/u);
   assert.match(postgresCert, /LOOPBACK_HOSTS/u);
   assert.match(postgresCert, /\^bob_ephemeral_/u);
   assert.match(postgresCert, /current_database\(\)/u);
   assert.doesNotMatch(postgresCert, /ALTER TABLE[\s\S]*DISABLE TRIGGER/u);
+  assert.match(keyLifecyclePostgresCert, /LOOPBACK_HOSTS/u);
+  assert.match(keyLifecyclePostgresCert, /\^bob_ephemeral_/u);
+  assert.match(keyLifecyclePostgresCert, /KEY_BINDING_APPEND_ONLY/u);
+  assert.match(keyLifecyclePostgresCert, /waitForAdvisoryWaiter/u);
+  assert.match(keyLifecyclePostgresCert, /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
+  assert.match(keyLifecyclePostgresCert, /OPENAI_NATIVE_PROOF_KEY_VERSION_RETAINED/u);
+  assert.match(keyLifecyclePostgresCert, /subjectKeyVersion: null/u);
+  assert.match(keyLifecyclePostgresCert, /key is not admitted and bound/u);
 });
 
 test('la découverte due est une livraison at-least-once claimée, renouvelable puis ACKée', () => {
@@ -356,4 +430,71 @@ test('les helpers trigger/directory restent révoqués et provider_stream physiq
   assert.match(fenceValidate, /VALIDATE CONSTRAINT/u);
   assert.doesNotMatch(fenceValidate, /ADD CONSTRAINT/u);
   assert.doesNotMatch(release, /OPENAI_NATIVE_SPEECH_MAINTENANCE_ENABLED/u);
+});
+
+test('l’observation locale V1 est additive, allowlistée, immuable et certifiée sans prétendre au DAC', () => {
+  assert.match(
+    localObservationMigration,
+    /ADD COLUMN "localObservationFormatVersion" INTEGER,\s+ADD COLUMN "localObservationKind" TEXT/u,
+  );
+  assert.match(
+    localObservationMigration,
+    /realtime_native_speech_deliveries_local_observation_shape_check[\s\S]*NOT VALID/u,
+  );
+  assert.match(
+    localObservationMigration,
+    /VALIDATE CONSTRAINT "realtime_native_speech_deliveries_local_observation_shape_check"/u,
+  );
+  assert.match(
+    localObservationMigration,
+    /"localObservationFormatVersion" = 1[\s\S]*"localObservationKind" = 'webrtc_remote_rtp_observed_provider_drained_v1'/u,
+  );
+  assert.doesNotMatch(localObservationMigration, /native_playout_queue_drained_v1/u);
+  assert.match(
+    localObservationMigration,
+    /OLD\."phase" = 'completed'[\s\S]*NEW\."phase" = 'delivered'[\s\S]*native speech observation and SLO are immutable/u,
+  );
+  assert.match(
+    localObservationMigration,
+    /REVOKE ALL ON FUNCTION public\.guard_realtime_native_speech_slo_v1\(\) FROM PUBLIC/u,
+  );
+  assert.match(metadataCert, /OpenAI native local observation constraint drift/u);
+  assert.match(metadataCert, /1e691b5af9ac02ac2a32c661187890b1/u);
+});
+
+test('la rotation preuve draine les non-terminaux mais conserve les décisions terminales sans ancienne clé', () => {
+  assert.match(proofRotationCert, /^\\set ON_ERROR_STOP on$/mu);
+  assert.match(proofRotationCert, /\\if :\{\?proof_key_version\}/u);
+  assert.match(proofRotationCert, /\\if :\{\?proof_key_fingerprint\}/u);
+  assert.match(proofRotationCert, /^BEGIN TRANSACTION READ ONLY;$/mu);
+  assert.match(proofRotationCert, /^ROLLBACK;$/mu);
+  assert.match(proofRotationCert, /SET LOCAL statement_timeout = '5s'/u);
+  assert.match(proofRotationCert, /SET LOCAL lock_timeout = '1s'/u);
+  assert.match(proofRotationCert, /role\.rolsuper OR role\.rolbypassrls/u);
+  assert.match(proofRotationCert, /target_fingerprint !~ '\^\[a-f0-9\]\{64\}\$'/u);
+  assert.match(
+    proofRotationCert,
+    /realtime_mistral_conversation_key_bindings[\s\S]*"keyFingerprint" = target_fingerprint/u,
+  );
+  assert.match(
+    proofRotationCert,
+    /"providerId" = 'openai'[\s\S]*"sidebandOwnerTokenHash" IS NOT NULL[\s\S]*"sidebandOwnerLeaseExpiresAt" > pg_catalog\.clock_timestamp\(\)/u,
+  );
+  assert.match(
+    proofRotationCert,
+    /phase NOT IN \('delivered', 'cancelled', 'failed', 'expired'\)[\s\S]*"proofKeyVersion" <> target_version/u,
+  );
+  assert.match(
+    proofRotationCert,
+    /completed` reste non terminal[\s\S]*replay exact\/conflit[\s\S]*sans recalcul HMAC/u,
+  );
+  assert.match(
+    proofRotationCert,
+    /phase = 'delivered'[\s\S]*"localObservationFormatVersion" IS DISTINCT FROM 1[\s\S]*"localObservationKind" IS DISTINCT FROM[\s\S]*webrtc_remote_rtp_observed_provider_drained_v1/u,
+  );
+  assert.match(proofRotationCert, /legacy delivered row has no V1 local observation proof/u);
+  assert.doesNotMatch(
+    proofRotationCert,
+    /^\s*(?:INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|ALTER\s+|CREATE\s+|DROP\s+|TRUNCATE\s+)/gmu,
+  );
 });

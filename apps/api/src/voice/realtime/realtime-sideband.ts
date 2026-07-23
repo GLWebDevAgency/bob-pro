@@ -59,6 +59,19 @@ const CONTROL_APPROVAL_TTL_MS = 15_000;
 const MAX_CONTROL_TURNS = 64;
 const MAX_CONTROL_WAITERS = 8;
 const DURABLE_CLEANUP_MAX_TIMEOUT_MS = 2_000;
+const NATIVE_DELIVERY_RECONCILIATION_DELAYS_MS = [
+  0,
+  100,
+  250,
+  500,
+  1_000,
+  250,
+  1_000,
+  1_000,
+] as const;
+const NATIVE_DELIVERY_RECONCILIATION_MIN_WINDOW_MS = 2_250;
+const NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS = 5_000;
+const NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS = 500;
 const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
 interface SidebandSocket {
@@ -151,6 +164,17 @@ export interface RealtimeSpeechDeliveryAcknowledgement {
   readonly contextDigest: string;
 }
 
+export interface RealtimeNativeSpeechDeliveryAcknowledgement {
+  readonly userId: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly turnId: string;
+  readonly deliveryId: string;
+  readonly acknowledgementId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+}
+
 export interface RealtimeSidebandControl {
   attach(input: RealtimeSidebandAttachInput): Promise<void>;
   contextChanged(input: {
@@ -165,6 +189,12 @@ export interface RealtimeSidebandControl {
    * les contrôles fermés : un turnId deviné avant l'ACK ne peut jamais naviguer ni proposer.
    */
   speechDelivered?(input: RealtimeSpeechDeliveryAcknowledgement): void;
+  /**
+   * Doit être appelé uniquement après le CAS durable `completed -> delivered`. Le signal mobile
+   * V1 est un proxy RTP+drain fournisseur, jamais une preuve DAC ; il libère l'historique mais
+   * n'ouvre aucun contrôle métier natif.
+   */
+  nativeSpeechDelivered?(input: RealtimeNativeSpeechDeliveryAcknowledgement): void;
   consumeAgentControl(input: {
     userId: string;
     companyId: string;
@@ -224,8 +254,15 @@ interface PendingNativeSpeech {
   readonly canonicalSpeech: string;
   readonly kind: string;
   readonly context: RealtimeSidebandContextVersion;
+  readonly authorityBinding: OpenAiNativeSpeechAuthorityBinding;
   readonly dispatcher: OpenAiNativeResponseDispatcher;
+  readonly deliverySettlement: Promise<'delivered' | 'cancelled'>;
+  readonly settleDelivery: (outcome: 'delivered' | 'cancelled') => void;
+  readonly reconciliationAbort: AbortController;
+  reconciliation: Promise<void> | null;
   responseId: string | null;
+  providerCompleted: boolean;
+  deliverySettled: boolean;
 }
 
 interface DecodedSidebandWireEvent {
@@ -456,6 +493,28 @@ async function boundedCleanup<T>(work: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
+async function waitForNativeReconciliationDelay(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) return false;
+  if (delayMs === 0) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ready: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve(ready);
+    };
+    const onAbort = (): void => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    timer.unref?.();
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function sessionMatchesSpeechDelivery(
   session: OpenAiRealtimeSessionConfig,
   speechDelivery: RealtimeSidebandAttachInput['speechDelivery'],
@@ -619,6 +678,7 @@ class ManagedSidebandSession {
       | 'hangup_failed'
       | 'turn_failed'
       | 'speech_publish_failed'
+      | 'speech_delivery_failed'
       | 'control_seal_failed'
       | 'speech_cancel_failed'
       | 'owner_lease_lost'
@@ -845,6 +905,20 @@ class ManagedSidebandSession {
     this.rejectControlTurn(pending.turnId);
   }
 
+  nativeSpeechDelivered(
+    input: Omit<RealtimeNativeSpeechDeliveryAcknowledgement, 'userId' | 'companyId' | 'sessionHandle'>,
+  ): void {
+    const pending = this.nativeSpeechByDeliveryId.get(input.deliveryId);
+    if (
+      !pending
+      || !UUID.test(input.acknowledgementId)
+      || pending.turnId !== input.turnId
+      || pending.context.revision !== input.contextRevision
+      || pending.context.digest !== input.contextDigest
+    ) return;
+    this.commitNativeSpeechDelivered(pending, input.acknowledgementId);
+  }
+
   async consumeAgentControl(input: {
     turnId: string;
     contextRevision: number;
@@ -1028,6 +1102,7 @@ class ManagedSidebandSession {
       this.onSecurityRejection('context_fence_rejected');
       return;
     }
+    if (!await this.awaitNativeDeliveryBeforeNextTurn()) return;
 
     // Le ticket est pris avant le premier await : deux transcripts reçus dans le même tick ne
     // peuvent donc jamais lancer deux cerveaux avec des AbortSignal encore valides.
@@ -1233,6 +1308,7 @@ class ManagedSidebandSession {
       prepared = await native.authority.prepareTurn({
         companyId: owner.companyId,
         subjectHmac: owner.subjectHash,
+        subjectKeyVersion: this.subjectKeyVersion,
         sessionId: owner.sessionId,
         turnId,
         contextRevision: context.revision,
@@ -1309,6 +1385,10 @@ class ManagedSidebandSession {
       return;
     }
     const pendingRef: { current: PendingNativeSpeech | null } = { current: null };
+    let settleDelivery!: (outcome: 'delivered' | 'cancelled') => void;
+    const deliverySettlement = new Promise<'delivered' | 'cancelled'>((resolve) => {
+      settleDelivery = resolve;
+    });
     const callbacks: OpenAiNativeResponseDispatcherCallbacks = {
       onStreaming: ({ responseId }) => {
         const pending = pendingRef.current;
@@ -1318,18 +1398,22 @@ class ManagedSidebandSession {
         this.nativeSpeechByResponseId.set(responseId, pending);
       },
       onCompleted: () => {
-        // `completed` est une preuve provider, pas une preuve acoustique. L'historique et les
-        // contrôles restent fermés jusqu'au futur ACK mobile natif durable.
+        const pending = pendingRef.current;
+        if (!pending || pending.deliverySettled) return;
+        // `completed` est une preuve fournisseur, pas une preuve acoustique. L'historique et les
+        // contrôles restent fermés jusqu'à l'ACK mobile natif durable.
+        pending.providerCompleted = true;
+        this.startNativeDeliveryReconciliation(pending);
       },
       onCancelled: () => {
         const pending = pendingRef.current;
         if (!pending) return;
-        if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+        this.settleNativeSpeech(pending, 'cancelled');
       },
       onFatal: () => {
         const pending = pendingRef.current;
         if (!pending) return;
-        if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+        this.settleNativeSpeech(pending, 'cancelled');
         this.onProviderError('speech_publish_failed');
       },
     };
@@ -1353,8 +1437,15 @@ class ManagedSidebandSession {
       canonicalSpeech: outcome.canonicalSpeech,
       kind: outcome.kind,
       context,
+      authorityBinding: binding,
       dispatcher,
+      deliverySettlement,
+      settleDelivery,
+      reconciliationAbort: new AbortController(),
+      reconciliation: null,
       responseId: null,
+      providerCompleted: false,
+      deliverySettled: false,
     };
     pendingRef.current = pending;
     this.currentNativeSpeech = pending;
@@ -1370,7 +1461,7 @@ class ManagedSidebandSession {
       || generation !== this.turnGeneration
       || this.currentNativeSpeech !== pending;
     if (started.status === 'started' && !stale) return;
-    if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+    this.settleNativeSpeech(pending, 'cancelled');
     if (started.status === 'started') {
       await dispatcher.interruptForServerOrigin(
         'superseded',
@@ -1429,7 +1520,7 @@ class ManagedSidebandSession {
       if (speech.artifactId) pending.push(this.cancelArtifact(speech, reason));
     }
     if (nativeSpeech) {
-      this.currentNativeSpeech = null;
+      this.settleNativeSpeech(nativeSpeech, 'cancelled');
       this.metrics.bobLiveTurns.inc({ outcome: 'interrupted', kind: nativeSpeech.kind });
       if (reason === 'barge_in' || reason === 'user_cancel') {
         pending.push(nativeSpeech.dispatcher.markMobileInterruption(
@@ -1450,6 +1541,134 @@ class ManagedSidebandSession {
     const cleanup = Promise.allSettled([previousCleanup, ...pending]).then(() => undefined);
     this.turnCleanup = cleanup;
     await cleanup;
+  }
+
+  private settleNativeSpeech(
+    pending: PendingNativeSpeech,
+    outcome: 'delivered' | 'cancelled',
+  ): void {
+    if (pending.deliverySettled) return;
+    pending.deliverySettled = true;
+    pending.reconciliationAbort.abort();
+    if (this.currentNativeSpeech === pending) this.currentNativeSpeech = null;
+    if (this.nativeSpeechByDeliveryId.get(pending.deliveryId) === pending) {
+      this.nativeSpeechByDeliveryId.delete(pending.deliveryId);
+    }
+    if (
+      pending.responseId !== null
+      && this.nativeSpeechByResponseId.get(pending.responseId) === pending
+    ) this.nativeSpeechByResponseId.delete(pending.responseId);
+    pending.settleDelivery(outcome);
+  }
+
+  private commitNativeSpeechDelivered(
+    pending: PendingNativeSpeech,
+    acknowledgementId: string,
+  ): boolean {
+    if (
+      pending.deliverySettled
+      || !pending.providerCompleted
+      || !UUID.test(acknowledgementId)
+      || !this.contextMatches(pending.context.revision, pending.context.digest)
+      || this.nativeSpeechByDeliveryId.get(pending.deliveryId) !== pending
+    ) return false;
+    this.settleNativeSpeech(pending, 'delivered');
+    // Le texte publié est exclusivement la parole canonique déjà approuvée par le cerveau Bob.
+    // Ni le transcript fournisseur ni la ligne PostgreSQL ne deviennent une autorité UI.
+    this.pushHistory({ role: 'bob', text: pending.canonicalSpeech });
+    this.metrics.bobLiveTurns.inc({ outcome: 'completed', kind: pending.kind });
+    // V1 interdit tout contrôle issu du RTP natif, même après son ACK durable.
+    this.rejectControlTurn(pending.turnId);
+    return true;
+  }
+
+  private startNativeDeliveryReconciliation(pending: PendingNativeSpeech): void {
+    if (pending.deliverySettled || !pending.providerCompleted || pending.reconciliation !== null) return;
+    const task = this.reconcileNativeDelivery(pending).finally(() => {
+      if (pending.reconciliation === task) pending.reconciliation = null;
+    });
+    pending.reconciliation = task;
+    void task;
+  }
+
+  private async reconcileNativeDelivery(pending: PendingNativeSpeech): Promise<void> {
+    const authority = this.native?.authority;
+    if (!authority) {
+      this.failNativeDeliveryReconciliation(pending);
+      return;
+    }
+    const windowMs = Math.min(
+      Math.max(this.timeoutMs, NATIVE_DELIVERY_RECONCILIATION_MIN_WINDOW_MS),
+      NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS,
+    );
+    const deadline = performance.now() + windowMs;
+    for (const delayMs of NATIVE_DELIVERY_RECONCILIATION_DELAYS_MS) {
+      if (!this.nativeSpeechCanReconcile(pending)) return;
+      const remainingBeforeDelay = deadline - performance.now();
+      if (remainingBeforeDelay <= 0) break;
+      const ready = await waitForNativeReconciliationDelay(
+        Math.min(delayMs, remainingBeforeDelay),
+        pending.reconciliationAbort.signal,
+      );
+      if (!ready || !this.nativeSpeechCanReconcile(pending)) return;
+      const remainingBeforeRead = deadline - performance.now();
+      if (remainingBeforeRead <= 0) break;
+      const outcome = await boundedCleanup(
+        authority.reconcileOwnerDelivery(pending.authorityBinding),
+        Math.min(remainingBeforeRead, NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS),
+      );
+      if (!this.nativeSpeechCanReconcile(pending)) return;
+      // Une Promise repository expirée ne peut pas être réellement annulée par ce port. Relancer
+      // immédiatement fabriquerait plusieurs requêtes PostgreSQL concurrentes par session : on
+      // ferme donc dès le premier timeout au lieu d'amplifier une panne de pool.
+      if (outcome === null) {
+        this.failNativeDeliveryReconciliation(pending);
+        return;
+      }
+      if (outcome?.status === 'delivered') {
+        this.commitNativeSpeechDelivered(pending, outcome.acknowledgementId);
+        return;
+      }
+      if (
+        outcome?.status === 'terminal_without_proof'
+        || outcome?.status === 'not_found'
+        || outcome?.status === 'rejected'
+      ) {
+        this.failNativeDeliveryReconciliation(pending);
+        return;
+      }
+      // `pending` et `unavailable` sont retentés séquentiellement dans cette fenêtre bornée.
+    }
+    if (this.nativeSpeechCanReconcile(pending)) this.failNativeDeliveryReconciliation(pending);
+  }
+
+  private nativeSpeechCanReconcile(pending: PendingNativeSpeech): boolean {
+    return !pending.deliverySettled
+      && pending.providerCompleted
+      && !pending.reconciliationAbort.signal.aborted
+      && this.isReady()
+      && this.currentNativeSpeech === pending
+      && this.nativeSpeechByDeliveryId.get(pending.deliveryId) === pending
+      && this.contextMatches(pending.context.revision, pending.context.digest);
+  }
+
+  private failNativeDeliveryReconciliation(pending: PendingNativeSpeech): void {
+    if (pending.deliverySettled) return;
+    this.settleNativeSpeech(pending, 'cancelled');
+    this.onProviderError('speech_delivery_failed');
+    this.hardFenceAndScheduleTermination('internal_error');
+  }
+
+  private async awaitNativeDeliveryBeforeNextTurn(): Promise<boolean> {
+    const pending = this.currentNativeSpeech;
+    if (!pending || pending.deliverySettled || !pending.providerCompleted) return true;
+    this.startNativeDeliveryReconciliation(pending);
+    const outcome = await boundedCleanup(pending.deliverySettlement, this.timeoutMs);
+    if (outcome === 'delivered') return this.isReady();
+    if (outcome === 'cancelled') return this.isReady();
+    this.onProviderError('speech_delivery_failed');
+    this.hardFenceAndScheduleTermination('internal_error');
+    return false;
   }
 
   private async cancelArtifact(
@@ -1521,7 +1740,7 @@ class ManagedSidebandSession {
     this.providerIngressFenced = true;
     this.turnAbort?.abort();
     this.turnAbort = null;
-    this.currentNativeSpeech = null;
+    if (this.currentNativeSpeech) this.settleNativeSpeech(this.currentNativeSpeech, 'cancelled');
     let socketFenced = this.providerSocketTerminated || this.socket.readyState === WebSocket.CLOSED;
     if (!socketFenced) {
       try {
@@ -1732,7 +1951,7 @@ class ManagedSidebandSession {
     this.turnAbort = null;
     this.currentSpeech?.controller.abort();
     this.currentSpeech = null;
-    this.currentNativeSpeech = null;
+    if (this.currentNativeSpeech) this.settleNativeSpeech(this.currentNativeSpeech, 'cancelled');
     this.nativeSpeechByDeliveryId.clear();
     this.nativeSpeechByResponseId.clear();
     this.owner = null;
@@ -1897,6 +2116,12 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     const session = this.sessionsByPrincipal.get(principalKey(input));
     if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return;
     session.speechDelivered(input);
+  }
+
+  nativeSpeechDelivered(input: RealtimeNativeSpeechDeliveryAcknowledgement): void {
+    const session = this.sessionsByPrincipal.get(principalKey(input));
+    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return;
+    session.nativeSpeechDelivered(input);
   }
 
   async consumeAgentControl(input: {

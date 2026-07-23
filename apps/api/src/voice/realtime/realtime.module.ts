@@ -83,6 +83,7 @@ import { DisabledMistralConversationResumeAuthority } from './mistral-conversati
 import { DisabledMistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
+import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
 import {
   ActiveMistralRealtimeIngressRuntime,
   DisabledMistralRealtimeIngressRuntime,
@@ -168,7 +169,12 @@ export function buildRealtimeSpeechRuntime(
   const live = resolveBobLiveEnv(env);
   if (!live.enabled) return null;
   if (live.speechDelivery === 'openai-native-webrtc-v1') {
-    if (live.provider !== 'openai' || !live.proofSecret || !live.usageHmacSecret) {
+    if (
+      live.provider !== 'openai'
+      || !live.subjectHmacKeyRing
+      || !live.proofKeyRing
+      || !live.usageHmacSecret
+    ) {
       throw new Error('Bob Live OpenAI native speech runtime is incompletely configured.');
     }
     const common = buildRealtimeCommonSpeechRuntime(
@@ -176,16 +182,10 @@ export function buildRealtimeSpeechRuntime(
       live.usageHmacSecret,
       live.usageKeyVersion,
     );
-    const currentProofSecret = live.proofSecret;
-    const currentProofVersion = live.proofKeyVersion;
     const authority = new OpenAiNativeSpeechAuthority(
       persistence.createOpenAiNativeSpeechDeliveryRepository(),
       {
-        proofKeys: Object.freeze({
-          currentVersion: currentProofVersion,
-          secret: (version: number) =>
-            version === currentProofVersion ? currentProofSecret : null,
-        }),
+        proofKeys: live.proofKeyRing,
       },
     );
     return Object.freeze({
@@ -266,6 +266,35 @@ export function buildRealtimeSpeechRuntime(
       publisher,
     }),
   });
+}
+
+/**
+ * Porte de composition réellement utilisée par Nest. Les deux keyrings natifs sont admis par
+ * PostgreSQL avant la création du moindre port request-time : une configuration locale cohérente
+ * mais non stageée, retirée ou liée à un autre matériau fait échouer le boot.
+ */
+export async function buildVerifiedRealtimeSpeechRuntime(
+  persistence: Persistence,
+  env: Env = loadEnv(),
+): Promise<RealtimeSpeechRuntime | null> {
+  const live = resolveBobLiveEnv(env);
+  if (
+    !live.enabled
+    || live.provider !== 'openai'
+    || live.speechDelivery !== 'openai-native-webrtc-v1'
+  ) return buildRealtimeSpeechRuntime(persistence, env);
+  if (!live.subjectHmacKeyRing || !live.proofKeyRing) {
+    throw new Error('Bob Live OpenAI native keyrings are incompletely configured.');
+  }
+  const keyVersions = persistence.createOpenAiNativeKeyVersionAuthority(
+    live.subjectHmacKeyRing,
+    live.proofKeyRing,
+  );
+  if (!keyVersions) {
+    throw new Error('Bob Live OpenAI native PostgreSQL key authority is unavailable.');
+  }
+  await keyVersions.assertCurrentKeyVersions();
+  return buildRealtimeSpeechRuntime(persistence, env);
 }
 
 const settingsProvider: Provider = {
@@ -399,7 +428,7 @@ const mistralIngressTicketProvider: Provider = {
 const realtimeSpeechRuntimeProvider: Provider = {
   provide: REALTIME_SPEECH_RUNTIME,
   inject: [PERSISTENCE],
-  useFactory: (persistence: Persistence) => buildRealtimeSpeechRuntime(persistence),
+  useFactory: (persistence: Persistence) => buildVerifiedRealtimeSpeechRuntime(persistence),
 };
 
 const realtimeDurableControlProvider: Provider = {
@@ -663,6 +692,27 @@ const realtimeSpeechDeliveryProvider: Provider = {
   },
 };
 
+const openAiNativeSpeechAcknowledgementProvider: Provider = {
+  provide: OpenAiNativeSpeechAcknowledgementService,
+  inject: [AppLogger, REALTIME_SPEECH_RUNTIME],
+  useFactory: (
+    logger: AppLogger,
+    speech: RealtimeSpeechRuntime | null,
+  ) => {
+    const live = resolveBobLiveEnv(loadEnv());
+    return new OpenAiNativeSpeechAcknowledgementService(
+      speech?.native?.authority ?? null,
+      {
+        enabled: live.enabled
+          && live.provider === 'openai'
+          && live.speechDelivery === 'openai-native-webrtc-v1',
+        subjectHmacKeyRing: live.subjectHmacKeyRing,
+      },
+      logger,
+    );
+  },
+};
+
 const realtimeSpeechSourcePolicyProvider: Provider = {
   provide: REALTIME_SPEECH_SOURCE_POLICY,
   inject: [REALTIME_SPEECH_RUNTIME],
@@ -695,6 +745,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeReaperDirectoryProvider,
     openAiNativeSpeechMaintenanceProvider,
     realtimeSpeechDeliveryProvider,
+    openAiNativeSpeechAcknowledgementProvider,
     realtimeSpeechSourcePolicyProvider,
     mistralRealtimeIngressRuntimeProvider,
     RealtimeAdmissionReaperScheduler,

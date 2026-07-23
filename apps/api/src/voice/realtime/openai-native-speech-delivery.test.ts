@@ -28,6 +28,10 @@ const FACTS_HMAC = '4'.repeat(64);
 const NONCE_HMAC = '5'.repeat(64);
 const CONTEXT_HMAC = '6'.repeat(64);
 const RESPONSE_HMAC = '7'.repeat(64);
+const LOCAL_OBSERVATION = Object.freeze({
+  formatVersion: 1 as const,
+  kind: 'webrtc_remote_rtp_observed_provider_drained_v1' as const,
+});
 
 function preparation(
   overrides: Partial<OpenAiNativeSpeechDeliveryPreparation> = {},
@@ -36,6 +40,7 @@ function preparation(
     deliveryId: DELIVERY_ID,
     companyId: 'company-1',
     subjectHmac: SUBJECT_HMAC,
+    subjectKeyVersion: 1,
     sessionId: SESSION_ID,
     turnId: TURN_ID,
     contextRevision: 9,
@@ -138,6 +143,7 @@ function acknowledgement(
     turnId: TURN_ID,
     contextRevision: 9,
     contextDigest: CONTEXT_HMAC,
+    localObservation: LOCAL_OBSERVATION,
     slo: null,
     atMs: 8_000,
     ...overrides,
@@ -425,6 +431,8 @@ describe('OpenAI native delivery acknowledgement and terminal states', () => {
         phase: 'delivered',
         acknowledgementId: ACK_ID,
         deliveredAtMs: 8_000,
+        localObservationFormatVersion: 1,
+        localObservationKind: LOCAL_OBSERVATION.kind,
         sloFormatVersion: null,
         bargeInDurationsMs: [],
         terminalAtMs: 8_000,
@@ -482,6 +490,19 @@ describe('OpenAI native delivery acknowledgement and terminal states', () => {
     expectDeliveryError(() => transitionOpenAiNativeSpeechDelivery(
       advanceToCompleted(),
       acknowledgement({ slo: slo as never }),
+    ), 'invalid_event');
+  });
+
+  it.each([
+    null,
+    { formatVersion: 1 },
+    { ...LOCAL_OBSERVATION, detail: 'speaker' },
+    { ...LOCAL_OBSERVATION, formatVersion: 2 },
+    { formatVersion: 1, kind: 'native_playout_queue_drained_v1' },
+  ])('refuse une observation locale absente, enrichie, inconnue ou reservee : %#', (value) => {
+    expectDeliveryError(() => transitionOpenAiNativeSpeechDelivery(
+      advanceToCompleted(),
+      acknowledgement({ localObservation: value as never }),
     ), 'invalid_event');
   });
 

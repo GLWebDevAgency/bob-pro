@@ -200,6 +200,7 @@ interface Harness {
   readonly terminate: ReturnType<typeof vi.fn>;
   readonly settings: RealtimeVoiceSettings;
   readonly nativeRepository: NativeMemoryRepository | null;
+  readonly nativeAuthority: OpenAiNativeSpeechAuthority | null;
   readonly nativeUsageBatch: ReturnType<typeof vi.fn<NonNullable<
   RealtimeVoiceUsageWriterPort['recordBatch']
   >>> | null;
@@ -221,6 +222,7 @@ function harness(options: {
   issueControl?: RealtimeSidebandAuditedSpeechDependencies['controls']['issue'];
   nativeUsageBatch?: NonNullable<RealtimeVoiceUsageWriterPort['recordBatch']>;
   nativeAtomicUsage?: boolean;
+  nativeRepository?: NativeMemoryRepository;
 } = {}): Harness {
   const settings = options.settings ?? SETTINGS;
   const isNative = settings.speechDelivery === 'openai-native-webrtc-v1';
@@ -264,7 +266,8 @@ function harness(options: {
     status: 'issued' as const,
     grantId: '00000000-0000-4000-8000-000000000098',
   })));
-  const nativeRepository = isNative ? new NativeMemoryRepository() : null;
+  const nativeRepository = isNative ? options.nativeRepository ?? new NativeMemoryRepository() : null;
+  const nativeAuthorityPort = nativeRepository ? nativeAuthority(nativeRepository) : null;
   const nativeUsageBatch = isNative
     ? vi.fn<NonNullable<RealtimeVoiceUsageWriterPort['recordBatch']>>().mockImplementation(
         options.nativeUsageBatch ?? (async () => ({
@@ -281,7 +284,7 @@ function harness(options: {
     ...(isNative
       ? {
           native: {
-            authority: nativeAuthority(nativeRepository!),
+            authority: nativeAuthorityPort!,
             usage: {
               record: vi.fn(async () => ({ status: 'unavailable' as const })),
               ...(options.nativeAtomicUsage === false ? {} : { recordBatch: nativeUsageBatch! }),
@@ -325,6 +328,7 @@ function harness(options: {
     terminate,
     settings,
     nativeRepository,
+    nativeAuthority: nativeAuthorityPort,
     nativeUsageBatch,
   };
 }
@@ -474,6 +478,46 @@ function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false):
     socket.providerEvent(done);
     socket.providerEvent(stopped);
   }
+}
+
+function acknowledgeNativeSpeech(
+  value: Harness,
+  overrides: Partial<Parameters<RealtimeSidebandManager['nativeSpeechDelivered']>[0]> = {},
+): void {
+  value.manager.nativeSpeechDelivered({
+    userId: 'user-1',
+    companyId: 'company-1',
+    sessionHandle: SESSION,
+    turnId: TURN,
+    deliveryId: NATIVE_DELIVERY,
+    acknowledgementId: ACKNOWLEDGEMENT,
+    contextRevision: 1,
+    contextDigest: CONTEXT,
+    ...overrides,
+  });
+}
+
+async function persistNativeAcknowledgement(
+  value: Harness,
+  overrides: Partial<Parameters<OpenAiNativeSpeechAuthority['acknowledgeMobileDelivery']>[0]> = {},
+): Promise<void> {
+  const outcome = await value.nativeAuthority!.acknowledgeMobileDelivery({
+    companyId: 'company-1',
+    subjectHmacCandidates: [{ version: 1, subjectHmac: SUBJECT }],
+    deliveryId: NATIVE_DELIVERY,
+    sessionId: SESSION,
+    turnId: TURN,
+    contextRevision: 1,
+    contextDigest: CONTEXT,
+    acknowledgementId: ACKNOWLEDGEMENT,
+    localObservation: {
+      formatVersion: 1,
+      kind: 'webrtc_remote_rtp_observed_provider_drained_v1',
+    },
+    slo: null,
+    ...overrides,
+  });
+  expect(outcome).toMatchObject({ status: 'applied', state: { phase: 'delivered' } });
 }
 
 afterEach(() => {
@@ -992,6 +1036,121 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
       'output_audio_buffer.clear',
     ]);
     expect(value.terminate).not.toHaveBeenCalled();
+  });
+
+  it('ne publie le tour Bob dans l’historique qu’après l’ACK natif durable exact', async () => {
+    const run = vi.fn()
+      .mockResolvedValueOnce(nativeReadyOutcome())
+      .mockResolvedValueOnce({ status: 'aborted' as const });
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: run });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-ack-1', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    emitNativeSuccessfulResponse(socket);
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('completed'));
+
+    finalTranscript(socket, 'native-input-ack-2', 'Explique encore.');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(run).toHaveBeenCalledOnce();
+    expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase).toBe('completed');
+
+    acknowledgeNativeSpeech(value, { contextDigest: 'f'.repeat(64) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(run).toHaveBeenCalledOnce();
+
+    await persistNativeAcknowledgement(value);
+    acknowledgeNativeSpeech(value);
+    acknowledgeNativeSpeech(value);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    expect(run.mock.calls[1]?.[0].history).toEqual([
+      { role: 'user', text: 'Aide-moi.' },
+      { role: 'bob', text: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1 },
+    ]);
+    expect(value.terminate).not.toHaveBeenCalled();
+  });
+
+  it('réconcilie sur PostgreSQL un ACK écrit par une autre réplique sans notification locale', async () => {
+    const repository = new NativeMemoryRepository();
+    const ownerReplica = harness({ settings: NATIVE_SETTINGS, nativeRepository: repository });
+    const acknowledgementReplica = harness({ settings: NATIVE_SETTINGS, nativeRepository: repository });
+    const run = vi.fn()
+      .mockResolvedValueOnce(nativeReadyOutcome())
+      .mockResolvedValueOnce({ status: 'aborted' as const });
+    await attach(ownerReplica, { turn: run });
+    const socket = ownerReplica.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-cross-replica-1', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    emitNativeSuccessfulResponse(socket);
+    await vi.waitFor(() => expect(repository.states.get(NATIVE_DELIVERY)?.phase).toBe('completed'));
+
+    await persistNativeAcknowledgement(acknowledgementReplica);
+    // La notification process-local part sur la mauvaise réplique et doit rester un simple fast-path.
+    acknowledgeNativeSpeech(acknowledgementReplica);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    finalTranscript(socket, 'native-input-cross-replica-2', 'Continue.');
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    expect(run.mock.calls[1]?.[0].history).toEqual([
+      { role: 'user', text: 'Aide-moi.' },
+      { role: 'bob', text: OPENAI_NATIVE_ELIGIBLE_SPEECH_V1.generic_help_v1 },
+    ]);
+    expect(ownerReplica.terminate).not.toHaveBeenCalled();
+  });
+
+  it('révoque encore une réponse completed si l’utilisateur reprend la parole avant l’ACK', async () => {
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: async () => nativeReadyOutcome() });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-completed-barge', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    emitNativeSuccessfulResponse(socket);
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('completed'));
+
+    socket.providerEvent({ type: 'input_audio_buffer.speech_started' });
+
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('cancelled'));
+    await expect(value.nativeAuthority!.acknowledgeMobileDelivery({
+      companyId: 'company-1',
+      subjectHmacCandidates: [{ version: 1, subjectHmac: SUBJECT }],
+      deliveryId: NATIVE_DELIVERY,
+      sessionId: SESSION,
+      turnId: TURN,
+      contextRevision: 1,
+      contextDigest: CONTEXT,
+      acknowledgementId: ACKNOWLEDGEMENT,
+      localObservation: {
+        formatVersion: 1,
+        kind: 'webrtc_remote_rtp_observed_provider_drained_v1',
+      },
+      slo: null,
+    })).resolves.toEqual({ status: 'conflict' });
+  });
+
+  it('ferme sans lancer un nouveau cerveau si l’ACK natif durable reste absent', async () => {
+    const run = vi.fn(async () => nativeReadyOutcome());
+    const value = harness({ settings: NATIVE_SETTINGS });
+    await attach(value, { turn: run });
+    const socket = value.sockets[0]!.socket;
+
+    finalTranscript(socket, 'native-input-timeout-1', 'Aide-moi.');
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    emitNativeSuccessfulResponse(socket);
+    await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
+      .toBe('completed'));
+
+    finalTranscript(socket, 'native-input-timeout-2', 'Continue.');
+    await vi.waitFor(() => expect(value.terminate).toHaveBeenCalledWith('kill_switch'));
+    expect(run).toHaveBeenCalledOnce();
+    expect(socket.sent.map((entry) => JSON.parse(entry).type)).toEqual([
+      'session.update',
+      'response.create',
+    ]);
   });
 
   it('hard-fence une réponse fournisseur qui ne correspond à aucune livraison préparée', async () => {
