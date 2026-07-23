@@ -230,6 +230,44 @@ async function retireRange(tx, keySpace, currentVersion) {
   return rows[0];
 }
 
+function validLegacySubjectAdmission(row) {
+  return (
+    (row?.phase === 'open' && row?.revision === 1)
+    || (row?.phase === 'closed' && row?.revision === 2)
+  );
+}
+
+async function readLegacySubjectAdmission(tx) {
+  const rows = await tx.$queryRaw`
+    SELECT phase, revision
+      FROM realtime_native_legacy_subject_admission
+     WHERE gate = 'subject-null-v1'
+  `;
+  if (rows.length !== 1 || !validLegacySubjectAdmission(rows[0])) {
+    fail('legacy subject admission gate is missing or invalid');
+  }
+  return rows[0];
+}
+
+async function closeLegacySubjectAdmission(tx) {
+  const gate = await readLegacySubjectAdmission(tx);
+  if (gate.phase === 'closed') return gate;
+  const rows = await tx.$queryRaw`
+    UPDATE realtime_native_legacy_subject_admission
+       SET phase = 'closed',
+           revision = 2
+     WHERE gate = 'subject-null-v1'
+       AND phase = 'open'
+       AND revision = 1
+       AND "closedAt" IS NULL
+    RETURNING phase, revision
+  `;
+  if (rows.length !== 1 || rows[0]?.phase !== 'closed' || rows[0]?.revision !== 2) {
+    fail('legacy subject admission gate closure failed');
+  }
+  return rows[0];
+}
+
 function assertConfiguredCoverage(keySpace, bindings, range, retained) {
   const configured = new Map(bindings.map((binding) => [binding.version, binding.fingerprint]));
   const required = new Set([range.minimumVersion, range.highestVersion]);
@@ -279,6 +317,9 @@ export async function manageBobLiveNativeKeyVersions(config, prisma) {
       if (liveOwnerCount !== 0) fail('retirement is blocked by a live OpenAI owner');
     }
 
+    const legacySubjectAdmission = config.mode === 'retire'
+      ? await closeLegacySubjectAdmission(tx)
+      : await readLegacySubjectAdmission(tx);
     const subjectRange = config.mode === 'stage'
       ? await stageRange(tx, SUBJECT_KEY_SPACE, config.subjectCurrentVersion, tableIsEmpty)
       : await retireRange(tx, SUBJECT_KEY_SPACE, config.subjectCurrentVersion);
@@ -306,6 +347,7 @@ export async function manageBobLiveNativeKeyVersions(config, prisma) {
 
     return Object.freeze({
       status: config.mode === 'stage' ? 'staged' : 'retired',
+      legacySubjectAdmissionPhase: legacySubjectAdmission.phase,
       subjectRange: Object.freeze({ ...subjectRange }),
       proofRange: Object.freeze({ ...proofRange }),
     });

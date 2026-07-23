@@ -1936,6 +1936,19 @@ model RealtimeNativeSpeechDelivery {
   @@map("realtime_native_speech_deliveries")
 }
 
+/// Gate global monotone de compatibilité rolling. Le runtime applicatif ne le manipule jamais :
+/// le trigger d'insertion le lit sous verrou sujet, et le rituel propriétaire le ferme une fois.
+model RealtimeNativeLegacySubjectAdmission {
+  gate      String    @id @db.Text
+  phase     String    @db.Text
+  revision  Int
+  createdAt DateTime  @db.Timestamptz(6)
+  closedAt  DateTime? @db.Timestamptz(6)
+
+  @@map("realtime_native_legacy_subject_admission")
+  @@ignore
+}
+
 /// Curseur global purement technique du scan keyset de maintenance. Le runtime ne possède aucun
 /// droit direct sur cette table ; seul le helper SECURITY DEFINER borné peut lire/avancer ses deux
 /// lignes. `@@ignore` empêche toute dérive vers un accès Prisma applicatif.

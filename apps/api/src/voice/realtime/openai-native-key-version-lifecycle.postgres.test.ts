@@ -170,6 +170,25 @@ describe.skipIf(!RUN_CERT)(
       await client.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${SUBJECT_KEY_SPACE}, 0))`;
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${PROOF_KEY_SPACE}, 0))`;
+        const closed = await tx.$executeRaw`
+          UPDATE realtime_native_legacy_subject_admission
+             SET phase = 'closed',
+                 revision = 2
+           WHERE gate = 'subject-null-v1'
+             AND phase = 'open'
+             AND revision = 1
+             AND "closedAt" IS NULL
+        `;
+        if (closed !== 1) {
+          const [gate] = await tx.$queryRaw<Array<{ phase: string; revision: number }>>`
+            SELECT phase, revision
+              FROM realtime_native_legacy_subject_admission
+             WHERE gate = 'subject-null-v1'
+          `;
+          if (gate?.phase !== 'closed' || gate.revision !== 2) {
+            throw new Error('legacy subject admission did not close exactly once');
+          }
+        }
         for (const keySpace of [SUBJECT_KEY_SPACE, PROOF_KEY_SPACE]) {
           const updated = await tx.$executeRaw`
             UPDATE realtime_mistral_conversation_key_version_floors
@@ -194,6 +213,16 @@ describe.skipIf(!RUN_CERT)(
          WHERE "keySpace" IN (${SUBJECT_KEY_SPACE}, ${PROOF_KEY_SPACE})
          ORDER BY "keySpace"
       `;
+    }
+
+    async function legacySubjectAdmission(): Promise<{ phase: string; revision: number }> {
+      const [gate] = await adminA.$queryRaw<Array<{ phase: string; revision: number }>>`
+        SELECT phase, revision
+          FROM realtime_native_legacy_subject_admission
+         WHERE gate = 'subject-null-v1'
+      `;
+      if (!gate) throw new Error('legacy subject admission gate is missing');
+      return gate;
     }
 
     interface Authority {
@@ -269,13 +298,14 @@ describe.skipIf(!RUN_CERT)(
       tx: Prisma.TransactionClient,
       state: ReturnType<typeof prepared>,
       releaseOwner: boolean,
+      subjectKeyVersion: number | null = state.subjectKeyVersion,
     ): Promise<void> {
       await tx.realtimeNativeSpeechDelivery.create({
         data: {
           deliveryId: state.deliveryId,
           companyId: state.companyId,
           subjectHmac: state.subjectHmac,
-          subjectKeyVersion: state.subjectKeyVersion,
+          subjectKeyVersion,
           sessionId: state.sessionId,
           turnId: state.turnId,
           contextRevision: state.contextRevision,
@@ -371,30 +401,56 @@ describe.skipIf(!RUN_CERT)(
         rolsuper: boolean;
         rolbypassrls: boolean;
         canUpdateFloor: boolean;
+        canReadLegacyGate: boolean;
+        canMutateLegacyGate: boolean;
+        canExecuteLegacyGateGuard: boolean;
       }>>`
         SELECT role.rolsuper, role.rolbypassrls,
                has_table_privilege(
                  current_user,
                  'public.realtime_mistral_conversation_key_version_floors',
                  'UPDATE'
-               ) AS "canUpdateFloor"
+               ) AS "canUpdateFloor",
+               has_table_privilege(
+                 current_user,
+                 'public.realtime_native_legacy_subject_admission',
+                 'SELECT'
+               ) AS "canReadLegacyGate",
+               has_table_privilege(
+                 current_user,
+                 'public.realtime_native_legacy_subject_admission',
+                 'INSERT,UPDATE,DELETE,TRUNCATE'
+               ) AS "canMutateLegacyGate",
+               has_function_privilege(
+                 current_user,
+                 'public.guard_realtime_native_legacy_subject_admission_v1()',
+                 'EXECUTE'
+               ) AS "canExecuteLegacyGateGuard"
           FROM pg_roles AS role
          WHERE role.rolname = current_user
       `;
-      expect(runtimeRole).toEqual({ rolsuper: false, rolbypassrls: false, canUpdateFloor: false });
+      expect(runtimeRole).toEqual({
+        rolsuper: false,
+        rolbypassrls: false,
+        canUpdateFloor: false,
+        canReadLegacyGate: false,
+        canMutateLegacyGate: false,
+        canExecuteLegacyGateGuard: false,
+      });
 
       await stageV2();
       expect(await ranges()).toEqual([
         { keySpace: SUBJECT_KEY_SPACE, minimumVersion: 1, highestVersion: 2 },
         { keySpace: PROOF_KEY_SPACE, minimumVersion: 1, highestVersion: 2 },
       ].sort((left, right) => left.keySpace.localeCompare(right.keySpace)));
+      expect(await legacySubjectAdmission()).toEqual({ phase: 'open', revision: 1 });
 
       const writerAuthority = await seedAuthority('writer-first');
       const writerState = prepared(writerAuthority, 'writer-first', 1, 1);
       const inserted = deferred();
       const commitWriter = deferred();
       const writer = runtime.withIsolatedTenant(companyId, async (tx) => {
-        await insertPrepared(tx, writerState, true);
+        await insertPrepared(tx, writerState, true, null);
         inserted.resolve();
         await commitWriter.promise;
       }, { maxWaitMs: 1_000, timeoutMs: 5_000 });
@@ -411,8 +467,22 @@ describe.skipIf(!RUN_CERT)(
         { keySpace: SUBJECT_KEY_SPACE, minimumVersion: 1, highestVersion: 2 },
         { keySpace: PROOF_KEY_SPACE, minimumVersion: 1, highestVersion: 2 },
       ].sort((left, right) => left.keySpace.localeCompare(right.keySpace)));
+      expect(await legacySubjectAdmission()).toEqual({ phase: 'open', revision: 1 });
       await adminA.realtimeNativeSpeechDelivery.delete({
         where: { deliveryId: writerState.deliveryId },
+      });
+      await adminA.realtimeSessionLease.deleteMany({ where: { companyId } });
+
+      const versionAuthority = await seedAuthority('subject-version-retained');
+      const versionState = prepared(versionAuthority, 'subject-version-retained', 1, 2);
+      await runtime.withIsolatedTenant(
+        companyId,
+        (tx) => insertPrepared(tx, versionState, true),
+      );
+      await expectDatabaseRejection(retireV1(adminB), /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
+      expect(await legacySubjectAdmission()).toEqual({ phase: 'open', revision: 1 });
+      await adminA.realtimeNativeSpeechDelivery.delete({
+        where: { deliveryId: versionState.deliveryId },
       });
       await adminA.realtimeSessionLease.deleteMany({ where: { companyId } });
 
@@ -423,61 +493,47 @@ describe.skipIf(!RUN_CERT)(
       await adminA.realtimeNativeSpeechDelivery.delete({ where: { deliveryId: proofState.deliveryId } });
       await adminA.realtimeSessionLease.deleteMany({ where: { companyId } });
 
-      const legacyAuthority = await seedAuthority('legacy-null');
-      const legacyState = prepared(legacyAuthority, 'legacy-null', 2, 2);
-      await adminA.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-        await tx.realtimeNativeSpeechDelivery.create({
-          data: {
-            deliveryId: legacyState.deliveryId,
-            companyId,
-            subjectHmac: legacyState.subjectHmac,
-            subjectKeyVersion: null,
-            sessionId: legacyState.sessionId,
-            turnId: legacyState.turnId,
-            contextRevision: 1,
-            contextDigest: legacyState.contextDigest,
-            sidebandOwnerEpoch: 1,
-            sidebandOwnerTokenHmac: legacyState.sidebandOwnerTokenHmac,
-            speechPolicyVersion: 1,
-            speechScenarioId: 'generic_help_v1',
-            canonicalSpeechHmac: legacyState.canonicalSpeechHmac,
-            factsHmac: legacyState.factsHmac,
-            requestNonceHmac: legacyState.requestNonceHmac,
-            proofFormatVersion: 2,
-            proofKeyVersion: 2,
-            provider: 'openai',
-            model: 'gpt-realtime-2.1',
-            voice: 'marin',
-            phase: 'prepared',
-            createdAt: new Date(legacyState.createdAtMs),
-            expiresAt: new Date(legacyState.expiresAtMs),
-            retentionExpiresAt: new Date(legacyState.createdAtMs + 30 * DAY_MS),
-          },
-        });
-      });
-      await expectDatabaseRejection(retireV1(adminB), /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
-      await adminA.realtimeNativeSpeechDelivery.delete({ where: { deliveryId: legacyState.deliveryId } });
-      await adminA.realtimeSessionLease.deleteMany({ where: { companyId } });
-
       await retireV1(adminB);
       expect(await ranges()).toEqual([
         { keySpace: SUBJECT_KEY_SPACE, minimumVersion: 2, highestVersion: 2 },
         { keySpace: PROOF_KEY_SPACE, minimumVersion: 2, highestVersion: 2 },
       ].sort((left, right) => left.keySpace.localeCompare(right.keySpace)));
+      expect(await legacySubjectAdmission()).toEqual({ phase: 'closed', revision: 2 });
 
       const retiredWriterAuthority = await seedAuthority('retire-first');
-      const retiredWriterState = prepared(retiredWriterAuthority, 'retire-first', 1, 1);
+      const retiredWriterState = prepared(retiredWriterAuthority, 'retire-first', 2, 2);
       await expectDatabaseRejection(
         runtime.withIsolatedTenant(
           companyId,
-          (tx) => insertPrepared(tx, retiredWriterState, false),
+          (tx) => insertPrepared(tx, retiredWriterState, false, null),
         ),
-        /key is not admitted and bound/u,
+        /legacy subject admission is closed/u,
       );
       expect(await adminA.realtimeNativeSpeechDelivery.count({
         where: { deliveryId: retiredWriterState.deliveryId },
       })).toBe(0);
+      await expectDatabaseRejection(adminA.$executeRaw`
+        UPDATE realtime_native_legacy_subject_admission
+           SET phase = 'open',
+               revision = 1,
+               "closedAt" = NULL
+         WHERE gate = 'subject-null-v1'
+      `, /transition is invalid/u);
+      await expectDatabaseRejection(
+        adminA.$executeRaw`DELETE FROM realtime_native_legacy_subject_admission`,
+        /append-only/u,
+      );
+      await expectDatabaseRejection(adminA.$executeRaw`
+        INSERT INTO realtime_native_legacy_subject_admission (
+          gate, phase, revision, "createdAt", "closedAt"
+        ) VALUES (
+          'subject-null-v2', 'open', 1, clock_timestamp(), NULL
+        )
+      `, /append-only/u);
+      await expectDatabaseRejection(
+        adminA.$executeRaw`TRUNCATE realtime_native_legacy_subject_admission`,
+        /append-only/u,
+      );
     }, 30_000);
   },
 );

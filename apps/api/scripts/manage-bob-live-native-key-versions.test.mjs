@@ -37,13 +37,19 @@ function fakePrisma({
   bindings = {},
   retainedSubject = [],
   retainedProof = [],
+  legacySubjectAdmissionPhase = 'open',
 } = {}) {
   const durableRanges = new Map(Object.entries(ranges));
   const durableBindings = new Map(Object.entries(bindings));
+  const legacySubjectAdmission = {
+    phase: legacySubjectAdmissionPhase,
+    revision: legacySubjectAdmissionPhase === 'open' ? 1 : 2,
+  };
   const key = (keySpace, version) => `${keySpace}:${version}`;
   return {
     ranges: durableRanges,
     bindings: durableBindings,
+    legacySubjectAdmission,
     $transaction: async (callback) => callback({
       $executeRaw: async (strings, ...values) => {
         const sql = strings.join('?');
@@ -58,6 +64,19 @@ function fakePrisma({
         const sql = strings.join('?');
         if (sql.includes('count(*)::integer AS "deliveryCount"')) return [{ deliveryCount }];
         if (sql.includes('count(*)::integer AS "liveOwnerCount"')) return [{ liveOwnerCount }];
+        if (
+          sql.includes('FROM realtime_native_legacy_subject_admission')
+          && sql.includes('SELECT phase, revision')
+        ) return [{ ...legacySubjectAdmission }];
+        if (sql.includes('UPDATE realtime_native_legacy_subject_admission')) {
+          if (
+            legacySubjectAdmission.phase !== 'open'
+            || legacySubjectAdmission.revision !== 1
+          ) return [];
+          legacySubjectAdmission.phase = 'closed';
+          legacySubjectAdmission.revision = 2;
+          return [{ ...legacySubjectAdmission }];
+        }
         if (sql.includes('FROM retained_bob_live_subject_hmac_key_bindings')) {
           return retainedSubject.map((version) => ({
             keyVersion: version,
@@ -148,6 +167,7 @@ test('stage initialise atomiquement sujet et preuve sur une table native vide', 
   const prisma = fakePrisma();
   const result = await manageBobLiveNativeKeyVersions(config, prisma);
   assert.equal(result.status, 'staged');
+  assert.equal(result.legacySubjectAdmissionPhase, 'open');
   assert.deepEqual(prisma.ranges.get('bob-live-subject-hmac-v1'), {
     minimumVersion: 1,
     highestVersion: 1,
@@ -156,6 +176,31 @@ test('stage initialise atomiquement sujet et preuve sur une table native vide', 
     minimumVersion: 1,
     highestVersion: 1,
   });
+});
+
+test('retire ferme le gate legacy même sans rotation artificielle', async () => {
+  const config = parseBobLiveNativeKeyVersionOperation('retire', environment());
+  const prisma = fakePrisma({
+    ranges: {
+      'bob-live-subject-hmac-v1': { minimumVersion: 1, highestVersion: 1 },
+      'openai-native-speech-proof-hmac-v1': { minimumVersion: 1, highestVersion: 1 },
+    },
+  });
+  const result = await manageBobLiveNativeKeyVersions(config, prisma);
+  assert.equal(result.status, 'retired');
+  assert.equal(result.legacySubjectAdmissionPhase, 'closed');
+  assert.deepEqual(prisma.legacySubjectAdmission, { phase: 'closed', revision: 2 });
+});
+
+test('stage échoue fermé devant un gate legacy corrompu', async () => {
+  const config = parseBobLiveNativeKeyVersionOperation('stage', environment());
+  await assert.rejects(
+    manageBobLiveNativeKeyVersions(
+      config,
+      fakePrisma({ legacySubjectAdmissionPhase: 'corrupt' }),
+    ),
+    /legacy subject admission gate is missing or invalid/u,
+  );
 });
 
 test('le premier stage refuse une table historique non enregistrée', async () => {
@@ -196,14 +241,30 @@ test('retire refuse tout owner OpenAI encore vivant', async () => {
 });
 
 test('la migration grave l’immutabilité, la rétention et les deux verrous', async () => {
-  const migration = await readFile(new URL(
+  const keyLifecycleMigration = await readFile(new URL(
     '../prisma/migrations/20260722060000_openai_native_key_lifecycle/migration.sql',
     import.meta.url,
   ), 'utf8');
-  assert.match(migration, /ADD COLUMN "subjectKeyVersion" INTEGER/);
-  assert.match(migration, /"subjectKeyVersion" IS NULL/);
-  assert.match(migration, /openai-native-speech-proof-hmac-v1/);
-  assert.match(migration, /retained_openai_native_proof_hmac_key_bindings/);
-  assert.match(migration, /NEW\."subjectKeyVersion"[\s\S]*OLD\."subjectKeyVersion"/u);
-  assert.match(migration, /pg_advisory_xact_lock_shared[\s\S]*bob-live-subject-hmac-v1[\s\S]*pg_advisory_xact_lock_shared[\s\S]*openai-native-speech-proof-hmac-v1/u);
+  const rollingGateMigration = await readFile(new URL(
+    '../prisma/migrations/20260724010000_openai_native_legacy_subject_gate/migration.sql',
+    import.meta.url,
+  ), 'utf8');
+  assert.match(keyLifecycleMigration, /ADD COLUMN "subjectKeyVersion" INTEGER/);
+  assert.match(keyLifecycleMigration, /"subjectKeyVersion" IS NULL/);
+  assert.match(keyLifecycleMigration, /openai-native-speech-proof-hmac-v1/);
+  assert.match(keyLifecycleMigration, /retained_openai_native_proof_hmac_key_bindings/);
+  assert.match(rollingGateMigration, /realtime_native_legacy_subject_admission/);
+  assert.match(rollingGateMigration, /OLD\.phase <> 'open'[\s\S]*NEW\.phase <> 'closed'/u);
+  assert.match(
+    rollingGateMigration,
+    /NEW\."subjectKeyVersion" IS NULL[\s\S]*legacy_subject_admission_open IS DISTINCT FROM TRUE/u,
+  );
+  assert.match(
+    rollingGateMigration,
+    /pg_advisory_xact_lock_shared[\s\S]*bob-live-subject-hmac-v1[\s\S]*pg_advisory_xact_lock_shared[\s\S]*openai-native-speech-proof-hmac-v1/u,
+  );
+  assert.match(
+    rollingGateMigration,
+    /NEW\."subjectKeyVersion"[\s\S]*OLD\."subjectKeyVersion"/u,
+  );
 });

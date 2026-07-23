@@ -23,6 +23,7 @@ const [
   nativeKeyManager,
   realtimeModule,
   keyLifecyclePostgresCert,
+  rollingGateMigration,
 ] = await Promise.all([
   readFile(new URL('scripts/release.sh', root), 'utf8'),
   readFile(
@@ -97,6 +98,13 @@ const [
     new URL('src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts', root),
     'utf8',
   ),
+  readFile(
+    new URL(
+      'prisma/migrations/20260724010000_openai_native_legacy_subject_gate/migration.sql',
+      root,
+    ),
+    'utf8',
+  ),
 ]);
 const indexes = [reaperIndex, tenantRetentionIndex, expiryIndex, retentionIndex].join('\n');
 
@@ -152,6 +160,7 @@ test('la release live exécute une certification metadata-only après migration,
 test('la release stage atomiquement les deux keyspaces avant les ACL, le boot et le certificat', () => {
   const markers = [
     'prisma migrate deploy',
+    'certify_openai_native_legacy_gate_pregrant',
     'manage-bob-live-native-key-versions.mjs stage',
     'grant_app_role',
     ' -f apps/api/prisma/rls.sql',
@@ -173,19 +182,48 @@ test('la release stage atomiquement les deux keyspaces avant les ACL, le boot et
     realtimeModule,
     /createOpenAiNativeKeyVersionAuthority[\s\S]*await keyVersions\.assertCurrentKeyVersions\(\)[\s\S]*buildRealtimeSpeechRuntime/u,
   );
+  assert.match(
+    release,
+    /REVOKE ALL ON TABLE public\.realtime_native_legacy_subject_admission FROM :"app_role"/u,
+  );
+  assert.match(
+    release,
+    /REVOKE ALL ON FUNCTION public\.guard_realtime_native_legacy_subject_admission_v1\(\)/u,
+  );
+  assert.match(
+    metadataCert,
+    /OpenAI native legacy subject admission (?:shape|constraint|trigger|ACL) drift/u,
+  );
 });
 
-test('la migration native reste expand-compatible et clôt les courses writer/retire', () => {
+test('le successeur natif rend le rolling N-1 réel et clôt les courses writer/retire', () => {
   assert.match(keyLifecycleMigration, /ADD COLUMN "subjectKeyVersion" INTEGER/u);
   assert.doesNotMatch(
     keyLifecycleMigration,
     /ADD COLUMN "subjectKeyVersion" INTEGER\s+(?:NOT NULL|DEFAULT)/u,
   );
   assert.match(
-    keyLifecycleMigration,
+    rollingGateMigration,
     /pg_advisory_xact_lock_shared[\s\S]*bob-live-subject-hmac-v1[\s\S]*pg_advisory_xact_lock_shared[\s\S]*openai-native-speech-proof-hmac-v1/u,
   );
-  assert.match(keyLifecycleMigration, /NEW\."subjectKeyVersion" IS NULL/u);
+  assert.match(
+    rollingGateMigration,
+    /NEW\."subjectKeyVersion" IS NULL[\s\S]*legacy_subject_admission_open IS DISTINCT FROM TRUE/u,
+  );
+  assert.match(
+    rollingGateMigration,
+    /OLD\.phase <> 'open'[\s\S]*NEW\.phase <> 'closed'/u,
+  );
+  assert.match(
+    rollingGateMigration,
+    /pg_catalog\.aclexplode[\s\S]*REVOKE ALL PRIVILEGES ON TABLE public\.realtime_native_legacy_subject_admission FROM %s CASCADE[\s\S]*REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %s CASCADE/u,
+  );
+  assert.doesNotMatch(
+    keyLifecyclePostgresCert,
+    /session_replication_role\s*=\s*replica/u,
+  );
+  assert.match(keyLifecyclePostgresCert, /insertPrepared\(tx, writerState, true, null\)/u);
+  assert.match(keyLifecyclePostgresCert, /legacy subject admission is closed/u);
   assert.match(keyLifecycleMigration, /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
   assert.match(keyLifecycleMigration, /OPENAI_NATIVE_PROOF_KEY_VERSION_RETAINED/u);
   assert.match(keyLifecycleMigration, /retained_openai_native_proof_hmac_key_bindings/u);
@@ -221,6 +259,10 @@ test('la certification mutationnelle native reste confinée au PostgreSQL éphé
     'a destructive key retirement certificate must not share retained authority evidence',
   );
   assert.match(isolatedRotationJob, /POSTGRES_DB: bob_ephemeral_key_rotation/u);
+  assert.match(
+    isolatedRotationJob,
+    /ALTER DEFAULT PRIVILEGES IN SCHEMA public[\s\S]*GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bob_app/u,
+  );
   assert.match(isolatedRotationJob, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'/u);
   assert.match(isolatedRotationJob, /OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral/u);
   assert.match(isolatedRotationJob, /openai-native-key-version-lifecycle\.postgres\.test\.ts/u);
@@ -246,8 +288,8 @@ test('la certification mutationnelle native reste confinée au PostgreSQL éphé
   assert.match(keyLifecyclePostgresCert, /waitForAdvisoryWaiter/u);
   assert.match(keyLifecyclePostgresCert, /BOB_LIVE_SUBJECT_KEY_VERSION_RETAINED/u);
   assert.match(keyLifecyclePostgresCert, /OPENAI_NATIVE_PROOF_KEY_VERSION_RETAINED/u);
-  assert.match(keyLifecyclePostgresCert, /subjectKeyVersion: null/u);
-  assert.match(keyLifecyclePostgresCert, /key is not admitted and bound/u);
+  assert.match(keyLifecyclePostgresCert, /subjectKeyVersion,\s*$/mu);
+  assert.match(keyLifecyclePostgresCert, /legacy subject admission is closed/u);
 });
 
 test('la découverte due est une livraison at-least-once claimée, renouvelable puis ACKée', () => {
