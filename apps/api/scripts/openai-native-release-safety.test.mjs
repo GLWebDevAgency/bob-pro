@@ -112,7 +112,8 @@ function workflowJob(name, nextName) {
 
 test('chaque certificat PostgreSQL de release provisionne Storage avant la migration', () => {
   const jobs = [
-    workflowJob('rls-certification', 'mistral-key-rotation-certification'),
+    workflowJob('rls-certification', 'realtime-global-capacity-certification'),
+    workflowJob('realtime-global-capacity-certification', 'mistral-key-rotation-certification'),
     workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
   ];
   for (const job of jobs) {
@@ -191,7 +192,10 @@ test('la migration native reste expand-compatible et clôt les courses writer/re
 });
 
 test('la certification mutationnelle native reste confinée au PostgreSQL éphémère de CI', () => {
-  const sharedAuthorityJob = workflowJob('rls-certification', 'mistral-key-rotation-certification');
+  const sharedAuthorityJob = workflowJob(
+    'rls-certification',
+    'realtime-global-capacity-certification',
+  );
   const isolatedRotationJob = workflowJob(
     'mistral-key-rotation-certification',
     'facturx-conformance',

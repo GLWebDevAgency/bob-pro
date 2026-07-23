@@ -179,22 +179,7 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
-      - name: Certify Bob Live global N/N+1 capacity and rollback on ephemeral PostgreSQL
-        run: |
-          BOB_LIVE_ENABLED=false \
-            sh apps/api/scripts/realtime-capacity-release.sh configure
-          BOB_LIVE_ENABLED=true \
-          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
-          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
-          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
-            sh apps/api/scripts/realtime-capacity-release.sh configure
-          RUN_POSTGRES_REALTIME_CAPACITY_CERT=true \
-          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
-          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
-          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
-            pnpm --filter @bob/api exec vitest run \
-              src/voice/realtime/realtime-capacity.postgres.test.ts
-      - name: Close Bob Live capacity after PostgreSQL certificates
+      - name: Close shared Bob Live capacity after PostgreSQL certificates
         if: always()
         run: |
           BOB_LIVE_ENABLED=false \
@@ -211,6 +196,122 @@ jobs:
                  )
             ) THEN
               RAISE EXCEPTION 'Bob Live capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
+
+  realtime-global-capacity-certification:
+    # Les certificats d'autorité partagés laissent volontairement des sessions observables.
+    # La course exacte N/N+1 exige au contraire un état initial vide et connu : elle dispose
+    # donc de sa propre base, sans nettoyage destructif ni dépendance à l'ordre des autres tests.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bob_ephemeral_global_capacity
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_global_capacity"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_global_capacity
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_global_capacity
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      SUPABASE_STORAGE_BUCKET: documents
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING: '{"1":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU","2":"BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: openai
+      OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+      BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '1000'
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Create isolated non-superuser app role
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+          SQL
+      - name: Provision the isolated Supabase Storage metadata contract
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
+      - name: Install and certify the isolated capacity schema
+        run: sh apps/api/scripts/release.sh
+      - name: Certify Bob Live global N/N+1 capacity and rollback on isolated PostgreSQL
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          BOB_LIVE_ENABLED=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          RUN_POSTGRES_REALTIME_CAPACITY_CERT=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            pnpm --filter @bob/api exec vitest run \
+              src/voice/realtime/realtime-capacity.postgres.test.ts
+      - name: Close isolated Bob Live capacity after certification
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Isolated Bob Live capacity teardown is not closed or exact';
             END IF;
           END;
           $$;
