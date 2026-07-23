@@ -28,6 +28,25 @@ const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT === 
 
 class ConcurrentCandidateLost extends Error {}
 
+function appendLuhnDigit(prefix: string): string {
+  for (let digit = 0; digit <= 9; digit += 1) {
+    const candidate = `${prefix}${digit}`;
+    let sum = 0;
+    let double = false;
+    for (let index = candidate.length - 1; index >= 0; index -= 1) {
+      let value = Number(candidate[index]);
+      if (double) {
+        value *= 2;
+        if (value > 9) value -= 9;
+      }
+      sum += value;
+      double = !double;
+    }
+    if (sum % 10 === 0) return candidate;
+  }
+  throw new Error('Unable to generate a valid Luhn identifier.');
+}
+
 describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certification PostgreSQL/RLS réelle', () => {
   const companyId = `expense-idem-cert-${randomUUID()}`;
   const expenseIds = [`expense-cert-${randomUUID()}`, `expense-cert-${randomUUID()}`];
@@ -144,15 +163,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
       new PrismaService({ datasourceUrl: runtimeUrl }),
     ];
     await Promise.all([admin.$connect(), ...workers.map((worker) => worker.$connect())]);
-    const siren = String(randomInt(100_000_000, 999_999_999));
+    // Les workflows complets réhydratent Company : la preuve PostgreSQL doit donc semer une
+    // identité légale réellement valide, pas seulement une valeur satisfaisant le schéma SQL.
+    const siren = appendLuhnDigit(String(randomInt(10_000_000, 100_000_000)));
+    const siret = appendLuhnDigit(`${siren}${String(randomInt(0, 10_000)).padStart(4, '0')}`);
     await admin.company.create({
       data: {
         id: companyId,
         name: 'Bob Expense Idempotency PostgreSQL Certification',
         legalForm: 'EI',
         siren,
-        siret: `${siren}00001`,
-        trade: 'certification',
+        siret,
+        trade: 'autre',
         vatRegime: 'reel_normal',
         addrLine1: '1 rue de la Certification',
         addrZip: '75001',
