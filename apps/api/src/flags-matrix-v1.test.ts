@@ -51,11 +51,11 @@ function readFrozenFlags(): readonly FrozenFlag[] {
   return parsed.flags.map((entry: unknown): FrozenFlag => {
     const candidate = entry as Partial<FrozenFlag>;
     if (
-      typeof candidate.name !== 'string'
-      || candidate.name.length === 0
-      || (typeof candidate.v1Value !== 'string' && typeof candidate.v1Value !== 'number')
-      || !FLAG_SCOPES.includes(candidate.scope as FrozenFlag['scope'])
-      || !FLAG_ENFORCEMENTS.includes(candidate.enforcement as FrozenFlag['enforcement'])
+      typeof candidate.name !== 'string' ||
+      candidate.name.length === 0 ||
+      (typeof candidate.v1Value !== 'string' && typeof candidate.v1Value !== 'number') ||
+      !FLAG_SCOPES.includes(candidate.scope as FrozenFlag['scope']) ||
+      !FLAG_ENFORCEMENTS.includes(candidate.enforcement as FrozenFlag['enforcement'])
     ) {
       throw new Error(`Entrée de flag invalide dans la matrice : ${JSON.stringify(entry)}.`);
     }
@@ -325,8 +325,8 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope ci)', () => {
     expect(mustang, 'MUSTANG_VERSION absent du bloc machine-readable').toBeDefined();
     const ciPath = resolve(__dirname, '..', '..', '..', '.github', 'workflows', 'ci.yml');
     const ci = readFileSync(ciPath, 'utf8');
-    const match = ci.match(/^\s*MUSTANG_VERSION:\s*"([^"]+)"\s*$/mu);
-    expect(match?.[1], 'MUSTANG_VERSION introuvable dans ci.yml').toBe(String(mustang?.v1Value));
+    const match = ci.match(/^\s*MUSTANG_VERSION:\s*(["'])([^"']+)\1\s*$/mu);
+    expect(match?.[2], 'MUSTANG_VERSION introuvable dans ci.yml').toBe(String(mustang?.v1Value));
   });
 
   // RUN_RLS_CERT / RLS_CERT_CLEANUP sont des variables de service Railway et le scope web
