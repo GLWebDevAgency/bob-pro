@@ -106,6 +106,29 @@ const [
 ]);
 const indexes = [reaperIndex, tenantRetentionIndex, expiryIndex, retentionIndex].join('\n');
 
+function workflowJob(name, nextName) {
+  const startMarker = `  ${name}:\n`;
+  const endMarker = `  ${nextName}:\n`;
+  const start = ci.indexOf(startMarker);
+  const end = ci.indexOf(endMarker, start + startMarker.length);
+  assert.ok(start >= 0, `workflow job ${name} must exist`);
+  assert.ok(end > start, `workflow job ${name} must end before ${nextName}`);
+  return ci.slice(start, end);
+}
+
+test('chaque certificat PostgreSQL de release provisionne Storage avant la migration', () => {
+  const jobs = [
+    workflowJob('rls-certification', 'mistral-key-rotation-certification'),
+    workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
+  ];
+  for (const job of jobs) {
+    const storage = job.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
+    const releaseCall = job.indexOf('sh apps/api/scripts/release.sh');
+    assert.ok(storage >= 0, 'ephemeral Storage vendor surface must be provisioned');
+    assert.ok(releaseCall > storage, 'Storage vendor surface must exist before release.sh');
+  }
+});
+
 test('la release live exécute une certification metadata-only après migration, ACL et RLS', () => {
   const call = '\ncertify_openai_native_release_metadata\n';
   assert.equal(release.split(call).length - 1, 1, 'metadata certificate call must be unique');

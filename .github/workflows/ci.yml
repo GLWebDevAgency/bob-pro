@@ -287,6 +287,21 @@ jobs:
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
           SQL
+      - name: Provision the isolated Supabase Storage metadata contract
+        run: |
+          # Test-only vendor surface: release.sh must prove that the legal-object immutability
+          # trigger is physically attached, even in this key-rotation-specific database.
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
       - name: Install and certify the isolated schema
         run: sh apps/api/scripts/release.sh
       - name: Certify key rotation and an observed retire-versus-writer race
