@@ -179,13 +179,6 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
-      - name: Certify OpenAI native key lifecycle and writer-retire races on PostgreSQL
-        env:
-          RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'
-          OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral
-        run: >-
-          pnpm --filter @bob/api exec vitest run
-          src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts
       - name: Certify Bob Live global N/N+1 capacity and rollback on ephemeral PostgreSQL
         run: |
           BOB_LIVE_ENABLED=false \
@@ -224,9 +217,9 @@ jobs:
           SQL
 
   mistral-key-rotation-certification:
-    # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. La certification
-    # d'autorité ci-dessus produit volontairement de telles preuves ; la course destructive
-    # prepare/retire vit donc dans sa propre base PostgreSQL éphémère, comme en exploitation.
+    # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. Les certificats
+    # d'autorité du job principal produisent volontairement de telles preuves ; toutes les
+    # courses destructives writer/retire vivent donc dans cette base PostgreSQL isolée.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -234,18 +227,18 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: bobpro
+          POSTGRES_DB: bob_ephemeral_key_rotation
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bobpro"
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_key_rotation"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_key_rotation
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_key_rotation
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
@@ -304,12 +297,21 @@ jobs:
           SQL
       - name: Install and certify the isolated schema
         run: sh apps/api/scripts/release.sh
+      - name: Certify OpenAI native subject/proof rotation and writer-retire races
+        env:
+          RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'
+          OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts
       - name: Certify key rotation and an observed retire-versus-writer race
         env:
           RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: 'true'
           BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: '2'
         run: |
           BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+          BOB_LIVE_SUBJECT_KEY_VERSION=2 \
+          BOB_LIVE_SUBJECT_HMAC_SECRET='BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ' \
             node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
           pnpm --filter @bob/api exec vitest run \
             src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
@@ -344,7 +346,7 @@ jobs:
       # Validateur tiers indépendant Mustang (règles Factur-X/EN 16931/France + veraPDF embarqué),
       # épinglé avec l'empreinte de l'artefact Maven Central. Ce gate complète nos validations
       # internes ; il n'est pas présenté comme une homologation DGFiP ou FNFE-MPE.
-      MUSTANG_VERSION: "2.24.0"
+      MUSTANG_VERSION: '2.24.0'
       MUSTANG_SHA256: 'e4904ffa0afdce3f5836dceb927c440a05ed5d60386fdd37e17a4b2f7652edbf'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

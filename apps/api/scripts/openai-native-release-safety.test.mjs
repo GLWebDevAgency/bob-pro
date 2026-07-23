@@ -75,10 +75,7 @@ const [
     'utf8',
   ),
   readFile(
-    new URL(
-      'prisma/migrations/20260722050000_openai_native_local_observation/migration.sql',
-      root,
-    ),
+    new URL('prisma/migrations/20260722050000_openai_native_local_observation/migration.sql', root),
     'utf8',
   ),
   readFile(new URL('prisma/rls.sql', root), 'utf8'),
@@ -91,10 +88,7 @@ const [
   readFile(new URL('src/voice/realtime/openai-native-speech-maintenance.prisma.ts', root), 'utf8'),
   readFile(new URL('prisma/openai-native-proof-key-rotation-cert.sql', root), 'utf8'),
   readFile(
-    new URL(
-      'prisma/migrations/20260722060000_openai_native_key_lifecycle/migration.sql',
-      root,
-    ),
+    new URL('prisma/migrations/20260722060000_openai_native_key_lifecycle/migration.sql', root),
     'utf8',
   ),
   readFile(new URL('scripts/manage-bob-live-native-key-versions.mjs', root), 'utf8'),
@@ -163,8 +157,14 @@ test('la release stage atomiquement les deux keyspaces avant les ACL, le boot et
     'certify_openai_native_release_metadata',
   ].map((marker) => release.lastIndexOf(marker));
   assert.ok(markers.every((index) => index >= 0));
-  assert.deepEqual(markers, [...markers].sort((left, right) => left - right));
-  assert.match(nativeKeyManager, /createHash\('sha256'\)\.update\(secret, 'utf8'\)\.digest\('hex'\)/u);
+  assert.deepEqual(
+    markers,
+    [...markers].sort((left, right) => left - right),
+  );
+  assert.match(
+    nativeKeyManager,
+    /createHash\('sha256'\)\.update\(secret, 'utf8'\)\.digest\('hex'\)/u,
+  );
   assert.match(nativeKeyManager, /ON CONFLICT \("keySpace", "keyVersion"\) DO NOTHING/u);
   assert.match(nativeKeyManager, /material mismatch/u);
   assert.match(nativeKeyManager, /cannot initialize after an unregistered native delivery/u);
@@ -191,6 +191,11 @@ test('la migration native reste expand-compatible et clôt les courses writer/re
 });
 
 test('la certification mutationnelle native reste confinée au PostgreSQL éphémère de CI', () => {
+  const sharedAuthorityJob = workflowJob('rls-certification', 'mistral-key-rotation-certification');
+  const isolatedRotationJob = workflowJob(
+    'mistral-key-rotation-certification',
+    'facturx-conformance',
+  );
   assert.match(ci, /RUN_POSTGRES_OPENAI_NATIVE_DELIVERY_CERT: 'true'/u);
   assert.match(ci, /OPENAI_NATIVE_CERT_DATABASE_KIND: ephemeral/u);
   assert.match(
@@ -206,9 +211,27 @@ test('la certification mutationnelle native reste confinée au PostgreSQL éphé
     /DIRECT_URL: postgresql:\/\/postgres:postgres@localhost:5432\/bob_ephemeral_ci/u,
   );
   assert.match(ci, /openai-native-speech-delivery\.postgres\.test\.ts/u);
-  assert.match(ci, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'/u);
-  assert.match(ci, /OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral/u);
-  assert.match(ci, /openai-native-key-version-lifecycle\.postgres\.test\.ts/u);
+  assert.doesNotMatch(
+    sharedAuthorityJob,
+    /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT/u,
+    'a destructive key retirement certificate must not share retained authority evidence',
+  );
+  assert.match(isolatedRotationJob, /POSTGRES_DB: bob_ephemeral_key_rotation/u);
+  assert.match(isolatedRotationJob, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'/u);
+  assert.match(isolatedRotationJob, /OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral/u);
+  assert.match(isolatedRotationJob, /openai-native-key-version-lifecycle\.postgres\.test\.ts/u);
+  const releaseIndex = isolatedRotationJob.indexOf('sh apps/api/scripts/release.sh');
+  const nativeRotationIndex = isolatedRotationJob.indexOf(
+    'openai-native-key-version-lifecycle.postgres.test.ts',
+  );
+  const mistralRotationIndex = isolatedRotationJob.indexOf(
+    'manage-mistral-conversation-key-version.mjs stage',
+  );
+  assert.ok(releaseIndex >= 0 && nativeRotationIndex > releaseIndex);
+  assert.ok(
+    mistralRotationIndex > nativeRotationIndex,
+    'native subject retirement must run before Mistral creates retained subject evidence',
+  );
   assert.match(postgresCert, /LOOPBACK_HOSTS/u);
   assert.match(postgresCert, /\^bob_ephemeral_/u);
   assert.match(postgresCert, /current_database\(\)/u);
