@@ -763,9 +763,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       .toEqual({ status: 'succeeded', acknowledged: true });
   }, 30_000);
 
-  it('prouve la projection keyset sous RLS avec 1 000 tenants et un tenant très bruyant', async () => {
+  it('prouve la projection keyset sous RLS à capacité pleine avec un historique très bruyant', async () => {
     const tenantCount = 1_000;
-    const hotRows = 20_000;
+    const hotAdmissionRows = 20_000;
     const sirenBase = randomInt(100_000_000, 500_000_000);
     const now = Date.now();
     const companies = Array.from({ length: tenantCount }, (_, index) => {
@@ -819,43 +819,39 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
                (md5('event-a-' || source.position::text)
                  || md5('event-b-' || source.position::text))::char(64),
                gen_random_uuid(), CASE
-                 WHEN source.position <= ${hotRows / 2}
+                 WHEN source.position <= ${hotAdmissionRows / 2}
                    THEN statement_timestamp() - interval '3 hours'
                  ELSE statement_timestamp()
                END
-          FROM generate_series(1, ${hotRows}) AS source(position)
-      `;
-      await admin.$executeRaw`
-        INSERT INTO realtime_session_leases (
-          "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
-          "reservedAt", "leaseExpiresAt", "hardExpiresAt", "updatedAt", version,
-          "sidebandOwnerEpoch", "sidebandProtocolVersion", "nextSpeechSequence"
-        )
-        SELECT ${companies[0]!.id},
-               (md5('lease-a-' || source.position::text)
-                 || md5('lease-b-' || source.position::text))::char(64),
-               gen_random_uuid(),
-               (md5('token-a-' || source.position::text)
-                 || md5('token-b-' || source.position::text))::char(64),
-               'reserved', statement_timestamp() - interval '1 minute',
-               CASE WHEN source.position <= ${hotRows / 2}
-                 THEN statement_timestamp() - interval '30 seconds'
-                 ELSE statement_timestamp() + interval '5 minutes'
-               END,
-               statement_timestamp() + interval '10 minutes',
-               statement_timestamp() - interval '30 seconds', 1, 0, 2, 1
-          FROM generate_series(1, ${hotRows}) AS source(position)
+          FROM generate_series(1, ${hotAdmissionRows}) AS source(position)
       `;
       await admin.$executeRaw`ANALYZE realtime_admission_events`;
       await admin.$executeRaw`ANALYZE realtime_session_leases`;
       await admin.$executeRaw`ANALYZE realtime_reaper_tenant_schedule`;
 
-      const [projection] = await admin.$queryRaw<Array<{ tenants: number }>>`
-        SELECT count(*)::int AS tenants
-          FROM realtime_reaper_tenant_schedule
-         WHERE "companyId" LIKE 'reaper-plan-%'
+      const [projection] = await admin.$queryRaw<Array<{
+        tenants: number;
+        usedSessions: number;
+        globalMaxSessions: number | null;
+        capacityMode: string;
+      }>>`
+        SELECT (
+                 SELECT count(*)::int
+                   FROM realtime_reaper_tenant_schedule
+                  WHERE "companyId" LIKE 'reaper-plan-%'
+               ) AS tenants,
+               capacity."usedSessions",
+               capacity."globalMaxSessions",
+               capacity.mode AS "capacityMode"
+          FROM realtime_global_capacity AS capacity
+         WHERE capacity.id = 1
       `;
-      expect(projection?.tenants).toBe(tenantCount);
+      expect(projection).toEqual({
+        tenants: tenantCount,
+        usedSessions: tenantCount,
+        globalMaxSessions: tenantCount,
+        capacityMode: 'active',
+      });
 
       const plans = await admin.$transaction(async (tx) => {
         await tx.$executeRaw`SET LOCAL ROLE bob_realtime_reaper_directory`;
