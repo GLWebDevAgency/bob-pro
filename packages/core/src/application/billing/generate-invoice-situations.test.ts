@@ -57,7 +57,7 @@ function makeEnv(
     companyId: quote.companyId,
     type: 'b2b',
     name: 'SARL Martin',
-    siren: '821503642',
+    siren: '821503646',
     address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
     ...(input.customerOver ?? {}),
   } as Record<string, unknown>;
@@ -112,7 +112,7 @@ function makeEnv(
   const seed = (invoice: Invoice, issue: boolean, sequence: number) => {
     if (issue) {
       invoice.assignNumber(DocNumber.format('F', 2026, sequence), SIGNED_AT);
-      const issued = invoice.issue({ mentions: [], terms, issuedAt: '2026-06-01', at: SIGNED_AT });
+      const issued = invoice.issue({ mentions: [], terms, issuedAt: '2026-06-01', at: SIGNED_AT, frenchBillingMode: 'S1' });
       if (!issued.ok) throw new Error('issue seed');
     }
     invoices.set(invoice.id, invoice);
@@ -243,7 +243,11 @@ describe('GenerateInvoiceFromQuote — mode situation (B2)', () => {
 
 describe('GenerateInvoiceFromQuote — finale après situations (A5 + B2)', () => {
   it('déduit acompte (net) + situations (TTC) et trace la part situations', async () => {
-    const { usecase, quote, seed, invoices } = makeEnv();
+    // B2C : le scénario de calcul reste supporté. En B2B/B2G, la reprise d'acompte est
+    // volontairement bloquée tant que le profil Factur-X Extended n'est pas certifié.
+    const { usecase, quote, seed, invoices } = makeEnv({
+      customerOver: { type: 'b2c', siren: undefined },
+    });
     const deposit = Invoice.fromSignedQuote(quote, 'deposit', 'dep-1');
     if (!deposit.ok) throw new Error('deposit');
     seed(deposit.value, true, 1);

@@ -13,6 +13,27 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  */
 export const VOICE_TRACE_PURGE_LIMIT_PER_TENANT = 500;
 export const VOICE_TRACE_PURGE_MAX_TENANTS = 100;
+const ONE_HOUR_MS = 60 * 60 * 1_000;
+
+/**
+ * Sélection bornée, stable et sans curseur mémoire : deux replicas/restarts dans la même heure
+ * choisissent la même page, puis l'heure suivante avance. Le tri rend la rotation indépendante
+ * de l'ordre renvoyé par PostgreSQL et la déduplication évite qu'une configuration répétée ne
+ * consomme plusieurs places du quota.
+ */
+export function selectVoiceTracePurgeTenantBatch(
+  companyIds: readonly string[],
+  at: Date,
+): string[] {
+  const stableIds = [...new Set(companyIds)].sort((left, right) => left.localeCompare(right));
+  if (stableIds.length <= VOICE_TRACE_PURGE_MAX_TENANTS) return stableIds;
+
+  const pageCount = Math.ceil(stableIds.length / VOICE_TRACE_PURGE_MAX_TENANTS);
+  const hourBucket = Math.floor(at.getTime() / ONE_HOUR_MS);
+  const pageIndex = ((hourBucket % pageCount) + pageCount) % pageCount;
+  const start = pageIndex * VOICE_TRACE_PURGE_MAX_TENANTS;
+  return stableIds.slice(start, start + VOICE_TRACE_PURGE_MAX_TENANTS);
+}
 
 export interface VoiceTracePurgeSummary {
   readonly skipped: boolean;
@@ -69,14 +90,15 @@ export class VoiceTracePurgeService {
     // tourner ce cron sur une base qui n'a jamais rien tracé et n'en tracera pas.
     if (this.running) return { skipped: true, tenants: 0, purged: 0, failures: 0 };
     this.running = true;
-    const before = this.now().toISOString();
+    const now = this.now();
+    const before = now.toISOString();
     let tenants = 0;
     let purged = 0;
     let failures = 0;
     try {
-      const companyIds = (await this.tenants.listCompanyIds()).slice(
-        0,
-        VOICE_TRACE_PURGE_MAX_TENANTS,
+      const companyIds = selectVoiceTracePurgeTenantBatch(
+        await this.tenants.listCompanyIds(),
+        now,
       );
       tenants = companyIds.length;
       for (const companyId of companyIds) {

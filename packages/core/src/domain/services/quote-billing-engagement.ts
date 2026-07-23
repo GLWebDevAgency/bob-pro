@@ -1,4 +1,10 @@
 import { type Invoice } from '../billing/invoice/invoice';
+import { type Totals } from '../billing/shared/totals';
+import { type DomainResult, err, ok } from '../../shared-kernel/result';
+
+export const SITUATION_VAT_CLOSURE_UNAVAILABLE_MESSAGE =
+  'Les arrondis de TVA cumulés des situations ne retombent pas exactement sur le marché signé. ' +
+  'La facture finale reste bloquée avant numérotation jusqu’à régularisation certifiée par taux.';
 
 /**
  * B2 — Engagement de facturation d'un DEVIS SIGNÉ : source UNIQUE des pièces sœurs lues par
@@ -39,6 +45,50 @@ export interface QuoteBillingEngagement {
 export function billedTtcCents(invoice: Invoice): number {
   const totals = invoice.totals();
   return invoice.kind === 'deposit' ? totals.netToPay : totals.ttc;
+}
+
+/**
+ * Une finale V2 ne reprend pas les situations en « déjà payé » : ses lignes représentent les
+ * travaux restants. La somme TVA(situations émises) + TVA(finale) doit donc retrouver, par taux,
+ * la TVA du marché signé. Les très petits montants peuvent diverger d'un centime quand chaque
+ * pièce arrondit séparément ; tant que BT-114 n'est pas modélisé et certifié, on refuse au lieu
+ * d'émettre une chaîne dont le cumul fiscal serait faux.
+ */
+export function validateSituationVatClosure(input: {
+  marketTotals: Pick<Totals, 'vatByRate'>;
+  emittedSituations: readonly Invoice[];
+  finalInvoice: Invoice;
+}): DomainResult<void> {
+  if (input.emittedSituations.length === 0) return ok(undefined);
+
+  const actualByRate: Record<string, number> = {};
+  for (const situation of input.emittedSituations) {
+    for (const [rate, cents] of Object.entries(situation.totals().vatByRate)) {
+      actualByRate[rate] = (actualByRate[rate] ?? 0) + cents;
+    }
+  }
+  for (const [rate, cents] of Object.entries(input.finalInvoice.totals().vatByRate)) {
+    actualByRate[rate] = (actualByRate[rate] ?? 0) + cents;
+  }
+
+  const rates = new Set([
+    ...Object.keys(input.marketTotals.vatByRate),
+    ...Object.keys(actualByRate),
+  ]);
+  const mismatch = [...rates]
+    .sort((left, right) => Number(left) - Number(right))
+    .find(
+      (rate) =>
+        (input.marketTotals.vatByRate[rate] ?? 0) !== (actualByRate[rate] ?? 0),
+    );
+  if (mismatch !== undefined) {
+    return err({
+      code: 'VALIDATION',
+      field: 'situationVatClosure',
+      message: SITUATION_VAT_CLOSURE_UNAVAILABLE_MESSAGE,
+    });
+  }
+  return ok(undefined);
 }
 
 /** Engagement de facturation du devis `quoteId` parmi les pièces du tenant. */

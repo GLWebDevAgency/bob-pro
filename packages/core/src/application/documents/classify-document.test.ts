@@ -64,8 +64,13 @@ function makeDocument(over: Partial<DocumentProps> = {}): Document {
 class MemoryDocuments implements DocumentRepository {
   readonly map = new Map<string, Document>();
   forceRevisionConflict = false;
-  async save(d: Document): Promise<void> {
+  async seed(d: Document): Promise<void> {
     this.map.set(d.id, d);
+  }
+  async attestInvoicePdf(): Promise<boolean> { return false; }
+  async insertInitialOrConfirmExact(d: Document): ReturnType<DocumentRepository['insertInitialOrConfirmExact']> {
+    this.map.set(d.id, d);
+    return { status: 'inserted', document: d };
   }
   async classify(
     input: Parameters<DocumentRepository['classify']>[0],
@@ -130,7 +135,7 @@ class MemoryDocuments implements DocumentRepository {
 describe('ClassifyDocument (A1-C14 — confirmation du classement proposé après OCR)', () => {
   it('rattache le document à la dépense, pose la validation et persiste (sort d’« À valider »)', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument());
+    await documents.seed(makeDocument());
     const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
 
     const r = await uc.execute({
@@ -176,7 +181,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('un document déjà validé qui se classe garde l’horodatage de sa première validation', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument({ reviewedAt: '2026-07-10T08:00:00.000Z' }));
+    await documents.seed(makeDocument({ reviewedAt: '2026-07-10T08:00:00.000Z' }));
     const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
 
     const r = await uc.execute({
@@ -196,7 +201,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('REFUSE d’écraser un lien métier existant par un lien DIFFÉRENT (DOCUMENT_ALREADY_LINKED → 422)', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument({ linkedEntityType: 'expense', linkedEntityId: 'exp-leroy' }));
+    await documents.seed(makeDocument({ linkedEntityType: 'expense', linkedEntityId: 'exp-leroy' }));
     const classify = documents.classify.bind(documents);
     let classifyCalls = 0;
     documents.classify = async (input) => {
@@ -236,7 +241,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('le re-lien IDENTIQUE d’un document déjà lié reste idempotent (le client mobile s’appuie dessus)', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(
+    await documents.seed(
       makeDocument({
         linkedEntityType: 'expense',
         linkedEntityId: 'exp-leroy',
@@ -276,7 +281,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('refuse un rattachement incomplet (invariant du domaine)', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument());
+    await documents.seed(makeDocument());
     const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
     const r = await uc.execute({
       companyId: COMPANY,
@@ -290,7 +295,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('refuse de classer un document supprimé', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(
+    await documents.seed(
       makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }),
     );
     const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
@@ -306,7 +311,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('échoue sans mutation si le compare-and-set de persistance perd une course', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument());
+    await documents.seed(makeDocument());
     documents.forceRevisionConflict = true;
 
     const result = await new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock }).execute({
@@ -323,7 +328,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
 
   it('refuse une cible métier absente sans muter le document ni lancer le compare-and-set', async () => {
     const documents = new MemoryDocuments();
-    await documents.save(makeDocument());
+    await documents.seed(makeDocument());
     const classify = documents.classify.bind(documents);
     let classifyCalls = 0;
     documents.classify = async (input) => {

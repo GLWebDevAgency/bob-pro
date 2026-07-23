@@ -119,6 +119,8 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
 
   async reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult> {
     if (
+      this.policy.globalCapacity === null
+      ||
       !validIdentity(input)
       || (input.sessionId !== undefined && !SESSION_ID_PATTERN.test(input.sessionId))
       || !Number.isInteger(input.maxSessionSeconds)
@@ -169,6 +171,17 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     const userEvents = tenantEvents.filter((event) => event.subjectHash === input.subjectHash);
     const denied = this.quotaDenial(userEvents, tenantEvents, now);
     if (denied) return denied;
+
+    if (this.leases.size >= this.policy.globalCapacity.globalMaxSessions) {
+      const nearestExpiry = Math.min(
+        ...[...this.leases.values()].map((lease) => Math.min(lease.leaseExpiresAt, lease.hardExpiresAt)),
+      );
+      return {
+        allowed: false,
+        denial: 'global_capacity',
+        retryAt: iso(Math.max(now + 1_000, Math.min(now + 60_000, nearestExpiry))),
+      };
+    }
 
     const sessionId = input.sessionId ?? this.entropy.sessionId();
     const leaseToken = this.entropy.token();
@@ -519,6 +532,13 @@ export class InProcessRealtimeAdmission extends InMemoryRealtimeAdmission {
 
   constructor(userLimitPerMinute: number, now: () => number = Date.now) {
     super({
+      globalCapacity: {
+        providerId: 'openai',
+        providerModel: 'gpt-realtime-2.1',
+        globalMaxSessions: 1_000,
+        providerMaxSessions: 1_000,
+        configVersion: 1,
+      },
       userLimitPerMinute,
       userLimitPerHour: Math.max(30, userLimitPerMinute),
       tenantLimitPerMinute: Math.max(50, userLimitPerMinute),

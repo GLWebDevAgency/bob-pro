@@ -2,7 +2,7 @@ import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type Customer } from '../customer/customer';
 
 /**
- * B6 (garde-fou de l'item B7 de l'audit) — client PROFESSIONNEL établi HORS DE FRANCE :
+ * B6 (garde-fou de l'item B7 de l'audit) — client établi HORS DE FRANCE :
  * l'émission est BLOQUÉE, sans contournement.
  *
  * Pourquoi fail-closed : une prestation/vente à un assujetti établi dans l'UE relève de
@@ -14,18 +14,20 @@ import { type Customer } from '../customer/customer';
  * due au Trésor par le seul fait de sa mention (art. 283, 3 du CGI). Le blocage protège
  * l'intégrité fiscale de l'artisan ; le module complet (intracom/export) est un lot ultérieur.
  *
- * Périmètre exact : professionnel (b2b/b2g) ET international. Le particulier étranger n'est
- * pas visé (TVA française applicable au B2C de proximité) ; le professionnel FRANÇAIS non plus.
+ * Bob ne stocke pas encore le pays ISO de l'adresse client ni le régime OSS/export : même pour
+ * un particulier, émettre aujourd'hui marquerait faussement FR dans Factur-X. Toute émission
+ * internationale est donc refusée jusqu'à modélisation du pays et du traitement fiscal exact.
  */
 export const INTERNATIONAL_PRO_EMISSION_BLOCK_MESSAGE =
-  'Client professionnel établi hors de France : la TVA intracommunautaire (autoliquidation par ' +
-  "le preneur, art. 259 du CGI) et l'exonération à l'export (art. 262 du CGI) ne sont pas " +
+  'Client établi hors de France : le pays, la TVA intracommunautaire/OSS et l’exonération export ' +
+  'ne sont pas encore modélisés de bout en bout. Pour un professionnel, l’autoliquidation par ' +
+  "le preneur (art. 259 du CGI) et l'exonération à l'export (art. 262 du CGI) ne sont pas " +
   'encore gérées. Émettre cette pièce avec une TVA française serait fiscalement faux — ' +
   "l'émission est bloquée pour protéger ton intégrité fiscale, sans contournement possible.";
 
-/** Garde d'émission — refuse toute pièce (devis→facture, facture directe, émission) pour un pro non-FR. */
+/** Garde d'émission — refuse toute pièce tant que le pays/régime international est incomplet. */
 export function internationalProEmissionGuard(customer: Customer): DomainResult<void> {
-  if (customer.isProfessional() && customer.isInternational())
+  if (customer.isInternational())
     return err({
       code: 'VALIDATION',
       field: 'customer',

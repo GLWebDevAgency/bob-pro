@@ -7,10 +7,17 @@ import {
   PrismaMistralConversationKeyVersionAuthority,
 } from './mistral-conversation-key-version.prisma';
 import { BOB_LIVE_SUBJECT_HMAC_KEY_SPACE } from './mistral-conversation-subject-key-version.prisma';
+import { OPENAI_NATIVE_PROOF_HMAC_KEY_SPACE } from './openai-native-proof-key-version.prisma';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_MISTRAL_CONVERSATION_CERT === 'true';
 const FEATURE_ENABLED =
   process.env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED === 'true';
+const SUBJECT_KEYRING_ENABLED = Boolean(
+  process.env.BOB_LIVE_SUBJECT_HMAC_KEYRING?.trim(),
+);
+const OPENAI_NATIVE_PROOF_KEYRING_ENABLED = Boolean(
+  process.env.BOB_LIVE_PROOF_KEYRING?.trim(),
+);
 
 function configuredSecrets(): ReadonlyMap<number, Uint8Array> {
   let decoded: unknown;
@@ -160,38 +167,27 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         },
       ]);
 
-      const [shape] = await worker.$queryRaw<Array<{
-        floorCount: bigint;
-        invalidFloorKeySpaceCount: bigint;
-        invalidBindingKeySpaceCount: bigint;
-      }>>`
-        SELECT (
-                 SELECT count(*)
-                   FROM realtime_mistral_conversation_key_version_floors
-               ) AS "floorCount",
-               (
-                 SELECT count(*)
-                   FROM realtime_mistral_conversation_key_version_floors
-                  WHERE "keySpace" NOT IN (
-                    ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE},
-                    ${BOB_LIVE_SUBJECT_HMAC_KEY_SPACE}
-                  )
-               ) AS "invalidFloorKeySpaceCount",
-               (
-                 SELECT count(*)
-                   FROM realtime_mistral_conversation_key_bindings
-                  WHERE "keySpace" NOT IN (
-                    ${MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE},
-                    ${BOB_LIVE_SUBJECT_HMAC_KEY_SPACE}
-                  )
-               ) AS "invalidBindingKeySpaceCount"
-      `;
-      expect(shape).toMatchObject({
-        invalidFloorKeySpaceCount: 0n,
-        invalidBindingKeySpaceCount: 0n,
-      });
-      expect(Number(shape?.floorCount ?? -1n)).toBeLessThanOrEqual(2);
-      if (FEATURE_ENABLED) expect(shape?.floorCount).toBe(2n);
+      const [floorKeySpaces, bindingKeySpaces] = await Promise.all([
+        worker.$queryRaw<Array<{ keySpace: string }>>`
+          SELECT "keySpace"
+            FROM realtime_mistral_conversation_key_version_floors
+           ORDER BY "keySpace"
+        `,
+        worker.$queryRaw<Array<{ keySpace: string }>>`
+          SELECT DISTINCT "keySpace"
+            FROM realtime_mistral_conversation_key_bindings
+           ORDER BY "keySpace"
+        `,
+      ]);
+      const expectedKeySpaces = new Set<string>();
+      if (FEATURE_ENABLED) expectedKeySpaces.add(MISTRAL_CONVERSATION_PERSISTENCE_KEY_SPACE);
+      if (SUBJECT_KEYRING_ENABLED) expectedKeySpaces.add(BOB_LIVE_SUBJECT_HMAC_KEY_SPACE);
+      if (OPENAI_NATIVE_PROOF_KEYRING_ENABLED) {
+        expectedKeySpaces.add(OPENAI_NATIVE_PROOF_HMAC_KEY_SPACE);
+      }
+      const expectedOrderedKeySpaces = [...expectedKeySpaces].sort();
+      expect(floorKeySpaces.map(({ keySpace }) => keySpace)).toEqual(expectedOrderedKeySpaces);
+      expect(bindingKeySpaces.map(({ keySpace }) => keySpace)).toEqual(expectedOrderedKeySpaces);
     });
 
     it('certifie migration, contraintes validées et policies bornées au rôle DIRECT_URL', async () => {

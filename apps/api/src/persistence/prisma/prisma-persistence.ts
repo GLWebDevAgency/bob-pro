@@ -45,6 +45,8 @@ import type {
   RealtimeAdmissionPort,
 } from '../../voice/realtime/realtime-admission';
 import { PrismaRealtimeAdmission } from '../../voice/realtime/realtime-admission.prisma';
+import { PrismaRealtimeGlobalCapacityInspector } from '../../voice/realtime/realtime-capacity.prisma';
+import type { RealtimeGlobalCapacityInspector } from '../../voice/realtime/realtime-capacity';
 import { PrismaRealtimeSpeechDeliveryRepository } from '../../voice/realtime/realtime-speech-delivery.prisma';
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../../voice/realtime/realtime-speech-delivery.repository';
 import { PrismaRealtimeSidebandOwner } from '../../voice/realtime/realtime-sideband-owner.prisma';
@@ -61,6 +63,12 @@ import type {
 } from '../../voice/realtime/realtime-mistral-ingress-ticket';
 import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-control.prisma';
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
+import { PrismaOpenAiNativeSpeechMaintenance } from '../../voice/realtime/openai-native-speech-maintenance.prisma';
+import type { OpenAiNativeSpeechMaintenancePort } from '../../voice/realtime/openai-native-speech-maintenance';
+import { PrismaOpenAiNativeSpeechDeliveryRepository } from '../../voice/realtime/openai-native-speech-delivery.prisma';
+import type { OpenAiNativeSpeechDeliveryRepositoryPort } from '../../voice/realtime/openai-native-speech-delivery';
+import { PrismaRealtimeReaperDirectory } from '../../voice/realtime/realtime-reaper-directory.prisma';
+import type { RealtimeReaperDirectoryPort } from '../../voice/realtime/realtime-reaper-directory';
 import { PrismaStripeBillingRepository } from './stripe-billing.repository';
 import type { MistralConversationPersistenceKeyRing } from '../../voice/realtime/mistral-conversation-outbox-seal';
 import {
@@ -82,6 +90,13 @@ import {
   PrismaBobLiveSubjectHmacKeyVersionAuthority,
 } from '../../voice/realtime/mistral-conversation-subject-key-version.prisma';
 import type { BobLiveSubjectHmacKeyRingAdmission } from '../../voice/realtime/mistral-conversation-subject-key-version';
+import {
+  PrismaOpenAiNativeKeyVersionAuthority,
+} from '../../voice/realtime/openai-native-proof-key-version.prisma';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../../voice/realtime/openai-native-proof-key-version';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -126,6 +141,10 @@ export class PrismaPersistence implements Persistence {
     return new PrismaRealtimeAdmission(this.prisma, policy);
   }
 
+  createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
+    return new PrismaRealtimeGlobalCapacityInspector(this.prisma);
+  }
+
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
     return new PrismaRealtimeSpeechDeliveryRepository(this.prisma);
   }
@@ -144,6 +163,25 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {
     return new PrismaRealtimeControlRepository(this.prisma);
+  }
+
+  createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
+    return new PrismaOpenAiNativeSpeechDeliveryRepository(this.prisma);
+  }
+
+  createOpenAiNativeKeyVersionAuthority(
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort {
+    return new PrismaOpenAiNativeKeyVersionAuthority(this.prisma, subjectKeys, proofKeys);
+  }
+
+  createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
+    return new PrismaOpenAiNativeSpeechMaintenance(this.prisma);
+  }
+
+  createRealtimeReaperDirectory(): RealtimeReaperDirectoryPort {
+    return new PrismaRealtimeReaperDirectory(this.prisma);
   }
 
   createMistralRealtimeIngressTicketAuthority(

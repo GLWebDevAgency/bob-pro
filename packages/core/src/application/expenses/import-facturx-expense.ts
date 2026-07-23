@@ -25,17 +25,17 @@ import { type RecordExpenseInput } from './record-expense';
  *     refus AFNOR 210 « facture mal adressée » (les 2 SIREN dans l'erreur) → `mal_adressee` ;
  *  4. COHÉRENCE arithmétique EN 16931 : validateFacturXBasic REJOUÉ sur la facture entrante
  *     → `incoherente` avec la liste des violations ;
- *  5. DOUBLON EXACT (SIREN fournisseur + n° de facture déjà en base) : anti double-paiement /
+ *  5. AUTOLIQUIDATION (catégorie AE), pure ou mixte : import comptable bloqué tant que le
+ *     moteur de TVA due/déductible, les écritures miroir et la CA3 ne sont pas certifiés ;
+ *  6. DOUBLON EXACT (SIREN fournisseur + n° de facture déjà en base) : anti double-paiement /
  *     double-déduction (P17) → `doublon` avec la clé.
  *
  * MAPPING EXPERT (le piège TVA, P21) :
  *  - vatCents = SOMME EXACTE des ventilations (multi-taux au centime, jamais un taux replayé) ;
  *  - vatRatePct = taux unique si toutes les ventilations partagent le même taux, sinon null ;
- *  - AUTOLIQUIDATION preneur (catégorie AE, art. 283-2 nonies CGI) : la TVA n'est PAS
- *    déductible sur cette pièce (c'est le preneur qui l'autoliquide) — `vatNonDeductible`
- *    garantit ZÉRO ligne 44566 à l'approbation (un import naïf déduirait la TVA du
- *    sous-traitant) ; prudence : le drapeau couvre TOUTE pièce portant de l'AE, y compris
- *    un mixte AE+S rarissime (pas de déduction automatique, note explicite, ajustement manuel) ;
+ *  - AUTOLIQUIDATION preneur (catégorie AE, art. 283-2 nonies CGI) : aucun brouillon
+ *    comptabilisable n'est produit en V1. Neutraliser la TVA à zéro serait fiscalement faux :
+ *    le preneur doit constater la TVA due et, selon son droit à déduction, son miroir ;
  *  - exonéré/franchise (catégorie E) : zéro TVA mentionnée → zéro déductible (règle E1
  *    « TVA déductible seulement si mentionnée »), note avec le motif d'exonération.
  */
@@ -60,9 +60,12 @@ export interface FacturXExpenseDraft {
   vatCents: number;
   /** Taux unique si toutes les ventilations partagent le même taux, sinon null. */
   vatRatePct: number | null;
-  /** true = aucune TVA déductible sur cette pièce (autoliquidation AE) — jamais de 44566. */
-  vatNonDeductible: boolean;
-  /** Explication TVA lisible (autoliquidation, exonération) — null si TVA classique. */
+  /**
+   * Compatibilité de contrat V1. Toujours false : une catégorie AE est refusée avant brouillon,
+   * elle n'est jamais transformée en fausse « TVA non déductible ».
+   */
+  vatNonDeductible: false;
+  /** Explication TVA lisible (exonération) — null si TVA classique. */
   vatNote: string | null;
   /** Catégorie proposée — la mémoire fournisseur PRIME via `withSupplierCategory`. */
   categoryGuess: ExpenseCategory;
@@ -76,6 +79,7 @@ export type ImportFacturXExpenseError =
   | { code: 'xml_invalide'; field: string; message: string; suggestedAfnorStatus: AfnorInboundRefusalStatus }
   | { code: 'type_non_gere'; typeCode: string; message: string }
   | { code: 'devise_non_geree'; currency: string; message: string }
+  | { code: 'autoliquidation_non_geree'; message: string }
   | {
       code: 'mal_adressee';
       buyerSiren: string | null;
@@ -224,7 +228,19 @@ export function importFacturXExpense(
     });
   }
 
-  // 5. DOUBLON EXACT (SIREN fournisseur + n° de facture) — anti double-paiement/double-déduction.
+  // 5. AUTOLIQUIDATION — fail-closed AVANT tout brouillon approuvable et donc avant RecordExpense.
+  // La catégorie AE peut cohabiter avec S : neutraliser toute la TVA de la pièce serait alors
+  // doublement faux. Le futur moteur devra ventiler TVA due/déductible et produire le miroir CA3.
+  const hasAE = d.vatBreakdown.some((breakdown) => breakdown.category === 'AE');
+  if (hasAE) {
+    return err({
+      code: 'autoliquidation_non_geree',
+      message:
+        "Cette facture comporte de l'autoliquidation (catégorie AE). Son approbation comptable est bloquée tant que le calcul de TVA due et déductible, les écritures miroir et la CA3 ne sont pas certifiés. Aucune dépense n'a été créée ; ne refusez pas la facture fournisseur pour ce seul motif.",
+    });
+  }
+
+  // 6. DOUBLON EXACT (SIREN fournisseur + n° de facture) — anti double-paiement/double-déduction.
   const supplierSiren = partySiren(d.seller);
   const duplicateKey = facturXExpenseKey({
     supplierSiren,
@@ -241,18 +257,14 @@ export function importFacturXExpense(
     }
   }
 
-  // MAPPING EXPERT — TVA multi-taux au centime, autoliquidation, exonération.
+  // MAPPING EXPERT — TVA multi-taux au centime et exonération. AE a déjà été bloquée.
   const vatCents = d.vatBreakdown.reduce((sum, b) => sum + b.vatCents, 0); // = taxTotalCents (validé BR-CO-14)
   const rates = [...new Set(d.vatBreakdown.map((b) => b.ratePct))];
   const vatRatePct = rates.length === 1 && rates[0] !== undefined ? rates[0] : null;
 
-  const hasAE = d.vatBreakdown.some((b) => b.category === 'AE');
   const exempt = d.vatBreakdown.find((b) => b.category === 'E');
   let vatNote: string | null = null;
-  if (hasAE) {
-    vatNote =
-      'Autoliquidation (art. 283-2 nonies CGI) : TVA due par le preneur — aucune TVA déductible sur cette pièce (pas de 44566), à autoliquider en déclaration.';
-  } else if (vatCents === 0 && exempt !== undefined) {
+  if (vatCents === 0 && exempt !== undefined) {
     vatNote = `TVA non applicable — fournisseur exonéré/en franchise (${exempt.exemptionReason ?? 'motif sur la pièce'}) : zéro TVA déductible (déductible seulement si mentionnée).`;
   }
 
@@ -266,11 +278,11 @@ export function importFacturXExpense(
     totalHtCents: d.taxBasisTotalCents,
     vatCents,
     vatRatePct,
-    vatNonDeductible: hasAE,
+    vatNonDeductible: false,
     vatNote,
-    // Défaut HONNÊTE : l'autoliquidation preneur signe un sous-traitant (BTP) ; sinon « autre ».
-    // La mémoire fournisseur PRIME toujours via `withSupplierCategory` (habitude validée > défaut).
-    categoryGuess: hasAE ? 'sous_traitance' : 'autre',
+    // Défaut HONNÊTE : aucune catégorie métier devinée. La mémoire fournisseur PRIME
+    // toujours via `withSupplierCategory` (habitude validée > défaut).
+    categoryGuess: 'autre',
     categorySource: 'default',
     source: 'facturx',
     duplicateKey,
@@ -291,8 +303,7 @@ export function withSupplierCategory(
 
 /**
  * Traduit le brouillon APPROUVÉ en entrée RecordExpense (écritures E1 automatiques).
- * C'est ICI que l'autoliquidation est neutralisée : vatCents 0 / vatRatePct null →
- * buildRecordedExpenseAccountingEntry ne poste AUCUNE ligne 44566 (charge = TTC intégral).
+ * Une facture AE n'atteint jamais ce point : `importFacturXExpense` la bloque avant brouillon.
  */
 export function facturXDraftToRecordExpenseInput(
   draft: FacturXExpenseDraft,
@@ -304,8 +315,8 @@ export function facturXDraftToRecordExpenseInput(
     documentDate: draft.documentDate,
     totalTtcCents: draft.totalTtcCents,
     totalHtCents: draft.totalHtCents,
-    vatCents: draft.vatNonDeductible ? 0 : draft.vatCents,
-    vatRatePct: draft.vatNonDeductible ? null : draft.vatRatePct,
+    vatCents: draft.vatCents,
+    vatRatePct: draft.vatRatePct,
     category: overrides?.category ?? draft.categoryGuess,
     source: 'facturx',
     supplierInvoiceNumber: draft.supplierInvoiceNumber,

@@ -100,6 +100,8 @@ export class RegisterPayment {
           method: input.method,
           receivedAt,
           idempotencyKey: key.value,
+          ordinaryReceivableCents: registered.value.ordinaryReceivableCents,
+          retentionReceivableCents: registered.value.retentionReceivableCents,
         });
         if (!payment.ok) throw new TxDomainError(payment.error);
         await this.deps.payments.save(payment.value);

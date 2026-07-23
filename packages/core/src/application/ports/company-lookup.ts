@@ -16,7 +16,7 @@ export interface CompanyLookupResult {
   /** Date de création de l'entreprise (ISO yyyy-mm-dd) — null si absente de la source. */
   dateCreation: string | null;
   address: Address | null;
-  /** N° TVA intracom (renvoyé par l'API ou dérivé du SIREN). */
+  /** N° TVA intracom réellement renvoyé par la source ; null si elle ne le fournit pas. */
   tvaIntracom: string | null;
   /** Qualification RGE active (utile Pack BTP). */
   rge: boolean;

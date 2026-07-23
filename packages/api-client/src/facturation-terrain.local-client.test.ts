@@ -128,7 +128,7 @@ describe('B2 — generateInvoice mode situation', () => {
     expect(JSON.stringify(s2.error)).toContain('reste facturable');
   });
 
-  it('aperçu de finale couverte à 100 % : aucune écriture artificielle, comme sur le serveur', async () => {
+  it('refuse une finale couverte à 100 % : aucune pièce ni écriture artificielle', async () => {
     const client = makeClient();
     const quoteId = await signedB2bQuote(client);
     const situation = await client.generateInvoice({
@@ -138,22 +138,23 @@ describe('B2 — generateInvoice mode situation', () => {
     });
     expect(situation.ok).toBe(true);
     if (!situation.ok) return;
-    const issued = await client.issueInvoice({ invoiceId: situation.value.invoiceId });
+    // Le devis contient main-d'œuvre + fournitures : BT-23 doit être confirmé explicitement
+    // à l'émission, comme dans l'UI et sur l'API. Ce test cible ensuite l'aperçu comptable.
+    const issued = await client.issueInvoice({
+      invoiceId: situation.value.invoiceId,
+      operationCategory: 'mixed',
+    });
     expect(issued.ok).toBe(true);
 
     const final = await client.generateInvoice({ quoteId, mode: 'final' });
-    expect(final.ok).toBe(true);
-    if (!final.ok) return;
-    const preview = await client.invoiceAccountingPreview(final.value.invoiceId);
-
-    expect(preview).toEqual({
-      ok: true,
-      value: {
-        invoiceId: final.value.invoiceId,
-        available: false,
-        reason:
-          'Aucune écriture à passer : le solde est entièrement couvert par les situations émises ' +
-          '(chiffre d’affaires et TVA déjà constatés à chaque situation).',
+    expect(final).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: {
+          code: 'VALIDATION',
+          field: 'situationBilledHtCents',
+        },
       },
     });
   });

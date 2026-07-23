@@ -329,6 +329,7 @@ model Company {
   customers                                   Customer[]
   quotes                                      Quote[]
   invoices                                    Invoice[]
+  invoicePredecessors                         InvoicePredecessor[]
   payments                                    Payment[]
   publicAccessTokens                          PublicAccessToken[]
   expenses                                    Expense[]
@@ -359,6 +360,7 @@ model Company {
   realtimeMistralTerminalReceipts             RealtimeMistralConversationTerminalReceipt[]
   realtimeMistralResumeTickets                RealtimeMistralConversationResumeTicket[]
   realtimeSpeechArtifacts                     RealtimeSpeechArtifact[]
+  realtimeNativeSpeechDeliveries              RealtimeNativeSpeechDelivery[]
   realtimeControlGrants                       RealtimeControlGrant[]
   realtimeControlUses                         RealtimeControlConsumption[]
   realtimeVoiceUsage                          RealtimeVoiceUsageEvent[]
@@ -456,6 +458,8 @@ model Customer {
   type                     CustomerType
   name                     String
   siren                    String?      @db.Char(9)
+  /// N° TVA français réellement saisi/confirmé. Jamais calculé depuis le SIREN.
+  tvaIntracom              String?
   isInternational          Boolean      @default(false)
   addrLine1                String
   addrZip                  String
@@ -662,85 +666,98 @@ model Quote {
 }
 
 model Invoice {
-  id                         String          @id
-  companyId                  String
-  company                    Company         @relation(fields: [companyId], references: [id])
-  customerId                 String
-  customer                   Customer        @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  kind                       DocKind
-  status                     InvoiceStatus   @default(draft)
-  number                     String?
-  issuedAt                   DateTime?
-  dueAt                      DateTime?
+  id                          String               @id
+  companyId                   String
+  company                     Company              @relation(fields: [companyId], references: [id])
+  customerId                  String
+  customer                    Customer             @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  kind                        DocKind
+  status                      InvoiceStatus        @default(draft)
+  number                      String?
+  issuedAt                    DateTime?
+  dueAt                       DateTime?
   /// A7 — date/période de la prestation si distincte de l'émission (art. 242 nonies A CGI,
   /// L441-9 c. com.) — FIGÉE à l'émission (trigger invoices_legal_traceability). NULL = non
   /// renseignée ; servicePeriodEnd NULL = prestation ponctuelle d'un seul jour.
-  servicePeriodStart         DateTime?       @db.Date
-  servicePeriodEnd           DateTime?       @db.Date
+  servicePeriodStart          DateTime?            @db.Date
+  servicePeriodEnd            DateTime?            @db.Date
   /// A7 — adresse de chantier/livraison si distincte de la facturation — FIGÉE à l'émission.
-  deliveryAddress            String?
-  parentQuoteId              String?
-  parentQuote                Quote?          @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  deliveryAddress             String?
+  parentQuoteId               String?
+  parentQuote                 Quote?               @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   // Trace légale immuable de la facture exacte annulée par un avoir total.
   // Les quatre champs sont tous NULL hors avoir et tous renseignés pour tout nouvel avoir.
-  sourceInvoiceId            String?
-  sourceInvoiceKind          DocKind?
-  sourceInvoiceNumber        String?
-  sourceInvoiceIssuedAt      DateTime?
-  sourceInvoice              Invoice?        @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  creditNotes                Invoice[]       @relation("InvoiceCreditNotes")
-  depositPct                 Int?
+  sourceInvoiceId             String?
+  sourceInvoiceKind           DocKind?
+  sourceInvoiceNumber         String?
+  sourceInvoiceIssuedAt       DateTime?
+  sourceInvoice               Invoice?             @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  creditNotes                 Invoice[]            @relation("InvoiceCreditNotes")
+  depositPct                  Int?
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
-  depositDeductionCents      Int             @default(0)
-  depositInvoiceId           String?
-  depositInvoice             Invoice?        @relation("InvoiceDepositDeductions", fields: [depositInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  deductedByInvoices         Invoice[]       @relation("InvoiceDepositDeductions")
-  paidCents                  Int             @default(0)
-  totalsHt                   Int             @default(0)
-  totalsVat                  Int             @default(0)
-  totalsTtc                  Int             @default(0)
-  totalsNetToPay             Int             @default(0)
-  vatByRate                  Json            @default("{}")
+  depositDeductionCents       Int                  @default(0)
+  depositInvoiceId            String?
+  depositInvoice              Invoice?             @relation("InvoiceDepositDeductions", fields: [depositInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  deductedByInvoices          Invoice[]            @relation("InvoiceDepositDeductions")
+  paidCents                   Int                  @default(0)
+  /// Version du contrat de règlement. `1` relit strictement les pièces historiques ; `2`
+  /// sépare créance légale, exigible immédiat et retenue sans réinterprétation au rechargement.
+  settlementSemanticsVersion  Int                  @default(1)
+  totalsHt                    Int                  @default(0)
+  totalsVat                   Int                  @default(0)
+  totalsTtc                   Int                  @default(0)
+  totalsNetToPay              Int                  @default(0)
+  /// Créance légale totale figée (BT-115). NULL = pièce historique V1 sans fait persisté.
+  totalsDuePayableCents       Int?
+  vatByRate                   Json                 @default("{}")
   /// B3/B5 — compléments de totaux PRÉSENTS UNIQUEMENT quand le fait existe (Totals.grossHt?/
   /// discountCents?/retenueGarantieCents?) : les pièces antérieures restent identiques au centime.
-  totalsGrossHt              Int?
-  totalsDiscountCents        Int?
-  totalsRetenueGarantieCents Int?
+  totalsGrossHt               Int?
+  totalsDiscountCents         Int?
+  totalsRetenueGarantieCents  Int?
   /// B2 — situation de travaux : n° d'ordre sur SON devis (1, 2, 3…) ; part de la déduction de
   /// la finale provenant des situations émises (compta : CA jamais compté deux fois).
-  situationOrder             Int?
-  situationDeductionCents    Int             @default(0)
+  situationOrder              Int?
+  situationDeductionCents     Int                  @default(0)
   /// B3 — remise globale de la pièce (reprise du devis à la dérivation, ou saisie sur facture
   /// directe) : % OU montant HT centimes, exclusifs (CHECK SQL).
-  globalDiscountPercent      Decimal?        @db.Decimal(5, 2)
-  globalDiscountAmountCents  Int?
+  globalDiscountPercent       Decimal?             @db.Decimal(5, 2)
+  globalDiscountAmountCents   Int?
   /// B5 — taux de retenue de garantie applicable à la pièce (situations + finale). NULL = aucune.
-  retenueGarantiePct         Decimal?        @db.Decimal(5, 2)
+  retenueGarantiePct          Decimal?             @db.Decimal(5, 2)
   /// B1/A3bis — facture DIRECTE B2C : intervention urgente à domicile expressément sollicitée
   /// (art. L221-10, al. 2 et L221-28, 8° c. conso), horodatée SERVEUR à la composition,
   /// IMMUABLE. NULL = jamais sollicitée (fail-closed).
-  urgentRepairRequestedAt    DateTime?       @db.Timestamptz(6)
+  urgentRepairRequestedAt     DateTime?            @db.Timestamptz(6)
   /// Suivi MANUEL de transmission (canal de facturation du client) : dates DÉCLARÉES par
   /// l'artisan (dépôt Chorus/portail puis acceptation) — mutables APRÈS émission (suivi
   /// opérationnel, pas un fait légal de la pièce). NULL = jamais suivi.
-  transmissionDepositedAt    DateTime?       @db.Date
-  transmissionAcceptedAt     DateTime?       @db.Date
-  legalMentions              String[]        @default([])
+  transmissionDepositedAt     DateTime?            @db.Date
+  transmissionAcceptedAt      DateTime?            @db.Date
+  legalMentions               String[]             @default([])
   /// A4 — régime de TVA de la pièce, CONSTATÉ par IssueInvoice et FIGÉ à l'émission (franchise
   /// 293 B / autoliquidation 283, 2 nonies / standard) — le XML Factur-X régénéré le lit en
   /// priorité, plus jamais l'état mutable de la fiche client. NULL = pièce émise avant le
   /// figeage (dérivation dynamique honnête, jamais rétro-déduite).
-  vatTreatmentAtIssuance     String?
+  vatTreatmentAtIssuance      String?
+  /// BT-23 — cadre de facturation France exact, résolu avant numérotation et figé avec la pièce.
+  /// NULL uniquement pour les archives historiques antérieures au writer 2026.
+  frenchBillingModeAtIssuance String?
+  /// Périmètre d'archive figé à l'émission : consumer = PDF original seul ; professional =
+  /// PDF + XML Factur-X. NULL signifie legacy non prouvé et bloque la clôture V2.
+  archiveAudienceAtIssuance   String?
   // B8 — bon de commande repris du devis à la dérivation (ou attaché en brouillon), FIGÉ à
   // l'émission (trigger invoices_legal_traceability). FK composite anti-IDOR comme sur quotes.
-  purchaseOrderNumber        String?
-  purchaseOrderReceivedAt    DateTime?       @db.Timestamptz(6)
-  purchaseOrderDocumentId    String?
-  purchaseOrderDocument      StoredDocument? @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  purchaseOrderNumber         String?
+  purchaseOrderReceivedAt     DateTime?            @db.Timestamptz(6)
+  purchaseOrderDocumentId     String?
+  purchaseOrderDocument       StoredDocument?      @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
-  revision                   Int             @default(1)
-  lines                      LineItem[]      @relation("InvoiceLines")
-  payments                   Payment[]
+  revision                    Int                  @default(1)
+  lines                       LineItem[]           @relation("InvoiceLines")
+  payments                    Payment[]
+  precedingInvoices           InvoicePredecessor[] @relation("InvoicePredecessorTarget")
+  successorInvoices           InvoicePredecessor[] @relation("InvoicePredecessorSource")
 
   @@unique([companyId, number], name: "uniq_invoice_number")
   @@unique([id, companyId], name: "uniq_invoice_id_company", map: "uniq_invoice_id_company")
@@ -761,6 +778,81 @@ model Invoice {
   @@map("invoices")
 }
 
+/// Références aux pièces antérieures d'une facture finale. Les deux FK composites garantissent
+/// que cible et source appartiennent au même tenant ; les snapshots sont validés et figés en SQL.
+model InvoicePredecessor {
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  invoiceId       String
+  invoice         Invoice  @relation("InvoicePredecessorTarget", fields: [invoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  sourceInvoiceId String
+  sourceInvoice   Invoice  @relation("InvoicePredecessorSource", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  kind            DocKind
+  number          String
+  issuedAt        DateTime @db.Date
+  position        Int
+
+  @@id([companyId, invoiceId, position], name: "invoice_predecessors_pkey")
+  @@unique([companyId, invoiceId, sourceInvoiceId], name: "uniq_invoice_predecessor_source")
+  @@index([sourceInvoiceId, companyId], map: "invoice_predecessors_source_company_idx")
+  @@map("invoice_predecessors")
+}
+
+/// Rail monotone de déploiement V1→V2. La migration installe V1 (writers N-1 encore tolérés) ;
+/// l'activation V2 n'intervient qu'après preuve que la nouvelle révision est seule en service.
+model InvoiceSettlementProtocolState {
+  id                    Int       @id @db.SmallInt
+  activeVersion         Int       @db.SmallInt
+  activatedAt           DateTime? @db.Timestamptz(6)
+  activatedByReleaseSha String?   @db.Char(40)
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@map("invoice_settlement_protocol_state")
+}
+
+/// Rail monotone du passage de l'ancien worker d'archive (mutations SQL directes) aux capacités
+/// bornées V2. L'état est global et administré uniquement avec DIRECT_URL après readiness.
+model DocumentArchiveProtocolState {
+  id                    Int                            @id @db.SmallInt
+  activeVersion         Int                            @db.SmallInt
+  databaseIdentity      String                         @unique @default(uuid()) @db.Uuid
+  activatedAt           DateTime?                      @db.Timestamptz(6)
+  activatedByReleaseSha String?                        @db.Char(40)
+  createdAt             DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                       @updatedAt @db.Timestamptz(6)
+  auditEvidence         DocumentArchiveAuditEvidence[] @relation("DocumentArchiveAuditDatabaseIdentity")
+
+  @@map("document_archive_protocol_state")
+}
+
+/// Preuve opérationnelle append-only du scanner historique. L'enveloppe exportée reste sans PII ;
+/// le rapport détaillé optionnel demeure privé à DIRECT_URL pour diagnostiquer un refus.
+model DocumentArchiveAuditEvidence {
+  id                      String                       @id @default(uuid()) @db.Uuid
+  deploymentId            String                       @unique(map: "document_archive_audit_evidence_deployment_key") @db.Uuid
+  releaseSha              String                       @db.Char(40)
+  databaseIdentity        String                       @db.Uuid
+  storageBucket           String
+  protocolState           DocumentArchiveProtocolState @relation("DocumentArchiveAuditDatabaseIdentity", fields: [databaseIdentity], references: [databaseIdentity], onDelete: Restrict, onUpdate: Restrict)
+  protocolVersion         Int                          @db.SmallInt
+  mode                    String
+  inventoryDigest         String                       @db.Char(64)
+  reportSha256            String                       @db.Char(64)
+  validatorEvidenceDigest String                       @db.Char(64)
+  validatorVersions       Json
+  counts                  Json
+  issueCodes              String[]
+  privateReport           Json?
+  readyForActivation      Boolean
+  auditedAt               DateTime                     @db.Timestamptz(6)
+  createdAt               DateTime                     @default(now()) @db.Timestamptz(6)
+
+  @@unique([releaseSha, inventoryDigest, reportSha256], map: "document_archive_audit_evidence_exact_replay_key")
+  @@index([releaseSha, readyForActivation, auditedAt], map: "document_archive_audit_evidence_release_ready_idx")
+  @@map("document_archive_audit_evidence")
+}
+
 model LineItem {
   id                  String       @id @default(uuid())
   quoteId             String?
@@ -779,9 +871,15 @@ model LineItem {
   /// NULL/NULL = aucune remise (lignes antérieures inchangées au centime).
   discountPercent     Decimal?     @db.Decimal(5, 2)
   discountAmountCents Int?
+  /// Ligne du devis signé à l'origine de cette ligne de facture. NULL pour les devis et les
+  /// factures autonomes ; la FK + le trigger SQL refusent les références inter-tenant/hors devis.
+  sourceQuoteLineId   String?
+  sourceQuoteLine     LineItem?    @relation("InvoiceLineSourceQuoteLine", fields: [sourceQuoteLineId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  derivedInvoiceLines LineItem[]   @relation("InvoiceLineSourceQuoteLine")
 
   @@index([quoteId])
   @@index([invoiceId])
+  @@index([sourceQuoteLineId], map: "line_items_source_quote_line_idx")
   // B9 — retrouver une pièce par le contenu d'une ligne ("peinture façade") sans scanner toute
   // line_items ("libellés de lignes" du cahier des charges) : index GIN trigram
   // line_items_label_trgm_idx (migration b9_documents_search_indexes, absent du DSL).
@@ -789,15 +887,19 @@ model LineItem {
 }
 
 model Payment {
-  id             String        @id
-  companyId      String
-  company        Company       @relation(fields: [companyId], references: [id])
-  invoiceId      String
-  invoice        Invoice       @relation(fields: [invoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  amount         Int
-  method         PaymentMethod
-  receivedAt     DateTime
-  idempotencyKey String?
+  id                       String        @id
+  companyId                String
+  company                  Company       @relation(fields: [companyId], references: [id])
+  invoiceId                String
+  invoice                  Invoice       @relation(fields: [invoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  amount                   Int
+  method                   PaymentMethod
+  receivedAt               DateTime
+  idempotencyKey           String?
+  /// NULL uniquement pendant la fenêtre expand pour un writer N-1 ; le reader le traite comme
+  /// `amount`/0, soit exactement l'écriture historique antérieure au compte 4117.
+  ordinaryReceivableCents  Int?
+  retentionReceivableCents Int?
 
   @@unique([companyId, idempotencyKey])
   @@index([invoiceId, companyId], map: "payments_invoice_company_idx")
@@ -925,46 +1027,48 @@ model SupplierMemoryProfile {
 }
 
 model StoredDocument {
-  id                    String                          @id
-  companyId             String
-  company               Company                         @relation(fields: [companyId], references: [id])
-  kind                  StoredDocumentKind
-  origin                StoredDocumentOrigin
-  status                StoredDocumentStatus            @default(active)
-  filename              String
+  id                     String                          @id
+  companyId              String
+  company                Company                         @relation(fields: [companyId], references: [id])
+  kind                   StoredDocumentKind
+  origin                 StoredDocumentOrigin
+  status                 StoredDocumentStatus            @default(active)
+  filename               String
   /**
    * Libellé d'affichage renommable (« Facture Leroy Merlin — 184,90 € »). NULL = lignes
    * historiques : le domaine retombe sur le filename, aucune valeur n'est rétro-remplie.
    */
-  displayName           String?
-  mimeType              String
-  byteSize              Int
-  sha256                String                          @db.Char(64)
-  storageKey            String                          @unique
-  folderId              String?
-  folder                DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
-  revision              Int                             @default(1)
-  linkedEntityType      StoredDocumentLinkedEntityType?
-  linkedEntityId        String?
-  documentDate          String?
-  issuedAt              String?
-  createdAt             DateTime
-  createdBy             String?
-  retentionUntil        String
-  deletedAt             DateTime?
+  displayName            String?
+  mimeType               String
+  byteSize               Int
+  sha256                 String                          @db.Char(64)
+  storageKey             String                          @unique
+  folderId               String?
+  folder                 DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  revision               Int                             @default(1)
+  linkedEntityType       StoredDocumentLinkedEntityType?
+  linkedEntityId         String?
+  documentDate           String?
+  issuedAt               String?
+  createdAt              DateTime
+  createdBy              String?
+  retentionUntil         String
+  deletedAt              DateTime?
   /**
    * Confirmation humaine (« c'est bon, je valide ») d'un document scanné — humain ou Bob,
    * parité voix. NULL = jamais validé : un doc rangé (folderId non nul) SANS validation reste
    * « à valider ». La première validation fait foi (latch), jamais réécrite.
    */
-  reviewedAt            DateTime?
-  tags                  String[]                        @default([])
-  versions              StoredDocumentVersion[]
-  analyses              DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
-  expensePaymentProofs  Expense[]                       @relation("ExpensePaymentProof")
+  reviewedAt             DateTime?
+  tags                   String[]                        @default([])
+  versions               StoredDocumentVersion[]
+  invoicePdfAttestations DocumentInvoicePdfAttestation[] @relation("InvoicePdfAttestationDocument")
+  archiveArtifacts       DocumentArchiveJobArtifact[]    @relation("DocumentArchiveArtifactDocument")
+  analyses               DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
+  expensePaymentProofs   Expense[]                       @relation("ExpensePaymentProof")
   // B8 — bons de commande scannés référencés par devis/factures (FK composite anti-IDOR).
-  purchaseOrderQuotes   Quote[]                         @relation("QuotePurchaseOrderDocument")
-  purchaseOrderInvoices Invoice[]                       @relation("InvoicePurchaseOrderDocument")
+  purchaseOrderQuotes    Quote[]                         @relation("QuotePurchaseOrderDocument")
+  purchaseOrderInvoices  Invoice[]                       @relation("InvoicePurchaseOrderDocument")
 
   @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])
@@ -1038,40 +1142,98 @@ model DocumentFolderDeletionPlan {
 }
 
 model StoredDocumentVersion {
-  id         String                  @id
-  documentId String
-  document   StoredDocument          @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  version    Int
-  storageKey String                  @unique
-  sha256     String                  @db.Char(64)
-  analyses   DocumentAnalysisCache[] @relation("StoredDocumentVersionAnalyses")
-  mimeType   String
-  byteSize   Int
-  createdAt  DateTime
-  reason     String
+  id                     String                          @id
+  documentId             String
+  document               StoredDocument                  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version                Int
+  storageKey             String                          @unique
+  sha256                 String                          @db.Char(64)
+  analyses               DocumentAnalysisCache[]         @relation("StoredDocumentVersionAnalyses")
+  archiveArtifacts       DocumentArchiveJobArtifact[]    @relation("DocumentArchiveArtifactVersion")
+  invoicePdfAttestations DocumentInvoicePdfAttestation[] @relation("InvoicePdfAttestationVersion")
+  mimeType               String
+  byteSize               Int
+  createdAt              DateTime
+  reason                 String
 
   @@unique([documentId, version])
+  @@unique([documentId, id], name: "uniq_document_version_document_id", map: "uniq_document_version_document_id")
   @@unique([documentId, version, sha256], name: "uniq_document_version_source", map: "uniq_document_version_source")
   @@index([documentId])
   @@map("document_versions")
 }
 
+/**
+ * Attestation byte-derived immuable d'un PDF de facture généré.
+ */
+model DocumentInvoicePdfAttestation {
+  companyId         String
+  documentId        String
+  document          StoredDocument        @relation("InvoicePdfAttestationDocument", fields: [companyId, documentId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict)
+  versionId         String
+  version           StoredDocumentVersion @relation("InvoicePdfAttestationVersion", fields: [documentId, versionId], references: [documentId, id], onDelete: Restrict, onUpdate: Restrict)
+  documentSha256    String                @db.Char(64)
+  profile           String
+  embeddedXmlSha256 String?               @db.Char(64)
+  detectorVersion   Int
+  attestedAt        DateTime              @default(now()) @db.Timestamptz(6)
+
+  @@id([documentId, versionId], name: "document_invoice_pdf_attestations_pkey")
+  @@index([companyId, documentId])
+  @@map("document_invoice_pdf_attestations")
+}
+
 model DocumentArchiveJob {
-  id            String                   @id
-  companyId     String
-  company       Company                  @relation(fields: [companyId], references: [id])
-  invoiceId     String
-  reason        String                   @default("invoice-issued")
-  status        DocumentArchiveJobStatus @default(pending)
-  attempts      Int                      @default(0)
-  nextAttemptAt DateTime
-  lastError     String?
-  createdAt     DateTime                 @default(now())
-  updatedAt     DateTime                 @updatedAt
+  id                   String                       @id
+  companyId            String
+  company              Company                      @relation(fields: [companyId], references: [id])
+  invoiceId            String
+  reason               String                       @default("invoice-issued")
+  status               DocumentArchiveJobStatus     @default(pending)
+  attempts             Int                          @default(0)
+  nextAttemptAt        DateTime
+  leaseToken           String?                      @unique
+  lastError            String?
+  integrityProof       Json?
+  integrityProofSha256 String?                      @db.Char(64)
+  completedAt          DateTime?                    @db.Timestamptz(6)
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+  artifacts            DocumentArchiveJobArtifact[]
 
   @@unique([companyId, invoiceId, reason], name: "uniq_document_archive_job")
+  @@unique([id, companyId], name: "uniq_document_archive_job_company", map: "uniq_document_archive_job_company")
   @@index([companyId, status, nextAttemptAt])
   @@map("document_archive_jobs")
+}
+
+/**
+ * Projection relationnelle du manifeste de clôture d'archive. Les champs sont des snapshots
+ * exacts des originaux relus ; les FK composites empêchent une preuve de référencer une autre
+ * société, un autre document ou une version qui n'appartient pas au document annoncé.
+ */
+model DocumentArchiveJobArtifact {
+  jobId          String
+  companyId      String
+  job            DocumentArchiveJob    @relation(fields: [jobId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  kind           String
+  contentProfile String
+  documentId     String
+  document       StoredDocument        @relation("DocumentArchiveArtifactDocument", fields: [companyId, documentId], references: [companyId, id], onDelete: Restrict, onUpdate: Restrict)
+  versionId      String
+  version        StoredDocumentVersion @relation("DocumentArchiveArtifactVersion", fields: [documentId, versionId], references: [documentId, id], onDelete: Restrict, onUpdate: Restrict)
+  versionNumber  Int
+  storageKey     String
+  mimeType       String
+  byteSize       Int
+  sha256         String                @db.Char(64)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(6)
+
+  @@id([jobId, kind], name: "document_archive_job_artifacts_pkey")
+  @@unique([jobId, documentId], name: "uniq_document_archive_job_artifact_document")
+  @@unique([jobId, versionId], name: "uniq_document_archive_job_artifact_version")
+  @@index([companyId, jobId])
+  @@map("document_archive_job_artifacts")
 }
 
 model NotificationJob {
@@ -1258,7 +1420,7 @@ model RealtimeAdmissionEvent {
 /// créé ; seule son empreinte SHA-256 permet les transitions CAS reserve/bind/activate/renew/release.
 model RealtimeSessionLease {
   companyId                   String    @db.Text
-  company                     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  company                     Company   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   subjectHash                 String    @db.Char(64)
   sessionId                   String    @unique(map: "realtime_session_leases_session_id_key") @db.Uuid
   leaseTokenHash              String    @unique(map: "realtime_session_leases_token_hash_key") @db.Char(64)
@@ -1299,6 +1461,25 @@ model RealtimeSessionLease {
   @@index([state, leaseExpiresAt], map: "realtime_session_leases_global_reaper_idx")
   @@index([hardExpiresAt], map: "realtime_session_leases_hard_expiry_idx")
   @@map("realtime_session_leases")
+}
+
+/// Autorité globale privée de capacité Bob Live. Le runtime ne reçoit aucun accès SQL direct :
+/// préflight et métrologie passent exclusivement par deux fonctions SECURITY DEFINER bornées.
+model RealtimeGlobalCapacity {
+  id                  Int       @id @default(1)
+  mode                String    @default("tracking") @db.Text
+  providerId          String?   @db.Text
+  providerModel       String?   @db.Text
+  globalMaxSessions   Int?
+  providerMaxSessions Int?
+  configVersion       Int?
+  retryAfterSeconds   Int?
+  usedSessions        Int
+  revision            BigInt    @default(0)
+  activatedAt         DateTime? @db.Timestamptz(6)
+  updatedAt           DateTime  @db.Timestamptz(6)
+
+  @@map("realtime_global_capacity")
 }
 
 /// Capacité one-shot du WSS PCM Mistral. Le ticket 256 bits et le userId restent absents de la
@@ -1679,33 +1860,177 @@ model RealtimeSpeechArtifact {
   @@map("realtime_speech_artifacts")
 }
 
-/// Action UI opaque, chiffrée et liée à un artefact effectivement livré. Les HMAC permettent
-/// de certifier le contenu sans stocker de payload lisible. Une grant ne peut jamais être modifiée.
+/// Preuve bornée d'une restitution audio OpenAI Realtime native. Ni audio, ni texte canonique,
+/// ni transcription ne sont persistés : uniquement des empreintes HMAC, des dimensions
+/// allowlistées et des timestamps. `dispatching` est le claim durable at-most-once posé avant
+/// `response.create` ; un résultat réseau ambigu ne peut donc jamais être rejoué aveuglément.
+model RealtimeNativeSpeechDelivery {
+  deliveryId                            String                @id @default(uuid()) @db.Uuid
+  companyId                             String                @db.Text
+  company                               Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "realtime_native_speech_deliveries_company_fkey")
+  subjectHmac                           String                @db.Char(64)
+  /// NULL uniquement pour les lignes N-1 créées avant la rotation durable. Tout nouveau writer
+  /// renseigne une version admise et liée ; aucun backfill ne peut inventer la clé historique.
+  subjectKeyVersion                     Int?
+  sessionId                             String                @db.Uuid
+  turnId                                String                @db.Uuid
+  contextRevision                       Int
+  contextDigest                         String                @db.Char(64)
+  sidebandOwnerEpoch                    Int
+  sidebandOwnerTokenHmac                String                @db.Char(64)
+  /// Version de la politique de risque déterministe ayant autorisé le RTP natif.
+  speechPolicyVersion                   Int
+  /// Scénario générique exact et allowlisté ; jamais un intent ou un libellé fourni par le LLM.
+  speechScenarioId                      String                @db.Text
+  canonicalSpeechHmac                   String                @db.Char(64)
+  factsHmac                             String                @db.Char(64)
+  requestNonceHmac                      String                @unique(map: "realtime_native_speech_deliveries_request_nonce_hmac_key") @db.Char(64)
+  proofFormatVersion                    Int
+  proofKeyVersion                       Int
+  provider                              String                @db.Text
+  model                                 String                @db.Text
+  voice                                 String                @db.Text
+  version                               Int                   @default(1)
+  revision                              Int                   @default(1)
+  phase                                 String                @db.Text
+  dispatchClaimId                       String?               @unique(map: "realtime_native_speech_deliveries_dispatch_claim_id_key") @db.Uuid
+  dispatchingAt                         DateTime?             @db.Timestamptz(3)
+  requestedAt                           DateTime?             @db.Timestamptz(3)
+  providerResponseIdHmac                String?               @db.Char(64)
+  acceptedAt                            DateTime?             @db.Timestamptz(3)
+  streamingAt                           DateTime?             @db.Timestamptz(3)
+  responseDoneAt                        DateTime?             @db.Timestamptz(3)
+  outputStoppedAt                       DateTime?             @db.Timestamptz(3)
+  outputTranscriptHmac                  String?               @db.Char(64)
+  completedAt                           DateTime?             @db.Timestamptz(3)
+  acknowledgementId                     String?               @unique(map: "realtime_native_speech_deliveries_acknowledgement_id_key") @db.Uuid
+  deliveredAt                           DateTime?             @db.Timestamptz(3)
+  /// Version de l'observation locale attachée au premier ACK. V1 = RTP distant observé + provider drainé, jamais DAC.
+  localObservationFormatVersion         Int?
+  /// Type allowlisté de l'observation locale ; aucun détail device ni identifiant fournisseur.
+  localObservationKind                  String?               @db.Text
+  /// Version du lot de métrologie attaché atomiquement au premier ACK. NULL = aucun lot fourni.
+  sloFormatVersion                      Int?
+  /// Réception device de `speech_stopped` au premier paquet RTP entrant, en millisecondes.
+  speechStoppedEventToFirstInboundRtpMs Int?
+  /// `complete` conserve les mesures exactes ; `overflowed` interdit une moyenne biaisée.
+  bargeInStatus                         String?               @db.Text
+  /// Maximum 16 latences exactes, sans contenu ni identifiant fournisseur.
+  bargeInDurationsMs                    Int[]                 @default([])
+  cancellationId                        String?               @unique(map: "realtime_native_speech_deliveries_cancellation_id_key") @db.Uuid
+  cancellationReason                    String?               @db.Text
+  failureId                             String?               @unique(map: "realtime_native_speech_deliveries_failure_id_key") @db.Uuid
+  failureReason                         String?               @db.Text
+  terminalAt                            DateTime?             @db.Timestamptz(3)
+  createdAt                             DateTime              @db.Timestamptz(3)
+  expiresAt                             DateTime              @db.Timestamptz(3)
+  retentionExpiresAt                    DateTime              @db.Timestamptz(3)
+  controlGrant                          RealtimeControlGrant?
+
+  @@unique([companyId, sessionId, turnId], name: "realtime_native_speech_delivery_turn", map: "realtime_native_speech_deliveries_turn_key")
+  @@unique([deliveryId, companyId, sessionId, turnId], name: "realtime_native_speech_delivery_tenant_binding", map: "realtime_native_speech_deliveries_tenant_binding_key")
+  @@unique([provider, providerResponseIdHmac], map: "realtime_native_speech_deliveries_provider_response_key")
+  @@index([companyId, sessionId, phase, createdAt], map: "realtime_native_speech_deliveries_session_phase_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_native_speech_deliveries_retention_idx")
+  @@index([subjectKeyVersion], map: "realtime_native_speech_deliveries_subject_key_version_idx")
+  @@map("realtime_native_speech_deliveries")
+}
+
+/// Curseur global purement technique du scan keyset de maintenance. Le runtime ne possède aucun
+/// droit direct sur cette table ; seul le helper SECURITY DEFINER borné peut lire/avancer ses deux
+/// lignes. `@@ignore` empêche toute dérive vers un accès Prisma applicatif.
+model RealtimeNativeSpeechMaintenanceCursor {
+  lane            String    @id @db.Text
+  afterDueAt      DateTime? @db.Timestamptz(6)
+  afterCompanyId  String?   @db.Text
+  afterDeliveryId String?   @db.Uuid
+  cycleUpperDueAt      DateTime? @db.Timestamptz(6)
+  cycleUpperCompanyId  String?   @db.Text
+  cycleUpperDeliveryId String?   @db.Uuid
+  pendingCompanyIds      String[]  @default([])
+  pendingAfterDueAt      DateTime? @db.Timestamptz(6)
+  pendingAfterCompanyId  String?   @db.Text
+  pendingAfterDeliveryId String?   @db.Uuid
+  pendingHasMore         Boolean?
+  claimId                String?   @db.Uuid
+  claimExpiresAt         DateTime? @db.Timestamptz(6)
+  revision        BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_native_speech_maintenance_cursors")
+}
+
+/// Projection conservative du prochain travail reaper. Les triggers N-1/N ne déplacent un minimum
+/// que vers le passé ; le reaper tenanté réconcilie ensuite la valeur exacte sous advisory lock.
+model RealtimeReaperTenantSchedule {
+  companyId          String    @id @db.Text
+  oldestAdmissionAt  DateTime? @db.Timestamptz(6)
+  nextLeaseDueAt     DateTime? @db.Timestamptz(6)
+  revision           BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_reaper_tenant_schedule")
+}
+
+/// Curseur technique du reaper provider-neutral. Les pages dues sont louées et ACKées par une
+/// fonction SECURITY DEFINER minimale ; aucun repository applicatif n'accède directement ici.
+model RealtimeReaperDirectoryCursor {
+  singleton                      Boolean   @id @default(true)
+  afterAdmissionCompanyId        String?   @db.Text
+  cycleUpperAdmissionCompanyId   String?   @db.Text
+  cycleAdmissionCutoffAt         DateTime? @db.Timestamptz(6)
+  afterLeaseCompanyId            String?   @db.Text
+  cycleUpperLeaseCompanyId       String?   @db.Text
+  cycleLeaseCutoffAt             DateTime? @db.Timestamptz(6)
+  preferLease                    Boolean   @default(true)
+  pendingCompanyIds              String[]  @default([])
+  pendingAfterAdmissionCompanyId String?  @db.Text
+  pendingAfterLeaseCompanyId     String?  @db.Text
+  pendingAdmissionHasMore        Boolean?
+  pendingLeaseHasMore            Boolean?
+  pendingPreferLease             Boolean?
+  claimId                        String?   @db.Uuid
+  claimExpiresAt                 DateTime? @db.Timestamptz(6)
+  revision                       BigInt    @default(0)
+
+  @@ignore
+  @@map("realtime_reaper_directory_cursor")
+}
+
+/// Action UI opaque, chiffrée et liée par XOR à une seule preuve de livraison acoustique. Le
+/// défaut `audited_artifact`/v1 conserve byte-for-byte les writers historiques ; le domaine
+/// `provider_stream`/v2 reste séparé. Une grant ne peut jamais être modifiée.
 model RealtimeControlGrant {
-  id                   String                      @id @default(uuid()) @db.Uuid
-  companyId            String                      @db.Text
-  company              Company                     @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  sessionId            String                      @db.Uuid
-  turnId               String                      @db.Uuid
-  artifactId           String                      @db.Uuid
-  artifact             RealtimeSpeechArtifact      @relation(fields: [artifactId, companyId, sessionId, turnId], references: [id, companyId, sessionId, turnId], onDelete: Restrict, onUpdate: Cascade)
+  id                   String                        @id @default(uuid()) @db.Uuid
+  companyId            String                        @db.Text
+  company              Company                       @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  sessionId            String                        @db.Uuid
+  turnId               String                        @db.Uuid
+  deliveryKind         String                        @default("audited_artifact") @db.Text
+  bindingVersion       Int                           @default(1)
+  artifactId           String?                       @db.Uuid
+  artifact             RealtimeSpeechArtifact?       @relation(fields: [artifactId, companyId, sessionId, turnId], references: [id, companyId, sessionId, turnId], onDelete: Restrict, onUpdate: Cascade)
+  nativeDeliveryId     String?                       @db.Uuid
+  nativeDelivery       RealtimeNativeSpeechDelivery? @relation(fields: [nativeDeliveryId, companyId, sessionId, turnId], references: [deliveryId, companyId, sessionId, turnId], onDelete: Restrict, onUpdate: Cascade, map: "realtime_control_grants_native_delivery_tenant_fkey")
   contextRevision      Int
-  contextDigest        String                      @db.Char(64)
-  controlKind          String                      @db.Text
+  contextDigest        String                        @db.Char(64)
+  controlKind          String                        @db.Text
   sealedControl        Bytes
   controlNonce         Bytes
   controlTag           Bytes
-  controlPayloadHmac   String                      @db.Char(64)
+  controlPayloadHmac   String                        @db.Char(64)
   encryptionKeyVersion Int
   proofKeyVersion      Int
-  issuedAt             DateTime                    @db.Timestamptz(6)
-  expiresAt            DateTime                    @db.Timestamptz(6)
-  retentionExpiresAt   DateTime                    @db.Timestamptz(6)
+  issuedAt             DateTime                      @db.Timestamptz(6)
+  expiresAt            DateTime                      @db.Timestamptz(6)
+  retentionExpiresAt   DateTime                      @db.Timestamptz(6)
   consumption          RealtimeControlConsumption?
 
   @@unique([companyId, sessionId, turnId], name: "realtime_control_grant_turn")
   @@unique([companyId, artifactId], name: "realtime_control_grant_artifact")
   @@unique([artifactId, companyId, sessionId, turnId], name: "realtime_control_grant_artifact_binding")
+  @@unique([companyId, nativeDeliveryId], name: "realtime_control_grant_native_delivery", map: "realtime_control_grants_native_delivery_key")
+  @@unique([nativeDeliveryId, companyId, sessionId, turnId], name: "realtime_control_grant_native_delivery_binding", map: "realtime_control_grants_native_delivery_binding_key")
   @@unique([id, companyId, sessionId, turnId], name: "realtime_control_grant_tenant_binding")
   @@index([companyId, sessionId, expiresAt], map: "realtime_control_grants_session_expiry_idx")
   @@index([companyId, retentionExpiresAt], map: "realtime_control_grants_retention_idx")

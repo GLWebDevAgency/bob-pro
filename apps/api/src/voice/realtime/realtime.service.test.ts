@@ -21,7 +21,12 @@ import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.ada
 import type { RealtimeSidebandControl } from './realtime-sideband';
 import type { RealtimeDurableControlPort } from './realtime-control';
 import type { RealtimeAgentTurnPort } from './realtime-agent-turn';
-import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
+import {
+  BOB_REALTIME_CONFIG_VERSION,
+  BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
+  type OpenAiRealtimeCallProvider,
+  type RealtimeVoiceSettings,
+} from './realtime.types';
 import type { MistralRealtimeIngressTicketAuthority } from './realtime-mistral-ingress-ticket';
 import {
   RealtimeProviderTerminationRegistry,
@@ -32,9 +37,18 @@ import type { MistralConversationResumeAuthority } from './mistral-conversation-
 import type { MistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
 
 const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
+const AUDITED_BOOTSTRAP_BINDING = {
+  configVersion: BOB_REALTIME_CONFIG_VERSION,
+  speechDelivery: 'audited-signed-url-v1',
+} as const;
+const NATIVE_BOOTSTRAP_BINDING = {
+  configVersion: BOB_REALTIME_CONFIG_VERSION,
+  speechDelivery: 'openai-native-webrtc-v1',
+} as const;
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
   provider: 'openai',
+  speechDelivery: 'audited-signed-url-v1',
   model: 'gpt-realtime-2.1',
   voice: 'marin',
   baseUrl: 'https://api.openai.com/v1',
@@ -66,6 +80,10 @@ const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
 };
 
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 3,
   userLimitPerHour: 30,
   tenantLimitPerMinute: 50,
@@ -547,6 +565,7 @@ describe('RealtimeVoiceService', () => {
     );
 
     const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       sessionHandle: '00000000-0000-4000-8000-000000000042',
       context: {
         version: 1,
@@ -614,6 +633,7 @@ describe('RealtimeVoiceService', () => {
 
     const config = await runAsPrincipal(() => service.publicConfig());
     const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       sessionHandle: '00000000-0000-4000-8000-000000000031',
       context,
     }));
@@ -712,6 +732,7 @@ describe('RealtimeVoiceService', () => {
     };
 
     const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       protocol: MISTRAL_CONVERSATION_PROTOCOL,
       sessionHandle: '00000000-0000-4000-8000-000000000033',
       context,
@@ -773,6 +794,7 @@ describe('RealtimeVoiceService', () => {
     );
 
     await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       protocol: MISTRAL_CONVERSATION_PROTOCOL,
       context: { version: 1, revision: 1, context: {} },
     }))).resolves.toMatchObject({
@@ -815,6 +837,7 @@ describe('RealtimeVoiceService', () => {
     );
 
     await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       protocol: MISTRAL_CONVERSATION_PROTOCOL,
       context: { version: 1, revision: 1, context: {} },
     }))).resolves.toMatchObject({
@@ -836,10 +859,27 @@ describe('RealtimeVoiceService', () => {
     expect(parseMistralRealtimeCallBody({ context: { version: 1, revision: 1, context: {} }, model: 'evil' }))
       .toMatchObject({ ok: false, error: { kind: 'validation' } });
     expect(parseMistralRealtimeCallBody({
+      context: { version: 1, revision: 1, context: {} },
+    })).toMatchObject({
+      ok: true,
+      value: {
+        wireContract: 'v3-legacy',
+        configVersion: BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
+        speechDelivery: 'audited-signed-url-v1',
+        protocol: 'bob.mistral-pcm.v1',
+      },
+    });
+    expect(parseMistralRealtimeCallBody({
+      context: { version: 1, revision: 1, context: {} },
+      configVersion: BOB_REALTIME_CONFIG_VERSION,
+    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(parseMistralRealtimeCallBody({
+      ...AUDITED_BOOTSTRAP_BINDING,
       protocol: MISTRAL_CONVERSATION_PROTOCOL,
       context: { version: 1, revision: 1, context: {} },
     })).toMatchObject({ ok: true, value: { protocol: MISTRAL_CONVERSATION_PROTOCOL } });
     expect(parseMistralRealtimeCallBody({
+      ...AUDITED_BOOTSTRAP_BINDING,
       protocol: 'bob.mistral-pcm.v3',
       context: { version: 1, revision: 1, context: {} },
     })).toMatchObject({ ok: false, error: { kind: 'validation' } });
@@ -863,6 +903,7 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
     await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       sessionHandle: '00000000-0000-4000-8000-000000000032',
       context: { version: 1, revision: 1, context: {} },
     }))).resolves.toMatchObject({
@@ -872,7 +913,7 @@ describe('RealtimeVoiceService', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('produit un bootstrap WebRTC sans clé durable et avec outils désactivés', async () => {
+  it('reste en livraison auditée texte avec le provider OpenAI tant que speechDelivery ne demande pas native', async () => {
     const provider: OpenAiRealtimeCallProvider = {
       createCall: successfulProviderCreate('rtc_12345678'),
       hangupCall: vi.fn(async () => undefined),
@@ -893,6 +934,7 @@ describe('RealtimeVoiceService', () => {
     );
 
     const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
       sessionHandle: '00000000-0000-4000-8000-000000000001',
     }));
@@ -901,6 +943,7 @@ describe('RealtimeVoiceService', () => {
     if (!result.ok) throw new Error('bootstrap attendu');
     expect(result.value).toMatchObject({
       transport: 'webrtc',
+      speechDelivery: 'audited-signed-url-v1',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
       sessionHandle: '00000000-0000-4000-8000-000000000001',
@@ -917,6 +960,8 @@ describe('RealtimeVoiceService', () => {
     expect(call?.safetyIdentifier).not.toContain('user-1');
     expect(call?.session).toMatchObject({
       model: 'gpt-realtime-2.1',
+      output_modalities: ['text'],
+      max_output_tokens: 1,
       tools: [],
       tool_choice: 'none',
       audio: {
@@ -933,6 +978,161 @@ describe('RealtimeVoiceService', () => {
       ok: true,
       value: { ended: true },
     });
+  });
+
+  it('sert un client N-1 en audited sans ajouter le discriminant v4 à la réponse wire', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_legacy_12345678'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    const parsed = parseRealtimeCallBody({ sdp: OFFER_SDP });
+    expect(parsed).toMatchObject({
+      ok: true,
+      value: {
+        wireContract: 'v3-legacy',
+        configVersion: BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
+        speechDelivery: 'audited-signed-url-v1',
+      },
+    });
+
+    const result = await runAsPrincipal(() => service.createCall({
+      sdp: OFFER_SDP,
+      sessionHandle: '00000000-0000-4000-8000-000000000003',
+    }));
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        transport: 'webrtc',
+        speechSourcePolicy: TEST_SPEECH_SOURCE_POLICY.policyForSession(
+          'company-1',
+          '00000000-0000-4000-8000-000000000003',
+        ),
+      },
+    });
+    if (!result.ok) throw new Error('bootstrap legacy attendu');
+    expect(result.value).not.toHaveProperty('speechDelivery');
+  });
+
+  it('natif OpenAI : annonce le contrat explicite et ne construit jamais de policy signée', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_native_12345678'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const policyForSession = vi.fn(() => {
+      throw new Error('la policy signée ne doit pas être appelée');
+    });
+    const sideband = sidebandStub();
+    const service = new RealtimeVoiceService(
+      { ...SETTINGS, speechDelivery: 'openai-native-webrtc-v1' },
+      provider,
+      admission(),
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      { policyForSession },
+    );
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      transport: 'webrtc',
+      speechDelivery: 'openai-native-webrtc-v1',
+    });
+    const result = await runAsPrincipal(() => service.createCall({
+      ...NATIVE_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: '00000000-0000-4000-8000-000000000002',
+    }));
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        transport: 'webrtc',
+        speechDelivery: 'openai-native-webrtc-v1',
+      },
+    });
+    if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
+    expect(policyForSession).not.toHaveBeenCalled();
+    expect(provider.createCall).toHaveBeenCalledOnce();
+    expect(sideband.attach).toHaveBeenCalledWith(expect.objectContaining({
+      speechDelivery: 'openai-native-webrtc-v1',
+      plan: 'business',
+      subjectKeyVersion: SETTINGS.subjectKeyVersion,
+    }));
+    const call = vi.mocked(provider.createCall).mock.calls[0]?.[0];
+    expect(call?.session).toMatchObject({
+      output_modalities: ['audio'],
+      max_output_tokens: 4_096,
+      tools: [],
+      tool_choice: 'none',
+      audio: {
+        input: {
+          turn_detection: {
+            create_response: false,
+            interrupt_response: false,
+          },
+        },
+      },
+    });
+  });
+
+  it('refuse un bootstrap dont delivery/version ne correspondent pas au config négocié', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_must_not_exist'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const durable = admission();
+    const reserve = vi.spyOn(durable, 'reserve');
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    for (const body of [
+      { ...NATIVE_BOOTSTRAP_BINDING, sdp: OFFER_SDP },
+      { sdp: OFFER_SDP, configVersion: BOB_REALTIME_CONFIG_VERSION },
+      { sdp: OFFER_SDP, speechDelivery: 'audited-signed-url-v1' },
+      {
+        ...AUDITED_BOOTSTRAP_BINDING,
+        configVersion: 'bob-live-provider-neutral-v2',
+        sdp: OFFER_SDP,
+      },
+    ]) {
+      await expect(runAsPrincipal(() => service.createCall(body))).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'validation' },
+      });
+    }
+    expect(reserve).not.toHaveBeenCalled();
+    expect(provider.createCall).not.toHaveBeenCalled();
   });
 
   it('libère le bail et interdit tout egress fournisseur si la policy audio manque', async () => {
@@ -957,7 +1157,10 @@ describe('RealtimeVoiceService', () => {
       { policyForSession: () => { throw new Error('storage unavailable'); } },
     );
 
-    await expect(runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }))).resolves.toMatchObject({
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }))).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-speech' },
     });
@@ -983,7 +1186,10 @@ describe('RealtimeVoiceService', () => {
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(config).toMatchObject({ available: false, availabilityReason: 'disabled' });
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
@@ -1010,7 +1216,10 @@ describe('RealtimeVoiceService', () => {
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(config).toMatchObject({ available: false, availabilityReason: 'not_entitled' });
     expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
@@ -1037,7 +1246,10 @@ describe('RealtimeVoiceService', () => {
       { check: vi.fn(async () => { throw new Error('subscription unavailable'); }) },
     );
 
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(result).toMatchObject({
       ok: false,
@@ -1063,7 +1275,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
     );
 
-    await expect(runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }))).resolves.toMatchObject({
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }))).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-entitlement' },
     });
@@ -1114,11 +1329,64 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const first = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
-    const second = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const first = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
+    const second = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(first.ok).toBe(true);
     expect(second).toMatchObject({ ok: false, error: { kind: 'rate_limited' } });
+    expect(provider.createCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuse la capacité globale avant tout second appel fournisseur', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_capacity_1'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const bounded = new InMemoryRealtimeAdmission({
+      ...ADMISSION_POLICY,
+      globalCapacity: {
+        providerId: 'openai',
+        providerModel: 'gpt-realtime-2.1',
+        globalMaxSessions: 1,
+        providerMaxSessions: 2,
+        configVersion: 9,
+      },
+    });
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      bounded,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    const first = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
+    const second = await runAsPrincipal(
+      () => service.createCall({ ...AUDITED_BOOTSTRAP_BINDING, sdp: OFFER_SDP }),
+      { userId: 'user-2', companyId: 'company-1' },
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-admission' },
+    });
     expect(provider.createCall).toHaveBeenCalledTimes(1);
   });
 
@@ -1144,7 +1412,10 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(result).toEqual({
       ok: false,
@@ -1183,7 +1454,10 @@ describe('RealtimeVoiceService', () => {
       TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(result).toEqual({
       ok: false,
@@ -1287,7 +1561,10 @@ describe('RealtimeVoiceService', () => {
       undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(result.ok).toBe(true);
     expect(order.slice(0, 5)).toEqual(['reserve', 'provider', 'bind', 'sideband', 'activate']);
@@ -1314,7 +1591,10 @@ describe('RealtimeVoiceService', () => {
       undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
 
-    const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+    }));
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'dependency' } });
     expect(provider.hangupCall).toHaveBeenCalledOnce();
@@ -1351,6 +1631,7 @@ describe('RealtimeVoiceService', () => {
     );
 
     await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
       sessionHandle: handle,
     }))).resolves.toMatchObject({
@@ -1384,7 +1665,11 @@ describe('RealtimeVoiceService', () => {
       undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
     const controller = new AbortController();
-    const running = runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }, controller.signal));
+    const running = runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }, controller.signal));
     await vi.waitFor(() => expect(provider.createCall).toHaveBeenCalledOnce());
 
     controller.abort();
@@ -1470,7 +1755,11 @@ describe('RealtimeVoiceService', () => {
       undefined,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    const created = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }));
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }));
     expect(created.ok).toBe(true);
 
     const context = {
@@ -1574,7 +1863,11 @@ describe('RealtimeVoiceService', () => {
       { issue: vi.fn(), consume: consumeControl } as unknown as RealtimeDurableControlPort,
       TEST_SPEECH_SOURCE_POLICY,
     );
-    const created = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }));
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }));
     expect(created.ok).toBe(true);
     const context = {
       screen: { name: '/cloture', instanceId: 'closing-1' },

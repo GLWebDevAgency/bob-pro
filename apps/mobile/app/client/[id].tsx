@@ -184,7 +184,7 @@ function dateLabel(date: string): string {
   return `${Number(date.slice(8, 10))} ${month}`;
 }
 
-/** « 821503642 » → « 821 503 642 » (réf : SIREN groupé par 3). */
+/** « 821503646 » → « 821 503 642 » (réf : SIREN groupé par 3). */
 function formatSiren(siren: string): string {
   return siren.replace(/(\d{3})(?=\d)/g, '$1 ');
 }
@@ -440,6 +440,7 @@ export default function ClientDetail() {
 
   // Coordonnées et métriques qualifiées. `null` reste « inconnu », jamais transformé en zéro.
   const siren = customer?.siren ?? null;
+  const tvaIntracom = customer?.tvaIntracom ?? null;
   const email = customer?.email ?? null;
   const phone = customer?.phone ?? null;
   const avgDelayDays = customer?.avgDelayDays ?? null;
@@ -514,6 +515,9 @@ export default function ClientDetail() {
     return [
       { key: 'fiche.infoType' as I18nKey, value: t(TYPE_KEY[customer.type], { personality }) },
       ...(siren ? [{ key: 'fiche.infoSiren' as I18nKey, value: formatSiren(siren) }] : []),
+      ...(tvaIntracom
+        ? [{ key: 'auth.companyTvaLabel' as I18nKey, value: tvaIntracom }]
+        : []),
       ...(customer.contactName
         ? [{ key: 'clients.createContactNameLabel' as I18nKey, value: customer.contactName }]
         : []),
@@ -531,7 +535,7 @@ export default function ClientDetail() {
           ]
         : []),
     ];
-  }, [customer, siren, email, phone, avgDelayDays, personality]);
+  }, [customer, siren, tvaIntracom, email, phone, avgDelayDays, personality]);
 
   // Préremplissage de l'édition (fiche.editCta) — prénom/nom reconstitués depuis `name` (le
   // domaine n'a qu'un seul champ, cf. chaîne complète C13/C40 TODO partagé) : premier mot =
@@ -546,6 +550,7 @@ export default function ClientDetail() {
       lastName: customer.type === 'b2c' ? rest.join(' ') : '',
       companyName: customer.type === 'b2c' ? '' : customer.name,
       siren: siren,
+      tvaIntracom,
       contactName: customer.contactName ?? '',
       email: email ?? '',
       phone: phone ?? '',
@@ -554,7 +559,7 @@ export default function ClientDetail() {
         ? `${customer.address.line1}, ${customer.address.zip} ${customer.address.city}`
         : '',
     };
-  }, [customer, siren, email, phone]);
+  }, [customer, siren, tvaIntracom, email, phone]);
 
   // Ouverture du chantier/projet : adresse PRÉ-REMPLIE depuis la fiche client (arbitrage fondateur).
   const openChantierCreate = (): void => {

@@ -19,7 +19,7 @@ export interface InvoicePdfData {
    * (computeLineBases) dans le mapping : l'adapter n'a aucune formule d'arrondi, il imprime.
    * Optionnel ADDITIF (compat ascendante des adapters/fixtures antérieurs).
    */
-  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number; discount?: Discount | null; lineTotalCents?: number }[];
+  lines: { label: string; qty: number; unit?: string | null; unitPriceHT: number; vatRate: number; discount?: Discount | null; lineTotalCents?: number }[];
   /**
    * B3/B5 — compléments optionnels PRÉSENTS uniquement quand le fait existe (mêmes clés que
    * Totals) : HT brut + total remisé (récapitulatif L441-9), retenue de garantie déduite du
@@ -115,7 +115,7 @@ export interface QuotePdfData {
   /** B3 — `discount` optionnel par ligne (compat ascendante) : remise imprimée à côté de la ligne.
    *  `lineTotalCents` — total HT brut de la ligne résolu par le domaine (mêmes garanties que la
    *  facture) ; optionnel ADDITIF. */
-  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number; discount?: Discount | null; lineTotalCents?: number }[];
+  lines: { label: string; qty: number; unit?: string | null; unitPriceHT: number; vatRate: number; discount?: Discount | null; lineTotalCents?: number }[];
   /** B3 — compléments optionnels (HT brut + total remisé) présents uniquement quand une remise existe.
    *  `vatByRate` — ventilation base + taxe par taux (imprimée dès ≥ 2 taux), montants du domaine. */
   totals: { ht: number; vat: number; ttc: number; netToPay: number; grossHt?: number; discountCents?: number; vatByRate?: { rate: number; base: number; tax: number }[] };

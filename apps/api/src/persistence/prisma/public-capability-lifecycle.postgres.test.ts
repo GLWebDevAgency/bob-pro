@@ -506,6 +506,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         const where = { companyId: { in: companyIds } };
         await admin.publicAccessToken.deleteMany({ where }).catch(() => undefined);
         await admin.subscription.deleteMany({ where }).catch(() => undefined);
+        await admin.documentArchiveJob.deleteMany({ where }).catch(() => undefined);
         await admin.invoice.deleteMany({ where }).catch(() => undefined);
         await admin.quote.deleteMany({ where }).catch(() => undefined);
         await admin.customer.deleteMany({ where }).catch(() => undefined);
@@ -851,6 +852,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const [signed, closed] = await Promise.all([signPromise, closePromise]);
       if (blockingError) throw blockingError;
+      // La signature expose désormais explicitement l'éventuelle capacité de rétractation.
+      // Cette fixture B2B ne doit jamais en fabriquer une : `null` fait partie du contrat.
       expect(signed).toEqual({
         ok: true,
         value: { status: 'signed', retractation: null },

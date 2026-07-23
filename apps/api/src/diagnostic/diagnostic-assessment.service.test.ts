@@ -25,7 +25,7 @@ function customer(id: string, companyId: string, type: 'b2b' | 'b2c') {
     companyId,
     type,
     name: `Client ${id}`,
-    ...(type === 'b2b' ? { siren: '111222333' } : {}),
+    ...(type === 'b2b' ? { siren: '821503646' } : {}),
     address: { line1: '2 rue Client', zip: '75002', city: 'Paris' },
   });
   if (!value.ok) throw new Error('invalid test customer');

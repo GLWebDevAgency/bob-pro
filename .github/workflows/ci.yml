@@ -48,31 +48,49 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: bobpro
+          POSTGRES_DB: bob_ephemeral_ci
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d bobpro"
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_ci"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_ci
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
-      CABINET_INVITATION_WORKER_ENABLED: "false"
-      RUN_RLS_CERT: "true"
-      RLS_CERT_CLEANUP: "true"
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      # Uniquement sur le Postgres service éphémère et loopback de ce job : le test de rollout
+      # crée la fixture minimale `storage.objects` et une preuve liée à GITHUB_SHA, afin que le
+      # vrai script d'activation soit exercé ensuite. Le garde du test refuse tout hôte distant.
+      DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'
+      # Bucket canonique de la fixture Storage éphémère. La preuve d'audit et le script de
+      # cutover consomment cette même valeur : aucune hypothèse implicite ne peut diverger.
+      SUPABASE_STORAGE_BUCKET: documents
       # Clés déterministes réservées à la base PostgreSQL éphémère de CI. Elles arment le même
       # protocole prepare/retire que la production sans dépendre d'un secret externe.
-      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: "true"
-      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: "1"
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
       BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
-      BOB_LIVE_SUBJECT_KEY_VERSION: "1"
-      BOB_LIVE_SUBJECT_HMAC_SECRET: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
       BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
+      # Autorité éphémère large pour les certificats historiques. Le dernier step la draine puis
+      # la reconfigure à N=5 afin de prouver séparément la course exacte N/N+1 multi-clients.
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: openai
+      OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -84,6 +102,11 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      # `release.sh` exécute les certifications sur le vrai code API. Un checkout CI neuf
+      # ne possède ni Prisma Client généré ni les `dist/` des dépendances workspace : construire
+      # toute la fermeture topologique évite de certifier un environnement différent de celui
+      # qui sera réellement déployé.
+      - run: pnpm --filter "@bob/api..." run build
       - name: Create non-superuser app role
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
@@ -96,31 +119,37 @@ jobs:
             END IF;
           END $$;
           SQL
+      - name: Provision the ephemeral Supabase Storage metadata contract
+        run: |
+          # Test-only vendor surface: production already owns this schema. Creating it before
+          # migrate proves that the legal-object immutability trigger is attached by the migration.
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
         run: sh apps/api/scripts/release.sh
-      - name: Activate outbox v2 and certify the post-deploy contract
+      - name: Activate archive/settlement/outbox v2 and certify the post-deploy contract
         run: |
+          DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-document-archive-v2.sh
+          INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           sh apps/api/scripts/release.sh
-      - name: Clone a dedicated database for destructive Mistral key-rotation certification
-        run: >-
-          psql postgresql://postgres:postgres@localhost:5432/postgres
-          -v ON_ERROR_STOP=1
-          -c 'CREATE DATABASE bobpro_mistral_key_rotation TEMPLATE bobpro'
-      - name: Certify Mistral key rotation on the dedicated database
+      - name: Certify Bob Live admission and fair reaper on ephemeral PostgreSQL
         env:
-          DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro_mistral_key_rotation
-          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro_mistral_key_rotation
-          RUN_POSTGRES_MISTRAL_IDENTITY_KEY_ROTATION_CERT: "true"
-          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
-          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
-        run: |
-          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
-            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
-          pnpm --filter @bob/api exec vitest run \
-            src/voice/realtime/mistral-conversation-identity-key-version-lifecycle.postgres.test.ts
-          pnpm --filter @bob/api exec vitest run \
-            src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
+          RUN_POSTGRES_REALTIME_ADMISSION_CERT: 'true'
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/realtime-admission.postgres.test.ts
       - name: Certify Mistral durable authority on the ephemeral mixed-key range
         run: |
           BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
@@ -129,30 +158,96 @@ jobs:
             sh apps/api/scripts/certify-mistral-conversation-authority.sh
       - name: Certify notification outbox concurrency and fencing on PostgreSQL
         env:
-          RUN_POSTGRES_OUTBOX_CERT: "true"
+          RUN_POSTGRES_OUTBOX_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/notification-jobs.postgres.test.ts
       - name: Certify expense creation idempotency on PostgreSQL
         env:
-          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: "true"
+          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-creation-requests.postgres.test.ts
       - name: Certify quote creation idempotency on PostgreSQL
         env:
-          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: "true"
+          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-creation-requests.postgres.test.ts
       - name: Certify global push-token rebind and revocation under FORCE RLS
         env:
-          RUN_POSTGRES_DEVICE_REBIND_CERT: "true"
+          RUN_POSTGRES_DEVICE_REBIND_CERT: 'true'
         run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
+      - name: Certify OpenAI native delivery concurrency and retention on ephemeral PostgreSQL
+        env:
+          RUN_POSTGRES_OPENAI_NATIVE_DELIVERY_CERT: 'true'
+          OPENAI_NATIVE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
+      - name: Close shared Bob Live capacity after PostgreSQL certificates
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Bob Live capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
 
-  facturx-conformance:
+  realtime-global-capacity-certification:
+    # Les certificats d'autorité partagés laissent volontairement des sessions observables.
+    # La course exacte N/N+1 exige au contraire un état initial vide et connu : elle dispose
+    # donc de sa propre base, sans nettoyage destructif ni dépendance à l'ordre des autres tests.
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bob_ephemeral_global_capacity
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_global_capacity"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
-      # Validateur Factur-X officiel (Schematron EN 16931 + PDF/A via veraPDF embarqué).
-      # Mettre à jour vers la dernière version publiée sur Maven Central si besoin.
-      MUSTANG_VERSION: "2.16.1"
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_global_capacity
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_global_capacity
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      SUPABASE_STORAGE_BUCKET: documents
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING: '{"1":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU","2":"BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: openai
+      OPENAI_REALTIME_MODEL: gpt-realtime-2.1
+      BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '1000'
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -162,23 +257,242 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
-      - uses: actions/setup-java@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Create isolated non-superuser app role
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+          SQL
+      - name: Provision the isolated Supabase Storage metadata contract
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
+      - name: Install and certify the isolated capacity schema
+        run: sh apps/api/scripts/release.sh
+      - name: Certify Bob Live global N/N+1 capacity and rollback on isolated PostgreSQL
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          BOB_LIVE_ENABLED=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          RUN_POSTGRES_REALTIME_CAPACITY_CERT=true \
+          BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=5 \
+          BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=6 \
+          BOB_LIVE_CAPACITY_CONFIG_VERSION=2 \
+            pnpm --filter @bob/api exec vitest run \
+              src/voice/realtime/realtime-capacity.postgres.test.ts
+      - name: Close isolated Bob Live capacity after certification
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Isolated Bob Live capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
+
+  mistral-key-rotation-certification:
+    # Une vraie rotation ne doit JAMAIS contourner une preuve encore retenue. Les certificats
+    # d'autorité du job principal produisent volontairement de telles preuves ; toutes les
+    # courses destructives writer/retire vivent donc dans cette base PostgreSQL isolée.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bob_ephemeral_key_rotation
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bob_ephemeral_key_rotation"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_key_rotation
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_key_rotation
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: 'false'
+      RUN_RLS_CERT: 'true'
+      RLS_CERT_CLEANUP: 'true'
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: 'true'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION: '1'
+      BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING: '{"1":"BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU","2":"BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY"}'
+      BOB_LIVE_SUBJECT_KEY_VERSION: '1'
+      BOB_LIVE_SUBJECT_HMAC_SECRET: 'AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM'
+      BOB_LIVE_SUBJECT_HMAC_KEYRING: '{"1":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","2":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ"}'
+      BOB_LIVE_PROOF_KEY_VERSION: '1'
+      BOB_LIVE_PROOF_SECRET: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc'
+      BOB_LIVE_PROOF_KEYRING: '{"1":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"}'
+      # Cette base isolée exécute des writers de compatibilité Mistral N-1 : elle doit donc ouvrir
+      # explicitement l'autorité physique, sans jamais dépendre d'un plafond implicite.
+      BOB_LIVE_ENABLED: 'true'
+      BOB_LIVE_PROVIDER: mistral
+      BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '1000'
+      BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1000'
+      BOB_LIVE_CAPACITY_CONFIG_VERSION: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "@bob/api..." run build
+      - name: Create non-superuser app role
+        run: |
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+          SQL
+      - name: Provision the isolated Supabase Storage metadata contract
+        run: |
+          # Test-only vendor surface: release.sh must prove that the legal-object immutability
+          # trigger is physically attached, even in this key-rotation-specific database.
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.objects (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            bucket_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            UNIQUE (bucket_id, name)
+          );
+          SQL
+      - name: Install and certify the isolated schema
+        run: sh apps/api/scripts/release.sh
+      - name: Certify OpenAI native subject/proof rotation and writer-retire races
+        env:
+          RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'
+          OPENAI_NATIVE_KEY_LIFECYCLE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/openai-native-key-version-lifecycle.postgres.test.ts
+      - name: Certify key rotation and an observed retire-versus-writer race
+        env:
+          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: 'true'
+          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: '2'
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+          BOB_LIVE_SUBJECT_KEY_VERSION=2 \
+          BOB_LIVE_SUBJECT_HMAC_SECRET='BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ' \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          pnpm --filter @bob/api exec vitest run \
+            src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
+      - name: Close isolated Mistral capacity after rotation certificate
+        if: always()
+        run: |
+          BOB_LIVE_ENABLED=false \
+            sh apps/api/scripts/realtime-capacity-release.sh configure
+          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (
+              SELECT 1 FROM realtime_global_capacity AS capacity
+               WHERE capacity.id = 1
+                 AND capacity.mode = 'closed'
+                 AND capacity."usedSessions" = (
+                   SELECT count(*)::INTEGER FROM realtime_session_leases
+                 )
+            ) THEN
+              RAISE EXCEPTION 'Mistral capacity teardown is not closed or exact';
+            END IF;
+          END;
+          $$;
+          SQL
+
+  facturx-conformance:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
+      # Validateur tiers indépendant Mustang (règles Factur-X/EN 16931/France + veraPDF embarqué),
+      # épinglé avec l'empreinte de l'artefact Maven Central. Ce gate complète nos validations
+      # internes ; il n'est pas présenté comme une homologation DGFiP ou FNFE-MPE.
+      MUSTANG_VERSION: '2.24.0'
+      MUSTANG_SHA256: 'e4904ffa0afdce3f5836dceb927c440a05ed5d60386fdd37e17a4b2f7652edbf'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
+      - name: Installer les outils XML déterministes
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils unzip
       - run: pnpm install --frozen-lockfile
-      # L'API importe @bob/ai en plus de @bob/core. Construire le graphe workspace complet
-      # évite qu'un package non émis soit résolu depuis des artefacts locaux absents en CI.
+      - name: Tester les gardes de rapports de conformité
+        run: node --test .github/scripts/*.test.mjs
+      # L'échantillon est produit par l'API, qui importe @bob/ai en plus de @bob/core.
+      # Construire toute la fermeture workspace garantit un checkout CI reproductible.
       - run: pnpm --filter "@bob/api..." run build
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
+      - name: XSD + profil EN16931 + BR-FR strict (FNFE-MPE v1.4.0.02)
+        run: bash .github/scripts/certify-facturx-fnfe.sh facturx-sample/factur-x.xml
       - name: Télécharger le validateur Mustang
-        run: curl -fsSL --retry 3 --retry-delay 5 -o mustang-cli.jar "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 -o mustang-cli.jar \
+            "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+          echo "${MUSTANG_SHA256}  mustang-cli.jar" | sha256sum -c -
       - name: Schematron EN 16931 sur le XML CII (gate bloquant)
-        run: java -jar mustang-cli.jar --action validate --source facturx-sample/factur-x.xml --no-notices
-      - name: veraPDF PDF/A-3 sur le PDF (informatif — embarquage polices = post-traitement prod)
-        continue-on-error: true
-        run: java -jar mustang-cli.jar --action validate --source facturx-sample/facture-x.pdf --no-notices
+        run: |
+          java -jar mustang-cli.jar --action validate \
+            --source facturx-sample/factur-x.xml --no-notices --disable-file-logging \
+            > facturx-sample/mustang-xml-report.xml
+          node .github/scripts/assert-mustang-report.mjs \
+            facturx-sample/mustang-xml-report.xml "${MUSTANG_VERSION}" xml
+      - name: veraPDF PDF/A-3b + XML embarqué (gate bloquant)
+        run: |
+          java -jar mustang-cli.jar --action validate \
+            --source facturx-sample/facture-x.pdf --no-notices --disable-file-logging \
+            > facturx-sample/mustang-pdf-report.xml
+          node .github/scripts/assert-mustang-report.mjs \
+            facturx-sample/mustang-pdf-report.xml "${MUSTANG_VERSION}" pdf
 
   api-artifact:
     # Leçon 2 du postmortem (design_handoff_bob_pro/POSTMORTEM_DEPLOY_20260717.md) : construit
@@ -216,22 +530,22 @@ jobs:
         # et le process n'ouvre pas de connexion Postgres réelle avant d'atteindre /health.
         env:
           NODE_ENV: production
-          DEMO_MODE: "false"
-          BOB_LIVE_ENABLED: "false"
-          OPENAI_REALTIME_ENABLED: "false"
+          DEMO_MODE: 'false'
+          BOB_LIVE_ENABLED: 'false'
+          OPENAI_REALTIME_ENABLED: 'false'
           CABINET_RELEASE_ENV: staging
-          DATABASE_URL: "postgresql://bob_app:secret@db.example.test:5432/bob"
-          SUPABASE_JWKS_URL: "https://project.supabase.co/auth/v1/.well-known/jwks.json"
-          SUPABASE_URL: "https://project.supabase.co"
-          SUPABASE_SERVICE_ROLE_KEY: "service-role-key-for-ci-boot-smoke"
-          CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
-          BREVO_API_KEY: "brevo-ci-boot-smoke-key"
-          BREVO_SENDER_EMAIL: "bob@example.test"
-          METRICS_TOKEN: "fedcba9876543210fedcba9876543210"
-          ERROR_REPORTER_WEBHOOK_URL: "https://errors.example.test/hook"
-          SIGN_WEB_BASE_URL: "https://signature.bobpro.fr"
-          CABINET_INVITATION_WEB_BASE_URL: "https://cabinet.bobpro.fr"
-          MISTRAL_API_KEY: "mistral-ci-boot-smoke-key"
+          DATABASE_URL: 'postgresql://bob_app:secret@db.example.test:5432/bob'
+          SUPABASE_JWKS_URL: 'https://project.supabase.co/auth/v1/.well-known/jwks.json'
+          SUPABASE_URL: 'https://project.supabase.co'
+          SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-for-ci-boot-smoke'
+          CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef'
+          BREVO_API_KEY: 'brevo-ci-boot-smoke-key'
+          BREVO_SENDER_EMAIL: 'bob@example.test'
+          METRICS_TOKEN: 'fedcba9876543210fedcba9876543210'
+          ERROR_REPORTER_WEBHOOK_URL: 'https://errors.example.test/hook'
+          SIGN_WEB_BASE_URL: 'https://signature.bobpro.fr'
+          CABINET_INVITATION_WEB_BASE_URL: 'https://cabinet.bobpro.fr'
+          MISTRAL_API_KEY: 'mistral-ci-boot-smoke-key'
         run: |
           set -euo pipefail
           node apps/api/dist/main.js > api-boot-smoke.log 2>&1 &

@@ -777,6 +777,10 @@ export default function Ventes() {
                             <QuoteActions
                               quote={q}
                               customerName={nameOf(q.customerId)}
+                              customerType={
+                                (customers.data ?? []).find((customer) => customer.id === q.customerId)
+                                  ?.type ?? null
+                              }
                               linkedInvoices={linkedInvoicesOfQuote(q.id)}
                             />
                           </View>

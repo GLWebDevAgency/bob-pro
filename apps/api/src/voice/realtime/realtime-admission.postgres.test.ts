@@ -1,13 +1,110 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RealtimeAdmissionPolicy } from './realtime-admission';
 import { PrismaRealtimeAdmission } from './realtime-admission.prisma';
 import { PrismaService } from '../../persistence/prisma/prisma.service';
+import { PrismaRealtimeReaperDirectory } from './realtime-reaper-directory.prisma';
+import type { RealtimeReaperDirectoryListResult } from './realtime-reaper-directory';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_REALTIME_ADMISSION_CERT === 'true';
 
+function explainUsesIndex(plan: Prisma.JsonValue, indexName: string): boolean {
+  return JSON.stringify(plan).includes(`"Index Name":"${indexName}"`);
+}
+
+function explainExecutionMs(plan: Prisma.JsonValue): number | null {
+  if (!Array.isArray(plan)) return null;
+  const root = plan[0];
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return null;
+  const value = root['Execution Time'];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>['resolve'];
+  let reject!: Deferred<T>['reject'];
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForBlockedBy(
+  observer: PrismaClient,
+  blockedPid: number,
+  blockingPid: number,
+): Promise<void> {
+  // La fonction trigger possède lock_timeout=1s. On observe donc la vraie arête de verrou puis on
+  // libère immédiatement le reconciler, sans utiliser un sleep comme hypothèse de synchronisation.
+  const deadlineAt = Date.now() + 750;
+  let lastState: { waitEventType: string | null; expectedBlocker: boolean } | undefined;
+  do {
+    [lastState] = await observer.$queryRaw<Array<{
+      waitEventType: string | null;
+      expectedBlocker: boolean;
+    }>>`
+      SELECT activity.wait_event_type AS "waitEventType",
+             ${blockingPid}::integer = ANY(
+               pg_catalog.pg_blocking_pids(activity.pid)
+             ) AS "expectedBlocker"
+        FROM pg_catalog.pg_stat_activity AS activity
+       WHERE activity.pid = ${blockedPid}
+    `;
+    if (lastState?.waitEventType === 'Lock' && lastState.expectedBlocker) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  } while (Date.now() < deadlineAt);
+  throw new Error(
+    `Writer ${blockedPid} was not observed waiting for reconciler ${blockingPid}: `
+      + JSON.stringify(lastState),
+  );
+}
+
+interface ReaperScheduleTestAccess {
+  reconcileReaperSchedule(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+  ): Promise<void>;
+}
+
+async function resetRealtimeReaperCursor(admin: PrismaClient): Promise<void> {
+  await admin.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL ROLE bob_realtime_reaper_directory`;
+    await tx.$executeRaw`
+      UPDATE realtime_reaper_directory_cursor
+         SET "afterAdmissionCompanyId" = NULL,
+             "cycleUpperAdmissionCompanyId" = NULL,
+             "cycleAdmissionCutoffAt" = NULL,
+             "afterLeaseCompanyId" = NULL,
+             "cycleUpperLeaseCompanyId" = NULL,
+             "cycleLeaseCutoffAt" = NULL,
+             "preferLease" = TRUE,
+             "pendingCompanyIds" = ARRAY[]::text[],
+             "pendingAfterAdmissionCompanyId" = NULL,
+             "pendingAfterLeaseCompanyId" = NULL,
+             "pendingAdmissionHasMore" = NULL,
+             "pendingLeaseHasMore" = NULL,
+             "pendingPreferLease" = NULL,
+             "claimId" = NULL,
+             "claimExpiresAt" = NULL,
+             revision = revision + 1
+       WHERE singleton
+    `;
+  });
+}
+
 const policy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 2,
   userLimitPerHour: 3,
   tenantLimitPerMinute: 100,
@@ -26,6 +123,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
   let admin: PrismaClient;
   let workers: PrismaService[] = [];
   let admissions: PrismaRealtimeAdmission[] = [];
+  let directories: PrismaRealtimeReaperDirectory[] = [];
+  const directoryCompanyIds: string[] = [];
 
   beforeAll(async () => {
     if (!runtimeUrl || !directUrl) {
@@ -37,6 +136,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       new PrismaService({ datasourceUrl: runtimeUrl }),
     ];
     admissions = workers.map((worker) => new PrismaRealtimeAdmission(worker, policy));
+    directories = workers.map((worker) => new PrismaRealtimeReaperDirectory(worker));
     await Promise.all([admin.$connect(), ...workers.map((worker) => worker.$connect())]);
     for (const [id, suffix] of [[companyId, 1], [otherCompanyId, 2]] as const) {
       const siren = String(randomInt(100_000_000, 999_999_999));
@@ -59,9 +159,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   afterAll(async () => {
     if (admin) {
-      await admin.realtimeSessionLease.deleteMany({ where: { companyId: { in: [companyId, otherCompanyId] } } }).catch(() => undefined);
-      await admin.realtimeAdmissionEvent.deleteMany({ where: { companyId: { in: [companyId, otherCompanyId] } } }).catch(() => undefined);
-      await admin.company.deleteMany({ where: { id: { in: [companyId, otherCompanyId] } } }).catch(() => undefined);
+      const allCompanyIds = [companyId, otherCompanyId, ...directoryCompanyIds];
+      await admin.realtimeSessionLease.deleteMany({ where: { companyId: { in: allCompanyIds } } }).catch(() => undefined);
+      await admin.realtimeAdmissionEvent.deleteMany({ where: { companyId: { in: allCompanyIds } } }).catch(() => undefined);
+      await admin.company.deleteMany({ where: { id: { in: allCompanyIds } } }).catch(() => undefined);
     }
     await Promise.allSettled([
       ...workers.map((worker) => worker.$disconnect()),
@@ -148,6 +249,859 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       providerMigrationApplied: true,
     });
   });
+
+  it('pagine plus de 100 tenants sans famine et fence le claim entre deux répliques', async () => {
+    const tenantCount = 125;
+    const sirenBase = randomInt(200_000_000, 700_000_000);
+    const now = Date.now();
+    const companies = Array.from({ length: tenantCount }, (_, index) => {
+      const id = `reaper-directory-${String(index).padStart(4, '0')}-${randomUUID()}`;
+      directoryCompanyIds.push(id);
+      const siren = String(sirenBase + index);
+      return {
+        id,
+        name: `Bob Reaper Directory Certification ${index}`,
+        legalForm: 'EI' as const,
+        siren,
+        siret: `${siren}${String(index).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal' as const,
+        addrLine1: `${index + 1} rue de la Certification`,
+        addrZip: '75001',
+        addrCity: 'Paris',
+      };
+    });
+    await admin.company.createMany({ data: companies });
+    await admin.realtimeAdmissionEvent.createMany({
+      data: companies.map((company, index) => ({
+        id: randomUUID(),
+        companyId: company.id,
+        subjectHash: index.toString(16).padStart(64, '0'),
+        sessionId: randomUUID(),
+        admittedAt: new Date(now - 3 * 60 * 60 * 1_000 + index),
+      })),
+    });
+    // Un tenant très bruyant ne doit compter qu'une fois dans une page globale.
+    await admin.realtimeAdmissionEvent.createMany({
+      data: Array.from({ length: 250 }, (_, index) => ({
+        id: randomUUID(),
+        companyId: companies[0]!.id,
+        subjectHash: `f${index.toString(16).padStart(63, '0')}`,
+        sessionId: randomUUID(),
+        admittedAt: new Date(now - 4 * 60 * 60 * 1_000 + index),
+      })),
+    });
+
+    // Une lease due reste prioritaire même si la lane admission contient déjà plus d'une page.
+    const leaseOnlyCompanyId = `reaper-directory-lease-${randomUUID()}`;
+    const leaseOnlySiren = String(sirenBase + tenantCount + 10);
+    directoryCompanyIds.push(leaseOnlyCompanyId);
+    await admin.company.create({
+      data: {
+        id: leaseOnlyCompanyId,
+        name: 'Bob Reaper Lease Lane Certification',
+        legalForm: 'EI',
+        siren: leaseOnlySiren,
+        siret: `${leaseOnlySiren}${String(tenantCount + 10).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal',
+        addrLine1: `${tenantCount + 11} rue de la Certification`,
+        addrZip: '75001',
+        addrCity: 'Paris',
+      },
+    });
+    await admin.realtimeSessionLease.create({
+      data: {
+        companyId: leaseOnlyCompanyId,
+        subjectHash: 'e'.repeat(64),
+        sessionId: randomUUID(),
+        leaseTokenHash: randomUUID().replaceAll('-', '').padEnd(64, '0'),
+        state: 'reserved',
+        reservedAt: new Date(now - 60_000),
+        leaseExpiresAt: new Date(now - 30_000),
+        hardExpiresAt: new Date(now + 60_000),
+        updatedAt: new Date(now - 30_000),
+      },
+    });
+
+    const contenders = await Promise.all(
+      directories.map((directory) => directory.listDueCompanyIds({ limit: 25 })),
+    );
+    const first = contenders.find((result) =>
+      result.status === 'succeeded' && result.companyIds.length > 0);
+    const blocked = contenders.find((result) =>
+      result.status === 'succeeded' && result.companyIds.length === 0);
+    expect(first).toEqual(expect.objectContaining({
+      status: 'succeeded', hasMore: true,
+    }));
+    expect(blocked).toEqual({
+      status: 'succeeded', companyIds: [], hasMore: false, claimId: null,
+    });
+    if (!first || first.status !== 'succeeded' || first.claimId === null) {
+      throw new Error('Realtime reaper first page missing.');
+    }
+    expect(first.companyIds).toContain(leaseOnlyCompanyId);
+
+    const [frozenCycle] = await admin.$queryRaw<Array<{
+      cycleAdmissionCutoffAt: Date;
+      cycleUpperAdmissionCompanyId: string;
+      pendingAfterAdmissionCompanyId: string;
+    }>>`
+      SELECT "cycleAdmissionCutoffAt", "cycleUpperAdmissionCompanyId",
+             "pendingAfterAdmissionCompanyId"
+        FROM realtime_reaper_directory_cursor
+       WHERE singleton
+    `;
+    if (
+      !frozenCycle?.cycleAdmissionCutoffAt
+      || !frozenCycle.cycleUpperAdmissionCompanyId
+      || !frozenCycle.pendingAfterAdmissionCompanyId
+    ) {
+      throw new Error('Realtime reaper frozen admission cycle missing.');
+    }
+    const cutoffCompanyId = `reaper-directory-0060z-${randomUUID()}`;
+    const cutoffSiren = String(sirenBase + tenantCount + 20);
+    directoryCompanyIds.push(cutoffCompanyId);
+    await admin.company.create({
+      data: {
+        id: cutoffCompanyId,
+        name: 'Bob Reaper Frozen Cutoff Certification',
+        legalForm: 'EI',
+        siren: cutoffSiren,
+        siret: `${cutoffSiren}${String(tenantCount + 20).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal',
+        addrLine1: `${tenantCount + 21} rue de la Certification`,
+        addrZip: '75001',
+        addrCity: 'Paris',
+      },
+    });
+    await admin.realtimeAdmissionEvent.create({
+      data: {
+        id: randomUUID(),
+        companyId: cutoffCompanyId,
+        subjectHash: 'd'.repeat(64),
+        sessionId: randomUUID(),
+        admittedAt: new Date(frozenCycle.cycleAdmissionCutoffAt.getTime() + 1),
+      },
+    });
+    expect(cutoffCompanyId > frozenCycle.pendingAfterAdmissionCompanyId).toBe(true);
+    expect(cutoffCompanyId < frozenCycle.cycleUpperAdmissionCompanyId).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const replayedCompanyIds = [...first.companyIds];
+    await admin.$executeRaw`
+      UPDATE realtime_reaper_directory_cursor
+         SET "claimExpiresAt" = statement_timestamp() - interval '1 microsecond'
+       WHERE singleton
+    `;
+    await expect(directories[0]!.renewClaim({ claimId: first.claimId })).resolves.toEqual({
+      status: 'succeeded', renewed: false,
+    });
+    // Une page louée reste byte-for-byte rejouable même si la configuration vient de passer
+    // de 25 à 5. La nouvelle borne ne s'appliquera qu'à la page suivante.
+    const [replay, expiredAck] = await Promise.all([
+      directories[1]!.listDueCompanyIds({ limit: 5 }),
+      directories[0]!.acknowledgeClaim({ claimId: first.claimId }),
+    ]);
+    expect(expiredAck).toEqual({ status: 'succeeded', acknowledged: false });
+    expect(replay).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: replayedCompanyIds, hasMore: true,
+    }));
+    expect(replayedCompanyIds.length).toBeGreaterThan(5);
+    if (replay.status !== 'succeeded' || replay.claimId === null) {
+      throw new Error('Realtime reaper replay claim missing.');
+    }
+    expect(replay.claimId).not.toBe(first.claimId);
+    await expect(directories[0]!.acknowledgeClaim({ claimId: first.claimId })).resolves.toEqual({
+      status: 'succeeded', acknowledged: false,
+    });
+
+    const reached = new Set<string>();
+    const visits = new Map<string, number>();
+    const lateCompanyIds: string[] = [];
+    let page: RealtimeReaperDirectoryListResult = replay;
+    for (
+      let pageIndex = 0;
+      pageIndex < 10 && page.status === 'succeeded' && page.companyIds.length > 0;
+      pageIndex += 1
+    ) {
+      // Trois arrivées plus récentes deviennent dues pendant le cycle. La borne haute figée doit
+      // permettre de finir les 125 lignes initiales, puis de les reprendre au cycle suivant sans
+      // famine ni extension infinie du scan courant.
+      if (pageIndex < 3) {
+        // Le préfixe z place ces tenants au-delà de la borne haute figée du cycle courant.
+        const lateCompanyId = `reaper-directory-z-late-${randomUUID()}`;
+        const lateSiren = String(sirenBase + tenantCount + pageIndex);
+        lateCompanyIds.push(lateCompanyId);
+        directoryCompanyIds.push(lateCompanyId);
+        await admin.company.create({
+          data: {
+            id: lateCompanyId,
+            name: `Bob Reaper Late Arrival ${pageIndex}`,
+            legalForm: 'EI',
+            siren: lateSiren,
+            siret: `${lateSiren}${String(tenantCount + pageIndex).padStart(5, '0')}`,
+            trade: 'certification',
+            vatRegime: 'reel_normal',
+            addrLine1: `${tenantCount + pageIndex + 1} rue de la Certification`,
+            addrZip: '75001',
+            addrCity: 'Paris',
+          },
+        });
+        await admin.realtimeAdmissionEvent.create({
+          data: {
+            id: randomUUID(),
+            companyId: lateCompanyId,
+            subjectHash: String(tenantCount + pageIndex).padStart(64, '0'),
+            sessionId: randomUUID(),
+            admittedAt: new Date(now - 3 * 60 * 60 * 1_000 + 10_000 + pageIndex),
+          },
+        });
+      }
+      if (page.hasMore) {
+        expect(page.companyIds).not.toEqual(
+          expect.arrayContaining([cutoffCompanyId, ...lateCompanyIds]),
+        );
+      }
+      for (const dueCompanyId of page.companyIds) {
+        reached.add(dueCompanyId);
+        visits.set(dueCompanyId, (visits.get(dueCompanyId) ?? 0) + 1);
+        await expect(admissions[0]!.claimExpired({ companyId: dueCompanyId, limit: 2 }))
+          .resolves.toEqual({ ok: true, claims: [] });
+      }
+      await expect(directories[0]!.renewClaim({ claimId: page.claimId! })).resolves.toEqual({
+        status: 'succeeded', renewed: true,
+      });
+      await expect(directories[0]!.acknowledgeClaim({ claimId: page.claimId! })).resolves.toEqual({
+        status: 'succeeded', acknowledged: true,
+      });
+      page = await directories[0]!.listDueCompanyIds({ limit: 25 });
+      if (page.status !== 'succeeded') throw new Error('Realtime reaper pagination unavailable.');
+    }
+    expect(reached).toEqual(new Set(directoryCompanyIds));
+    expect(visits.get(companies[0]!.id)).toBe(1);
+    expect(page).toEqual({
+      status: 'succeeded', companyIds: [], hasMore: false, claimId: null,
+    });
+
+    const [cursor] = await admin.$queryRaw<Array<{
+      claimId: string | null;
+      afterAdmissionCompanyId: string | null;
+      cycleUpperAdmissionCompanyId: string | null;
+      cycleAdmissionCutoffAt: Date | null;
+      afterLeaseCompanyId: string | null;
+      cycleUpperLeaseCompanyId: string | null;
+      cycleLeaseCutoffAt: Date | null;
+      revision: bigint;
+    }>>`
+      SELECT "claimId", "afterAdmissionCompanyId", "cycleUpperAdmissionCompanyId",
+             "cycleAdmissionCutoffAt", "afterLeaseCompanyId", "cycleUpperLeaseCompanyId",
+             "cycleLeaseCutoffAt", revision
+        FROM realtime_reaper_directory_cursor
+       WHERE singleton
+    `;
+    expect(cursor).toEqual(expect.objectContaining({
+      claimId: null,
+      afterAdmissionCompanyId: null,
+      cycleUpperAdmissionCompanyId: null,
+      cycleAdmissionCutoffAt: null,
+      afterLeaseCompanyId: null,
+      cycleUpperLeaseCompanyId: null,
+      cycleLeaseCutoffAt: null,
+    }));
+    expect(cursor?.revision).toBeGreaterThan(0n);
+  }, 60_000);
+
+  it('alterne les deux lanes avec limit=1 et remplit une page lease-only', async () => {
+    const sirenBase = randomInt(710_000_000, 850_000_000);
+    const now = Date.now();
+    const leaseCompanies = Array.from({ length: 7 }, (_, index) => {
+      const id = `reaper-fair-lease-${String(index).padStart(2, '0')}-${randomUUID()}`;
+      directoryCompanyIds.push(id);
+      const siren = String(sirenBase + index);
+      return {
+        id,
+        name: `Bob Reaper Fair Lease ${index}`,
+        legalForm: 'EI' as const,
+        siren,
+        siret: `${siren}${String(index + 300).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal' as const,
+        addrLine1: `${index + 300} rue de la Certification`,
+        addrZip: '75001',
+        addrCity: 'Paris',
+      };
+    });
+    const admissionOnlyCompanyId = `reaper-fair-admission-${randomUUID()}`;
+    const admissionSiren = String(sirenBase + 20);
+    directoryCompanyIds.push(admissionOnlyCompanyId);
+    await admin.company.createMany({
+      data: [
+        ...leaseCompanies,
+        {
+          id: admissionOnlyCompanyId,
+          name: 'Bob Reaper Fair Admission',
+          legalForm: 'EI' as const,
+          siren: admissionSiren,
+          siret: `${admissionSiren}${String(320).padStart(5, '0')}`,
+          trade: 'certification',
+          vatRegime: 'reel_normal' as const,
+          addrLine1: '320 rue de la Certification',
+          addrZip: '75001',
+          addrCity: 'Paris',
+        },
+      ],
+    });
+    await admin.realtimeSessionLease.createMany({
+      data: leaseCompanies.map((company, index) => ({
+        companyId: company.id,
+        subjectHash: (index + 20).toString(16).padStart(64, '0'),
+        sessionId: randomUUID(),
+        leaseTokenHash: randomUUID().replaceAll('-', '').padEnd(64, '0'),
+        state: 'reserved',
+        reservedAt: new Date(now - 60_000),
+        leaseExpiresAt: new Date(now - 30_000),
+        hardExpiresAt: new Date(now + 60_000),
+        updatedAt: new Date(now - 30_000),
+      })),
+    });
+    await admin.realtimeAdmissionEvent.create({
+      data: {
+        id: randomUUID(),
+        companyId: admissionOnlyCompanyId,
+        subjectHash: 'c'.repeat(64),
+        sessionId: randomUUID(),
+        admittedAt: new Date(now - 3 * 60 * 60 * 1_000),
+      },
+    });
+    await admin.$executeRaw`
+      UPDATE realtime_reaper_directory_cursor
+         SET "afterAdmissionCompanyId" = NULL,
+             "cycleUpperAdmissionCompanyId" = NULL,
+             "cycleAdmissionCutoffAt" = NULL,
+             "afterLeaseCompanyId" = NULL,
+             "cycleUpperLeaseCompanyId" = NULL,
+             "cycleLeaseCutoffAt" = NULL,
+             "preferLease" = TRUE,
+             "pendingCompanyIds" = ARRAY[]::text[],
+             "pendingAfterAdmissionCompanyId" = NULL,
+             "pendingAfterLeaseCompanyId" = NULL,
+             "pendingAdmissionHasMore" = NULL,
+             "pendingLeaseHasMore" = NULL,
+             "pendingPreferLease" = NULL,
+             "claimId" = NULL,
+             "claimExpiresAt" = NULL
+       WHERE singleton
+    `;
+
+    const leaseTurn = await directories[0]!.listDueCompanyIds({ limit: 1 });
+    expect(leaseTurn).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: [leaseCompanies[0]!.id], hasMore: true,
+    }));
+    if (leaseTurn.status !== 'succeeded' || leaseTurn.claimId === null) {
+      throw new Error('Realtime reaper lease turn missing.');
+    }
+    await expect(directories[0]!.acknowledgeClaim({ claimId: leaseTurn.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+
+    const admissionTurn = await directories[0]!.listDueCompanyIds({ limit: 1 });
+    expect(admissionTurn).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: [admissionOnlyCompanyId], hasMore: true,
+    }));
+    if (admissionTurn.status !== 'succeeded' || admissionTurn.claimId === null) {
+      throw new Error('Realtime reaper admission turn missing.');
+    }
+    await expect(directories[0]!.acknowledgeClaim({ claimId: admissionTurn.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+
+    await admin.realtimeAdmissionEvent.deleteMany({ where: { companyId: admissionOnlyCompanyId } });
+    await expect(admissions[0]!.claimExpired({ companyId: admissionOnlyCompanyId, limit: 1 }))
+      .resolves.toEqual({ ok: true, claims: [] });
+    await admin.$executeRaw`
+      UPDATE realtime_reaper_directory_cursor
+         SET "afterAdmissionCompanyId" = NULL,
+             "cycleUpperAdmissionCompanyId" = NULL,
+             "cycleAdmissionCutoffAt" = NULL,
+             "afterLeaseCompanyId" = NULL,
+             "cycleUpperLeaseCompanyId" = NULL,
+             "cycleLeaseCutoffAt" = NULL,
+             "preferLease" = TRUE
+       WHERE singleton
+    `;
+    const leaseOnlyPage = await directories[0]!.listDueCompanyIds({ limit: 5 });
+    expect(leaseOnlyPage).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: leaseCompanies.slice(0, 5).map(({ id }) => id),
+      hasMore: true,
+    }));
+    if (leaseOnlyPage.status !== 'succeeded' || leaseOnlyPage.claimId === null) {
+      throw new Error('Realtime reaper full lease-only page missing.');
+    }
+    await expect(directories[0]!.acknowledgeClaim({ claimId: leaseOnlyPage.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+    await admin.realtimeSessionLease.deleteMany({
+      where: { companyId: { in: leaseCompanies.map(({ id }) => id) } },
+    });
+    for (const company of leaseCompanies) {
+      await expect(admissions[0]!.claimExpired({ companyId: company.id, limit: 1 }))
+        .resolves.toEqual({ ok: true, claims: [] });
+    }
+    await admin.$executeRaw`
+      UPDATE realtime_reaper_directory_cursor
+         SET "afterAdmissionCompanyId" = NULL,
+             "cycleUpperAdmissionCompanyId" = NULL,
+             "cycleAdmissionCutoffAt" = NULL,
+             "afterLeaseCompanyId" = NULL,
+             "cycleUpperLeaseCompanyId" = NULL,
+             "cycleLeaseCutoffAt" = NULL,
+             "preferLease" = TRUE
+       WHERE singleton
+    `;
+  }, 30_000);
+
+  it('fige aussi le cutoff lease pendant un cycle puis reprend la nouvelle échéance', async () => {
+    const suffix = randomUUID();
+    const ids = {
+      first: `reaper-freeze-lease-${suffix}-a`,
+      late: `reaper-freeze-lease-${suffix}-b`,
+      last: `reaper-freeze-lease-${suffix}-c`,
+    } as const;
+    directoryCompanyIds.push(ids.first, ids.late, ids.last);
+    const sirenBase = randomInt(500_000_000, 800_000_000);
+    await admin.company.createMany({
+      data: Object.values(ids).map((id, index) => {
+        const siren = String(sirenBase + index);
+        return {
+          id,
+          name: `Bob Reaper Frozen Lease ${index}`,
+          legalForm: 'EI' as const,
+          siren,
+          siret: `${siren}${String(index + 700).padStart(5, '0')}`,
+          trade: 'certification',
+          vatRegime: 'reel_normal' as const,
+          addrLine1: `${index + 700} rue de la Certification`,
+          addrZip: '75001',
+          addrCity: 'Paris',
+        };
+      }),
+    });
+    const expiredAt = new Date(Date.now() - 30_000);
+    await admin.realtimeSessionLease.createMany({
+      data: [ids.first, ids.last].map((tenantId, index) => ({
+        companyId: tenantId,
+        subjectHash: (index + 800).toString(16).padStart(64, '0'),
+        sessionId: randomUUID(),
+        leaseTokenHash: randomUUID().replaceAll('-', '').padEnd(64, '0'),
+        state: 'reserved',
+        reservedAt: new Date(expiredAt.getTime() - 30_000),
+        leaseExpiresAt: expiredAt,
+        hardExpiresAt: new Date(Date.now() + 60_000),
+        updatedAt: expiredAt,
+      })),
+    });
+
+    const first = await directories[0]!.listDueCompanyIds({ limit: 1 });
+    expect(first).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: [ids.first], hasMore: true,
+    }));
+    if (first.status !== 'succeeded' || first.claimId === null) {
+      throw new Error('Realtime reaper frozen lease first page missing.');
+    }
+    const [cycle] = await admin.$queryRaw<Array<{
+      cutoffAt: Date;
+      upperCompanyId: string;
+    }>>`
+      SELECT "cycleLeaseCutoffAt" AS "cutoffAt",
+             "cycleUpperLeaseCompanyId" AS "upperCompanyId"
+        FROM realtime_reaper_directory_cursor
+       WHERE singleton
+    `;
+    if (!cycle?.cutoffAt || cycle.upperCompanyId !== ids.last) {
+      throw new Error('Realtime reaper frozen lease cursor missing.');
+    }
+    await admin.realtimeSessionLease.create({
+      data: {
+        companyId: ids.late,
+        subjectHash: 'f'.repeat(64),
+        sessionId: randomUUID(),
+        leaseTokenHash: randomUUID().replaceAll('-', '').padEnd(64, '0'),
+        state: 'reserved',
+        reservedAt: cycle.cutoffAt,
+        leaseExpiresAt: new Date(cycle.cutoffAt.getTime() + 20),
+        hardExpiresAt: new Date(cycle.cutoffAt.getTime() + 60_000),
+        updatedAt: cycle.cutoffAt,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await expect(admissions[0]!.claimExpired({ companyId: ids.first, limit: 1 }))
+      .resolves.toEqual({ ok: true, claims: [] });
+    await expect(directories[0]!.acknowledgeClaim({ claimId: first.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+
+    const last = await directories[0]!.listDueCompanyIds({ limit: 1 });
+    expect(last).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: [ids.last], hasMore: false,
+    }));
+    if (last.status !== 'succeeded' || last.claimId === null) {
+      throw new Error('Realtime reaper frozen lease last page missing.');
+    }
+    await expect(admissions[0]!.claimExpired({ companyId: ids.last, limit: 1 }))
+      .resolves.toEqual({ ok: true, claims: [] });
+    await expect(directories[0]!.acknowledgeClaim({ claimId: last.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+
+    const nextCycle = await directories[0]!.listDueCompanyIds({ limit: 1 });
+    expect(nextCycle).toEqual(expect.objectContaining({
+      status: 'succeeded', companyIds: [ids.late], hasMore: false,
+    }));
+    if (nextCycle.status !== 'succeeded' || nextCycle.claimId === null) {
+      throw new Error('Realtime reaper late lease page missing.');
+    }
+    await expect(admissions[0]!.claimExpired({ companyId: ids.late, limit: 1 }))
+      .resolves.toEqual({ ok: true, claims: [] });
+    await expect(directories[0]!.acknowledgeClaim({ claimId: nextCycle.claimId })).resolves
+      .toEqual({ status: 'succeeded', acknowledged: true });
+  }, 30_000);
+
+  it('prouve la projection keyset sous RLS à capacité pleine avec un historique très bruyant', async () => {
+    const tenantCount = 1_000;
+    const hotAdmissionRows = 20_000;
+    const sirenBase = randomInt(100_000_000, 500_000_000);
+    const now = Date.now();
+    const companies = Array.from({ length: tenantCount }, (_, index) => {
+      const id = `reaper-plan-${String(index).padStart(4, '0')}-${randomUUID()}`;
+      directoryCompanyIds.push(id);
+      const siren = String(sirenBase + index);
+      return {
+        id,
+        name: `Bob Reaper Plan ${index}`,
+        legalForm: 'EI' as const,
+        siren,
+        siret: `${siren}${String(index + 1_000).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal' as const,
+        addrLine1: `${index + 1_000} rue de la Certification`,
+        addrZip: '75001',
+        addrCity: 'Paris',
+      };
+    });
+    const companyIds = companies.map(({ id }) => id);
+    try {
+      await resetRealtimeReaperCursor(admin);
+      await admin.company.createMany({ data: companies });
+      await admin.realtimeAdmissionEvent.createMany({
+        data: companies.map((company, index) => ({
+          id: randomUUID(),
+          companyId: company.id,
+          subjectHash: (index + 1_000).toString(16).padStart(64, '0'),
+          sessionId: randomUUID(),
+          admittedAt: new Date(now - 3 * 60 * 60 * 1_000 + index),
+        })),
+      });
+      await admin.realtimeSessionLease.createMany({
+        data: companies.map((company, index) => ({
+          companyId: company.id,
+          subjectHash: (index + 2_000).toString(16).padStart(64, '0'),
+          sessionId: randomUUID(),
+          leaseTokenHash: randomUUID().replaceAll('-', '').padEnd(64, '0'),
+          state: 'reserved',
+          reservedAt: new Date(now - 60_000),
+          leaseExpiresAt: new Date(now - 30_000),
+          hardExpiresAt: new Date(now + 60_000),
+          updatedAt: new Date(now - 30_000),
+        })),
+      });
+      await admin.$executeRaw`
+        INSERT INTO realtime_admission_events (
+          id, "companyId", "subjectHash", "sessionId", "admittedAt"
+        )
+        SELECT gen_random_uuid(), ${companies[0]!.id},
+               (md5('event-a-' || source.position::text)
+                 || md5('event-b-' || source.position::text))::char(64),
+               gen_random_uuid(), CASE
+                 WHEN source.position <= ${hotAdmissionRows / 2}
+                   THEN statement_timestamp() - interval '3 hours'
+                 ELSE statement_timestamp()
+               END
+          FROM generate_series(1, ${hotAdmissionRows}) AS source(position)
+      `;
+      await admin.$executeRaw`ANALYZE realtime_admission_events`;
+      await admin.$executeRaw`ANALYZE realtime_session_leases`;
+      await admin.$executeRaw`ANALYZE realtime_reaper_tenant_schedule`;
+
+      const [projection] = await admin.$queryRaw<Array<{
+        tenants: number;
+        usedSessions: number;
+        globalMaxSessions: number | null;
+        capacityMode: string;
+      }>>`
+        SELECT (
+                 SELECT count(*)::int
+                   FROM realtime_reaper_tenant_schedule
+                  WHERE "companyId" LIKE 'reaper-plan-%'
+               ) AS tenants,
+               capacity."usedSessions",
+               capacity."globalMaxSessions",
+               capacity.mode AS "capacityMode"
+          FROM realtime_global_capacity AS capacity
+         WHERE capacity.id = 1
+      `;
+      expect(projection).toEqual({
+        tenants: tenantCount,
+        usedSessions: tenantCount,
+        globalMaxSessions: tenantCount,
+        capacityMode: 'active',
+      });
+
+      const plans = await admin.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL ROLE bob_realtime_reaper_directory`;
+        await tx.$executeRaw`SET LOCAL statement_timeout = '4s'`;
+        await tx.$executeRaw`SET LOCAL lock_timeout = '1s'`;
+        const admissionUpperQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."oldestAdmissionAt" <= statement_timestamp() - interval '2 hours'
+           ORDER BY schedule."companyId" DESC
+           LIMIT 1
+        `;
+        const leaseUpperQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."nextLeaseDueAt" <= statement_timestamp()
+           ORDER BY schedule."companyId" DESC
+           LIMIT 1
+        `;
+        const admissionPageQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."oldestAdmissionAt" <= statement_timestamp() - interval '2 hours'
+             AND schedule."companyId" <= ${companies.at(-1)!.id}
+           ORDER BY schedule."companyId"
+           LIMIT 101
+        `;
+        const leasePageQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."nextLeaseDueAt" <= statement_timestamp()
+             AND schedule."companyId" <= ${companies.at(-1)!.id}
+           ORDER BY schedule."companyId"
+           LIMIT 101
+        `;
+        const admissionMiddlePageQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."oldestAdmissionAt" <= statement_timestamp() - interval '2 hours'
+             AND schedule."companyId" > ${companies[Math.floor(tenantCount / 2)]!.id}
+             AND schedule."companyId" <= ${companies.at(-1)!.id}
+           ORDER BY schedule."companyId"
+           LIMIT 101
+        `;
+        const leaseMiddlePageQuery = Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."nextLeaseDueAt" <= statement_timestamp()
+             AND schedule."companyId" > ${companies[Math.floor(tenantCount / 2)]!.id}
+             AND schedule."companyId" <= ${companies.at(-1)!.id}
+           ORDER BY schedule."companyId"
+           LIMIT 101
+        `;
+        const run = (query: Prisma.Sql) => tx.$queryRaw<
+          Array<{ 'QUERY PLAN': Prisma.JsonValue }>
+        >(query).then((rows) => rows[0]?.['QUERY PLAN']);
+        const admissionUpper = await run(admissionUpperQuery);
+        const leaseUpper = await run(leaseUpperQuery);
+        const admissionPage = await run(admissionPageQuery);
+        const leasePage = await run(leasePageQuery);
+        const admissionMiddlePage = await run(admissionMiddlePageQuery);
+        const leaseMiddlePage = await run(leaseMiddlePageQuery);
+        await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
+        const forcedAdmissionPage = await run(admissionPageQuery);
+        const forcedLeasePage = await run(leasePageQuery);
+        await tx.$executeRaw`SET LOCAL enable_seqscan = on`;
+        const claimId = randomUUID();
+        const directoryPlan = await run(Prisma.sql`
+          EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+          SELECT * FROM public.list_realtime_reaper_tenants_v1(100, ${claimId}::uuid)
+        `);
+        await tx.$queryRaw`
+          SELECT public.ack_realtime_reaper_tenants_v1(${claimId}::uuid)
+        `;
+        return {
+          admissionUpper,
+          leaseUpper,
+          admissionPage,
+          leasePage,
+          admissionMiddlePage,
+          leaseMiddlePage,
+          forcedAdmissionPage,
+          forcedLeasePage,
+          directoryPlan,
+        };
+      });
+
+      for (const plan of [
+        plans.admissionUpper,
+        plans.leaseUpper,
+        plans.admissionPage,
+        plans.leasePage,
+        plans.admissionMiddlePage,
+        plans.leaseMiddlePage,
+        plans.directoryPlan,
+      ]) {
+        expect(plan).toBeDefined();
+        expect(explainExecutionMs(plan!)).toBeLessThan(100);
+        expect(JSON.stringify(plan)).not.toMatch(
+          /realtime_(?:admission_events|session_leases)/u,
+        );
+      }
+      expect(explainUsesIndex(
+        plans.forcedAdmissionPage!, 'realtime_reaper_schedule_admission_due_idx',
+      ) || explainUsesIndex(
+        plans.forcedAdmissionPage!, 'realtime_reaper_tenant_schedule_pkey',
+      )).toBe(true);
+      expect(explainUsesIndex(
+        plans.forcedLeasePage!, 'realtime_reaper_schedule_lease_due_idx',
+      ) || explainUsesIndex(
+        plans.forcedLeasePage!, 'realtime_reaper_tenant_schedule_pkey',
+      )).toBe(true);
+      // Le choix naturel reste volontairement cost-based : sur 1 000 lignes toutes dues,
+      // PostgreSQL peut préférer un scan de la seule projection en moins d'une milliseconde.
+      // Les assertions ci-dessus bornent ce plan et interdisent tout accès aux historiques ; les
+      // deux plans `enable_seqscan = off` prouvent séparément que chaque requête reste indexable.
+      // Le planner demeure libre de choisir le PK keyset ou l'index partiel ; leurs définitions,
+      // validité et readiness exactes sont certifiées indépendamment par le certificat release.
+    } finally {
+      try {
+        await admin.realtimeSessionLease.deleteMany({ where: { companyId: { in: companyIds } } });
+        await admin.realtimeAdmissionEvent.deleteMany({ where: { companyId: { in: companyIds } } });
+        await admin.company.deleteMany({ where: { id: { in: companyIds } } });
+      } finally {
+        await resetRealtimeReaperCursor(admin);
+      }
+    }
+  }, 60_000);
+
+  it('ne perd pas une échéance insérée pendant la réconciliation exacte', async () => {
+    const raceCompanyId = `reaper-schedule-race-${randomUUID()}`;
+    const siren = String(randomInt(100_000_000, 999_999_999));
+    directoryCompanyIds.push(raceCompanyId);
+    await admin.company.create({
+      data: {
+        id: raceCompanyId,
+        name: 'Bob Reaper Schedule Race Certification',
+        legalForm: 'EI',
+        siren,
+        siret: `${siren}${String(randomInt(0, 99_999)).padStart(5, '0')}`,
+        trade: 'certification',
+        vatRegime: 'reel_normal',
+        addrLine1: '1 rue de la Concurrence',
+        addrZip: '75001',
+        addrCity: 'Paris',
+      },
+    });
+
+    const baselineAt = new Date(Date.now() - 30 * 60 * 1_000);
+    const concurrentAt = new Date(baselineAt.getTime() - 3 * 60 * 60 * 1_000);
+    await admin.realtimeAdmissionEvent.create({
+      data: {
+        id: randomUUID(),
+        companyId: raceCompanyId,
+        subjectHash: '7'.repeat(64),
+        sessionId: randomUUID(),
+        admittedAt: baselineAt,
+      },
+    });
+
+    const scheduleLocked = deferred<{ pid: number }>();
+    const continueReconciliation = deferred<void>();
+    const reconcilerPromise = workers[0]!.withIsolatedTenant(
+      raceCompanyId,
+      async (tx) => {
+        const locked = await tx.$queryRaw<Array<{ pid: number; companyId: string }>>`
+          SELECT pg_catalog.pg_backend_pid()::integer AS pid,
+                 schedule."companyId"
+            FROM realtime_reaper_tenant_schedule AS schedule
+           WHERE schedule."companyId" = ${raceCompanyId}
+           FOR UPDATE
+        `;
+        if (locked.length !== 1) {
+          throw new Error('Schedule row required before race certification.');
+        }
+        scheduleLocked.resolve({ pid: locked[0]!.pid });
+        await continueReconciliation.promise;
+        await (admissions[0]! as unknown as ReaperScheduleTestAccess)
+          .reconcileReaperSchedule(tx, raceCompanyId);
+      },
+      { maxWaitMs: 1_000, timeoutMs: 5_000 },
+    ).catch((error: unknown) => {
+      scheduleLocked.reject(error);
+      throw error;
+    });
+
+    const { pid: reconcilerPid } = await scheduleLocked.promise;
+    const writerStarted = deferred<{ pid: number }>();
+    const writerPromise = workers[1]!.withIsolatedTenant(
+      raceCompanyId,
+      async (tx) => {
+        const [backend] = await tx.$queryRaw<Array<{ pid: number }>>`
+          SELECT pg_catalog.pg_backend_pid()::integer AS pid
+        `;
+        if (!backend) throw new Error('Writer backend PID missing.');
+        writerStarted.resolve(backend);
+        await tx.$executeRaw`
+          INSERT INTO realtime_admission_events (
+            id, "companyId", "subjectHash", "sessionId", "admittedAt"
+          ) VALUES (
+            ${randomUUID()}::uuid, ${raceCompanyId}, ${'8'.repeat(64)},
+            ${randomUUID()}::uuid, ${concurrentAt}
+          )
+        `;
+      },
+      { maxWaitMs: 1_000, timeoutMs: 5_000 },
+    ).catch((error: unknown) => {
+      writerStarted.reject(error);
+      throw error;
+    });
+
+    let observationError: unknown;
+    try {
+      const { pid: writerPid } = await writerStarted.promise;
+      await waitForBlockedBy(admin, writerPid, reconcilerPid);
+    } catch (error) {
+      observationError = error;
+    } finally {
+      continueReconciliation.resolve(undefined);
+    }
+
+    const outcomes = await Promise.allSettled([reconcilerPromise, writerPromise]);
+    const rejected = outcomes.find(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+    );
+    if (rejected) throw rejected.reason;
+    if (observationError) throw observationError;
+
+    const [projection] = await admin.$queryRaw<Array<{
+      scheduledAt: Date | null;
+      sourceMinimumAt: Date | null;
+    }>>`
+      SELECT schedule."oldestAdmissionAt" AS "scheduledAt",
+             (
+               SELECT min(event."admittedAt")
+                 FROM realtime_admission_events AS event
+                WHERE event."companyId" = ${raceCompanyId}
+             ) AS "sourceMinimumAt"
+        FROM realtime_reaper_tenant_schedule AS schedule
+       WHERE schedule."companyId" = ${raceCompanyId}
+    `;
+    expect(projection?.sourceMinimumAt).toEqual(concurrentAt);
+    expect(projection?.scheduledAt).toEqual(concurrentAt);
+  }, 30_000);
 
   it('sérialise deux réservations du même sujet entre répliques', async () => {
     const subjectHash = '1'.repeat(64);

@@ -17,6 +17,9 @@ import {
   type InvoiceStatus,
   type InvoiceKind,
   type CreditedInvoiceKind,
+  type PrecedingInvoiceSnapshot,
+  type Payment,
+  type PaymentMethod,
   type QuoteLine,
   type LineCategory,
   type VatRate,
@@ -27,6 +30,7 @@ import {
   type Discount,
   type CustomerBillingChannel,
   type CustomerBillingChannelType,
+  isFrenchBillingMode,
 } from '@bob/core';
 
 const toDateOnly = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
@@ -42,6 +46,7 @@ function docKindToInvoiceKind(d: string): InvoiceKind {
 
 interface LineRow {
   id: string;
+  sourceQuoteLineId: string | null;
   label: string;
   category: string;
   qty: { toString(): string };
@@ -94,6 +99,7 @@ export function lineRowToQuoteLine(row: LineRow): QuoteLine {
     vatRate: Number(row.vatRate.toString()) as VatRate,
   };
   if (row.unit !== null) line.unit = row.unit;
+  if (row.sourceQuoteLineId !== null) line.sourceQuoteLineId = row.sourceQuoteLineId;
   const discount = discountFromColumns(
     { percent: row.discountPercent, amountCents: row.discountAmountCents },
     `line ${row.id}`,
@@ -117,6 +123,74 @@ export function quoteLineToCreate(l: QuoteLine, owner: { quoteId?: string; invoi
     vatRate: l.vatRate,
     discountPercent: discount.percent,
     discountAmountCents: discount.amountCents,
+    sourceQuoteLineId: l.sourceQuoteLineId ?? null,
+  };
+}
+
+export interface PaymentPersistenceRow {
+  id: string;
+  companyId: string;
+  invoiceId: string;
+  amount: number;
+  method: string;
+  receivedAt: Date;
+  idempotencyKey: string | null;
+  ordinaryReceivableCents: number | null;
+  retentionReceivableCents: number | null;
+}
+
+/**
+ * Lecture compatible expand : les deux NULL signifient un paiement écrit avant le contrat 4117,
+ * donc 100 % de la somme sur la créance ordinaire. Une moitié NULL est une corruption, jamais un
+ * montant complété silencieusement.
+ */
+export function paymentRowToRecordInput(row: PaymentPersistenceRow): {
+  id: string;
+  companyId: string;
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  receivedAt: string;
+  idempotencyKey: string | null;
+  ordinaryReceivableCents: number;
+  retentionReceivableCents: number;
+} {
+  const bothLegacy = row.ordinaryReceivableCents === null && row.retentionReceivableCents === null;
+  let ordinaryReceivableCents: number;
+  let retentionReceivableCents: number;
+  if (bothLegacy) {
+    ordinaryReceivableCents = row.amount;
+    retentionReceivableCents = 0;
+  } else if (row.ordinaryReceivableCents !== null && row.retentionReceivableCents !== null) {
+    ordinaryReceivableCents = row.ordinaryReceivableCents;
+    retentionReceivableCents = row.retentionReceivableCents;
+  } else {
+    throw new Error(`Corrupted receivable allocation for payment ${row.id}: partial allocation.`);
+  }
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    invoiceId: row.invoiceId,
+    amount: row.amount,
+    method: row.method as PaymentMethod,
+    receivedAt: row.receivedAt.toISOString(),
+    idempotencyKey: row.idempotencyKey,
+    ordinaryReceivableCents,
+    retentionReceivableCents,
+  };
+}
+
+export function paymentToPersistence(payment: Payment) {
+  return {
+    id: payment.id,
+    companyId: payment.companyId,
+    invoiceId: payment.invoiceId,
+    amount: payment.amount,
+    method: payment.method,
+    receivedAt: new Date(payment.receivedAt),
+    idempotencyKey: payment.idempotencyKey,
+    ordinaryReceivableCents: payment.ordinaryReceivableCents,
+    retentionReceivableCents: payment.retentionReceivableCents,
   };
 }
 
@@ -217,6 +291,7 @@ export function companyPropsToCreate(p: CompanyProps) {
 
 interface CustomerRow {
   id: string; companyId: string; type: string; name: string; siren: string | null; isInternational: boolean;
+  tvaIntracom: string | null;
   addrLine1: string; addrZip: string; addrCity: string; email: string | null; phone: string | null;
   contactName: string | null;
   ptLabel: string | null; isSubcontractingBtp: boolean;
@@ -244,6 +319,7 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
     isSubcontractingBtp: row.isSubcontractingBtp,
   };
   if (row.siren) props.siren = row.siren;
+  if (row.tvaIntracom) props.tvaIntracom = row.tvaIntracom;
   if (row.email) props.email = row.email;
   if (row.phone) props.phone = row.phone;
   if (row.contactName) props.contactName = row.contactName;
@@ -285,6 +361,7 @@ export function customerPropsToCreate(p: CustomerProps) {
     type: p.type,
     name: p.name,
     siren: p.siren ?? null,
+    tvaIntracom: p.tvaIntracom ?? null,
     isInternational: p.isInternational ?? false,
     addrLine1: p.address.line1,
     addrZip: p.address.zip,
@@ -569,6 +646,45 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
   };
 }
 
+export interface InvoicePredecessorRow {
+  sourceInvoiceId: string;
+  kind: string;
+  number: string;
+  issuedAt: Date;
+  position: number;
+}
+
+export function invoicePredecessorRowToSnapshot(
+  row: InvoicePredecessorRow,
+): PrecedingInvoiceSnapshot {
+  const kind = docKindToInvoiceKind(row.kind);
+  if (kind !== 'deposit' && kind !== 'situation') {
+    throw new Error(`Corrupted invoice predecessor ${row.sourceInvoiceId}: unsupported kind ${row.kind}.`);
+  }
+  return {
+    invoiceId: row.sourceInvoiceId,
+    kind,
+    number: row.number,
+    issuedAt: row.issuedAt.toISOString().slice(0, 10),
+  };
+}
+
+export function invoicePredecessorToCreate(
+  predecessor: PrecedingInvoiceSnapshot,
+  owner: { companyId: string; invoiceId: string },
+  position: number,
+) {
+  return {
+    companyId: owner.companyId,
+    invoiceId: owner.invoiceId,
+    sourceInvoiceId: predecessor.invoiceId,
+    kind: invoiceKindToDocKind(predecessor.kind),
+    number: predecessor.number,
+    issuedAt: new Date(`${predecessor.issuedAt}T00:00:00.000Z`),
+    position,
+  };
+}
+
 interface InvoiceRow {
   id: string; companyId: string; customerId: string; kind: string; status: string; number: string | null;
   issuedAt: Date | null; dueAt: Date | null; parentQuoteId: string | null; depositPct: number | null;
@@ -576,7 +692,9 @@ interface InvoiceRow {
   sourceInvoiceId: string | null; sourceInvoiceKind: string | null; sourceInvoiceNumber: string | null;
   sourceInvoiceIssuedAt: Date | null;
   depositDeductionCents: number; depositInvoiceId: string | null;
+  settlementSemanticsVersion: number;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
+  totalsDuePayableCents: number | null;
   vatByRate: unknown; legalMentions: string[];
   /** B3/B5 — compléments de totaux : présents UNIQUEMENT quand le fait existe (NULL sinon). */
   totalsGrossHt: number | null;
@@ -597,16 +715,34 @@ interface InvoiceRow {
   transmissionAcceptedAt: Date | null;
   /** A4 — régime de TVA figé à l'émission. NULL = pièce émise avant le figeage. */
   vatTreatmentAtIssuance: string | null;
+  /** BT-23 — cadre France figé. NULL = archive historique. */
+  frenchBillingModeAtIssuance: string | null;
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
   revision: number;
   lines: LineRow[];
+  precedingInvoices: InvoicePredecessorRow[];
 }
 
 export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
   const status = row.status as InvoiceStatus;
   const kind = docKindToInvoiceKind(row.kind);
+  if (row.settlementSemanticsVersion !== 1 && row.settlementSemanticsVersion !== 2) {
+    throw new Error(
+      `Corrupted settlement semantics for invoice ${row.id}: version ${row.settlementSemanticsVersion}.`,
+    );
+  }
+  const expectedDuePayable = row.totalsNetToPay + (row.totalsRetenueGarantieCents ?? 0);
+  if (
+    row.settlementSemanticsVersion === 2
+    && row.totalsDuePayableCents !== expectedDuePayable
+  ) {
+    throw new Error(
+      `Corrupted settlement semantics for invoice ${row.id}: due payable must equal `
+      + `net to pay plus retention (${expectedDuePayable}).`,
+    );
+  }
   const frozen: Totals | null =
     status === 'draft' && kind !== 'credit_note'
       ? null
@@ -615,6 +751,9 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
           vat: row.totalsVat,
           ttc: row.totalsTtc,
           netToPay: row.totalsNetToPay,
+          ...(row.totalsDuePayableCents !== null
+            ? { duePayableCents: row.totalsDuePayableCents }
+            : {}),
           vatByRate: (row.vatByRate as Record<string, number>) ?? {},
           // B3/B5 : compléments PRÉSENTS uniquement quand le fait a été figé (NULL honnête
           // sinon — les totaux des pièces antérieures restent identiques au centime).
@@ -633,6 +772,7 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     lines: row.lines.map(lineRowToQuoteLine),
     number: row.number,
     frozenTotals: frozen,
+    settlementSemanticsVersion: row.settlementSemanticsVersion,
     mentions: row.legalMentions,
     issuedAt: toDateOnly(row.issuedAt),
     dueAt: toDateOnly(row.dueAt),
@@ -651,11 +791,15 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
       || row.vatTreatmentAtIssuance === 'autoliquidation'
         ? row.vatTreatmentAtIssuance
         : null,
+    frenchBillingModeAtIssuance: isFrenchBillingMode(row.frenchBillingModeAtIssuance)
+      ? row.frenchBillingModeAtIssuance
+      : null,
     paid: row.paidCents,
     depositPct: row.depositPct,
     parentQuoteId: row.parentQuoteId,
     depositDeductionCents: row.depositDeductionCents ?? 0,
     depositInvoiceId: row.depositInvoiceId ?? null,
+    precedingInvoices: row.precedingInvoices.map(invoicePredecessorRowToSnapshot),
     // B2/B3/B5 : situation, remise globale et retenue — NULL honnête (jamais rétro-remplis).
     situationDeductionCents: row.situationDeductionCents ?? 0,
     situationOrder: row.situationOrder,

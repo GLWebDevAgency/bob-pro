@@ -94,6 +94,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     }).execute({
       invoiceId,
       terms: { days: 30, endOfMonth: false, label: 'Paiement à 30 jours' },
+      operationCategory: 'services',
     });
     expect(issued.ok).toBe(true);
     if (issued.ok) expect(issued.value.number).toBe('F-2026-0001');

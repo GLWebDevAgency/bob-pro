@@ -184,6 +184,7 @@ const COMPANY_LEGAL_FIELDS = new Set([
   'phone',
   'rcsOrRm',
   'address',
+  'tvaIntracom',
 ]);
 const MEDIATEUR_CONSO_FIELDS = new Set(['nom', 'coordonnees']);
 const COMPANY_LEGAL_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
@@ -196,6 +197,7 @@ const COMPANY_LEGAL_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
 const INVOICE_ISSUE_FIELDS = new Set([
   'servicePeriod',
   'deliveryAddress',
+  'operationCategory',
   'invoiceId',
   'terms',
   // Override RESPONSABILISÉ de l'embargo L221-10 (`true` strict, journalisé côté use case).
@@ -220,6 +222,7 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'type',
   'name',
   'siren',
+  'tvaIntracom',
   'address',
   'email',
   'phone',
@@ -635,6 +638,7 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
     typeof body.address.zip !== 'string' ||
     typeof body.address.city !== 'string' ||
     !validOptionalString(body.siren) ||
+    !validOptionalString(body.tvaIntracom) ||
     !validOptionalString(body.email) ||
     !validOptionalString(body.phone) ||
     !validOptionalString(body.contactName) ||
@@ -709,6 +713,7 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
       city: body.address.city,
     },
     ...(body.siren !== undefined ? { siren: body.siren as string } : {}),
+    ...(body.tvaIntracom !== undefined ? { tvaIntracom: body.tvaIntracom as string } : {}),
     ...(body.email !== undefined ? { email: body.email as string } : {}),
     ...(body.phone !== undefined ? { phone: body.phone as string } : {}),
     ...(body.contactName !== undefined ? { contactName: body.contactName as string } : {}),
@@ -1978,6 +1983,10 @@ export class HealthController {
     return {
       ready: true,
       customers: r.value.customers,
+      // Capacité de compatibilité mixed-version : cette révision refuse tout XML/Factur-X B2C
+      // sur l'endpoint ET rend son PDF sans enveloppe hybride. Le pipeline vérifie ce marqueur
+      // sur toutes les anciennes répliques avant d'appliquer les migrations archive V2.
+      capabilities: { documentArchiveB2cHttpFence: 'v1' as const },
       release: readReleaseMetadata(),
       network: { clientIpSource: clientIpSourceForRequest(request) },
     };
@@ -2268,6 +2277,25 @@ export class CompanyLookupController {
         });
       }
     }
+    // Le numéro de TVA est un IDENTIFIANT ATTRIBUÉ, jamais calculé depuis le SIREN. La forme
+    // exacte et la cohérence SIREN/clé sont validées par Company.of, autorité du domaine.
+    let tvaIntracom: string | null | undefined;
+    if ('tvaIntracom' in body) {
+      if (body.tvaIntracom === null) {
+        tvaIntracom = null;
+      } else if (
+        typeof body.tvaIntracom === 'string' &&
+        body.tvaIntracom.trim().length > 0 &&
+        body.tvaIntracom.trim().length <= 32
+      ) {
+        tvaIntracom = body.tvaIntracom.trim();
+      } else {
+        issues.push({
+          field: 'tvaIntracom',
+          message: 'Numéro de TVA intracommunautaire invalide (chaîne non vide ou null).',
+        });
+      }
+    }
     // Adresse du siège : objet COMPLET uniquement (pas de patch par sous-champ — une adresse
     // partielle serait un état incohérent sur une pièce comptable). Non nullable : `address`
     // est requis sur CompanyProps, l'effacer n'a aucun sens légal.
@@ -2307,6 +2335,7 @@ export class CompanyLookupController {
         phone,
         rcsOrRm,
         address,
+        tvaIntracom,
       }),
     );
   }
@@ -2632,6 +2661,7 @@ export class InvoicesController {
       invoiceId: string;
       servicePeriod?: { start: string; end: string | null };
       deliveryAddress?: string;
+      operationCategory?: 'goods' | 'services' | 'mixed';
       embargoOverride?: boolean;
     } = { invoiceId: id };
     if (body !== undefined && body !== null) {
@@ -2681,6 +2711,20 @@ export class InvoicesController {
           });
         } else {
           input.deliveryAddress = deliveryAddress;
+        }
+      }
+      if ('operationCategory' in body) {
+        if (
+          body.operationCategory !== 'goods'
+          && body.operationCategory !== 'services'
+          && body.operationCategory !== 'mixed'
+        ) {
+          issues.push({
+            field: 'operationCategory',
+            message: 'Nature attendue : goods, services ou mixed.',
+          });
+        } else {
+          input.operationCategory = body.operationCategory;
         }
       }
       // Override L221-10 : `true` strict uniquement (jamais implicite, jamais par truthiness).

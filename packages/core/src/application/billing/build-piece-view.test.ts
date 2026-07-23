@@ -9,9 +9,9 @@ import {
   type PieceQuoteData,
 } from './build-piece-view';
 
-const MARTIN: PieceCustomerData = { id: 'c-martin', name: 'SARL Martin Rénovation', type: 'b2b', siren: '821503642' };
+const MARTIN: PieceCustomerData = { id: 'c-martin', name: 'SARL Martin Rénovation', type: 'b2b', siren: '821503646' };
 const DURAND: PieceCustomerData = { id: 'c-durand', name: 'Mme Durand', type: 'b2c', siren: null };
-const MAIRIE: PieceCustomerData = { id: 'c-sevres', name: 'Mairie de Sèvres', type: 'b2g', siren: '217504028' };
+const MAIRIE: PieceCustomerData = { id: 'c-sevres', name: 'Mairie de Sèvres', type: 'b2g', siren: '217504026' };
 
 const LINE = { id: 'l1', label: 'Pose PAC', category: 'labor' as const, qty: 1, unitPriceHT: 135667, vatRate: 20 as const };
 
@@ -68,8 +68,8 @@ describe('buildPieceView — TEST D’OR acompte 488,40 (30 % de 1 628,00 €)',
 
 describe('buildPieceView — partyLine adaptatif (B2C sans SIREN)', () => {
   it('b2b/b2g : SIREN formaté ; particulier : RIEN', () => {
-    expect(buildPartyLine(MARTIN)).toBe('SIREN 821 503 642');
-    expect(buildPartyLine(MAIRIE)).toBe('SIREN 217 504 028');
+    expect(buildPartyLine(MARTIN)).toBe('SIREN 821 503 646');
+    expect(buildPartyLine(MAIRIE)).toBe('SIREN 217 504 026');
     expect(buildPartyLine(DURAND)).toBeNull();
     expect(formatSiren('732829320')).toBe('SIREN 732 829 320');
   });

@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, type SituationAmountInput, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -305,6 +305,104 @@ function askToPick(input: {
       followUp: item.followUp,
     })),
   };
+}
+
+const FRENCH_OPERATION_CATEGORY_OPTIONS: readonly {
+  value: FrenchOperationCategory;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: 'services',
+    label: 'Prestation principale',
+    description: 'Les fournitures sont intégrées ou accessoires à la prestation.',
+  },
+  {
+    value: 'goods',
+    label: 'Vente principale',
+    description: 'La pose ou la prestation est accessoire à la vente du bien.',
+  },
+  {
+    value: 'mixed',
+    label: 'Biens et prestations séparés',
+    description: 'Les biens et les prestations constituent des opérations indépendantes.',
+  },
+];
+
+/**
+ * Qualification BT-23 déterministe et fermée. Le LLM n'est jamais autorisé à transformer une
+ * formulation incertaine en fait fiscal : zéro ou plusieurs correspondances => question.
+ */
+function extractFrenchOperationCategory(
+  message: string,
+  options: { allowOrdinal?: boolean } = {},
+): FrenchOperationCategory | null {
+  const text = normalized(message);
+  const matches = new Set<FrenchOperationCategory>();
+  if (
+    /nature (?:de l[’']? ?)?operation\s*[:=-]?\s*services?\b/.test(text)
+    || /prestation principale|service principal|fournitures? (?:integrees?|accessoires?)/.test(text)
+  ) matches.add('services');
+  if (
+    /nature (?:de l[’']? ?)?operation\s*[:=-]?\s*(?:goods|biens?|vente)\b/.test(text)
+    || /vente principale|bien principal|pose (?:integree|accessoire)/.test(text)
+  ) matches.add('goods');
+  if (
+    /nature (?:de l[’']? ?)?operation\s*[:=-]?\s*(?:mixed|mixte)\b/.test(text)
+    || /biens? et prestations? (?:separes?|independants?)|operations? independantes?/.test(text)
+  ) matches.add('mixed');
+  if (options.allowOrdinal === true) {
+    if (/^(?:le |la )?(?:premier|premiere|1|1er|1ere)$/.test(text.trim())) matches.add('services');
+    if (/^(?:le |la )?(?:deuxieme|second|seconde|2|2e)$/.test(text.trim())) matches.add('goods');
+    if (/^(?:le |la )?(?:troisieme|3|3e)$/.test(text.trim())) matches.add('mixed');
+  }
+  return matches.size === 1 ? [...matches][0]! : null;
+}
+
+function extractScopedFrenchOperationCategory(
+  message: string,
+  invoiceRef: string,
+): FrenchOperationCategory | null {
+  const text = normalized(message);
+  const marker = normalized(`pour la facture ${invoiceRef}`);
+  const start = text.lastIndexOf(marker);
+  if (start < 0) return null;
+  const scoped = text.slice(start, text.indexOf(';', start + marker.length) < 0
+    ? undefined
+    : text.indexOf(';', start + marker.length));
+  return extractFrenchOperationCategory(scoped);
+}
+
+function frenchOperationCategoryQuestion(input: {
+  id: string;
+  invoiceRef: string;
+  customerName?: string;
+  commandPrefix: string;
+  scoped: boolean;
+}): AgentQuestion {
+  return askToPick({
+    id: input.id,
+    question: `Quelle est la nature principale de l’opération pour la facture ${input.invoiceRef}${input.customerName ? ` (${input.customerName})` : ''} ?`,
+    header: 'Opération',
+    items: FRENCH_OPERATION_CATEGORY_OPTIONS.map((option) => ({
+      value: option.value,
+      label: option.label,
+      description: option.description,
+      followUp:
+        `${input.commandPrefix}; `
+        + `${input.scoped ? `pour la facture ${input.invoiceRef}, ` : ''}`
+        + `nature de l’opération : ${option.value}`,
+    })),
+  });
+}
+
+function isFrenchOperationCategoryRequiredError(error: AppError): boolean {
+  if (error.kind === 'validation') {
+    return error.issues.some((issue) => issue.field === 'operationCategory');
+  }
+  return error.kind === 'domain'
+    && error.error.code === 'VALIDATION'
+    && error.error.field === 'operationCategory';
 }
 
 export interface AgentRun {
@@ -1111,6 +1209,27 @@ export interface AskOptions extends Omit<AgentAskPayload, 'message'> {
   signal?: AbortSignal;
 }
 
+const BOB_GENERIC_CAPABILITY_CATALOG = [
+  '· Facturation — « fais un devis pour Martin », « crée une facture pour Martin », « relance mes clients »',
+  '· Dépenses — « scanne ce ticket », « ajoute une dépense Leroy Merlin »',
+  '· Fiscal — « combien de TVA je dois ? », « mes échéances à venir », « suis-je prêt pour la facturation électronique ? »',
+  '· Pilotage — « comment va mon activité ? », « qui me doit de l’argent ? », « combien je peux me verser ? »',
+].join('\n');
+
+/**
+ * Gabarits génériques déterministes. Ils ne contiennent aucune donnée tenant ; le routeur
+ * acoustique les compare exactement avant d'autoriser un scénario natif à faible risque.
+ */
+export const BOB_GENERIC_ASSISTANCE_SPEECH = Object.freeze({
+  help:
+    'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n'
+    + BOB_GENERIC_CAPABILITY_CATALOG,
+  unknown:
+    'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). '
+    + 'Voici ce que je sais faire :\n'
+    + BOB_GENERIC_CAPABILITY_CATALOG,
+} as const);
+
 /**
  * Cerveau agentique de Bob. Mappe une demande en langage naturel vers un OUTIL (= use case),
  * applique la politique de confirmation (autonomie), puis exécute. Parité totale : tout ce que
@@ -1211,6 +1330,39 @@ export class BobAgent {
     const isPaymentTermsContinuation = lastBobTurn !== undefined
       && /conditions de paiement/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /paie|paye|r[èe]gle|jours|conditions/i.test(turn.text));
+    // BT-23 — une réponse courte (« le premier », « mixte ») n'a de sens que juste après LA
+    // question sur la nature de l'opération et dans un parcours d'émission réellement présent
+    // dans l'historique. Hors de ce contexte, aucun ordinal ne devient un fait fiscal.
+    const lastInvoiceIssueTurn = [...recentUserTurns]
+      .reverse()
+      .find((turn) => detectIntent(turn.text) === 'emettre_facture');
+    const isOperationCategoryContinuation = lastBobTurn !== undefined
+      && /nature (?:principale )?de l[’']op[ée]ration/i.test(lastBobTurn.text)
+      && lastInvoiceIssueTurn !== undefined;
+    if (
+      isOperationCategoryContinuation
+      && parseVoiceConsent(userMessage) === 'cancel'
+    ) {
+      return ok({
+        kind: 'answer',
+        intent: 'emettre_facture',
+        model: DETERMINISTIC_CLASSIFIER_MODEL,
+        plan: ['Annuler la qualification avant émission'],
+        card: {
+          title: 'Émission annulée',
+          body: 'Je n’émets pas la facture. Rien n’a été modifié.',
+        },
+        spokenPrompt: 'Entendu, je n’émets pas la facture. Rien n’a été modifié.',
+      });
+    }
+    const continuedOperationCategory = isOperationCategoryContinuation
+      ? extractFrenchOperationCategory(userMessage, { allowOrdinal: true })
+      : null;
+    const operationCategoryCommand = isOperationCategoryContinuation
+      ? `${lastInvoiceIssueTurn.text}; ${continuedOperationCategory === null
+          ? userMessage
+          : `nature de l’opération : ${continuedOperationCategory}`}`
+      : null;
     // B8 — passerelle d'enchaînement : après « Bon de commande lié ✓ », un OUI franc délègue au
     // flow generer_facture_devis EXISTANT via sa commande canonique VERBATIM ; un NON franc clôt
     // proprement (le lien, lui, est déjà fait). Jamais d'action sur une réponse ambiguë.
@@ -1234,6 +1386,7 @@ export class BobAgent {
       ? `Fais la facture du devis ${invoiceChainRef}`
       : null;
     const classificationMessage = chainCommand
+      ?? operationCategoryCommand
       ?? (isExpensePaymentContinuation
         || isPurchaseOrderContinuation
         || isDictatedExpenseContinuation
@@ -1244,7 +1397,7 @@ export class BobAgent {
         : userMessage);
     // Le message des handlers : la commande canonique quand l'enchaînement a été accepté,
     // sinon la demande telle que dite (les handlers relisent l'historique eux-mêmes).
-    const effectiveMessage = chainCommand ?? userMessage;
+    const effectiveMessage = chainCommand ?? operationCategoryCommand ?? userMessage;
     const plan = await this.classify(classificationMessage, routed.model, history, context, opts.signal);
     opts.signal?.throwIfAborted();
     const model =
@@ -1305,17 +1458,6 @@ export class BobAgent {
     return result;
   }
 
-  /** DÉCOUVRABILITÉ (S9) : catalogue des capacités PAR DOMAINE, un exemple parlé chacun —
-   * les exemples sont des commandes CANONIQUES qui matchent detectIntent à coup sûr. */
-  private capabilityCatalog(): string {
-    return [
-      '· Facturation — « fais un devis pour Martin », « encaisse la facture 2026-014 », « relance les retards »',
-      '· Dépenses — « scanne ce ticket », « j’ai payé Leroy Merlin hier par carte »',
-      '· Fiscal — « combien de TVA je dois ? », « mes échéances à venir », « prêt pour 2026 ? »',
-      '· Pilotage — « comment va mon activité ? », « qui me doit de l’argent ? », « combien je peux me verser ? »',
-    ].join('\n');
-  }
-
   private unknownRun(model: string): AgentRun {
     return {
       kind: 'answer',
@@ -1324,10 +1466,7 @@ export class BobAgent {
       plan: ['Comprendre la demande'],
       card: {
         title: 'Bob',
-        body:
-          'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
-          'Voici ce que je sais faire :\n' +
-          this.capabilityCatalog(),
+        body: BOB_GENERIC_ASSISTANCE_SPEECH.unknown,
       },
     };
   }
@@ -1342,9 +1481,7 @@ export class BobAgent {
       plan: ['Présenter les capacités'],
       card: {
         title: 'Ce que je sais faire',
-        body:
-          'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n' +
-          this.capabilityCatalog(),
+        body: BOB_GENERIC_ASSISTANCE_SPEECH.help,
       },
     };
   }
@@ -3627,8 +3764,41 @@ export class BobAgent {
             : {}),
         });
       }
+      const operationCategory = invoice.operationCategoryRequired
+        ? extractFrenchOperationCategory(message)
+        : null;
+      if (invoice.operationCategoryRequired && operationCategory === null) {
+        const ref = displayRef(invoice);
+        const question = frenchOperationCategoryQuestion({
+          id: 'emettre_facture.operationCategory',
+          invoiceRef: ref,
+          customerName: invoice.customerName,
+          commandPrefix: `Émets la facture ${ref}`,
+          scoped: false,
+        });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier la facture brouillon', 'Demander la nature réglementaire manquante'],
+          card: {
+            title: 'Nature de l’opération',
+            body:
+              `Avant d’émettre la facture ${ref}, j’ai besoin d’un fait métier : `
+              + 'quelle est la nature principale de l’opération ? Rien n’a encore été modifié.',
+          },
+          choices: question.options.map((option) => ({
+            label: option.label,
+            value: option.followUp,
+          })),
+          ask: [question],
+        });
+      }
       const tool = this.tool('emettre_facture')!;
-      const args = { invoiceId: invoice.id };
+      const args = {
+        invoiceId: invoice.id,
+        ...(operationCategory === null ? {} : { operationCategory }),
+      };
       const label = `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName} (${formatEUR(invoice.totalTtcCents)})`;
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
@@ -4709,6 +4879,24 @@ export class BobAgent {
       const wantsDeposit = /acompte/.test(normalizedMessage);
       const wantsFinal = /(finale?|solde|totalite)/.test(normalizedMessage);
       let mode: 'deposit' | 'final' | null = wantsDeposit && !wantsFinal ? 'deposit' : wantsFinal ? 'final' : null;
+      const depositAvailable = quote.depositAvailable !== false;
+      const depositUnavailableReason =
+        quote.depositUnavailableReason ?? PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE;
+
+      // La liste vient du même use case que l'écran : Bob ne propose jamais un acompte
+      // professionnel que le domaine refusera ensuite, ni une finale après un ancien acompte.
+      if (!depositAvailable && (mode === 'deposit' || quote.depositInvoiced)) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la disponibilité du parcours acompte', 'Expliquer la fermeture sans créer de brouillon'],
+          card: {
+            title: 'Parcours acompte indisponible',
+            body: depositUnavailableReason,
+          },
+        });
+      }
 
       // A3 — gel de rétractation B2C : la facture FINALE est légalement bloquée pendant le
       // délai de 14 jours (art. L221-18 s. c. conso) tant que le client n'a pas demandé
@@ -4720,7 +4908,8 @@ export class BobAgent {
       const finalBlockedUntil = quote.finalBlockedUntil ?? null;
       if (finalBlockedUntil !== null && mode !== 'deposit') {
         const ref = displayRef(quote);
-        const depositPossible = quote.depositPct !== null && !quote.depositInvoiced;
+        const depositPossible =
+          depositAvailable && quote.depositPct !== null && !quote.depositInvoiced;
         return ok({
           kind: 'answer',
           intent,
@@ -4749,6 +4938,22 @@ export class BobAgent {
 
       if (mode === null) {
         if (quote.depositPct !== null && !quote.depositInvoiced) {
+          if (!depositAvailable) {
+            const ref = displayRef(quote);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Identifier le devis signé', 'Expliquer la fermeture du parcours acompte', 'Laisser choisir explicitement une finale'],
+              card: {
+                title: 'Acompte indisponible pour ce client',
+                body: `${depositUnavailableReason} Tu peux préparer une facture finale sans reprise d'acompte quand le chantier le permet.`,
+              },
+              choices: [
+                { label: 'Facture finale', value: `Fais la facture finale du devis ${ref}` },
+              ],
+            });
+          }
           // LA question de précision : deux voies légitimes, montants exacts au diff de
           // confirmation (jamais recalculés ici — une seule vérité, le domaine).
           const ref = displayRef(quote);
@@ -4961,6 +5166,21 @@ export class BobAgent {
       if (!r.ok) return err(r.error);
       issuableInvoices = r.value;
     }
+    const ambiguousIssueIds = new Set(
+      steps
+        .filter((step) => step.intent === 'emettre_facture')
+        .map((step) => resolveDocumentTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          documents: issuableInvoices,
+          ...(context !== undefined ? { context } : {}),
+          type: 'invoice',
+          capability: 'invoice.issue',
+        }).target)
+        .filter((invoice): invoice is IssuableInvoice =>
+          invoice !== null && invoice.operationCategoryRequired)
+        .map((invoice) => invoice.id),
+    );
     const actions: BatchItem[] = [];
     for (const step of steps) {
       if (step.intent === 'encaisser') {
@@ -5110,10 +5330,46 @@ export class BobAgent {
               : {}),
           });
         }
+        const scopedCategoryRequired = ambiguousIssueIds.size > 1;
+        const operationCategory = invoice.operationCategoryRequired
+          ? scopedCategoryRequired
+            ? extractScopedFrenchOperationCategory(message, displayRef(invoice))
+            : extractFrenchOperationCategory(message)
+          : null;
+        if (invoice.operationCategoryRequired && operationCategory === null) {
+          const ref = displayRef(invoice);
+          const question = frenchOperationCategoryQuestion({
+            id: 'plan.emettre_facture.operationCategory',
+            invoiceRef: ref,
+            customerName: invoice.customerName,
+            commandPrefix: message,
+            scoped: scopedCategoryRequired,
+          });
+          return ok({
+            kind: 'answer',
+            intent: 'emettre_facture',
+            model,
+            plan: ['Lever la qualification fiscale avant de préparer le lot'],
+            card: {
+              title: 'Lot en attente',
+              body:
+                `La facture ${ref} exige la nature principale de l’opération avant que je prépare le lot. `
+                + 'Rien n’a été exécuté.',
+            },
+            choices: question.options.map((option) => ({
+              label: option.label,
+              value: option.followUp,
+            })),
+            ask: [question],
+          });
+        }
         issuableInvoices = issuableInvoices.filter((i) => i.id !== invoice.id);
         actions.push({
           tool: 'emettre_facture',
-          args: { invoiceId: invoice.id },
+          args: {
+            invoiceId: invoice.id,
+            ...(operationCategory === null ? {} : { operationCategory }),
+          },
           label: `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName}`,
         });
       } else if (step.intent === 'payout') {
@@ -5279,6 +5535,39 @@ export class BobAgent {
             card: alreadyLinkedCard(existing),
           });
         }
+      }
+      // BT-23 — l'état a pu changer entre proposition et confirmation, ou un ancien hôte a pu
+      // omettre le pré-calcul. Le refus autoritaire redevient LA même question structurée ;
+      // aucune seconde mutation n'est tentée et aucune catégorie n'est inventée.
+      if (
+        pending.tool === 'emettre_facture'
+        && isFrenchOperationCategoryRequiredError(run.error)
+      ) {
+        const rawInvoiceId = pending.args.invoiceId;
+        const invoiceRef = typeof rawInvoiceId === 'string' ? rawInvoiceId : 'brouillon';
+        const question = frenchOperationCategoryQuestion({
+          id: 'emettre_facture.operationCategory',
+          invoiceRef,
+          commandPrefix: `Émets la facture ${invoiceRef}`,
+          scoped: false,
+        });
+        return ok({
+          kind: 'answer',
+          intent: 'emettre_facture',
+          model,
+          plan: ['Relire le refus fiscal autoritaire', 'Demander la nature manquante'],
+          card: {
+            title: 'Nature de l’opération',
+            body:
+              'La facture a besoin de sa nature principale avant émission. '
+              + 'Elle n’a pas été émise.',
+          },
+          choices: question.options.map((option) => ({
+            label: option.label,
+            value: option.followUp,
+          })),
+          ask: [question],
+        });
       }
       // B1/B2/B4 — gardes du domaine (pro étranger B6, urgence b2c A3bis, cumul de situations,
       // plafond L441-10) : l'état a pu changer entre la proposition et la confirmation — le

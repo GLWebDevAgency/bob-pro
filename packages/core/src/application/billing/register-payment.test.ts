@@ -16,7 +16,8 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     id: 'inv-1',
     companyId: 'co-1',
     status: opts.status ?? 'partially_paid',
-    registerPayment: () => ok(undefined),
+    registerPayment: (amount: number) =>
+      ok({ ordinaryReceivableCents: amount, retentionReceivableCents: 0 }),
   } as unknown as Invoice;
   const invoices: InvoiceRepository = {
     findById: async () => invoice,

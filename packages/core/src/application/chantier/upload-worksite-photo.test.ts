@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Chantier } from '../../domain/chantier/chantier';
 import { type ChantierRepository } from '../ports/repositories';
 import { type WorksiteMediaStorage, type WorksiteMediaItem } from '../ports/worksite-media';
-import { type DocumentStoragePort, type StoredObject } from '../ports/document-storage';
+import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '../ports/document-storage';
 import { UploadWorksitePhoto } from './upload-worksite-photo';
 import { DeleteWorksitePhoto } from './delete-worksite-photo';
 
@@ -51,9 +51,15 @@ class MemoryMedia implements WorksiteMediaStorage {
 class MemoryStorage implements DocumentStoragePort {
   readonly removed: string[] = [];
   async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: 'fake' };
+    return {
+      key: input.key,
+      sizeBytes: input.bytes.byteLength,
+      sha256: 'fake',
+      contentType: input.contentType,
+      created: true,
+    };
   }
-  async get(): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  async get(): Promise<LoadedStoredObject | null> {
     return null;
   }
   async getSignedUrl(): Promise<string> {

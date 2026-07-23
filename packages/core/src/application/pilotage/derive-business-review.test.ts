@@ -85,6 +85,7 @@ function baseInput(overrides?: Partial<BusinessReviewInput>): BusinessReviewInpu
     invoices: [],
     customers: [],
     expenses: [],
+    vatRegime: 'reel_normal',
     today: TODAY,
     ...overrides,
   };

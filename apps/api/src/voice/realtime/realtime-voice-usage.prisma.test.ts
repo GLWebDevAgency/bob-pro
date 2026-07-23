@@ -72,10 +72,27 @@ function repository(results: readonly unknown[]) {
     _companyId: string,
     operation: (client: Prisma.TransactionClient) => Promise<unknown>,
   ) => operation(tx));
+  const isolatedErrors: unknown[] = [];
+  const withIsolatedTenant = vi.fn(async (
+    _companyId: string,
+    operation: (client: Prisma.TransactionClient) => Promise<unknown>,
+  ) => {
+    try {
+      return await operation(tx);
+    } catch (error) {
+      isolatedErrors.push(error);
+      throw error;
+    }
+  });
   return {
-    value: new PrismaRealtimeVoiceUsageRepository({ withTenant } as unknown as PrismaService),
+    value: new PrismaRealtimeVoiceUsageRepository({
+      withTenant,
+      withIsolatedTenant,
+    } as unknown as PrismaService),
     queryRaw,
     withTenant,
+    withIsolatedTenant,
+    isolatedErrors,
   };
 }
 
@@ -152,5 +169,95 @@ describe('PrismaRealtimeVoiceUsageRepository', () => {
     const h = repository([new Error('postgres connection secret')]);
 
     await expect(h.value.record(validInput())).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('committe les deux mesures dans une unique transaction tenantée isolée', async () => {
+    const first = validInput();
+    const second = validInput({
+      eventId: '55555555-5555-4555-8555-555555555555',
+      dedupeKeyHmac: 'c'.repeat(64),
+      kind: 'realtime_tokens_out',
+      amount: '8.000000',
+    });
+    const h = repository([
+      [{ id: first.eventId }],
+      [{ id: second.eventId }],
+    ]);
+
+    await expect(h.value.recordBatch([first, second])).resolves.toEqual({
+      status: 'recorded',
+      eventIds: [first.eventId, second.eventId],
+    });
+    expect(h.withIsolatedTenant).toHaveBeenCalledOnce();
+    expect(h.withIsolatedTenant).toHaveBeenCalledWith(COMPANY_ID, expect.any(Function));
+    expect(h.withTenant).not.toHaveBeenCalled();
+    expect(h.queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('retourne duplicate uniquement quand le lot entier est déjà durable et identique', async () => {
+    const first = validInput();
+    const second = validInput({
+      eventId: '55555555-5555-4555-8555-555555555555',
+      dedupeKeyHmac: 'c'.repeat(64),
+      kind: 'realtime_tokens_out',
+      amount: '8.000000',
+    });
+    const firstExisting = existingRow(first);
+    const secondExisting = existingRow(second, { id: '66666666-6666-4666-8666-666666666666' });
+    const h = repository([[], [firstExisting], [], [secondExisting]]);
+
+    await expect(h.value.recordBatch([first, second])).resolves.toEqual({
+      status: 'duplicate',
+      eventIds: [EXISTING_EVENT_ID, '66666666-6666-4666-8666-666666666666'],
+    });
+  });
+
+  it('annule le lot entier en levant dans la transaction dès qu’une collision diffère', async () => {
+    const first = validInput();
+    const second = validInput({
+      eventId: '55555555-5555-4555-8555-555555555555',
+      dedupeKeyHmac: 'c'.repeat(64),
+      kind: 'realtime_tokens_out',
+      amount: '8.000000',
+    });
+    const h = repository([
+      [{ id: first.eventId }],
+      [],
+      [existingRow(second, { amount: new Prisma.Decimal('9.000000') })],
+    ]);
+
+    await expect(h.value.recordBatch([first, second])).resolves.toEqual({ status: 'conflict' });
+    expect(h.withIsolatedTenant).toHaveBeenCalledOnce();
+    expect(h.queryRaw).toHaveBeenCalledTimes(3);
+    expect(h.isolatedErrors).toHaveLength(1);
+    expect(h.isolatedErrors[0]).toMatchObject({ message: 'realtime_voice_usage_batch_conflict' });
+  });
+
+  it('dégrade une panne de seconde insertion après avoir forcé le rollback transactionnel', async () => {
+    const first = validInput();
+    const second = validInput({
+      eventId: '55555555-5555-4555-8555-555555555555',
+      dedupeKeyHmac: 'c'.repeat(64),
+      kind: 'realtime_tokens_out',
+    });
+    const h = repository([[{ id: first.eventId }], new Error('postgres connection secret')]);
+
+    await expect(h.value.recordBatch([first, second])).resolves.toEqual({ status: 'unavailable' });
+    expect(h.withIsolatedTenant).toHaveBeenCalledOnce();
+  });
+
+  it('refuse tout lot invalide ou multi-tenant avant d’ouvrir la transaction', async () => {
+    const h = repository([]);
+
+    await expect(h.value.recordBatch([])).resolves.toEqual({ status: 'unavailable' });
+    await expect(h.value.recordBatch([
+      validInput(),
+      validInput({ companyId: 'company-2', dedupeKeyHmac: 'c'.repeat(64) }),
+    ])).resolves.toEqual({ status: 'unavailable' });
+    await expect(h.value.recordBatch([
+      validInput(),
+      validInput({ dedupeKeyHmac: 'raw-provider-event-id' }),
+    ])).resolves.toEqual({ status: 'unavailable' });
+    expect(h.withIsolatedTenant).not.toHaveBeenCalled();
   });
 });

@@ -225,6 +225,7 @@ function call(input: RealtimeVoiceCallInput): RealtimeVoiceMistralConversationCa
     voice: NEGOTIATION.voice,
     configVersion: NEGOTIATION.configVersion,
     maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
+    speechDelivery: 'audited-signed-url-v1',
     speechSourcePolicy: {
       mode: 'signed-url-v1',
       allowedOrigin: 'https://project.supabase.co',
@@ -670,6 +671,8 @@ describe('MistralConversationTransport', () => {
         transport: 'mistral-pcm',
         protocol: MISTRAL_CONVERSATION_PROTOCOL,
         context: { version: 1, revision: 1, context: CONTEXT },
+        configVersion: NEGOTIATION.configVersion,
+        speechDelivery: NEGOTIATION.speechDelivery,
         sessionHandle: SESSION,
       },
       expect.any(AbortSignal),

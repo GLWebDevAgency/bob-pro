@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  Company,
   Expense,
   Payment,
   parisDateOnly,
@@ -7,6 +8,7 @@ import {
   type PaymentGatewayPort,
   type PdfRendererPort,
 } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -25,6 +27,13 @@ function asPrincipal<T>(principal: Principal, fn: () => T): T {
 
 function harness() {
   const persistence = new InMemoryPersistence();
+  const company = Company.of({
+    ...MERCIER_PROPS,
+    id: OWNER_COMPANY,
+    name: 'Société propriétaire de la trésorerie',
+  });
+  if (!company.ok) throw new Error('fixture: société propriétaire invalide');
+  persistence.companies.seed(company.value);
   const service = new BackendService(
     persistence,
     {} as PaymentGatewayPort,

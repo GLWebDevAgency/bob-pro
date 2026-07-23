@@ -4,8 +4,11 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
+. apps/api/scripts/lib/preserve-cleanup-status.sh
+
 : "${DATABASE_URL:?DATABASE_URL runtime app-role is required}"
 : "${DIRECT_URL:?DIRECT_URL privileged migration URL is required}"
+: "${APP_DATABASE_ROLE:?APP_DATABASE_ROLE runtime role name is required}"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 
@@ -16,6 +19,328 @@ fi
 
 cleanup_rls_cert() {
   psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cleanup.sql
+}
+
+cleanup_release_on_exit() {
+  original_status=$?
+  trap - EXIT HUP INT TERM
+  preserve_exit_status_after_cleanup "$original_status" cleanup_rls_cert
+}
+
+certify_invoice_settlement_protocol() {
+  local_version="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -c 'SELECT "activeVersion" FROM public.invoice_settlement_protocol_state WHERE id = 1'
+  )"
+  case "$local_version" in
+    1)
+      RUN_POSTGRES_INVOICE_SETTLEMENT_ROLLOUT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/invoice-settlement-rollout.postgres.test.ts
+      ;;
+    2)
+      RUN_POSTGRES_INVOICE_SETTLEMENT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/invoice-settlement-semantics.postgres.test.ts
+      ;;
+    *)
+      echo "invoice settlement protocol singleton is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+}
+
+certify_document_archive_protocol() {
+  local_version="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -c 'SELECT "activeVersion" FROM public.document_archive_protocol_state WHERE id = 1'
+  )"
+  case "$local_version" in
+    1)
+      RUN_POSTGRES_DOCUMENT_ARCHIVE_ROLLOUT_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/document-archive-rollout.postgres.test.ts
+      ;;
+    2)
+      RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
+        pnpm --filter @bob/api exec vitest run \
+          src/persistence/prisma/document-archive-integrity.postgres.test.ts
+      ;;
+    *)
+      echo "document archive protocol singleton is missing or invalid" >&2
+      return 1
+      ;;
+  esac
+}
+
+certify_generated_legal_storage_fence() {
+  fence_count="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_trigger AS trigger
+  JOIN pg_catalog.pg_class AS relation ON relation.oid = trigger.tgrelid
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_proc AS function ON function.oid = trigger.tgfoid
+  JOIN pg_catalog.pg_roles AS function_owner ON function_owner.oid = function.proowner
+ WHERE namespace.nspname = 'storage'
+   AND relation.relname = 'objects'
+   AND trigger.tgname = 'generated_legal_storage_object_immutable'
+   AND NOT trigger.tgisinternal
+   AND trigger.tgenabled = 'O'
+   AND function.proname = 'prevent_generated_legal_storage_object_mutation'
+   AND function.prosecdef
+   AND function.proconfig @> ARRAY['row_security=off']::TEXT[]
+   AND (function_owner.rolsuper OR function_owner.rolbypassrls);
+SQL
+  )"
+  if [ "$fence_count" != "1" ]; then
+    echo "generated legal Storage immutability trigger is missing or invalid" >&2
+    return 1
+  fi
+}
+
+certify_openai_native_release_metadata() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/openai-native-release-cert.sql
+}
+
+certify_realtime_global_capacity_release_metadata() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/realtime-global-capacity-release-cert.sql
+}
+
+certify_document_archive_evidence_privacy() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  direct_authority RECORD;
+  evidence_relation RECORD;
+  private_relation RECORD;
+  private_table TEXT;
+  control_relation RECORD;
+  control_table TEXT;
+  expected_archive_function_names CONSTANT TEXT[] := ARRAY[
+    'attest_generated_invoice_pdf_v1',
+    'attest_historical_generated_invoice_pdf_v1',
+    'capture_invoice_archive_audience_v1',
+    'document_archive_backfill_proved_artifacts_v1',
+    'document_archive_integrity_proof_for_reason_v2_is_valid',
+    'document_archive_integrity_proof_v1_is_valid',
+    'document_archive_integrity_proof_v1_sha256',
+    'document_archive_job_claim_v1',
+    'document_archive_job_complete_v1',
+    'document_archive_job_complete_v2',
+    'document_archive_job_enqueue_v1',
+    'document_archive_job_enqueue_v2',
+    'document_archive_job_fail_v1',
+    'document_archive_job_pdf_attestation_v2_is_valid',
+    'document_archive_job_scope_v2_is_valid',
+    'document_archive_protocol_v2_is_active',
+    'enforce_document_archive_audit_evidence_immutable',
+    'enforce_document_archive_protocol_monotonicity',
+    'generated_invoice_pdf_attestation_visible_v2',
+    'generated_legal_archive_representation_v2_is_valid',
+    'guard_customer_type_after_legal_piece_v1',
+    'guard_document_archive_job_proof_v1',
+    'guard_document_archive_job_scope_v2',
+    'guard_document_invoice_pdf_attestation_immutable_v1',
+    'guard_document_original_facts_v1',
+    'guard_document_version_immutable_v1',
+    'guard_generated_invoice_facturx_scope_v1',
+    'guard_generated_legal_archive_cutover_v2',
+    'guard_generated_legal_archive_representation_v2',
+    'prevent_generated_legal_storage_object_mutation',
+    'spool_document_archive_job_during_v2_cutover'
+  ]::TEXT[];
+  archive_function RECORD;
+  archive_function_count INTEGER;
+  exposed_role TEXT;
+BEGIN
+  SELECT rolsuper, rolbypassrls
+    INTO STRICT direct_authority
+    FROM pg_catalog.pg_roles
+   WHERE rolname = current_user;
+
+  IF NOT (direct_authority.rolsuper OR direct_authority.rolbypassrls) THEN
+    RAISE EXCEPTION
+      'DIRECT_URL role must be SUPERUSER or BYPASSRLS for private archive evidence';
+  END IF;
+
+  SELECT relation.oid, relation.relacl, relation.relowner,
+         relation.relrowsecurity, relation.relforcerowsecurity
+    INTO STRICT evidence_relation
+    FROM pg_catalog.pg_class AS relation
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+   WHERE namespace.nspname = 'public'
+     AND relation.relname = 'document_archive_audit_evidence'
+     AND relation.relkind = 'r';
+
+  IF NOT evidence_relation.relrowsecurity OR NOT evidence_relation.relforcerowsecurity THEN
+    RAISE EXCEPTION 'document archive evidence must have ENABLE + FORCE RLS';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_policy
+     WHERE polrelid = evidence_relation.oid
+  ) THEN
+    RAISE EXCEPTION 'document archive evidence must not expose any RLS policy';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.aclexplode(
+        coalesce(
+          evidence_relation.relacl,
+          pg_catalog.acldefault('r', evidence_relation.relowner)
+        )
+      ) AS privilege
+     WHERE privilege.grantee = 0
+       AND privilege.privilege_type IN (
+         'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+       )
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC retains a privilege on document archive evidence';
+  END IF;
+
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+       AND pg_catalog.has_table_privilege(
+         exposed_role,
+         'public.document_archive_audit_evidence',
+         'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+       ) THEN
+      RAISE EXCEPTION '% retains a privilege on document archive evidence', exposed_role;
+    END IF;
+  END LOOP;
+
+  FOREACH private_table IN ARRAY ARRAY[
+    'document_archive_job_artifacts',
+    'document_invoice_pdf_attestations'
+  ]::TEXT[] LOOP
+    SELECT relation.oid, relation.relacl, relation.relowner,
+           relation.relrowsecurity, relation.relforcerowsecurity
+      INTO STRICT private_relation
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname = 'public'
+       AND relation.relname = private_table
+       AND relation.relkind = 'r';
+    IF NOT private_relation.relrowsecurity OR NOT private_relation.relforcerowsecurity THEN
+      RAISE EXCEPTION '% must have ENABLE + FORCE RLS', private_table;
+    END IF;
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(private_relation.relacl, pg_catalog.acldefault('r', private_relation.relowner))
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type IN (
+           'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+         )
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains a privilege on private archive table %', private_table;
+    END IF;
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_table_privilege(
+           exposed_role,
+           pg_catalog.format('public.%I', private_table),
+           'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+         ) THEN
+        RAISE EXCEPTION '% retains a privilege on private archive table %',
+          exposed_role, private_table;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  FOREACH control_table IN ARRAY ARRAY[
+    'document_archive_protocol_state',
+    'invoice_settlement_protocol_state'
+  ]::TEXT[] LOOP
+    SELECT relation.oid, relation.relacl, relation.relowner
+      INTO STRICT control_relation
+      FROM pg_catalog.pg_class AS relation
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname = 'public'
+       AND relation.relname = control_table
+       AND relation.relkind = 'r';
+
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(
+            control_relation.relacl,
+            pg_catalog.acldefault('r', control_relation.relowner)
+          )
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type IN (
+           'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+         )
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains a mutation privilege on %', control_table;
+    END IF;
+
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_table_privilege(
+           exposed_role,
+           pg_catalog.format('public.%I', control_table),
+           'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+         ) THEN
+        RAISE EXCEPTION '% retains a mutation privilege on %', exposed_role, control_table;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  SELECT count(*)::INTEGER
+    INTO archive_function_count
+    FROM pg_catalog.pg_proc AS procedure
+    JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+   WHERE namespace.nspname = 'public'
+     AND procedure.prokind = 'f'
+     AND procedure.proname = ANY(expected_archive_function_names);
+  IF archive_function_count <> cardinality(expected_archive_function_names) THEN
+    RAISE EXCEPTION
+      'archive RPC inventory drift: expected %, found %',
+      cardinality(expected_archive_function_names), archive_function_count;
+  END IF;
+
+  FOR archive_function IN
+    SELECT procedure.oid, procedure.proacl, procedure.proowner, procedure.proname
+      FROM pg_catalog.pg_proc AS procedure
+      JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+     WHERE namespace.nspname = 'public'
+       AND procedure.prokind = 'f'
+       AND procedure.proname = ANY(expected_archive_function_names)
+  LOOP
+    IF EXISTS (
+      SELECT 1
+        FROM pg_catalog.aclexplode(
+          coalesce(
+            archive_function.proacl,
+            pg_catalog.acldefault('f', archive_function.proowner)
+          )
+        ) AS privilege
+       WHERE privilege.grantee = 0
+         AND privilege.privilege_type = 'EXECUTE'
+    ) THEN
+      RAISE EXCEPTION 'PUBLIC retains EXECUTE on archive RPC %', archive_function.proname;
+    END IF;
+    FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+      IF pg_catalog.to_regrole(exposed_role) IS NOT NULL
+         AND pg_catalog.has_function_privilege(exposed_role, archive_function.oid, 'EXECUTE') THEN
+        RAISE EXCEPTION '% retains EXECUTE on archive RPC %',
+          exposed_role, archive_function.proname;
+      END IF;
+    END LOOP;
+  END LOOP;
+END;
+$$;
+SQL
 }
 
 grant_app_role() {
@@ -39,6 +364,7 @@ REVOKE TRUNCATE ON TABLE
   public.realtime_mistral_conversation_commands,
   public.realtime_session_leases
 FROM :"app_role";
+REVOKE ALL ON TABLE public.realtime_global_capacity FROM :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
 -- suffisent pas : un futur changement de policy ne doit pas reactiver leur mutation.
 REVOKE UPDATE, DELETE ON TABLE
@@ -47,6 +373,98 @@ REVOKE UPDATE, DELETE ON TABLE
   public.quote_creation_requests,
   public.bank_balance_snapshots
 FROM :"app_role";
+-- Rail global monotone du protocole de règlement : le runtime le lit via le trigger, mais seule
+-- DIRECT_URL peut activer V2 après retrait prouvé de N-1. Les snapshots d'antécédents n'ont
+-- aucune capacité UPDATE, même si une future policy RLS dérive.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.invoice_settlement_protocol_state
+FROM :"app_role";
+REVOKE UPDATE, TRUNCATE ON TABLE public.invoice_predecessors FROM :"app_role";
+-- Les originaux du coffre ne sont jamais supprimés par le runtime. Les versions sont strictement
+-- append-only ; les seules mutations admises sur `documents` sont les métadonnées bornées et
+-- contrôlées par le trigger `documents_original_facts_immutable`.
+REVOKE DELETE, TRUNCATE ON TABLE public.documents FROM :"app_role";
+REVOKE DELETE, TRUNCATE ON TABLE public.document_versions FROM :"app_role";
+-- Aucun use case ne supprime une ligne de devis canonique. Les brouillons éditables sont portés
+-- par quote_draft_slots ; révoquer DELETE ici protège définitivement le contrat signé et son
+-- archive polymorphe contre une dérive de policy ou une requête SQL directe.
+REVOKE DELETE ON TABLE public.quotes FROM :"app_role";
+-- Rail global monotone de l'archive : lecture runtime seulement, activation via DIRECT_URL.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_archive_protocol_state
+FROM :"app_role";
+-- Preuve globale de cutover, sans PII mais strictement réservée aux opérations DIRECT_URL.
+REVOKE ALL ON TABLE public.document_archive_audit_evidence FROM :"app_role";
+-- La projection relationnelle est toujours privée. L'outbox conserve temporairement INSERT /
+-- UPDATE en phase expand uniquement pour que N-1 puisse déposer un ordre qui sera spoolé ; aucune
+-- archive légale générée ne peut être matérialisée avant l'activation post-readiness.
+REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_archive_jobs,
+  public.document_archive_job_artifacts
+FROM :"app_role";
+REVOKE INSERT, UPDATE ON TABLE public.document_archive_job_artifacts FROM :"app_role";
+-- Le détecteur d'octets écrit l'attestation par une capacité bornée. Le runtime peut la relire via
+-- RLS mais n'a aucun geste SQL direct ; le helper profond non tenant-scopé reste privé.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.document_invoice_pdf_attestations
+FROM :"app_role";
+GRANT SELECT ON TABLE public.document_invoice_pdf_attestations TO :"app_role";
+REVOKE EXECUTE ON FUNCTION public.generated_legal_archive_representation_v2_is_valid(TEXT)
+  FROM :"app_role";
+REVOKE EXECUTE ON FUNCTION public.document_archive_job_pdf_attestation_v2_is_valid(
+  TEXT, TEXT, TEXT, JSONB
+) FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.attest_generated_invoice_pdf_v1(
+  TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.generated_invoice_pdf_attestation_visible_v2(TEXT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v2(TEXT, TEXT, TEXT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_claim_v1(
+  TEXT, TEXT, TIMESTAMP WITHOUT TIME ZONE, BIGINT, TEXT
+) TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_fail_v1(TEXT, TEXT, TEXT, BIGINT, TEXT)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v2(TEXT, TEXT, TEXT, JSONB, TEXT)
+  TO :"app_role";
+SELECT ("activeVersion" = 1)::text AS document_archive_expand
+  FROM public.document_archive_protocol_state
+ WHERE id = 1
+\gset
+\if :document_archive_expand
+  GRANT EXECUTE ON FUNCTION public.attest_historical_generated_invoice_pdf_v1(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+  ) TO :"app_role";
+  GRANT INSERT, UPDATE ON TABLE public.document_archive_jobs TO :"app_role";
+  -- Le CHECK de forme est SECURITY INVOKER : N-1 doit pouvoir l'évaluer tant que ses écritures
+  -- directes sont tolérées. Cette capacité pure est retirée dans la même transaction que V2.
+  GRANT EXECUTE ON FUNCTION public.document_archive_integrity_proof_for_reason_v2_is_valid(
+    TEXT, TEXT, TEXT, JSONB
+  ) TO :"app_role";
+  -- N-1 confirme encore un retry de version via UPSERT ... DO UPDATE. Le trigger n'autorise
+  -- qu'un no-op exact et la policy est elle-même bornée au protocole V1.
+  GRANT UPDATE ON TABLE public.document_versions TO :"app_role";
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_enqueue_v1(TEXT, TEXT, TEXT, TEXT)
+    TO :"app_role";
+  GRANT EXECUTE ON FUNCTION public.document_archive_job_complete_v1(
+    TEXT, TEXT, TEXT, JSONB, TEXT
+  ) TO :"app_role";
+\else
+  REVOKE EXECUTE ON FUNCTION public.attest_historical_generated_invoice_pdf_v1(
+    TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, SMALLINT
+  ) FROM :"app_role";
+  REVOKE INSERT, UPDATE ON TABLE public.document_archive_jobs FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_integrity_proof_for_reason_v2_is_valid(
+    TEXT, TEXT, TEXT, JSONB
+  ) FROM :"app_role";
+  REVOKE UPDATE ON TABLE public.document_versions FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_enqueue_v1(TEXT, TEXT, TEXT, TEXT)
+    FROM :"app_role";
+  REVOKE EXECUTE ON FUNCTION public.document_archive_job_complete_v1(
+    TEXT, TEXT, TEXT, JSONB, TEXT
+  ) FROM :"app_role";
+\endif
 -- Une société se clôture, elle ne se supprime jamais depuis le runtime : son identité légale
 -- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.
 REVOKE DELETE ON TABLE public.companies FROM :"app_role";
@@ -57,6 +475,12 @@ REVOKE DELETE, TRUNCATE ON TABLE
   public.realtime_speech_artifacts,
   public.stripe_subscription_invoices
 FROM :"app_role";
+-- DELETE reste borné par deux policies (tenant + fence RESTRICTIVE) et un trigger de rétention.
+-- Aucune DDL relationnelle ni suppression des contrôles dépendants ne fuit au runtime.
+GRANT DELETE ON TABLE public.realtime_native_speech_deliveries TO :"app_role";
+REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.realtime_native_speech_deliveries
+FROM :"app_role";
+REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
   public.realtime_mistral_conversation_outbox,
   public.realtime_mistral_conversation_commands,
@@ -65,6 +489,59 @@ REVOKE UPDATE, DELETE ON TABLE
   public.realtime_voice_usage_events
 FROM :"app_role";
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.realtime_voice_usage_daily FROM :"app_role";
+-- Les triggers invoquent ces fonctions sans privilège EXECUTE du caller. Les exposer permettrait
+-- sinon de contourner l'adapter CAS et ses preuves applicatives.
+REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
+  TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM :"app_role";
+-- Ces helpers sont une autorité de trigger, pas une API. Une ancienne default ACL ou un GRANT
+-- manuel vers un rôle tiers est normalisé ici ; leur ACL exacte reste owner-only.
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %s CASCADE',
+  function.oid::regprocedure,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee_role.rolname) END
+)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE function.oid IN (
+   'public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)'::regprocedure,
+   'public.guard_realtime_native_delivery_v1()'::regprocedure,
+   'public.guard_realtime_native_speech_slo_v1()'::regprocedure,
+   'public.guard_realtime_native_delivery_delete_v1()'::regprocedure,
+   'public.deny_realtime_native_delivery_truncate_v1()'::regprocedure
+ )
+   AND privilege.grantee <> function.proowner
+\gexec
+REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  FROM :"app_role";
+REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  FROM :"app_role";
+REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  TO :"app_role";
+GRANT EXECUTE ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  TO :"app_role";
+REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
+  TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
+  TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.assert_realtime_control_consumption_binding_v3(
+  TEXT, UUID, UUID, UUID, UUID, TIMESTAMPTZ
+) FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant_v2() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption_v2() FROM :"app_role";
 -- Les registres globaux de versions sont monotones, append-only et isolés par keySpace. Le runtime
 -- peut seulement les lire ; seul DIRECT_URL prépare ou retire une version au déploiement.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
@@ -77,6 +554,10 @@ FROM :"app_role";
 REVOKE ALL ON FUNCTION public.retained_bob_live_subject_hmac_key_bindings()
   FROM :"app_role";
 GRANT EXECUTE ON FUNCTION public.retained_bob_live_subject_hmac_key_bindings()
+  TO :"app_role";
+REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
+  FROM :"app_role";
+GRANT EXECUTE ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
   TO :"app_role";
 -- Le runtime invoque uniquement les deux capacités SECURITY DEFINER bornées. Il ne peut jamais
 -- endosser le rôle propriétaire NOLOGIN ni atteindre ses ACL de table sous-jacentes.
@@ -629,6 +1110,576 @@ $$;
 SQL
 }
 
+ensure_openai_native_maintenance_directory_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+SELECT format(
+  'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  'bob_openai_native_maintenance_directory'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_roles
+   WHERE rolname = 'bob_openai_native_maintenance_directory'
+) \gexec
+
+ALTER ROLE bob_openai_native_maintenance_directory
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
+
+DO $$
+DECLARE
+  authority pg_catalog.pg_roles%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT authority
+    FROM pg_catalog.pg_roles
+   WHERE rolname = 'bob_openai_native_maintenance_directory';
+  IF authority.rolcanlogin
+     OR authority.rolsuper
+     OR authority.rolcreatedb
+     OR authority.rolcreaterole
+     OR authority.rolinherit
+     OR authority.rolreplication
+     OR authority.rolbypassrls THEN
+    RAISE EXCEPTION
+      'OpenAI native maintenance directory role must remain least-privileged NOLOGIN';
+  END IF;
+END;
+$$;
+
+SELECT format(
+  'REVOKE %I FROM %I CASCADE', parent_role.rolname,
+  'bob_openai_native_maintenance_directory'
+)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS parent_role ON parent_role.oid = membership.roleid
+ WHERE membership.member = 'bob_openai_native_maintenance_directory'::regrole
+\gexec
+SELECT format(
+  'REVOKE %I FROM %I CASCADE',
+  'bob_openai_native_maintenance_directory', member_role.rolname
+)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+ WHERE membership.roleid = 'bob_openai_native_maintenance_directory'::regrole
+   AND member_role.rolname <> current_user
+\gexec
+
+GRANT bob_openai_native_maintenance_directory TO CURRENT_USER
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SQL
+}
+
+provision_openai_native_maintenance_directory() {
+  ensure_openai_native_maintenance_directory_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+       'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+       'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+     )
+       AND function.proowner NOT IN (
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
+         'bob_openai_native_maintenance_directory'::regrole
+       )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance directory function has an unexpected owner';
+  END IF;
+END;
+$$;
+
+GRANT CREATE ON SCHEMA public TO bob_openai_native_maintenance_directory;
+SELECT format(
+  'ALTER FUNCTION %s OWNER TO bob_openai_native_maintenance_directory',
+  function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+   'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+   'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+ )
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+
+SET LOCAL ROLE bob_openai_native_maintenance_directory;
+REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(
+  TEXT, INTEGER, UUID
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  FROM PUBLIC;
+ALTER FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  SECURITY DEFINER;
+ALTER FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  SECURITY DEFINER;
+ALTER FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  SECURITY DEFINER;
+ALTER FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  SET row_security = on;
+ALTER FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  SET row_security = on;
+ALTER FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  SET row_security = on;
+ALTER FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  SET statement_timeout = '4s';
+
+-- Une default ACL historique ne doit jamais laisser un troisième rôle invoquer cette capacité
+-- globale. Toute normalisation fonctionnelle reste sous le rôle owner NOLOGIN : le rituel marche
+-- aussi avec un DIRECT_URL CREATEROLE/BYPASSRLS non-superuser.
+SELECT format(
+  'REVOKE ALL ON FUNCTION %s FROM %I CASCADE',
+  function.oid::regprocedure,
+  grantee_role.rolname
+)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE function.oid IN (
+   'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+   'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+   'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+ )
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+
+SELECT format('GRANT EXECUTE ON FUNCTION %s TO %I', function.oid::regprocedure, :'app_role')
+  FROM pg_catalog.pg_proc AS function
+ WHERE :'app_role' <> ''
+   AND function.oid IN (
+     'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+     'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+     'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+   )
+\gexec
+RESET ROLE;
+
+REVOKE CREATE ON SCHEMA public FROM bob_openai_native_maintenance_directory;
+GRANT USAGE ON SCHEMA public TO bob_openai_native_maintenance_directory;
+REVOKE ALL ON TABLE public.realtime_native_speech_deliveries
+  FROM bob_openai_native_maintenance_directory;
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_native_speech_deliveries FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee_role.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_native_speech_deliveries'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT ("deliveryId", "companyId", phase, "expiresAt", "retentionExpiresAt")
+  ON TABLE public.realtime_native_speech_deliveries
+  TO bob_openai_native_maintenance_directory;
+
+-- Exactement owner + directory au niveau table, aucune ACL colonne héritée. FORCE RLS a déjà
+-- fermé l'éventuelle fenêtre N-1 dans la migration elle-même.
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.realtime_native_speech_maintenance_cursors FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee_role.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE relation.oid = 'public.realtime_native_speech_maintenance_cursors'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_native_speech_maintenance_cursors FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee_role.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee_role ON grantee_role.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_native_speech_maintenance_cursors'::regclass
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT, UPDATE ON TABLE public.realtime_native_speech_maintenance_cursors
+  TO bob_openai_native_maintenance_directory;
+
+SELECT format(
+  'REVOKE %I FROM %I CASCADE',
+  owner_role.rolname, member_role.rolname
+)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS owner_role ON owner_role.oid = membership.roleid
+  JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+ WHERE owner_role.rolname = 'bob_openai_native_maintenance_directory'
+   AND member_role.rolname = :'app_role'
+\gexec
+SELECT pg_catalog.set_config('bob.openai_native_directory_app_role', :'app_role', true);
+DO $$
+DECLARE
+  app_role_name TEXT := NULLIF(
+    pg_catalog.current_setting('bob.openai_native_directory_app_role', true),
+    ''
+  );
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+       'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+       'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+     )
+       AND (
+         function.proowner <> 'bob_openai_native_maintenance_directory'::regrole
+         OR NOT function.prosecdef
+         OR function.proconfig IS DISTINCT FROM ARRAY[
+           'search_path=pg_catalog', 'row_security=on', 'statement_timeout=4s'
+         ]::TEXT[]
+       )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance directory function authority drift';
+  END IF;
+  IF has_table_privilege(
+       'bob_openai_native_maintenance_directory',
+       'public.realtime_native_speech_deliveries',
+       'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance directory owns a mutation privilege';
+  END IF;
+  IF NOT has_table_privilege(
+       'bob_openai_native_maintenance_directory',
+       'public.realtime_native_speech_maintenance_cursors',
+       'SELECT,UPDATE'
+     )
+     OR has_table_privilege(
+       'bob_openai_native_maintenance_directory',
+       'public.realtime_native_speech_maintenance_cursors',
+       'INSERT,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance cursor privilege drift';
+  END IF;
+  IF app_role_name IS NOT NULL AND (
+    NOT has_function_privilege(
+      app_role_name,
+      'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)',
+      'EXECUTE'
+    )
+    OR NOT has_function_privilege(
+      app_role_name,
+      'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)',
+      'EXECUTE'
+    )
+    OR NOT has_function_privilege(
+      app_role_name,
+      'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)',
+      'EXECUTE'
+    )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance directory is not executable by runtime';
+  END IF;
+  IF app_role_name IS NOT NULL AND has_table_privilege(
+       app_role_name,
+       'public.realtime_native_speech_maintenance_cursors',
+       'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native cursor table leaked to runtime';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     CROSS JOIN LATERAL pg_catalog.aclexplode(
+       COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+     ) AS privilege
+     WHERE function.oid IN (
+       'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+       'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+       'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+     )
+       AND privilege.privilege_type = 'EXECUTE'
+       AND privilege.grantee NOT IN (
+         function.proowner,
+         pg_catalog.to_regrole(app_role_name)
+       )
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance directory function ACL drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_attribute AS attribute
+     WHERE attribute.attrelid = 'public.realtime_native_speech_maintenance_cursors'::regclass
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+       AND attribute.attacl IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'OpenAI native maintenance cursor column ACL drift';
+  END IF;
+END;
+$$;
+SQL
+}
+
+ensure_realtime_reaper_directory_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SELECT format(
+  'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+  'bob_realtime_reaper_directory'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_reaper_directory'
+) \gexec
+
+ALTER ROLE bob_realtime_reaper_directory
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+DO $$
+DECLARE authority pg_catalog.pg_roles%ROWTYPE;
+BEGIN
+  SELECT * INTO STRICT authority
+    FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_reaper_directory';
+  IF authority.rolcanlogin OR authority.rolsuper OR authority.rolcreatedb
+     OR authority.rolcreaterole OR authority.rolinherit OR authority.rolreplication
+     OR authority.rolbypassrls THEN
+    RAISE EXCEPTION 'Realtime reaper directory role privilege drift';
+  END IF;
+END;
+$$;
+
+SELECT format('REVOKE %I FROM %I CASCADE', parent.rolname, 'bob_realtime_reaper_directory')
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS parent ON parent.oid = membership.roleid
+ WHERE membership.member = 'bob_realtime_reaper_directory'::regrole
+\gexec
+SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_reaper_directory', member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
+   AND member.rolname <> current_user
+\gexec
+
+GRANT bob_realtime_reaper_directory TO CURRENT_USER
+  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SQL
+}
+
+provision_realtime_reaper_directory() {
+  ensure_realtime_reaper_directory_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+       'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+       'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+       'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+     )
+       AND function.proowner NOT IN (
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user),
+         'bob_realtime_reaper_directory'::regrole
+       )
+  ) THEN
+    RAISE EXCEPTION 'Realtime reaper directory function has an unexpected owner';
+  END IF;
+END;
+$$;
+
+GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_reaper_directory;
+SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_reaper_directory', function.oid::regprocedure)
+  FROM pg_catalog.pg_proc AS function
+ WHERE function.oid IN (
+   'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+   'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+   'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+   'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+ )
+   AND function.proowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+
+SET LOCAL ROLE bob_realtime_reaper_directory;
+REVOKE ALL ON FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() FROM PUBLIC;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SECURITY DEFINER;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SECURITY DEFINER;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SECURITY DEFINER;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SECURITY DEFINER;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID)
+  SET search_path = pg_catalog;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET search_path = pg_catalog;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET search_path = pg_catalog;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET search_path = pg_catalog;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SET row_security = on;
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET row_security = on;
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET row_security = on;
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET row_security = on;
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET statement_timeout = '4s';
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID)
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1()
+  SET statement_timeout = '4s';
+ALTER FUNCTION public.list_realtime_reaper_tenants_v1(INTEGER, UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.ack_realtime_reaper_tenants_v1(UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.renew_realtime_reaper_tenants_claim_v1(UUID) SET lock_timeout = '1s';
+ALTER FUNCTION public.sync_realtime_reaper_tenant_schedule_v1() SET lock_timeout = '1s';
+
+SELECT format('REVOKE ALL ON FUNCTION %s FROM %I CASCADE',
+              function.oid::regprocedure, grantee.rolname)
+  FROM pg_catalog.pg_proc AS function
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+ ) AS privilege
+  JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE function.oid IN (
+   'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+   'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+   'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure,
+   'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure
+ )
+   AND privilege.privilege_type = 'EXECUTE'
+   AND privilege.grantee <> function.proowner
+\gexec
+SELECT format('GRANT EXECUTE ON FUNCTION %s TO %I', function.oid::regprocedure, :'app_role')
+  FROM pg_catalog.pg_proc AS function
+ WHERE :'app_role' <> ''
+   AND function.oid IN (
+     'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure,
+     'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure,
+     'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure
+   )
+\gexec
+RESET ROLE;
+
+REVOKE CREATE ON SCHEMA public FROM bob_realtime_reaper_directory;
+GRANT USAGE ON SCHEMA public TO bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_admission_events FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_session_leases FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_mistral_conversation_bootstrap_tickets
+  FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_mistral_conversation_missions
+  FROM bob_realtime_reaper_directory;
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE %s FROM bob_realtime_reaper_directory CASCADE',
+  attribute.attname, attribute.attrelid::regclass
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+ WHERE attribute.attrelid IN (
+   'public.realtime_admission_events'::regclass,
+   'public.realtime_session_leases'::regclass,
+   'public.realtime_mistral_conversation_bootstrap_tickets'::regclass,
+   'public.realtime_mistral_conversation_missions'::regclass
+ )
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND privilege.grantee = 'bob_realtime_reaper_directory'::regrole
+\gexec
+-- Le rôle global ne voit plus aucune source tenantée. Les triggers ne font qu'abaisser la
+-- projection depuis leurs transition tables ; la réconciliation exacte reste tenantée.
+
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_tenant_schedule FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_reaper_tenant_schedule FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_reaper_tenant_schedule'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON TABLE public.realtime_reaper_tenant_schedule TO bob_realtime_reaper_directory;
+SELECT format(
+  'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_reaper_tenant_schedule TO %I',
+  :'app_role'
+)
+ WHERE :'app_role' <> ''
+\gexec
+
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_directory_cursor FROM %s CASCADE',
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_class AS relation
+ CROSS JOIN LATERAL pg_catalog.aclexplode(
+   COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+ ) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE relation.oid = 'public.realtime_reaper_directory_cursor'::regclass
+   AND privilege.grantee <> relation.relowner
+\gexec
+SELECT DISTINCT format(
+  'REVOKE ALL PRIVILEGES (%I) ON TABLE public.realtime_reaper_directory_cursor FROM %s CASCADE',
+  attribute.attname,
+  CASE WHEN privilege.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(grantee.rolname) END
+)
+  FROM pg_catalog.pg_attribute AS attribute
+ CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+  LEFT JOIN pg_catalog.pg_roles AS grantee ON grantee.oid = privilege.grantee
+ WHERE attribute.attrelid = 'public.realtime_reaper_directory_cursor'::regclass
+   AND attribute.attnum > 0 AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+\gexec
+GRANT SELECT, UPDATE ON TABLE public.realtime_reaper_directory_cursor
+  TO bob_realtime_reaper_directory;
+
+SELECT format('REVOKE %I FROM %I CASCADE', owner.rolname, member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = membership.roleid
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE owner.rolname = 'bob_realtime_reaper_directory'
+   AND member.rolname = :'app_role'
+\gexec
+SQL
+}
+
+certify_realtime_reaper_release_metadata() {
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/realtime-reaper-release-cert.sql
+}
+
 certify_cabinet_worker_scope() {
   : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
   : "${CABINET_INVITATION_WORKER_ENABLED:?CABINET_INVITATION_WORKER_ENABLED is required}"
@@ -732,18 +1783,44 @@ node --test \
 # Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
 # octet au dépôt. Les nouveaux fichiers locaux sont attendus jusqu'au migrate deploy.
 node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local
+
+# Ne jamais installer l'expand qui gèle les sorties historiques si des factures émises n'ont pas
+# encore reçu une audience revue. Le contrôle est volontairement antérieur à toute mutation de
+# rôle ou de schéma de ce train.
+sh apps/api/scripts/check-document-archive-legacy-audience.sh
 pnpm --filter '@bob/api...' run build
 
 # Révoque tout ancien SET ROLE runtime avant même que la migration SECURITY DEFINER soit visible.
 ensure_mistral_bootstrap_reaper_role
+ensure_openai_native_maintenance_directory_role
+ensure_realtime_reaper_directory_role
+DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 pnpm --filter @bob/api exec prisma migrate deploy
 node apps/api/scripts/assert-applied-migration-checksums.mjs
+certify_generated_legal_storage_fence
 provision_mistral_bootstrap_reaper
 node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_openai_native_maintenance_directory
+provision_realtime_reaper_directory
+DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \
+  sh apps/api/scripts/realtime-capacity-release.sh provision
+# Toute la suite de certification s'exécute admissions fermées. Un échec ne peut donc jamais
+# laisser une autorité active après une release incomplète ; l'activation réelle est le dernier
+# geste atomique, après retrait des fixtures et de leurs traps.
+DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
+  sh apps/api/scripts/realtime-capacity-release.sh configure
+certify_openai_native_release_metadata
+certify_realtime_reaper_release_metadata
+certify_realtime_global_capacity_release_metadata
+certify_document_archive_evidence_privacy
 
-trap cleanup_rls_cert EXIT INT TERM
+trap cleanup_release_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cleanup_rls_cert
 node apps/api/scripts/bootstrap-cabinet-pilots.mjs
 certify_cabinet_worker_scope
@@ -770,6 +1847,10 @@ RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
 RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
+certify_document_archive_protocol
+RUN_POSTGRES_CREDIT_NOTE_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/credit-note-traceability.postgres.test.ts
+certify_invoice_settlement_protocol
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
 RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
@@ -777,6 +1858,9 @@ RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
 DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
   sh apps/api/scripts/certify-mistral-conversation-authority.sh
 cleanup_rls_cert
-trap - EXIT INT TERM
+trap - EXIT HUP INT TERM
 
+# Dernier geste de la release : active la configuration exacte demandée, ou laisse explicitement
+# l'autorité fermée. Aucun test susceptible d'échouer n'est exécuté après cette transition.
+DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
 echo "Bob Pro API release checks passed"

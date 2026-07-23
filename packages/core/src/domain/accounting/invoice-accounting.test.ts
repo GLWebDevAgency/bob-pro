@@ -35,7 +35,14 @@ function issuedInvoice(mode: 'final' | 'deposit'): Invoice {
   const inv = Invoice.fromSignedQuote(signedQuote(mode === 'deposit' ? 30 : null), mode, 'inv-1');
   if (!inv.ok) throw new Error('invoice');
   inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  inv.value.issue({
+    mentions: [],
+    terms,
+    issuedAt: ISSUED,
+    at: AT,
+    vatTreatment: 'standard',
+    frenchBillingMode: 'S1',
+  });
   return inv.value;
 }
 
@@ -43,7 +50,7 @@ function issuedCreditNote(source: Invoice, id: string, sequence: number): Invoic
   const credit = Invoice.creditNoteFor(source, id);
   if (!credit.ok) throw new Error('credit note');
   credit.value.assignNumber(DocNumber.format('A', 2026, sequence), AT);
-  credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: source.frenchBillingModeAtIssuance ?? 'S1' });
   return credit.value;
 }
 
@@ -114,10 +121,23 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
     const inv = Invoice.fromSignedQuote(q.value, 'final', 'inv-2', {
       depositDeduction: { amountCents: depositCents, invoiceId: 'inv-1' },
+      precedingInvoices: [{
+        invoiceId: 'inv-1',
+        kind: 'deposit',
+        number: 'F-2026-0001',
+        issuedAt: ISSUED,
+      }],
     });
     if (!inv.ok) throw new Error('invoice');
     inv.value.assignNumber(DocNumber.format('F', 2026, 2), AT);
-    inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.value.issue({
+      mentions: [],
+      terms,
+      issuedAt: ISSUED,
+      at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
+    });
     return inv.value;
   }
 
@@ -193,7 +213,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     const dep = Invoice.fromSignedQuote(q.value, 'deposit', 'inv-1');
     if (!dep.ok) throw new Error('deposit');
     dep.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    dep.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    dep.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     const depositEntry = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: dep.value, chart: chart.value });
     expect(depositEntry.ok).toBe(true);
     if (!depositEntry.ok || depositEntry.value === null) return;

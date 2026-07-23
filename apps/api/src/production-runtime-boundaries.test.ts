@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import {
+  Company,
   err,
   type AppError,
   type OcrPort,
@@ -8,6 +9,7 @@ import {
   type PdfRendererPort,
   type Result,
 } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -72,7 +74,10 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
 
   it('getCashflow en live sans solde confirmé ni document : état vide marqué none, jamais un solde qualifié inventé', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
-    const { service } = harness();
+    const { persistence, service } = harness();
+    const company = Company.of(MERCIER_PROPS);
+    if (!company.ok) throw new Error('fixture: société invalide');
+    await persistence.companies.save(company.value);
     vi.stubEnv('DEMO_MODE', 'false');
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));

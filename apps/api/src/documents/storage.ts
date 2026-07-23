@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { type DocumentStoragePort, type StoredObject } from '@bob/core';
+import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '@bob/core';
 import { loadEnv } from '../config/env';
 
 export const DOCUMENT_STORAGE = Symbol('DOCUMENT_STORAGE');
@@ -30,7 +30,7 @@ export class UnavailableDocumentStorage implements DocumentStoragePort {
   get(
     _companyId: string,
     _key: string,
-  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  ): Promise<LoadedStoredObject | null> {
     return this.fail();
   }
 
@@ -51,8 +51,14 @@ export class UnavailableDocumentStorage implements DocumentStoragePort {
 }
 
 function assertTenantStorageKey(companyId: string, key: string): void {
-  const prefix = `companies/${companyId}/documents/`;
-  if (!key.startsWith(prefix) || key.includes('..') || key.startsWith('/')) {
+  const root = `companies/${companyId}/`;
+  const relative = key.startsWith(root) ? key.slice(root.length) : '';
+  if (
+    (!relative.startsWith('documents/') && !relative.startsWith('chantiers/'))
+    || relative.includes('..')
+    || relative.includes('//')
+    || key.startsWith('/')
+  ) {
     throw new Error('Document storage key outside tenant scope.');
   }
 }
@@ -115,28 +121,56 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     contentType: string;
   }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
-    if (await this.stat(input.companyId, input.key))
-      throw new Error('Document object already exists.');
-    const response = await fetch(this.objectUrl(input.key), {
-      method: 'POST',
-      headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
-      body: Buffer.from(input.bytes),
-    });
-    if (!response.ok)
-      throw new Error(
-        `Supabase storage upload failed: ${response.status} ${await response.text()}`,
-      );
-    return {
-      key: input.key,
-      sizeBytes: input.bytes.byteLength,
-      sha256: documentSha256(input.bytes),
-    };
+    const expectedSha256 = documentSha256(input.bytes);
+    const isExact = (object: LoadedStoredObject | null): object is LoadedStoredObject =>
+      object !== null
+      && object.sizeBytes === input.bytes.byteLength
+      && object.sha256 === expectedSha256
+      && normalizedContentType(object.contentType) === normalizedContentType(input.contentType);
+    const existing = await this.get(input.companyId, input.key);
+    if (existing) {
+      if (isExact(existing)) {
+        return { ...existing, created: false };
+      }
+      throw new Error('Document object key collision with different content.');
+    }
+    let response: Response;
+    try {
+      response = await fetch(this.objectUrl(input.key), {
+        method: 'POST',
+        headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
+        body: Buffer.from(input.bytes),
+      });
+    } catch (error) {
+      // Une coupure après acceptation du POST est indiscernable d'un refus réseau. Une relecture
+      // exacte transforme ce cas en succès idempotent ; sinon l'erreur primaire est conservée.
+      const raced = await this.get(input.companyId, input.key).catch(() => null);
+      if (isExact(raced)) return { ...raced, created: false };
+      throw error;
+    }
+    if (!response.ok) {
+      const responseText = await response.text();
+      // Deux workers peuvent constater l'absence puis uploader la même clé. Le perdant adopte
+      // uniquement un objet strictement identique ; une collision différente reste fatale.
+      const raced = await this.get(input.companyId, input.key);
+      if (isExact(raced)) {
+        return { ...raced, created: false };
+      }
+      throw new Error(`Supabase storage upload failed: ${response.status} ${responseText}`);
+    }
+    const stored = await this.get(input.companyId, input.key);
+    if (!isExact(stored)) {
+      // Une clé publiée peut déjà avoir été adoptée par un retry concurrent. La supprimer ici
+      // créerait une référence cassée ; une purge dédiée devra prouver l'absence de référence.
+      throw new Error('Supabase storage read-after-write integrity mismatch.');
+    }
+    return { ...stored, created: true };
   }
 
   async get(
     companyId: string,
     key: string,
-  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  ): Promise<LoadedStoredObject | null> {
     assertTenantStorageKey(companyId, key);
     const response = await fetch(this.objectUrl(key), { method: 'GET', headers: this.headers() });
     if (!response.ok) {
@@ -144,8 +178,12 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
       throw new Error(`Supabase storage download failed: ${response.status} ${text}`);
     }
+    const bytes = new Uint8Array(await response.arrayBuffer());
     return {
-      bytes: new Uint8Array(await response.arrayBuffer()),
+      key,
+      bytes,
+      sizeBytes: bytes.byteLength,
+      sha256: documentSha256(bytes),
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',
     };
   }
@@ -211,6 +249,10 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       throw new Error(`Supabase storage delete failed: ${response.status} ${text}`);
     }
   }
+}
+
+function normalizedContentType(value: string): string {
+  return (value.split(';')[0] ?? '').trim().toLowerCase();
 }
 
 export function buildDocumentStorage(): DocumentStoragePort {

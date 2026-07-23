@@ -19,6 +19,10 @@ import { buildRealtimeSpeechStorageKey } from './realtime-speech-storage';
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_MISTRAL_INGRESS_CERT === 'true';
 
 const admissionPolicy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 100,
   userLimitPerHour: 1_000,
   tenantLimitPerMinute: 1_000,

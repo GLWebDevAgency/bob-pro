@@ -1,11 +1,16 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Optional,
+  type OnApplicationShutdown,
+} from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { AppLogger } from '../../observability/logger';
 import {
-  isRealtimeCompanyId,
   type RealtimeAdmissionPort,
   type RealtimeReapingClaim,
 } from './realtime-admission';
+import type { RealtimeReaperDirectoryPort } from './realtime-reaper-directory';
 import {
   REALTIME_ADMISSION,
   REALTIME_PROVIDER_TERMINATION_REGISTRY,
@@ -17,18 +22,15 @@ import {
 } from './realtime-provider-registry';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 
-export const REALTIME_REAPER_TENANT_DIRECTORY = Symbol('REALTIME_REAPER_TENANT_DIRECTORY');
+export const REALTIME_REAPER_DIRECTORY = Symbol('REALTIME_REAPER_DIRECTORY');
 export const REALTIME_REAPER_OPTIONS = Symbol('REALTIME_REAPER_OPTIONS');
-
-export interface RealtimeReaperTenantDirectory {
-  listCompanyIds(): Promise<string[]>;
-}
 
 export interface RealtimeReaperOptions {
   maxTenantsPerSweep: number;
   maxClaimsPerTenant: number;
   maxConcurrentTenants: number;
   maxConcurrentHangups: number;
+  shutdownGraceMs: number;
 }
 
 export interface RealtimeReaperSweepSummary {
@@ -38,6 +40,9 @@ export interface RealtimeReaperSweepSummary {
   terminated: number;
   failures: number;
   unavailableTenants: number;
+  discoveryUnavailable: boolean;
+  discoverySaturated: boolean;
+  claimUnacknowledged: boolean;
 }
 
 const DEFAULT_OPTIONS: RealtimeReaperOptions = {
@@ -47,6 +52,7 @@ const DEFAULT_OPTIONS: RealtimeReaperOptions = {
   maxClaimsPerTenant: 2,
   maxConcurrentTenants: 2,
   maxConcurrentHangups: 4,
+  shutdownGraceMs: 5_000,
 };
 
 function boundedInteger(value: number | undefined, fallback: number, max: number): number {
@@ -60,6 +66,7 @@ function normalizedOptions(input?: Partial<RealtimeReaperOptions>): RealtimeReap
     maxClaimsPerTenant: boundedInteger(input?.maxClaimsPerTenant, DEFAULT_OPTIONS.maxClaimsPerTenant, 10),
     maxConcurrentTenants: boundedInteger(input?.maxConcurrentTenants, DEFAULT_OPTIONS.maxConcurrentTenants, 8),
     maxConcurrentHangups: boundedInteger(input?.maxConcurrentHangups, DEFAULT_OPTIONS.maxConcurrentHangups, 16),
+    shutdownGraceMs: boundedInteger(input?.shutdownGraceMs, DEFAULT_OPTIONS.shutdownGraceMs, 30_000),
   };
 }
 
@@ -89,17 +96,18 @@ class AsyncLimiter {
  * reaper token, et `completeReaping` n'est jamais appelé sans terminaison provider confirmée.
  */
 @Injectable()
-export class RealtimeAdmissionReaperScheduler {
+export class RealtimeAdmissionReaperScheduler implements OnApplicationShutdown {
   private readonly options: RealtimeReaperOptions;
   private readonly providers: RealtimeProviderTerminationRegistry;
-  private running = false;
+  private inFlight: Promise<RealtimeReaperSweepSummary> | null = null;
+  private stopping = false;
 
   constructor(
     @Inject(REALTIME_ADMISSION) private readonly admission: RealtimeAdmissionPort,
     @Inject(REALTIME_PROVIDER_TERMINATION_REGISTRY)
     provider: OpenAiRealtimeCallProvider | RealtimeProviderTerminationRegistry,
-    @Inject(REALTIME_REAPER_TENANT_DIRECTORY) private readonly tenants: RealtimeReaperTenantDirectory,
-    @Inject(REALTIME_VOICE_SETTINGS) private readonly settings: RealtimeVoiceSettings,
+    @Inject(REALTIME_REAPER_DIRECTORY) private readonly directory: RealtimeReaperDirectoryPort,
+    @Inject(REALTIME_VOICE_SETTINGS) settings: RealtimeVoiceSettings,
     private readonly logger: AppLogger,
     @Optional() @Inject(REALTIME_REAPER_OPTIONS) options?: Partial<RealtimeReaperOptions>,
   ) {
@@ -123,50 +131,136 @@ export class RealtimeAdmissionReaperScheduler {
   }
 
   async sweep(): Promise<RealtimeReaperSweepSummary> {
-    if (!this.settings.enabled || this.running) return this.emptySummary(true);
-    this.running = true;
+    // La maintenance continue après un kill-switch : les appels déjà créés doivent être drainés.
+    if (this.stopping || this.inFlight) return this.emptySummary(true);
+    const task = this.runSweep();
+    this.inFlight = task;
+    try {
+      return await task;
+    } finally {
+      if (this.inFlight === task) this.inFlight = null;
+    }
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    this.stopping = true;
+    if (!this.inFlight) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.options.shutdownGraceMs);
+      timer.unref?.();
+    });
+    await Promise.race([this.inFlight.then(() => undefined, () => undefined), deadline]);
+    if (timer) clearTimeout(timer);
+  }
+
+  private async runSweep(): Promise<RealtimeReaperSweepSummary> {
     const summary = this.emptySummary(false);
     try {
-      const companyIds = [...new Set(await this.tenants.listCompanyIds())]
-        .filter(isRealtimeCompanyId)
-        .slice(0, this.options.maxTenantsPerSweep);
+      const due = await this.directory.listDueCompanyIds({
+        limit: this.options.maxTenantsPerSweep,
+      });
+      if (due.status !== 'succeeded') {
+        summary.discoveryUnavailable = true;
+        summary.failures += 1;
+        this.logger.warn('bob.live.reaper.directory_unavailable', 'BobLiveReaper');
+        return this.audit(summary);
+      }
+      if (
+        (due.companyIds.length === 0) !== (due.claimId === null)
+        || (due.companyIds.length === 0 && due.hasMore)
+      ) {
+        summary.discoveryUnavailable = true;
+        summary.failures += 1;
+        this.logger.warn('bob.live.reaper.directory_projection_rejected', 'BobLiveReaper');
+        return this.audit(summary);
+      }
+      const companyIds = [...due.companyIds];
       summary.tenants = companyIds.length;
+      summary.discoverySaturated = due.hasMore;
       const hangups = new AsyncLimiter(this.options.maxConcurrentHangups);
-      await this.forEachBounded(companyIds, this.options.maxConcurrentTenants, async (companyId) => {
-        const batch = await this.admission.claimExpired({
-          companyId,
-          limit: this.options.maxClaimsPerTenant,
-        });
-        if (!batch.ok) {
-          summary.unavailableTenants += 1;
-          summary.failures += 1;
-          this.logger.warn('bob.live.reaper.admission_unavailable', 'BobLiveReaper');
-          return;
+      let directoryClaimOwned = true;
+      for (
+        let offset = 0;
+        offset < companyIds.length && !this.stopping;
+        offset += this.options.maxConcurrentTenants
+      ) {
+        if (due.claimId === null) {
+          directoryClaimOwned = false;
+          break;
         }
-        summary.claims += batch.claims.length;
-        await Promise.all(batch.claims.map((claim) => hangups.run(() => this.terminate(claim, summary))));
-      });
-      this.logger.audit('bob.live.reaper.sweep', {
-        tenants: summary.tenants,
-        claims: summary.claims,
-        terminated: summary.terminated,
-        failures: summary.failures,
-        unavailableTenants: summary.unavailableTenants,
-      });
-      return summary;
+        let renewal;
+        try {
+          renewal = await this.directory.renewClaim({ claimId: due.claimId });
+        } catch {
+          renewal = { status: 'unavailable' as const };
+        }
+        if (renewal.status !== 'succeeded' || !renewal.renewed) {
+          directoryClaimOwned = false;
+          summary.claimUnacknowledged = true;
+          summary.failures += 1;
+          this.logger.warn('bob.live.reaper.directory_claim_lost', 'BobLiveReaper');
+          break;
+        }
+        const wave = companyIds.slice(offset, offset + this.options.maxConcurrentTenants);
+        await Promise.all(
+          wave.map((companyId) => this.processTenant(companyId, hangups, summary)),
+        );
+      }
+      if (this.stopping) directoryClaimOwned = false;
+      if (due.claimId !== null) {
+        if (directoryClaimOwned) {
+          let ack;
+          try {
+            ack = await this.directory.acknowledgeClaim({ claimId: due.claimId });
+          } catch {
+            ack = { status: 'unavailable' as const };
+          }
+          summary.claimUnacknowledged = ack.status !== 'succeeded' || !ack.acknowledged;
+          if (summary.claimUnacknowledged) summary.failures += 1;
+        } else {
+          summary.claimUnacknowledged = true;
+        }
+      }
+      return this.audit(summary);
     } catch {
       summary.failures += 1;
       this.logger.warn('bob.live.reaper.sweep_failed', 'BobLiveReaper');
-      return summary;
-    } finally {
-      this.running = false;
+      return this.audit(summary);
     }
+  }
+
+  private async processTenant(
+    companyId: string,
+    hangups: AsyncLimiter,
+    summary: RealtimeReaperSweepSummary,
+  ): Promise<boolean> {
+    let batch;
+    try {
+      batch = await this.admission.claimExpired({
+        companyId,
+        limit: this.options.maxClaimsPerTenant,
+      });
+    } catch {
+      batch = { ok: false as const, reason: 'unavailable' as const };
+    }
+    if (!batch.ok) {
+      summary.unavailableTenants += 1;
+      summary.failures += 1;
+      this.logger.warn('bob.live.reaper.admission_unavailable', 'BobLiveReaper');
+      return false;
+    }
+    summary.claims += batch.claims.length;
+    const terminations = await Promise.all(
+      batch.claims.map((claim) => hangups.run(() => this.terminate(claim, summary))),
+    );
+    return terminations.every(Boolean);
   }
 
   private async terminate(
     claim: RealtimeReapingClaim,
     summary: RealtimeReaperSweepSummary,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       // I/O externe hors transaction : claimExpired a déjà rendu le contrôle et libéré ses locks.
       await this.providers.hangupCall({
@@ -183,36 +277,26 @@ export class RealtimeAdmissionReaperScheduler {
     } catch {
       summary.failures += 1;
       this.logger.warn('bob.live.reaper.provider_hangup_failed', 'BobLiveReaper');
-      return;
+      return false;
     }
-    const completed = await this.admission.completeReaping({
-      companyId: claim.companyId,
-      subjectHash: claim.subjectHash,
-      sessionId: claim.sessionId,
-      reaperToken: claim.reaperToken,
-    });
+    let completed;
+    try {
+      completed = await this.admission.completeReaping({
+        companyId: claim.companyId,
+        subjectHash: claim.subjectHash,
+        sessionId: claim.sessionId,
+        reaperToken: claim.reaperToken,
+      });
+    } catch {
+      completed = { ok: false as const, reason: 'unavailable' as const };
+    }
     if (!completed.ok) {
       summary.failures += 1;
       this.logger.warn('bob.live.reaper.completion_failed', 'BobLiveReaper');
-      return;
+      return false;
     }
     summary.terminated += 1;
-  }
-
-  private async forEachBounded<T>(
-    items: T[],
-    concurrency: number,
-    operation: (item: T) => Promise<void>,
-  ): Promise<void> {
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < items.length) {
-        const index = cursor;
-        cursor += 1;
-        await operation(items[index]!);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+    return true;
   }
 
   private emptySummary(skipped: boolean): RealtimeReaperSweepSummary {
@@ -223,6 +307,21 @@ export class RealtimeAdmissionReaperScheduler {
       terminated: 0,
       failures: 0,
       unavailableTenants: 0,
+      discoveryUnavailable: false,
+      discoverySaturated: false,
+      claimUnacknowledged: false,
     };
+  }
+
+  private audit(summary: RealtimeReaperSweepSummary): RealtimeReaperSweepSummary {
+    if (
+      summary.tenants > 0
+      || summary.claims > 0
+      || summary.failures > 0
+      || summary.discoveryUnavailable
+      || summary.discoverySaturated
+      || summary.claimUnacknowledged
+    ) this.logger.audit('bob.live.reaper.sweep', { ...summary });
+    return summary;
   }
 }

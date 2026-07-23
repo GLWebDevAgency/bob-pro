@@ -10,6 +10,7 @@ const AMOUNT_DECIMAL = /^(?:0|[1-9][0-9]{0,12})\.[0-9]{6}$/u;
 const POSTGRES_INT_MAX = 2_147_483_647;
 const MAX_AMOUNT_MICROS = 1_000_000_000_000_000_000n;
 const MAX_DEDUPE_SCOPE_BYTES = 512;
+const MAX_USAGE_BATCH_SIZE = 64;
 const EVENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export const REALTIME_VOICE_USAGE_KINDS = [
@@ -51,13 +52,34 @@ export type RealtimeVoiceUsageRepositoryResult =
   | { readonly status: 'conflict' }
   | { readonly status: 'unavailable' };
 
+export type RealtimeVoiceUsageRepositoryBatchResult =
+  | {
+    readonly status: 'recorded' | 'duplicate';
+    /** Identifiants durables, dans le même ordre que les mesures soumises. */
+    readonly eventIds: readonly string[];
+  }
+  | { readonly status: 'conflict' | 'unavailable' };
+
 export interface RealtimeVoiceUsageRepositoryPort {
   record(input: RealtimeVoiceUsageRepositoryInput): Promise<RealtimeVoiceUsageRepositoryResult>;
+  /**
+   * Capacité atomique optionnelle pour préserver les adapters historiques à mesure unique.
+   * Les consommateurs qui exigent l'atomicité doivent échouer fermé lorsqu'elle est absente.
+   */
+  recordBatch?(
+    inputs: readonly RealtimeVoiceUsageRepositoryInput[],
+  ): Promise<RealtimeVoiceUsageRepositoryBatchResult>;
 }
 
 /** Le mode mémoire ne doit jamais simuler un registre d'usage ou de facturation durable. */
 export class DisabledRealtimeVoiceUsageRepository implements RealtimeVoiceUsageRepositoryPort {
   async record(_input: RealtimeVoiceUsageRepositoryInput): Promise<RealtimeVoiceUsageRepositoryResult> {
+    return { status: 'unavailable' };
+  }
+
+  async recordBatch(
+    _inputs: readonly RealtimeVoiceUsageRepositoryInput[],
+  ): Promise<RealtimeVoiceUsageRepositoryBatchResult> {
     return { status: 'unavailable' };
   }
 }
@@ -82,9 +104,20 @@ export type RealtimeVoiceUsageWriteResult =
   | { readonly status: 'recorded' | 'duplicate'; readonly eventId: string }
   | { readonly status: 'rejected' | 'conflict' | 'unavailable' };
 
+export type RealtimeVoiceUsageBatchWriteResult =
+  | {
+    readonly status: 'recorded' | 'duplicate';
+    readonly eventIds: readonly string[];
+  }
+  | { readonly status: 'rejected' | 'conflict' | 'unavailable' };
+
 /** Port runtime étroit : les adapters consommateurs n'accèdent jamais au dépôt ni au HMAC. */
 export interface RealtimeVoiceUsageWriterPort {
   record(input: RealtimeVoiceUsageInput): Promise<RealtimeVoiceUsageWriteResult>;
+  /** Voir le repository : absent sur les anciens doubles, jamais remplacé par des écritures partielles. */
+  recordBatch?(
+    inputs: readonly RealtimeVoiceUsageInput[],
+  ): Promise<RealtimeVoiceUsageBatchWriteResult>;
 }
 
 export interface RealtimeVoiceUsageWriterConfig {
@@ -208,6 +241,68 @@ export class RealtimeVoiceUsageWriter implements RealtimeVoiceUsageWriterPort {
   }
 
   async record(input: RealtimeVoiceUsageInput): Promise<RealtimeVoiceUsageWriteResult> {
+    let recordedAtMs: number;
+    let generatedEventId: string;
+    try {
+      recordedAtMs = this.now();
+      generatedEventId = this.eventId();
+    } catch {
+      return { status: 'unavailable' };
+    }
+    const repositoryInput = this.prepare(input, recordedAtMs, generatedEventId);
+    if (repositoryInput === null) return { status: 'rejected' };
+
+    try {
+      return await this.repository.record(repositoryInput);
+    } catch {
+      return { status: 'unavailable' };
+    }
+  }
+
+  /**
+   * Prépare l'intégralité du lot avant la première écriture, puis délègue son commit atomique au
+   * repository. Il n'existe volontairement aucun fallback vers `record()` : une panne de capacité
+   * batch doit laisser zéro mesure durable plutôt qu'une fenêtre de facturation partielle.
+   */
+  async recordBatch(
+    inputs: readonly RealtimeVoiceUsageInput[],
+  ): Promise<RealtimeVoiceUsageBatchWriteResult> {
+    if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > MAX_USAGE_BATCH_SIZE) {
+      return { status: 'rejected' };
+    }
+    if (typeof this.repository.recordBatch !== 'function') return { status: 'unavailable' };
+
+    let recordedAtMs: number;
+    let generatedEventIds: readonly string[];
+    try {
+      recordedAtMs = this.now();
+      generatedEventIds = inputs.map(() => this.eventId());
+    } catch {
+      return { status: 'unavailable' };
+    }
+
+    const repositoryInputs: RealtimeVoiceUsageRepositoryInput[] = [];
+    let companyId: string | null = null;
+    for (const [index, input] of inputs.entries()) {
+      const prepared = this.prepare(input, recordedAtMs, generatedEventIds[index] ?? '');
+      if (prepared === null) return { status: 'rejected' };
+      if (companyId !== null && prepared.companyId !== companyId) return { status: 'rejected' };
+      companyId = prepared.companyId;
+      repositoryInputs.push(prepared);
+    }
+
+    try {
+      return await this.repository.recordBatch(Object.freeze(repositoryInputs));
+    } catch {
+      return { status: 'unavailable' };
+    }
+  }
+
+  private prepare(
+    input: RealtimeVoiceUsageInput,
+    recordedAtMs: number,
+    generatedEventId: string,
+  ): RealtimeVoiceUsageRepositoryInput | null {
     if (
       typeof input !== 'object'
       || input === null
@@ -222,15 +317,7 @@ export class RealtimeVoiceUsageWriter implements RealtimeVoiceUsageWriterPort {
       || typeof input.amount !== 'number'
       || typeof input.dedupeScope !== 'string'
       || typeof input.occurredAt !== 'string'
-    ) return { status: 'rejected' };
-    let recordedAtMs: number;
-    let generatedEventId: string;
-    try {
-      recordedAtMs = this.now();
-      generatedEventId = this.eventId();
-    } catch {
-      return { status: 'unavailable' };
-    }
+    ) return null;
     const occurredAtMs = validIso(input.occurredAt);
     const amount = canonicalAmount(input.amount);
     const eventId = typeof generatedEventId === 'string' ? generatedEventId.toLowerCase() : '';
@@ -261,7 +348,7 @@ export class RealtimeVoiceUsageWriter implements RealtimeVoiceUsageWriterPort {
       // ambiguë entre adapters. Les espaces et identifiants provider ordinaires restent permis.
       // eslint-disable-next-line no-control-regex
       || /[\u0000-\u001f\u007f]/u.test(input.dedupeScope)
-    ) return { status: 'rejected' };
+    ) return null;
 
     const dedupeKeyHmac = createHmac('sha256', this.config.proofSecret)
       .update('bob-pro:realtime-voice-usage:dedupe:v1\u0000', 'utf8')
@@ -298,12 +385,6 @@ export class RealtimeVoiceUsageWriter implements RealtimeVoiceUsageWriterPort {
       recordedAt,
       retentionExpiresAt,
     };
-    if (!isRealtimeVoiceUsageRepositoryInput(repositoryInput)) return { status: 'rejected' };
-
-    try {
-      return await this.repository.record(repositoryInput);
-    } catch {
-      return { status: 'unavailable' };
-    }
+    return isRealtimeVoiceUsageRepositoryInput(repositoryInput) ? repositoryInput : null;
   }
 }

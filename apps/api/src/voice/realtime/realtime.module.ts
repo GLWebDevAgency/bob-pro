@@ -12,7 +12,6 @@ import {
 import { allowedCorsOrigins } from '../../config/cors';
 import { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
-import { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
 import { PersistenceModule } from '../../persistence/persistence.module';
 import type { Persistence } from '../../persistence/persistence';
 import { PERSISTENCE } from '../../persistence/persistence-token';
@@ -21,9 +20,10 @@ import {
   OpenAiRealtimeCallAdapter,
 } from './openai-realtime-call.adapter';
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
+import { RealtimeGlobalCapacityMonitor } from './realtime-capacity-monitor';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
-  REALTIME_REAPER_TENANT_DIRECTORY,
+  REALTIME_REAPER_DIRECTORY,
   RealtimeAdmissionReaperScheduler,
 } from './realtime-reaper.scheduler';
 import {
@@ -37,7 +37,10 @@ import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
 import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
-import type { RealtimeSpeechDeliveryRepositoryPort } from './realtime-speech-delivery.repository';
+import {
+  DisabledRealtimeSpeechDeliveryRepository,
+  type RealtimeSpeechDeliveryRepositoryPort,
+} from './realtime-speech-delivery.repository';
 import {
   BobAiRealtimeSpeechAuditAdapter,
   BobAiRealtimeSpeechSynthesisAdapter,
@@ -78,6 +81,9 @@ import {
 } from './mistral-conversation-terminal-replay';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
 import { DisabledMistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
+import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
+import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
+import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
 import {
   ActiveMistralRealtimeIngressRuntime,
   DisabledMistralRealtimeIngressRuntime,
@@ -89,8 +95,10 @@ import {
   MISTRAL_CONVERSATION_RESUME_AUTHORITY,
   MISTRAL_CONVERSATION_BOOTSTRAP_AUTHORITY,
   MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
+  OPENAI_NATIVE_SPEECH_MAINTENANCE,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_GLOBAL_CAPACITY_INSPECTOR,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -107,20 +115,52 @@ import {
 
 const REALTIME_SPEECH_RUNTIME = Symbol('REALTIME_SPEECH_RUNTIME');
 
-interface RealtimeSpeechRuntime {
+interface RealtimeCommonSpeechRuntime {
+  readonly owner: RealtimeSidebandOwnerPort;
+  readonly usage: RealtimeVoiceUsageWriter;
+}
+
+interface RealtimeAuditedSpeechRuntime {
   readonly storage: RealtimeSpeechStoragePort;
   readonly sourcePolicy: RealtimeSpeechSourcePolicyPort;
   readonly publisher: RealtimeSpeechPublisher;
-  readonly owner: RealtimeSidebandOwnerPort;
   readonly deliveryRepository: RealtimeSpeechDeliveryRepositoryPort;
-  readonly usage: RealtimeVoiceUsageWriter;
   readonly controls: RealtimeDurableControlAuthority;
 }
 
+interface RealtimeNativeSpeechRuntime {
+  readonly authority: OpenAiNativeSpeechAuthority;
+}
+
+type RealtimeSpeechRuntime = RealtimeCommonSpeechRuntime & (
+  | {
+      readonly audited: RealtimeAuditedSpeechRuntime;
+      readonly native?: never;
+    }
+  | {
+      readonly audited?: never;
+      readonly native: RealtimeNativeSpeechRuntime;
+    }
+);
+
+function buildRealtimeCommonSpeechRuntime(
+  persistence: Persistence,
+  usageHmacSecret: string,
+  usageKeyVersion: number,
+): RealtimeCommonSpeechRuntime {
+  return Object.freeze({
+    owner: persistence.createRealtimeSidebandOwner(),
+    usage: new RealtimeVoiceUsageWriter(persistence.createRealtimeVoiceUsageRepository(), {
+      proofSecret: usageHmacSecret,
+      proofKeyVersion: usageKeyVersion,
+    }),
+  });
+}
+
 /**
- * Composition root de la sortie Bob Live : le fournisseur ne devient jamais une dépendance du
- * service métier. Une session activée sans stockage privé, TTS qualifié ou audit indépendant fait
- * échouer le démarrage au lieu de retomber silencieusement sur une sortie audio non auditée.
+ * Composition root de la sortie Bob Live : owner et métrologie sont communs, puis une seule branche
+ * de restitution est assemblée. L'audité exige stockage privé + TTS + audit indépendant ; le natif
+ * OpenAI exige uniquement son autorité durable. Aucun mode ne retombe implicitement sur l'autre.
  */
 export function buildRealtimeSpeechRuntime(
   persistence: Persistence,
@@ -128,15 +168,45 @@ export function buildRealtimeSpeechRuntime(
 ): RealtimeSpeechRuntime | null {
   const live = resolveBobLiveEnv(env);
   if (!live.enabled) return null;
+  if (live.speechDelivery === 'openai-native-webrtc-v1') {
+    if (
+      live.provider !== 'openai'
+      || !live.subjectHmacKeyRing
+      || !live.proofKeyRing
+      || !live.usageHmacSecret
+    ) {
+      throw new Error('Bob Live OpenAI native speech runtime is incompletely configured.');
+    }
+    const common = buildRealtimeCommonSpeechRuntime(
+      persistence,
+      live.usageHmacSecret,
+      live.usageKeyVersion,
+    );
+    const authority = new OpenAiNativeSpeechAuthority(
+      persistence.createOpenAiNativeSpeechDeliveryRepository(),
+      {
+        proofKeys: live.proofKeyRing,
+      },
+    );
+    return Object.freeze({
+      ...common,
+      native: Object.freeze({ authority }),
+    });
+  }
+
   if (
-    !live.proofSecret ||
-    !live.controlEncryptionSecret ||
-    !live.usageHmacSecret ||
-    !env.SUPABASE_URL ||
-    !env.SUPABASE_SERVICE_ROLE_KEY
+    !live.proofSecret
+    || !live.controlEncryptionSecret
+    || !live.usageHmacSecret
+    || !env.SUPABASE_URL
+    || !env.SUPABASE_SERVICE_ROLE_KEY
   ) {
     throw new Error('Bob Live audited speech runtime is incompletely configured.');
   }
+  const proofSecret = live.proofSecret;
+  const controlEncryptionSecret = live.controlEncryptionSecret;
+  const supabaseUrl = env.SUPABASE_URL;
+  const supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 
   // La composition consomme la configuration déjà validée, jamais un fallback implicite basé
   // sur la présence fortuite de la clé concurrente dans `process.env`.
@@ -147,8 +217,8 @@ export function buildRealtimeSpeechRuntime(
   }
 
   const storage = new SupabaseRealtimeSpeechStorage({
-    url: env.SUPABASE_URL,
-    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+    url: supabaseUrl,
+    serviceRoleKey: supabaseServiceRoleKey,
     bucket: env.SUPABASE_REALTIME_AUDIO_BUCKET,
     requestTimeoutMs: 2_000,
   });
@@ -157,42 +227,102 @@ export function buildRealtimeSpeechRuntime(
     synthesizer: new BobAiRealtimeSpeechSynthesisAdapter(tts),
     auditor: new BobAiRealtimeSpeechAuditAdapter(auditStt),
   });
-
-  return Object.freeze({
-    storage,
-    sourcePolicy: storage,
-    deliveryRepository,
-    owner: persistence.createRealtimeSidebandOwner(),
-    usage: new RealtimeVoiceUsageWriter(persistence.createRealtimeVoiceUsageRepository(), {
-      proofSecret: live.usageHmacSecret,
-      proofKeyVersion: live.usageKeyVersion,
-    }),
-    controls: new RealtimeDurableControlAuthority(persistence.createRealtimeControlRepository(), {
+  const common = buildRealtimeCommonSpeechRuntime(
+    persistence,
+    live.usageHmacSecret,
+    live.usageKeyVersion,
+  );
+  const controls = new RealtimeDurableControlAuthority(
+    persistence.createRealtimeControlRepository(),
+    {
       sealKeys: {
-        encryptionSecret: live.controlEncryptionSecret,
+        encryptionSecret: controlEncryptionSecret,
         encryptionKeyVersion: live.controlEncryptionKeyVersion,
-        proofSecret: live.proofSecret,
+        proofSecret,
         proofKeyVersion: live.proofKeyVersion,
       },
       keyRing: {
         encryptionSecret: (version) =>
-          version === live.controlEncryptionKeyVersion ? live.controlEncryptionSecret : null,
-        proofSecret: (version) => (version === live.proofKeyVersion ? live.proofSecret : null),
+          version === live.controlEncryptionKeyVersion ? controlEncryptionSecret : null,
+        proofSecret: (version) => (version === live.proofKeyVersion ? proofSecret : null),
       },
-    }),
-    publisher: new RealtimeSpeechPublisher({
-      renderer,
-      repository: persistence.createRealtimeSpeechArtifactRepository(),
+    },
+  );
+  const publisher = new RealtimeSpeechPublisher({
+    renderer,
+    repository: persistence.createRealtimeSpeechArtifactRepository(),
+    storage,
+    proofSecret,
+    proofKeyVersion: live.proofKeyVersion,
+  });
+
+  return Object.freeze({
+    ...common,
+    audited: Object.freeze({
       storage,
-      proofSecret: live.proofSecret,
-      proofKeyVersion: live.proofKeyVersion,
+      sourcePolicy: storage,
+      deliveryRepository,
+      controls,
+      publisher,
     }),
   });
+}
+
+/**
+ * Porte de composition réellement utilisée par Nest. Les deux keyrings natifs sont admis par
+ * PostgreSQL avant la création du moindre port request-time : une configuration locale cohérente
+ * mais non stageée, retirée ou liée à un autre matériau fait échouer le boot.
+ */
+export async function buildVerifiedRealtimeSpeechRuntime(
+  persistence: Persistence,
+  env: Env = loadEnv(),
+): Promise<RealtimeSpeechRuntime | null> {
+  const live = resolveBobLiveEnv(env);
+  if (
+    !live.enabled
+    || live.provider !== 'openai'
+    || live.speechDelivery !== 'openai-native-webrtc-v1'
+  ) return buildRealtimeSpeechRuntime(persistence, env);
+  if (!live.subjectHmacKeyRing || !live.proofKeyRing) {
+    throw new Error('Bob Live OpenAI native keyrings are incompletely configured.');
+  }
+  const keyVersions = persistence.createOpenAiNativeKeyVersionAuthority(
+    live.subjectHmacKeyRing,
+    live.proofKeyRing,
+  );
+  if (!keyVersions) {
+    throw new Error('Bob Live OpenAI native PostgreSQL key authority is unavailable.');
+  }
+  await keyVersions.assertCurrentKeyVersions();
+  return buildRealtimeSpeechRuntime(persistence, env);
 }
 
 const settingsProvider: Provider = {
   provide: REALTIME_VOICE_SETTINGS,
   useFactory: (): RealtimeVoiceSettings => realtimeVoiceSettingsFromEnv(loadEnv()),
+};
+
+const realtimeGlobalCapacityInspectorProvider: Provider = {
+  provide: REALTIME_GLOBAL_CAPACITY_INSPECTOR,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createRealtimeGlobalCapacityInspector(),
+};
+
+const realtimeGlobalCapacityMonitorProvider: Provider = {
+  provide: RealtimeGlobalCapacityMonitor,
+  inject: [REALTIME_VOICE_SETTINGS, REALTIME_GLOBAL_CAPACITY_INSPECTOR, Metrics, AppLogger],
+  useFactory: (
+    settings: RealtimeVoiceSettings,
+    inspector: ReturnType<Persistence['createRealtimeGlobalCapacityInspector']>,
+    metrics: Metrics,
+    logger: AppLogger,
+  ) => new RealtimeGlobalCapacityMonitor(
+    settings.enabled,
+    resolveBobLiveEnv(loadEnv()).globalCapacity,
+    inspector,
+    metrics,
+    logger,
+  ),
 };
 
 const openAiProvider: Provider = {
@@ -208,10 +338,34 @@ const mistralRealtimeTerminationAuthorityProvider: Provider = {
   provide: MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   inject: [REALTIME_VOICE_SETTINGS],
   useFactory: (settings: RealtimeVoiceSettings) =>
-    settings.enabled && settings.provider === 'mistral'
+    settings.provider === 'mistral'
       ? new MistralRealtimeTerminationAuthority()
       : null,
 };
+
+/**
+ * Le kill-switch ferme les nouvelles admissions, jamais le drain des appels déjà persistés.
+ * L'adapter du provider sélectionné reste donc enregistré même lorsque `enabled=false` ; retirer
+ * ses credentials avant zéro lease relève du protocole de bascule C4, pas de ce switch runtime.
+ */
+export function buildRealtimeProviderTerminationRegistry(
+  settings: RealtimeVoiceSettings,
+  openAi: OpenAiRealtimeCallProvider,
+  mistral: MistralRealtimeTerminationAuthority | null,
+  conversation: MistralConversationTerminalReplayRuntime | null,
+): RealtimeProviderTerminationRegistry {
+  const adapters = [];
+  if (settings.provider === 'openai') {
+    adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
+  }
+  if (mistral || conversation) {
+    adapters.push(new MistralConversationTerminationRouter(
+      mistral,
+      conversation?.termination ?? null,
+    ));
+  }
+  return new RealtimeProviderTerminationRegistry(adapters);
+}
 
 const providerTerminationRegistryProvider: Provider = {
   provide: REALTIME_PROVIDER_TERMINATION_REGISTRY,
@@ -226,19 +380,7 @@ const providerTerminationRegistryProvider: Provider = {
     openAi: OpenAiRealtimeCallProvider,
     mistral: MistralRealtimeTerminationAuthority | null,
     conversation: MistralConversationTerminalReplayRuntime | null,
-  ) => {
-    const adapters = [];
-    if (settings.enabled && settings.provider === 'openai') {
-      adapters.push(realtimeProviderTerminationAdapter('openai', openAi));
-    }
-    if (mistral || conversation) {
-      adapters.push(new MistralConversationTerminationRouter(
-        mistral,
-        conversation?.termination ?? null,
-      ));
-    }
-    return new RealtimeProviderTerminationRegistry(adapters);
-  },
+  ) => buildRealtimeProviderTerminationRegistry(settings, openAi, mistral, conversation),
 };
 
 const admissionProvider: Provider = {
@@ -286,14 +428,14 @@ const mistralIngressTicketProvider: Provider = {
 const realtimeSpeechRuntimeProvider: Provider = {
   provide: REALTIME_SPEECH_RUNTIME,
   inject: [PERSISTENCE],
-  useFactory: (persistence: Persistence) => buildRealtimeSpeechRuntime(persistence),
+  useFactory: (persistence: Persistence) => buildVerifiedRealtimeSpeechRuntime(persistence),
 };
 
 const realtimeDurableControlProvider: Provider = {
   provide: REALTIME_DURABLE_CONTROLS,
   inject: [REALTIME_SPEECH_RUNTIME],
   useFactory: (speech: RealtimeSpeechRuntime | null) =>
-    speech?.controls ?? new DisabledRealtimeDurableControlAuthority(),
+    speech?.audited?.controls ?? new DisabledRealtimeDurableControlAuthority(),
 };
 
 export async function buildMistralConversationTerminalReplayRuntime(
@@ -402,7 +544,8 @@ const mistralRealtimeIngressRuntimeProvider: Provider = {
     if (!settings.enabled || settings.provider !== 'mistral') {
       return new DisabledMistralRealtimeIngressRuntime();
     }
-    if (!speech || !terminations)
+    const audited = speech?.audited;
+    if (!speech || !audited || !terminations)
       throw new Error('Bob Live Mistral audited runtime is unavailable.');
     const env = loadEnv();
     const live = resolveBobLiveEnv(env);
@@ -411,10 +554,10 @@ const mistralRealtimeIngressRuntimeProvider: Provider = {
       admission,
       owners: speech.owner,
       agentTurns,
-      speech: speech.publisher,
+      speech: audited.publisher,
       usage: speech.usage,
-      controls: speech.controls,
-      cancellation: speech.deliveryRepository,
+      controls: audited.controls,
+      cancellation: audited.deliveryRepository,
     });
     const adapter = createMistralRealtimeUpgradeAdapter(
       {
@@ -465,9 +608,23 @@ const sidebandProvider: Provider = {
       speech
         ? {
             owner: speech.owner,
-            publisher: speech.publisher,
-            cancellation: speech.deliveryRepository,
-            controls: speech.controls,
+            ...(speech.audited
+              ? {
+                  audited: {
+                    publisher: speech.audited.publisher,
+                    cancellation: speech.audited.deliveryRepository,
+                    controls: speech.audited.controls,
+                  },
+                }
+              : {}),
+            ...(speech.native
+              ? {
+                  native: {
+                    authority: speech.native.authority,
+                    usage: speech.usage,
+                  },
+                }
+              : {}),
           }
         : undefined,
     ),
@@ -475,10 +632,15 @@ const sidebandProvider: Provider = {
 
 const realtimeAgentTurnProvider: Provider = {
   provide: REALTIME_AGENT_TURN,
-  inject: [PERSISTENCE, ModuleRef],
-  useFactory: (persistence: Persistence, moduleRef: ModuleRef) =>
+  inject: [PERSISTENCE, REALTIME_VOICE_SETTINGS, ModuleRef],
+  useFactory: (
+    persistence: Persistence,
+    settings: RealtimeVoiceSettings,
+    moduleRef: ModuleRef,
+  ) =>
     new RealtimeBobAgentTurnAdapter(
       persistence,
+      settings.provider,
       // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
       // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
       () => moduleRef.get(BackendService, { strict: false }),
@@ -494,31 +656,57 @@ const realtimeEntitlementProvider: Provider = {
     ),
 };
 
-const reaperTenantDirectoryProvider: Provider = {
-  provide: REALTIME_REAPER_TENANT_DIRECTORY,
-  inject: [PERSISTENCE, AppLogger],
-  useFactory: (persistence: Persistence, logger: AppLogger) =>
-    new ScheduledTenantDirectory(persistence, logger),
+const realtimeReaperDirectoryProvider: Provider = {
+  provide: REALTIME_REAPER_DIRECTORY,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createRealtimeReaperDirectory(),
+};
+
+const openAiNativeSpeechMaintenanceProvider: Provider = {
+  provide: OPENAI_NATIVE_SPEECH_MAINTENANCE,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => persistence.createOpenAiNativeSpeechMaintenance(),
 };
 
 const realtimeSpeechDeliveryProvider: Provider = {
   provide: RealtimeSpeechDeliveryService,
-  inject: [PERSISTENCE, AppLogger, REALTIME_SPEECH_RUNTIME],
+  inject: [AppLogger, REALTIME_SPEECH_RUNTIME],
   useFactory: (
-    persistence: Persistence,
     logger: AppLogger,
     speech: RealtimeSpeechRuntime | null,
   ) => {
     const env = loadEnv();
     const live = resolveBobLiveEnv(env);
+    const audited = speech?.audited;
     return new RealtimeSpeechDeliveryService(
-      speech?.deliveryRepository ?? persistence.createRealtimeSpeechDeliveryRepository(),
-      speech?.storage ?? null,
+      audited?.deliveryRepository ?? new DisabledRealtimeSpeechDeliveryRepository(),
+      audited?.storage ?? null,
       {
-        enabled: live.enabled,
+        enabled: live.enabled && live.speechDelivery === 'audited-signed-url-v1',
         subjectHmacSecret: live.subjectHmacSecret,
         proofSecret: live.proofSecret,
         proofKeyVersion: live.proofKeyVersion,
+      },
+      logger,
+    );
+  },
+};
+
+const openAiNativeSpeechAcknowledgementProvider: Provider = {
+  provide: OpenAiNativeSpeechAcknowledgementService,
+  inject: [AppLogger, REALTIME_SPEECH_RUNTIME],
+  useFactory: (
+    logger: AppLogger,
+    speech: RealtimeSpeechRuntime | null,
+  ) => {
+    const live = resolveBobLiveEnv(loadEnv());
+    return new OpenAiNativeSpeechAcknowledgementService(
+      speech?.native?.authority ?? null,
+      {
+        enabled: live.enabled
+          && live.provider === 'openai'
+          && live.speechDelivery === 'openai-native-webrtc-v1',
+        subjectHmacKeyRing: live.subjectHmacKeyRing,
       },
       logger,
     );
@@ -529,7 +717,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
   provide: REALTIME_SPEECH_SOURCE_POLICY,
   inject: [REALTIME_SPEECH_RUNTIME],
   useFactory: (speech: RealtimeSpeechRuntime | null): RealtimeSpeechSourcePolicyPort | null =>
-    speech?.sourcePolicy ?? null,
+    speech?.audited?.sourcePolicy ?? null,
 };
 
 @Module({
@@ -541,6 +729,8 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,
     admissionProvider,
+    realtimeGlobalCapacityInspectorProvider,
+    realtimeGlobalCapacityMonitorProvider,
     mistralIngressTicketProvider,
     realtimeSpeechRuntimeProvider,
     realtimeDurableControlProvider,
@@ -552,12 +742,15 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,
-    reaperTenantDirectoryProvider,
+    realtimeReaperDirectoryProvider,
+    openAiNativeSpeechMaintenanceProvider,
     realtimeSpeechDeliveryProvider,
+    openAiNativeSpeechAcknowledgementProvider,
     realtimeSpeechSourcePolicyProvider,
     mistralRealtimeIngressRuntimeProvider,
     RealtimeAdmissionReaperScheduler,
     MistralConversationBootstrapReaperScheduler,
+    OpenAiNativeSpeechMaintenanceScheduler,
     RealtimeVoiceService,
   ],
   exports: [MISTRAL_REALTIME_INGRESS_RUNTIME],

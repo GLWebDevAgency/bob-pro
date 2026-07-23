@@ -276,6 +276,7 @@ function bootstrapMatches(
     && call.model === negotiation.model
     && call.voice === negotiation.voice
     && call.configVersion === negotiation.configVersion
+    && call.speechDelivery === negotiation.speechDelivery
     && call.maxSessionSeconds === negotiation.maxSessionSeconds
     && call.contextRevision === 1
     && SHA256.test(call.contextDigest)
@@ -559,6 +560,8 @@ export class MistralConversationTransport
         transport: 'mistral-pcm',
         protocol: MISTRAL_CONVERSATION_PROTOCOL,
         context: { version: 1, revision: 1, context: this.options.getInitialContext() },
+        configVersion: this.negotiation.configVersion,
+        speechDelivery: this.negotiation.speechDelivery,
         sessionHandle: requestedSessionHandle,
       }, lifecycle.signal);
       this.assertCurrent(generation, lifecycle.signal);

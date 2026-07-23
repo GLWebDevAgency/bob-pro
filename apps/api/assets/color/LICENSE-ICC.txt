@@ -1,0 +1,11 @@
+Source: https://registry.color.org/rgb-registry/profiles/sRGB2014.icc
+Profile: sRGB2014.icc (3024 bytes)
+SHA-256: 384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a
+
+International Color Consortium profile licence:
+This ICC-owned profile may be copied, distributed, embedded, made, used and sold without
+restriction. Altered versions must remove the original identification and copyright information
+and must not be represented as the original profile.
+
+The profile is embedded unchanged. Its internal copyright tag reads:
+Copyright International Color Consortium, 2015

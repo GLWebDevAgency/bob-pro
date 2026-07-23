@@ -1,4 +1,5 @@
 import { type DomainResult, err } from '../../shared-kernel/result';
+import { type VatRegime } from '../company/company';
 import { type Expense, type ExpenseCategory } from '../expense/expense';
 import { type PaymentMethod } from '../payment/payment';
 import { AccountingEntry, type AccountingEntryLineProps } from './accounting-entry';
@@ -66,6 +67,14 @@ function appValidation(field: string, message: string) {
 export interface BuildExpenseAccountingEntryInput {
   entryId: string;
   expense: Expense;
+  /**
+   * Régime TVA QUALIFIÉ de l'entreprise au moment du traitement.
+   *
+   * Il ne vient jamais de la facture fournisseur ni de l'OCR : seul le profil entreprise
+   * confirmé peut décider si la TVA portée par la pièce est récupérable. `null` matérialise
+   * explicitement l'absence de qualification et provoque un refus fail-closed.
+   */
+  vatRegime: VatRegime | null;
   chart?: ChartOfAccounts;
   accounts?: Partial<ExpenseAccountingAccounts>;
 }
@@ -82,9 +91,18 @@ export function buildRecordedExpenseAccountingEntry(
 ): DomainResult<AccountingEntry> {
   const p = input.expense.toProps();
   if (p.totalTtcCents <= 0) return err(appValidation('expense.totalTtcCents', 'Montant TTC requis pour comptabiliser.'));
+  if (!['franchise', 'reel_simpl', 'reel_normal'].includes(input.vatRegime ?? '')) {
+    return err(appValidation(
+      'vatRegime',
+      'Le régime de TVA de l’entreprise doit être confirmé avant de comptabiliser cet achat.',
+    ));
+  }
 
   const accounts = mergeAccounts(input.accounts);
-  const vat = p.vatCents ?? 0;
+  // En franchise en base, la TVA fournisseur est un élément du coût : elle n'est jamais
+  // portée en 44566. La donnée de la pièce reste intacte sur Expense pour l'audit ; seule son
+  // interprétation comptable change ici. Au réel, prudence inchangée : TVA absente => 0.
+  const vat = input.vatRegime === 'franchise' ? 0 : (p.vatCents ?? 0);
   const charge = p.totalTtcCents - vat;
   const label = `Achat ${p.supplierName}`;
 

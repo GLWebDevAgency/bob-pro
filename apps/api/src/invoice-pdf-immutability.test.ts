@@ -4,6 +4,7 @@ import type { InvoicePdfData, OcrPort, PaymentGatewayPort, PdfRendererPort } fro
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -23,13 +24,14 @@ function makeService() {
   const persistence = new InMemoryPersistence();
   const rendered: InvoicePdfData[] = [];
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) => {
+    renderInvoice: vi.fn(async (data, facturX) => {
       rendered.push(structuredClone(data));
-      return new TextEncoder().encode(
-        `%PDF-1.7\narchive:${data.number}:${data.billingPresentation.accentColor}`,
+      return renderPdfFixture(
+        `archive:${data.number}:${data.billingPresentation.accentColor}`,
+        facturX?.xml,
       );
     }),
-    renderQuote: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`)),
+    renderQuote: vi.fn(async (data) => renderPdfFixture(`quote:${data.number}`)),
   };
   const notificationDelivery = {
     enqueue: vi.fn(async (input: { notification: unknown }) => ({
@@ -273,7 +275,7 @@ describe('facture PDF émise — original immuable', () => {
 
       // Métadonnée de taille corrompue : le SHA reste identique mais le GET échoue fermé.
       const originalProps = pdfDocument.toProps();
-      await persistence.documents.save(
+      persistence.documents.forceReplaceForTesting(
         Document.rehydrate({
           ...originalProps,
           byteSize: originalProps.byteSize + 1,
@@ -288,7 +290,7 @@ describe('facture PDF émise — original immuable', () => {
         ok: false,
         error: { kind: 'unavailable', service: 'invoice-archive' },
       });
-      await persistence.documents.save(Document.rehydrate(originalProps));
+      persistence.documents.forceReplaceForTesting(Document.rehydrate(originalProps));
 
       // Octets altérés à taille identique : le contrôle SHA refuse l'objet.
       const corruptedBytes = new Uint8Array(original.bytes);

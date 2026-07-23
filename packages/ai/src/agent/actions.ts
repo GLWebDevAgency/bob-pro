@@ -17,6 +17,7 @@ import {
   type SubscriptionStatusView,
   type OwnerPayGuidance,
   type PaymentMethod,
+  type FrenchOperationCategory,
 } from '@bob/core';
 import {
   type ContextEntitySummary,
@@ -108,6 +109,8 @@ export interface IssuableInvoice {
   customerName: string;
   totalTtcCents: number;
   status: string;
+  /** BT-23 : vrai uniquement quand l'utilisateur doit qualifier l'accessorité des lignes. */
+  operationCategoryRequired: boolean;
 }
 
 /** Devis SIGNÉ facturable (ASK-2) — matière de generer_facture : le mode (acompte/solde)
@@ -121,6 +124,10 @@ export interface InvoiceableQuote {
   depositPct: number | null;
   /** L'acompte a déjà été facturé : la finale devient l'évidence (aucune question). */
   depositInvoiced: boolean;
+  /** Faux quand la chaîne acompte → finale n'est pas certifiée pour ce client. */
+  depositAvailable?: boolean;
+  /** Motif métier réel à restituer ; absent chez les hôtes historiques. */
+  depositUnavailableReason?: string | null;
   /** B8 (OPTIONNEL, rétro-compatible) : bon de commande déjà attaché au devis — null si aucun,
    * absent chez un hôte historique. Permet à lier_bon_commande d'annoncer un remplacement. */
   purchaseOrder?: { number: string; receivedAt: string | null; documentId: string | null } | null;
@@ -550,6 +557,8 @@ export interface BobActions {
   >;
   issueInvoice(input: {
     invoiceId: string;
+    /** BT-23 : fait choisi par l'utilisateur lorsque biens et services sont ambigus. */
+    operationCategory?: FrenchOperationCategory;
     /** Override RESPONSABILISÉ de l'embargo L221-10 (émission = demande de paiement) — `true`
      * strict après confirmation dédiée (safetyFloor) ; journalisé serveur. Jamais implicite. */
     embargoOverride?: boolean;

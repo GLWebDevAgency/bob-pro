@@ -47,11 +47,31 @@ import {
   DisabledRealtimeControlRepository,
   type RealtimeControlRepositoryPort,
 } from '../voice/realtime/realtime-control.repository';
+import {
+  DisabledOpenAiNativeSpeechMaintenance,
+  type OpenAiNativeSpeechMaintenancePort,
+} from '../voice/realtime/openai-native-speech-maintenance';
+import {
+  DisabledOpenAiNativeSpeechDeliveryRepository,
+  type OpenAiNativeSpeechDeliveryRepositoryPort,
+} from '../voice/realtime/openai-native-speech-delivery';
+import {
+  DisabledRealtimeReaperDirectory,
+  type RealtimeReaperDirectoryPort,
+} from '../voice/realtime/realtime-reaper-directory';
+import {
+  DisabledRealtimeGlobalCapacityInspector,
+  type RealtimeGlobalCapacityInspector,
+} from '../voice/realtime/realtime-capacity';
 import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
 import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import type { MistralConversationAdmissionPolicy } from '../voice/realtime/mistral-conversation-admission';
 import type { MistralConversationBootstrapReaperPort } from '../voice/realtime/mistral-conversation-bootstrap-reaper';
 import type { BobLiveSubjectHmacKeyRingAdmission } from '../voice/realtime/mistral-conversation-subject-key-version';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../voice/realtime/openai-native-proof-key-version';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -121,6 +141,9 @@ export class InMemoryPersistence implements Persistence {
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new InMemoryRealtimeAdmission(policy);
   }
+  createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
+    return new DisabledRealtimeGlobalCapacityInspector();
+  }
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
     return new DisabledRealtimeSpeechDeliveryRepository();
   }
@@ -135,6 +158,22 @@ export class InMemoryPersistence implements Persistence {
   }
   createRealtimeControlRepository(): RealtimeControlRepositoryPort {
     return new DisabledRealtimeControlRepository();
+  }
+  createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort {
+    return new DisabledOpenAiNativeSpeechDeliveryRepository();
+  }
+  createOpenAiNativeKeyVersionAuthority(
+    _subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    _proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort | null {
+    // Le harness mémoire ne peut pas attester un registre append-only PostgreSQL.
+    return null;
+  }
+  createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort {
+    return new DisabledOpenAiNativeSpeechMaintenance();
+  }
+  createRealtimeReaperDirectory(): RealtimeReaperDirectoryPort {
+    return new DisabledRealtimeReaperDirectory();
   }
   createMistralRealtimeIngressTicketAuthority(
     _policy: MistralRealtimeIngressTicketPolicy,
@@ -171,6 +210,8 @@ export class InMemoryPersistence implements Persistence {
     const subscriptionSnapshot = this.subscriptions.snapshot();
     const cabinetSnapshot = this.cabinet.snapshot?.();
     const documentSnapshot = this.documents.snapshot();
+    const documentInvoicePdfAttestationSnapshot =
+      this.documents.snapshotInvoicePdfAttestations();
     const documentAnalysisSnapshot = this.documentAnalyses.snapshot();
     const folderSnapshot = this.documentFolders.snapshot();
     const quoteSnapshot = this.quotes.snapshot();
@@ -195,6 +236,7 @@ export class InMemoryPersistence implements Persistence {
       this.subscriptions.restore(subscriptionSnapshot);
       if (cabinetSnapshot !== undefined) this.cabinet.restore?.(cabinetSnapshot);
       this.documents.restore(documentSnapshot);
+      this.documents.restoreInvoicePdfAttestations(documentInvoicePdfAttestationSnapshot);
       this.documentAnalyses.restore(documentAnalysisSnapshot);
       this.documentFolders.restore(folderSnapshot);
       this.quotes.restore(quoteSnapshot);

@@ -39,7 +39,7 @@ function invoice(kind: Extract<InvoiceKind, 'final' | 'deposit'> = 'final', issu
   if (!inv.ok) throw new Error('invoice');
   if (issued) {
     inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
   }
   return inv.value;
 }
@@ -159,34 +159,21 @@ describe('RecordIssuedInvoiceAccountingEntry', () => {
     expect(entries.saved).toHaveLength(0);
   });
 
-  it('B2 — finale SOLDÉE par les situations seules : ok sans écriture (jamais un rollback d’émission)', async () => {
-    // Scénario du finding : devis 148 000 HT / 162 800 TTC, situation 100 % émise, finale à 0.
+  it('B2 — refuse de créer une finale soldée à 100 % par les situations', () => {
+    // Une pièce finale à zéro n’a aucune substance comptable : le domaine la
+    // refuse avant numérotation plutôt que de tolérer une émission fantôme.
     const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-1', {
       depositDeduction: { amountCents: 162800, invoiceId: null },
       situationDeductionCents: 162800,
+      situationBilledHtCents: 148000,
     });
-    if (!final.ok) throw new Error('final');
-    final.value.assignNumber(DocNumber.format('F', 2026, 9), AT);
-    const issued = final.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
-    if (!issued.ok) throw new Error('issue');
 
-    const entries = new MemoryEntries();
-    const useCase = new RecordIssuedInvoiceAccountingEntry({
-      invoices: new MemoryInvoices(final.value),
-      entries,
-    });
-    const r = await useCase.execute({ invoiceId: 'inv-1' });
-
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.value).toEqual({
-        id: issuedInvoiceAccountingEntryId('inv-1'),
-        created: false,
-        totalDebitCents: 0,
-        totalCreditCents: 0,
+    expect(final.ok).toBe(false);
+    if (!final.ok) {
+      expect(final.error).toMatchObject({
+        code: 'VALIDATION',
+        field: 'situationBilledHtCents',
       });
     }
-    // Aucune écriture fantôme : le journal des ventes reste vierge pour cette pièce.
-    expect(entries.saved).toHaveLength(0);
   });
 });

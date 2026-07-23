@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { RecordExpense, canonicalRecordExpensePayload, type RecordExpenseInput } from './record-expense';
+import {
+  RecordExpense,
+  canonicalRecordExpensePayload,
+  type RecordExpenseDeps,
+  type RecordExpenseInput,
+} from './record-expense';
 import { type Expense } from '../../domain/expense/expense';
+import { Company } from '../../domain/company/company';
+import { MERCIER_PROPS } from '../fixtures';
+
+const TEST_COMPANY = (() => {
+  const result = Company.of({ ...MERCIER_PROPS, id: 'co-1' });
+  if (!result.ok) throw new Error('Fixture company invalide');
+  return result.value;
+})();
+
+const companies = {
+  findById: async (id: string) => (id === TEST_COMPANY.id ? TEST_COMPANY : null),
+};
 
 function input(overrides: Partial<Omit<RecordExpenseInput, 'companyId'>> = {}): Omit<RecordExpenseInput, 'companyId'> {
   return {
@@ -91,6 +108,7 @@ describe('RecordExpense — création payée d’emblée (ticket de caisse scann
           findById: async () => null,
           listByCompany: async () => [],
         },
+        companies,
         ids: { newId: () => 'expense-1' },
         clock: { now: () => '2026-07-18T10:00:00.000Z', today: () => '2026-07-18' },
       },
@@ -166,6 +184,7 @@ describe('RecordExpense — chantierId à la création (flux scan : destination 
           findById: async () => null,
           listByCompany: async () => [],
         },
+        companies,
         ids: { newId: () => 'expense-1' },
         clock: { now: () => '2026-07-18T10:00:00.000Z', today: () => '2026-07-18' },
         ...(over.withPort === false
@@ -258,5 +277,39 @@ describe('RecordExpense — chantierId à la création (flux scan : destination 
     });
     expect(existsCalls).toHaveLength(0);
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe('RecordExpense — qualification fiscale tenant fail-closed', () => {
+  const baseDeps = {
+    expenses: {
+      save: async (_expense: Expense) => undefined,
+      findById: async () => null,
+      listByCompany: async () => [],
+    },
+    ids: { newId: () => 'expense-1' },
+    clock: { now: () => '2026-07-18T10:00:00.000Z', today: () => '2026-07-18' },
+  };
+
+  const validInput: RecordExpenseInput = {
+    companyId: 'co-1',
+    supplierName: 'Cedeo',
+    documentDate: '2026-07-13',
+    totalTtcCents: 12_000,
+    vatCents: 2_000,
+    category: 'fournitures',
+  };
+
+  it('refuse sans port entreprise : aucun régime TVA implicite', async () => {
+    const r = await new RecordExpense(baseDeps as unknown as RecordExpenseDeps).execute(validInput);
+    expect(r).toMatchObject({ ok: false, error: { kind: 'dependency', port: 'CompanyRepository' } });
+  });
+
+  it('refuse une entreprise absente du tenant avant toute persistance', async () => {
+    const r = await new RecordExpense({
+      ...baseDeps,
+      companies: { findById: async () => null },
+    }).execute(validInput);
+    expect(r).toEqual({ ok: false, error: { kind: 'not_found', entity: 'company', id: 'co-1' } });
   });
 });

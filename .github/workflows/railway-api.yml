@@ -40,8 +40,12 @@ on:
         value: ${{ jobs.release-api.outputs.release_environment }}
 jobs:
   release-api:
+    # GitHub cancels a normal run step after roughly ten seconds. Keep the job alive so the
+    # cancellation-specific cleanup step below can reconcile an archive deployment whose creation
+    # response was lost; all ordinary unfinished steps still retain their implicit success() guard.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
     # Map the free-form workflow_call input before GitHub resolves environment
     # secrets. The validation step below still fails closed for unsupported
     # values, while an invalid caller can never select an arbitrary environment.
@@ -54,6 +58,8 @@ jobs:
       release_sha: ${{ steps.readiness.outputs.release_sha }}
       release_environment: ${{ steps.readiness.outputs.release_environment }}
     steps:
+      - name: Capture the release job time budget
+        run: echo "BOB_RELEASE_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
@@ -62,6 +68,8 @@ jobs:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           RELEASE_SERVICE: ${{ inputs.service }}
           EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           EXPECTED_PROMOTION_WORKFLOW_REF: ${{ format('{0}/.github/workflows/cabinet-release.yml@refs/heads/main', github.repository) }}
           RELEASE_REF: ${{ github.ref }}
@@ -72,6 +80,15 @@ jobs:
           esac
           [ -n "$EXPECTED_SERVICE" ] || { echo "GitHub environment variable RAILWAY_API_SERVICE is required" >&2; exit 1; }
           [ "$RELEASE_SERVICE" = "$EXPECTED_SERVICE" ] || { echo "Railway service does not match the selected environment" >&2; exit 1; }
+          ARCHIVE_AUDIT_SERVICE_ID="$ARCHIVE_AUDIT_SERVICE_ID" RAILWAY_ENVIRONMENT_ID="$RAILWAY_ENVIRONMENT_ID" node <<'NODE'
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          if (!uuid.test(process.env.ARCHIVE_AUDIT_SERVICE_ID ?? '')) {
+            throw new Error('RAILWAY_ARCHIVE_AUDIT_SERVICE_ID must be a UUID');
+          }
+          if (!uuid.test(process.env.RAILWAY_ENVIRONMENT_ID ?? '')) {
+            throw new Error('RAILWAY_ENVIRONMENT_ID must be a UUID');
+          }
+          NODE
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             [ "$CALLER_WORKFLOW_REF" = "$EXPECTED_PROMOTION_WORKFLOW_REF" ] || { echo "Production is only callable through cabinet-release.yml on main" >&2; exit 1; }
             [ "$RELEASE_REF" = refs/heads/main ] || { echo "Production requires refs/heads/main" >&2; exit 1; }
@@ -107,6 +124,38 @@ jobs:
         run: |
           railway status --environment "$RAILWAY_ENV" --json \
             | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
+      # Deux trains obligatoires pour l'archive V2 : aucune migration ne peut empêcher une
+      # ancienne réplique de RENVOYER en mémoire un XML B2C. Le prédécesseur doit donc déjà
+      # publier le fence HTTP old-schema-compatible, puis être l'unique réplique active.
+      - name: Certify predecessor B2C HTTP fence before archive expansion
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          node <<'NODE'
+          const url = new URL(process.env.API_BASE_URL ?? '');
+          if (url.protocol !== 'https:') throw new Error('API_BASE_URL must use https');
+          NODE
+          body="$(mktemp)"
+          fenced=false
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --location "$API_BASE_URL/health/ready" >"$body"; then
+              if HEALTH_BODY="$body" node <<'NODE'
+          const fs = require('node:fs');
+          const payload = JSON.parse(fs.readFileSync(process.env.HEALTH_BODY, 'utf8'));
+          if (payload?.ready !== true) process.exit(1);
+          if (payload?.capabilities?.documentArchiveB2cHttpFence !== 'v1') process.exit(1);
+          NODE
+              then
+                fenced=true
+                break
+              fi
+            fi
+            sleep 5
+          done
+          [ "$fenced" = true ] || {
+            echo "Refusing archive migrations: deployed predecessor lacks documentArchiveB2cHttpFence=v1" >&2
+            exit 1
+          }
       # Inputs texte libre passés via env (jamais interpolés dans le shell) — anti-injection.
       - name: Expand schema, spool notification delivery, and certify RLS
         env:
@@ -188,15 +237,72 @@ jobs:
           echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
           echo "release_sha=$EXPECTED_RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "release_environment=$EXPECTED_RELEASE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
-      - name: Retire the previous Mistral key, activate outbox v2 and certify the contract
+      - name: Reserve the archive audit and cleanup time budget
+        if: ${{ success() && !cancelled() }}
+        env:
+          RELEASE_JOB_STARTED_AT: ${{ env.BOB_RELEASE_JOB_STARTED_AT }}
+        run: |
+          node <<'NODE'
+          const startedAt = Number(process.env.RELEASE_JOB_STARTED_AT);
+          const now = Math.floor(Date.now() / 1_000);
+          const elapsedSeconds = now - startedAt;
+          if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0) {
+            throw new Error('Release job time budget is invalid');
+          }
+          if (elapsedSeconds > 10_800) {
+            throw new Error('Refusing to start the archive audit without its cleanup time budget');
+          }
+          NODE
+      - name: Preflight and run the isolated Railway archive byte-audit
+        id: archive_audit
+        if: ${{ success() && !cancelled() }}
+        timeout-minutes: 100
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          RELEASE_SHA: ${{ github.sha }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.release-evidence/document-archive/audit-${{ github.sha }}.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          # Railway's public API is quota-bound; the runner rejects any cadence below 10 s.
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: node apps/api/scripts/run-railway-document-archive-audit.mjs
+      - name: Reconcile an interrupted Railway archive audit
+        if: ${{ always() && (steps.archive_audit.outcome == 'failure' || steps.archive_audit.outcome == 'cancelled') }}
+        timeout-minutes: 4
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ARCHIVE_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_ARCHIVE_AUDIT_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+          RELEASE_SHA: ${{ github.sha }}
+          DOCUMENT_ARCHIVE_AUDIT_CI_EVIDENCE: ${{ github.workspace }}/.release-evidence/document-archive/audit-${{ github.sha }}.json
+          DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '5400'
+          DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
+        run: node apps/api/scripts/run-railway-document-archive-audit.mjs --cleanup-only
+      - name: Preserve the non-PII archive audit envelope
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: document-archive-${{ inputs.environment }}-${{ github.sha }}
+          path: .release-evidence/document-archive/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retire the previous Mistral key, activate archive/settlement/outbox v2 and certify the contract
+        if: ${{ success() && steps.archive_audit.outcome == 'success' }}
+        timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
           RAILWAY_ENV: ${{ inputs.environment }}
-        # Le trigger de spool n'est retiré qu'après preuve que la révision attendue est prête.
-        # En cas d'échec avant cette étape, N-1 continue les écritures métier et les messages
-        # restent différés. Après activation, le fence RLS bloque toute révision sans protocole v2.
+        # Les activations n'interviennent qu'après readiness du SHA et preuve mono-réplique.
+        # Avant cette étape, N-1 peut continuer les écritures V1 et les messages restent spoolés.
+        # Après activation, tout rollback N-1 est interdit : seule une correction roll-forward est sûre.
         run: |
           railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
+          DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-document-archive-v2.sh
+          INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
+            railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-invoice-settlement-v2.sh
           railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-notification-outbox-v2.sh
           railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/release.sh

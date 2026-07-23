@@ -61,7 +61,7 @@ class MemoryDocuments implements Pick<DocumentRepository, 'findById' | 'rename'>
   readonly map = new Map<string, Document>();
   forceRevisionConflict = false;
   renameCalls = 0;
-  save(d: Document): void {
+  seed(d: Document): void {
     this.map.set(d.id, d);
   }
   async rename(
@@ -87,7 +87,7 @@ class MemoryDocuments implements Pick<DocumentRepository, 'findById' | 'rename'>
 describe('RenameDocument (libellé d’affichage — le filename d’archive reste immuable)', () => {
   it('renomme, incrémente la révision et laisse le filename d’archive intact', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new RenameDocument({ documents });
 
     const r = await uc.execute({
@@ -110,7 +110,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('rejoue sans écriture quand le libellé est identique (idempotence)', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new RenameDocument({ documents });
 
     await uc.execute({
@@ -133,7 +133,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('refuse une révision périmée (conflit optimiste) sans muter le document', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new RenameDocument({ documents });
     await uc.execute({ companyId: COMPANY, documentId: 'doc-leroy', displayName: 'Nom actuel', expectedRevision: 1 });
 
@@ -150,7 +150,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('refuse un document introuvable (ou hors tenant) et une révision invalide', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new RenameDocument({ documents });
 
     const missing = await uc.execute({ companyId: COMPANY, documentId: 'inconnu', displayName: 'X y z', expectedRevision: 1 });
@@ -165,7 +165,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('refuse un libellé invalide (vide, trop long) via le domaine', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     const uc = new RenameDocument({ documents });
 
     const empty = await uc.execute({ companyId: COMPANY, documentId: 'doc-leroy', displayName: '   ', expectedRevision: 1 });
@@ -183,7 +183,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('refuse de renommer un document supprimé', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }));
+    documents.seed(makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }));
     const uc = new RenameDocument({ documents });
 
     const r = await uc.execute({ companyId: COMPANY, documentId: 'doc-del', displayName: 'Nouveau nom', expectedRevision: 1 });
@@ -192,7 +192,7 @@ describe('RenameDocument (libellé d’affichage — le filename d’archive res
 
   it('échoue sans mutation si le compare-and-set de persistance perd une course', async () => {
     const documents = new MemoryDocuments();
-    documents.save(makeDocument());
+    documents.seed(makeDocument());
     documents.forceRevisionConflict = true;
 
     const result = await new RenameDocument({ documents }).execute({

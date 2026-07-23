@@ -34,6 +34,8 @@ const MAX_RESPONSE_START_TIMEOUT_MS = 60_000;
 export interface RealtimeAuditedUplinkTransport extends VoiceConversationTransport {
   getProcessAudioLease(): ProcessAudioLease | null;
   getSpeechSourcePolicy(): RealtimeVoiceSpeechSourcePolicy | null;
+  /** Présent sur le WebRTC brut, qui peut devenir le transport primaire du contrat natif. */
+  readonly completionMode?: 'continuous' | 'one-shot';
   /** Vrai pour un ticket one-shot : la lecture + ACK acoustique clôt toute la mission. */
   readonly completesConversationAfterAuditedSpeech?: boolean;
 }

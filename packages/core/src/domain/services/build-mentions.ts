@@ -3,7 +3,6 @@ import { type Customer } from '../customer/customer';
 import { type LineCategory } from '../billing/shared/line-item';
 import { type VatRate } from '../billing/shared/vat-rate';
 import { type DateOnly } from '../../shared-kernel/time';
-import { frenchVatNumber } from '../compliance/facturx';
 import { formatEUR } from '../../format/money';
 
 export type OperationNature = 'biens' | 'services' | 'mixte';
@@ -105,10 +104,11 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   if (company.rcsOrRm) m.push(company.rcsOrRm);
   // A6 — n° de TVA intracommunautaire du vendeur dès lors que la TVA est facturée (art. 242
   // nonies A, I-3° de l'annexe II au CGI). Franchise en base : TVA non applicable, numéro omis —
-  // cohérent avec le XML Factur-X qui omet BT-31 en franchise. Valeur du profil quand elle a été
-  // saisie, sinon dérivation déterministe depuis le SIREN (même algorithme que le XML, BT-31).
-  if (!company.isVatFranchise()) {
-    m.push(`TVA intracommunautaire : ${company.tvaIntracom ?? frenchVatNumber(company.siren)}`);
+  // cohérent avec le XML Factur-X qui omet BT-31 en franchise. Le numéro doit avoir été
+  // réellement fourni/validé dans Company : un SIREN permet de calculer une clé mais ne prouve
+  // ni l'attribution ni l'activité du numéro, donc il n'est JAMAIS converti en mention fiscale.
+  if (!company.isVatFranchise() && company.tvaIntracom) {
+    m.push(`TVA intracommunautaire : ${company.tvaIntracom}`);
   }
 
   // Réforme 2026/2027 : le SIREN du client (assujetti) devient une mention obligatoire en B2B/B2G.

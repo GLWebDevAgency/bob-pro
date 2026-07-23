@@ -3,7 +3,11 @@ import { Invoice } from '../billing/invoice/invoice';
 import { Quote, type QuoteSnapshot } from '../billing/quote/quote';
 import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
-import { billedTtcCents, quoteBillingEngagement } from './quote-billing-engagement';
+import {
+  billedTtcCents,
+  quoteBillingEngagement,
+  validateSituationVatClosure,
+} from './quote-billing-engagement';
 
 const AT = '2026-06-01T09:00:00.000Z';
 const terms = (() => {
@@ -33,7 +37,14 @@ function signedQuote(over: Partial<QuoteSnapshot> = {}): Quote {
 function issue(invoice: Invoice, sequence: number): Invoice {
   const assigned = invoice.assignNumber(DocNumber.format('F', 2026, sequence), AT);
   if (!assigned.ok) throw new Error('number');
-  const issued = invoice.issue({ mentions: [], terms, issuedAt: '2026-06-01', at: AT });
+  const issued = invoice.issue({
+    mentions: [],
+    terms,
+    issuedAt: '2026-06-01',
+    at: AT,
+    vatTreatment: 'standard',
+    frenchBillingMode: 'S1',
+  });
   if (!issued.ok) throw new Error('issue');
   return invoice;
 }
@@ -117,5 +128,65 @@ describe('quoteBillingEngagement (B2 — source unique des pièces sœurs)', () 
     // TTC 48 840 ; net à payer 46 398 (retenue 2 442) — le CUMUL compte le TTC plein.
     expect(sit.totals().netToPay).toBe(46398);
     expect(billedTtcCents(sit)).toBe(48840);
+  });
+
+  it('refuse une finale quand les arrondis par pièce surévaluent la TVA cumulée', () => {
+    const tiny = signedQuote({
+      lines: [
+        { id: 'tiny', label: 'Petit poste', category: 'labor', qty: 1, unitPriceHT: 6, vatRate: 20 },
+      ],
+    });
+    const first = situation(tiny, 'sit-tiny', 1, 3);
+    const final = Invoice.fromSignedQuote(tiny, 'final', 'fin-tiny', {
+      depositDeduction: { amountCents: first.totals().ttc, invoiceId: first.id },
+      situationDeductionCents: first.totals().ttc,
+      situationBilledHtCents: first.totals().ht,
+      situationBilledByQuoteLineCents: { tiny: 3 },
+      precedingInvoices: [
+        {
+          invoiceId: first.id,
+          kind: 'situation',
+          number: 'F-2026-0001',
+          issuedAt: '2026-06-01',
+        },
+      ],
+    });
+    if (!final.ok) throw new Error('final');
+
+    expect(tiny.totals().vat).toBe(1);
+    expect(first.totals().vat + final.value.totals().vat).toBe(2);
+    expect(validateSituationVatClosure({
+      marketTotals: tiny.totals(),
+      emittedSituations: [first],
+      finalInvoice: final.value,
+    })).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'situationVatClosure' },
+    });
+  });
+
+  it('accepte la clôture quand le cumul TVA par taux retrouve exactement le marché', () => {
+    const first = situation(quote, 'sit-ok', 1, 44400);
+    const final = Invoice.fromSignedQuote(quote, 'final', 'fin-ok', {
+      depositDeduction: { amountCents: first.totals().ttc, invoiceId: first.id },
+      situationDeductionCents: first.totals().ttc,
+      situationBilledHtCents: first.totals().ht,
+      situationBilledByQuoteLineCents: { l1: 24000, l2: 20400 },
+      precedingInvoices: [
+        {
+          invoiceId: first.id,
+          kind: 'situation',
+          number: 'F-2026-0001',
+          issuedAt: '2026-06-01',
+        },
+      ],
+    });
+    if (!final.ok) throw new Error('final');
+
+    expect(validateSituationVatClosure({
+      marketTotals: quote.totals(),
+      emittedSituations: [first],
+      finalInvoice: final.value,
+    })).toEqual({ ok: true, value: undefined });
   });
 });

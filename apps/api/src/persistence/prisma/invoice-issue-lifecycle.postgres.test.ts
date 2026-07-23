@@ -346,6 +346,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             legalForm: 'EI',
             siren: '552100554',
             siret,
+            tvaIntracom: 'FR96552100554',
             trade: 'autre',
             vatRegime: 'reel_normal',
             rcsOrRm: 'RCS Paris 552 100 554',

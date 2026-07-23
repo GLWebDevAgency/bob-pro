@@ -1,5 +1,11 @@
 # SPEC — BOB LIVE (mandat fondateur 2026-07-13, autonomie totale Claude+GPT)
 
+> **Amendement normatif du 21/07/2026** — La cible de publication est désormais **GPT Realtime**
+> avec Voice Trace obligatoire. Le plein-duplex Mistral V3 est gelé jusqu'après publication.
+> [OBJECTIFS_SPECS_DOD_PUBLICATION.md](OBJECTIFS_SPECS_DOD_PUBLICATION.md) fixe l'objectif, la
+> sélection homogène du fournisseur, les SLO, l'ordre d'exécution et la DoD. Les architectures
+> Mistral décrites plus bas sont conservées comme patrimoine post-V1, pas comme travail actif.
+
 **But** : fluidité de classe majeure — ChatGPT Live / Gemini Live / Claude vocal. Voix-à-voix
 naturel, interruption à la parole, latence mesurée et pilotée. Validation fondateur À LA FIN.
 

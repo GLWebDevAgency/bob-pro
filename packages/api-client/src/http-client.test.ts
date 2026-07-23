@@ -1186,6 +1186,13 @@ describe('HttpBobClient', () => {
       if (u === 'https://api.bob.test/invoices/inv-9/draft' && method === 'DELETE') {
         return new Response(JSON.stringify({ deleted: true }), { headers: { 'content-type': 'application/json' } });
       }
+      if (u === 'https://api.bob.test/invoices/inv-9/issue' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          invoiceId: 'inv-9',
+          operationCategory: 'services',
+        });
+        return new Response(JSON.stringify({ number: 'F-2026-0009' }), { headers: { 'content-type': 'application/json' } });
+      }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1202,6 +1209,12 @@ describe('HttpBobClient', () => {
 
     const deleted = await client.deleteDraftInvoice('inv-9');
     expect(deleted.ok && deleted.value).toEqual({ deleted: true });
+
+    const issued = await client.issueInvoice({
+      invoiceId: 'inv-9',
+      operationCategory: 'services',
+    });
+    expect(issued.ok && issued.value).toEqual({ number: 'F-2026-0009' });
   });
 
   it('P0 R4 : signature-link et sign frappent les routes exactes avec le corps exact', async () => {
@@ -1570,7 +1583,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     const input = {
       name: 'SARL Nguyen',
       type: 'b2b' as const,
-      siren: '123456789',
+      siren: '732829320',
+      tvaIntracom: 'FR44732829320',
       contactName: 'Mme Nguyen',
       address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
     };
@@ -1622,6 +1636,7 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       value: [
         {
           ...item,
+          tvaIntracom: null,
           paymentTerms: null,
           billingChannel: null,
           isInternational: false,
@@ -1647,6 +1662,7 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       outstandingCents: 0,
       customerCreditCents: 0,
       siren: '130025265',
+      tvaIntracom: null,
       avgDelayDays: null,
       paidOnTimeRatio: null,
       paymentHistoryStatus: 'insufficient_history',
@@ -2122,6 +2138,15 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     allowedOrigin: 'https://project.supabase.co',
     allowedPathPrefix: `/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/${sessionHandle}/`,
   });
+  const nativeBinding = (configVersion: string) => ({
+    configVersion,
+    speechDelivery: 'openai-native-webrtc-v1' as const,
+  });
+  const auditedBinding = (configVersion: string) => ({
+    configVersion,
+    speechDelivery: 'audited-signed-url-v1' as const,
+  });
+  const currentConfigVersion = 'bob-live-provider-neutral-v4';
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -2170,6 +2195,202 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     });
   });
 
+  it('décode le contrat WebRTC natif exact sans policy signée', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      available: true,
+      transport: 'webrtc',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      ...nativeBinding(currentConfigVersion),
+      requiresDevelopmentBuild: true,
+      maxSessionSeconds: 900,
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.realtimeVoiceConfig()).resolves.toEqual({
+      ok: true,
+      value: {
+        available: true,
+        transport: 'webrtc',
+        model: 'gpt-realtime-2.1',
+        voice: 'marin',
+        ...nativeBinding(currentConfigVersion),
+        requiresDevelopmentBuild: true,
+        maxSessionSeconds: 900,
+      },
+    });
+  });
+
+  it.each([
+    ['delivery absente', {
+      available: true,
+      transport: 'webrtc',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      configVersion: currentConfigVersion,
+      requiresDevelopmentBuild: true,
+      maxSessionSeconds: 900,
+    }],
+    ['policy mêlée au config natif', {
+      available: true,
+      transport: 'webrtc',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      ...nativeBinding(currentConfigVersion),
+      requiresDevelopmentBuild: true,
+      maxSessionSeconds: 900,
+      speechSourcePolicy: { mode: 'signed-url-v1' },
+    }],
+    ['delivery native sur Mistral', {
+      available: true,
+      transport: 'mistral-pcm',
+      protocol: 'bob.mistral-pcm.v1',
+      model: 'voxtral-mini-transcribe-realtime-2602',
+      voice: 'marin',
+      ...nativeBinding(currentConfigVersion),
+      requiresDevelopmentBuild: true,
+      maxSessionSeconds: 900,
+    }],
+  ])('rejette un config de livraison incohérent ou partiel (%s)', async (_label, response) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(response), {
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.realtimeVoiceConfig()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it('lie le bootstrap natif à la delivery/version et refuse toute policy signée', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000031';
+    const answerSdp = 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=recvonly\r\n';
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        ...nativeBinding(currentConfigVersion),
+        sessionHandle,
+      });
+      return new Response(JSON.stringify({
+        transport: 'webrtc',
+        answerSdp,
+        sessionHandle,
+        hardExpiresAt: '2026-07-22T20:00:00.000Z',
+        model: 'gpt-realtime-2.1',
+        voice: 'marin',
+        ...nativeBinding(currentConfigVersion),
+        maxSessionSeconds: 900,
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = await client.createRealtimeVoiceCall({
+      transport: 'webrtc',
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...nativeBinding(currentConfigVersion),
+      sessionHandle,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { speechDelivery: 'openai-native-webrtc-v1', answerSdp },
+    });
+    if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');
+  });
+
+  it('parle au serveur N-1 sans champs v4 et normalise sa réponse audited WebRTC', async () => {
+    const configVersion = 'bob-live-provider-neutral-v3';
+    const sessionHandle = '00000000-0000-4000-8000-000000000033';
+    const answerSdp = 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=recvonly\r\n';
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        sessionHandle,
+      });
+      return new Response(JSON.stringify({
+        transport: 'webrtc',
+        answerSdp,
+        sessionHandle,
+        hardExpiresAt: '2026-07-22T20:00:00.000Z',
+        model: 'gpt-realtime-2.1',
+        voice: 'marin',
+        configVersion,
+        maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'webrtc',
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...auditedBinding(configVersion),
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        transport: 'webrtc',
+        speechDelivery: 'audited-signed-url-v1',
+        answerSdp,
+      },
+    });
+  });
+
+  it('refuse une version hors fenêtre N/N-1 avant tout appel réseau', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...auditedBinding('bob-live-provider-neutral-v2'),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['policy ajoutée au natif', 'openai-native-webrtc-v1', true, currentConfigVersion],
+    ['policy absente de l’audité', 'audited-signed-url-v1', false, currentConfigVersion],
+    ['delivery divergente', 'audited-signed-url-v1', true, currentConfigVersion],
+    ['version divergente', 'openai-native-webrtc-v1', false, 'bob-live-provider-neutral-v2'],
+  ] as const)(
+    'rejette un bootstrap WebRTC mélangé ou non lié (%s)',
+    async (_label, responseDelivery, includePolicy, responseVersion) => {
+      const sessionHandle = '00000000-0000-4000-8000-000000000032';
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+        transport: 'webrtc',
+        answerSdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\na=recvonly\r\n',
+        sessionHandle,
+        hardExpiresAt: '2026-07-22T20:00:00.000Z',
+        model: 'gpt-realtime-2.1',
+        voice: 'marin',
+        configVersion: responseVersion,
+        speechDelivery: responseDelivery,
+        maxSessionSeconds: 900,
+        ...(includePolicy ? { speechSourcePolicy: speechSourcePolicy(sessionHandle) } : {}),
+      }), { headers: { 'content-type': 'application/json' } })));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+      const requestBinding = _label === 'policy absente de l’audité'
+        ? auditedBinding(currentConfigVersion)
+        : nativeBinding(currentConfigVersion);
+
+      await expect(client.createRealtimeVoiceCall({
+        sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        ...requestBinding,
+        sessionHandle,
+      })).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'dependency', port: 'api-contract' },
+      });
+    },
+  );
+
   it('décode strictement la capacité et négocie le SDP via le backend authentifié', async () => {
     const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
     const sessionHandle = '00000000-0000-4000-8000-000000000001';
@@ -2183,7 +2404,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           transport: 'webrtc',
           model: 'gpt-realtime-2.1',
           voice: 'marin',
-          configVersion: 'bob-live-webrtc-v1',
+          configVersion: currentConfigVersion,
           requiresDevelopmentBuild: true,
           maxSessionSeconds: 900,
           speechDelivery: 'audited-signed-url-v1',
@@ -2232,6 +2453,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       expect(init?.method).toBe('POST');
       expect(JSON.parse(String(init?.body))).toEqual({
         sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        ...auditedBinding(currentConfigVersion),
         sessionHandle,
       });
       return new Response(JSON.stringify({
@@ -2241,7 +2463,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         hardExpiresAt: '2026-07-13T20:00:00.000Z',
         model: 'gpt-realtime-2.1',
         voice: 'marin',
-        configVersion: 'bob-live-webrtc-v1',
+        ...auditedBinding(currentConfigVersion),
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       }), { headers: { 'content-type': 'application/json' } });
@@ -2256,6 +2478,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     const config = await client.realtimeVoiceConfig();
     const call = await client.createRealtimeVoiceCall({
       sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     });
     const context = await client.updateRealtimeVoiceContext(sessionHandle, {
@@ -2311,7 +2534,11 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       expect(String(url)).toBe('https://api.bob.test/voice/realtime/calls');
       expect(String(url)).not.toContain(ticket);
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual({ context, sessionHandle });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        context,
+        ...auditedBinding(currentConfigVersion),
+        sessionHandle,
+      });
       return new Response(JSON.stringify({
         transport: 'mistral-pcm',
         websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
@@ -2326,7 +2553,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         hardExpiresAt: '2026-07-14T12:15:00.000Z',
         model: 'voxtral-mini-transcribe-realtime-2602',
         voice: 'marin',
-        configVersion: 'bob-live-provider-neutral-v2',
+        ...auditedBinding(currentConfigVersion),
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       }), { headers: { 'content-type': 'application/json' } });
@@ -2337,6 +2564,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     const result = await client.createRealtimeVoiceCall({
       transport: 'mistral-pcm',
       context,
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     });
 
@@ -2356,9 +2584,62 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         hardExpiresAt: '2026-07-14T12:15:00.000Z',
         model: 'voxtral-mini-transcribe-realtime-2602',
         voice: 'marin',
-        configVersion: 'bob-live-provider-neutral-v2',
+        ...auditedBinding(currentConfigVersion),
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
+      },
+    });
+  });
+
+  it('parle au serveur Mistral N-1 sans champs v4 et normalise sa réponse audited', async () => {
+    const configVersion = 'bob-live-provider-neutral-v3';
+    const sessionHandle = '00000000-0000-4000-8000-000000000016';
+    const ticket = 'B'.repeat(43);
+    const contextDigest = 'e'.repeat(64);
+    const context = {
+      version: 1 as const,
+      revision: 2,
+      context: {
+        screen: { name: '/home', instanceId: 'home-n-minus-one' },
+        entities: [],
+        capabilities: ['screen.read'] as const,
+      },
+    };
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ context, sessionHandle });
+      return new Response(JSON.stringify({
+        transport: 'mistral-pcm',
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket,
+        protocol: 'bob.mistral-pcm.v1',
+        ticketExpiresAt: '2026-07-22T12:00:30.000Z',
+        maxAudioBytes: 28_800_000,
+        contextRevision: 2,
+        contextDigest,
+        sessionHandle,
+        hardExpiresAt: '2026-07-22T12:15:00.000Z',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion,
+        maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      context,
+      ...auditedBinding(configVersion),
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        speechDelivery: 'audited-signed-url-v1',
+        ticket,
       },
     });
   });
@@ -2382,6 +2663,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       expect(JSON.parse(String(init?.body))).toEqual({
         protocol: 'bob.mistral-pcm.v2',
         context,
+        ...auditedBinding(currentConfigVersion),
         sessionHandle,
       });
       return new Response(JSON.stringify({
@@ -2400,7 +2682,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         hardExpiresAt: '2026-07-19T12:15:00.000Z',
         model: 'voxtral-mini-transcribe-realtime-2602',
         voice: 'marin',
-        configVersion: 'bob-live-provider-neutral-v2',
+        ...auditedBinding(currentConfigVersion),
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       }), { headers: { 'content-type': 'application/json' } });
@@ -2412,6 +2694,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       transport: 'mistral-pcm',
       protocol: 'bob.mistral-pcm.v2',
       context,
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     })).resolves.toEqual({
       ok: true,
@@ -2431,7 +2714,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         hardExpiresAt: '2026-07-19T12:15:00.000Z',
         model: 'voxtral-mini-transcribe-realtime-2602',
         voice: 'marin',
-        configVersion: 'bob-live-provider-neutral-v2',
+        ...auditedBinding(currentConfigVersion),
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       },
@@ -2456,7 +2739,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       hardExpiresAt: '2026-07-19T12:15:00.000Z',
       model: 'voxtral-mini-transcribe-realtime-2602',
       voice: 'marin',
-      configVersion: 'bob-live-provider-neutral-v2',
+      ...auditedBinding(currentConfigVersion),
       maxSessionSeconds: 900,
       speechSourcePolicy: speechSourcePolicy(sessionHandle),
     }), { headers: { 'content-type': 'application/json' } })));
@@ -2474,6 +2757,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           capabilities: ['screen.read'],
         },
       },
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     })).resolves.toMatchObject({
       ok: false,
@@ -2497,7 +2781,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       hardExpiresAt: '2026-07-14T12:15:00.000Z',
       model: 'voxtral-mini-transcribe-realtime-2602',
       voice: 'marin',
-      configVersion: 'bob-live-provider-neutral-v2',
+      ...auditedBinding(currentConfigVersion),
       maxSessionSeconds: 900,
       // La policy reste correctement liée à company-1 : le champ localisateur doit lui aussi
       // être exact, sinon le mobile transmettrait un tenant ambigu dans l'auth WebSocket.
@@ -2516,6 +2800,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           capabilities: ['screen.read'],
         },
       },
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     })).resolves.toMatchObject({
       ok: false,
@@ -2539,7 +2824,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       hardExpiresAt: '2026-07-14T12:15:00.000Z',
       model: 'voxtral-mini-transcribe-realtime-2602',
       voice: 'marin',
-      configVersion: 'bob-live-provider-neutral-v2',
+      ...auditedBinding(currentConfigVersion),
       maxSessionSeconds: 900,
       speechSourcePolicy: speechSourcePolicy(sessionHandle),
     }), { headers: { 'content-type': 'application/json' } })));
@@ -2556,6 +2841,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           capabilities: ['screen.read'],
         },
       },
+      ...auditedBinding(currentConfigVersion),
       sessionHandle,
     })).resolves.toMatchObject({
       ok: false,
@@ -2588,7 +2874,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       hardExpiresAt: '2026-07-14T12:15:00.000Z',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
-      configVersion: 'bob-live-provider-neutral-v3',
+      ...auditedBinding('bob-live-provider-neutral-v3'),
       maxSessionSeconds: 900,
       speechSourcePolicy: speechSourcePolicyValue,
     }), { headers: { 'content-type': 'application/json' } })));
@@ -2596,6 +2882,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
 
     await expect(client.createRealtimeVoiceCall({
       sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...auditedBinding('bob-live-provider-neutral-v3'),
       sessionHandle,
     })).resolves.toMatchObject({
       ok: false,
@@ -2618,8 +2905,9 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       hardExpiresAt: '2026-07-14T12:15:00.000Z',
       model: 'voxtral-mini-transcribe-realtime-2602',
       voice: 'marin',
-      configVersion: 'bob-live-provider-neutral-v2',
+      ...auditedBinding(currentConfigVersion),
       maxSessionSeconds: 900,
+      speechSourcePolicy: speechSourcePolicy('00000000-0000-4000-8000-000000000011'),
       providerSessionId: 'private-provider-id',
     };
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(response), {
@@ -2638,6 +2926,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           capabilities: ['screen.read'],
         },
       },
+      ...auditedBinding(currentConfigVersion),
     });
 
     expect(result).toMatchObject({
@@ -2655,12 +2944,15 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       callId: 'rtc_12345678',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
-      configVersion: 'bob-live-webrtc-v1',
+      ...nativeBinding(currentConfigVersion),
       maxSessionSeconds: 900,
     }), { headers: { 'content-type': 'application/json' } })));
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
 
-    const result = await client.createRealtimeVoiceCall({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+    const result = await client.createRealtimeVoiceCall({
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...nativeBinding(currentConfigVersion),
+    });
 
     expect(result).toMatchObject({
       ok: false,
@@ -2719,7 +3011,10 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     controller.abort();
 
     const result = await client.createRealtimeVoiceCall(
-      { sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' },
+      {
+        sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        ...nativeBinding(currentConfigVersion),
+      },
       controller.signal,
     );
 

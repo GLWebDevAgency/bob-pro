@@ -32,26 +32,24 @@ concurrency:
   group: bob-live-native-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Le config Expo refuse volontairement tout binaire sans API, auth et liens légaux. Les valeurs
+# ci-dessous sont des origines réservées au harnais de compilation : elles ne sont ni des données
+# produit, ni des secrets, ni un mode démo, et aucun artefact de ce workflow n'est distribué.
+env:
+  CI: "true"
+  EXPO_PUBLIC_API_URL: https://api.ci.bobpro.test
+  EXPO_PUBLIC_SUPABASE_URL: https://supabase.ci.bobpro.test
+  EXPO_PUBLIC_SUPABASE_ANON_KEY: ci-public-anon-key-not-a-secret
+  EXPO_PUBLIC_TERMS_URL: https://legal.ci.bobpro.test/conditions-utilisation
+  EXPO_PUBLIC_PRIVACY_URL: https://legal.ci.bobpro.test/confidentialite
+  EXPO_PUBLIC_SUPPORT_EMAIL: support@bobpro.test
+  EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL: https://legal.ci.bobpro.test/auth/confirme
+
 jobs:
   android-contract:
     name: Android module + wire contract
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    env:
-      CI: "true"
-      # Les contrats natifs passent par `expo prebuild`, qui ÉVALUE app.config.ts. Celui-ci
-      # refuse fail-closed un build sans EXPO_PUBLIC_API_URL — garde SAINE (elle empêche un
-      # binaire distribué de pointer des fixtures) qu'il ne faut surtout pas affaiblir. On
-      # fournit donc des valeurs de CONTRAT, non secrètes : ce job compile un projet éphémère
-      # pour vérifier le module natif et le contrat de fil, il n'expédie aucun binaire et ne
-      # joint aucun service. Publiques par nature, comme celles d'eas.json.
-      EXPO_PUBLIC_API_URL: "https://bob-pro-api-production.up.railway.app"
-      EXPO_PUBLIC_SUPABASE_URL: "https://cvdkqjczgqoeshputacl.supabase.co"
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: "ci-contract-check"
-      EXPO_PUBLIC_TERMS_URL: "https://bob-pro-sign-web.vercel.app/legal/conditions-utilisation"
-      EXPO_PUBLIC_PRIVACY_URL: "https://bob-pro-sign-web.vercel.app/legal/confidentialite"
-      EXPO_PUBLIC_SUPPORT_EMAIL: "ci-contract-check@bobpro.invalid"
-      EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL: "https://bob-pro-sign-web.vercel.app/auth/confirme"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -93,21 +91,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 35
     env:
-      CI: "true"
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
-      # Les contrats natifs passent par `expo prebuild`, qui ÉVALUE app.config.ts. Celui-ci
-      # refuse fail-closed un build sans EXPO_PUBLIC_API_URL — garde SAINE (elle empêche un
-      # binaire distribué de pointer des fixtures) qu'il ne faut surtout pas affaiblir. On
-      # fournit donc des valeurs de CONTRAT, non secrètes : ce job compile un projet éphémère
-      # pour vérifier le module natif et le contrat de fil, il n'expédie aucun binaire et ne
-      # joint aucun service. Publiques par nature, comme celles d'eas.json.
-      EXPO_PUBLIC_API_URL: "https://bob-pro-api-production.up.railway.app"
-      EXPO_PUBLIC_SUPABASE_URL: "https://cvdkqjczgqoeshputacl.supabase.co"
-      EXPO_PUBLIC_SUPABASE_ANON_KEY: "ci-contract-check"
-      EXPO_PUBLIC_TERMS_URL: "https://bob-pro-sign-web.vercel.app/legal/conditions-utilisation"
-      EXPO_PUBLIC_PRIVACY_URL: "https://bob-pro-sign-web.vercel.app/legal/confidentialite"
-      EXPO_PUBLIC_SUPPORT_EMAIL: "ci-contract-check@bobpro.invalid"
-      EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL: "https://bob-pro-sign-web.vercel.app/auth/confirme"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

@@ -63,8 +63,8 @@ export interface BusinessReviewInput {
   invoices: readonly AgedBalanceInvoiceData[];
   customers: readonly AgedBalanceCustomerData[];
   expenses: readonly BusinessReviewExpenseData[];
-  /** Régime TVA si connu (getCompanyMe est optionnel) — repli honnête : réel (TTC − TVA). */
-  vatRegime?: VatRegime | null;
+  /** Régime TVA qualifié du tenant — requis : aucun traitement « réel » implicite. */
+  vatRegime: VatRegime;
   today: DateOnly;
   params?: {
     /** Plancher de base sous lequel aucun % n'est émis (défaut 300 000 c = 3 000 €). */
@@ -466,7 +466,11 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
   };
 
   // ── Position TVA (réutilisée, jamais recalculée depuis le grand livre) ──────────────
-  const vat = deriveVatPosition({ invoices: input.invoices, expenses: input.expenses });
+  const vat = deriveVatPosition({
+    vatRegime: input.vatRegime,
+    invoices: input.invoices,
+    expenses: input.expenses,
+  });
 
   const quality = {
     invoicesWithoutDueDate: input.invoices.filter(

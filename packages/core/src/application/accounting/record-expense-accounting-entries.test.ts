@@ -3,7 +3,18 @@ import { Expense, type ExpenseProps } from '../../domain/expense/expense';
 import { AccountingEntry } from '../../domain/accounting/accounting-entry';
 import { type AccountingEntryRepository } from '../ports/accounting-entry-repository';
 import { type ExpenseRepository } from '../ports/repositories';
-import { RecordExpenseAccountingEntries } from './record-expense-accounting-entries';
+import {
+  RecordExpenseAccountingEntries,
+  type RecordExpenseAccountingEntriesDeps,
+} from './record-expense-accounting-entries';
+import { Company, type VatRegime } from '../../domain/company/company';
+import { MERCIER_PROPS } from '../fixtures';
+
+function companyFor(vatRegime: VatRegime = 'reel_normal') {
+  const result = Company.of({ ...MERCIER_PROPS, id: 'co-1', vatRegime });
+  if (!result.ok) throw new Error('Fixture company invalide');
+  return result.value;
+}
 
 function expenseProps(over: Partial<ExpenseProps> = {}): ExpenseProps {
   return {
@@ -29,9 +40,10 @@ function expenseProps(over: Partial<ExpenseProps> = {}): ExpenseProps {
   };
 }
 
-function makeEnv(expenses: ExpenseProps[]) {
+function makeEnv(expenses: ExpenseProps[], vatRegime: VatRegime = 'reel_normal') {
   const byId = new Map(expenses.map((p) => [p.id, Expense.rehydrate(p)]));
   const saved = new Map<string, AccountingEntry>();
+  const company = companyFor(vatRegime);
   const expenseRepo: ExpenseRepository = {
     save: async (e) => void byId.set(e.id, e),
     findById: async (id) => byId.get(id) ?? null,
@@ -42,7 +54,14 @@ function makeEnv(expenses: ExpenseProps[]) {
     findById: async (_companyId, id) => saved.get(id) ?? null,
     listByCompany: async (companyId) => [...saved.values()].filter((e) => e.companyId === companyId),
   };
-  return { saved, usecase: new RecordExpenseAccountingEntries({ expenses: expenseRepo, entries: entryRepo }) };
+  return {
+    saved,
+    usecase: new RecordExpenseAccountingEntries({
+      expenses: expenseRepo,
+      entries: entryRepo,
+      companies: { findById: async (id) => (id === company.id ? company : null) },
+    }),
+  };
 }
 
 describe('RecordExpenseAccountingEntries (cycle achats complet)', () => {
@@ -80,10 +99,62 @@ describe('RecordExpenseAccountingEntries (cycle achats complet)', () => {
     expect(env.saved.size).toBe(2);
   });
 
+  it('franchise : le cycle complet poste le TTC en 6xx et aucun 44566', async () => {
+    const env = makeEnv([expenseProps({ status: 'to_pay', paymentEvidence: null })], 'franchise');
+    const r = await env.usecase.execute({ expenseId: 'exp-1' });
+    expect(r.ok).toBe(true);
+    expect(env.saved.get('expense:exp-1:recorded')?.lines).toEqual([
+      { account: '606', label: 'Achat Cedeo', debitCents: 34_200, creditCents: 0 },
+      { account: '401', label: 'Achat Cedeo', debitCents: 0, creditCents: 34_200 },
+    ]);
+  });
+
+  it('refuse de valider silencieusement un ancien 44566 incompatible avec une franchise', async () => {
+    const env = makeEnv([expenseProps({ status: 'to_pay', paymentEvidence: null })], 'franchise');
+    env.saved.set('expense:exp-1:recorded', AccountingEntry.rehydrate({
+      id: 'expense:exp-1:recorded',
+      companyId: 'co-1',
+      journal: 'purchases',
+      sourceType: 'expense',
+      sourceId: 'exp-1',
+      entryDate: '2026-07-01',
+      reference: 'Cedeo',
+      label: 'Achat Cedeo',
+      lines: [
+        { account: '606', label: 'Achat Cedeo', debitCents: 28_500, creditCents: 0 },
+        { account: '44566', label: 'Achat Cedeo', debitCents: 5_700, creditCents: 0 },
+        { account: '401', label: 'Achat Cedeo', debitCents: 0, creditCents: 34_200 },
+      ],
+    }));
+    const r = await env.usecase.execute({ expenseId: 'exp-1' });
+    expect(r).toMatchObject({ ok: false, error: { kind: 'conflict', entity: 'accounting_entry' } });
+    expect(env.saved.get('expense:exp-1:recorded')?.lines.some((line) => line.account === '44566')).toBe(true);
+  });
+
   it('dépense introuvable : not_found (jamais d’écriture orpheline)', async () => {
     const env = makeEnv([]);
     const r = await env.usecase.execute({ expenseId: 'ghost' });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('not_found');
+  });
+
+  it('FAIL-CLOSED : sans source du régime TVA, aucune écriture n’est postée', async () => {
+    const byId = new Map([['exp-1', Expense.rehydrate(expenseProps())]]);
+    const saved = new Map<string, AccountingEntry>();
+    const depsWithoutCompanies = {
+      expenses: {
+        save: async (e: Expense) => void byId.set(e.id, e),
+        findById: async (id: string) => byId.get(id) ?? null,
+        listByCompany: async () => [...byId.values()],
+      },
+      entries: {
+        save: async (entry: AccountingEntry) => void saved.set(entry.id, entry),
+        findById: async () => null,
+        listByCompany: async () => [],
+      },
+    } as unknown as RecordExpenseAccountingEntriesDeps;
+    const r = await new RecordExpenseAccountingEntries(depsWithoutCompanies).execute({ expenseId: 'exp-1' });
+    expect(r).toMatchObject({ ok: false, error: { kind: 'dependency', port: 'CompanyRepository' } });
+    expect(saved.size).toBe(0);
   });
 });

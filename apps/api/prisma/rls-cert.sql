@@ -28,9 +28,417 @@ SELECT pg_temp.assert_eq(
   'cert role cannot bypass RLS'
 );
 SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_reaper_tenant_schedule'::regclass),
+  1,
+  'realtime reaper tenant schedule has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_reaper_tenant_schedule'),
+  5,
+  'realtime reaper tenant schedule exposes exactly five policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE']) AS required(privilege_name)
+    WHERE has_table_privilege(
+      current_user, 'public.realtime_reaper_tenant_schedule', required.privilege_name
+    )),
+  4,
+  'runtime role can reconcile only its tenant reaper schedule'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_reaper_tenant_schedule',
+    'TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot truncate, reference or retarget the reaper schedule'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_reaper_directory_cursor',
+    'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot access the global reaper cursor'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.sync_realtime_reaper_tenant_schedule_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke the schedule trigger authority directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM unnest(ARRAY[
+       'public.list_realtime_reaper_tenants_v1(integer,uuid)',
+       'public.ack_realtime_reaper_tenants_v1(uuid)',
+       'public.renew_realtime_reaper_tenants_claim_v1(uuid)'
+     ]) AS capability(signature)
+    WHERE has_function_privilege(current_user, capability.signature, 'EXECUTE')),
+  3,
+  'runtime role receives the three bounded reaper directory capabilities'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_native_speech_deliveries'::regclass),
+  1,
+  'native speech delivery has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'realtime_native_speech_maintenance_cursors'),
+  2,
+  'native maintenance cursor exposes no extra policy'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'),
+  6,
+  'native speech delivery exposes exactly six policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_native_speech_maintenance_cursors'::regclass),
+  1,
+  'native maintenance cursor has enabled and forced RLS during rolling deploy'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'realtime_native_speech_maintenance_cursors'
+      AND policyname IN (
+        'realtime_native_speech_maintenance_cursor_directory_select',
+        'realtime_native_speech_maintenance_cursor_directory_update'
+      )
+      AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_openai_native_maintenance_directory%'),
+  2,
+  'native maintenance cursor exposes exactly two directory-only policies'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_due_directory_select'
+      AND cmd = 'SELECT' AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_openai_native_maintenance_directory%'
+      AND qual LIKE '%expiresAt%'
+      AND qual LIKE '%retentionExpiresAt%'),
+  1,
+  'native speech due-directory policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_select' AND cmd = 'SELECT'),
+  1,
+  'native speech delivery select policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_insert' AND cmd = 'INSERT'),
+  1,
+  'native speech delivery insert policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_update' AND cmd = 'UPDATE'),
+  1,
+  'native speech delivery update policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_delete_tenant'
+      AND cmd = 'DELETE' AND permissive = 'PERMISSIVE'),
+  1,
+  'native speech delivery delete tenant policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_native_speech_deliveries'
+      AND policyname = 'realtime_native_speech_delivery_delete_retention_fence'
+      AND cmd = 'DELETE' AND permissive = 'RESTRICTIVE'
+      AND qual LIKE '%retentionExpiresAt%'
+      AND qual LIKE '%realtime_control_grants%'),
+  1,
+  'native speech delivery restrictive retention policy exact'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_attribute
+    WHERE attrelid = 'public.realtime_native_speech_deliveries'::regclass
+      AND attname = ANY (ARRAY[
+        'dispatchingAt', 'requestedAt', 'acceptedAt', 'streamingAt',
+        'responseDoneAt', 'outputStoppedAt', 'completedAt', 'deliveredAt',
+        'terminalAt', 'createdAt', 'expiresAt', 'retentionExpiresAt'
+      ]::TEXT[])
+      AND format_type(atttypid, atttypmod) = 'timestamp(3) with time zone'),
+  12,
+  'native speech machine timestamps persist exact JavaScript millisecond precision'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_constraint
+    WHERE conrelid = 'public.realtime_native_speech_deliveries'::regclass
+      AND conname = 'realtime_native_speech_deliveries_finite_timestamps_check'
+      AND pg_get_constraintdef(oid) LIKE '%isfinite%'),
+  1,
+  'native speech delivery rejects non-finite machine timestamps'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_constraint
+    WHERE conrelid = 'public.realtime_control_grants'::regclass
+      AND conname = 'realtime_control_grants_provider_stream_v1_disabled_check'
+      AND convalidated
+      AND pg_get_constraintdef(oid) LIKE '%provider_stream%'),
+  1,
+  'native provider_stream controls remain physically disabled in V1'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'SELECT') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can read native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'INSERT') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can prepare native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'UPDATE') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can perform native speech CAS updates'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.realtime_native_speech_deliveries', 'DELETE') THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke the tenant and retention fenced native purge'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_native_speech_deliveries',
+    'TRUNCATE, REFERENCES, TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot truncate, reference or retarget native speech deliveries'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech fence directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_delivery_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech transition guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_speech_slo_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech SLO guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.guard_realtime_native_delivery_delete_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech delete guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.deny_realtime_native_delivery_truncate_v1()',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot invoke native speech truncate guard directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke only the bounded native due-directory capability'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can ACK only its opaque native maintenance claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can heartbeat only its opaque native maintenance claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN pg_has_role(
+    current_user,
+    'bob_openai_native_maintenance_directory',
+    'SET'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot SET ROLE to the native maintenance directory owner'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user,
+    'public.realtime_native_speech_maintenance_cursors',
+    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot read or mutate native maintenance cursors directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM pg_attribute AS attribute
+    WHERE attribute.attrelid =
+      'public.realtime_native_speech_maintenance_cursors'::regclass
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+      AND has_column_privilege(
+        current_user, attribute.attrelid, attribute.attnum,
+        'SELECT,INSERT,UPDATE,REFERENCES'
+      )),
+  0,
+  'runtime role has no inherited native cursor column privilege'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT CASE WHEN relrowsecurity AND relforcerowsecurity THEN 1 ELSE 0 END::bigint
+     FROM pg_class
+    WHERE oid = 'public.realtime_reaper_directory_cursor'::regclass),
+  1,
+  'realtime reaper directory cursor has enabled and forced RLS'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'realtime_reaper_directory_cursor'
+      AND policyname IN (
+        'realtime_reaper_directory_cursor_select',
+        'realtime_reaper_directory_cursor_update'
+      )
+      AND permissive = 'PERMISSIVE'
+      AND qual LIKE '%bob_realtime_reaper_directory%'),
+  2,
+  'realtime reaper cursor exposes exactly two directory-only policies'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.list_realtime_reaper_tenants_v1(integer,uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can invoke the bounded realtime reaper directory'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.ack_realtime_reaper_tenants_v1(uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can ACK only its opaque realtime reaper claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user, 'public.renew_realtime_reaper_tenants_claim_v1(uuid)', 'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  1,
+  'runtime role can heartbeat only its opaque realtime reaper claim'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN pg_has_role(current_user, 'bob_realtime_reaper_directory', 'SET')
+    THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot SET ROLE to realtime reaper directory owner'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(
+    current_user, 'public.realtime_reaper_directory_cursor',
+    'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot read or mutate realtime reaper cursor directly'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM pg_attribute AS attribute
+    WHERE attribute.attrelid = 'public.realtime_reaper_directory_cursor'::regclass
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND has_column_privilege(
+        current_user, attribute.attrelid, attribute.attnum,
+        'SELECT,INSERT,UPDATE,REFERENCES'
+      )),
+  0,
+  'runtime role has no inherited realtime reaper cursor column privilege'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_control_grant_binding_v3(text,integer,uuid,uuid,text,uuid,uuid,integer,character,timestamp with time zone,timestamp with time zone,timestamp with time zone)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot inspect control delivery bindings directly'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_function_privilege(
+    current_user,
+    'public.assert_realtime_control_consumption_binding_v3(text,uuid,uuid,uuid,uuid,timestamp with time zone)',
+    'EXECUTE'
+  ) THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot inspect control consumption bindings directly'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.companies', 'DELETE') THEN 1 ELSE 0 END,
   0,
   'runtime role cannot hard-delete companies'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.documents', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot hard-delete documents'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.document_versions', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot hard-delete document versions'
 );
 SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.document_analyses', 'UPDATE') THEN 1 ELSE 0 END,
@@ -95,57 +503,15 @@ SELECT set_config('app.notification_outbox_version', '2', false);
 -- contrôlées le contournent. La preuve N-1 en fin de fichier réactive le comportement réel.
 SELECT set_config('app.notification_outbox_cutover_bypass', 'certification', false);
 
--- Runtime cleanup for local reruns. Append-only fixtures are removed by the
--- privileged rls-cert-cleanup.sql invoked before and after this certification.
-BEGIN;
-SET LOCAL app.current_company_id = 'rls-co-a';
-DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
-DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
-DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
-DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
-DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
-DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
-DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
-DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
-DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
-DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
-DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
-DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
-DELETE FROM notification_jobs WHERE id IN ('00000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-00000000000c');
-DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
-DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
-DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
-DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
-DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
-DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-COMMIT;
+-- La même certification s'exécute pendant l'expand V1 puis après le cutover V2. Les fixtures
+-- archive doivent donc emprunter exactement la capacité encore autorisée dans chaque protocole.
+SELECT ("activeVersion" = 1) AS document_archive_expand
+  FROM public.document_archive_protocol_state
+ WHERE id = 1
+\gset
 
-BEGIN;
-SET LOCAL app.current_company_id = 'rls-co-b';
-DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
-DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
-DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
-DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
-DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
-DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
-DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
-DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
-DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
-DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
-DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
-DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
-DELETE FROM notification_jobs WHERE id IN ('00000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-00000000000c');
-DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
-DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
-DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
-DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
-DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
-DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
-DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-COMMIT;
+-- Fixture cleanup is intentionally privileged and is executed before and after this file by
+-- release.sh. The runtime role must never acquire hard-delete rights merely to make a cert rerunnable.
 
 -- Seed tenant A through RLS WITH CHECK policies.
 BEGIN;
@@ -166,8 +532,13 @@ INSERT INTO customers (id, "companyId", type, name, "addrLine1", "addrZip", "add
 VALUES ('rls-customer-a', 'rls-co-a', 'b2c', 'Client A', '1 rue A', '75001', 'Paris');
 INSERT INTO quotes (id, "companyId", "customerId", status)
 VALUES ('rls-quote-a', 'rls-co-a', 'rls-customer-a', 'sent');
-INSERT INTO invoices (id, "companyId", "customerId", kind, status)
-VALUES ('rls-invoice-a', 'rls-co-a', 'rls-customer-a', 'invoice', 'issued');
+INSERT INTO invoices (
+  id, "companyId", "customerId", kind, status, number, "issuedAt", "dueAt"
+)
+VALUES (
+  'rls-invoice-a', 'rls-co-a', 'rls-customer-a', 'invoice', 'issued',
+  'RLS-A-2026-001', '2026-01-01T00:00:00Z', '2026-01-31T00:00:00Z'
+);
 INSERT INTO line_items (id, "quoteId", position, label, category, qty, "unitPriceHt", "vatRate")
 VALUES ('rls-line-a', 'rls-quote-a', 1, 'Line A', 'labor', 1, 10000, 20);
 INSERT INTO payments (id, "companyId", "invoiceId", amount, method, "receivedAt")
@@ -269,8 +640,18 @@ VALUES (
 );
 INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextValue")
 VALUES ('rls-co-a', 'quote', 2026, 2);
-INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\if :document_archive_expand
+  INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+  VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\else
+  SELECT pg_temp.assert_eq(
+    CASE WHEN public.document_archive_job_enqueue_v2(
+      'rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued-pdf-only-b2c'
+    ) THEN 1 ELSE 0 END,
+    1,
+    'tenant A archive job enqueued through V2 capability'
+  );
+\endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",
   status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
@@ -327,8 +708,13 @@ INSERT INTO customers (id, "companyId", type, name, "addrLine1", "addrZip", "add
 VALUES ('rls-customer-b', 'rls-co-b', 'b2c', 'Client B', '2 rue B', '69001', 'Lyon');
 INSERT INTO quotes (id, "companyId", "customerId", status)
 VALUES ('rls-quote-b', 'rls-co-b', 'rls-customer-b', 'sent');
-INSERT INTO invoices (id, "companyId", "customerId", kind, status)
-VALUES ('rls-invoice-b', 'rls-co-b', 'rls-customer-b', 'invoice', 'issued');
+INSERT INTO invoices (
+  id, "companyId", "customerId", kind, status, number, "issuedAt", "dueAt"
+)
+VALUES (
+  'rls-invoice-b', 'rls-co-b', 'rls-customer-b', 'invoice', 'issued',
+  'RLS-B-2026-001', '2026-01-01T00:00:00Z', '2026-01-31T00:00:00Z'
+);
 INSERT INTO line_items (id, "quoteId", position, label, category, qty, "unitPriceHt", "vatRate")
 VALUES ('rls-line-b', 'rls-quote-b', 1, 'Line B', 'labor', 1, 20000, 20);
 INSERT INTO payments (id, "companyId", "invoiceId", amount, method, "receivedAt")
@@ -388,8 +774,18 @@ VALUES (
 );
 INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextValue")
 VALUES ('rls-co-b', 'quote', 2026, 2);
-INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\if :document_archive_expand
+  INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+  VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+\else
+  SELECT pg_temp.assert_eq(
+    CASE WHEN public.document_archive_job_enqueue_v2(
+      'rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c'
+    ) THEN 1 ELSE 0 END,
+    1,
+    'tenant B archive job enqueued through V2 capability'
+  );
+\endif
 INSERT INTO notification_jobs (
   id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, "payloadFingerprint",
   status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
@@ -563,8 +959,6 @@ BEGIN
   END;
 END;
 $$;
-DELETE FROM document_versions WHERE id = 'rls-docver-a-validation';
-
 DO $$
 BEGIN
   BEGIN
@@ -671,8 +1065,18 @@ BEGIN
     NULL;
   END;
   BEGIN
-    INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
-    VALUES ('rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    IF (
+      SELECT "activeVersion" = 1
+        FROM public.document_archive_protocol_state
+       WHERE id = 1
+    ) THEN
+      INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
+      VALUES ('rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    ELSE
+      PERFORM public.document_archive_job_enqueue_v2(
+        'rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued-pdf-only-b2c'
+      );
+    END IF;
     RAISE EXCEPTION 'RLS cert failed: cross-tenant document archive job insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
@@ -734,6 +1138,14 @@ END;
 $$;
 COMMIT;
 
+-- Les releases gardent l'autorité de capacité fermée pendant leurs autres certifications. Les
+-- sondes mutantes Bob Live ne sont exécutées que lorsqu'une capacité éphémère a explicitement été
+-- activée ; l'autorité fermée est néanmoins prouvée via son inspector agrégé.
+SELECT (mode = 'active') AS bob_live_capacity_active
+  FROM inspect_realtime_global_capacity_v1()
+\gset
+\if :bob_live_capacity_active
+
 -- Bob Live : quotas et bail ne contiennent qu'un subject HMAC/token hashés et restent tenant-scoped.
 -- La transaction est annulée pour conserver une certification réexécutable.
 BEGIN;
@@ -744,6 +1156,7 @@ SELECT pg_temp.assert_eq(
       AND table_name IN (
         'realtime_admission_events', 'realtime_session_leases',
         'realtime_mistral_ingress_tickets', 'realtime_speech_artifacts',
+        'realtime_native_speech_deliveries',
         'realtime_control_grants', 'realtime_control_consumptions',
         'realtime_voice_usage_events', 'realtime_voice_usage_daily'
       )
@@ -771,6 +1184,79 @@ VALUES (
   CURRENT_TIMESTAMP + INTERVAL '15 minutes', 1, 1, '{"screen":{"name":"RLS","instanceId":"rls"},"entities":[],"capabilities":[]}'::jsonb,
   repeat('e', 64), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
 );
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule
+    WHERE "companyId" = 'rls-co-a'
+      AND "oldestAdmissionAt" IS NOT DISTINCT FROM (
+        SELECT min("admittedAt") FROM realtime_admission_events
+         WHERE "companyId" = 'rls-co-a'
+      )
+      AND "nextLeaseDueAt" IS NOT DISTINCT FROM (
+        SELECT min(LEAST("leaseExpiresAt", "hardExpiresAt"))
+          FROM realtime_session_leases
+         WHERE "companyId" = 'rls-co-a' AND state IN ('reserved', 'active', 'reaping')
+      )),
+  1,
+  'realtime schedule tenant A is materialized from its exact source minima'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_reaper_tenant_schedule (
+      "companyId", "oldestAdmissionAt", "nextLeaseDueAt", revision
+    ) VALUES (
+      'rls-co-b', CURRENT_TIMESTAMP - INTERVAL '1 hour', NULL, 0
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+SET LOCAL app.current_company_id = 'rls-co-b';
+INSERT INTO realtime_reaper_tenant_schedule (
+  "companyId", "oldestAdmissionAt", "nextLeaseDueAt", revision
+) VALUES (
+  'rls-co-b', CURRENT_TIMESTAMP - INTERVAL '1 hour',
+  CURRENT_TIMESTAMP - INTERVAL '30 minutes', 0
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b'),
+  1,
+  'realtime schedule tenant B can be reconciled in its own context'
+);
+SET LOCAL app.current_company_id = 'rls-co-a';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule),
+  1,
+  'tenant A sees only its own realtime schedule after B exists'
+);
+DO $$
+DECLARE
+  affected BIGINT;
+BEGIN
+  UPDATE realtime_reaper_tenant_schedule
+     SET revision = revision + 1
+   WHERE "companyId" = 'rls-co-b';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 0 THEN
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule update affected %', affected;
+  END IF;
+  DELETE FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 0 THEN
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant reaper schedule delete affected %', affected;
+  END IF;
+
+  UPDATE realtime_reaper_tenant_schedule
+     SET revision = revision + 1
+   WHERE "companyId" = 'rls-co-a';
+  GET DIAGNOSTICS affected = ROW_COUNT;
+  IF affected <> 1 THEN
+    RAISE EXCEPTION 'RLS cert failed: own reaper schedule update affected %', affected;
+  END IF;
+END;
+$$;
 INSERT INTO realtime_mistral_ingress_tickets (
   id, "companyId", "subjectHash", "subjectKeyVersion", "sessionId", "ticketHash", protocol,
   state, plan, "contextSchemaVersion", "contextRevision", "contextDigest",
@@ -821,10 +1307,33 @@ SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 0, 'tenant B cannot see tenant A realtime event');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 0, 'tenant B cannot see tenant A realtime lease');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 0, 'tenant B cannot see tenant A Mistral ticket');
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-a'),
+  0,
+  'tenant B cannot see tenant A realtime schedule after global discovery'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_reaper_tenant_schedule WHERE "companyId" = 'rls-co-b'),
+  1,
+  'tenant B still sees its own realtime schedule after global discovery'
+);
 ROLLBACK;
 
 -- Bob Live durable : séquence globale DB, quatrième fence, preuve acoustique sans contenu,
 -- contrôle one-shot et rollup d'usage par sujet/plan/kind. Tout est annulé en fin de sonde.
+SELECT (
+  EXISTS (
+    SELECT 1 FROM realtime_mistral_conversation_key_version_floors
+     WHERE "keySpace" = 'bob-live-subject-hmac-v1'
+       AND 1 BETWEEN "minimumVersion" AND "highestVersion"
+  )
+  AND EXISTS (
+    SELECT 1 FROM realtime_mistral_conversation_key_version_floors
+     WHERE "keySpace" = 'openai-native-speech-proof-hmac-v1'
+       AND 1 BETWEEN "minimumVersion" AND "highestVersion"
+  )
+) AS openai_native_key_lifecycle_ready
+\gset
 BEGIN;
 SET LOCAL app.current_company_id = 'rls-co-a';
 INSERT INTO realtime_admission_events (id, "companyId", "subjectHash", "sessionId", "admittedAt")
@@ -849,6 +1358,144 @@ VALUES (
   repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '1 minute', 1,
   1, repeat('4', 64), CURRENT_TIMESTAMP, 1, 2, CURRENT_TIMESTAMP, 1
 );
+\if :openai_native_key_lifecycle_ready
+-- GPT Realtime natif : preuve v2 liée à la politique v1, sans contrôle provider_stream. La
+-- politique applicative V1 n'autorise le RTP que pour ces scénarios génériques exacts.
+INSERT INTO realtime_native_speech_deliveries (
+  "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
+  "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+  "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+  "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+  version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+)
+VALUES (
+  '00000000-0000-4000-8000-00000000c0b3', 'rls-co-a', repeat('a', 64),
+  1,
+  '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b4',
+  1, repeat('4', 64), 1, repeat('2', 64),
+  1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('e', 64),
+  2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+  1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+  CURRENT_TIMESTAMP + INTERVAL '30 days'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_native_speech_deliveries (
+      "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
+      "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+      "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+      "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+      version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+    )
+    VALUES (
+      '00000000-0000-4000-0000-00000000c0b7', 'rls-co-a', repeat('a', 64),
+      1,
+      '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b7',
+      1, repeat('4', 64), 1, repeat('2', 64),
+      1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('d', 64),
+      2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+      1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+      CURRENT_TIMESTAMP + INTERVAL '30 days'
+    );
+    RAISE EXCEPTION 'RLS cert failed: non-RFC native delivery UUID was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    INSERT INTO realtime_native_speech_deliveries (
+      "deliveryId", "companyId", "subjectHmac", "subjectKeyVersion", "sessionId", "turnId",
+      "contextRevision", "contextDigest", "sidebandOwnerEpoch", "sidebandOwnerTokenHmac",
+      "speechPolicyVersion", "speechScenarioId", "canonicalSpeechHmac", "factsHmac",
+      "requestNonceHmac", "proofFormatVersion", "proofKeyVersion", provider, model, voice,
+      version, revision, phase, "createdAt", "expiresAt", "retentionExpiresAt"
+    )
+    VALUES (
+      '00000000-0000-4000-8000-00000000c0b8', 'rls-co-a', repeat('a', 64),
+      1,
+      '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0b9',
+      1, repeat('4', 64), 1, repeat('2', 64),
+      1, 'generic_help_v1', repeat('5', 64), repeat('7', 64), repeat('c', 64),
+      2, 1, 'openai', 'gpt-realtime-2.1', 'cedar',
+      1, 1, 'prepared', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '45 seconds',
+      'infinity'::TIMESTAMPTZ
+    );
+    RAISE EXCEPTION 'RLS cert failed: infinite native delivery timestamp was accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+END;
+$$;
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_native_speech_deliveries),
+  1,
+  'invalid native UUID and infinity probes leave no row behind'
+);
+DO $$
+BEGIN
+  BEGIN
+    UPDATE realtime_native_speech_deliveries
+       SET phase = 'expired', revision = 2,
+           "terminalAt" = "expiresAt"
+     WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 1;
+    RAISE EXCEPTION 'RLS cert failed: native speech delivery expired before DB deadline';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    NULL;
+  END;
+END;
+$$;
+SELECT pg_temp.assert_eq(
+  (SELECT revision FROM realtime_native_speech_deliveries
+    WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3'),
+  1,
+  'early native expiration is rejected without mutation'
+);
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'dispatching', revision = 2,
+       "dispatchClaimId" = '00000000-0000-4000-8000-00000000c0b6',
+       "dispatchingAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 1;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'requested', revision = 3, "requestedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 2;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'accepted', revision = 4,
+       "providerResponseIdHmac" = repeat('b', 64), "acceptedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 3;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'streaming', revision = 5, "streamingAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 4;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'draining', revision = 6, "responseDoneAt" = CURRENT_TIMESTAMP,
+       "outputTranscriptHmac" = repeat('5', 64)
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 5;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'completed', revision = 7, "outputStoppedAt" = CURRENT_TIMESTAMP,
+       "completedAt" = CURRENT_TIMESTAMP
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 6;
+UPDATE realtime_native_speech_deliveries
+   SET phase = 'delivered', revision = 8,
+       "acknowledgementId" = '00000000-0000-4000-8000-00000000c0b5',
+       "deliveredAt" = CURRENT_TIMESTAMP, "terminalAt" = CURRENT_TIMESTAMP,
+       "localObservationFormatVersion" = 1,
+       "localObservationKind" = 'webrtc_remote_rtp_observed_provider_drained_v1',
+       "sloFormatVersion" = 1, "speechStoppedEventToFirstInboundRtpMs" = 250,
+       "bargeInStatus" = 'complete', "bargeInDurationsMs" = ARRAY[120]::INTEGER[]
+ WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3' AND revision = 7;
+DO $$
+BEGIN
+  BEGIN
+    UPDATE realtime_native_speech_deliveries
+       SET revision = 9
+     WHERE "deliveryId" = '00000000-0000-4000-8000-00000000c0b3';
+    RAISE EXCEPTION 'RLS cert failed: terminal native speech delivery was mutable';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN
+    NULL;
+  END;
+END;
+$$;
+\endif
 INSERT INTO realtime_speech_artifacts (
   id, "companyId", "subjectHash", "sessionId", "turnId", "segmentIndex", "renderTokenHash",
   "sidebandOwnerEpoch", "sidebandOwnerTokenHash", state, classification,
@@ -922,17 +1569,58 @@ VALUES (
   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '35 days'
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_speech_artifacts), 1, 'speech artifact tenant A visible');
+\if :openai_native_key_lifecycle_ready
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 1, 'native speech delivery tenant A visible');
+\else
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 0, 'native speech remains dormant without staged key lifecycle');
+\endif
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_grants), 1, 'control grant tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 1, 'control consumption tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 1, 'voice usage event tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_daily), 1, 'voice usage rollup tenant A visible');
 SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_speech_artifacts), 0, 'tenant B cannot see tenant A speech');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_native_speech_deliveries), 0, 'tenant B cannot see tenant A native speech');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_grants), 0, 'tenant B cannot see tenant A control');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_control_consumptions), 0, 'tenant B cannot see tenant A consumption');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_events), 0, 'tenant B cannot see tenant A usage');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_voice_usage_daily), 0, 'tenant B cannot see tenant A rollup');
 ROLLBACK;
+
+\else
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM inspect_realtime_global_capacity_v1() WHERE mode = 'closed'),
+  1,
+  'closed Bob Live capacity is explicit while lease mutation probes are skipped'
+);
+BEGIN;
+SET LOCAL app.current_company_id = 'rls-co-a';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM preflight_realtime_global_capacity_v1('openai', 'closed-cert', 1, 1, 1)
+    WHERE status = 'unavailable' AND "retryAt" IS NULL),
+  1,
+  'closed Bob Live capacity refuses preflight'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "reservedAt", "leaseExpiresAt", "hardExpiresAt", "updatedAt", version
+    ) VALUES (
+      'rls-co-a', repeat('9', 64), '00000000-0000-4000-8000-00000000b0f1', repeat('8', 64),
+      'reserved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '15 seconds',
+      CURRENT_TIMESTAMP + INTERVAL '15 minutes', CURRENT_TIMESTAMP, 1
+    );
+    RAISE EXCEPTION 'RLS cert failed: closed capacity accepted a direct lease writer';
+  EXCEPTION WHEN SQLSTATE '55000' THEN
+    NULL;
+  END;
+END;
+$$;
+ROLLBACK;
+\endif
 
 -- Registre d'idempotence Expense : tenant-scoped, insert-only et sans clé brute. La transaction
 -- est volontairement annulée pour que la certification reste réexécutable sans policy DELETE.

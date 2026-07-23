@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadEnv } from '../../config/env';
+import type { FactoryProvider, Provider } from '@nestjs/common';
+import { MODULE_METADATA } from '@nestjs/common/constants';
+import { ModuleRef } from '@nestjs/core';
+import { loadEnv, type Env } from '../../config/env';
 import type { Persistence } from '../../persistence/persistence';
+import { PERSISTENCE } from '../../persistence/persistence-token';
 import type { MistralConversationDurableAuthority } from './mistral-conversation-gateway-v2';
 import type { MistralConversationPersistenceKeyRing } from './mistral-conversation-outbox-seal';
 import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
@@ -12,25 +16,139 @@ import {
   type MistralRealtimeIdentityBinding,
   type MistralRealtimeIngressIdentityKeyRing,
 } from './realtime-mistral-ingress-ticket';
+import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
+import {
+  REALTIME_DURABLE_CONTROLS,
+  OPENAI_NATIVE_SPEECH_MAINTENANCE,
+  MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+  REALTIME_AGENT_TURN,
+  REALTIME_SIDEBAND,
+  REALTIME_SPEECH_SOURCE_POLICY,
+  REALTIME_VOICE_SETTINGS,
+} from './realtime.tokens';
+import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
+import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
+import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
+import { REALTIME_REAPER_DIRECTORY } from './realtime-reaper.scheduler';
+import type { RealtimeVoiceSettings } from './realtime.types';
+import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import { DisabledRealtimeDurableControlAuthority } from './realtime-control';
+import { RealtimeVoiceUsageWriter } from './realtime-voice-usage';
 import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
+  buildRealtimeSpeechRuntime,
+  buildVerifiedRealtimeSpeechRuntime,
+  RealtimeVoiceModule,
 } from './realtime.module';
+
+type RealtimeAgentTurnFactoryProvider = FactoryProvider & {
+  provide: typeof REALTIME_AGENT_TURN;
+};
+
+function isRealtimeAgentTurnFactoryProvider(
+  provider: Provider,
+): provider is RealtimeAgentTurnFactoryProvider {
+  return typeof provider === 'object'
+    && provider !== null
+    && 'provide' in provider
+    && provider.provide === REALTIME_AGENT_TURN
+    && 'inject' in provider
+    && Array.isArray(provider.inject)
+    && 'useFactory' in provider
+    && typeof provider.useFactory === 'function';
+}
+
+function moduleFactory(token: unknown): FactoryProvider {
+  const providers = Reflect.getMetadata(
+    MODULE_METADATA.PROVIDERS,
+    RealtimeVoiceModule,
+  ) as Provider[];
+  const provider = providers.find((candidate) =>
+    typeof candidate === 'object'
+    && candidate !== null
+    && 'provide' in candidate
+    && candidate.provide === token);
+  if (!provider || !('useFactory' in provider) || typeof provider.useFactory !== 'function') {
+    throw new Error('RealtimeVoiceModule factory provider is unavailable.');
+  }
+  return provider as FactoryProvider;
+}
 
 function validMistralEnvironment(): void {
   vi.stubEnv('DEMO_MODE', 'true');
   vi.stubEnv('BOB_LIVE_ENABLED', 'true');
   vi.stubEnv('BOB_LIVE_PROVIDER', 'mistral');
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '100');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '100');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('MISTRAL_API_KEY', 'test-mistral-key');
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', 'i'.repeat(32));
   vi.stubEnv('BOB_LIVE_SUBJECT_KEY_VERSION', '1');
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: 'i'.repeat(32) }));
   vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'p'.repeat(32));
+  vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '1');
+  vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: 'p'.repeat(32) }));
   vi.stubEnv('BOB_LIVE_USAGE_HMAC_SECRET', 'u'.repeat(32));
   vi.stubEnv('BOB_LIVE_CONTROL_ENCRYPTION_SECRET', 'c'.repeat(32));
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
+}
+
+function validSpeechRuntimeEnvironment(provider: 'openai' | 'mistral'): Env {
+  validMistralEnvironment();
+  vi.stubEnv('BOB_LIVE_PROVIDER', provider);
+  vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'audited-signed-url-v1');
+  vi.stubEnv('SUPABASE_URL', 'https://bob-live-test.supabase.co');
+  vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'test-service-role-key');
+  if (provider === 'openai') vi.stubEnv('OPENAI_API_KEY', 'test-openai-key');
+  return loadEnv();
+}
+
+function speechPersistenceFixture(): {
+  readonly persistence: Persistence;
+  readonly owner: ReturnType<Persistence['createRealtimeSidebandOwner']>;
+  readonly factories: Readonly<Record<
+  | 'owner'
+  | 'usage'
+  | 'keyVersions'
+  | 'nativeDelivery'
+  | 'auditedDelivery'
+  | 'controls'
+  | 'artifact',
+  ReturnType<typeof vi.fn>
+  >>;
+} {
+  const owner = {} as ReturnType<Persistence['createRealtimeSidebandOwner']>;
+  const factories = {
+    owner: vi.fn(() => owner),
+    usage: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeVoiceUsageRepository']>)),
+    keyVersions: vi.fn(() => ({ assertCurrentKeyVersions: vi.fn(async () => undefined) })),
+    nativeDelivery: vi.fn(() => (
+      {} as ReturnType<Persistence['createOpenAiNativeSpeechDeliveryRepository']>
+    )),
+    auditedDelivery: vi.fn(() => (
+      {} as ReturnType<Persistence['createRealtimeSpeechDeliveryRepository']>
+    )),
+    controls: vi.fn(() => ({} as ReturnType<Persistence['createRealtimeControlRepository']>)),
+    artifact: vi.fn(() => (
+      {} as ReturnType<Persistence['createRealtimeSpeechArtifactRepository']>
+    )),
+  };
+  return {
+    owner,
+    factories,
+    persistence: {
+      createRealtimeSidebandOwner: factories.owner,
+      createRealtimeVoiceUsageRepository: factories.usage,
+      createOpenAiNativeKeyVersionAuthority: factories.keyVersions,
+      createOpenAiNativeSpeechDeliveryRepository: factories.nativeDelivery,
+      createRealtimeSpeechDeliveryRepository: factories.auditedDelivery,
+      createRealtimeControlRepository: factories.controls,
+      createRealtimeSpeechArtifactRepository: factories.artifact,
+    } as unknown as Persistence,
+  };
 }
 
 function durable(): MistralConversationDurableAuthority {
@@ -308,5 +426,321 @@ describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
       .rejects.toBe(admissionError);
     expect(authorities.assertCurrentKeyVersion).toHaveBeenCalledOnce();
     expect(authorities.durable.open).not.toHaveBeenCalled();
+  });
+});
+
+describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  type SpeechRuntime = NonNullable<ReturnType<typeof buildRealtimeSpeechRuntime>>;
+  type SidebandFactory = (
+    settings: RealtimeVoiceSettings,
+    callProvider: unknown,
+    metrics: unknown,
+    logger: unknown,
+    speech: SpeechRuntime | null,
+  ) => unknown;
+  type WiredSpeech = {
+    readonly owner?: unknown;
+    readonly audited?: unknown;
+    readonly native?: { readonly authority?: unknown; readonly usage?: unknown };
+  };
+
+  function sidebandSpeech(runtime: SpeechRuntime): WiredSpeech | undefined {
+    const factory = moduleFactory(REALTIME_SIDEBAND).useFactory as unknown as SidebandFactory;
+    const manager = factory(
+      {} as RealtimeVoiceSettings,
+      {},
+      {},
+      {},
+      runtime,
+    );
+    return (manager as { readonly speech?: WiredSpeech }).speech;
+  }
+
+  it('compose OpenAI natif sans stockage Supabase, TTS ni audit acoustique', () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+      SUPABASE_URL: undefined,
+      SUPABASE_SERVICE_ROLE_KEY: undefined,
+      BOB_LIVE_LOCAL_AUDIT_BASE_URL: undefined,
+      BOB_LIVE_LOCAL_AUDIT_TOKEN: undefined,
+    };
+    // Les builders historiques lisent process.env : les rendre indisponibles prouve que la branche
+    // native ne les sollicite pas, même si la configuration Env lui est injectée directement.
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', '');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', '');
+    const fixture = speechPersistenceFixture();
+
+    const runtime = buildRealtimeSpeechRuntime(fixture.persistence, env);
+
+    if (!runtime?.native) throw new Error('Native speech runtime was not composed.');
+    expect(runtime.owner).toBe(fixture.owner);
+    expect(runtime.usage).toBeInstanceOf(RealtimeVoiceUsageWriter);
+    expect(runtime.native.authority).toBeInstanceOf(OpenAiNativeSpeechAuthority);
+    expect(runtime.audited).toBeUndefined();
+    expect(fixture.factories.owner).toHaveBeenCalledOnce();
+    expect(fixture.factories.usage).toHaveBeenCalledOnce();
+    expect(fixture.factories.nativeDelivery).toHaveBeenCalledOnce();
+    expect(fixture.factories.auditedDelivery).not.toHaveBeenCalled();
+    expect(fixture.factories.controls).not.toHaveBeenCalled();
+    expect(fixture.factories.artifact).not.toHaveBeenCalled();
+
+    const wired = sidebandSpeech(runtime);
+    expect(wired?.owner).toBe(runtime.owner);
+    expect(wired?.native).toEqual({
+      authority: runtime.native.authority,
+      usage: runtime.usage,
+    });
+    expect(wired?.audited).toBeUndefined();
+
+    const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
+      (speech: SpeechRuntime | null) => unknown;
+    const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
+      (speech: SpeechRuntime | null) => unknown;
+    expect(controlsFactory(runtime)).toBeInstanceOf(DisabledRealtimeDurableControlAuthority);
+    expect(sourcePolicyFactory(runtime)).toBeNull();
+
+    // Le flag natif reste volontairement bloqué tant que la certification device n'est pas verte.
+    // Le provider est néanmoins composé avec l'autorité native injectée et demeure désactivé.
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'audited-signed-url-v1');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
+    const acknowledgementFactory = moduleFactory(
+      OpenAiNativeSpeechAcknowledgementService,
+    ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+    const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
+    expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
+    expect((acknowledgements as { readonly authority?: unknown }).authority)
+      .toBe(runtime.native.authority);
+    // Le service ne conserve volontairement pas l'objet de configuration (il contient la keyring
+    // sujet). Prouver le bit effectif évite aussi de réintroduire les secrets dans son instance.
+    expect((acknowledgements as { readonly enabled?: boolean }).enabled).toBe(false);
+  });
+
+  it('admet sujet et preuve dans PostgreSQL avant de construire le runtime natif', async () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+      SUPABASE_URL: undefined,
+      SUPABASE_SERVICE_ROLE_KEY: undefined,
+      BOB_LIVE_LOCAL_AUDIT_BASE_URL: undefined,
+      BOB_LIVE_LOCAL_AUDIT_TOKEN: undefined,
+    };
+    const fixture = speechPersistenceFixture();
+    const assertCurrentKeyVersions = vi.fn(async () => undefined);
+    fixture.factories.keyVersions.mockReturnValue({ assertCurrentKeyVersions });
+
+    const runtime = await buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env);
+
+    expect(runtime?.native).toBeDefined();
+    expect(fixture.factories.keyVersions).toHaveBeenCalledOnce();
+    expect(assertCurrentKeyVersions).toHaveBeenCalledOnce();
+    expect(fixture.factories.keyVersions.mock.invocationCallOrder[0])
+      .toBeLessThan(assertCurrentKeyVersions.mock.invocationCallOrder[0] as number);
+    expect(assertCurrentKeyVersions.mock.invocationCallOrder[0])
+      .toBeLessThan(fixture.factories.nativeDelivery.mock.invocationCallOrder[0] as number);
+  });
+
+  it('refuse le runtime natif si la persistance ne fournit pas son autorité de versions', async () => {
+    const configured = validSpeechRuntimeEnvironment('openai');
+    const env: Env = {
+      ...configured,
+      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+    };
+    const fixture = speechPersistenceFixture();
+    fixture.factories.keyVersions.mockReturnValue(null);
+
+    await expect(buildVerifiedRealtimeSpeechRuntime(fixture.persistence, env))
+      .rejects.toThrow('PostgreSQL key authority is unavailable');
+    expect(fixture.factories.owner).not.toHaveBeenCalled();
+    expect(fixture.factories.usage).not.toHaveBeenCalled();
+    expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each(['openai', 'mistral'] as const)(
+    'ne sollicite pas le registre natif pour la restitution auditée %s',
+    async (provider) => {
+      const fixture = speechPersistenceFixture();
+
+      await expect(buildVerifiedRealtimeSpeechRuntime(
+        fixture.persistence,
+        validSpeechRuntimeEnvironment(provider),
+      )).resolves.not.toBeNull();
+
+      expect(fixture.factories.keyVersions).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['openai', 'mistral'] as const)(
+    'conserve la chaîne auditée complète et exclusive avec %s',
+    (provider) => {
+      const env = validSpeechRuntimeEnvironment(provider);
+      const fixture = speechPersistenceFixture();
+
+      const runtime = buildRealtimeSpeechRuntime(fixture.persistence, env);
+
+      if (!runtime?.audited) throw new Error('Audited speech runtime was not composed.');
+      expect(runtime.native).toBeUndefined();
+      expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+      expect(fixture.factories.auditedDelivery).toHaveBeenCalledOnce();
+      expect(fixture.factories.controls).toHaveBeenCalledOnce();
+      expect(fixture.factories.artifact).toHaveBeenCalledOnce();
+
+      const wired = sidebandSpeech(runtime);
+      expect(wired?.owner).toBe(runtime.owner);
+      expect(wired?.audited).toEqual({
+        publisher: runtime.audited.publisher,
+        cancellation: runtime.audited.deliveryRepository,
+        controls: runtime.audited.controls,
+      });
+      expect(wired?.native).toBeUndefined();
+
+      const controlsFactory = moduleFactory(REALTIME_DURABLE_CONTROLS).useFactory as unknown as
+        (speech: SpeechRuntime | null) => unknown;
+      const sourcePolicyFactory = moduleFactory(REALTIME_SPEECH_SOURCE_POLICY).useFactory as unknown as
+        (speech: SpeechRuntime | null) => unknown;
+      expect(controlsFactory(runtime)).toBe(runtime.audited.controls);
+      expect(sourcePolicyFactory(runtime)).toBe(runtime.audited.sourcePolicy);
+
+      const acknowledgementFactory = moduleFactory(
+        OpenAiNativeSpeechAcknowledgementService,
+      ).useFactory as unknown as (logger: unknown, speech: SpeechRuntime | null) => unknown;
+      const acknowledgements = acknowledgementFactory({ audit: vi.fn(), warn: vi.fn() }, runtime);
+      expect(acknowledgements).toBeInstanceOf(OpenAiNativeSpeechAcknowledgementService);
+      expect((acknowledgements as { readonly authority?: unknown }).authority).toBeNull();
+    },
+  );
+
+  it.each(['openai', 'mistral'] as const)(
+    'reste fail-closed avant toute construction de port en mode audité %s incomplet',
+    (provider) => {
+      const configured = validSpeechRuntimeEnvironment(provider);
+      const env: Env = {
+        ...configured,
+        SUPABASE_URL: undefined,
+        SUPABASE_SERVICE_ROLE_KEY: undefined,
+      };
+      const fixture = speechPersistenceFixture();
+
+      expect(() => buildRealtimeSpeechRuntime(fixture.persistence, env))
+        .toThrow('Bob Live audited speech runtime is incompletely configured.');
+      expect(fixture.factories.owner).not.toHaveBeenCalled();
+      expect(fixture.factories.usage).not.toHaveBeenCalled();
+      expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
+      expect(fixture.factories.auditedDelivery).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
+  it.each(['openai', 'mistral'] as const)(
+    'injecte le fournisseur %s choisi au bootstrap dans l’adaptateur agent',
+    (provider) => {
+      const providers = Reflect.getMetadata(
+        MODULE_METADATA.PROVIDERS,
+        RealtimeVoiceModule,
+      ) as Provider[];
+      const definition = providers.find(isRealtimeAgentTurnFactoryProvider);
+
+      expect(definition).toBeDefined();
+      expect(definition?.inject).toEqual([
+        PERSISTENCE,
+        REALTIME_VOICE_SETTINGS,
+        ModuleRef,
+      ]);
+
+      const persistence = {} as Persistence;
+      const moduleRef = { get: vi.fn() } as unknown as ModuleRef;
+      const factory = definition?.useFactory as ((
+        persistence: Persistence,
+        settings: RealtimeVoiceSettings,
+        moduleRef: ModuleRef,
+      ) => RealtimeBobAgentTurnAdapter) | undefined;
+      const adapter = factory?.(
+        persistence,
+        { provider } as RealtimeVoiceSettings,
+        moduleRef,
+      );
+
+      expect(adapter).toBeInstanceOf(RealtimeBobAgentTurnAdapter);
+      expect(
+        (adapter as unknown as { readonly requiredProvider: unknown }).requiredProvider,
+      ).toBe(provider);
+    },
+  );
+});
+
+describe('RealtimeVoiceModule — maintenance durable OpenAI native', () => {
+  it('compose une capacité DB séparée depuis Persistence sans annuaire de jobs configuré', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const maintenance = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === OPENAI_NATIVE_SPEECH_MAINTENANCE);
+    expect(maintenance).toMatchObject({ inject: [PERSISTENCE] });
+    expect(providers).toContain(OpenAiNativeSpeechMaintenanceScheduler);
+
+    const create = vi.fn(() => ({
+      listDueCompanyIds: vi.fn(), acknowledgeDueCompanyIds: vi.fn(),
+      renewDueCompanyIdsClaim: vi.fn(), reapExpired: vi.fn(), purgeRetained: vi.fn(),
+    }));
+    const factory = (maintenance as FactoryProvider | undefined)?.useFactory as
+      | ((persistence: Pick<Persistence, 'createOpenAiNativeSpeechMaintenance'>) => unknown)
+      | undefined;
+    expect(factory?.({ createOpenAiNativeSpeechMaintenance: create })).toBe(create.mock.results[0]?.value);
+    expect(create).toHaveBeenCalledOnce();
+  });
+});
+
+describe('RealtimeVoiceModule — annuaire durable du reaper admission', () => {
+  it('compose le port PostgreSQL séparé sans ScheduledTenantDirectory', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const directory = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === REALTIME_REAPER_DIRECTORY);
+    expect(directory).toMatchObject({ inject: [PERSISTENCE] });
+
+    const created = {
+      listDueCompanyIds: vi.fn(), renewClaim: vi.fn(), acknowledgeClaim: vi.fn(),
+    };
+    const create = vi.fn(() => created);
+    const factory = (directory as FactoryProvider | undefined)?.useFactory as
+      | ((persistence: Pick<Persistence, 'createRealtimeReaperDirectory'>) => unknown)
+      | undefined;
+    expect(factory?.({ createRealtimeReaperDirectory: create })).toBe(created);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('conserve aussi l’autorité de terminaison Mistral en mode drain-only', () => {
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      RealtimeVoiceModule,
+    ) as Provider[];
+    const termination = providers.find((provider) =>
+      typeof provider === 'object'
+      && provider !== null
+      && 'provide' in provider
+      && provider.provide === MISTRAL_REALTIME_TERMINATION_AUTHORITY);
+    const factory = (termination as FactoryProvider | undefined)?.useFactory as
+      | ((settings: RealtimeVoiceSettings) => MistralRealtimeTerminationAuthority | null)
+      | undefined;
+
+    expect(factory?.({ enabled: false, provider: 'mistral' } as RealtimeVoiceSettings))
+      .toBeInstanceOf(MistralRealtimeTerminationAuthority);
+    expect(factory?.({ enabled: false, provider: 'openai' } as RealtimeVoiceSettings))
+      .toBeNull();
   });
 });

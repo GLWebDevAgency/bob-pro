@@ -22,6 +22,11 @@ export interface RoutingContext {
   hasDeepseekKey?: boolean;
   hasOpenaiKey?: boolean;
   hasMistralKey?: boolean;
+  /**
+   * Contrainte d'exécution exacte, posée uniquement par un transport serveur de confiance.
+   * Quand elle est présente, aucune chaîne de fallback ne peut changer de fournisseur.
+   */
+  requiredProvider?: Provider;
   /** Mode souveraineté : ne router que vers des fournisseurs UE (Mistral). Pour un déploiement « full EU ». */
   euOnly?: boolean;
   /** Overrides d'env pour le catalogue de modèles (`<PROVIDER>_MODEL_<TIER>`). */
@@ -117,15 +122,26 @@ export class ModelRouter {
   }
 
   route(task: TaskType): RoutingDecision {
-    // Mode souveraineté UE : on ne considère que les fournisseurs européens (Mistral).
-    const chain = this.ctx.euOnly ? CHAINS[task].filter((p) => EU_PROVIDERS.has(p)) : CHAINS[task];
+    // Une contrainte transport est exacte : une clé concurrente ne devient jamais un fallback.
+    // Une combinaison incohérente (OpenAI imposé + mode UE) échoue fermée.
+    const chain = this.ctx.requiredProvider !== undefined
+      ? this.ctx.euOnly && !EU_PROVIDERS.has(this.ctx.requiredProvider)
+        ? []
+        : [this.ctx.requiredProvider]
+      : this.ctx.euOnly
+        ? CHAINS[task].filter((p) => EU_PROVIDERS.has(p))
+        : CHAINS[task];
     for (let i = 0; i < chain.length; i++) {
       const p = chain[i]!;
       if (this.available(p)) {
         const tier = TASK_TIER[task];
         return {
           model: p,
-          reason: i === 0 ? `modèle préféré pour ${task}` : `fallback #${i} pour ${task}`,
+          reason: this.ctx.requiredProvider !== undefined
+            ? `fournisseur ${p} imposé pour ${task}`
+            : i === 0
+              ? `modèle préféré pour ${task}`
+              : `fallback #${i} pour ${task}`,
           tier,
           modelId: modelFor(p, tier, this.ctx.envOverrides),
         };
@@ -133,7 +149,11 @@ export class ModelRouter {
     }
     return {
       model: 'unavailable',
-      reason: this.ctx.euOnly
+      reason: this.ctx.requiredProvider !== undefined
+        ? this.ctx.euOnly && !EU_PROVIDERS.has(this.ctx.requiredProvider)
+          ? `fournisseur ${this.ctx.requiredProvider} incompatible avec le mode UE`
+          : `fournisseur ${this.ctx.requiredProvider} requis mais indisponible`
+        : this.ctx.euOnly
         ? 'mode UE : aucune clé Mistral configurée'
         : 'aucune clé de fournisseur configurée',
     };

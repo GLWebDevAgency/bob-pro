@@ -62,11 +62,61 @@ const completeStripeEnvironment = Object.freeze({
   PAYMENT_RETURN_BASE_URL: 'https://app.bobpro.fr',
 });
 
+const nativeKeyLifecycleEnvironment = Object.freeze({
+  BOB_LIVE_PROVIDER: 'mistral',
+  BOB_LIVE_SUBJECT_KEY_VERSION: '1',
+  BOB_LIVE_SUBJECT_HMAC_SECRET: 'subject-current-release-gate-material-2026',
+  BOB_LIVE_SUBJECT_HMAC_KEYRING: JSON.stringify({
+    1: 'subject-current-release-gate-material-2026',
+  }),
+  BOB_LIVE_PROOF_KEY_VERSION: '1',
+  BOB_LIVE_PROOF_SECRET: 'proof-current-release-gate-material-2026',
+  BOB_LIVE_PROOF_KEYRING: JSON.stringify({
+    1: 'proof-current-release-gate-material-2026',
+  }),
+});
+
 test('autorise la release V1 en accès anticipé quand Stripe est entièrement absent', () => {
   const result = runReleaseGate();
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /release-env-ok/u);
+});
+
+test('refuse une capacité Bob Live partielle et certifie le groupe complet', () => {
+  const partial = runReleaseGate({ BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50' });
+  assert.notEqual(partial.status, 0);
+  assert.match(partial.stderr, /BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS is required/u);
+
+  const complete = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '60',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.equal(complete.status, 0, complete.stderr);
+});
+
+test('refuse un plafond Bob Live supérieur au fournisseur ou au gateway Mistral', () => {
+  const providerOverflow = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '51',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.notEqual(providerOverflow.status, 0);
+  assert.match(providerOverflow.stderr, /greater than or equal to the global limit/u);
+
+  const gatewayOverflow = runReleaseGate({
+    BOB_LIVE_ENABLED: 'true',
+    BOB_LIVE_PROVIDER: 'mistral',
+    BOB_LIVE_GATEWAY_MAX_CONNECTIONS: '40',
+    BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50',
+    BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '60',
+    BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
+  });
+  assert.notEqual(gatewayOverflow.status, 0);
+  assert.match(gatewayOverflow.stderr, /must not exceed BOB_LIVE_GATEWAY_MAX_CONNECTIONS/u);
 });
 
 test('traite sept variables Stripe vides comme un paiement non provisionné', () => {
@@ -109,4 +159,63 @@ test('refuse le mode test Stripe et une origine de retour non canonique', () => 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /STRIPE_LIVEMODE must be 'true'/u);
   assert.match(result.stderr, /PAYMENT_RETURN_BASE_URL must be a canonical non-demo HTTPS URL/u);
+});
+
+test('préserve le cycle des clés natives même pendant une bascule fournisseur vers Mistral', () => {
+  const result = runReleaseGate(nativeKeyLifecycleEnvironment);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /release-env-ok/u);
+});
+
+test('refuse de remplacer le matériau preuve sous un numéro déjà déclaré courant', () => {
+  const result = runReleaseGate({
+    ...nativeKeyLifecycleEnvironment,
+    BOB_LIVE_PROOF_SECRET: 'proof-other-release-gate-material-2026',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /current secret must match its legacy current-secret variable/u);
+});
+
+test('refuse une keyring preuve non adjacente ou partageant le matériau sujet', () => {
+  const nonAdjacent = runReleaseGate({
+    ...nativeKeyLifecycleEnvironment,
+    BOB_LIVE_PROOF_KEY_VERSION: '3',
+    BOB_LIVE_PROOF_SECRET: 'proof-current-release-gate-material-2026',
+    BOB_LIVE_PROOF_KEYRING: JSON.stringify({
+      1: 'proof-previous-release-gate-material-2026',
+      3: 'proof-current-release-gate-material-2026',
+    }),
+  });
+  assert.notEqual(nonAdjacent.status, 0);
+  assert.match(nonAdjacent.stderr, /current N and optional adjacent N-1 only/u);
+
+  const reused = runReleaseGate({
+    ...nativeKeyLifecycleEnvironment,
+    BOB_LIVE_PROOF_SECRET: 'subject-current-release-gate-material-2026',
+    BOB_LIVE_PROOF_KEYRING: JSON.stringify({
+      1: 'subject-current-release-gate-material-2026',
+    }),
+  });
+  assert.notEqual(reused.status, 0);
+  assert.match(reused.stderr, /subject and proof key material must be dedicated/u);
+});
+
+test('refuse la restitution OpenAI native sans keyring preuve versionnée', () => {
+  const result = runReleaseGate({
+    BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /BOB_LIVE_PROOF_KEYRING is required/u);
+});
+
+test('refuse d’armer le certificat PostgreSQL destructif dans une release live', () => {
+  const result = runReleaseGate({
+    RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT must be absent or false/u);
 });

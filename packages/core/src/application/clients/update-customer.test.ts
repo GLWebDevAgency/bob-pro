@@ -52,7 +52,7 @@ describe('UpdateCustomer', () => {
       companyId: 'co-1',
       type: 'b2b',
       name: 'Durand SARL',
-      siren: '123456789',
+      siren: '732829320',
       contactName: 'Julie Durand',
       email: 'julie@durand.fr',
       phone: '0612345678',
@@ -63,7 +63,7 @@ describe('UpdateCustomer', () => {
     const saved = customers.get('cust-1');
     expect(saved?.name).toBe('Durand SARL');
     expect(saved?.type).toBe('b2b');
-    expect(saved?.siren).toBe('123456789');
+    expect(saved?.siren).toBe('732829320');
     expect(saved?.contactName).toBe('Julie Durand');
     expect(saved?.toProps().address).toEqual({ line1: '2 rue B', zip: '75002', city: 'Paris' });
   });
@@ -121,6 +121,17 @@ describe('UpdateCustomer — garde du TYPE (A3/A4 : la qualité s’apprécie à
     return created.value; // brouillon : status 'draft'
   }
 
+  function cancelledIssuedInvoiceFor(customerId: string) {
+    const draft = issuedInvoiceFor(customerId);
+    return Invoice.rehydrate({
+      ...draft.toSnapshot(),
+      status: 'cancelled',
+      number: 'F-2026-0001',
+      issuedAt: '2026-06-01',
+      dueAt: '2026-07-01',
+    });
+  }
+
   it('devis SIGNÉ présent → changement de type REFUSÉ (b2c→b2b interdit, fiche intacte)', async () => {
     const customers = new MemoryCustomers([customer(base)]);
     const useCase = new UpdateCustomer({
@@ -128,7 +139,7 @@ describe('UpdateCustomer — garde du TYPE (A3/A4 : la qualité s’apprécie à
       quotes: { listByCompany: async () => [signedQuoteFor('cust-1')] },
       invoices: emptyInvoices,
     });
-    const r = await useCase.execute({ ...base, type: 'b2b', siren: '123456789' });
+    const r = await useCase.execute({ ...base, type: 'b2b', siren: '732829320' });
     expect(r.ok).toBe(false);
     if (!r.ok && r.error.kind === 'domain' && r.error.error.code === 'VALIDATION') {
       expect(r.error.error.field).toBe('type');
@@ -138,7 +149,7 @@ describe('UpdateCustomer — garde du TYPE (A3/A4 : la qualité s’apprécie à
   });
 
   it('b2b→b2c avec devis signé : refus aussi (jamais de gel rétroactif fabriqué)', async () => {
-    const proBase = { ...base, type: 'b2b' as const, siren: '123456789' };
+    const proBase = { ...base, type: 'b2b' as const, siren: '732829320' };
     const customers = new MemoryCustomers([customer(proBase)]);
     const useCase = new UpdateCustomer({
       customers,
@@ -157,9 +168,21 @@ describe('UpdateCustomer — garde du TYPE (A3/A4 : la qualité s’apprécie à
       quotes: emptyQuotes,
       invoices: { listByCompany: async () => [issuedInvoiceFor('cust-1')] },
     });
-    const r = await useCase.execute({ ...base, type: 'b2b', siren: '123456789' });
+    const r = await useCase.execute({ ...base, type: 'b2b', siren: '732829320' });
     expect(r.ok).toBe(true);
     expect(customers.get('cust-1')?.type).toBe('b2b');
+  });
+
+  it('facture émise puis annulée → le type reste figé pour préserver sa portée légale', async () => {
+    const customers = new MemoryCustomers([customer(base)]);
+    const useCase = new UpdateCustomer({
+      customers,
+      quotes: emptyQuotes,
+      invoices: { listByCompany: async () => [cancelledIssuedInvoiceFor('cust-1')] },
+    });
+    const r = await useCase.execute({ ...base, type: 'b2b', siren: '732829320' });
+    expect(r.ok).toBe(false);
+    expect(customers.get('cust-1')?.type).toBe('b2c');
   });
 
   it('pièces d’un AUTRE client → sans effet sur cette fiche', async () => {
@@ -169,7 +192,7 @@ describe('UpdateCustomer — garde du TYPE (A3/A4 : la qualité s’apprécie à
       quotes: { listByCompany: async () => [signedQuoteFor('cust-autre')] },
       invoices: emptyInvoices,
     });
-    const r = await useCase.execute({ ...base, type: 'b2b', siren: '123456789' });
+    const r = await useCase.execute({ ...base, type: 'b2b', siren: '732829320' });
     expect(r.ok).toBe(true);
   });
 

@@ -79,7 +79,25 @@ describe('Invoice.situationFromSignedQuote (B2)', () => {
     expect(t.ttc).toBe(48840);
     expect(t.retenueGarantieCents).toBe(2442);
     expect(t.netToPay).toBe(46398);
+    expect(t.duePayableCents).toBe(48840);
     expect(t.vatByRate['10']).toBe(4440); // TVA due sur l'avancement PLEIN
+  });
+  it('B5 — payer le montant immédiat ne solde pas la retenue ; le reliquat reste encaissable', () => {
+    const created = Invoice.situationFromSignedQuote(signedQuote({ retenuePct: 5 }), 'inv-ret', {
+      order: 1,
+      targetHtCents: 44400,
+    });
+    if (!created.ok) throw new Error('situation');
+    const invoice = created.value;
+    invoice.assignNumber(DocNumber.format('F', 2026, 2), AT);
+    invoice.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
+
+    expect(invoice.registerPayment(46398, AT).ok).toBe(true);
+    expect(invoice.status).toBe('partially_paid');
+    expect(invoice.paid).toBe(46398);
+    expect(invoice.registerPayment(2442, AT).ok).toBe(true);
+    expect(invoice.status).toBe('paid');
+    expect(invoice.paid).toBe(48840);
   });
   it('B3 — le prorata part des bases NETTES de remises du devis', () => {
     // Marché remisé 10 % : HT net 133 200. Une situation de 133 200 = 100 % passe ;
@@ -103,7 +121,7 @@ describe('Invoice.situationFromSignedQuote (B2)', () => {
     if (!r.ok) throw new Error('situation');
     const inv = r.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    expect(inv.issue({ mentions: ['M'], terms, issuedAt: ISSUED, at: AT }).ok).toBe(true);
+    expect(inv.issue({ mentions: ['M'], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' }).ok).toBe(true);
     expect(inv.totals().retenueGarantieCents).toBe(2442);
     expect(inv.totals().netToPay).toBe(46398);
   });
@@ -127,7 +145,14 @@ describe('Invoice.situationFromSignedQuote (B2)', () => {
     if (!r.ok) throw new Error('situation');
     const inv = r.value;
     inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
-    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    inv.issue({
+      mentions: [],
+      terms,
+      issuedAt: ISSUED,
+      at: AT,
+      vatTreatment: 'standard',
+      frenchBillingMode: 'S1',
+    });
     const creditNote = Invoice.creditNoteFor(inv, 'cn1');
     expect(creditNote.ok).toBe(true);
     if (creditNote.ok) {
@@ -140,13 +165,15 @@ describe('Invoice.situationFromSignedQuote (B2)', () => {
 });
 
 describe('Invoice.fromSignedQuote — remises B3 et retenue B5', () => {
-  it('acompte : reprend la remise globale du devis (net = 30 % du TTC remisé)', () => {
+  it('acompte V2 : ses lignes et son TTC portent 30 % du marché remisé, sans double remise', () => {
     const r = Invoice.fromSignedQuote(signedQuote({ depositPct: 30, globalDiscountPct: 10 }), 'deposit', 'inv1');
     if (!r.ok) throw new Error('deposit');
     const t = r.value.totals();
-    expect(t.ttc).toBe(146520);
+    expect(t.ttc).toBe(43956);
     expect(t.netToPay).toBe(43956);
-    expect(r.value.globalDiscount).toEqual({ type: 'percent', value: 10 });
+    expect(t.duePayableCents).toBe(43956);
+    expect(r.value.globalDiscount).toBeNull();
+    expect(r.value.lines.every((line) => line.label.startsWith('Acompte 30 % — '))).toBe(true);
   });
   it('acompte : PAS de retenue de garantie (elle précède l’exécution)', () => {
     const r = Invoice.fromSignedQuote(signedQuote({ depositPct: 30, retenuePct: 5 }), 'deposit', 'inv1');
@@ -162,16 +189,25 @@ describe('Invoice.fromSignedQuote — remises B3 et retenue B5', () => {
     expect(t.retenueGarantieCents).toBe(8140);
     expect(t.netToPay).toBe(154660);
   });
-  it('finale après acompte + situation : solde exact, retenue sur le solde, part situations tracée', () => {
+  it('finale après acompte + situation : lignes résiduelles, reprise avance et retenue distinctes', () => {
     const r = Invoice.fromSignedQuote(signedQuote({ retenuePct: 5 }), 'final', 'inv1', {
       depositDeduction: { amountCents: 97680, invoiceId: null },
       situationDeductionCents: 48840,
+      situationBilledHtCents: 44400,
+      situationBilledByQuoteLineCents: { l1: 24000, l2: 20400 },
+      precedingInvoices: [
+        { invoiceId: 'dep-1', kind: 'deposit', number: 'F-2026-0001', issuedAt: ISSUED },
+        { invoiceId: 'sit-1', kind: 'situation', number: 'F-2026-0002', issuedAt: ISSUED },
+      ],
     });
     if (!r.ok) throw new Error('final');
     const t = r.value.totals();
-    // Solde 162 800 − 97 680 = 65 120 ; retenue 5 % = 3 256 ; net 61 864.
-    expect(t.retenueGarantieCents).toBe(3256);
-    expect(t.netToPay).toBe(61864);
+    // Lignes restantes : 113 960 TTC ; reprise d'avance : 48 840 ; créance : 65 120.
+    // La retenue porte sur les travaux résiduels, pas sur l'avance : 5 % = 5 698.
+    expect(t.ttc).toBe(113960);
+    expect(t.duePayableCents).toBe(65120);
+    expect(t.retenueGarantieCents).toBe(5698);
+    expect(t.netToPay).toBe(59422);
     expect(r.value.situationDeductionCents).toBe(48840);
   });
   it('part situations > déduction totale → refus', () => {
@@ -228,7 +264,7 @@ describe('Invoice.composeStandalone (B1) — facture directe', () => {
     snapshot.lines = [lines[0]!];
     const shrunk = Invoice.rehydrate(snapshot);
     shrunk.assignNumber(DocNumber.format('F', 2026, 9), AT);
-    const issued = shrunk.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    const issued = shrunk.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
     expect(issued.ok).toBe(false);
   });
 });

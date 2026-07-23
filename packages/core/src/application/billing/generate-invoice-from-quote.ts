@@ -1,12 +1,15 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import type { DateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { Invoice } from '../../domain/billing/invoice/invoice';
 import { computeLineBases } from '../../domain/services/compute-totals';
 import {
   billedTtcCents,
   quoteBillingEngagement,
+  validateSituationVatClosure,
 } from '../../domain/services/quote-billing-engagement';
 import { internationalProEmissionGuard } from '../../domain/services/international-emission-guard';
+import { professionalAdvanceRecoveryGuard } from '../../domain/compliance/professional-advance-recovery';
 import {
   deriveRetractation,
   offPremisesEmbargoOverrideRisk,
@@ -290,14 +293,86 @@ export class GenerateInvoiceFromQuote {
     // corrélé de bout en bout : devis → acompte → situations → solde exact.
     let depositDeduction: { amountCents: number; invoiceId: string | null } | undefined;
     let situationDeductionCents = 0;
+    let situationBilledHtCents = 0;
+    let advanceDeductionCents = 0;
+    let situationBilledByQuoteLineCents: Readonly<Record<string, number>> | undefined;
+    let precedingInvoices:
+      { invoiceId: string; kind: 'deposit' | 'situation'; number: string; issuedAt: DateOnly }[] = [];
     if (mode === 'final') {
       // Seules les pièces ÉMISES se déduisent (un brouillon de situation n'a pas d'effet fiscal).
       const emitted = alreadyInvoiced.filter((i) => i.status !== 'draft');
+      const emittedSituations = emitted.filter((i) => i.kind === 'situation');
       const amountCents = emitted.reduce((sum, i) => sum + billedTtcCents(i), 0);
-      situationDeductionCents = emitted
-        .filter((i) => i.kind === 'situation')
-        .reduce((sum, i) => sum + billedTtcCents(i), 0);
+      situationDeductionCents = emittedSituations.reduce(
+        (sum, invoice) => sum + billedTtcCents(invoice),
+        0,
+      );
+      advanceDeductionCents = amountCents - situationDeductionCents;
+      situationBilledHtCents = emittedSituations.reduce(
+        (sum, invoice) => sum + invoice.totals().ht,
+        0,
+      );
+
+      // Une finale après situations ne peut pas reposer sur un prorata global : avec plusieurs
+      // taux ou postes, cela déplacerait silencieusement du CA/TVA entre les lignes du devis.
+      // Chaque ligne de situation V2 porte donc son lien immuable vers le poste contractuel ;
+      // un historique sans ce lien reste consultable mais sa finale est bloquée honnêtement.
+      if (emittedSituations.length > 0) {
+        const quoteLineIds = new Set(quote.lines.map((line) => line.id));
+        const billedByQuoteLine: Record<string, number> = {};
+        for (const situation of emittedSituations) {
+          const bases = computeLineBases(situation.lines, {
+            globalDiscount: situation.globalDiscount,
+          }).netLineBases;
+          const recomputedHt = bases.reduce((sum, amount) => sum + amount, 0);
+          if (recomputedHt !== situation.totals().ht) {
+            return err(
+              appDomain({
+                code: 'VALIDATION',
+                field: 'situation',
+                message:
+                  'Une situation antérieure ne retrouve pas sa ventilation HT figée ; le solde ne peut pas être préparé.',
+              }),
+            );
+          }
+          for (const [index, line] of situation.lines.entries()) {
+            const sourceId = line.sourceQuoteLineId;
+            if (sourceId === undefined || !quoteLineIds.has(sourceId)) {
+              return err(
+                appDomain({
+                  code: 'VALIDATION',
+                  field: 'situation.sourceQuoteLineId',
+                  message:
+                    'Une situation antérieure ne référence pas précisément ses lignes de devis ; le solde doit être régularisé avant émission.',
+                }),
+              );
+            }
+            billedByQuoteLine[sourceId] =
+              (billedByQuoteLine[sourceId] ?? 0) + (bases[index] ?? 0);
+          }
+        }
+        situationBilledByQuoteLineCents = billedByQuoteLine;
+      }
       if (amountCents > 0) {
+        const incompleteSource = emitted.find(
+          (invoice) => invoice.number === null || invoice.issuedAt === null,
+        );
+        if (incompleteSource) {
+          return err(
+            appDomain({
+              code: 'VALIDATION',
+              field: 'invoice',
+              message:
+                'Une pièce antérieure émise ne possède pas sa référence légale complète ; le solde ne peut pas être préparé.',
+            }),
+          );
+        }
+        precedingInvoices = emitted.map((invoice) => ({
+          invoiceId: invoice.id,
+          kind: invoice.kind as 'deposit' | 'situation',
+          number: invoice.number!,
+          issuedAt: invoice.issuedAt!,
+        }));
         // Réf de nav : la pièce source si UNIQUE — composite (plusieurs pièces) sinon.
         depositDeduction = {
           amountCents,
@@ -306,13 +381,42 @@ export class GenerateInvoiceFromQuote {
       }
     }
 
+    const advancePath = professionalAdvanceRecoveryGuard({
+      customerType: customer.type,
+      invoiceKind: mode,
+      advanceDeductionCents,
+    });
+    if (!advancePath.ok) return err(appDomain(advancePath.error));
+
     const created = Invoice.fromSignedQuote(
       quote,
       mode,
       this.deps.ids.newId(),
-      depositDeduction ? { depositDeduction, situationDeductionCents } : undefined,
+      depositDeduction
+        ? {
+            depositDeduction,
+            situationDeductionCents,
+            situationBilledHtCents,
+            ...(situationBilledByQuoteLineCents === undefined
+              ? {}
+              : { situationBilledByQuoteLineCents }),
+            ...(precedingInvoices.length === 0 ? {} : { precedingInvoices }),
+          }
+        : undefined,
     );
     if (!created.ok) return err(appDomain(created.error));
+
+    if (mode === 'final') {
+      const emittedSituations = alreadyInvoiced.filter(
+        (invoice) => invoice.kind === 'situation' && invoice.status !== 'draft',
+      );
+      const vatClosure = validateSituationVatClosure({
+        marketTotals: quote.totals(),
+        emittedSituations,
+        finalInvoice: created.value,
+      });
+      if (!vatClosure.ok) return err(appDomain(vatClosure.error));
+    }
 
     try {
       await this.deps.invoices.save(created.value);

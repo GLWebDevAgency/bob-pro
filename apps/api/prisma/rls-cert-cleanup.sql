@@ -18,6 +18,7 @@ DELETE FROM release_flag_subjects WHERE id IN ('rls-flag-user-pilot', 'rls-flag-
 
 DELETE FROM realtime_control_consumptions WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_control_grants WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
+DELETE FROM realtime_native_speech_deliveries WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_speech_artifacts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_voice_usage_events WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_voice_usage_daily WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
@@ -34,7 +35,7 @@ DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b
 DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
 DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
 DELETE FROM document_analyses WHERE "documentId" IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
-DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');
+DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');

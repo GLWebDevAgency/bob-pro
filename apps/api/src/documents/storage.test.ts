@@ -17,15 +17,25 @@ describe('InMemoryDocumentStorage', () => {
       contentType: 'application/octet-stream',
     });
 
-    expect(stored).toEqual({ key, sizeBytes: 3, sha256: SHA });
-    await expect(
-      storage.put({
-        companyId: 'co-1',
-        key,
-        bytes: BYTES,
-        contentType: 'application/octet-stream',
-      }),
-    ).rejects.toThrow('already exists');
+    expect(stored).toEqual({
+      key,
+      sizeBytes: 3,
+      sha256: SHA,
+      contentType: 'application/octet-stream',
+      created: true,
+    });
+    await expect(storage.put({
+      companyId: 'co-1',
+      key,
+      bytes: BYTES,
+      contentType: 'application/octet-stream; charset=binary',
+    })).resolves.toMatchObject({ created: false, sha256: SHA });
+    await expect(storage.put({
+      companyId: 'co-1',
+      key,
+      bytes: new Uint8Array([1, 2, 4]),
+      contentType: 'application/octet-stream',
+    })).rejects.toThrow('collision');
   });
 
   it('refuse une clé hors périmètre tenant', async () => {
@@ -79,12 +89,165 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     }
   });
 
+  it('get calcule taille et SHA-256 depuis les octets effectivement téléchargés', async () => {
+    const storage = makeStorage(
+      (async () => new Response(Buffer.from(BYTES), {
+        status: 200,
+        headers: { 'content-type': 'application/xml; charset=binary' },
+      })) as typeof fetch,
+    );
+    try {
+      const loaded = await storage.get('co-1', KEY);
+      expect(loaded).toEqual({
+        key: KEY,
+        bytes: BYTES,
+        sizeBytes: BYTES.byteLength,
+        sha256: SHA,
+        contentType: 'application/xml; charset=binary',
+      });
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('adopte un objet préexistant strictement identique sans POST ni DELETE', async () => {
+    const methods: string[] = [];
+    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? 'GET');
+      return new Response(Buffer.from(BYTES), {
+        status: 200,
+        headers: { 'content-type': 'application/xml; charset=binary' },
+      });
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
+      })).resolves.toMatchObject({ created: false, sha256: SHA });
+      expect(methods).toEqual(['GET']);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('adopte le gagnant identique après un conflit d’upload concurrent', async () => {
+    const methods: string[] = [];
+    let getCount = 0;
+    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      methods.push(method);
+      if (method === 'GET') {
+        getCount += 1;
+        return getCount === 1
+          ? new Response(NOT_FOUND_BODY, { status: 400 })
+          : new Response(Buffer.from(BYTES), {
+              status: 200,
+              headers: { 'content-type': 'application/xml' },
+            });
+      }
+      return new Response('already exists', { status: 409 });
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
+      })).resolves.toMatchObject({ created: false, sha256: SHA });
+      expect(methods).toEqual(['GET', 'POST', 'GET']);
+      expect(methods).not.toContain('DELETE');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('refuse une collision de même taille/MIME dont les octets diffèrent, sans effacement', async () => {
+    const methods: string[] = [];
+    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+      methods.push(init?.method ?? 'GET');
+      return new Response(Buffer.from([1, 2, 4]), {
+        status: 200,
+        headers: { 'content-type': 'application/xml' },
+      });
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
+      })).rejects.toThrow('collision');
+      expect(methods).toEqual(['GET']);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('refuse un readback corrompu après POST sans supprimer une clé potentiellement adoptée', async () => {
+    const methods: string[] = [];
+    let getCount = 0;
+    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      methods.push(method);
+      if (method === 'GET') {
+        getCount += 1;
+        return getCount === 1
+          ? new Response(NOT_FOUND_BODY, { status: 400 })
+          : new Response(Buffer.from([1, 2, 4]), {
+              status: 200,
+              headers: { 'content-type': 'application/xml' },
+            });
+      }
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
+      })).rejects.toThrow('read-after-write integrity mismatch');
+      expect(methods).toEqual(['GET', 'POST', 'GET']);
+      expect(methods).not.toContain('DELETE');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('adopte l’objet exact quand l’ACK du POST est perdu', async () => {
+    const methods: string[] = [];
+    let getCount = 0;
+    const storage = makeStorage((async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      methods.push(method);
+      if (method === 'GET') {
+        getCount += 1;
+        return getCount === 1
+          ? new Response(NOT_FOUND_BODY, { status: 400 })
+          : new Response(Buffer.from(BYTES), {
+              status: 200,
+              headers: { 'content-type': 'application/xml' },
+            });
+      }
+      throw new Error('connection reset after upload');
+    }) as typeof fetch);
+    try {
+      await expect(storage.put({
+        companyId: 'co-1', key: KEY, bytes: BYTES, contentType: 'application/xml',
+      })).resolves.toMatchObject({ created: false, sha256: SHA });
+      expect(methods).toEqual(['GET', 'POST', 'GET']);
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
   it('put : le pré-stat 400 not_found ne bloque plus le PREMIER upload (objet uploadé)', async () => {
     const calls: string[] = [];
+    let objectGets = 0;
     const storage = makeStorage((async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = String(url);
-      calls.push(`${init?.method ?? 'GET'} ${u}`);
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${u}`);
       if (u.includes('/object/info/')) return new Response(NOT_FOUND_BODY, { status: 400 });
+      if (method === 'GET' && u.includes('/object/bob-documents/')) {
+        objectGets += 1;
+        return objectGets === 1
+          ? new Response(NOT_FOUND_BODY, { status: 400 })
+          : new Response(Buffer.from(BYTES), {
+              status: 200,
+              headers: { 'content-type': 'application/xml; charset=binary' },
+            });
+      }
       return new Response('{}', { status: 200 }); // l'upload POST réussit
     }) as typeof fetch);
     try {
@@ -95,6 +258,8 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
         contentType: 'application/xml',
       });
       expect(stored.sha256).toBe(SHA);
+      expect(stored.created).toBe(true);
+      expect(stored.contentType).toContain('application/xml');
       expect(calls.some((c) => c.startsWith('POST') && c.includes('/object/bob-documents/'))).toBe(
         true,
       );

@@ -3,6 +3,7 @@ dist
 .turbo
 .vercel
 *.log
+.DS_Store
 .expo
 .env*
 !.env.example
@@ -17,6 +18,14 @@ coverage
 *.tsbuildinfo
 .env*.local
 .gradle/
+packages/core/dist-testing/
+
+# Next 16 régénère ces déclarations différemment pour `next dev` et `next build`.
+# Elles doivent rester générées localement (`next typegen`), jamais versionnées.
+apps/landing/next-env.d.ts
+apps/web/next-env.d.ts
 
 # Expo — régénéré par expo-cli à chaque dev/typecheck (log C00 14:16)
 expo-env.d.ts
+apps/mobile/android/
+apps/mobile/ios/

@@ -179,6 +179,7 @@ function harness(
         voice: NEGOTIATION.voice,
         configVersion: NEGOTIATION.configVersion,
         maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
+        speechDelivery: 'audited-signed-url-v1' as const,
         speechSourcePolicy: {
           mode: 'signed-url-v1' as const,
           allowedOrigin: 'https://project.supabase.co',
@@ -202,6 +203,7 @@ function harness(
       voice: NEGOTIATION.voice,
       configVersion: NEGOTIATION.configVersion,
       maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
+      speechDelivery: 'audited-signed-url-v1' as const,
       speechSourcePolicy: {
         mode: 'signed-url-v1' as const,
         allowedOrigin: 'https://project.supabase.co',
@@ -262,6 +264,8 @@ describe('MistralRealtimeTransport', () => {
       {
         transport: 'mistral-pcm',
         context: { version: 1, revision: 1, context: CONTEXT },
+        configVersion: NEGOTIATION.configVersion,
+        speechDelivery: NEGOTIATION.speechDelivery,
         sessionHandle: SESSION,
       },
       expect.any(AbortSignal),

@@ -14,6 +14,7 @@ BEGIN
     'customers',
     'quotes',
     'invoices',
+    'invoice_predecessors',
     'line_items',
     'payments',
     'public_access_tokens',
@@ -26,7 +27,9 @@ BEGIN
     'document_folders',
     'document_folder_deletion_plans',
     'document_versions',
+    'document_invoice_pdf_attestations',
     'document_archive_jobs',
+    'document_archive_job_artifacts',
     'notification_jobs',
     'devices',
     'push_installations',
@@ -45,6 +48,7 @@ BEGIN
     'document_counters',
     'realtime_admission_events',
     'realtime_session_leases',
+    'realtime_reaper_tenant_schedule',
     'realtime_mistral_ingress_tickets',
     'realtime_mistral_conversation_bootstrap_tickets',
     'realtime_mistral_conversation_missions',
@@ -57,6 +61,7 @@ BEGIN
     'realtime_mistral_conversation_identity_key_version_floors',
     'realtime_mistral_conversation_identity_key_bindings',
     'realtime_speech_artifacts',
+    'realtime_native_speech_deliveries',
     'realtime_control_grants',
     'realtime_control_consumptions',
     'realtime_voice_usage_events',
@@ -191,9 +196,53 @@ CREATE POLICY tenant_isolation ON quotes
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON invoices;
-CREATE POLICY tenant_isolation ON invoices
+DROP POLICY IF EXISTS invoice_select ON invoices;
+DROP POLICY IF EXISTS invoice_insert ON invoices;
+DROP POLICY IF EXISTS invoice_update ON invoices;
+DROP POLICY IF EXISTS invoice_delete_draft ON invoices;
+CREATE POLICY invoice_select ON invoices FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_insert ON invoices FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_update ON invoices FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_delete_draft ON invoices FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND status = 'draft'
+  );
+
+-- Références de pièces antérieures : lecture/insertion strictement tenant et brouillon.
+-- Aucun UPDATE ; DELETE
+-- seulement pendant la vie du brouillon cible (le trigger SQL rend la preuve append-only dès
+-- l'émission et refuse également toute suppression orpheline).
+DROP POLICY IF EXISTS tenant_isolation ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_select ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_insert ON invoice_predecessors;
+DROP POLICY IF EXISTS invoice_predecessor_delete_draft ON invoice_predecessors;
+CREATE POLICY invoice_predecessor_select ON invoice_predecessors FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY invoice_predecessor_insert ON invoice_predecessors FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1 FROM invoices i
+       WHERE i.id = invoice_predecessors."invoiceId"
+         AND i."companyId" = invoice_predecessors."companyId"
+         AND i.status = 'draft'
+    )
+  );
+CREATE POLICY invoice_predecessor_delete_draft ON invoice_predecessors FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1 FROM invoices i
+       WHERE i.id = invoice_predecessors."invoiceId"
+         AND i."companyId" = invoice_predecessors."companyId"
+         AND i.status = 'draft'
+    )
+  );
 
 DROP POLICY IF EXISTS tenant_isolation ON payments;
 CREATE POLICY tenant_isolation ON payments
@@ -226,9 +275,39 @@ CREATE POLICY tenant_quote_creation_request_insert ON quote_creation_requests
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON documents;
-CREATE POLICY tenant_isolation ON documents
+DROP POLICY IF EXISTS tenant_document_select ON documents;
+DROP POLICY IF EXISTS tenant_document_insert ON documents;
+DROP POLICY IF EXISTS tenant_document_update ON documents;
+DROP POLICY IF EXISTS generated_invoice_pdf_attestation_select_fence ON documents;
+CREATE POLICY tenant_document_select ON documents FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY tenant_document_insert ON documents FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY tenant_document_update ON documents FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+-- Après activation V2, un PDF de facture généré n'est visible que si son profil a été attesté
+-- depuis ses octets et correspond au snapshot d'audience. AS RESTRICTIVE compose ce fence avec
+-- le tenant policy ci-dessus (AND), il ne peut jamais élargir une lecture.
+CREATE POLICY generated_invoice_pdf_attestation_select_fence ON documents
+  AS RESTRICTIVE FOR SELECT
+  USING (
+    origin <> 'generated'::public."StoredDocumentOrigin"
+    OR kind <> 'invoice_pdf'::public."StoredDocumentKind"
+    OR NOT EXISTS (
+      SELECT 1
+        FROM public.document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 2
+    )
+    OR (
+      "linkedEntityType" = 'invoice'::public."StoredDocumentLinkedEntityType"
+      AND btrim(coalesce("linkedEntityId", '')) <> ''
+      AND public.generated_invoice_pdf_attestation_visible_v2("companyId", id)
+    )
+  );
+-- Pas de policy DELETE : la purge après rétention appartient à une capacité d'administration
+-- distincte. Une dérive future d'ACL ne doit pas rendre le hard-delete accessible au runtime.
 
 DROP POLICY IF EXISTS tenant_isolation ON document_analyses;
 DROP POLICY IF EXISTS tenant_analysis_select ON document_analyses;
@@ -267,11 +346,19 @@ DROP POLICY IF EXISTS tenant_isolation ON realtime_admission_events;
 CREATE POLICY tenant_isolation ON realtime_admission_events
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS realtime_admission_event_reaper_directory_select
+  ON realtime_admission_events;
+DROP POLICY IF EXISTS realtime_admission_event_reaper_schedule_select
+  ON realtime_admission_events;
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_session_leases;
 CREATE POLICY tenant_isolation ON realtime_session_leases
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS realtime_session_lease_reaper_directory_select
+  ON realtime_session_leases;
+DROP POLICY IF EXISTS realtime_session_lease_reaper_schedule_select
+  ON realtime_session_leases;
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_ingress_tickets;
 CREATE POLICY tenant_isolation ON realtime_mistral_ingress_tickets
@@ -672,6 +759,218 @@ CREATE POLICY realtime_speech_artifact_update ON realtime_speech_artifacts
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
+-- Annuaire provider-neutral du reaper admission. Le rôle propriétaire NOLOGIN est provisionné et
+-- ses ACL sont normalisées par release.sh après chaque replay RLS.
+-- Les fonctions appartiennent après la première release au rôle NOLOGIN directory. Leur ACL ne
+-- peut donc être normalisée ici par un DIRECT_URL BYPASSRLS non-superuser/non-INHERIT. Le
+-- provisionnement owner-scoped qui suit immédiatement ce replay les révoque et les certifie.
+REVOKE ALL ON TABLE public.realtime_reaper_tenant_schedule FROM PUBLIC;
+REVOKE ALL ON TABLE public.realtime_reaper_directory_cursor FROM PUBLIC;
+ALTER TABLE public.realtime_reaper_tenant_schedule ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_tenant_schedule FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_directory_cursor ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_reaper_directory_cursor FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_authority
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_select
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_insert
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_update
+  ON public.realtime_reaper_tenant_schedule;
+DROP POLICY IF EXISTS realtime_reaper_tenant_schedule_tenant_delete
+  ON public.realtime_reaper_tenant_schedule;
+CREATE POLICY realtime_reaper_tenant_schedule_authority
+  ON public.realtime_reaper_tenant_schedule FOR ALL
+  USING (
+    current_user = 'bob_realtime_reaper_directory'
+    OR current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner
+        FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+    ))
+  )
+  WITH CHECK (
+    current_user = 'bob_realtime_reaper_directory'
+    OR current_user = pg_catalog.pg_get_userbyid((
+      SELECT relation.relowner
+        FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid = 'public.realtime_reaper_tenant_schedule'::regclass
+    ))
+  );
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_select
+  ON public.realtime_reaper_tenant_schedule FOR SELECT
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_insert
+  ON public.realtime_reaper_tenant_schedule FOR INSERT
+  WITH CHECK ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_update
+  ON public.realtime_reaper_tenant_schedule FOR UPDATE
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''))
+  WITH CHECK ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+CREATE POLICY realtime_reaper_tenant_schedule_tenant_delete
+  ON public.realtime_reaper_tenant_schedule FOR DELETE
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', TRUE), ''));
+DROP POLICY IF EXISTS realtime_reaper_directory_cursor_select
+  ON public.realtime_reaper_directory_cursor;
+DROP POLICY IF EXISTS realtime_reaper_directory_cursor_update
+  ON public.realtime_reaper_directory_cursor;
+CREATE POLICY realtime_reaper_directory_cursor_select
+  ON public.realtime_reaper_directory_cursor FOR SELECT
+  USING (current_user = 'bob_realtime_reaper_directory');
+CREATE POLICY realtime_reaper_directory_cursor_update
+  ON public.realtime_reaper_directory_cursor FOR UPDATE
+  USING (current_user = 'bob_realtime_reaper_directory')
+  WITH CHECK (current_user = 'bob_realtime_reaper_directory');
+DO $$
+DECLARE
+  exposed_role TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_tenant_schedule FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_reaper_directory_cursor FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
+
+-- Preuve OpenAI RTP native : CAS tenanté et DELETE de rétention doublement borné. Le seul helper
+-- global exposable ne renvoie que les identifiants des tenants ayant du travail déjà dû.
+REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
+  TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(
+  TEXT, INTEGER, UUID
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
+  FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
+  FROM PUBLIC;
+REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM PUBLIC;
+ALTER TABLE public.realtime_native_speech_maintenance_cursors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.realtime_native_speech_maintenance_cursors FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS realtime_native_speech_maintenance_cursor_directory_select
+  ON public.realtime_native_speech_maintenance_cursors;
+DROP POLICY IF EXISTS realtime_native_speech_maintenance_cursor_directory_update
+  ON public.realtime_native_speech_maintenance_cursors;
+CREATE POLICY realtime_native_speech_maintenance_cursor_directory_select
+  ON public.realtime_native_speech_maintenance_cursors
+  FOR SELECT
+  USING (current_user = 'bob_openai_native_maintenance_directory');
+CREATE POLICY realtime_native_speech_maintenance_cursor_directory_update
+  ON public.realtime_native_speech_maintenance_cursors
+  FOR UPDATE
+  USING (current_user = 'bob_openai_native_maintenance_directory')
+  WITH CHECK (current_user = 'bob_openai_native_maintenance_directory');
+-- L'ACL de l'annuaire global est normalisée par provision_openai_native_maintenance_directory,
+-- sous son owner NOLOGIN exact, immédiatement après ce replay RLS dans release.sh.
+DO $$
+DECLARE
+  exposed_role TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID) FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.realtime_native_speech_maintenance_cursors FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
+  TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
+  TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.assert_realtime_control_consumption_binding_v3(
+  TEXT, UUID, UUID, UUID, UUID, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_grant_v2() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.guard_realtime_control_consumption_v2() FROM PUBLIC;
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_select ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_update ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_due_directory_select ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_delete_tenant ON realtime_native_speech_deliveries;
+DROP POLICY IF EXISTS realtime_native_speech_delivery_delete_retention_fence ON realtime_native_speech_deliveries;
+CREATE POLICY realtime_native_speech_delivery_select ON realtime_native_speech_deliveries
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_insert ON realtime_native_speech_deliveries
+  FOR INSERT WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_update ON realtime_native_speech_deliveries
+  FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_due_directory_select
+  ON realtime_native_speech_deliveries
+  FOR SELECT
+  USING (
+    current_user = 'bob_openai_native_maintenance_directory'
+    AND (
+      (
+        phase NOT IN ('delivered', 'cancelled', 'failed', 'expired')
+        AND "expiresAt" <= statement_timestamp()
+      )
+      OR (
+        phase IN ('delivered', 'cancelled', 'failed', 'expired')
+        AND "retentionExpiresAt" <= statement_timestamp()
+      )
+    )
+  );
+CREATE POLICY realtime_native_speech_delivery_delete_tenant ON realtime_native_speech_deliveries
+  FOR DELETE
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_native_speech_delivery_delete_retention_fence
+  ON realtime_native_speech_deliveries
+  AS RESTRICTIVE
+  FOR DELETE
+  USING (
+    phase IN ('delivered', 'cancelled', 'failed', 'expired')
+    AND "retentionExpiresAt" <= statement_timestamp()
+    AND NOT EXISTS (
+      SELECT 1
+        FROM realtime_control_grants AS control_grant
+       WHERE control_grant."companyId" = realtime_native_speech_deliveries."companyId"
+         AND control_grant."nativeDeliveryId" = realtime_native_speech_deliveries."deliveryId"
+    )
+  );
+
 DROP POLICY IF EXISTS tenant_isolation ON realtime_control_grants;
 DROP POLICY IF EXISTS realtime_control_grant_select ON realtime_control_grants;
 DROP POLICY IF EXISTS realtime_control_grant_insert ON realtime_control_grants;
@@ -719,9 +1018,57 @@ CREATE POLICY realtime_voice_usage_daily_rollup_update ON realtime_voice_usage_d
   );
 
 DROP POLICY IF EXISTS tenant_isolation ON document_archive_jobs;
-CREATE POLICY tenant_isolation ON document_archive_jobs
-  USING ("companyId" = current_setting('app.current_company_id', true))
-  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+DROP POLICY IF EXISTS document_archive_jobs_tenant_select ON document_archive_jobs;
+DROP POLICY IF EXISTS document_archive_jobs_tenant_insert ON document_archive_jobs;
+DROP POLICY IF EXISTS document_archive_jobs_tenant_update ON document_archive_jobs;
+CREATE POLICY document_archive_jobs_tenant_select ON document_archive_jobs
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+-- Fenêtre expand N/N-1 : l'ancien binaire écrit encore directement dans l'outbox. Ces policies
+-- sont donc doublement bornées par le tenant ET par le rail monotone V1. L'activation V2 change
+-- l'état dans la même transaction que le retrait des ACL : même si un GRANT dérivait plus tard,
+-- les policies resteraient fermées. Le writer N utilise déjà les capacités SECURITY DEFINER V2.
+CREATE POLICY document_archive_jobs_tenant_insert ON document_archive_jobs FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+CREATE POLICY document_archive_jobs_tenant_update ON document_archive_jobs FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+-- Jamais de policy DELETE. Après activation V2, aucune policy INSERT/UPDATE n'est satisfiable et
+-- le runtime ne conserve que enqueue/claim/fail/complete, qui bornent identité, horloge et preuve.
+
+DROP POLICY IF EXISTS document_archive_job_artifacts_tenant_select
+  ON document_archive_job_artifacts;
+CREATE POLICY document_archive_job_artifacts_tenant_select ON document_archive_job_artifacts
+  FOR SELECT USING ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS document_invoice_pdf_attestations_tenant_select
+  ON document_invoice_pdf_attestations;
+CREATE POLICY document_invoice_pdf_attestations_tenant_select
+  ON document_invoice_pdf_attestations FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON notification_jobs;
 DO $$
@@ -1133,13 +1480,48 @@ CREATE POLICY tenant_isolation ON line_items
 
 -- document_versions : rattachées via leur document parent.
 DROP POLICY IF EXISTS tenant_isolation ON document_versions;
-CREATE POLICY tenant_isolation ON document_versions
+DROP POLICY IF EXISTS tenant_document_version_select ON document_versions;
+DROP POLICY IF EXISTS tenant_document_version_insert ON document_versions;
+DROP POLICY IF EXISTS tenant_document_version_update_expand ON document_versions;
+CREATE POLICY tenant_document_version_select ON document_versions FOR SELECT
   USING (
     EXISTS (SELECT 1 FROM documents d WHERE d.id = document_versions."documentId" AND d."companyId" = current_setting('app.current_company_id', true))
-  )
+  );
+CREATE POLICY tenant_document_version_insert ON document_versions FOR INSERT
   WITH CHECK (
     EXISTS (SELECT 1 FROM documents d WHERE d.id = document_versions."documentId" AND d."companyId" = current_setting('app.current_company_id', true))
   );
+-- Compatibilité N-1 strictement temporaire : son UPSERT confirme un retry par un UPDATE no-op.
+-- Le trigger `document_versions_immutable` refuse toute différence ; le protocole V1 ferme en
+-- plus cette policy dès l'activation, avant même le retrait de l'ACL UPDATE.
+CREATE POLICY tenant_document_version_update_expand ON document_versions FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM documents d
+       WHERE d.id = document_versions."documentId"
+         AND d."companyId" = current_setting('app.current_company_id', true)
+    )
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM documents d
+       WHERE d.id = document_versions."documentId"
+         AND d."companyId" = current_setting('app.current_company_id', true)
+    )
+    AND EXISTS (
+      SELECT 1
+        FROM document_archive_protocol_state AS protocol
+       WHERE protocol.id = 1
+         AND protocol."activeVersion" = 1
+    )
+  );
+-- Jamais de policy DELETE ; en V2, la policy UPDATE devient fausse et l'ACL est révoquée.
 
 -- ——— Espace Cabinet V3 — identité JWT + autorisation DB ———
 -- Ces helpers SECURITY DEFINER évitent les récursions de policies sur cabinet_members. Ils ne

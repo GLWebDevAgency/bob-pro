@@ -60,6 +60,10 @@ const MAX_REPLAY_BYTES = 240 * 1024;
 const INT32_MAX = 0x7fff_ffff;
 const RECONCILIATION_WRITER_ADVISORY_GATE = 1_904_726_114;
 const admissionPolicy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 40,
   userLimitPerHour: 200,
   tenantLimitPerMinute: 200,

@@ -25,6 +25,10 @@ import {
   type DocumentFolderProps,
   type DocumentProps,
   type DocumentVersionProps,
+  type InitialDocumentInsertResult,
+  type InvoicePdfRepresentationAttestation,
+  type AttestInvoicePdfInput,
+  isExactInitialDocumentReplay,
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
@@ -45,10 +49,13 @@ import {
   type FiscalProfileRepository,
 } from '@bob/core';
 import type { ServerCompanyRepository } from '../persistence';
-import type {
-  DocumentArchiveJob,
-  DocumentArchiveJobRepository,
-  EnqueueDocumentArchiveJobInput,
+import {
+  documentArchiveIntegrityProofSha256,
+  isValidDocumentArchiveIntegrityProof,
+  type DocumentArchiveIntegrityProof,
+  type DocumentArchiveJob,
+  type DocumentArchiveJobRepository,
+  type EnqueueDocumentArchiveJobInput,
 } from '../document-archive-jobs';
 import {
   NotificationDedupeConflictError,
@@ -90,9 +97,16 @@ import {
   expenseRowToProps,
   expensePropsToPersistence,
   discountToColumns,
+  invoicePredecessorToCreate,
+  paymentRowToRecordInput,
+  paymentToPersistence,
 } from './mappers';
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
+const INVOICE_INCLUDE = {
+  lines: { orderBy: { position: 'asc' as const } },
+  precedingInvoices: { orderBy: { position: 'asc' as const } },
+};
 const DOCUMENT_INCLUDE = { versions: { orderBy: { version: 'asc' as const } } };
 const ACCOUNTING_ENTRY_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
 
@@ -322,7 +336,7 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
   async findById(id: string): Promise<Invoice | null> {
     const row = await this.prisma
       .client()
-      .invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+      .invoice.findUnique({ where: { id }, include: INVOICE_INCLUDE });
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
@@ -330,7 +344,7 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     // Verrou de ligne DANS la transaction courante (sérialise émission/encaissement concurrents) + reload frais.
     const db = this.prisma.client();
     await db.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR UPDATE`;
-    const row = await db.invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+    const row = await db.invoice.findUnique({ where: { id }, include: INVOICE_INCLUDE });
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
@@ -338,7 +352,7 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     requireActiveTransaction(this.prisma, 'Invoice public read lock');
     const db = this.prisma.client();
     await db.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR SHARE`;
-    const row = await db.invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+    const row = await db.invoice.findUnique({ where: { id }, include: INVOICE_INCLUDE });
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
   async findByParentQuoteId(
@@ -348,7 +362,7 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
   ): Promise<Invoice | null> {
     const row = await this.prisma.client().invoice.findFirst({
       where: { companyId, parentQuoteId, kind: invoiceKindToDocKind(kind) },
-      include: LINES_INCLUDE,
+      include: INVOICE_INCLUDE,
       orderBy: { id: 'asc' },
     });
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
@@ -359,14 +373,14 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
   ): Promise<Invoice | null> {
     const row = await this.prisma.client().invoice.findFirst({
       where: { companyId, sourceInvoiceId, kind: 'credit_note' },
-      include: LINES_INCLUDE,
+      include: INVOICE_INCLUDE,
     });
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     const rows = await this.prisma
       .client()
-      .invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
+      .invoice.findMany({ where: { companyId }, include: INVOICE_INCLUDE });
     return rows.map((row) => Invoice.rehydrate(invoiceRowToSnapshot(row)));
   }
   async save(i: Invoice): Promise<void> {
@@ -393,10 +407,12 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       depositDeductionCents: s.depositDeductionCents ?? 0,
       depositInvoiceId: s.depositInvoiceId ?? null,
       paidCents: s.paid,
+      settlementSemanticsVersion: s.settlementSemanticsVersion ?? 1,
       totalsHt: totals.ht,
       totalsVat: totals.vat,
       totalsTtc: totals.ttc,
       totalsNetToPay: totals.netToPay,
+      totalsDuePayableCents: totals.duePayableCents ?? null,
       vatByRate: totals.vatByRate as Record<string, number>,
       // B3/B5 : compléments de totaux PRÉSENTS uniquement quand le fait existe (NULL sinon —
       // les pièces antérieures restent identiques au centime).
@@ -423,11 +439,16 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       // A4 : régime de TVA constaté et figé à l'émission (IssueInvoice) — NULL avant émission
       // et pour les pièces émises avant le figeage.
       vatTreatmentAtIssuance: s.vatTreatmentAtIssuance ?? null,
+      // BT-23 : code exact décidé par IssueInvoice, jamais reconstitué par l'adapter.
+      frenchBillingModeAtIssuance: s.frenchBillingModeAtIssuance ?? null,
       // B8 : bon de commande (repris du devis ou attaché en brouillon) + révision optimiste.
       ...purchaseOrderToPersistence(s.purchaseOrder),
       revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));
+    const predecessors = (s.precedingInvoices ?? []).map((source, position) =>
+      invoicePredecessorToCreate(source, { companyId: s.companyId, invoiceId: s.id }, position),
+    );
     const persist = async (): Promise<void> => {
       const tx = this.prisma.client();
       const existing = await tx.invoice.findUnique({
@@ -446,8 +467,10 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
             update: { sourceInvoiceId },
             select: { id: true },
           });
-          if (published.id === s.id && lines.length > 0)
-            await tx.lineItem.createMany({ data: lines });
+          if (published.id === s.id) {
+            if (predecessors.length > 0) await tx.invoicePredecessor.createMany({ data: predecessors });
+            if (lines.length > 0) await tx.lineItem.createMany({ data: lines });
+          }
           return;
         }
         try {
@@ -468,8 +491,33 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
           }
           throw cause;
         }
+        if (predecessors.length > 0) await tx.invoicePredecessor.createMany({ data: predecessors });
         if (lines.length > 0) await tx.lineItem.createMany({ data: lines });
         return;
+      }
+
+      // Les références contractuelles sont des snapshots append-only. Toute divergence entre
+      // l'agrégat relu et la base signale un objet stale/corrompu : ne jamais les remplacer.
+      const persistedPredecessors = await tx.invoicePredecessor.findMany({
+        where: { companyId: s.companyId, invoiceId: s.id },
+        orderBy: { position: 'asc' },
+      });
+      const predecessorsMatch =
+        persistedPredecessors.length === predecessors.length
+        && persistedPredecessors.every((row, index) => {
+          const expected = predecessors[index];
+          return expected !== undefined
+            && row.companyId === expected.companyId
+            && row.invoiceId === expected.invoiceId
+            && row.sourceInvoiceId === expected.sourceInvoiceId
+            && row.kind === expected.kind
+            && row.number === expected.number
+            && row.issuedAt.toISOString().slice(0, 10)
+              === expected.issuedAt.toISOString().slice(0, 10)
+            && row.position === expected.position;
+        });
+      if (!predecessorsMatch) {
+        throw new Error(`Immutable predecessor mismatch for invoice ${s.id}.`);
       }
 
       // Tant que la ligne parente est encore `draft`, on publie d'abord son contenu courant.
@@ -491,16 +539,28 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
    * défaut) : on les supprime explicitement d'abord, comme `save` le fait pour un brouillon éditable.
    */
   async deleteById(id: string): Promise<void> {
-    if (this.prisma.inTransaction()) {
+    const deleteDraft = async (): Promise<void> => {
       const tx = this.prisma.client();
+      // Verrouille la cible AVANT les enfants : une émission concurrente attendra ce delete, et
+      // un delete concurrent attendra l'émission puis relira `issued` et refusera. Le check du
+      // use case reste utile pour l'UX ; celui-ci est l'autorité transactionnelle anti-TOCTOU.
+      const [locked] = await tx.$queryRaw<Array<{ status: string }>>`
+        SELECT status::text AS status
+          FROM public.invoices
+         WHERE id = ${id}
+         FOR UPDATE
+      `;
+      if (!locked) throw new Error(`Invoice ${id} not found for draft deletion.`);
+      if (locked.status !== 'draft') {
+        throw new Error(`Invoice ${id} is no longer a draft and cannot be deleted.`);
+      }
+      await tx.invoicePredecessor.deleteMany({ where: { invoiceId: id } });
       await tx.lineItem.deleteMany({ where: { invoiceId: id } });
-      await tx.invoice.delete({ where: { id } });
-    } else {
-      await this.prisma.$transaction([
-        this.prisma.lineItem.deleteMany({ where: { invoiceId: id } }),
-        this.prisma.invoice.delete({ where: { id } }),
-      ]);
-    }
+      const deleted = await tx.invoice.deleteMany({ where: { id, status: 'draft' } });
+      if (deleted.count !== 1) throw new Error(`Invoice ${id} draft deletion lost its lock.`);
+    };
+    if (this.prisma.inTransaction()) await deleteDraft();
+    else await this.prisma.runInTransaction(deleteDraft);
   }
 }
 
@@ -625,21 +685,84 @@ function documentVersionPropsToData(v: DocumentVersionProps) {
 
 export class PrismaDocumentRepository implements DocumentRepository {
   constructor(private readonly prisma: PrismaService) {}
-  async save(d: Document): Promise<void> {
-    const p = d.toProps();
-    const db = this.prisma.client();
-    await db.storedDocument.upsert({
-      where: { id: p.id },
-      create: { id: p.id, ...documentPropsToData(p) },
-      update: documentPropsToData(p),
-    });
-    for (const version of p.versions) {
-      await db.storedDocumentVersion.upsert({
-        where: { id: version.id },
-        create: { id: version.id, ...documentVersionPropsToData(version) },
-        update: documentVersionPropsToData(version),
-      });
+  private async persistInvoicePdfAttestation(input: AttestInvoicePdfInput): Promise<boolean> {
+    requireActiveTransaction(this.prisma, 'Invoice PDF representation attestation');
+    const rows = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.attest_generated_invoice_pdf_v1(
+        ${input.companyId}::text,
+        ${input.documentId}::text,
+        ${input.versionId}::text,
+        ${input.documentSha256}::text,
+        ${input.profile}::text,
+        ${input.embeddedXmlSha256}::text,
+        ${input.detectorVersion}::smallint
+      ) AS accepted
+    `;
+    return rows[0]?.accepted === true;
+  }
+
+  async attestInvoicePdf(input: AttestInvoicePdfInput): Promise<boolean> {
+    return this.persistInvoicePdfAttestation(input);
+  }
+
+  async insertInitialOrConfirmExact(
+    d: Document,
+    invoicePdfAttestation?: InvoicePdfRepresentationAttestation,
+  ): Promise<InitialDocumentInsertResult> {
+    if (!this.prisma.inTransaction()) {
+      throw new Error('Document initial insert requires an active tenant transaction.');
     }
+    const persist = async (): Promise<InitialDocumentInsertResult> => {
+      const p = d.toProps();
+      if (p.versions.length !== 1 || p.versions[0]!.version !== 1) {
+        return { status: 'conflict' };
+      }
+      const db = this.prisma.client();
+      // createMany(skipDuplicates) garde la transaction utilisable si un concurrent gagne la
+      // même clé ; create()+catch P2002 empoisonnerait la transaction PostgreSQL courante.
+      const documentInsert = await db.storedDocument.createMany({
+        data: [{ id: p.id, ...documentPropsToData(p) }],
+        skipDuplicates: true,
+      });
+      if (documentInsert.count === 0) {
+        const existing = await this.findById(p.companyId, p.id);
+        if (!existing || !isExactInitialDocumentReplay(existing, d)) {
+          return { status: 'conflict' };
+        }
+        if (invoicePdfAttestation !== undefined) {
+          const accepted = await this.persistInvoicePdfAttestation({
+            companyId: p.companyId,
+            documentId: p.id,
+            versionId: p.versions[0]!.id,
+            ...invoicePdfAttestation,
+          });
+          if (!accepted) throw new Error('Invoice PDF representation attestation rejected.');
+        }
+        return { status: 'exact', document: existing };
+      }
+      const versionInsert = await db.storedDocumentVersion.createMany({
+        data: p.versions.map((version) => ({ id: version.id, ...documentVersionPropsToData(version) })),
+        skipDuplicates: true,
+      });
+      if (versionInsert.count !== p.versions.length) {
+        // Ne jamais accorder DELETE au rôle runtime sur l'archive. Une collision de version est
+        // une anomalie d'intégrité : lever fait sortir de `runWithTenant`, donc PostgreSQL annule
+        // atomiquement l'INSERT parent et toute version partielle avant que le use case traduise
+        // l'erreur. Un retour normal ici committerait au contraire un document sans version.
+        throw new Error('Document initial version identity conflict.');
+      }
+      if (invoicePdfAttestation !== undefined) {
+        const accepted = await this.persistInvoicePdfAttestation({
+          companyId: p.companyId,
+          documentId: p.id,
+          versionId: p.versions[0]!.id,
+          ...invoicePdfAttestation,
+        });
+        if (!accepted) throw new Error('Invoice PDF representation attestation rejected.');
+      }
+      return { status: 'inserted', document: d };
+    };
+    return persist();
   }
   /**
    * Classement + validation humaine atomiques. L'adapter REJOUE les deux opérations de domaine
@@ -1040,7 +1163,7 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
   }
 }
 
-function archiveJobRowToView(row: {
+interface DocumentArchiveJobRow {
   id: string;
   companyId: string;
   invoiceId: string;
@@ -1048,23 +1171,121 @@ function archiveJobRowToView(row: {
   status: string;
   attempts: number;
   nextAttemptAt: Date;
+  leaseToken: string | null;
   lastError: string | null;
+  integrityProof: Prisma.JsonValue | null;
+  integrityProofSha256: string | null;
+  completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
-}): DocumentArchiveJob {
+}
+
+function archiveJobRowToView(row: DocumentArchiveJobRow): DocumentArchiveJob {
+  if (
+    row.reason !== 'invoice-issued'
+    && row.reason !== 'invoice-issued-pdf-only-b2c'
+    && row.reason !== 'quote-signed'
+  ) {
+    throw new Error(`Document archive job reason invalide: ${row.reason}`);
+  }
+  if (row.status !== 'pending' && row.status !== 'failed' && row.status !== 'done') {
+    throw new Error(`Document archive job status invalide: ${row.status}`);
+  }
+  const integrityProof = parseArchiveIntegrityProof(row.integrityProof);
+  const verifiedProof =
+    integrityProof !== null
+    && isValidDocumentArchiveIntegrityProof(integrityProof)
+    && integrityProof.companyId === row.companyId
+    && integrityProof.pieceId === row.invoiceId
+    && integrityProof.reason === row.reason
+    && row.integrityProofSha256 === documentArchiveIntegrityProofSha256(integrityProof)
+      ? integrityProof
+      : null;
   return {
     id: row.id,
     companyId: row.companyId,
     // Colonne historique `invoiceId` = id de la pièce cible (facture OU devis selon reason) —
     // le renommage de colonne serait une migration non additive, interdite.
     pieceId: row.invoiceId,
-    reason: row.reason === 'quote-signed' ? 'quote-signed' : 'invoice-issued',
-    status: row.status as DocumentArchiveJob['status'],
+    reason: row.reason,
+    status: row.status,
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
+    leaseToken: row.leaseToken,
     lastError: row.lastError,
+    integrityProof: verifiedProof,
+    integrityProofSha256: row.integrityProofSha256,
+    completedAt: row.completedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function parseArchiveIntegrityProof(value: Prisma.JsonValue | null): DocumentArchiveIntegrityProof | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, Prisma.JsonValue>;
+  if (
+    Object.keys(record).sort().join(',') !== 'algorithm,artifacts,companyId,pieceId,reason,version'
+    ||
+    record.version !== 1
+    || record.algorithm !== 'sha256'
+    || typeof record.companyId !== 'string'
+    || typeof record.pieceId !== 'string'
+    || (
+      record.reason !== 'invoice-issued'
+      && record.reason !== 'invoice-issued-pdf-only-b2c'
+      && record.reason !== 'quote-signed'
+    )
+    || !Array.isArray(record.artifacts)
+  ) {
+    return null;
+  }
+  const artifacts: DocumentArchiveIntegrityProof['artifacts'] = [];
+  for (const valueArtifact of record.artifacts) {
+    if (valueArtifact === null || typeof valueArtifact !== 'object' || Array.isArray(valueArtifact)) return null;
+    const artifact = valueArtifact as Record<string, Prisma.JsonValue>;
+    if (
+      Object.keys(artifact).sort().join(',') !==
+        'byteSize,contentProfile,documentId,kind,mimeType,sha256,storageKey,version,versionId'
+      ||
+      (artifact.kind !== 'invoice_pdf' && artifact.kind !== 'facturx_xml' && artifact.kind !== 'signed_quote')
+      || (
+        artifact.contentProfile !== 'plain_pdf'
+        && artifact.contentProfile !== 'facturx_pdfa3'
+        && artifact.contentProfile !== 'facturx_xml'
+      )
+      || typeof artifact.documentId !== 'string'
+      || typeof artifact.versionId !== 'string'
+      || artifact.version !== 1
+      || typeof artifact.storageKey !== 'string'
+      || typeof artifact.mimeType !== 'string'
+      || typeof artifact.byteSize !== 'number'
+      || !Number.isSafeInteger(artifact.byteSize)
+      || artifact.byteSize <= 0
+      || typeof artifact.sha256 !== 'string'
+      || !/^[a-f0-9]{64}$/.test(artifact.sha256)
+    ) {
+      return null;
+    }
+    artifacts.push({
+      kind: artifact.kind,
+      contentProfile: artifact.contentProfile,
+      documentId: artifact.documentId,
+      versionId: artifact.versionId,
+      version: 1,
+      storageKey: artifact.storageKey,
+      mimeType: artifact.mimeType,
+      byteSize: artifact.byteSize,
+      sha256: artifact.sha256,
+    });
+  }
+  return {
+    version: 1,
+    algorithm: 'sha256',
+    companyId: record.companyId,
+    pieceId: record.pieceId,
+    reason: record.reason,
+    artifacts,
   };
 }
 
@@ -1072,35 +1293,19 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
   constructor(private readonly prisma: PrismaService) {}
 
   async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
-    const existing = await this.prisma.client().documentArchiveJob.findUnique({
-      where: {
-        uniq_document_archive_job: {
-          companyId: input.companyId,
-          invoiceId: input.pieceId,
-          reason: input.reason,
-        },
-      },
-    });
-    if (existing) {
-      if (existing.status !== 'done') {
-        await this.prisma.client().documentArchiveJob.update({
-          where: { id: existing.id },
-          data: { status: 'pending', nextAttemptAt: new Date(input.now), lastError: null },
-        });
-      }
-      return;
+    // L'ordre est immuable et son scheduler de retry fait autorité. Un ré-enqueue identique ne
+    // réarme ni un lease actif, ni une quarantaine, ni une terminaison prouvée. L'horloge de
+    // l'hôte n'entre jamais dans le calendrier durable : une machine réglée en 2099 ne doit pas
+    // pouvoir immobiliser une archive pendant 73 ans.
+    void input.now;
+    const [result] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.document_archive_job_enqueue_v2(
+        ${input.id}, ${input.companyId}, ${input.pieceId}, ${input.reason}
+      ) AS accepted
+    `;
+    if (result?.accepted !== true) {
+      throw new Error('Document archive enqueue identity conflict.');
     }
-    await this.prisma.client().documentArchiveJob.create({
-      data: {
-        id: input.id,
-        companyId: input.companyId,
-        invoiceId: input.pieceId,
-        reason: input.reason,
-        status: 'pending',
-        attempts: 0,
-        nextAttemptAt: new Date(input.now),
-      },
-    });
   }
 
   async findByPiece(
@@ -1115,44 +1320,130 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
   }
 
   async countIncomplete(companyId: string, reason: DocumentArchiveJob['reason']): Promise<number> {
-    return this.prisma.client().documentArchiveJob.count({
-      where: { companyId, reason, status: { not: 'done' } },
+    // La seule présence SQL d'un JSON/digest ne constitue pas une preuve. On repasse chaque
+    // terminaison par le parseur + digest canoniques de l'application avant de lever la barrière.
+    const rows = await this.prisma.client().documentArchiveJob.findMany({
+      where: { companyId, reason },
     });
+    return rows.reduce((count, row) => {
+      const job = archiveJobRowToView(row);
+      return count + (
+        job.status === 'done'
+        && job.integrityProof !== null
+        && job.integrityProofSha256 !== null
+        && job.completedAt !== null
+          ? 0
+          : 1
+      );
+    }, 0);
   }
 
   async listDue(companyId: string, now: string, limit: number): Promise<DocumentArchiveJob[]> {
-    const rows = await this.prisma.client().documentArchiveJob.findMany({
-      where: {
-        companyId,
-        status: { in: ['pending', 'failed'] },
-        nextAttemptAt: { lte: new Date(now) },
-      },
-      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
-      take: limit,
-    });
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new Error('Limite de collecte archive invalide.');
+    }
+    // `now` reste dans le port pour la parité du double déterministe, mais PostgreSQL est
+    // l'autorité du runtime. Un worker en retard ne doit pas masquer les jobs réellement dus.
+    void now;
+    const rows = await this.prisma.client().$queryRaw<DocumentArchiveJobRow[]>`
+      SELECT id, "companyId", "invoiceId", reason, status, attempts,
+             "nextAttemptAt", "leaseToken", "lastError", "integrityProof",
+             "integrityProofSha256", "completedAt", "createdAt", "updatedAt"
+        FROM "document_archive_jobs"
+       WHERE "companyId" = ${companyId}
+         AND (
+           status IN ('pending'::"DocumentArchiveJobStatus", 'failed'::"DocumentArchiveJobStatus")
+           OR (status = 'done'::"DocumentArchiveJobStatus" AND "integrityProof" IS NULL)
+         )
+         AND "nextAttemptAt" <= statement_timestamp()
+       ORDER BY "nextAttemptAt" ASC, "createdAt" ASC
+       LIMIT ${limit}
+    `;
     return rows.map(archiveJobRowToView);
   }
 
-  async markDone(id: string, at: string): Promise<void> {
-    await this.prisma.client().documentArchiveJob.update({
-      where: { id },
-      data: { status: 'done', lastError: null, updatedAt: new Date(at) },
+  async claimForArchive(
+    id: string,
+    companyId: string,
+    expectedUpdatedAt: string,
+    now: string,
+    leaseUntil: string,
+    leaseToken: string,
+  ): Promise<{ outcome: 'claimed'; job: DocumentArchiveJob } | { outcome: 'skipped' }> {
+    const leaseMs = Date.parse(leaseUntil) - Date.parse(now);
+    if (!Number.isFinite(leaseMs) || leaseMs <= 0 || leaseMs > 30 * 60_000) {
+      throw new Error('Durée de lease archive invalide.');
+    }
+    const [claim] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.document_archive_job_claim_v1(
+        ${id},
+        ${companyId},
+        ${expectedUpdatedAt}::timestamp(3),
+        ${leaseMs}::bigint,
+        ${leaseToken}
+      ) AS accepted
+    `;
+    if (claim?.accepted !== true) return { outcome: 'skipped' };
+    const row = await this.prisma.client().documentArchiveJob.findFirst({
+      where: { id, companyId, leaseToken },
     });
+    return row === null ? { outcome: 'skipped' } : { outcome: 'claimed', job: archiveJobRowToView(row) };
   }
 
-  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
-    const job = await this.prisma.client().documentArchiveJob.findUnique({ where: { id } });
-    if (!job) return;
-    await this.prisma.client().documentArchiveJob.update({
-      where: { id },
-      data: {
-        status: 'failed',
-        attempts: job.attempts + 1,
-        nextAttemptAt: new Date(nextAttemptAt),
-        lastError: error.slice(0, 2000),
-        updatedAt: new Date(at),
-      },
-    });
+  async markDone(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    proof: DocumentArchiveIntegrityProof,
+    proofSha256: string,
+    at: string,
+  ): Promise<boolean> {
+    if (
+      proof.companyId !== companyId
+      || !isValidDocumentArchiveIntegrityProof(proof)
+      || documentArchiveIntegrityProofSha256(proof) !== proofSha256
+    ) {
+      return false;
+    }
+    void at;
+    const [completion] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.document_archive_job_complete_v2(
+        ${id},
+        ${companyId},
+        ${leaseToken},
+        ${JSON.stringify(proof)}::jsonb,
+        ${proofSha256}
+      ) AS accepted
+    `;
+    return completion?.accepted === true;
+  }
+
+  async markFailed(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    at: string,
+    nextAttemptAt: string,
+    error: string,
+  ): Promise<boolean> {
+    const retryDelayMs = Date.parse(nextAttemptAt) - Date.parse(at);
+    if (
+      !Number.isFinite(retryDelayMs)
+      || retryDelayMs < 1
+      || retryDelayMs > 24 * 60 * 60_000
+    ) {
+      throw new Error('Délai de retry archive invalide.');
+    }
+    const [failure] = await this.prisma.client().$queryRaw<Array<{ accepted: boolean }>>`
+      SELECT public.document_archive_job_fail_v1(
+        ${id},
+        ${companyId},
+        ${leaseToken},
+        ${retryDelayMs}::bigint,
+        ${error.slice(0, 2000)}
+      ) AS accepted
+    `;
+    return failure?.accepted === true;
   }
 }
 
@@ -2578,31 +2869,17 @@ export class PrismaPaymentRepository implements PaymentRepository {
     method: string;
     receivedAt: Date;
     idempotencyKey: string | null;
+    ordinaryReceivableCents: number | null;
+    retentionReceivableCents: number | null;
   }): Payment {
-    const r = Payment.record({
-      id: row.id,
-      companyId: row.companyId,
-      invoiceId: row.invoiceId,
-      amount: row.amount,
-      method: row.method as Payment['method'],
-      receivedAt: row.receivedAt.toISOString(),
-      idempotencyKey: row.idempotencyKey,
-    });
+    const r = Payment.record(paymentRowToRecordInput(row));
     return requirePersistedAggregate('payment', row.id, r);
   }
 
   async save(p: Payment): Promise<void> {
     // client() => participe à la transaction d'encaissement (paiement + facture atomiques).
     await this.prisma.client().payment.create({
-      data: {
-        id: p.id,
-        companyId: p.companyId,
-        invoiceId: p.invoiceId,
-        amount: p.amount,
-        method: p.method,
-        receivedAt: new Date(p.receivedAt),
-        idempotencyKey: p.idempotencyKey,
-      },
+      data: paymentToPersistence(p),
     });
   }
   async findById(companyId: string, id: string): Promise<Payment | null> {

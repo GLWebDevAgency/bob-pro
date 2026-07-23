@@ -2,6 +2,7 @@ import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type Address } from '../../shared-kernel/contact';
 import { Siren, Siret } from '../../shared-kernel/identifiers';
 import { type DateOnly, type Instant } from '../../shared-kernel/time';
+import { validateFrenchVatId } from '../../shared-kernel/french-vat-id';
 
 export type LegalForm = 'EI' | 'EURL' | 'SASU' | 'SARL' | 'SAS' | 'micro';
 export type VatRegime = 'franchise' | 'reel_simpl' | 'reel_normal';
@@ -140,6 +141,12 @@ export class Company {
     if (!siret.ok) return siret;
     if (siret.value.siren().value !== siren.value.value)
       return err({ code: 'VALIDATION', field: 'siret', message: 'SIRET incoherent avec le SIREN.' });
+    let tvaIntracom: string | undefined;
+    if (p.tvaIntracom !== undefined) {
+      const vat = validateFrenchVatId(p.tvaIntracom, siren.value.value);
+      if (!vat.ok) return vat;
+      tvaIntracom = vat.value;
+    }
     if (
       p.customerPortfolio !== undefined
       && !(['b2c', 'b2b', 'b2g', 'mixte'] as const).includes(p.customerPortfolio)
@@ -203,7 +210,7 @@ export class Company {
         });
       }
     }
-    return ok(new Company(p));
+    return ok(new Company({ ...p, ...(tvaIntracom === undefined ? {} : { tvaIntracom }) }));
   }
 
   get id(): string {
@@ -305,8 +312,24 @@ export class Company {
   assertCanIssue(): DomainResult<void> {
     if (!this.p.rcsOrRm)
       return err({ code: 'VALIDATION', field: 'rcsOrRm', message: 'RCS ou RM requis pour emettre.' });
-    if (!this.p.address.line1 || !this.p.address.city)
+    if (
+      this.p.address.line1.trim().length === 0
+      || this.p.address.zip.trim().length === 0
+      || this.p.address.city.trim().length === 0
+    )
       return err({ code: 'VALIDATION', field: 'address', message: 'Adresse complete requise.' });
+    if (this.isSociete() && this.p.capitalSocialCents === undefined)
+      return err({
+        code: 'VALIDATION',
+        field: 'capitalSocialCents',
+        message: 'Capital social requis pour émettre au nom de cette société.',
+      });
+    if (!this.isVatFranchise() && !this.p.tvaIntracom)
+      return err({
+        code: 'VALIDATION',
+        field: 'tvaIntracom',
+        message: 'Numéro de TVA intracommunautaire réel requis pour émettre avec TVA.',
+      });
     return ok(undefined);
   }
 

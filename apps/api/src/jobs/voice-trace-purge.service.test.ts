@@ -7,7 +7,9 @@ import { AppLogger } from '../observability/logger';
 import type { ScheduledTenantDirectory } from './tenant-directory';
 import {
   VOICE_TRACE_PURGE_LIMIT_PER_TENANT,
+  VOICE_TRACE_PURGE_MAX_TENANTS,
   VoiceTracePurgeService,
+  selectVoiceTracePurgeTenantBatch,
 } from './voice-trace-purge.service';
 
 const NOW = new Date('2026-09-01T00:00:00.000Z');
@@ -39,14 +41,14 @@ async function seed(
   });
 }
 
-function harness(companyIds: string[]) {
+function harness(companyIds: string[], now: () => Date = () => NOW) {
   const persistence = new InMemoryPersistence();
   const traces = persistence.voiceTraces as unknown as InMemoryVoiceTraceRepository;
   const service = new VoiceTracePurgeService(
     persistence as unknown as Persistence,
     directory(companyIds),
     new AppLogger(),
-    () => NOW,
+    now,
   );
   return { service, traces, persistence };
 }
@@ -97,6 +99,49 @@ describe('VoiceTracePurgeService — la rétention est CÂBLÉE, pas décorative
     expect(purge).toHaveBeenCalledWith(
       expect.objectContaining({ limit: VOICE_TRACE_PURGE_LIMIT_PER_TENANT }),
     );
+  });
+
+  it('fait tourner plus de 100 tenants sans famine, y compris après un redémarrage horaire', () => {
+    const companyIds = Array.from(
+      { length: VOICE_TRACE_PURGE_MAX_TENANTS + 1 },
+      (_, index) => `co_${String(index + 1).padStart(3, '0')}`,
+    );
+    const firstHour = selectVoiceTracePurgeTenantBatch(companyIds, NOW);
+    const secondHour = selectVoiceTracePurgeTenantBatch(
+      companyIds,
+      new Date(NOW.getTime() + 60 * 60 * 1_000),
+    );
+
+    expect(firstHour.length).toBeLessThanOrEqual(VOICE_TRACE_PURGE_MAX_TENANTS);
+    expect(secondHour.length).toBeLessThanOrEqual(VOICE_TRACE_PURGE_MAX_TENANTS);
+    expect(new Set([...firstHour, ...secondHour])).toEqual(new Set(companyIds));
+  });
+
+  it('câble la rotation au sweep et purge réellement les 101 tenants sur deux heures', async () => {
+    const companyIds = Array.from(
+      { length: VOICE_TRACE_PURGE_MAX_TENANTS + 1 },
+      (_, index) => `co_${String(index + 1).padStart(3, '0')}`,
+    );
+    let currentTime = NOW;
+    const { service, traces, persistence } = harness(companyIds, () => currentTime);
+    await Promise.all(
+      companyIds.map((companyId) =>
+        seed(traces, companyId, `vtr_${companyId}`, '2026-08-01T00:00:00.000Z'),
+      ),
+    );
+    const scoped = vi.spyOn(persistence, 'runWithTenant');
+
+    const first = await service.sweep();
+    currentTime = new Date(NOW.getTime() + 60 * 60 * 1_000);
+    const second = await service.sweep();
+
+    expect([first.tenants, second.tenants].sort((left, right) => left - right)).toEqual([
+      1,
+      VOICE_TRACE_PURGE_MAX_TENANTS,
+    ]);
+    expect(first.purged + second.purged).toBe(companyIds.length);
+    expect(new Set(scoped.mock.calls.map((call) => call[0]))).toEqual(new Set(companyIds));
+    expect(traces.list()).toEqual([]);
   });
 
   it('ne relance pas un balayage déjà en cours', async () => {

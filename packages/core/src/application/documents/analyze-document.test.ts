@@ -4,7 +4,7 @@ import { type DocumentAnalysisDraft } from '../../domain/document/document-analy
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type DocumentIntelligenceInput, type DocumentIntelligenceOutput, type DocumentIntelligencePort } from '../ports/document-intelligence';
 import { type DocumentRepository } from '../ports/document-repository';
-import { type DocumentStoragePort, type StoredObject } from '../ports/document-storage';
+import { type DocumentStoragePort, type LoadedStoredObject, type StoredObject } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
 import { type AppError } from '../result';
 import { AnalyzeDocument, DOCUMENT_INTELLIGENCE_MAX_BYTES } from './analyze-document';
@@ -13,6 +13,14 @@ const CURRENT_BYTES = new Uint8Array([37, 80, 68, 70]);
 const CURRENT_SHA = 'b'.repeat(64);
 const PREVIOUS_SHA = 'a'.repeat(64);
 const CURRENT_KEY = `companies/co-1/documents/doc-1/2-${CURRENT_SHA}.pdf`;
+
+function storedObject(
+  bytes: Uint8Array,
+  contentType: string,
+  sha256 = CURRENT_SHA,
+): LoadedStoredObject {
+  return { key: CURRENT_KEY, bytes, sizeBytes: bytes.byteLength, sha256, contentType };
+}
 
 const clock: ClockPort = {
   now: () => '2026-07-13T15:00:00.000Z',
@@ -74,11 +82,10 @@ function makeDocument(input?: { status?: 'active' | 'deleted'; mimeType?: string
 }
 
 class MemoryDocuments implements DocumentRepository {
-  saveCount = 0;
   constructor(private readonly document: Document | null) {}
-
-  async save(): Promise<void> {
-    this.saveCount += 1;
+  async attestInvoicePdf(): Promise<boolean> { return false; }
+  async insertInitialOrConfirmExact(): ReturnType<DocumentRepository['insertInitialOrConfirmExact']> {
+    return { status: 'conflict' };
   }
 
   async classify(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
@@ -112,17 +119,14 @@ class MemoryDocuments implements DocumentRepository {
 
 class MemoryStorage implements DocumentStoragePort {
   getCount = 0;
-  object: { bytes: Uint8Array; contentType: string } | null = {
-    bytes: CURRENT_BYTES,
-    contentType: 'application/pdf; charset=binary',
-  };
+  object: LoadedStoredObject | null = storedObject(CURRENT_BYTES, 'application/pdf; charset=binary');
   throws: Error | null = null;
 
   async put(): Promise<StoredObject> {
     throw new Error('non utilisé');
   }
 
-  async get(companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  async get(companyId: string, key: string): Promise<LoadedStoredObject | null> {
     this.getCount += 1;
     if (this.throws) throw this.throws;
     if (companyId !== 'co-1' || key !== CURRENT_KEY) return null;
@@ -184,7 +188,7 @@ function setup(document: Document | null = makeDocument()) {
 
 describe('AnalyzeDocument', () => {
   it('recharge la version courante côté serveur et rend une analyse validée, sans mutation', async () => {
-    const { documents, intelligence, useCase } = setup();
+    const { intelligence, useCase } = setup();
 
     const result = await useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
 
@@ -209,7 +213,6 @@ describe('AnalyzeDocument', () => {
     });
     expect(intelligence.calls[0]?.bytes).toEqual(CURRENT_BYTES);
     expect(intelligence.calls[0]?.bytes).not.toBe(CURRENT_BYTES);
-    expect(documents.saveCount).toBe(0);
   });
 
   it('respecte le tenant : un document hors tenant reste introuvable et aucun octet ne part au moteur', async () => {
@@ -238,7 +241,7 @@ describe('AnalyzeDocument', () => {
 
   it('autorise un XML professionnel archivé et transmet ses octets au moteur générique', async () => {
     const xml = setup(makeDocument({ mimeType: 'application/xml' }));
-    xml.storage.object = { bytes: CURRENT_BYTES, contentType: 'application/xml; charset=utf-8' };
+    xml.storage.object = storedObject(CURRENT_BYTES, 'application/xml; charset=utf-8');
 
     const result = await xml.useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
 
@@ -271,16 +274,22 @@ describe('AnalyzeDocument', () => {
     if (!missingResult.ok) expect(missingResult.error).toMatchObject({ kind: 'dependency', port: 'document-storage' });
 
     const truncated = setup();
-    truncated.storage.object = { bytes: new Uint8Array([1]), contentType: 'application/pdf' };
+    truncated.storage.object = storedObject(new Uint8Array([1]), 'application/pdf');
     const truncatedResult = await truncated.useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
     expect(truncatedResult.ok).toBe(false);
     if (!truncatedResult.ok) expect(truncatedResult.error.kind).toBe('dependency');
 
     const wrongMime = setup();
-    wrongMime.storage.object = { bytes: CURRENT_BYTES, contentType: 'image/jpeg' };
+    wrongMime.storage.object = storedObject(CURRENT_BYTES, 'image/jpeg');
     const wrongMimeResult = await wrongMime.useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
     expect(wrongMimeResult.ok).toBe(false);
     if (!wrongMimeResult.ok) expect(wrongMimeResult.error.kind).toBe('dependency');
+
+    const altered = setup();
+    altered.storage.object = storedObject(CURRENT_BYTES, 'application/pdf', 'c'.repeat(64));
+    const alteredResult = await altered.useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
+    expect(alteredResult.ok).toBe(false);
+    expect(altered.intelligence.calls).toHaveLength(0);
   });
 
   it('convertit les exceptions des ports en erreurs de dépendance explicites', async () => {

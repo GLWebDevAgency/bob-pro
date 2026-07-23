@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { Siret, type Address, type CustomerType } from '@bob/core';
+import { Siret, validateFrenchVatId, type Address, type CustomerType } from '@bob/core';
 import type { CreateCustomerClientInput } from '@bob/api-client';
 import { t, type Personality } from '@bob/i18n';
 import { Button, Chip, Skeleton, font, useTheme } from '@bob/ui';
@@ -24,6 +24,7 @@ export interface CustomerFormInitial {
   lastName: string;
   companyName: string;
   siren: string | null;
+  tvaIntracom: string | null;
   contactName: string;
   email: string;
   phone: string;
@@ -37,6 +38,7 @@ const EMPTY_INITIAL: CustomerFormInitial = {
   lastName: '',
   companyName: '',
   siren: null,
+  tvaIntracom: null,
   contactName: '',
   email: '',
   phone: '',
@@ -49,12 +51,21 @@ interface FieldProps {
   value: string;
   onChangeText: (v: string) => void;
   placeholder: string;
-  autoCapitalize?: 'words' | 'none' | 'sentences';
+  autoCapitalize?: 'words' | 'none' | 'sentences' | 'characters';
   keyboardType?: 'default' | 'email-address' | 'phone-pad' | 'number-pad';
+  invalid?: boolean;
 }
 
-function Field({ label, value, onChangeText, placeholder, autoCapitalize = 'sentences', keyboardType = 'default' }: FieldProps) {
-  const { colors } = useTheme();
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  autoCapitalize = 'sentences',
+  keyboardType = 'default',
+  invalid = false,
+}: FieldProps) {
+  const { colors, semantic } = useTheme();
   return (
     <View style={{ marginTop: 12 }}>
       <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400 }]}>
@@ -74,7 +85,7 @@ function Field({ label, value, onChangeText, placeholder, autoCapitalize = 'sent
             minHeight: 44,
             marginTop: 7,
             borderWidth: 1,
-            borderColor: colors.lineSoft,
+            borderColor: invalid ? semantic.danger : colors.lineSoft,
             borderRadius: 12,
             paddingHorizontal: 13,
             paddingVertical: 11,
@@ -114,6 +125,7 @@ export function CustomerForm({
   const [lastName, setLastName] = useState(base.lastName);
   const [companyName, setCompanyName] = useState(base.companyName);
   const [siren, setSiren] = useState<string | null>(base.siren);
+  const [tvaIntracom, setTvaIntracom] = useState(base.tvaIntracom ?? '');
   const [contactName, setContactName] = useState(base.contactName);
   const [email, setEmail] = useState(base.email);
   const [phone, setPhone] = useState(base.phone);
@@ -126,6 +138,7 @@ export function CustomerForm({
   const [siret, setSiret] = useState('');
   const [siretError, setSiretError] = useState(false);
   const [siretFound, setSiretFound] = useState<string | null>(null);
+  const [siretCandidateUnverified, setSiretCandidateUnverified] = useState(false);
   const lookup = useLookupCompany();
   const search = useSearchAddress();
 
@@ -151,7 +164,9 @@ export function CustomerForm({
       onSuccess: (result) => {
         setCompanyName(result.denomination);
         setSiren(result.siren);
+        setTvaIntracom(result.tvaIntracom ?? '');
         setSiretFound(result.denomination);
+        setSiretCandidateUnverified(false);
         if (result.address) {
           setSelectedAddress(result.address);
           setAddressQuery(`${result.address.line1}, ${result.address.zip} ${result.address.city}`);
@@ -162,7 +177,20 @@ export function CustomerForm({
     });
   };
 
-  const identityValid = type === 'b2c' ? firstName.trim() !== '' && lastName.trim() !== '' : companyName.trim() !== '';
+  const normalizedVat =
+    type !== 'b2c' && tvaIntracom.trim() !== '' && siren !== null
+      ? validateFrenchVatId(tvaIntracom, siren)
+      : null;
+  const vatValid =
+    type === 'b2c' ||
+    tvaIntracom.trim() === '' ||
+    (siren !== null && normalizedVat?.ok === true);
+  const identityValid =
+    (type === 'b2c'
+      ? firstName.trim() !== '' && lastName.trim() !== ''
+      : companyName.trim() !== '') &&
+    vatValid &&
+    !siretCandidateUnverified;
 
   const submit = (): void => {
     if (!identityValid || submitting) return;
@@ -173,7 +201,10 @@ export function CustomerForm({
       address: selectedAddress ?? { line1: '', zip: '', city: '' },
       ...(email.trim() ? { email: email.trim() } : {}),
       ...(phone.trim() ? { phone: phone.trim() } : {}),
-      ...(siren ? { siren } : {}),
+      ...(type !== 'b2c' && siren ? { siren } : {}),
+      ...(type !== 'b2c' && normalizedVat?.ok === true
+        ? { tvaIntracom: normalizedVat.value }
+        : {}),
       ...(type !== 'b2c' && contactName.trim() ? { contactName: contactName.trim() } : {}),
     });
   };
@@ -241,7 +272,13 @@ export function CustomerForm({
             <TextInput
               value={formatSiret(siret)}
               onChangeText={(raw) => {
-                setSiret(raw.replace(/\D/g, '').slice(0, 14));
+                const next = raw.replace(/\D/g, '').slice(0, 14);
+                setSiret(next);
+                // Une saisie de recherche ne remplace jamais la fiche persistée avant succès.
+                // Tant qu'elle n'est pas vérifiée, on bloque Enregistrer plutôt que d'effacer
+                // silencieusement le SIREN/TVA existant ou d'envoyer l'ancien avec le nouveau.
+                setSiretCandidateUnverified(next.length > 0);
+                setSiretFound(null);
                 setSiretError(false);
               }}
               placeholder={t('clients.createSiretPlaceholder', { personality })}
@@ -284,6 +321,24 @@ export function CustomerForm({
               {t('clients.createSiretFound', { personality, params: { name: siretFound } })}
             </Text>
           ) : null}
+
+          <Field
+            label={t('clients.createTvaLabel', { personality })}
+            value={tvaIntracom}
+            onChangeText={setTvaIntracom}
+            placeholder={t('clients.createTvaPlaceholder', { personality })}
+            autoCapitalize="characters"
+            invalid={!vatValid}
+          />
+          <Text
+            accessibilityRole={!vatValid ? 'alert' : undefined}
+            style={[
+              font('sub'),
+              { color: !vatValid ? semantic.danger : colors.slate400, lineHeight: 18, marginTop: 7 },
+            ]}
+          >
+            {t(!vatValid ? 'clients.createTvaInvalid' : 'clients.createTvaHint', { personality })}
+          </Text>
 
           <Field
             label={t('clients.createContactNameLabel', { personality })}

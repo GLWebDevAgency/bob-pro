@@ -2,6 +2,13 @@
 
 Document de référence — figé le 2026-07-20 (branche `hardening/integrity-rls-conformite-deps`).
 
+> **Écart de cible consigné le 21/07/2026** — cette matrice décrit encore l'état réellement
+> configuré avant la bascule. La cible de publication est GPT Realtime conformément à
+> [OBJECTIFS_SPECS_DOD_PUBLICATION.md](OBJECTIFS_SPECS_DOD_PUBLICATION.md) et à l'ADR-0004.
+> Les valeurs et le bloc machine-readable ne seront changés que dans le lot atomique qui livre les
+> gardes runtime, les profils EAS et les tests anti-drift correspondants. Jusqu'alors, ne pas lire
+> cette matrice comme la preuve que GPT Realtime est déjà actif.
+
 ## Préambule
 
 Ce document **fige la matrice des flags et variables d'environnement de la build V1 publiée** de Bob Pro, sur les quatre plans où un flag peut se poser :
@@ -84,7 +91,7 @@ Décision actée : ADR-0001 rollout fermé + **garde liveness `nextServerSequenc
 | Flag | Où il se pose | Défaut code | Valeur V1 figée | Pourquoi | Risque si dévié |
 |---|---|---|---|---|---|
 | PDP / e-invoicing | **AUCUN flag d'environnement n'existe** | n/a | rien à poser | Factur-X import/réception et guide Chorus en dur ; canaux PDP/e-reporting = **stubs structurels** derrière ports (`architecture-blueprint.md` l.734,770) — le mode « démo » PDP n'est PAS pilotable par env. ⚠️ Échéance légale dure : choix du partenaire **Plateforme Agréée + inscription annuaire avant le 01/09/2026** (cf. À confirmer #12) | Croire qu'une env var contrôle le mode démo PDP : la bascule vers un PDP agréé sera un **chantier code** |
-| `MUSTANG_VERSION` | CI (`.github/workflows/ci.yml:137`) | `2.16.1` en dur | **posée = `2.16.1`** (épinglée) | Validateur Factur-X ; Schematron EN 16931 = gate bloquant | Version retirée de Maven = job facturx rouge ; jamais `latest` |
+| `MUSTANG_VERSION` | CI (`.github/workflows/ci.yml`) | `2.24.0` en dur | **posée = `2.24.0`** (épinglée + SHA-256) | Validateur indépendant Factur-X/EN 16931/France + veraPDF = gate bloquant | Version/empreinte Maven modifiée = job facturx rouge ; jamais `latest` |
 
 ---
 
@@ -290,7 +297,7 @@ Flags **non sensibles** à valeur figée. `enforcement` : `"default"` = la valeu
     { "name": "EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL", "v1Value": "https://bob-pro-sign-web.vercel.app/auth/confirme", "scope": "mobile", "enforcement": "posed" },
     { "name": "NEXT_PUBLIC_API_URL", "v1Value": "https://bob-pro-api-production.up.railway.app", "scope": "web", "enforcement": "posed" },
     { "name": "NEXT_PUBLIC_SUPABASE_URL", "v1Value": "https://cvdkqjczgqoeshputacl.supabase.co", "scope": "web", "enforcement": "posed" },
-    { "name": "MUSTANG_VERSION", "v1Value": "2.16.1", "scope": "ci", "enforcement": "posed" },
+    { "name": "MUSTANG_VERSION", "v1Value": "2.24.0", "scope": "ci", "enforcement": "posed" },
     { "name": "RUN_RLS_CERT", "v1Value": "true", "scope": "ci", "enforcement": "posed" },
     { "name": "RLS_CERT_CLEANUP", "v1Value": "true", "scope": "ci", "enforcement": "posed" }
   ]

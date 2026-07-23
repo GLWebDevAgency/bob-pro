@@ -16,6 +16,8 @@ function snapshot(over: Partial<InvoiceSnapshot> = {}): InvoiceSnapshot {
     mentions: [],
     issuedAt: '2026-06-10',
     dueAt: '2026-07-10',
+    vatTreatmentAtIssuance: 'standard',
+    frenchBillingModeAtIssuance: 'S1',
     paid: 0,
     depositPct: null,
     parentQuoteId: 'quote-1',
@@ -26,6 +28,7 @@ function snapshot(over: Partial<InvoiceSnapshot> = {}): InvoiceSnapshot {
 function makeEnv(seed: InvoiceSnapshot[]) {
   const invoices = new Map(seed.map((s) => [s.id, Invoice.rehydrate(s)]));
   let n = 0;
+  let saves = 0;
   const repo: InvoiceRepository = {
     findById: async (id) => invoices.get(id) ?? null,
     lockById: async (id) => invoices.get(id) ?? null,
@@ -38,10 +41,17 @@ function makeEnv(seed: InvoiceSnapshot[]) {
         (i) => i.companyId === companyId && i.kind === 'credit_note' && i.creditNoteSource?.invoiceId === sourceInvoiceId,
       ) ?? null,
     listByCompany: async (companyId) => [...invoices.values()].filter((i) => i.companyId === companyId),
-    save: async (i) => void invoices.set(i.id, i),
+    save: async (i) => {
+      saves += 1;
+      invoices.set(i.id, i);
+    },
     deleteById: async (id) => void invoices.delete(id),
   };
-  return { repo, usecase: new CreateCreditNote({ invoices: repo, ids: { newId: () => `cn-${++n}` } }) };
+  return {
+    repo,
+    usecase: new CreateCreditNote({ invoices: repo, ids: { newId: () => `cn-${++n}` } }),
+    saveCount: () => saves,
+  };
 }
 
 describe('CreateCreditNote (A6 — avoir total en brouillon)', () => {
@@ -96,5 +106,25 @@ describe('CreateCreditNote (A6 — avoir total en brouillon)', () => {
     expect(onDraft.ok).toBe(false);
     const onCreditNote = await env.usecase.execute({ invoiceId: 'inv-cn' });
     expect(onCreditNote.ok).toBe(false);
+  });
+
+  it('refuse une source historique sans faits fiscaux avant de sauvegarder un brouillon inutilisable', async () => {
+    const env = makeEnv([
+      snapshot({
+        vatTreatmentAtIssuance: null,
+        frenchBillingModeAtIssuance: null,
+      }),
+    ]);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'invoice' },
+      },
+    });
+    expect(env.saveCount()).toBe(0);
   });
 });

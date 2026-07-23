@@ -13,7 +13,7 @@ function makeActions() {
     draftRelance: async () => ok({ subject: 's', body: 'b' }),
     listPayableInvoices: async () => ok([{ id: 'inv-1', number: '2026-014', remainingCents: 132000, customerName: 'Durand' }]),
     listSendableQuotes: async () => ok([{ id: 'quote-1', number: 'D2026-014', totalTtcCents: 132000, customerName: 'Durand', status: 'draft' }]),
-    listIssuableInvoices: async () => ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 132000, customerName: 'Durand', status: 'draft' }]),
+    listIssuableInvoices: async () => ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 132000, customerName: 'Durand', status: 'draft', operationCategoryRequired: false }]),
     listDocuments: async () => ok([]),
     registerPayment: async () => {
       payments++;

@@ -7,6 +7,7 @@ import { type DocumentRepository } from '../ports/document-repository';
 import { type DocumentStoragePort } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
 import { type AppError, appConflict, appDomain, appNotFound } from '../result';
+import { loadVerifiedStoredObject, normalizeDocumentContentType } from './verified-stored-object';
 
 export const DOCUMENT_INTELLIGENCE_MIME_TYPES = [
   'image/jpeg',
@@ -40,10 +41,6 @@ export interface AnalyzeDocumentDeps {
 
 function dependencyError(port: string, error: unknown): AppError {
   return { kind: 'dependency', port, cause: error instanceof Error ? error.message : String(error) };
-}
-
-function normalizedMimeType(value: string): string {
-  return (value.split(';')[0] ?? '').trim().toLowerCase();
 }
 
 /**
@@ -99,7 +96,7 @@ export class AnalyzeDocument {
       (latest, version) => (version.version > latest.version ? version : latest),
       props.versions[0]!,
     );
-    const mimeType = normalizedMimeType(currentVersion.mimeType);
+    const mimeType = normalizeDocumentContentType(currentVersion.mimeType);
     if (!DOCUMENT_INTELLIGENCE_MIME_TYPES.includes(mimeType as (typeof DOCUMENT_INTELLIGENCE_MIME_TYPES)[number])) {
       return err({
         kind: 'validation',
@@ -113,21 +110,14 @@ export class AnalyzeDocument {
       });
     }
 
-    let stored;
-    try {
-      stored = await this.deps.storage.get(companyId, currentVersion.storageKey);
-    } catch (error) {
-      return err(dependencyError('document-storage', error));
-    }
-    if (!stored) {
-      return err(dependencyError('document-storage', 'Original archivé introuvable.'));
-    }
-    if (stored.bytes.byteLength === 0 || stored.bytes.byteLength !== currentVersion.byteSize) {
-      return err(dependencyError('document-storage', 'Taille de l’original incohérente avec les métadonnées.'));
-    }
-    if (normalizedMimeType(stored.contentType) !== mimeType) {
-      return err(dependencyError('document-storage', 'Type MIME de l’original incohérent avec les métadonnées.'));
-    }
+    const stored = await loadVerifiedStoredObject(this.deps.storage, {
+      companyId,
+      key: currentVersion.storageKey,
+      sizeBytes: currentVersion.byteSize,
+      sha256: currentVersion.sha256,
+      contentType: mimeType,
+    });
+    if (!stored.ok) return stored;
 
     let intelligenceResult;
     try {
@@ -138,7 +128,7 @@ export class AnalyzeDocument {
         filename: props.filename,
         mimeType,
         // Isole l'original en mémoire d'un adapter qui muterait accidentellement son buffer.
-        bytes: stored.bytes.slice(),
+        bytes: stored.value.bytes.slice(),
         ...(input.context !== undefined ? { classificationContext: input.context } : {}),
       });
     } catch (error) {

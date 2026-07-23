@@ -40,7 +40,7 @@ function invoice(): Invoice {
   const inv = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-1');
   if (!inv.ok) throw new Error('invoice');
   inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
-  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT, frenchBillingMode: 'S1' });
   return inv.value;
 }
 

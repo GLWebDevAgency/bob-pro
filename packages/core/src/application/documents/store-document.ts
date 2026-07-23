@@ -2,12 +2,16 @@ import { type Result, ok, err } from '../../shared-kernel/result';
 import { parisDateOnly, type DateOnly } from '../../shared-kernel/time';
 import { Document, type DocumentKind, type DocumentLinkedEntityType, type DocumentOrigin } from '../../domain/document/document';
 import { type DocumentFolderRepository } from '../ports/document-folder-repository';
-import { type DocumentRepository } from '../ports/document-repository';
+import {
+  type DocumentRepository,
+  type InvoicePdfRepresentationAttestation,
+} from '../ports/document-repository';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type DocumentStoragePort } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { documentToView, type DocumentView } from './document-view';
+import { loadVerifiedStoredObject } from './verified-stored-object';
 
 export interface StoreDocumentInput {
   id: string;
@@ -28,12 +32,14 @@ export interface StoreDocumentInput {
   createdBy?: string | null;
   retentionUntil?: DateOnly;
   reason?: string;
+  /** Obligatoire pour tout PDF de facture généré : résultat du parseur binaire de l'adapter. */
+  invoicePdfAttestation?: InvoicePdfRepresentationAttestation;
   /** Tags proposés par l'OCR, confirmés à l'enregistrement (#11). */
   tags?: string[];
 }
 
 export interface StoreDocumentDeps {
-  documents: Pick<DocumentRepository, 'save'>;
+  documents: Pick<DocumentRepository, 'insertInitialOrConfirmExact'>;
   folders: Pick<DocumentFolderRepository, 'findById'>;
   linkTargets: DocumentLinkTargetPort;
   storage: DocumentStoragePort;
@@ -50,20 +56,45 @@ function dependencyError(port: string, e: unknown): AppError {
   return { kind: 'dependency', port, cause: e instanceof Error ? e.message : String(e) };
 }
 
-async function bestEffortRemove(storage: DocumentStoragePort, companyId: string, storageKey: string): Promise<void> {
-  try {
-    await storage.remove(companyId, storageKey);
-  } catch {
-    // L'appelant reçoit l'erreur primaire ; la purge sera reprise par maintenance si besoin.
-  }
-}
-
 export class StoreDocument {
   constructor(private readonly deps: StoreDocumentDeps) {}
 
   async execute(input: StoreDocumentInput): Promise<Result<DocumentView, AppError>> {
     if (input.bytes.byteLength === 0) {
       return err({ kind: 'validation', issues: [{ field: 'bytes', message: 'Document vide.' }] });
+    }
+
+    const isGeneratedInvoicePdf = input.origin === 'generated'
+      && input.kind === 'invoice_pdf'
+      && input.linkedEntityType === 'invoice';
+    if (isGeneratedInvoicePdf && input.invoicePdfAttestation === undefined) {
+      return err({
+        kind: 'validation',
+        issues: [{
+          field: 'invoicePdfAttestation',
+          message: 'Attestation binaire obligatoire pour un PDF de facture généré.',
+        }],
+      });
+    }
+    if (input.invoicePdfAttestation !== undefined) {
+      const attestation = input.invoicePdfAttestation;
+      if (
+        !isGeneratedInvoicePdf
+        || attestation.documentSha256 !== input.sha256
+        || !/^[a-f0-9]{64}$/u.test(attestation.documentSha256)
+        || (
+          attestation.profile === 'facturx_pdfa3'
+          && !/^[a-f0-9]{64}$/u.test(attestation.embeddedXmlSha256)
+        )
+      ) {
+        return err({
+          kind: 'validation',
+          issues: [{
+            field: 'invoicePdfAttestation',
+            message: 'Attestation binaire incohérente avec le document.',
+          }],
+        });
+      }
     }
 
     const now = this.deps.clock.now();
@@ -141,8 +172,22 @@ export class StoreDocument {
       return err(dependencyError('document-storage', e));
     }
 
-    if (stored.sha256 !== input.sha256 || stored.sizeBytes !== input.bytes.byteLength) {
-      await bestEffortRemove(this.deps.storage, input.companyId, input.storageKey);
+    const verified = await loadVerifiedStoredObject(this.deps.storage, {
+      companyId: input.companyId,
+      key: input.storageKey,
+      sizeBytes: input.bytes.byteLength,
+      sha256: input.sha256,
+      contentType: input.mimeType,
+    });
+    if (!verified.ok) {
+      return verified;
+    }
+
+    if (
+      stored.key !== input.storageKey
+      || stored.sha256 !== input.sha256
+      || stored.sizeBytes !== input.bytes.byteLength
+    ) {
       return err({
         kind: 'dependency',
         port: 'document-storage',
@@ -151,12 +196,20 @@ export class StoreDocument {
     }
 
     try {
-      await this.deps.documents.save(document.value);
+      const persisted = await this.deps.documents.insertInitialOrConfirmExact(
+        document.value,
+        input.invoicePdfAttestation,
+      );
+      if (persisted.status === 'conflict') {
+        return err({
+          kind: 'conflict',
+          entity: 'document',
+          reason: 'document_initial_archive_conflict',
+        });
+      }
+      return ok(documentToView(persisted.document));
     } catch (e) {
-      await bestEffortRemove(this.deps.storage, input.companyId, input.storageKey);
-      throw e;
+      return err(dependencyError('document-repository', e));
     }
-
-    return ok(documentToView(document.value));
   }
 }

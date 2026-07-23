@@ -4,6 +4,7 @@ import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
@@ -27,10 +28,9 @@ function makeService() {
     });
   }
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) =>
-      new TextEncoder().encode(`%PDF-1.7\ninvoice:${data.number}`),
-    ),
-    renderQuote: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`)),
+    renderInvoice: vi.fn(async (data, facturX) =>
+      renderPdfFixture(`invoice:${data.number}`, facturX?.xml)),
+    renderQuote: vi.fn(async (data) => renderPdfFixture(`quote:${data.number}`)),
   };
   const notificationDelivery = {
     enqueue: vi.fn(async (input: { notification: unknown }) => ({

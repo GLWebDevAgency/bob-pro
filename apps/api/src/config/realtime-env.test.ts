@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEnv,
   resolveBobLiveEnv,
+  resolveBobLiveProofKeyRing,
   resolveBobLiveSubjectHmacKeyRing,
   resolveMistralConversationPersistenceKeyRing,
   resolveMistralV2IdentityEncryptionKeyRing,
@@ -25,6 +26,9 @@ function validRealtimeEnv(): void {
   vi.stubEnv('OPENAI_REALTIME_ACTIVE_LEASE_SECONDS', '30');
   vi.stubEnv('OPENAI_REALTIME_HEARTBEAT_SECONDS', '10');
   vi.stubEnv('OPENAI_REALTIME_REAPER_LEASE_SECONDS', '30');
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
@@ -39,6 +43,9 @@ function validMistralRealtimeEnv(): void {
   vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'p'.repeat(32));
   vi.stubEnv('BOB_LIVE_USAGE_HMAC_SECRET', 'u'.repeat(32));
   vi.stubEnv('BOB_LIVE_CONTROL_ENCRYPTION_SECRET', 'c'.repeat(32));
+  vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+  vi.stubEnv('BOB_LIVE_CAPACITY_CONFIG_VERSION', '1');
   vi.stubEnv('BOB_LIVE_AUDIT_PROVIDER', 'local-whisper');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://127.0.0.1:8080/v1');
   vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', 'a'.repeat(32));
@@ -70,10 +77,39 @@ describe('Bob Live — validation de la politique d’admission', () => {
       OPENAI_REALTIME_HEARTBEAT_SECONDS: 10,
       OPENAI_REALTIME_REAPER_LEASE_SECONDS: 30,
       BOB_LIVE_SUBJECT_KEY_VERSION: 1,
+      BOB_LIVE_SPEECH_DELIVERY: 'audited-signed-url-v1',
       OPENAI_REALTIME_PROOF_KEY_VERSION: 1,
       OPENAI_REALTIME_CONTROL_ENCRYPTION_KEY_VERSION: 1,
       SUPABASE_REALTIME_AUDIO_BUCKET: 'bob-live-audio',
     });
+  });
+
+  it('exige le groupe capacité complet et l’expose comme un seul contrat typé', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', undefined);
+    expect(() => loadEnv()).toThrow(/capacité Bob Live partielle/i);
+
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '60');
+    expect(resolveBobLiveEnv(loadEnv()).globalCapacity).toEqual({
+      providerId: 'openai',
+      providerModel: 'gpt-realtime-2.1',
+      globalMaxSessions: 50,
+      providerMaxSessions: 60,
+      configVersion: 1,
+    });
+  });
+
+  it('refuse un plafond Bob supérieur au fournisseur ou au gateway Mistral', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '51');
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '50');
+    expect(() => loadEnv()).toThrow(/dépasser le plafond du fournisseur/i);
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS', '501');
+    vi.stubEnv('BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS', '600');
+    expect(() => loadEnv()).toThrow(/dépasser la capacité du gateway Mistral/i);
   });
 
   it('refuse quota horaire inférieur au quota minute', () => {
@@ -207,6 +243,41 @@ describe('Bob Live — validation de la politique d’admission', () => {
     const keyRing = resolveBobLiveSubjectHmacKeyRing(loadEnv());
     expect(keyRing?.secret(1)).toBe(legacy);
     expect(resolveBobLiveEnv(loadEnv()).subjectHmacSecret).toBe(legacy);
+  });
+
+  it('conserve exactement N-1/N pour la preuve native et expose le matériau courant', () => {
+    validRealtimeEnv();
+    const previous = 'proof-previous-byte-exact-2026'.padEnd(40, 'p');
+    const current = 'proof-current-byte-exact-2026'.padEnd(40, 'c');
+    vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', current);
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: previous, 2: current }));
+
+    const env = loadEnv();
+    const keyRing = resolveBobLiveProofKeyRing(env);
+    expect(keyRing?.currentVersion).toBe(2);
+    expect(keyRing?.versions).toEqual([1, 2]);
+    expect(keyRing?.secret(1)).toBe(previous);
+    expect(keyRing?.secret(2)).toBe(current);
+    expect(keyRing?.secret(3)).toBeNull();
+    expect(resolveBobLiveEnv(env).proofSecret).toBe(current);
+  });
+
+  it('refuse une keyring preuve ambiguë, non adjacente ou divergente du secret courant', () => {
+    validRealtimeEnv();
+    const first = 'proof-first-byte-exact-2026'.padEnd(40, 'a');
+    const current = 'proof-current-byte-exact-2026'.padEnd(40, 'b');
+    vi.stubEnv('BOB_LIVE_PROOF_KEY_VERSION', '3');
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', current);
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 1: first, 3: current }));
+    expect(() => loadEnv()).toThrow(/uniquement N-1\/N/u);
+
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 2: first, 3: first }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+
+    vi.stubEnv('BOB_LIVE_PROOF_KEYRING', JSON.stringify({ 2: first, 3: current }));
+    vi.stubEnv('BOB_LIVE_PROOF_SECRET', 'proof-other-material-2026'.padEnd(40, 'x'));
+    expect(() => loadEnv()).toThrow(/doit correspondre à la version courante/u);
   });
 
   it('refuse le replay v2 sans keyring sujet ou avec une version courante divergente', () => {
@@ -388,10 +459,24 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(resolveBobLiveEnv(env)).toMatchObject({
       enabled: true,
       provider: 'openai',
+      speechDelivery: 'audited-signed-url-v1',
       providerModel: 'gpt-realtime-2.1',
       providerBaseUrl: 'https://api.openai.com/v1',
       auditProvider: 'local-whisper',
     });
+  });
+
+  it('garde la livraison auditée par défaut et bloque le RTP natif avant certification runtime', () => {
+    validRealtimeEnv();
+    expect(resolveBobLiveEnv(loadEnv()).speechDelivery).toBe('audited-signed-url-v1');
+
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'openai-native-webrtc-v1');
+    expect(() => loadEnv()).toThrow(/bloqué tant que le duplex natif n’est pas certifié/i);
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_SPEECH_DELIVERY', 'openai-native-webrtc-v1');
+    expect(() => loadEnv()).toThrow(/exige BOB_LIVE_PROVIDER=openai/i);
   });
 
   it.each(['openai', 'mistral'] as const)(

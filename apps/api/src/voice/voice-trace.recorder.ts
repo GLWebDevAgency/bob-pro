@@ -9,6 +9,7 @@ import {
   VOICE_TRACE_SESSION_IDLE_MS,
   VOICE_TRACE_TRANSCRIPT_MAX_CHARS,
   type VoiceSessionCursor,
+  type VoiceTraceErrorFacts,
   type VoiceTurnClassification,
 } from '@bob/core';
 import {
@@ -38,6 +39,45 @@ export const VOICE_TRACE_MAX_PENDING_TURNS = 200;
  * qu'une base martelée par un tour vocal sur deux.
  */
 const VOICE_TRACE_DISABLE_AFTER_FAILURES = 5;
+
+/**
+ * Les faits détaillés (`cause`, `reason`, messages de validation) appartiennent exclusivement à
+ * la trace PostgreSQL souveraine. Le journal Railway ne reçoit que des identifiants techniques
+ * compacts. La validation syntaxique est volontairement fail-closed : une future valeur libre
+ * ou enrichie de contexte métier est omise au lieu de franchir cette frontière.
+ */
+const VOICE_TRACE_LOG_TOKEN = /^[a-z0-9][a-z0-9_.:-]{0,63}$/u;
+const VOICE_TRACE_ERROR_KINDS: ReadonlySet<string> = new Set([
+  'conflict',
+  'dependency',
+  'domain',
+  'forbidden',
+  'not_found',
+  'rate_limited',
+  'unavailable',
+  'validation',
+]);
+
+function safeVoiceTraceLogToken(value: string | undefined): string | undefined {
+  return value !== undefined && VOICE_TRACE_LOG_TOKEN.test(value) ? value : undefined;
+}
+
+/** Vue explicitement allowlistée d'une erreur pour les logs externes. */
+export function voiceTraceLogErrorShape(
+  error: VoiceTraceErrorFacts | null,
+): Record<string, unknown> {
+  if (error === null) return {};
+  const port = safeVoiceTraceLogToken(error.port);
+  const service = safeVoiceTraceLogToken(error.service);
+  const entity = safeVoiceTraceLogToken(error.entity);
+  return {
+    errorKind: VOICE_TRACE_ERROR_KINDS.has(error.kind) ? error.kind : 'unknown',
+    ...(port === undefined ? {} : { errorPort: port }),
+    ...(service === undefined ? {} : { errorService: service }),
+    ...(entity === undefined ? {} : { errorEntity: entity }),
+    ...(error.issues === undefined ? {} : { validationIssueCount: error.issues.length }),
+  };
+}
 
 interface PendingVoiceTurn {
   readonly traceId: string;
@@ -151,7 +191,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
           retentionExpiresAt: voiceTraceExpiryAt(startedAt),
         }),
       );
-      this.emit('voice.turn.entendu', cursor, classification, {
+      this.emit('voice.turn.entendu', cursor, classification, input.error, {
         sttModel: input.sttModel,
         transcriptionMs: input.transcriptionMs,
       });
@@ -197,7 +237,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
       this.enqueue(input.companyId, () =>
         this.p.voiceTraces.completeTurn(input.companyId, completion),
       );
-      this.emit('voice.turn.traite', turn.cursor, classification, {
+      this.emit('voice.turn.traite', turn.cursor, classification, input.error, {
         intent: input.intent,
         tool: input.tool,
         planificationMs: input.planificationMs,
@@ -241,6 +281,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
         'voice.turn.repondu',
         turn.cursor,
         input.error === null ? SPOKEN : synthesisError,
+        input.error,
         { ttsModel: input.ttsModel, syntheseMs: input.syntheseMs },
       );
     } catch {
@@ -264,7 +305,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
         () => {
           this.consecutiveFailures = 0;
         },
-        (cause: unknown) => this.recordWriteFailure(cause),
+        () => this.recordWriteFailure(),
       );
   }
 
@@ -275,7 +316,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
    * invisible par construction — le fondateur croirait tester sous observation alors que rien
    * n'est enregistré. C'est cette panne-là qu'il faut faire remonter.
    */
-  private recordWriteFailure(cause: unknown): void {
+  private recordWriteFailure(): void {
     this.consecutiveFailures += 1;
     if (this.consecutiveFailures < VOICE_TRACE_DISABLE_AFTER_FAILURES) {
       this.logger.warn('Écriture de trace vocale impossible.', 'VoiceTrace');
@@ -289,7 +330,9 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
       undefined,
       'VoiceTrace',
     );
-    this.reporter.captureException(cause instanceof Error ? cause : new Error('voice-trace-write'), {
+    const incident = new Error('voice-trace-write');
+    incident.name = 'VoiceTracePersistenceError';
+    this.reporter.captureException(incident, {
       correlationId: getCorrelationId(),
       channel: 'voice-trace',
     });
@@ -304,6 +347,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
     action: string,
     cursor: VoiceSessionCursor,
     classification: VoiceTurnClassification,
+    error: VoiceTraceErrorFacts | null,
     extra: Record<string, unknown>,
   ): void {
     const shape = {
@@ -311,7 +355,7 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
       turnIndex: cursor.turnIndex,
       outcome: classification.outcome,
       ...extra,
-      ...(classification.reason === null ? {} : { reason: classification.reason }),
+      ...voiceTraceLogErrorShape(error),
     };
     if (classification.level === 'info') {
       this.logger.audit(action, shape);
@@ -325,7 +369,8 @@ export class VoiceTraceRecorder implements VoiceTraceRecorderPort {
   /** Un tour jamais conclu ne doit pas retenir de mémoire au-delà de sa fenêtre de session. */
   private prunePending(nowMs: number): void {
     for (const [key, turn] of this.pending) {
-      if (nowMs - turn.cursor.lastActivityAtMs > VOICE_TRACE_SESSION_IDLE_MS) this.pending.delete(key);
+      if (nowMs - turn.cursor.lastActivityAtMs > VOICE_TRACE_SESSION_IDLE_MS)
+        this.pending.delete(key);
     }
     if (this.pending.size <= VOICE_TRACE_MAX_PENDING_TURNS) return;
     const oldestFirst = [...this.pending.entries()].sort(

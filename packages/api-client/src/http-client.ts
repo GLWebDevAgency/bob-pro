@@ -114,6 +114,8 @@ import type {
   RealtimeVoiceSpeechCancellationReason,
   RealtimeVoiceSpeechDeliveryAcknowledgement,
   RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  RealtimeVoiceNativeSpeechDeliveryInput,
   RealtimeVoiceSpeechFeed,
   RealtimeVoiceSpeechFeedInput,
   RealtimeVoiceSpeechMimeType,
@@ -175,6 +177,10 @@ import {
   decodeQuoteDraftSlot,
   type QuoteDraftEnvelopeWire,
 } from './quote-draft-codec';
+import {
+  decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  encodeRealtimeVoiceNativeSpeechDeliveryInput,
+} from './realtime-native-speech-ack-codec';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -194,6 +200,8 @@ const QUOTE_CREATION_TIMEOUT_MS = 20_000;
 const AGENT_TURN_TIMEOUT_MS = 50_000;
 // Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const REALTIME_CONFIG_VERSION_CURRENT = 'bob-live-provider-neutral-v4';
+const REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
 const REALTIME_SPEECH_REQUEST_TIMEOUT_MS = 5_000;
 const REALTIME_SPEECH_RESPONSE_MAX_BYTES = 16 * 1024;
@@ -372,6 +380,7 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
 
 /** B4/B6/B7 — champs ADDITIFS de la fiche (serveurs antérieurs : absents ⇒ normalisés). */
 const CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS = [
+  'tvaIntracom',
   'paymentTerms',
   'billingChannel',
   'isInternational',
@@ -505,6 +514,8 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   }
   if (value.isInternational !== undefined && typeof value.isInternational !== 'boolean')
     return null;
+  if (value.tvaIntracom !== undefined && value.tvaIntracom !== null && typeof value.tvaIntracom !== 'string')
+    return null;
   if (
     value.paymentTermsLabel !== undefined &&
     value.paymentTermsLabel !== null &&
@@ -518,6 +529,7 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
     ...(value as unknown as CustomerListItem),
     paymentTerms,
     billingChannel,
+    tvaIntracom: (value.tvaIntracom as string | null | undefined) ?? null,
     isInternational: value.isInternational === true,
     paymentTermsLabel: (value.paymentTermsLabel as string | null | undefined) ?? null,
     isSubcontractingBtp: value.isSubcontractingBtp === true,
@@ -545,6 +557,7 @@ function customerClientBody(
     name: input.name,
     address: { ...input.address },
     ...(input.siren !== undefined ? { siren: input.siren } : {}),
+    ...(input.tvaIntracom !== undefined ? { tvaIntracom: input.tvaIntracom } : {}),
     ...(input.email !== undefined ? { email: input.email } : {}),
     ...(input.phone !== undefined ? { phone: input.phone } : {}),
     ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
@@ -1156,7 +1169,24 @@ function invalidRealtimeSpeechInput<T>(
 
 function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
   if (!isRecord(value)) return null;
+  const hasAvailabilityReason = Object.hasOwn(value, 'availabilityReason');
+  const hasProtocol = Object.hasOwn(value, 'protocol');
+  const commonKeys = [
+    'available',
+    'transport',
+    'model',
+    'voice',
+    'configVersion',
+    'requiresDevelopmentBuild',
+    'maxSessionSeconds',
+    'speechDelivery',
+  ] as const;
   if (
+    !hasExactKeys(value, [
+      ...commonKeys,
+      ...(hasAvailabilityReason ? ['availabilityReason'] : []),
+      ...(hasProtocol ? ['protocol'] : []),
+    ]) ||
     typeof value.available !== 'boolean' ||
     (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm') ||
     typeof value.model !== 'string' ||
@@ -1170,13 +1200,15 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     !Number.isInteger(value.maxSessionSeconds) ||
     value.maxSessionSeconds < 60 ||
     value.maxSessionSeconds > 900 ||
-    value.speechDelivery !== 'audited-signed-url-v1' ||
-    (value.transport === 'webrtc' && value.protocol !== undefined) ||
+    (value.speechDelivery !== 'openai-native-webrtc-v1' &&
+      value.speechDelivery !== 'audited-signed-url-v1') ||
+    (value.speechDelivery === 'openai-native-webrtc-v1' && value.transport !== 'webrtc') ||
+    (value.transport === 'webrtc' && hasProtocol) ||
     (value.transport === 'mistral-pcm' &&
-      value.protocol !== undefined &&
+      hasProtocol &&
       value.protocol !== 'bob.mistral-pcm.v1' &&
       value.protocol !== 'bob.mistral-pcm.v2') ||
-    (value.availabilityReason !== undefined &&
+    (hasAvailabilityReason &&
       value.availabilityReason !== 'disabled' &&
       value.availabilityReason !== 'not_entitled' &&
       value.availabilityReason !== 'entitlement_unavailable')
@@ -1188,18 +1220,32 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     value.availabilityReason === 'entitlement_unavailable'
       ? value.availabilityReason
       : null;
-  return {
+  const common = {
     available: value.available,
-    ...(availabilityReason === null ? {} : { availabilityReason }),
-    transport: value.transport,
+    ...(availabilityReason === null
+      ? {}
+      : {
+          availabilityReason: availabilityReason as
+            | 'disabled'
+            | 'not_entitled'
+            | 'entitlement_unavailable',
+        }),
     model: value.model,
     voice: value.voice,
     configVersion: value.configVersion,
     requiresDevelopmentBuild: true,
     maxSessionSeconds: value.maxSessionSeconds,
+  } as const;
+  if (value.transport === 'webrtc') {
+    return value.speechDelivery === 'openai-native-webrtc-v1'
+      ? { ...common, transport: 'webrtc', speechDelivery: 'openai-native-webrtc-v1' }
+      : { ...common, transport: 'webrtc', speechDelivery: 'audited-signed-url-v1' };
+  }
+  return {
+    ...common,
+    transport: 'mistral-pcm',
     speechDelivery: 'audited-signed-url-v1',
-    ...(value.transport === 'mistral-pcm' &&
-      (value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
+    ...((value.protocol === 'bob.mistral-pcm.v1' || value.protocol === 'bob.mistral-pcm.v2')
       ? { protocol: value.protocol }
       : {}),
   };
@@ -1280,8 +1326,16 @@ function decodeRealtimeVoiceCall(
   value: unknown,
   expectedCompanyId: string,
   expectedApiBaseUrl: string,
+  expectedConfigVersion: string,
+  expectedSpeechDelivery: RealtimeVoiceCallInput['speechDelivery'],
 ): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
+  const legacyWire =
+    expectedConfigVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
+    && expectedSpeechDelivery === 'audited-signed-url-v1';
+  const currentWire = expectedConfigVersion === REALTIME_CONFIG_VERSION_CURRENT;
+  if (!legacyWire && !currentWire) return null;
+  const hasSpeechDelivery = Object.hasOwn(value, 'speechDelivery');
   const commonKeys = [
     'transport',
     'sessionHandle',
@@ -1290,10 +1344,11 @@ function decodeRealtimeVoiceCall(
     'voice',
     'configVersion',
     'maxSessionSeconds',
-    'speechSourcePolicy',
   ] as const;
   if (
-    typeof value.sessionHandle !== 'string' ||
+    (legacyWire && hasSpeechDelivery)
+    || (currentWire && !hasSpeechDelivery)
+    || typeof value.sessionHandle !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.sessionHandle,
     ) ||
@@ -1304,19 +1359,18 @@ function decodeRealtimeVoiceCall(
     (value.voice !== 'marin' && value.voice !== 'cedar') ||
     typeof value.configVersion !== 'string' ||
     !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    value.configVersion !== expectedConfigVersion ||
     typeof value.maxSessionSeconds !== 'number' ||
     !Number.isInteger(value.maxSessionSeconds) ||
     value.maxSessionSeconds < 60 ||
-    value.maxSessionSeconds > 900
+    value.maxSessionSeconds > 900 ||
+    (currentWire && value.speechDelivery !== expectedSpeechDelivery)
   )
     return null;
 
-  const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
-    value.speechSourcePolicy,
-    expectedCompanyId,
-    value.sessionHandle,
-  );
-  if (!speechSourcePolicy) return null;
+  const wireCommonKeys = currentWire
+    ? [...commonKeys, 'speechDelivery'] as const
+    : commonKeys;
 
   const common = {
     sessionHandle: value.sessionHandle,
@@ -1325,26 +1379,67 @@ function decodeRealtimeVoiceCall(
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
-    speechSourcePolicy,
   } as const;
 
   if (value.transport === 'webrtc') {
+    if (value.speechDelivery === 'openai-native-webrtc-v1') {
+      if (
+        !currentWire ||
+        !hasExactKeys(value, [...wireCommonKeys, 'answerSdp']) ||
+        typeof value.answerSdp !== 'string' ||
+        value.answerSdp.length < 16 ||
+        value.answerSdp.length > 256 * 1024 ||
+        !value.answerSdp.startsWith('v=0')
+      )
+        return null;
+      return {
+        transport: 'webrtc',
+        speechDelivery: 'openai-native-webrtc-v1',
+        answerSdp: value.answerSdp,
+        ...common,
+      };
+    }
     if (
-      !hasExactKeys(value, [...commonKeys, 'answerSdp']) ||
+      !hasExactKeys(value, [...wireCommonKeys, 'speechSourcePolicy', 'answerSdp']) ||
       typeof value.answerSdp !== 'string' ||
       value.answerSdp.length < 16 ||
       value.answerSdp.length > 256 * 1024 ||
       !value.answerSdp.startsWith('v=0')
     )
       return null;
-    return { transport: 'webrtc', answerSdp: value.answerSdp, ...common };
+    const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+      value.speechSourcePolicy,
+      expectedCompanyId,
+      value.sessionHandle,
+    );
+    if (!speechSourcePolicy) return null;
+    return {
+      transport: 'webrtc',
+      speechDelivery: 'audited-signed-url-v1',
+      speechSourcePolicy,
+      answerSdp: value.answerSdp,
+      ...common,
+    };
   }
 
   if (value.transport === 'mistral-pcm') {
+    if (currentWire && value.speechDelivery !== 'audited-signed-url-v1') return null;
+    const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+      value.speechSourcePolicy,
+      expectedCompanyId,
+      value.sessionHandle,
+    );
+    if (!speechSourcePolicy) return null;
+    const auditedCommon = {
+      ...common,
+      speechDelivery: 'audited-signed-url-v1' as const,
+      speechSourcePolicy,
+    };
     if (value.protocol === 'bob.mistral-pcm.v2') {
       if (
         !hasExactKeys(value, [
-          ...commonKeys,
+          ...wireCommonKeys,
+          'speechSourcePolicy',
           'websocketUrl',
           'companyId',
           'ticket',
@@ -1384,12 +1479,13 @@ function decodeRealtimeVoiceCall(
         contextDigest: value.contextDigest,
         routeMode: value.routeMode,
         fullDuplexCertified: value.fullDuplexCertified,
-        ...common,
+        ...auditedCommon,
       };
     }
     if (
       !hasExactKeys(value, [
-        ...commonKeys,
+        ...wireCommonKeys,
+        'speechSourcePolicy',
         'websocketUrl',
         'companyId',
         'ticket',
@@ -1425,7 +1521,7 @@ function decodeRealtimeVoiceCall(
       maxAudioBytes: value.maxAudioBytes,
       contextRevision: value.contextRevision,
       contextDigest: value.contextDigest,
-      ...common,
+      ...auditedCommon,
     };
   }
   return null;
@@ -2013,6 +2109,7 @@ export class HttpBobClient implements BobClient {
     email?: string | null;
     phone?: string | null;
     rcsOrRm?: string | null;
+    tvaIntracom?: string | null;
     address?: { line1: string; zip: string; city: string };
   }) {
     return this.req<CompanyProps>('PATCH', '/company/legal', input);
@@ -2077,15 +2174,37 @@ export class HttpBobClient implements BobClient {
     );
   }
   createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
+    const currentWire = input.configVersion === REALTIME_CONFIG_VERSION_CURRENT;
+    const legacyWire =
+      input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
+      && input.speechDelivery === 'audited-signed-url-v1';
+    if (!currentWire && !legacyWire) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
+        'configVersion',
+        'Version Bob Live non prise en charge par ce client.',
+      );
+    }
     const body =
       input.transport === 'mistral-pcm'
         ? {
             context: input.context,
+            ...(currentWire
+              ? {
+                  configVersion: input.configVersion,
+                  speechDelivery: input.speechDelivery,
+                }
+              : {}),
             ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           }
         : {
             sdp: input.sdp,
+            ...(currentWire
+              ? {
+                  configVersion: input.configVersion,
+                  speechDelivery: input.speechDelivery,
+                }
+              : {}),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           };
     return this.req<RealtimeVoiceCall>(
@@ -2093,7 +2212,13 @@ export class HttpBobClient implements BobClient {
       '/voice/realtime/calls',
       body,
       undefined,
-      (value) => decodeRealtimeVoiceCall(value, this.companyId, this.opts.baseUrl),
+      (value) => decodeRealtimeVoiceCall(
+        value,
+        this.companyId,
+        this.opts.baseUrl,
+        input.configVersion,
+        input.speechDelivery,
+      ),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -2355,6 +2480,59 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/deliveries`,
       { deliveryId: input.deliveryId, audioSha256: input.audioSha256 },
       (status, value) => decodeRealtimeVoiceSpeechDelivery(status, value, turnId),
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceNativeSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    deliveryId: string,
+    input: RealtimeVoiceNativeSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ) {
+    if (typeof sessionHandle !== 'string' || !UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof turnId !== 'string' || !UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'turnId',
+        'Le tour Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof deliveryId !== 'string' || !UUID_PATTERN.test(deliveryId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'deliveryId',
+        'La livraison vocale native Bob Live doit être un UUID.',
+      );
+    }
+    const encoded = encodeRealtimeVoiceNativeSpeechDeliveryInput(input);
+    if (encoded === null) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+        'nativeSpeechAcknowledgement',
+        'L’acquittement vocal natif Bob Live est incomplet ou hors bornes.',
+      );
+    }
+
+    const canonicalTurnId = turnId.toLowerCase();
+    const canonicalDeliveryId = deliveryId.toLowerCase();
+    return this.reqRealtimeSpeech<RealtimeVoiceNativeSpeechDeliveryAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle.toLowerCase())}/turns/${encodeURIComponent(canonicalTurnId)}/native-speech/${encodeURIComponent(canonicalDeliveryId)}/deliveries`,
+      encoded,
+      (status, value) => decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement(
+        status,
+        value,
+        {
+          deliveryId: canonicalDeliveryId,
+          turnId: canonicalTurnId,
+          acknowledgementId: encoded.acknowledgementId,
+          contextRevision: encoded.contextRevision,
+          contextDigest: encoded.contextDigest,
+        },
+      ),
       signal,
     );
   }

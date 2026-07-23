@@ -39,7 +39,7 @@ function makeEnv(
   input: {
     quote?: Quote;
     failSaveWithConcurrentInvoice?: boolean;
-    /** A3 — type du client (défaut b2b : le gel de rétractation ne concerne que le b2c). */
+    /** A3 — type du client (défaut b2c : couvre le chemin PDF/e-reporting avec acompte). */
     customerType?: 'b2c' | 'b2b' | 'b2g';
     customerMissing?: boolean;
     /** A3 — « maintenant » injecté (défaut : bien APRÈS le délai du devis par défaut). */
@@ -55,7 +55,7 @@ function makeEnv(
   const customerR = Customer.of({
     id: quote.customerId,
     companyId: quote.companyId,
-    type: input.customerType ?? 'b2b',
+    type: input.customerType ?? 'b2c',
     name: 'Client Test',
     address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' },
   });
@@ -137,6 +137,22 @@ function invoiceFromQuote(quote: Quote, kind: Invoice['kind'], id: string): Invo
 }
 
 describe('GenerateInvoiceFromQuote', () => {
+  it('refuse de créer un acompte professionnel tant que la reprise EXTENDED/PA n’est pas certifiée', async () => {
+    const env = makeEnv({ customerType: 'b2b' });
+
+    const result = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'advanceRecovery' },
+      },
+    });
+    expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(0);
+    expect(env.counts()).toEqual({ saveCalls: 0 });
+  });
+
   it('retourne la facture existante quand on rejoue la même génération', async () => {
     const env = makeEnv();
 
@@ -165,6 +181,19 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(env.counts()).toEqual({ saveCalls: 2 });
   });
 
+  it('conserve la provenance de chaque ligne du devis sur une finale standard', async () => {
+    const env = makeEnv();
+
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const final = await env.invoices.findById(generated.value.invoiceId);
+    expect(final?.lines).toEqual([
+      expect.objectContaining({ id: 'line-1', sourceQuoteLineId: 'line-1' }),
+    ]);
+  });
+
   it('récupère la facture concurrente si la sauvegarde échoue sur le doublon DB', async () => {
     const env = makeEnv({ failSaveWithConcurrentInvoice: true });
 
@@ -188,7 +217,15 @@ describe('GenerateInvoiceFromQuote', () => {
       customerId: 'cus-1',
       kind,
       status: 'issued',
-      lines: [{ id: `${id}-l1`, label: 'Avancement', category: 'labor', qty: 1, unitPriceHT: ht, vatRate: 20 }],
+      lines: [{
+        id: `${id}-l1`,
+        label: 'Avancement',
+        category: 'labor',
+        qty: 1,
+        unitPriceHT: ht,
+        vatRate: 20,
+        ...(kind === 'situation' ? { sourceQuoteLineId: 'line-1' } : {}),
+      }],
       number: 'F-2026-0099',
       frozenTotals: { ht, vatByRate: { '20': vat }, vat, ttc: ht + vat, netToPay },
       mentions: [],
@@ -197,6 +234,8 @@ describe('GenerateInvoiceFromQuote', () => {
       paid: 0,
       depositPct: null,
       parentQuoteId: 'quote-1',
+      vatTreatmentAtIssuance: 'standard',
+      frenchBillingModeAtIssuance: 'S1',
     });
   }
 
@@ -223,11 +262,56 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(generated.ok).toBe(true);
     if (!generated.ok) return;
     const final = await env.invoices.findById(generated.value.invoiceId);
-    expect(final?.totals().ttc).toBe(120000);
-    // Solde exact = 120 000 − 36 000 − 24 000 ; déduction composite → pas d'invoiceId unique.
+    // La finale porte les 96 000 c TTC de travaux restant après la situation ; elle reprend
+    // ensuite les 36 000 c d'avance. Solde exact du marché = 60 000 c.
+    expect(final?.totals().ttc).toBe(96000);
     expect(final?.totals().netToPay).toBe(60000);
     expect(final?.toSnapshot().depositDeductionCents).toBe(60000);
     expect(final?.toSnapshot().depositInvoiceId).toBeNull();
+  });
+
+  it('refuse avant sauvegarde une finale dont le cumul TVA des situations exige BT-114', async () => {
+    const quote = signedQuote(null, {
+      lines: [
+        {
+          id: 'line-1',
+          label: 'Petit poste',
+          category: 'labor',
+          qty: 1,
+          unitPriceHT: 6,
+          vatRate: 20,
+        },
+      ],
+    });
+    const env = makeEnv({ quote });
+    const situation = Invoice.situationFromSignedQuote(quote, 'sit-rounding', {
+      order: 1,
+      targetHtCents: 3,
+    });
+    if (!situation.ok) throw new Error('situation');
+    await env.invoices.save(Invoice.rehydrate({
+      ...situation.value.toSnapshot(),
+      status: 'issued',
+      number: 'F-2026-0001',
+      issuedAt: '2026-06-10',
+      dueAt: '2026-07-10',
+      frozenTotals: situation.value.totals(),
+      vatTreatmentAtIssuance: 'standard',
+      frenchBillingModeAtIssuance: 'S1',
+    }));
+    const savesBeforeFinal = env.counts().saveCalls;
+
+    const generated = await env.usecase.execute({ quoteId: quote.id, mode: 'final' });
+
+    expect(generated).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: { code: 'VALIDATION', field: 'situationVatClosure' },
+      },
+    });
+    expect(env.counts().saveCalls).toBe(savesBeforeFinal);
+    expect(await env.invoices.findByParentQuoteId(quote.companyId, quote.id, 'final')).toBeNull();
   });
 
   it('A5 : une pièce déjà facturée UNIQUE reste citée (invoiceId conservé) ; brouillon exclu', async () => {
@@ -514,9 +598,9 @@ describe('GenerateInvoiceFromQuote — embargo de paiement L221-10 (contrat hors
     expect(r.ok).toBe(true);
   });
 
-  it('professionnel (b2b) signé sur place : hors champ L221-10 — jamais bloqué', async () => {
+  it('professionnel (b2b) signé sur place : la finale est hors champ L221-10', async () => {
     const env = makeEnv({ customerType: 'b2b', now: duringEmbargo });
-    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
     expect(r.ok).toBe(true);
   });
 

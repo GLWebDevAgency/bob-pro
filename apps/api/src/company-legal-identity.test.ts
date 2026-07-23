@@ -74,6 +74,9 @@ async function seedCompanyWithoutRegistration(persistence: InMemoryPersistence):
     ...withoutRegistration,
     name: 'FLY SERVICES',
     legalForm: 'SAS',
+    // Le test isole le seul cul-de-sac RCS : le capital, autre prérequis propre aux sociétés,
+    // est déjà connu. Sans cela il prétendrait qu'un champ débloque une fiche encore incomplète.
+    capitalSocialCents: 100_000,
     address: { line1: '19 QUAI DE LA SEINE', zip: '75019', city: 'PARIS' },
   });
   if (!company.ok) throw new Error('fixture: Company.of KO');

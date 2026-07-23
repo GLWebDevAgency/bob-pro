@@ -8,6 +8,7 @@ import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 
 /**
  * B8 — outil vocal lier_bon_commande, HÔTE RÉEL (buildBobActions → use case core
@@ -64,8 +65,9 @@ function makeService() {
     p,
     {} as PaymentGatewayPort,
     {
-      renderInvoice: vi.fn(async () => new TextEncoder().encode('%PDF-1.7\ninvoice')),
-      renderQuote: vi.fn(async () => new TextEncoder().encode('%PDF-1.7\nquote')),
+      renderInvoice: vi.fn(async (_data, facturX) =>
+        renderPdfFixture('invoice', facturX?.xml)),
+      renderQuote: vi.fn(async () => renderPdfFixture('quote')),
     } as PdfRendererPort,
     {} as OcrPort,
     admin,
@@ -87,6 +89,8 @@ async function signedRatpQuote(service: BackendService): Promise<{ quoteId: stri
   const customer = await service.createCustomer({
     name: 'RATP',
     type: 'b2g',
+    // Identité publique réelle : le flux BT-13 ne doit pas contourner l'exigence BT-49/0225.
+    siren: '775663438',
     address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' },
   });
   if (!customer.ok) throw new Error('fixage du décor : createCustomer KO');

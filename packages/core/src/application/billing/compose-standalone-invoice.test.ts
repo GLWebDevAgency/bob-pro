@@ -32,7 +32,7 @@ const customerProps: CustomerProps = {
   companyId: 'co-1',
   type: 'b2b',
   name: 'Syndic Les Pins',
-  siren: '789220117',
+  siren: '789220118',
   address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' },
 };
 

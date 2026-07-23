@@ -6,6 +6,11 @@ import { PrismaClient, Prisma } from '@prisma/client';
 const txStorage = new AsyncLocalStorage<Prisma.TransactionClient>();
 const NOTIFICATION_OUTBOX_VERSION = '2';
 
+export interface IsolatedTransactionOptions {
+  readonly maxWaitMs: number;
+  readonly timeoutMs: number;
+}
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
   async onModuleInit(): Promise<void> {
@@ -51,6 +56,44 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     });
   }
 
+  /**
+   * Ouvre toujours une transaction tenantée indépendante, même depuis une transaction ambiante.
+   *
+   * Réservé aux autorités durables qui doivent absorber leur propre échec sans empoisonner la
+   * transaction HTTP appelante (leases, CAS, accusés de réception). L'appelant ne doit donc jamais
+   * dépendre d'une écriture non commitée de la transaction ambiante.
+   */
+  withIsolatedTenant<T>(
+    companyId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: IsolatedTransactionOptions,
+  ): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await this.setCompanyContext(tx, companyId);
+      return txStorage.run(tx, () => fn(tx));
+    }, options === undefined ? undefined : {
+      maxWait: options.maxWaitMs,
+      timeout: options.timeoutMs,
+    });
+  }
+
+  /**
+   * Ouvre une transaction globale indépendante sans poser d'identité tenant.
+   *
+   * Réservé aux capacités globales minimales qui installent elles-mêmes leurs timeouts SQL avant
+   * toute lecture. Le callback reçoit seulement le client transactionnel : aucun repository
+   * tenanté ne doit être appelé depuis cette autorité.
+   */
+  withIsolatedGlobal<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options?: IsolatedTransactionOptions,
+  ): Promise<T> {
+    return this.$transaction(fn, options === undefined ? undefined : {
+      maxWait: options.maxWaitMs,
+      timeout: options.timeoutMs,
+    });
+  }
+
   private async setCompanyContext(tx: Prisma.TransactionClient, companyId: string): Promise<void> {
     await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
     // Fence de protocole, pas une autorisation : les policies vérifient toujours companyId.
@@ -71,10 +114,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
    * que soit le contexte asynchrone d'où le drain est déclenché.
    */
   detachedWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await this.setCompanyContext(tx, companyId);
-      return txStorage.run(tx, fn);
-    });
+    return this.withIsolatedTenant(companyId, () => fn());
   }
 
   /** Pose uniquement l'identité authentifiée. Utile pour lister les memberships de l'utilisateur. */

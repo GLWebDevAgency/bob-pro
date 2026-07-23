@@ -18,6 +18,10 @@ const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_MISTRAL_CONVERSATION_LEASE_FE
 const CONTEXT_DIGEST = 'a'.repeat(64);
 
 const admissionPolicy: RealtimeAdmissionPolicy = {
+  globalCapacity: {
+    providerId: 'openai', providerModel: 'gpt-realtime-2.1',
+    globalMaxSessions: 1_000, providerMaxSessions: 1_000, configVersion: 1,
+  },
   userLimitPerMinute: 10,
   userLimitPerHour: 100,
   tenantLimitPerMinute: 100,

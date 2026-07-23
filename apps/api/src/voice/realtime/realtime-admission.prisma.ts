@@ -33,6 +33,22 @@ interface ClockRow {
   now: Date;
 }
 
+interface ReaperTimeoutRow {
+  statementTimeout: string;
+  lockTimeout: string;
+}
+
+interface AdmissionTimeoutRow {
+  statementTimeout: string;
+  lockTimeout: string;
+}
+
+const REAPER_EVENT_CLEANUP_LIMIT = 1_000;
+const REAPER_TRANSACTION_OPTIONS = { maxWaitMs: 1_000, timeoutMs: 4_000 } as const;
+const REAPER_STATEMENT_TIMEOUT = '3s';
+const REAPER_LOCK_TIMEOUT = '1s';
+const ADMISSION_TRANSACTION_OPTIONS = { maxWaitMs: 1_000, timeoutMs: 4_000 } as const;
+
 interface LeaseRow {
   companyId: string;
   subjectHash: string;
@@ -54,6 +70,11 @@ interface QuotaRow {
   userHourOldest: Date | null;
   tenantMinuteOldest: Date | null;
   tenantHourOldest: Date | null;
+}
+
+interface CapacityPreflightRow {
+  status: 'allowed' | 'saturated' | 'unavailable';
+  retryAt: Date | null;
 }
 
 interface UpdatedLeaseRow {
@@ -123,13 +144,21 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
   }
 
   async reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult> {
-    if (!validReserve(input)) return deniedUnavailable();
+    if (!validReserve(input) || this.policy.globalCapacity === null) return deniedUnavailable();
+    const capacity = this.policy.globalCapacity;
     const sessionId = input.sessionId ?? randomUUID();
     const leaseToken = token();
     const leaseTokenHash = hashRealtimeLeaseToken(leaseToken);
 
     try {
-      return await this.prisma.withTenant(input.companyId, async (tx) => {
+      return await this.prisma.withIsolatedTenant(input.companyId, async (tx) => {
+        const [timeouts] = await tx.$queryRaw<AdmissionTimeoutRow[]>`
+          SELECT set_config('statement_timeout', '3s', true) AS "statementTimeout",
+                 set_config('lock_timeout', '1s', true) AS "lockTimeout"
+        `;
+        if (timeouts?.statementTimeout !== '3s' || timeouts.lockTimeout !== '1s') {
+          return deniedUnavailable();
+        }
         await this.lockAdmission(tx, input.companyId, input.subjectHash);
         const [{ now }] = await tx.$queryRaw<ClockRow[]>`SELECT clock_timestamp() AS now`;
         if (!now) return deniedUnavailable();
@@ -142,6 +171,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
              AND "subjectHash" = ${input.subjectHash}
            FOR UPDATE
         `;
+        let staleProviderlessLease: LeaseRow | null = null;
         if (existing) {
           if (existing.state === 'reaping' && existing.leaseExpiresAt.getTime() > now.getTime()) {
             return {
@@ -160,15 +190,9 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
             };
           }
           if (existing.providerId === null && existing.providerCallId === null) {
-            await tx.$executeRaw`
-              DELETE FROM realtime_session_leases
-               WHERE "companyId" = ${existing.companyId}
-                 AND "subjectHash" = ${existing.subjectHash}
-                 AND "sessionId" = ${existing.sessionId}::uuid
-                 AND version = ${existing.version}
-                 AND "providerId" IS NULL
-                 AND "providerCallId" IS NULL
-            `;
+            // Le DELETE prend le verrou global via trigger. Il est différé après les quotas pour
+            // ne pas sérialiser purge et comptage de toutes les répliques sous ce verrou.
+            staleProviderlessLease = existing;
           } else {
             if (existing.providerId === null || existing.providerCallId === null) {
               return deniedUnavailable();
@@ -248,6 +272,42 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
         const quotaDenial = this.quotaDenial(quota);
         if (quotaDenial) return quotaDenial;
 
+        if (staleProviderlessLease) {
+          const deleted = await tx.$executeRaw`
+            DELETE FROM realtime_session_leases
+             WHERE "companyId" = ${staleProviderlessLease.companyId}
+               AND "subjectHash" = ${staleProviderlessLease.subjectHash}
+               AND "sessionId" = ${staleProviderlessLease.sessionId}::uuid
+               AND version = ${staleProviderlessLease.version}
+               AND "providerId" IS NULL
+               AND "providerCallId" IS NULL
+               AND ("leaseExpiresAt" <= ${now} OR "hardExpiresAt" <= ${now})
+          `;
+          if (deleted !== 1) return deniedUnavailable();
+        }
+
+        // Dernier verrou de l'ordre tenant → sujet → singleton. Une autorisation conserve le
+        // FOR UPDATE jusqu'au commit qui crée lease + événement ; aucun provider n'est appelé ici.
+        const [preflight] = await tx.$queryRaw<CapacityPreflightRow[]>`
+          SELECT status, "retryAt"
+            FROM preflight_realtime_global_capacity_v1(
+              ${capacity.providerId}, ${capacity.providerModel},
+              ${capacity.globalMaxSessions}::integer, ${capacity.providerMaxSessions}::integer,
+              ${capacity.configVersion}::integer
+            )
+        `;
+        if (!preflight || preflight.status === 'unavailable') return deniedUnavailable();
+        if (preflight.status === 'saturated') {
+          return {
+            allowed: false,
+            denial: 'global_capacity',
+            retryAt: preflight.retryAt?.toISOString() ?? null,
+          };
+        }
+        if (preflight.status !== 'allowed' || preflight.retryAt !== null) {
+          return deniedUnavailable();
+        }
+
         const [inserted] = await tx.$queryRaw<Array<{ leaseExpiresAt: Date; hardExpiresAt: Date }>>`
           INSERT INTO realtime_session_leases (
             "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
@@ -284,7 +344,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
             hardExpiresAt: inserted.hardExpiresAt.toISOString(),
           },
         };
-      });
+      }, ADMISSION_TRANSACTION_OPTIONS);
     } catch {
       return deniedUnavailable();
     }
@@ -435,37 +495,74 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
     if (!isRealtimeCompanyId(input.companyId)) return { ok: false, reason: 'unavailable' };
     const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
     try {
-      return await this.prisma.withTenant(input.companyId, async (tx) => {
+      return await this.withBoundedReaperTenant(input.companyId, async (tx) => {
         await this.lockTenant(tx, input.companyId);
         await tx.$executeRaw`
-          DELETE FROM realtime_admission_events
-           WHERE "companyId" = ${input.companyId}
-             AND "admittedAt" <= clock_timestamp() - interval '2 hours'
+          WITH candidates AS (
+            SELECT event.id
+              FROM realtime_admission_events AS event
+             WHERE event."companyId" = ${input.companyId}
+               AND event."admittedAt" <= clock_timestamp() - interval '2 hours'
+             ORDER BY event."admittedAt", event.id
+             FOR UPDATE OF event SKIP LOCKED
+             LIMIT ${REAPER_EVENT_CLEANUP_LIMIT}
+          )
+          DELETE FROM realtime_admission_events AS event
+          USING candidates
+           WHERE event."companyId" = ${input.companyId}
+             AND event.id = candidates.id
         `;
         await tx.$executeRaw`
-          DELETE FROM realtime_session_leases
-           WHERE "companyId" = ${input.companyId}
-             AND "providerId" IS NULL
-             AND "providerCallId" IS NULL
-             AND ("leaseExpiresAt" <= clock_timestamp() OR "hardExpiresAt" <= clock_timestamp())
+          WITH candidates AS (
+            SELECT lease."subjectHash", lease."sessionId"
+              FROM realtime_session_leases AS lease
+             WHERE lease."companyId" = ${input.companyId}
+               AND lease."providerId" IS NULL
+               AND lease."providerCallId" IS NULL
+               AND (
+                 lease."leaseExpiresAt" <= clock_timestamp()
+                 OR lease."hardExpiresAt" <= clock_timestamp()
+               )
+             ORDER BY LEAST(lease."leaseExpiresAt", lease."hardExpiresAt"), lease."sessionId"
+             FOR UPDATE OF lease SKIP LOCKED
+             LIMIT ${limit}
+          )
+          DELETE FROM realtime_session_leases AS lease
+          USING candidates
+           WHERE lease."companyId" = ${input.companyId}
+             AND lease."subjectHash" = candidates."subjectHash"
+             AND lease."sessionId" = candidates."sessionId"
         `;
         // Une preuve terminale Mistral confirmée signifie que le socket fournisseur est déjà
         // fermé. Après la grâce de livraison, supprimer localement le drain est la seule action
         // correcte : le transformer en claim reaper provoquerait un second hangup sans nécessité.
         await tx.$executeRaw`
+          WITH candidates AS (
+            SELECT lease."subjectHash", lease."sessionId"
+              FROM realtime_session_leases AS lease
+              JOIN realtime_mistral_ingress_tickets AS ticket
+                ON ticket."companyId" = lease."companyId"
+               AND ticket."subjectHash" = lease."subjectHash"
+               AND ticket."sessionId" = lease."sessionId"
+             WHERE lease."companyId" = ${input.companyId}
+               AND ticket.state IN ('completed', 'abandoned')
+               AND ticket."providerTermination" = 'confirmed'
+               AND ticket."providerSessionId" = lease."providerCallId"
+               AND lease."providerId" = 'mistral'
+               AND lease."providerCallId" IS NOT NULL
+               AND (
+                 lease."leaseExpiresAt" <= clock_timestamp()
+                 OR lease."hardExpiresAt" <= clock_timestamp()
+               )
+             ORDER BY LEAST(lease."leaseExpiresAt", lease."hardExpiresAt"), lease."sessionId"
+             FOR UPDATE OF lease SKIP LOCKED
+             LIMIT ${limit}
+          )
           DELETE FROM realtime_session_leases AS lease
-          USING realtime_mistral_ingress_tickets AS ticket
+          USING candidates
            WHERE lease."companyId" = ${input.companyId}
-             AND ticket."companyId" = lease."companyId"
-             AND ticket."subjectHash" = lease."subjectHash"
-             AND ticket."sessionId" = lease."sessionId"
-             AND ticket.state IN ('completed', 'abandoned')
-             AND ticket."providerTermination" = 'confirmed'
-             AND ticket."providerSessionId" = lease."providerCallId"
-             AND lease."providerId" = 'mistral'
-             AND lease."providerCallId" IS NOT NULL
-             AND (lease."leaseExpiresAt" <= clock_timestamp()
-               OR lease."hardExpiresAt" <= clock_timestamp())
+             AND lease."subjectHash" = candidates."subjectHash"
+             AND lease."sessionId" = candidates."sessionId"
         `;
         const rows = await tx.$queryRaw<LeaseRow[]>`
           SELECT "companyId", "subjectHash", "sessionId", state, "providerId", "providerCallId",
@@ -487,6 +584,10 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
           const claim = await this.claimRowForReaping(tx, row);
           if (claim) claims.push(claim);
         }
+        // Les triggers N-1/N ne déplacent les minima que vers le passé : ils ne peuvent donc
+        // jamais masquer une échéance. Sous le même advisory lock tenant, le reaper est l'unique
+        // autorité qui avance ou supprime ensuite cette projection conservative.
+        await this.reconcileReaperSchedule(tx, input.companyId);
         return { ok: true as const, claims };
       });
     } catch {
@@ -562,17 +663,24 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
       || !isRealtimeSessionId(input.sessionId)
       || input.reaperToken.length < 32
     ) return mutationRejected();
-    return this.mutate(input.companyId, async (tx) => {
-      const deleted = await tx.$executeRaw`
-        DELETE FROM realtime_session_leases
-         WHERE "companyId" = ${input.companyId}
-           AND "subjectHash" = ${input.subjectHash}
-           AND "sessionId" = ${input.sessionId}::uuid
-           AND state = 'reaping'
-           AND "reaperTokenHash" = ${hashRealtimeLeaseToken(input.reaperToken)}
-      `;
-      return deleted === 1 ? { ok: true, reason: null } : mutationRejected();
-    });
+    try {
+      return await this.withBoundedReaperTenant(input.companyId, async (tx) => {
+        await this.lockTenant(tx, input.companyId);
+        const deleted = await tx.$executeRaw`
+          DELETE FROM realtime_session_leases
+           WHERE "companyId" = ${input.companyId}
+             AND "subjectHash" = ${input.subjectHash}
+             AND "sessionId" = ${input.sessionId}::uuid
+             AND state = 'reaping'
+             AND "reaperTokenHash" = ${hashRealtimeLeaseToken(input.reaperToken)}
+        `;
+        if (deleted !== 1) return mutationRejected();
+        await this.reconcileReaperSchedule(tx, input.companyId);
+        return { ok: true, reason: null };
+      });
+    } catch {
+      return mutationUnavailable();
+    }
   }
 
   async updateContext(input: RealtimeContextUpdateInput): Promise<RealtimeContextUpdateResult> {
@@ -834,6 +942,75 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
     } catch {
       return mutationUnavailable();
     }
+  }
+
+  private withBoundedReaperTenant<T>(
+    companyId: string,
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.withIsolatedTenant(companyId, async (tx) => {
+      const [timeouts] = await tx.$queryRaw<ReaperTimeoutRow[]>`
+        SELECT set_config('statement_timeout', ${REAPER_STATEMENT_TIMEOUT}, true)
+                 AS "statementTimeout",
+               set_config('lock_timeout', ${REAPER_LOCK_TIMEOUT}, true) AS "lockTimeout"
+      `;
+      if (
+        timeouts?.statementTimeout !== REAPER_STATEMENT_TIMEOUT
+        || timeouts.lockTimeout !== REAPER_LOCK_TIMEOUT
+      ) throw new Error('realtime_reaper_timeout_fence_rejected');
+      return operation(tx);
+    }, REAPER_TRANSACTION_OPTIONS);
+  }
+
+  private async reconcileReaperSchedule(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+  ): Promise<void> {
+    // Verrouiller la projection AVANT de lire les sources. Un writer concurrent peut avoir déjà
+    // modifié une lease puis attendre dans son trigger conservative : le reaper commitera sa vue,
+    // puis ce trigger reprendra et appliquera LEAST. L'ordre inverse pourrait écraser une échéance
+    // plus ancienne avec un snapshot antérieur et créer un faux négatif.
+    await tx.$queryRaw`
+      SELECT "companyId"
+        FROM realtime_reaper_tenant_schedule
+       WHERE "companyId" = ${companyId}
+       FOR UPDATE
+    `;
+    await tx.$executeRaw`
+      WITH projection AS (
+        SELECT ${companyId}::text AS "companyId",
+               (
+                 SELECT min(event."admittedAt")
+                   FROM realtime_admission_events AS event
+                  WHERE event."companyId" = ${companyId}
+               ) AS "oldestAdmissionAt",
+               (
+                 SELECT min(CASE
+                   WHEN lease.state = 'reaping' THEN lease."leaseExpiresAt"
+                   ELSE LEAST(lease."leaseExpiresAt", lease."hardExpiresAt")
+                 END)
+                   FROM realtime_session_leases AS lease
+                  WHERE lease."companyId" = ${companyId}
+               ) AS "nextLeaseDueAt"
+      ), upserted AS (
+        INSERT INTO realtime_reaper_tenant_schedule AS schedule (
+          "companyId", "oldestAdmissionAt", "nextLeaseDueAt"
+        )
+        SELECT projection."companyId", projection."oldestAdmissionAt",
+               projection."nextLeaseDueAt"
+          FROM projection
+         WHERE projection."oldestAdmissionAt" IS NOT NULL
+            OR projection."nextLeaseDueAt" IS NOT NULL
+        ON CONFLICT ("companyId") DO UPDATE
+          SET "oldestAdmissionAt" = EXCLUDED."oldestAdmissionAt",
+              "nextLeaseDueAt" = EXCLUDED."nextLeaseDueAt",
+              revision = schedule.revision + 1
+        RETURNING "companyId"
+      )
+      DELETE FROM realtime_reaper_tenant_schedule AS schedule
+       WHERE schedule."companyId" = ${companyId}
+         AND NOT EXISTS (SELECT 1 FROM upserted)
+    `;
   }
 
   private async lockAdmission(

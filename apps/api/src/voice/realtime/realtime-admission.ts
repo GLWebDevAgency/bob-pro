@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parseAgentContext, type AgentContext } from '@bob/ai';
 import { resolveBobLiveEnv, type Env } from '../../config/env';
+import type { RealtimeGlobalCapacityExpectation } from './realtime-capacity';
 
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -13,6 +14,7 @@ const REALTIME_CONTEXT_MAX_BYTES = 16_384;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 export type RealtimeAdmissionDenial =
+  | 'global_capacity'
   | 'user_minute'
   | 'user_hour'
   | 'tenant_minute'
@@ -42,6 +44,8 @@ export interface RealtimeDatabaseHardExpiryProof {
 }
 
 export interface RealtimeAdmissionPolicy {
+  /** Null uniquement lorsque Bob Live est désactivé ; une admission reste alors fail-closed. */
+  globalCapacity: RealtimeGlobalCapacityExpectation | null;
   userLimitPerMinute: number;
   userLimitPerHour: number;
   tenantLimitPerMinute: number;
@@ -55,6 +59,7 @@ export interface RealtimeAdmissionPolicy {
 export function realtimeAdmissionPolicyFromEnv(env: Env): RealtimeAdmissionPolicy {
   const live = resolveBobLiveEnv(env);
   return {
+    globalCapacity: live.globalCapacity,
     userLimitPerMinute: live.maxCallsPerMinute,
     userLimitPerHour: live.maxCallsPerHour,
     tenantLimitPerMinute: live.maxTenantCallsPerMinute,
@@ -67,7 +72,9 @@ export function realtimeAdmissionPolicyFromEnv(env: Env): RealtimeAdmissionPolic
 }
 
 export function validateRealtimeAdmissionPolicy(policy: RealtimeAdmissionPolicy): void {
-  const positiveIntegers = Object.entries(policy).filter(([, value]) => !Number.isInteger(value) || value <= 0);
+  const positiveIntegers = Object.entries(policy).filter(([key, value]) => (
+    key !== 'globalCapacity' && (!Number.isInteger(value) || (value as number) <= 0)
+  ));
   if (positiveIntegers.length > 0) {
     throw new Error(`Invalid realtime admission policy: ${positiveIntegers.map(([key]) => key).join(', ')}`);
   }
@@ -82,6 +89,23 @@ export function validateRealtimeAdmissionPolicy(policy: RealtimeAdmissionPolicy)
   }
   if (policy.heartbeatSeconds >= policy.activeLeaseSeconds) {
     throw new Error('Realtime heartbeat must be shorter than the active lease.');
+  }
+  if (policy.globalCapacity !== null) {
+    const capacity = policy.globalCapacity;
+    if (
+      !isRealtimeProviderId(capacity.providerId)
+      || capacity.providerModel.trim().length < 1
+      || capacity.providerModel.length > 100
+      || !Number.isInteger(capacity.globalMaxSessions)
+      || capacity.globalMaxSessions < 1
+      || capacity.globalMaxSessions > 1_000
+      || !Number.isInteger(capacity.providerMaxSessions)
+      || capacity.providerMaxSessions < capacity.globalMaxSessions
+      || capacity.providerMaxSessions > 10_000
+      || !Number.isInteger(capacity.configVersion)
+      || capacity.configVersion < 1
+      || capacity.configVersion > POSTGRES_INTEGER_MAX
+    ) throw new Error('Invalid realtime global capacity policy.');
   }
 }
 

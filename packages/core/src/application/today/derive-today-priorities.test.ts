@@ -166,7 +166,11 @@ describe('deriveTodayPriorities', () => {
       label: 'Paiement à 30 jours',
     } as const;
     expect(
-      (await issue.execute({ invoiceId: depositA.value.invoiceId, terms: paymentTerms })).ok,
+      (await issue.execute({
+        invoiceId: depositA.value.invoiceId,
+        terms: paymentTerms,
+        operationCategory: 'services',
+      })).ok,
     ).toBe(true);
     const paidA = await new RegisterPayment({
       invoices: env.invoiceRepo,

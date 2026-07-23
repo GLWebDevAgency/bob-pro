@@ -1,4 +1,12 @@
-import { AccountingEntry, ChantierNote, ChartOfAccounts, Expense, Invoice, Quote } from '@bob/core';
+import {
+  AccountingEntry,
+  ChantierNote,
+  ChartOfAccounts,
+  Expense,
+  Invoice,
+  Quote,
+  normalizeDocumentContentType,
+} from '@bob/core';
 import type {
   Company,
   Customer,
@@ -28,6 +36,7 @@ import type {
   CatalogueUpdateWriteResult,
   CatalogueDeleteWriteResult,
 } from '@bob/core';
+import { portableSha256Bytes } from '../expense-idempotency';
 
 export class InMemoryCompanyRepository implements CompanyRepository {
   private readonly map = new Map<string, Company>();
@@ -420,35 +429,94 @@ export class InMemoryWorksiteMediaStorage implements WorksiteMediaStorage {
 /** Démo/local uniquement — octets en mémoire, URL de visualisation en data: URI. Le runtime live
  * utilise SupabaseDocumentStorage (apps/api) derrière le MÊME DocumentStoragePort. */
 export class InMemoryDocumentStorage implements DocumentStoragePort {
-  private readonly map = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  private readonly map = new Map<string, { companyId: string; bytes: Uint8Array; contentType: string; sha256: string }>();
+  private assertTenantKey(companyId: string, key: string): void {
+    const allowedPrefixes = [
+      `companies/${companyId}/documents/`,
+      `companies/${companyId}/chantiers/`,
+    ];
+    if (!allowedPrefixes.some((prefix) => key.startsWith(prefix))) {
+      throw new Error('InMemoryDocumentStorage: key outside tenant scope.');
+    }
+  }
   async put(input: {
     companyId: string;
     key: string;
     bytes: Uint8Array;
     contentType: string;
   }): Promise<StoredObject> {
-    this.map.set(input.key, { bytes: input.bytes, contentType: input.contentType });
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: 'demo' };
+    this.assertTenantKey(input.companyId, input.key);
+    const sha256 = portableSha256Bytes(input.bytes);
+    const contentType = normalizeDocumentContentType(input.contentType);
+    const existing = this.map.get(input.key);
+    if (existing) {
+      if (
+        existing.companyId === input.companyId
+        && existing.sha256 === sha256
+        && existing.bytes.byteLength === input.bytes.byteLength
+        && normalizeDocumentContentType(existing.contentType) === contentType
+      ) {
+        return {
+          key: input.key,
+          sizeBytes: existing.bytes.byteLength,
+          sha256,
+          contentType: existing.contentType,
+          created: false,
+        };
+      }
+      throw new Error('InMemoryDocumentStorage: collision de clé.');
+    }
+    this.map.set(input.key, {
+      companyId: input.companyId,
+      bytes: input.bytes.slice(),
+      contentType,
+      sha256,
+    });
+    return {
+      key: input.key,
+      sizeBytes: input.bytes.byteLength,
+      sha256,
+      contentType,
+      created: true,
+    };
   }
   async get(
-    _companyId: string,
+    companyId: string,
     key: string,
-  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-    return this.map.get(key) ?? null;
-  }
-  async getSignedUrl(_companyId: string, key: string, _ttlSeconds: number): Promise<string> {
+  ): ReturnType<DocumentStoragePort['get']> {
+    this.assertTenantKey(companyId, key);
     const item = this.map.get(key);
-    if (!item) throw new Error('InMemoryDocumentStorage: objet introuvable.');
+    return Promise.resolve(
+      !item || item.companyId !== companyId
+        ? null
+        : {
+            key,
+            bytes: item.bytes.slice(),
+            sizeBytes: item.bytes.byteLength,
+            sha256: item.sha256,
+            contentType: item.contentType,
+          },
+    );
+  }
+  async getSignedUrl(companyId: string, key: string, _ttlSeconds: number): Promise<string> {
+    this.assertTenantKey(companyId, key);
+    const item = this.map.get(key);
+    if (!item || item.companyId !== companyId) throw new Error('InMemoryDocumentStorage: objet introuvable.');
     return `data:${item.contentType};base64,${Buffer.from(item.bytes).toString('base64')}`;
   }
   async stat(
-    _companyId: string,
+    companyId: string,
     key: string,
   ): Promise<{ sizeBytes: number; contentType: string } | null> {
+    this.assertTenantKey(companyId, key);
     const item = this.map.get(key);
-    return item ? { sizeBytes: item.bytes.byteLength, contentType: item.contentType } : null;
+    return item?.companyId === companyId
+      ? { sizeBytes: item.bytes.byteLength, contentType: item.contentType }
+      : null;
   }
-  async remove(_companyId: string, key: string): Promise<void> {
-    this.map.delete(key);
+  async remove(companyId: string, key: string): Promise<void> {
+    this.assertTenantKey(companyId, key);
+    const item = this.map.get(key);
+    if (item?.companyId === companyId) this.map.delete(key);
   }
 }

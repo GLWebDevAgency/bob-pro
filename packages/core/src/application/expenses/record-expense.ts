@@ -2,7 +2,7 @@ import { type Result, ok, err } from '../../shared-kernel/result';
 import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
-import { type ExpenseRepository } from '../ports/repositories';
+import { type CompanyRepository, type ExpenseRepository } from '../ports/repositories';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { Expense, type ExpenseCategory, type ExpenseSource } from '../../domain/expense/expense';
 import { type PaymentMethod } from '../../domain/payment/payment';
@@ -90,6 +90,11 @@ export function canonicalRecordExpensePayload(input: Omit<RecordExpenseInput, 'c
 
 export interface RecordExpenseDeps {
   expenses: ExpenseRepository;
+  /**
+   * Source tenant de la qualification TVA. Requise structurellement : une dépense ne doit pas
+   * entrer dans le cycle comptable sans entreprise qualifiée.
+   */
+  companies: Pick<CompanyRepository, 'findById'>;
   ids: IdGeneratorPort;
   clock: ClockPort;
   /**
@@ -106,6 +111,19 @@ export class RecordExpense {
   constructor(private readonly deps: RecordExpenseDeps) {}
 
   async execute(input: RecordExpenseInput): Promise<Result<{ id: string }, AppError>> {
+    if (!this.deps.companies) {
+      return err({
+        kind: 'dependency',
+        port: 'CompanyRepository',
+        cause: 'Le régime TVA tenant ne peut pas être qualifié : création de dépense refusée.',
+      });
+    }
+    // `Company` est l'agrégat validé qui porte le choix explicite de régime TVA. Cette lecture
+    // précède toute consommation d'identifiant et toute persistance : aucun contexte fiscal
+    // fourni par l'OCR ou le client HTTP ne peut se substituer à la vérité tenant.
+    const company = await this.deps.companies.findById(input.companyId);
+    if (!company || company.id !== input.companyId) return err(appNotFound('company', input.companyId));
+
     const id = this.deps.ids.newId();
     // Ticket déjà réglé (scan) : la dépense naît payée avec sa preuve — le domaine revalide
     // date/moyen/justificatif comme pour tout règlement (jamais de « payée sans preuve »).

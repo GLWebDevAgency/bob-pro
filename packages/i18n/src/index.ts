@@ -3103,6 +3103,11 @@ const legacyFr = {
     pro: 'La facture d’acompte est encore en brouillon. Vérifiez-la et émettez-la avant de générer la facture finale.',
     direct: 'Acompte encore en brouillon. Vérifie-le et émets-le d’abord.',
   },
+  'devis.voice.invoiceDepositUnavailable': {
+    pote: 'Le parcours acompte pour un client professionnel attend encore sa certification Factur-X EXTENDED et Plateforme Agréée. Je ne te propose pas une action qui bloquerait ensuite au solde.',
+    pro: 'Le parcours acompte professionnel reste fermé jusqu’à sa certification Factur-X EXTENDED et Plateforme Agréée. Aucune action incomplète n’est proposée.',
+    direct: 'Acompte professionnel indisponible jusqu’à certification EXTENDED/PA.',
+  },
   // R6/R7 — édition/suppression d'une ligne de devis BROUILLON à la voix (devis/[id]) : la voix
   // DIT ce qu'elle prépare et OUVRE la Sheet d'édition / la confirmation de suppression — jamais
   // n'écrit elle-même (même plancher que le choix de facture ci-dessus : proposer → tap → valider).
@@ -4181,6 +4186,16 @@ const legacyFr = {
     pro: 'Générer la facture finale',
     direct: 'Facture finale',
   },
+  'piece.advanceRecoveryUnavailableTitle': {
+    pote: 'Solde professionnel en attente',
+    pro: 'Reprise d’acompte indisponible',
+    direct: 'Solde indisponible',
+  },
+  'piece.advanceRecoveryUnavailableBody': {
+    pote: 'Cet acompte reste consultable, mais Bob ne créera pas une finale qu’il ne sait pas encore certifier et transmettre correctement.',
+    pro: 'La facture finale après acompte reste fermée jusqu’à la certification Factur-X EXTENDED et Plateforme Agréée. Aucun numéro ne sera consommé.',
+    direct: 'Finale après acompte fermée jusqu’à certification EXTENDED/PA.',
+  },
   'piece.deposit': {
     pote: 'Acompte {pct} % à la commande : {amount}',
     pro: 'Acompte de {pct} % à la commande : {amount}',
@@ -4267,6 +4282,47 @@ const legacyFr = {
     direct: 'Facturer',
   },
   'piece.actionEmettre': { pote: 'Émettre', pro: 'Émettre la facture', direct: 'Émettre' },
+  // BT-23 — nature de l'opération : décision utilisateur, jamais déduite par le LLM.
+  'piece.operationCategory.title': {
+    pote: 'Une précision avant d’émettre',
+    pro: 'Nature de l’opération',
+    direct: 'Nature de la facture',
+  },
+  'piece.operationCategory.question': {
+    pote: 'Cette facture mélange fourniture et travail. Qu’est-ce qui décrit le mieux l’opération ?',
+    pro: 'La facture contient des biens et des prestations. Comment faut-il qualifier l’opération ?',
+    direct: 'Biens et prestations : quelle catégorie ?',
+  },
+  'piece.operationCategory.services': {
+    pote: 'Prestation avec fournitures intégrées',
+    pro: 'Prestation avec fournitures intégrées',
+    direct: 'Prestation + fournitures',
+  },
+  'piece.operationCategory.goods': {
+    pote: 'Vente avec prestation accessoire',
+    pro: 'Vente avec prestation accessoire',
+    direct: 'Vente + prestation',
+  },
+  'piece.operationCategory.mixed': {
+    pote: 'Biens et prestations indépendants',
+    pro: 'Biens et prestations indépendants',
+    direct: 'Biens + prestations séparés',
+  },
+  'piece.operationCategory.confirm': {
+    pote: 'Choisir et émettre',
+    pro: 'Confirmer et émettre',
+    direct: 'Émettre',
+  },
+  'piece.operationCategory.cancel': {
+    pote: 'Pas maintenant',
+    pro: 'Annuler',
+    direct: 'Annuler',
+  },
+  'piece.operationCategory.invalid': {
+    pote: 'Je n’ai pas reconnu ce choix. Réessaie.',
+    pro: 'La nature sélectionnée est invalide. Veuillez réessayer.',
+    direct: 'Choix invalide. Réessaie.',
+  },
   // États
   'piece.notFound': {
     pote: 'Je ne retrouve pas cette pièce. Elle a peut-être été supprimée ?',
@@ -5071,6 +5127,26 @@ const legacyFr = {
     pote: 'TVA intracom',
     pro: 'TVA intracommunautaire',
     direct: 'TVA intracom',
+  },
+  'clients.createTvaLabel': {
+    pote: 'N° de TVA intracommunautaire',
+    pro: 'N° de TVA intracommunautaire',
+    direct: 'N° TVA intracom',
+  },
+  'clients.createTvaPlaceholder': {
+    pote: 'FR25 821503646',
+    pro: 'FR25 821503646',
+    direct: 'FR25 821503646',
+  },
+  'clients.createTvaHint': {
+    pote: 'Facultatif. Recopie seulement un numéro réellement attribué au client.',
+    pro: 'Facultatif. Saisissez uniquement le numéro réellement attribué au client.',
+    direct: 'Facultatif · jamais déduit du SIREN.',
+  },
+  'clients.createTvaInvalid': {
+    pote: 'Ce numéro ne correspond pas au SIREN trouvé ou sa clé est invalide.',
+    pro: 'Ce numéro ne correspond pas au SIREN renseigné ou sa clé est invalide.',
+    direct: 'N° TVA incohérent avec le SIREN.',
   },
   'auth.companyRge': { pote: 'Certifié RGE ✓', pro: 'Certification RGE ✓', direct: 'RGE ✓' },
   'auth.companyConfirm': {
@@ -7096,9 +7172,9 @@ const legacyFr = {
     direct: 'Info manquante pour facturer',
   },
   'reglages.identityBlockingBody': {
-    pote: 'Sans ton n° d’immatriculation et ton adresse, je ne peux pas te laisser émettre une facture : elle serait attaquable. Deux minutes et c’est réglé.',
-    pro: 'Sans numéro d’immatriculation ni adresse complète, aucune facture ne peut être émise : elle serait contestable. Le complément prend deux minutes.',
-    direct: 'N° d’immatriculation + adresse requis pour émettre. À compléter.',
+    pote: 'Il me faut ton n° d’immatriculation, ton adresse et, si tu factures la TVA, le numéro qui t’a été attribué. Deux minutes et c’est réglé.',
+    pro: 'Le numéro d’immatriculation, l’adresse complète et, hors franchise, le numéro de TVA attribué sont requis avant émission.',
+    direct: 'Immatriculation + adresse + TVA au réel requis.',
   },
   'reglages.identityFixCta': {
     pote: 'Compléter maintenant',
@@ -7126,6 +7202,31 @@ const legacyFr = {
     pote: 'J’ai besoin de ce numéro pour que ta facture soit valable.',
     pro: 'Ce numéro est requis pour la validité de vos factures.',
     direct: 'Numéro requis.',
+  },
+  'reglages.legalSheetTvaLabel': {
+    pote: 'N° de TVA intracommunautaire',
+    pro: 'N° de TVA intracommunautaire',
+    direct: 'N° TVA intracom',
+  },
+  'reglages.legalSheetTvaPlaceholder': {
+    pote: 'FR44 732829320',
+    pro: 'FR44 732829320',
+    direct: 'FR44 732829320',
+  },
+  'reglages.legalSheetTvaRequiredHint': {
+    pote: 'Recopie le numéro attribué sur ton mémento fiscal. Je vérifie sa clé, je ne l’invente jamais.',
+    pro: 'Recopiez le numéro attribué sur votre mémento fiscal. Bob vérifie sa clé sans jamais le déduire du SIREN.',
+    direct: 'Numéro attribué requis au régime réel. Jamais calculé depuis le SIREN.',
+  },
+  'reglages.legalSheetTvaOptionalHint': {
+    pote: 'Tu es en franchise : laisse vide si aucun numéro ne t’a été attribué.',
+    pro: 'En franchise, laissez ce champ vide si aucun numéro ne vous a été attribué.',
+    direct: 'Optionnel en franchise si non attribué.',
+  },
+  'reglages.legalSheetTvaInvalid': {
+    pote: 'Ce numéro ne correspond pas à ton SIREN ou sa clé est invalide.',
+    pro: 'Ce numéro ne correspond pas à votre SIREN ou sa clé est invalide.',
+    direct: 'N° TVA incohérent avec le SIREN.',
   },
   'reglages.legalSheetAddressLabel': {
     pote: 'Adresse du siège',

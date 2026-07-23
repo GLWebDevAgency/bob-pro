@@ -50,6 +50,14 @@ import type { RealtimeSidebandOwnerPort } from '../voice/realtime/realtime-sideb
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../voice/realtime/realtime-speech-delivery.repository';
 import type { RealtimeSpeechArtifactRepositoryPort } from '../voice/realtime/realtime-speech-publisher';
 import type { RealtimeVoiceUsageRepositoryPort } from '../voice/realtime/realtime-voice-usage';
+import type { OpenAiNativeSpeechMaintenancePort } from '../voice/realtime/openai-native-speech-maintenance';
+import type { OpenAiNativeSpeechDeliveryRepositoryPort } from '../voice/realtime/openai-native-speech-delivery';
+import type {
+  OpenAiNativeKeyVersionAuthorityPort,
+  OpenAiNativeProofKeyRingAdmission,
+} from '../voice/realtime/openai-native-proof-key-version';
+import type { RealtimeReaperDirectoryPort } from '../voice/realtime/realtime-reaper-directory';
+import type { RealtimeGlobalCapacityInspector } from '../voice/realtime/realtime-capacity';
 import type { AgentJournalRepository } from './agent-journal';
 import type { DeviceRepository } from './devices';
 import type { DocumentAnalysisStore } from './document-analyses';
@@ -136,11 +144,24 @@ export interface Persistence {
   counters: SequenceCounterPort;
   cabinet: CabinetInfrastructure;
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort;
+  /** Inspection agrégée globale, séparée des commandes tenantées d'admission. */
+  createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector;
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort;
   createRealtimeSidebandOwner(): RealtimeSidebandOwnerPort;
   createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort;
   createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort;
   createRealtimeControlRepository(): RealtimeControlRepositoryPort;
+  /** État request-time durable d'une restitution audio OpenAI native. */
+  createOpenAiNativeSpeechDeliveryRepository(): OpenAiNativeSpeechDeliveryRepositoryPort;
+  /** Préflight DB-only des keyrings sujet + preuve ; aucun double runtime n'est autorisé. */
+  createOpenAiNativeKeyVersionAuthority(
+    subjectKeys: BobLiveSubjectHmacKeyRingAdmission,
+    proofKeys: OpenAiNativeProofKeyRingAdmission,
+  ): OpenAiNativeKeyVersionAuthorityPort | null;
+  /** Capacité DB-only séparée des repositories request-time de Bob Live. */
+  createOpenAiNativeSpeechMaintenance(): OpenAiNativeSpeechMaintenancePort;
+  /** Annuaire global minimal des seuls leases dus ; aucune mutation tenant ne traverse ce port. */
+  createRealtimeReaperDirectory(): RealtimeReaperDirectoryPort;
   createMistralRealtimeIngressTicketAuthority(
     policy: MistralRealtimeIngressTicketPolicy,
     identityKeys: MistralRealtimeIngressIdentityKeyRing,

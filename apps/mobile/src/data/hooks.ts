@@ -471,6 +471,7 @@ export function useUpdateCompanyLegal() {
   return useMutation({
     mutationFn: async (input: {
       rcsOrRm?: string | null;
+      tvaIntracom?: string | null;
       address?: { line1: string; zip: string; city: string };
     }) => {
       const result = await client.updateCompanyLegal(input);
@@ -1502,6 +1503,8 @@ export function useIssueInvoice() {
   return useMutation({
     mutationFn: async (input: {
       invoiceId: string;
+      /** BT-23 — sélectionnée dans la feuille de désambiguïsation pour une pièce ambiguë. */
+      operationCategory?: 'goods' | 'services' | 'mixed';
       /** Override RESPONSABILISÉ de l'embargo L221-10 (l'émission est une demande de paiement) —
        *  `true` strict après la feuille de confirmation dédiée ; journalisé serveur. Sans lui,
        *  l'override confirmé à la génération finissait en cul-de-sac « Oups » à l'émission. */
@@ -1509,6 +1512,9 @@ export function useIssueInvoice() {
     }) => {
       const r = await client.issueInvoice({
         invoiceId: input.invoiceId,
+        ...(input.operationCategory === undefined
+          ? {}
+          : { operationCategory: input.operationCategory }),
         ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
       });
       if (!r.ok) throw r.error;

@@ -4,6 +4,7 @@ import type { AppError, Result } from '@bob/core';
 import { getPrincipal } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
 import {
+  classifyRealtimeAgentSpeechPurpose,
   RealtimeBobAgentTurnAdapter,
   realtimeAgentContextVersion,
   type RealtimeBobAgentExecutor,
@@ -21,15 +22,15 @@ function run(overrides: Partial<AgentRun> = {}): AgentRun {
   };
 }
 
-function harness(result: Result<AgentRun, AppError>) {
+function harness(result: Result<AgentRun, AppError>, requiredProvider: 'openai' | 'mistral' = 'openai') {
   const runWithTenant = vi.fn(async (_companyId: string, operation: () => Promise<unknown>) => operation());
   const askBob = vi.fn<RealtimeBobAgentExecutor['askBob']>(
-    async (_payload: AgentAskPayload, _execution: { readonly signal: AbortSignal }) => result,
+    async (_payload: AgentAskPayload, _execution) => result,
   );
   const persistence = { runWithTenant } as unknown as Persistence;
   const executor: RealtimeBobAgentExecutor = { askBob };
   return {
-    adapter: new RealtimeBobAgentTurnAdapter(persistence, () => executor),
+    adapter: new RealtimeBobAgentTurnAdapter(persistence, requiredProvider, () => executor),
     runWithTenant,
     askBob,
   };
@@ -78,6 +79,9 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       status: 'ready',
       canonicalSpeech: 'Réponse canonique.',
       navigate: '/devis/new',
+      speechPurpose: 'navigation',
+      speechSource: 'card_body',
+      hasTenantContext: true,
     });
     expect(h.runWithTenant).toHaveBeenCalledWith('company-1', expect.any(Function));
     expect(h.askBob).toHaveBeenCalledWith(
@@ -86,7 +90,18 @@ describe('RealtimeBobAgentTurnAdapter', () => {
         autonomy: 'confirm_all',
         tone: 'pote',
       }),
-      { signal: expect.any(AbortSignal) },
+      { signal: expect.any(AbortSignal), requiredProvider: 'openai' },
+    );
+  });
+
+  it('propage le fournisseur Mistral exact sans le déduire des clés disponibles', async () => {
+    const h = harness({ ok: true, value: run() }, 'mistral');
+
+    await h.adapter.run(input());
+
+    expect(h.askBob).toHaveBeenCalledWith(
+      expect.any(Object),
+      { signal: expect.any(AbortSignal), requiredProvider: 'mistral' },
     );
   });
 
@@ -114,9 +129,25 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       kind: 'proposed',
       canonicalSpeech: 'Je prépare la relance. Tu veux que je le fasse ?',
       proposalId: '00000000-0000-4000-8000-000000000001',
+      speechPurpose: 'action_proposal',
+      speechSource: 'spoken_prompt',
+      hasTenantContext: true,
     });
     expect(result).not.toHaveProperty('navigate');
     expect(JSON.stringify(result)).not.toContain('private-id');
+  });
+
+  it('qualifie explicitement la provenance et ferme les réponses ambiguës sur business_answer', () => {
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), false))
+      .toBe('generic_assistance');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'unknown', naturalBody: 'Avec plaisir.' }), false))
+      .toBe('business_answer');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ intent: 'aide' }), true))
+      .toBe('business_answer');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ choices: [{ label: 'A', value: 'a' }] }), false))
+      .toBe('structured_choice');
+    expect(classifyRealtimeAgentSpeechPurpose(run({ kind: 'done' }), false))
+      .toBe('action_result');
   });
 
   it('rend une erreur publique bornée sans exposer la cause interne', async () => {
