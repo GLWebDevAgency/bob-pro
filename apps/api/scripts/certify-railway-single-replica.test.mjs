@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   certifySingleRailwayReplica,
   railwayTopologyExitCode,
@@ -8,6 +11,13 @@ import {
   RailwayTopologyDriftError,
   RailwayTopologyUnavailableError,
 } from './certify-railway-single-replica.mjs';
+
+const certifierPath = fileURLToPath(
+  new URL('./certify-railway-single-replica.mjs', import.meta.url),
+);
+const topologyWorkflowPath = fileURLToPath(
+  new URL('../../../.github/workflows/railway-topology-drift.yml', import.meta.url),
+);
 
 function captureError(callback) {
   let captured;
@@ -280,4 +290,43 @@ test('classe une réponse absente ou invalide comme indisponible, jamais comme d
   );
   assert.ok(malformed instanceof RailwayTopologyUnavailableError);
   assert.equal(railwayTopologyExitCode(malformed), RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE);
+});
+
+test('le point d’entrée CLI expose réellement les verdicts succès, indisponible et dérive', () => {
+  const run = (status) =>
+    spawnSync(process.execPath, [certifierPath, 'production', 'bob-pro-api'], {
+      input: JSON.stringify(status),
+      encoding: 'utf8',
+    });
+
+  const success = run(fixture());
+  assert.equal(success.status, 0, success.stderr);
+  assert.match(success.stdout, /railway-single-replica-ok:production:bob-pro-api/u);
+
+  const unavailable = run({});
+  assert.equal(unavailable.status, RAILWAY_TOPOLOGY_UNAVAILABLE_EXIT_CODE);
+  assert.match(unavailable.stderr, /environments absents/u);
+
+  const drifted = run(fixture([2]));
+  assert.equal(drifted.status, RAILWAY_TOPOLOGY_DRIFT_EXIT_CODE);
+  assert.match(drifted.stderr, /exactement un replica/u);
+});
+
+test('le workflow isole les secrets, les branches et les incidents de topologie', () => {
+  const workflow = readFileSync(topologyWorkflowPath, 'utf8');
+
+  assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' \}\}/u);
+  assert.match(workflow, /github_environment: railway-topology-staging/u);
+  assert.match(workflow, /github_environment: production/u);
+  assert.match(workflow, /RAILWAY_TOKEN: \$\{\{ secrets\.RAILWAY_TOKEN \}\}/u);
+  assert.doesNotMatch(workflow, /RAILWAY_STAGING_TOKEN/u);
+  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.match(workflow, /max-parallel: 1/u);
+  assert.match(workflow, /failure_kind=drift/u);
+  assert.match(workflow, /failure_kind=unavailable/u);
+  assert.match(workflow, /gh api --paginate --slurp/u);
+  assert.match(workflow, /map\(select\(\.pull_request == null\)\)/u);
+  assert.match(workflow, /plusieurs incidents Railway possédés correspondent/u);
+  assert.match(workflow, /Close owned incidents after recovery/u);
+  assert.doesNotMatch(workflow, /gh issue list[\s\S]*--limit 100/u);
 });

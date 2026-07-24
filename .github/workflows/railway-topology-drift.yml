@@ -23,6 +23,9 @@ jobs:
     environment: ${{ matrix.github_environment }}
     strategy:
       fail-fast: false
+      # Both jobs own the same incident label. Serializing them avoids a
+      # create/update race when the label has been deleted or recreated.
+      max-parallel: 1
       matrix:
         include:
           - railway_environment: staging
@@ -89,8 +92,11 @@ jobs:
           fi
           ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$FAILURE_KIND -->"
           existing="$(
-            gh issue list --state open --label "$INCIDENT_LABEL" --limit 100 --json number,title,body \
+            gh api --paginate --slurp \
+              "/repos/$GH_REPO/issues?state=open&labels=$INCIDENT_LABEL&per_page=100" \
               | jq -er --arg title "$incident_title" --arg marker "$ownership_marker" '
+                  add |
+                  map(select(.pull_request == null)) |
                   map(select(.title == $title and ((.body // "") | contains($marker)))) |
                   if length == 0 then ""
                   elif length == 1 then .[0].number | tostring
@@ -128,8 +134,11 @@ jobs:
             fi
             ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$failure_kind -->"
             existing="$(
-              gh issue list --state open --label "$INCIDENT_LABEL" --limit 100 --json number,title,body \
+              gh api --paginate --slurp \
+                "/repos/$GH_REPO/issues?state=open&labels=$INCIDENT_LABEL&per_page=100" \
                 | jq -er --arg title "$incident_title" --arg marker "$ownership_marker" '
+                    add |
+                    map(select(.pull_request == null)) |
                     map(select(.title == $title and ((.body // "") | contains($marker)))) |
                     if length == 0 then ""
                     elif length == 1 then .[0].number | tostring
