@@ -106,8 +106,10 @@ export interface OpenAiNativeResponseUsageCounters {
     readonly cachedTokens: number | null;
     readonly textTokens: number | null;
     readonly audioTokens: number | null;
+    readonly imageTokens: number | null;
     readonly cachedTextTokens: number | null;
     readonly cachedAudioTokens: number | null;
+    readonly cachedImageTokens: number | null;
   } | null;
   readonly outputTokenDetails: {
     readonly textTokens: number | null;
@@ -595,25 +597,62 @@ function decodeUsage(value: unknown): OpenAiNativeResponseUsage {
     const cachedTokens = optionalTokenCount(inputDetailsValue.cached_tokens);
     const textTokens = optionalTokenCount(inputDetailsValue.text_tokens);
     const audioTokens = optionalTokenCount(inputDetailsValue.audio_tokens);
+    const imageTokens = optionalTokenCount(inputDetailsValue.image_tokens);
     const cachedDetails = inputDetailsValue.cached_tokens_details;
     let cachedTextTokens: number | null = null;
     let cachedAudioTokens: number | null = null;
+    let cachedImageTokens: number | null = null;
     if (cachedDetails !== undefined && cachedDetails !== null) {
       if (!isRecord(cachedDetails)) fail('invalid_event');
       cachedTextTokens = optionalTokenCount(cachedDetails.text_tokens);
       cachedAudioTokens = optionalTokenCount(cachedDetails.audio_tokens);
+      cachedImageTokens = optionalTokenCount(cachedDetails.image_tokens);
     }
+    const allInputModalitiesKnown = textTokens !== null
+      && audioTokens !== null
+      && imageTokens !== null;
+    const allCachedModalitiesKnown = cachedTextTokens !== null
+      && cachedAudioTokens !== null
+      && cachedImageTokens !== null;
+    const inputModalityTotal = (textTokens ?? 0) + (audioTokens ?? 0) + (imageTokens ?? 0);
+    const cachedModalityTotal = (cachedTextTokens ?? 0)
+      + (cachedAudioTokens ?? 0)
+      + (cachedImageTokens ?? 0);
     if (
       (cachedTokens !== null && cachedTokens > inputTokens)
-      || ((textTokens ?? 0) + (audioTokens ?? 0) > inputTokens)
-      || ((cachedTextTokens ?? 0) + (cachedAudioTokens ?? 0) > (cachedTokens ?? inputTokens))
+      || inputModalityTotal > inputTokens
+      || (allInputModalitiesKnown && inputModalityTotal !== inputTokens)
+      || (cachedDetails !== undefined && cachedDetails !== null && cachedTokens === null)
+      || cachedModalityTotal > (cachedTokens ?? inputTokens)
+      || (
+        allCachedModalitiesKnown
+        && cachedTokens !== null
+        && cachedModalityTotal !== cachedTokens
+      )
+      || (
+        cachedTextTokens !== null
+        && textTokens !== null
+        && cachedTextTokens > textTokens
+      )
+      || (
+        cachedAudioTokens !== null
+        && audioTokens !== null
+        && cachedAudioTokens > audioTokens
+      )
+      || (
+        cachedImageTokens !== null
+        && imageTokens !== null
+        && cachedImageTokens > imageTokens
+      )
     ) fail('invalid_event');
     inputTokenDetails = {
       cachedTokens,
       textTokens,
       audioTokens,
+      imageTokens,
       cachedTextTokens,
       cachedAudioTokens,
+      cachedImageTokens,
     };
   }
 
@@ -623,7 +662,11 @@ function decodeUsage(value: unknown): OpenAiNativeResponseUsage {
     if (!isRecord(outputDetailsValue)) fail('invalid_event');
     const textTokens = optionalTokenCount(outputDetailsValue.text_tokens);
     const audioTokens = optionalTokenCount(outputDetailsValue.audio_tokens);
-    if ((textTokens ?? 0) + (audioTokens ?? 0) > outputTokens) fail('invalid_event');
+    const outputModalityTotal = (textTokens ?? 0) + (audioTokens ?? 0);
+    if (
+      outputModalityTotal > outputTokens
+      || (textTokens !== null && audioTokens !== null && outputModalityTotal !== outputTokens)
+    ) fail('invalid_event');
     outputTokenDetails = { textTokens, audioTokens };
   }
 

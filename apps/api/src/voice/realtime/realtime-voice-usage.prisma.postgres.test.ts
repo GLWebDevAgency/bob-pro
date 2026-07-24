@@ -129,10 +129,16 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       ]);
     });
 
-    it('committe deux mesures, déduplique le retry et les masque à un autre tenant', async () => {
+    it('committe huit dimensions de coût, rollup exact, retry dédupliqué et RLS étanche', async () => {
       const batch = [
-        usage('2'.repeat(64), 'realtime_tokens_in', '12.000000'),
-        usage('3'.repeat(64), 'realtime_tokens_out', '8.000000'),
+        usage('2'.repeat(64), 'realtime_uncached_text_tokens_in', '3.000000'),
+        usage('3'.repeat(64), 'realtime_uncached_audio_tokens_in', '4.000000'),
+        usage('4'.repeat(64), 'realtime_uncached_image_tokens_in', '1.000000'),
+        usage('5'.repeat(64), 'realtime_cached_text_tokens_in', '1.000000'),
+        usage('6'.repeat(64), 'realtime_cached_audio_tokens_in', '2.000000'),
+        usage('7'.repeat(64), 'realtime_cached_image_tokens_in', '1.000000'),
+        usage('8'.repeat(64), 'realtime_text_tokens_out', '2.000000'),
+        usage('9'.repeat(64), 'realtime_audio_tokens_out', '6.000000'),
       ] as const;
 
       await expect(repository.recordBatch(batch)).resolves.toEqual({
@@ -144,13 +150,48 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         eventIds: batch.map((input) => input.eventId),
       });
 
-      const visible = await runtime.withTenant(companyId, async (tx) => tx.realtimeVoiceUsageEvent.count({
-        where: { companyId, dedupeKeyHmac: { in: batch.map((input) => input.dedupeKeyHmac) } },
-      }));
-      const hidden = await runtime.withTenant(otherCompanyId, async (tx) => tx.realtimeVoiceUsageEvent.count({
-        where: { companyId, dedupeKeyHmac: { in: batch.map((input) => input.dedupeKeyHmac) } },
-      }));
-      expect({ visible, hidden }).toEqual({ visible: 2, hidden: 0 });
+      const visible = await runtime.withTenant(companyId, async (tx) => {
+        const [eventCount, daily] = await Promise.all([
+          tx.realtimeVoiceUsageEvent.count({
+            where: { companyId, dedupeKeyHmac: { in: batch.map((input) => input.dedupeKeyHmac) } },
+          }),
+          tx.realtimeVoiceUsageDaily.findMany({
+            where: {
+              companyId,
+              source: 'openai.realtime.native.response',
+              kind: { in: batch.map((input) => input.kind) },
+            },
+            orderBy: { kind: 'asc' },
+          }),
+        ]);
+        return {
+          eventCount,
+          daily: daily.map((row) => ({
+            kind: row.kind,
+            amount: row.amount.toFixed(6),
+            eventCount: Number(row.eventCount),
+          })),
+        };
+      });
+      const hidden = await runtime.withTenant(otherCompanyId, async (tx) => Promise.all([
+        tx.realtimeVoiceUsageEvent.count({
+          where: { companyId, dedupeKeyHmac: { in: batch.map((input) => input.dedupeKeyHmac) } },
+        }),
+        tx.realtimeVoiceUsageDaily.count({
+          where: {
+            companyId,
+            source: 'openai.realtime.native.response',
+            kind: { in: batch.map((input) => input.kind) },
+          },
+        }),
+      ]));
+      expect(visible).toEqual({
+        eventCount: 8,
+        daily: [...batch]
+          .sort((left, right) => left.kind.localeCompare(right.kind))
+          .map((input) => ({ kind: input.kind, amount: input.amount, eventCount: 1 })),
+      });
+      expect(hidden).toEqual([0, 0]);
     });
 
     it('rollback aussi la première insertion et son rollup si la seconde mesure est en conflit', async () => {

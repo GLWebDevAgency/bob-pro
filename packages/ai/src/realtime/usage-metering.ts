@@ -14,8 +14,16 @@
 export type VoiceUsageKind =
   | 'realtime_audio_in_seconds' // parole utilisateur envoyée au modèle temps réel
   | 'realtime_audio_out_seconds' // parole générée par le modèle
-  | 'realtime_tokens_in' // tokens texte entrants (instructions, outils, contexte)
-  | 'realtime_tokens_out' // tokens texte sortants (transcripts, tool calls)
+  | 'realtime_tokens_in' // agrégat provider historique, conservé pour compatibilité N-1
+  | 'realtime_tokens_out' // agrégat provider historique, conservé pour compatibilité N-1
+  | 'realtime_uncached_text_tokens_in'
+  | 'realtime_uncached_audio_tokens_in'
+  | 'realtime_uncached_image_tokens_in'
+  | 'realtime_cached_text_tokens_in'
+  | 'realtime_cached_audio_tokens_in'
+  | 'realtime_cached_image_tokens_in'
+  | 'realtime_text_tokens_out'
+  | 'realtime_audio_tokens_out'
   | 'llm_tokens_in' // cerveau texte (classification, naturalisation, repli)
   | 'llm_tokens_out'
   | 'stt_seconds' // dictée cloud (Voxtral)

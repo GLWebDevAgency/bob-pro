@@ -43,6 +43,46 @@ describe('summarizeVoiceUsage — l’étude tarifaire du fondateur (coût réel
     expect(study.tenants[0]!.costCents).toBe(0);
   });
 
+  it('tarife séparément cache/non-cache et chaque modalité sans double compter les agrégats', () => {
+    const study = summarizeVoiceUsage(
+      [
+        e('t1', 'realtime_uncached_text_tokens_in', 100),
+        e('t1', 'realtime_cached_text_tokens_in', 50),
+        e('t1', 'realtime_uncached_audio_tokens_in', 10),
+        e('t1', 'realtime_cached_audio_tokens_in', 5),
+        e('t1', 'realtime_uncached_image_tokens_in', 4),
+        e('t1', 'realtime_cached_image_tokens_in', 2),
+        e('t1', 'realtime_text_tokens_out', 20),
+        e('t1', 'realtime_audio_tokens_out', 10),
+      ],
+      {
+        realtime_uncached_text_tokens_in: 1,
+        realtime_cached_text_tokens_in: 0.2,
+        realtime_uncached_audio_tokens_in: 5,
+        realtime_cached_audio_tokens_in: 1,
+        realtime_uncached_image_tokens_in: 5,
+        realtime_cached_image_tokens_in: 2.5,
+        realtime_text_tokens_out: 4,
+        realtime_audio_tokens_out: 3,
+      },
+    );
+    const row = study.tenants[0]!;
+    expect(row.byKind).toMatchObject({
+      realtime_uncached_text_tokens_in: 100,
+      realtime_cached_text_tokens_in: 50,
+      realtime_uncached_audio_tokens_in: 10,
+      realtime_cached_audio_tokens_in: 5,
+      realtime_uncached_image_tokens_in: 4,
+      realtime_cached_image_tokens_in: 2,
+      realtime_text_tokens_out: 20,
+      realtime_audio_tokens_out: 10,
+    });
+    // 300 milli-centimes exactement : aucun total input/output n'est ajouté une seconde fois.
+    expect(row.costCents).toBe(30);
+    expect(row.byKind.realtime_tokens_in).toBeUndefined();
+    expect(row.byKind.realtime_tokens_out).toBeUndefined();
+  });
+
   it('montants négatifs/NaN ignorés (un compteur ne recule jamais) ; moyenne et médiane exposées', () => {
     const study = summarizeVoiceUsage(
       [e('t1', 'llm_tokens_out', -50), e('t1', 'llm_tokens_out', Number.NaN), e('t2', 'realtime_audio_out_seconds', 10)],

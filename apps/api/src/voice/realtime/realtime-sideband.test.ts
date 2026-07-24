@@ -275,6 +275,12 @@ function harness(options: {
           eventIds: [
             '00000000-0000-4000-8000-000000000042',
             '00000000-0000-4000-8000-000000000043',
+            '00000000-0000-4000-8000-000000000044',
+            '00000000-0000-4000-8000-000000000045',
+            '00000000-0000-4000-8000-000000000046',
+            '00000000-0000-4000-8000-000000000047',
+            '00000000-0000-4000-8000-000000000048',
+            '00000000-0000-4000-8000-000000000049',
           ],
         })),
       )
@@ -466,7 +472,13 @@ function emitNativeSuccessfulResponse(socket: FakeSocket, stoppedFirst = false):
         total_tokens: 20,
         input_tokens: 12,
         output_tokens: 8,
-        input_token_details: { cached_tokens: 0, text_tokens: 12, audio_tokens: 0 },
+        input_token_details: {
+          cached_tokens: 0,
+          text_tokens: 12,
+          audio_tokens: 0,
+          image_tokens: 0,
+          cached_tokens_details: { text_tokens: 0, audio_tokens: 0, image_tokens: 0 },
+        },
         output_token_details: { text_tokens: 0, audio_tokens: 8 },
       },
     },
@@ -934,8 +946,14 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
       await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
         .toBe('completed'));
       expect(value.nativeUsageBatch?.mock.calls[0]?.[0].map((measure) => measure.kind)).toEqual([
-        'realtime_tokens_in',
-        'realtime_tokens_out',
+        'realtime_uncached_text_tokens_in',
+        'realtime_uncached_audio_tokens_in',
+        'realtime_uncached_image_tokens_in',
+        'realtime_cached_text_tokens_in',
+        'realtime_cached_audio_tokens_in',
+        'realtime_cached_image_tokens_in',
+        'realtime_text_tokens_out',
+        'realtime_audio_tokens_out',
       ]);
       expect(value.terminate).not.toHaveBeenCalled();
     },

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { PlanTier } from '@bob/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { OpenAiNativeResponseUsageInput } from './openai-native-response-dispatcher';
@@ -19,6 +20,16 @@ const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const TURN_ID = '22222222-2222-4222-8222-222222222222';
 const DELIVERY_ID = '33333333-3333-4333-8333-333333333333';
 const OCCURRED_AT = '2026-07-22T12:34:56.789Z';
+const USAGE_EVENT_IDS = [
+  '44444444-4444-4444-8444-444444444444',
+  '55555555-5555-4555-8555-555555555555',
+  '66666666-6666-4666-8666-666666666666',
+  '77777777-7777-4777-8777-777777777777',
+  '88888888-8888-4888-8888-888888888888',
+  '99999999-9999-4999-8999-999999999999',
+  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+] as const;
 
 function context(overrides: Partial<OpenAiNativeResponseUsageContext> = {}) {
   return {
@@ -45,13 +56,15 @@ function input(overrides: Partial<OpenAiNativeResponseUsageInput> = {}) {
       inputTokens: 12,
       outputTokens: 8,
       inputTokenDetails: {
-        cachedTokens: 2,
+        cachedTokens: 4,
         textTokens: 4,
-        audioTokens: 8,
+        audioTokens: 6,
+        imageTokens: 2,
         cachedTextTokens: 1,
-        cachedAudioTokens: 1,
+        cachedAudioTokens: 2,
+        cachedImageTokens: 1,
       },
-      outputTokenDetails: { textTokens: 0, audioTokens: 8 },
+      outputTokenDetails: { textTokens: 2, audioTokens: 6 },
     },
     ...overrides,
   };
@@ -60,10 +73,7 @@ function input(overrides: Partial<OpenAiNativeResponseUsageInput> = {}) {
 function writer(
   implementation: NonNullable<RealtimeVoiceUsageWriterPort['recordBatch']> = async () => ({
     status: 'recorded',
-    eventIds: [
-      '44444444-4444-4444-8444-444444444444',
-      '55555555-5555-4555-8555-555555555555',
-    ],
+    eventIds: USAGE_EVENT_IDS,
   }),
 ) {
   const record = vi.fn<RealtimeVoiceUsageWriterPort['record']>();
@@ -77,7 +87,7 @@ function writer(
 }
 
 describe('OpenAiNativeResponseUsageAdapter', () => {
-  it('mappe les deux compteurs avec une identité pseudonymisée, une source et un temps stables', async () => {
+  it('mappe huit dimensions non chevauchantes avec une identité pseudonymisée et un temps stable', async () => {
     const metering = writer();
     const mutableContext = context();
     const adapter = new OpenAiNativeResponseUsageAdapter(metering.port, mutableContext);
@@ -102,14 +112,20 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
         source: OPENAI_NATIVE_RESPONSE_USAGE_SOURCE,
         dedupeScope: `openai-native-response:${DELIVERY_ID}`,
         occurredAt: OCCURRED_AT,
-        kind: 'realtime_tokens_in',
-        amount: 12,
+        kind: 'realtime_uncached_text_tokens_in',
+        amount: 3,
       },
       expect.objectContaining({
-        kind: 'realtime_tokens_out',
-        amount: 8,
+        kind: 'realtime_uncached_audio_tokens_in',
+        amount: 4,
         occurredAt: OCCURRED_AT,
       }),
+      expect.objectContaining({ kind: 'realtime_uncached_image_tokens_in', amount: 1 }),
+      expect.objectContaining({ kind: 'realtime_cached_text_tokens_in', amount: 1 }),
+      expect.objectContaining({ kind: 'realtime_cached_audio_tokens_in', amount: 2 }),
+      expect.objectContaining({ kind: 'realtime_cached_image_tokens_in', amount: 1 }),
+      expect.objectContaining({ kind: 'realtime_text_tokens_out', amount: 2 }),
+      expect.objectContaining({ kind: 'realtime_audio_tokens_out', amount: 6 }),
     ]);
     const serialized = JSON.stringify(metering.recordBatch.mock.calls);
     expect(serialized).not.toContain('cachedTokens');
@@ -119,7 +135,7 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
     expect(serialized).not.toContain('client@example.test');
   });
 
-  it('produit deux HMAC distinctes avec le writer réel puis déduplique un retry complet', async () => {
+  it('produit huit HMAC distinctes avec le writer réel puis déduplique un retry complet', async () => {
     const rows = new Map<string, RealtimeVoiceUsageRepositoryInput>();
     const persisted: RealtimeVoiceUsageRepositoryInput[] = [];
     const repository: RealtimeVoiceUsageRepositoryPort = {
@@ -134,12 +150,7 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
         return { status: 'recorded', eventIds: measurements.map((measurement) => measurement.eventId) };
       },
     };
-    const eventIds = [
-      '44444444-4444-4444-8444-444444444444',
-      '55555555-5555-4555-8555-555555555555',
-      '66666666-6666-4666-8666-666666666666',
-      '77777777-7777-4777-8777-777777777777',
-    ];
+    const eventIds = Array.from({ length: 16 }, () => randomUUID());
     const usageWriter = new RealtimeVoiceUsageWriter(
       repository,
       { proofSecret: 'p'.repeat(32), proofKeyVersion: 3 },
@@ -151,11 +162,11 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
     await expect(adapter.record(input())).resolves.toEqual({ status: 'recorded' });
     await expect(adapter.record(input())).resolves.toEqual({ status: 'duplicate' });
 
-    expect(rows).toHaveLength(2);
-    expect(persisted).toHaveLength(4);
-    expect(persisted[0]!.dedupeKeyHmac).not.toBe(persisted[1]!.dedupeKeyHmac);
-    expect(persisted[0]!.dedupeKeyHmac).toBe(persisted[2]!.dedupeKeyHmac);
-    expect(persisted[1]!.dedupeKeyHmac).toBe(persisted[3]!.dedupeKeyHmac);
+    expect(rows.size).toBe(8);
+    expect(persisted).toHaveLength(16);
+    expect(new Set(persisted.slice(0, 8).map((row) => row.dedupeKeyHmac)).size).toBe(8);
+    expect(persisted.slice(0, 8).map((row) => row.dedupeKeyHmac))
+      .toEqual(persisted.slice(8).map((row) => row.dedupeKeyHmac));
     expect(JSON.stringify(persisted)).not.toContain(DELIVERY_ID);
   });
 
@@ -164,10 +175,7 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
       { status: 'unavailable' as const },
       {
         status: 'recorded' as const,
-        eventIds: [
-          '44444444-4444-4444-8444-444444444444',
-          '55555555-5555-4555-8555-555555555555',
-        ],
+        eventIds: USAGE_EVENT_IDS,
       },
     ];
     const metering = writer(async () => outcomes.shift() ?? { status: 'unavailable' as const });
@@ -184,18 +192,21 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
       occurredAt: measure.occurredAt,
       amount: measure.amount,
     })))).toEqual([0, 1].map(() => [
-      { kind: 'realtime_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 12 },
-      { kind: 'realtime_tokens_out', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 8 },
+      { kind: 'realtime_uncached_text_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 3 },
+      { kind: 'realtime_uncached_audio_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 4 },
+      { kind: 'realtime_uncached_image_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 1 },
+      { kind: 'realtime_cached_text_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 1 },
+      { kind: 'realtime_cached_audio_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 2 },
+      { kind: 'realtime_cached_image_tokens_in', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 1 },
+      { kind: 'realtime_text_tokens_out', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 2 },
+      { kind: 'realtime_audio_tokens_out', scope: `openai-native-response:${DELIVERY_ID}`, occurredAt: OCCURRED_AT, amount: 6 },
     ]));
   });
 
-  it('retourne duplicate seulement lorsque les deux dimensions existent déjà', async () => {
+  it('retourne duplicate seulement lorsque les huit dimensions existent déjà', async () => {
     const metering = writer(async () => ({
       status: 'duplicate',
-      eventIds: [
-        '44444444-4444-4444-8444-444444444444',
-        '55555555-5555-4555-8555-555555555555',
-      ],
+      eventIds: USAGE_EVENT_IDS,
     }));
     const adapter = new OpenAiNativeResponseUsageAdapter(metering.port, context());
     await expect(adapter.record(input())).resolves.toEqual({ status: 'duplicate' });
@@ -209,6 +220,25 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
     ['delivery', { deliveryId: 'not-a-uuid' }],
     ['turn', { turnId: 'not-a-uuid' }],
     ['compteurs divergents', { usage: { ...input().usage, totalTokens: 21 } }],
+    ['détails absents', { usage: { ...input().usage, inputTokenDetails: null } }],
+    ['image inconnue', {
+      usage: {
+        ...input().usage,
+        inputTokenDetails: { ...input().usage.inputTokenDetails, imageTokens: null },
+      },
+    }],
+    ['cache modal divergent', {
+      usage: {
+        ...input().usage,
+        inputTokenDetails: { ...input().usage.inputTokenDetails, cachedTokens: 5 },
+      },
+    }],
+    ['sortie modale divergente', {
+      usage: {
+        ...input().usage,
+        outputTokenDetails: { textTokens: 1, audioTokens: 6 },
+      },
+    }],
   ])('refuse avant écriture un binding incohérent : %s', async (_label, patch) => {
     const metering = writer();
     const adapter = new OpenAiNativeResponseUsageAdapter(metering.port, context());
@@ -242,6 +272,18 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
   });
 
   it.each([
+    ['lot incomplet', USAGE_EVENT_IDS.slice(0, 7)],
+    ['identifiant réutilisé entre deux dimensions', [
+      ...USAGE_EVENT_IDS.slice(0, 7),
+      USAGE_EVENT_IDS[0],
+    ]],
+  ])('refuse un résultat atomique non prouvable : %s', async (_label, eventIds) => {
+    const metering = writer(async () => ({ status: 'recorded', eventIds }));
+    const adapter = new OpenAiNativeResponseUsageAdapter(metering.port, context());
+    await expect(adapter.record(input())).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it.each([
     ['writer absent', null, context()],
     ['batch atomique absent', { record: vi.fn() }, context()],
     ['subject hash invalide', writer().port, context({ subjectHash: 'raw-user-id' })],
@@ -256,15 +298,21 @@ describe('OpenAiNativeResponseUsageAdapter', () => {
     )).toThrow('openai_native_response_usage_configuration_invalid');
   });
 
-  it('soumet les deux dimensions dans un unique appel atomique', async () => {
+  it('soumet les huit dimensions dans un unique appel atomique', async () => {
     const metering = writer();
     const adapter = new OpenAiNativeResponseUsageAdapter(metering.port, context());
 
     await expect(adapter.record(input())).resolves.toEqual({ status: 'recorded' });
     expect(metering.recordBatch).toHaveBeenCalledOnce();
     expect(metering.recordBatch.mock.calls[0]![0].map((measure) => measure.kind)).toEqual([
-      'realtime_tokens_in',
-      'realtime_tokens_out',
+      'realtime_uncached_text_tokens_in',
+      'realtime_uncached_audio_tokens_in',
+      'realtime_uncached_image_tokens_in',
+      'realtime_cached_text_tokens_in',
+      'realtime_cached_audio_tokens_in',
+      'realtime_cached_image_tokens_in',
+      'realtime_text_tokens_out',
+      'realtime_audio_tokens_out',
     ]);
   });
 });

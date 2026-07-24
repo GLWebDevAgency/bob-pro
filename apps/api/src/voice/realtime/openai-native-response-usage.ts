@@ -34,6 +34,17 @@ export interface OpenAiNativeResponseUsageContext {
 
 type UsageMeasure = Pick<RealtimeVoiceUsageInput, 'kind' | 'amount'>;
 
+export const OPENAI_NATIVE_RESPONSE_USAGE_MEASURE_KINDS = Object.freeze([
+  'realtime_uncached_text_tokens_in',
+  'realtime_uncached_audio_tokens_in',
+  'realtime_uncached_image_tokens_in',
+  'realtime_cached_text_tokens_in',
+  'realtime_cached_audio_tokens_in',
+  'realtime_cached_image_tokens_in',
+  'realtime_text_tokens_out',
+  'realtime_audio_tokens_out',
+] as const satisfies readonly RealtimeVoiceUsageInput['kind'][]);
+
 function isCanonicalIso(value: string): boolean {
   const epoch = Date.parse(value);
   return Number.isFinite(epoch) && new Date(epoch).toISOString() === value;
@@ -67,30 +78,90 @@ function validTokenCount(value: unknown): value is number {
     && value <= MAX_PROVIDER_TOKEN_COUNT;
 }
 
-function validRuntimeInput(
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validRuntimeBinding(
   value: unknown,
   context: OpenAiNativeResponseUsageContext,
 ): value is OpenAiNativeResponseUsageInput {
-  if (typeof value !== 'object' || value === null) return false;
+  if (!isRecord(value)) return false;
   const input = value as Partial<OpenAiNativeResponseUsageInput>;
+  if (input.provider !== 'openai' || input.companyId !== context.companyId) return false;
+  return typeof input.deliveryId === 'string'
+    && UUID.test(input.deliveryId)
+    && typeof input.sessionId === 'string'
+    && input.sessionId.toLowerCase() === context.sessionId
+    && typeof input.turnId === 'string'
+    && UUID.test(input.turnId)
+    && isRecord(input.usage);
+}
+
+function exactCostMeasures(
+  value: unknown,
+): readonly UsageMeasure[] | null {
+  if (!isRecord(value) || value.status !== 'available') return null;
+  const totalTokens = value.totalTokens;
+  const inputTokens = value.inputTokens;
+  const outputTokens = value.outputTokens;
   if (
-    input.provider !== 'openai'
-    || input.companyId !== context.companyId
-    || typeof input.deliveryId !== 'string'
-    || !UUID.test(input.deliveryId)
-    || typeof input.sessionId !== 'string'
-    || input.sessionId.toLowerCase() !== context.sessionId
-    || typeof input.turnId !== 'string'
-    || !UUID.test(input.turnId)
-    || typeof input.usage !== 'object'
-    || input.usage === null
-  ) return false;
-  const usage = input.usage as Partial<OpenAiNativeResponseUsageInput['usage']>;
-  return usage.status === 'available'
-    && validTokenCount(usage.totalTokens)
-    && validTokenCount(usage.inputTokens)
-    && validTokenCount(usage.outputTokens)
-    && usage.totalTokens === usage.inputTokens + usage.outputTokens;
+    !validTokenCount(totalTokens)
+    || !validTokenCount(inputTokens)
+    || !validTokenCount(outputTokens)
+    || totalTokens !== inputTokens + outputTokens
+    || !isRecord(value.inputTokenDetails)
+    || !isRecord(value.outputTokenDetails)
+  ) return null;
+
+  const input = value.inputTokenDetails;
+  const output = value.outputTokenDetails;
+  const cachedTokens = input.cachedTokens;
+  const textTokens = input.textTokens;
+  const audioTokens = input.audioTokens;
+  const imageTokens = input.imageTokens;
+  const cachedTextTokens = input.cachedTextTokens;
+  const cachedAudioTokens = input.cachedAudioTokens;
+  const cachedImageTokens = input.cachedImageTokens;
+  const outputTextTokens = output.textTokens;
+  const outputAudioTokens = output.audioTokens;
+  if (
+    !validTokenCount(cachedTokens)
+    || !validTokenCount(textTokens)
+    || !validTokenCount(audioTokens)
+    || !validTokenCount(imageTokens)
+    || !validTokenCount(cachedTextTokens)
+    || !validTokenCount(cachedAudioTokens)
+    || !validTokenCount(cachedImageTokens)
+    || !validTokenCount(outputTextTokens)
+    || !validTokenCount(outputAudioTokens)
+    || textTokens + audioTokens + imageTokens !== inputTokens
+    || cachedTextTokens + cachedAudioTokens + cachedImageTokens !== cachedTokens
+    || cachedTextTokens > textTokens
+    || cachedAudioTokens > audioTokens
+    || cachedImageTokens > imageTokens
+    || outputTextTokens + outputAudioTokens !== outputTokens
+  ) return null;
+
+  return Object.freeze([
+    Object.freeze({
+      kind: 'realtime_uncached_text_tokens_in',
+      amount: textTokens - cachedTextTokens,
+    }),
+    Object.freeze({
+      kind: 'realtime_uncached_audio_tokens_in',
+      amount: audioTokens - cachedAudioTokens,
+    }),
+    Object.freeze({
+      kind: 'realtime_uncached_image_tokens_in',
+      amount: imageTokens - cachedImageTokens,
+    }),
+    Object.freeze({ kind: 'realtime_cached_text_tokens_in', amount: cachedTextTokens }),
+    Object.freeze({ kind: 'realtime_cached_audio_tokens_in', amount: cachedAudioTokens }),
+    Object.freeze({ kind: 'realtime_cached_image_tokens_in', amount: cachedImageTokens }),
+    Object.freeze({ kind: 'realtime_text_tokens_out', amount: outputTextTokens }),
+    Object.freeze({ kind: 'realtime_audio_tokens_out', amount: outputAudioTokens }),
+  ] satisfies readonly UsageMeasure[]);
 }
 
 function usageResult(result: unknown): OpenAiNativeResponseUsageResult {
@@ -101,11 +172,14 @@ function usageResult(result: unknown): OpenAiNativeResponseUsageResult {
   switch (status) {
     case 'recorded':
     case 'duplicate': {
+      const eventIds = 'eventIds' in result && Array.isArray(result.eventIds)
+        ? result.eventIds
+        : null;
       if (
-        !('eventIds' in result)
-        || !Array.isArray(result.eventIds)
-        || result.eventIds.length !== 2
-        || result.eventIds.some((eventId) => typeof eventId !== 'string' || !UUID.test(eventId))
+        eventIds === null
+        || eventIds.length !== OPENAI_NATIVE_RESPONSE_USAGE_MEASURE_KINDS.length
+        || eventIds.some((eventId) => typeof eventId !== 'string' || !UUID.test(eventId))
+        || new Set(eventIds).size !== eventIds.length
       ) return { status: 'unavailable' };
       return { status };
     }
@@ -124,8 +198,8 @@ function usageResult(result: unknown): OpenAiNativeResponseUsageResult {
  * Adaptateur étroit entre les compteurs OpenAI déjà décodés et le journal provider-neutre.
  *
  * Le contexte pseudonymisé est figé à la construction. Une mesure ne transporte que des UUID,
- * deux compteurs et une source constante ; aucun transcript, audio, nom ou payload fournisseur ne
- * traverse cette frontière.
+ * huit compteurs non chevauchants et une source constante ; aucun transcript, audio, nom ou
+ * payload fournisseur ne traverse cette frontière.
  */
 export class OpenAiNativeResponseUsageAdapter implements OpenAiNativeResponseUsagePort {
   private readonly context: Readonly<OpenAiNativeResponseUsageContext>;
@@ -152,7 +226,9 @@ export class OpenAiNativeResponseUsageAdapter implements OpenAiNativeResponseUsa
   }
 
   async record(input: OpenAiNativeResponseUsageInput): Promise<OpenAiNativeResponseUsageResult> {
-    if (!validRuntimeInput(input, this.context)) return { status: 'rejected' };
+    if (!validRuntimeBinding(input, this.context)) return { status: 'rejected' };
+    const measures = exactCostMeasures(input.usage);
+    if (measures === null) return { status: 'rejected' };
 
     const deliveryId = input.deliveryId.toLowerCase();
     const common = Object.freeze({
@@ -164,14 +240,10 @@ export class OpenAiNativeResponseUsageAdapter implements OpenAiNativeResponseUsa
       plan: this.context.plan,
       source: OPENAI_NATIVE_RESPONSE_USAGE_SOURCE,
       // `kind` est une dimension distincte de la HMAC du writer : cette portée reste donc commune
-      // aux deux compteurs tout en produisant deux clés d'idempotence séparées et stables.
+      // aux huit compteurs tout en produisant huit clés d'idempotence séparées et stables.
       dedupeScope: `openai-native-response:${deliveryId}`,
       occurredAt: this.context.occurredAt,
     });
-    const measures = Object.freeze<readonly UsageMeasure[]>([
-      Object.freeze({ kind: 'realtime_tokens_in', amount: input.usage.inputTokens }),
-      Object.freeze({ kind: 'realtime_tokens_out', amount: input.usage.outputTokens }),
-    ]);
     try {
       return usageResult(await this.writeBatch(
         Object.freeze(measures.map((measure) => Object.freeze({ ...common, ...measure }))),
