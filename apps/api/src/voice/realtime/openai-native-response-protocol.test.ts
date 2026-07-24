@@ -408,8 +408,9 @@ describe('Bob Live OpenAI natif — décodeur wire strict', () => {
         input_token_details: {
           cached_tokens: 20,
           text_tokens: 30,
-          audio_tokens: 70,
-          cached_tokens_details: { text_tokens: 5, audio_tokens: 15 },
+          audio_tokens: 60,
+          image_tokens: 10,
+          cached_tokens_details: { text_tokens: 5, audio_tokens: 10, image_tokens: 5 },
         },
         output_token_details: { text_tokens: 5, audio_tokens: 35 },
         provider_private_field: 'never-retained',
@@ -425,9 +426,11 @@ describe('Bob Live OpenAI natif — décodeur wire strict', () => {
         inputTokenDetails: {
           cachedTokens: 20,
           textTokens: 30,
-          audioTokens: 70,
+          audioTokens: 60,
+          imageTokens: 10,
           cachedTextTokens: 5,
-          cachedAudioTokens: 15,
+          cachedAudioTokens: 10,
+          cachedImageTokens: 5,
         },
         outputTokenDetails: { textTokens: 5, audioTokens: 35 },
       },
@@ -450,6 +453,66 @@ describe('Bob Live OpenAI natif — décodeur wire strict', () => {
       })),
       'invalid_event',
     );
+
+    for (const usage of [
+      {
+        total_tokens: 140,
+        input_tokens: 100,
+        output_tokens: 40,
+        input_token_details: {
+          cached_tokens: 20,
+          text_tokens: 30,
+          audio_tokens: 60,
+          image_tokens: 9,
+          cached_tokens_details: { text_tokens: 5, audio_tokens: 10, image_tokens: 5 },
+        },
+        output_token_details: { text_tokens: 5, audio_tokens: 35 },
+      },
+      {
+        total_tokens: 140,
+        input_tokens: 100,
+        output_tokens: 40,
+        input_token_details: {
+          cached_tokens: 20,
+          text_tokens: 30,
+          audio_tokens: 60,
+          image_tokens: 10,
+          cached_tokens_details: { text_tokens: 31, audio_tokens: 0, image_tokens: 0 },
+        },
+        output_token_details: { text_tokens: 5, audio_tokens: 35 },
+      },
+      {
+        total_tokens: 140,
+        input_tokens: 100,
+        output_tokens: 40,
+        input_token_details: {
+          cached_tokens: 20,
+          text_tokens: 30,
+          audio_tokens: 60,
+          image_tokens: 10,
+          cached_tokens_details: { text_tokens: 5, audio_tokens: 10, image_tokens: 4 },
+        },
+        output_token_details: { text_tokens: 5, audio_tokens: 35 },
+      },
+      {
+        total_tokens: 140,
+        input_tokens: 100,
+        output_tokens: 40,
+        input_token_details: {
+          cached_tokens: 20,
+          text_tokens: 30,
+          audio_tokens: 60,
+          image_tokens: 10,
+          cached_tokens_details: { text_tokens: 5, audio_tokens: 10, image_tokens: 5 },
+        },
+        output_token_details: { text_tokens: 5, audio_tokens: 34 },
+      },
+    ]) {
+      expectProtocolError(
+        () => decoded(responseDoneEvent({ usage })),
+        'invalid_event',
+      );
+    }
   });
 });
 

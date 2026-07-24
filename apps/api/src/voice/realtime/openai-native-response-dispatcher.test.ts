@@ -306,12 +306,13 @@ function providerUsage() {
     input_tokens: 12,
     output_tokens: 8,
     input_token_details: {
-      cached_tokens: 2,
+      cached_tokens: 4,
       text_tokens: 4,
-      audio_tokens: 8,
-      cached_tokens_details: { text_tokens: 1, audio_tokens: 1 },
+      audio_tokens: 6,
+      image_tokens: 2,
+      cached_tokens_details: { text_tokens: 1, audio_tokens: 2, image_tokens: 1 },
     },
-    output_token_details: { text_tokens: 0, audio_tokens: 8 },
+    output_token_details: { text_tokens: 2, audio_tokens: 6 },
   };
 }
 
@@ -408,13 +409,15 @@ describe('OpenAiNativeResponseDispatcher', () => {
           inputTokens: 12,
           outputTokens: 8,
           inputTokenDetails: {
-            cachedTokens: 2,
+            cachedTokens: 4,
             textTokens: 4,
-            audioTokens: 8,
+            audioTokens: 6,
+            imageTokens: 2,
             cachedTextTokens: 1,
-            cachedAudioTokens: 1,
+            cachedAudioTokens: 2,
+            cachedImageTokens: 1,
           },
-          outputTokenDetails: { textTokens: 0, audioTokens: 8 },
+          outputTokenDetails: { textTokens: 2, audioTokens: 6 },
         },
       });
       expect(h.metering.record.mock.invocationCallOrder[0])

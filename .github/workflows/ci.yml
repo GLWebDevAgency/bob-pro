@@ -179,6 +179,13 @@ jobs:
         run: >-
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/openai-native-speech-delivery.postgres.test.ts
+      - name: Certify OpenAI native cost dimensions and atomic rollups on ephemeral PostgreSQL
+        env:
+          RUN_POSTGRES_REALTIME_VOICE_USAGE_BATCH_CERT: 'true'
+          REALTIME_VOICE_USAGE_CERT_DATABASE_KIND: ephemeral
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/realtime-voice-usage.prisma.postgres.test.ts
       - name: Close shared Bob Live capacity after PostgreSQL certificates
         if: always()
         run: |
