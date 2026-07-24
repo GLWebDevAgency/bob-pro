@@ -11,21 +11,27 @@ on:
     - cron: '17 * * * *'
 
 concurrency:
-  group: railway-topology-drift
-  cancel-in-progress: true
+  group: railway-topology-drift-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   certify-single-replica:
-    name: ${{ matrix.environment }} remains single-replica
+    if: ${{ github.ref == 'refs/heads/main' }}
+    name: ${{ matrix.railway_environment }} remains single-replica
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: ${{ matrix.environment }}
+    environment: ${{ matrix.github_environment }}
     strategy:
       fail-fast: false
+      # Both jobs own the same incident label. Serializing them avoids a
+      # create/update race when the label has been deleted or recreated.
+      max-parallel: 1
       matrix:
-        environment:
-          - staging
-          - production
+        include:
+          - railway_environment: staging
+            github_environment: railway-topology-staging
+          - railway_environment: production
+            github_environment: production
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -36,28 +42,112 @@ jobs:
       - name: Install pinned Railway CLI
         run: sh apps/api/scripts/install-railway-cli.sh
       - name: Reject topology drift
+        id: topology
         env:
-          # The staging token is repository-scoped under a distinct name so a
-          # same-name production fallback can never be selected silently.
-          RAILWAY_TOKEN: ${{ matrix.environment == 'staging' && secrets.RAILWAY_STAGING_TOKEN || secrets.RAILWAY_TOKEN }}
-          RAILWAY_ENV: ${{ matrix.environment }}
+          # Each matrix job resolves this name from its declared GitHub
+          # environment. Staging and production therefore receive separate,
+          # least-privilege Railway project tokens without a shared fallback.
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_ENV: ${{ matrix.railway_environment }}
           RAILWAY_SERVICE: bob-pro-api
         run: |
-          railway status --environment "$RAILWAY_ENV" --json \
-            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
-      - name: Open an owned incident on drift
-        if: ${{ failure() }}
+          status_file="$RUNNER_TEMP/railway-status-$RAILWAY_ENV.json"
+          if ! railway status --environment "$RAILWAY_ENV" --json >"$status_file"; then
+            echo "failure_kind=unavailable" >>"$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if node apps/api/scripts/certify-railway-single-replica.mjs \
+            "$RAILWAY_ENV" "$RAILWAY_SERVICE" "$status_file"; then
+            echo "failure_kind=none" >>"$GITHUB_OUTPUT"
+            exit 0
+          else
+            certification_exit_code="$?"
+          fi
+          if [ "$certification_exit_code" -eq 2 ]; then
+            echo "failure_kind=drift" >>"$GITHUB_OUTPUT"
+          else
+            echo "failure_kind=unavailable" >>"$GITHUB_OUTPUT"
+          fi
+          exit 1
+      - name: Open an owned incident
+        if: ${{ failure() && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          INCIDENT_TITLE: Railway topology drift (${{ matrix.environment }})
+          FAILURE_KIND: ${{ steps.topology.outputs.failure_kind }}
+          INCIDENT_LABEL: railway-topology-monitor
+          RAILWAY_ENV: ${{ matrix.railway_environment }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          existing="$(gh issue list --state open --search "\"$INCIDENT_TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          gh label create "$INCIDENT_LABEL" \
+            --color "B60205" \
+            --description "Incident possédé par le moniteur de topologie Railway" \
+            --force
+          if [ "$FAILURE_KIND" = drift ]; then
+            incident_title="Railway topology drift ($RAILWAY_ENV)"
+            incident_body="Le contrôle mono-process a détecté une topologie incompatible. Tant que le throttler public reste local au processus, traiter cette alerte avant toute promotion : $RUN_URL"
+          else
+            incident_title="Railway topology check unavailable ($RAILWAY_ENV)"
+            incident_body="Le contrôle de topologie Railway n'a pas pu interroger l'environnement. Rétablir l'intégration avant toute promotion : $RUN_URL"
+          fi
+          ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$FAILURE_KIND -->"
+          existing="$(
+            gh api --paginate --slurp \
+              "/repos/$GH_REPO/issues?state=open&labels=$INCIDENT_LABEL&per_page=100" \
+              | jq -er --arg title "$incident_title" --arg marker "$ownership_marker" '
+                  add |
+                  map(select(.pull_request == null)) |
+                  map(select(.title == $title and ((.body // "") | contains($marker)))) |
+                  if length == 0 then ""
+                  elif length == 1 then .[0].number | tostring
+                  else error("plusieurs incidents Railway possédés correspondent")
+                  end
+                '
+          )"
           if [ -z "$existing" ]; then
+            owned_incident_body="$(printf '%s\n\n%s' "$ownership_marker" "$incident_body")"
             gh issue create \
-              --title "$INCIDENT_TITLE" \
-              --body "Le contrôle mono-process a échoué. Tant que le throttler public reste local au processus, traiter cette alerte avant toute promotion : $RUN_URL"
+              --title "$incident_title" \
+              --label "$INCIDENT_LABEL" \
+              --body "$owned_incident_body"
           else
             gh issue comment "$existing" --body "Le contrôle échoue encore : $RUN_URL"
           fi
+      - name: Close owned incidents after recovery
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INCIDENT_LABEL: railway-topology-monitor
+          RAILWAY_ENV: ${{ matrix.railway_environment }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "$INCIDENT_LABEL" \
+            --color "B60205" \
+            --description "Incident possédé par le moniteur de topologie Railway" \
+            --force
+          for failure_kind in drift unavailable; do
+            if [ "$failure_kind" = drift ]; then
+              incident_title="Railway topology drift ($RAILWAY_ENV)"
+            else
+              incident_title="Railway topology check unavailable ($RAILWAY_ENV)"
+            fi
+            ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$failure_kind -->"
+            existing="$(
+              gh api --paginate --slurp \
+                "/repos/$GH_REPO/issues?state=open&labels=$INCIDENT_LABEL&per_page=100" \
+                | jq -er --arg title "$incident_title" --arg marker "$ownership_marker" '
+                    add |
+                    map(select(.pull_request == null)) |
+                    map(select(.title == $title and ((.body // "") | contains($marker)))) |
+                    if length == 0 then ""
+                    elif length == 1 then .[0].number | tostring
+                    else error("plusieurs incidents Railway possédés correspondent")
+                    end
+                  '
+            )"
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --body "Contrôle rétabli : $RUN_URL"
+              gh issue close "$existing" --reason completed
+            fi
+          done
