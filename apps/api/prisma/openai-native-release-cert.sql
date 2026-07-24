@@ -22,6 +22,7 @@ DECLARE
   trigger_helper_function_oids OID[] := ARRAY[
     'public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)'::regprocedure,
     'public.guard_realtime_native_delivery_v1()'::regprocedure,
+    'public.guard_realtime_native_legacy_subject_admission_v1()'::regprocedure,
     'public.guard_realtime_native_speech_slo_v1()'::regprocedure,
     'public.guard_realtime_native_delivery_delete_v1()'::regprocedure,
     'public.deny_realtime_native_delivery_truncate_v1()'::regprocedure
@@ -162,7 +163,7 @@ BEGIN
       FROM (
         VALUES
           ('00_realtime_native_speech_deliveries_guard_v1', 23::smallint,
-           'guard_realtime_native_delivery_v1', '3709ffccd4c9ebeef50ac6cbd907ba51'),
+           'guard_realtime_native_delivery_v1', 'c45f66592aafe4ab4841ae0e54109b64'),
           ('01_realtime_native_speech_deliveries_slo_guard_v1', 23::smallint,
            'guard_realtime_native_speech_slo_v1', '1e691b5af9ac02ac2a32c661187890b1'),
           ('02_realtime_native_speech_deliveries_delete_guard_v1', 11::smallint,
@@ -198,7 +199,9 @@ BEGIN
         ('public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)'::regprocedure,
          TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], 'ff12cb80e8571754191c282ea22be058'),
         ('public.guard_realtime_native_delivery_v1()'::regprocedure,
-         TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], '3709ffccd4c9ebeef50ac6cbd907ba51'),
+         TRUE, ARRAY['search_path=pg_catalog, public']::TEXT[], 'c45f66592aafe4ab4841ae0e54109b64'),
+        ('public.guard_realtime_native_legacy_subject_admission_v1()'::regprocedure,
+         FALSE, ARRAY['search_path=pg_catalog, public']::TEXT[], '1b84ef1172c0fba15e81ea792f841003'),
         ('public.guard_realtime_native_speech_slo_v1()'::regprocedure,
          FALSE, ARRAY['search_path=pg_catalog, public']::TEXT[], '1e691b5af9ac02ac2a32c661187890b1'),
         ('public.guard_realtime_native_delivery_delete_v1()'::regprocedure,
@@ -230,7 +233,7 @@ BEGIN
        WHERE function.oid = ANY(trigger_helper_function_oids)
          AND privilege.privilege_type = 'EXECUTE'
          AND NOT privilege.is_grantable
-         AND privilege.grantee = function.proowner) <> 5
+         AND privilege.grantee = function.proowner) <> 6
      OR EXISTS (
        SELECT 1
          FROM pg_catalog.pg_proc AS function
@@ -374,6 +377,146 @@ BEGIN
         )
   ) THEN
     RAISE EXCEPTION 'OpenAI native key registry ACL drift';
+  END IF;
+
+  IF (SELECT count(*)
+        FROM pg_catalog.pg_class AS relation
+       WHERE relation.oid =
+         'public.realtime_native_legacy_subject_admission'::regclass
+         AND relation.relkind = 'r'
+         AND relation.relowner = pg_catalog.to_regrole(session_user)
+         AND NOT relation.relrowsecurity
+         AND NOT relation.relforcerowsecurity) <> 1
+     OR (SELECT count(*)
+           FROM pg_catalog.pg_attribute AS attribute
+          WHERE attribute.attrelid =
+            'public.realtime_native_legacy_subject_admission'::regclass
+            AND attribute.attnum > 0
+            AND NOT attribute.attisdropped) <> 5
+     OR EXISTS (
+       SELECT 1
+         FROM (VALUES
+           ('gate', 'text', TRUE),
+           ('phase', 'text', TRUE),
+           ('revision', 'integer', TRUE),
+           ('createdAt', 'timestamp(6) with time zone', TRUE),
+           ('closedAt', 'timestamp(6) with time zone', FALSE)
+         ) AS expected(column_name, data_type, not_null)
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM pg_catalog.pg_attribute AS attribute
+           WHERE attribute.attrelid =
+             'public.realtime_native_legacy_subject_admission'::regclass
+             AND attribute.attname = expected.column_name
+             AND pg_catalog.format_type(attribute.atttypid, attribute.atttypmod) =
+               expected.data_type
+             AND attribute.attnotnull = expected.not_null
+             AND NOT attribute.atthasdef
+             AND attribute.attgenerated = ''
+             AND NOT attribute.attisdropped
+        )
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native legacy subject admission shape drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (VALUES
+        ('realtime_native_legacy_subject_admission_singleton_check',
+         'b8e9dcafc32ba7c4e54b6cf9b0770d6f'),
+        ('realtime_native_legacy_subject_admission_phase_check',
+         '1470c0b196dcb88f085417d2c9ddc667'),
+        ('realtime_native_legacy_subject_admission_revision_check',
+         '48dd7a3061595db907f6feaf11744c75'),
+        ('realtime_native_legacy_subject_admission_shape_check',
+         '350ecd22964dd31190c0bea84dc896a2')
+      ) AS expected(constraint_name, definition_md5)
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_constraint AS constraint_row
+        WHERE constraint_row.conrelid =
+          'public.realtime_native_legacy_subject_admission'::regclass
+          AND constraint_row.conname = expected.constraint_name
+          AND constraint_row.contype = 'c'
+          AND constraint_row.convalidated
+          AND pg_catalog.md5(pg_catalog.pg_get_constraintdef(constraint_row.oid)) =
+            expected.definition_md5
+     )
+  )
+  OR (SELECT count(*)
+        FROM pg_catalog.pg_constraint AS constraint_row
+       WHERE constraint_row.conrelid =
+         'public.realtime_native_legacy_subject_admission'::regclass
+         AND constraint_row.contype = 'c') <> 4
+  OR (SELECT count(*)
+        FROM pg_catalog.pg_constraint AS constraint_row
+       WHERE constraint_row.conrelid =
+         'public.realtime_native_legacy_subject_admission'::regclass
+         AND constraint_row.conname =
+           'realtime_native_legacy_subject_admission_pkey'
+         AND constraint_row.contype = 'p'
+         AND constraint_row.convalidated) <> 1 THEN
+    RAISE EXCEPTION 'OpenAI native legacy subject admission constraint drift';
+  END IF;
+  IF (SELECT count(*)
+        FROM pg_catalog.pg_trigger AS trigger
+       WHERE trigger.tgrelid =
+         'public.realtime_native_legacy_subject_admission'::regclass
+         AND NOT trigger.tgisinternal) <> 2
+     OR EXISTS (
+       SELECT 1
+         FROM (VALUES
+           ('realtime_native_legacy_subject_admission_row_guard_v1', 31::smallint),
+           ('realtime_native_legacy_subject_admission_truncate_guard_v1', 34::smallint)
+         ) AS expected(trigger_name, trigger_type)
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM pg_catalog.pg_trigger AS trigger
+            JOIN pg_catalog.pg_proc AS function ON function.oid = trigger.tgfoid
+           WHERE trigger.tgrelid =
+             'public.realtime_native_legacy_subject_admission'::regclass
+             AND trigger.tgname = expected.trigger_name
+             AND trigger.tgtype = expected.trigger_type
+             AND trigger.tgenabled = 'O'
+             AND trigger.tgqual IS NULL
+             AND trigger.tgnargs = 0
+             AND NOT trigger.tgdeferrable
+             AND NOT trigger.tginitdeferred
+             AND function.oid =
+               'public.guard_realtime_native_legacy_subject_admission_v1()'::regprocedure
+             AND pg_catalog.md5(function.prosrc) =
+               '1b84ef1172c0fba15e81ea792f841003'
+        )
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native legacy subject admission trigger drift';
+  END IF;
+  IF pg_catalog.has_table_privilege(
+       app_role_name,
+       'public.realtime_native_legacy_subject_admission',
+       'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+     )
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_class AS relation
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+          COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+        ) AS privilege
+        WHERE relation.oid =
+          'public.realtime_native_legacy_subject_admission'::regclass
+          AND (
+            privilege.grantee <> relation.relowner
+            OR privilege.is_grantable
+          )
+     )
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_attribute AS attribute
+        WHERE attribute.attrelid =
+          'public.realtime_native_legacy_subject_admission'::regclass
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND attribute.attacl IS NOT NULL
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native legacy subject admission ACL drift';
   END IF;
 
   IF (SELECT count(*)

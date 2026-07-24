@@ -380,6 +380,10 @@ jobs:
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+          -- Reproduit l'ALTER DEFAULT PRIVILEGES installé par une release N-1. La migration du
+          -- gate doit retirer ce grant avant son COMMIT, sans attendre grant_app_role.
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public
+            GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO bob_app;
           SQL
       - name: Provision the isolated Supabase Storage metadata contract
         run: |

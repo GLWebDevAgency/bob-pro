@@ -99,6 +99,62 @@ SQL
   fi
 }
 
+certify_openai_native_legacy_gate_pregrant() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT pg_catalog.set_config('bob.openai_native_legacy_gate_app_role', :'app_role', true);
+DO $$
+DECLARE
+  app_role_name TEXT := NULLIF(
+    pg_catalog.current_setting('bob.openai_native_legacy_gate_app_role', true),
+    ''
+  );
+  forbidden_privilege TEXT;
+BEGIN
+  IF app_role_name IS NULL OR pg_catalog.to_regrole(app_role_name) IS NULL THEN
+    RAISE EXCEPTION 'OpenAI native legacy gate requires an existing runtime role';
+  END IF;
+  IF pg_catalog.to_regclass(
+       'public.realtime_native_legacy_subject_admission'
+     ) IS NULL
+     OR pg_catalog.to_regprocedure(
+       'public.guard_realtime_native_legacy_subject_admission_v1()'
+     ) IS NULL THEN
+    RAISE EXCEPTION 'OpenAI native legacy gate migration is incomplete';
+  END IF;
+
+  FOREACH forbidden_privilege IN ARRAY ARRAY[
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+  ]::TEXT[] LOOP
+    IF pg_catalog.has_table_privilege(
+         app_role_name,
+         'public.realtime_native_legacy_subject_admission',
+         forbidden_privilege
+       ) THEN
+      RAISE EXCEPTION
+        'OpenAI native legacy gate leaked % before runtime grants',
+        forbidden_privilege;
+    END IF;
+  END LOOP;
+  IF pg_catalog.has_function_privilege(
+       app_role_name,
+       'public.guard_realtime_native_legacy_subject_admission_v1()',
+       'EXECUTE'
+     )
+     OR pg_catalog.has_function_privilege(
+       app_role_name,
+       'public.guard_realtime_native_delivery_v1()',
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'OpenAI native legacy gate helper leaked before runtime grants';
+  END IF;
+END;
+$$;
+ROLLBACK;
+SQL
+}
+
 certify_openai_native_release_metadata() {
   psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" \
@@ -481,6 +537,9 @@ GRANT DELETE ON TABLE public.realtime_native_speech_deliveries TO :"app_role";
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.realtime_native_speech_deliveries
 FROM :"app_role";
 REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM :"app_role";
+-- Le gate rolling N-1 est une autorité globale de déploiement. Le trigger natif peut le lire
+-- avec ses droits propriétaire, mais le runtime tenanté ne doit ni l'observer ni le muter.
+REVOKE ALL ON TABLE public.realtime_native_legacy_subject_admission FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
   public.realtime_mistral_conversation_outbox,
   public.realtime_mistral_conversation_commands,
@@ -495,6 +554,8 @@ REVOKE ALL ON FUNCTION public.assert_realtime_native_delivery_fence_v1(
   TEXT, CHAR(64), UUID, TEXT, INTEGER, CHAR(64), CHAR(64), INTEGER
 ) FROM :"app_role";
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_v1() FROM :"app_role";
+REVOKE ALL ON FUNCTION public.guard_realtime_native_legacy_subject_admission_v1()
+  FROM :"app_role";
 REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM :"app_role";
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM :"app_role";
 REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM :"app_role";
@@ -513,6 +574,7 @@ SELECT DISTINCT format(
  WHERE function.oid IN (
    'public.assert_realtime_native_delivery_fence_v1(text,character,uuid,text,integer,character,character,integer)'::regprocedure,
    'public.guard_realtime_native_delivery_v1()'::regprocedure,
+   'public.guard_realtime_native_legacy_subject_admission_v1()'::regprocedure,
    'public.guard_realtime_native_speech_slo_v1()'::regprocedure,
    'public.guard_realtime_native_delivery_delete_v1()'::regprocedure,
    'public.deny_realtime_native_delivery_truncate_v1()'::regprocedure
@@ -1797,6 +1859,7 @@ ensure_realtime_reaper_directory_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 pnpm --filter @bob/api exec prisma migrate deploy
 node apps/api/scripts/assert-applied-migration-checksums.mjs
+certify_openai_native_legacy_gate_pregrant
 certify_generated_legal_storage_fence
 provision_mistral_bootstrap_reaper
 node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
