@@ -4,6 +4,22 @@
 
 **Décision fondateur : 2026-07-21**
 
+**Contre-signature Claude : 2026-07-25** — décision fondateur CONFIRMÉE oralement (session du
+25/07, audit de main), ce qui solde le « À confirmer #10 » de la matrice, avec deux amendements
+fondateur :
+
+1. **Voxtral tour-par-tour n'est pas retiré** : la bascule GPT Realtime ↔ Voxtral tour-par-tour
+   est une **configuration d'ADMINISTRATION** (jamais un sélecteur utilisateur) — aujourd'hui les
+   variables Railway (`BOB_LIVE_ENABLED`/`BOB_LIVE_PROVIDER`), demain le **dashboard admin** (à
+   construire) qui permettra de tester l'un ou l'autre sans redéploiement. Les flags concernés
+   portent un marqueur `FUTUR DASHBOARD ADMIN` dans `env.ts`.
+2. **Le duplex Mistral (« Voxtral live ») devient un chantier parallèle long terme**, construit
+   tranquillement hors chemin critique ; sa version complète remplacera le tour-par-tour, sans
+   jamais conditionner la publication.
+
+Rappel de dépendance : la DoD §6.3 (« Bob Live passe sur appareils ») reste suspendue à
+l'actation par le fondateur de la **clé OpenAI production + budget** (D3 du PROGRAMME).
+
 **Portée : prochaine version publique de Bob Pro**
 
 Ce document est la source de vérité du train de publication. Il remplace toute instruction

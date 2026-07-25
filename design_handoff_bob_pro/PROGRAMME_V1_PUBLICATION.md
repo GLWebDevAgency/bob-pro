@@ -7,6 +7,17 @@
 > seule branche courte active à la fois**. Les sections historiques ci-dessous restent un journal
 > de décision et ne prévalent pas lorsqu'elles contredisent ce cap.
 
+> **Ratification du 25/07/2026 (fondateur, oral — contre-signature Claude)** — Le remplacement
+> de la liste unique par OBJECTIFS_SPECS_DOD_PUBLICATION.md est RATIFIÉ, avec deux amendements :
+> bascule d'ADMINISTRATION GPT Realtime ↔ Voxtral tour-par-tour (config runtime, exposée plus
+> tard dans le futur dashboard admin — jamais un sélecteur utilisateur), et duplex Mistral en
+> chantier parallèle long terme (jamais bloquant pour la publication). Les entrées historiques de
+> ce document NON reprises dans OBJECTIFS **restent dues** et ne disparaissent pas par
+> rétrogradation : renommage NICO (§ dédié), early-access/IAP, écran compte, onboarding à froid,
+> arbitrages B1-B7 — chacune sera soit tracée dans OBJECTIFS, soit explicitement abandonnée par
+> décision commune. Acomptes professionnels (B2B/B2G) : fermeture V1 CONFIRMÉE par le fondateur
+> le 25/07 avec parcours de repli « situation » à proposer dans l'app.
+
 RÈGLE : quand le travail EN COURS est terminé, FEATURE FREEZE — plus aucun ajout avant
 publication de la V1, SAUF manque jugé indispensable D'UN COMMUN ACCORD Claude+GPT.
 Ce document est la liste unique de clôture ; toute entrée nouvelle exige l'accord des

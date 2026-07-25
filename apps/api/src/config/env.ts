@@ -53,6 +53,10 @@ const schema = z.object({
   // Contrat fournisseur-neutre Bob Live. Les OPENAI_REALTIME_* restent des alias de
   // transition pour les déploiements déjà configurés, mais un nouveau déploiement doit
   // utiliser BOB_LIVE_* afin de pouvoir sélectionner Mistral sans clé OpenAI.
+  // FUTUR DASHBOARD ADMIN (décision fondateur 25/07/2026) : la bascule GPT Realtime ↔
+  // Voxtral tour-par-tour est une configuration d'ADMINISTRATION — jamais un sélecteur
+  // utilisateur. BOB_LIVE_ENABLED et BOB_LIVE_PROVIDER seront exposés dans le dashboard
+  // admin (à construire) pour tester l'un ou l'autre sans redéploiement Railway.
   BOB_LIVE_ENABLED: z.enum(['true', 'false']).optional(),
   BOB_LIVE_PROVIDER: z.enum(['openai', 'mistral']).default('openai'),
   // Rollout acoustique distinct du fournisseur. Le défaut audité conserve le chemin N-1 ;

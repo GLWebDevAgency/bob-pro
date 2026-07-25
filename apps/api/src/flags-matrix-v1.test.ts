@@ -89,6 +89,7 @@ const EXPECTED_API_FLAG_NAMES = [
   'BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_MAX_BATCHES',
   'BOB_LIVE_AUDIT_PROVIDER',
   'BOB_LIVE_GATEWAY_TLS_MODE',
+  'BOB_LIVE_SPEECH_DELIVERY',
   'MISTRAL_STT_MODEL',
   'MISTRAL_TTS_MODEL',
   'MISTRAL_OCR_MODEL',
@@ -120,6 +121,12 @@ const EXPECTED_MOBILE_FLAG_NAMES = [
  * du développeur ou du harnais de test : leur présence fausserait la mesure des défauts.
  */
 const RESIDUAL_VARIABLES = [
+  // Train natif 21-24/07 : trio capacité tout-ou-rien + keyring preuve — un résidu partiel
+  // dans l'environnement du runner ferait échouer loadEnv() sans aucun drift réel.
+  'BOB_LIVE_PROOF_KEYRING',
+  'BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS',
+  'BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS',
+  'BOB_LIVE_CAPACITY_CONFIG_VERSION',
   'STRIPE_SECRET_KEY',
   'STRIPE_PRICE_SOLO',
   'STRIPE_PRICE_PRO',
