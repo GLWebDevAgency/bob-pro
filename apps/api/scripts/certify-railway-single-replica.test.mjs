@@ -330,3 +330,16 @@ test('le workflow isole les secrets, les branches et les incidents de topologie'
   assert.match(workflow, /Close owned incidents after recovery/u);
   assert.doesNotMatch(workflow, /gh issue list[\s\S]*--limit 100/u);
 });
+
+test('le workflow ne fabrique jamais de marqueur orphelin et ne spamme pas les incidents', () => {
+  const workflow = readFileSync(topologyWorkflowPath, 'utf8');
+
+  // Un échec AVANT l'étape topology (ex. install CLI) laisse failure_kind vide :
+  // sans défaut, le marqueur est malformé et l'incident devient infermable (#12/#13).
+  assert.match(workflow, /FAILURE_KIND="\$\{FAILURE_KIND:-unavailable\}"/u);
+  // La récupération referme aussi les incidents historiques à marqueur vide.
+  assert.match(workflow, /legacy-empty/u);
+  assert.match(workflow, new RegExp('bob-pro:\\$INCIDENT_LABEL:\\$RAILWAY_ENV: -->', 'u'));
+  // L'issue ouverte EST l'état : aucun commentaire de relance à chaque tick.
+  assert.doesNotMatch(workflow, /échoue encore/u);
+});

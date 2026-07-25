@@ -8,7 +8,10 @@ on:
   workflow_dispatch:
   schedule:
     # Le throttler public reste process-local jusqu'au passage à un storage partagé atomique.
-    - cron: '17 * * * *'
+    # Cadence 6 h : le déploiement re-certifie déjà la topologie inline (railway-api.yml) ;
+    # ce cron ne couvre que la dérive manuelle du dashboard, et une alarme horaire ignorée
+    # vaut moins qu'une alarme rare et crédible.
+    - cron: '17 */6 * * *'
 
 concurrency:
   group: railway-topology-drift-${{ github.ref }}
@@ -79,6 +82,10 @@ jobs:
           RAILWAY_ENV: ${{ matrix.railway_environment }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Si l'échec précède l'étape topology (ex. installation du CLI), son output
+          # n'existe pas : sans défaut, le marqueur d'incident serait malformé et
+          # l'anti-doublon comme la fermeture automatique ne le reconnaîtraient jamais.
+          FAILURE_KIND="${FAILURE_KIND:-unavailable}"
           gh label create "$INCIDENT_LABEL" \
             --color "B60205" \
             --description "Incident possédé par le moniteur de topologie Railway" \
@@ -110,9 +117,9 @@ jobs:
               --title "$incident_title" \
               --label "$INCIDENT_LABEL" \
               --body "$owned_incident_body"
-          else
-            gh issue comment "$existing" --body "Le contrôle échoue encore : $RUN_URL"
           fi
+          # Pas de commentaire de relance à chaque tick : l'issue ouverte EST l'état.
+          # Le prochain commentaire arrivera à la récupération (fermeture automatique).
       - name: Close owned incidents after recovery
         if: ${{ success() && github.ref == 'refs/heads/main' }}
         env:
@@ -126,13 +133,19 @@ jobs:
             --color "B60205" \
             --description "Incident possédé par le moniteur de topologie Railway" \
             --force
-          for failure_kind in drift unavailable; do
+          # « legacy-empty » referme les incidents historiques créés avant le défaut
+          # FAILURE_KIND (marqueur à kind vide, titre « unavailable »).
+          for failure_kind in drift unavailable legacy-empty; do
             if [ "$failure_kind" = drift ]; then
               incident_title="Railway topology drift ($RAILWAY_ENV)"
             else
               incident_title="Railway topology check unavailable ($RAILWAY_ENV)"
             fi
-            ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$failure_kind -->"
+            if [ "$failure_kind" = legacy-empty ]; then
+              ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV: -->"
+            else
+              ownership_marker="<!-- bob-pro:$INCIDENT_LABEL:$RAILWAY_ENV:$failure_kind -->"
+            fi
             existing="$(
               gh api --paginate --slurp \
                 "/repos/$GH_REPO/issues?state=open&labels=$INCIDENT_LABEL&per_page=100" \

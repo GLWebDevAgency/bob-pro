@@ -14,7 +14,10 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 mkdir -p "$install_dir"
 
+# Retry : un flake réseau du download ne doit pas se transformer en faux
+# incident de topologie « unavailable » côté moniteur.
 curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+  --retry 3 --retry-delay 2 --retry-all-errors \
   --output "$tmp_dir/$archive" "$url"
 printf '%s  %s\n' "$sha256" "$tmp_dir/$archive" | sha256sum --check --status
 tar --extract --gzip --file "$tmp_dir/$archive" --directory "$tmp_dir" railway
