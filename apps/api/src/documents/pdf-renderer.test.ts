@@ -361,3 +361,80 @@ describe('Acompte devis + chips', () => {
     expect(text).toContain("Valable jusqu'au 2026-08-19");
   });
 });
+
+describe('Réconciliation finale — sémantique de règlement V1 vs V2 (L441-9)', () => {
+  // Marché 148 000 HT/10 % : situation déjà facturée 44 400 HT → 48 840 TTC ; acompte 12 000.
+  const RETENUE = 6_000;
+  const v2Final: InvoicePdfData = {
+    ...baseInvoice,
+    kind: 'final',
+    // V2 : lignes RÉSIDUELLES (situations déjà retirées) — TTC = travaux restants.
+    lines: [{ label: 'Solde du marché', qty: 1, unitPriceHT: 100_000, vatRate: 20 }],
+    totals: {
+      ht: 100_000,
+      vat: 20_000,
+      ttc: 120_000,
+      // Seule la part acompte (60 840 − 48 840 = 12 000) et la retenue se déduisent du TTC.
+      netToPay: 120_000 - 12_000 - RETENUE,
+      retenueGarantieCents: RETENUE,
+      depositDeductionCents: 60_840,
+      situationDeductionCents: 48_840,
+    },
+    retenueGarantiePct: 5,
+    settlementSemanticsVersion: 2,
+  };
+
+  it('V2 : les situations ne sont JAMAIS une déduction du TTC résiduel — rangée contextuelle sans signe', async () => {
+    // Auto-vérification de la fixture : l'arithmétique visible se recoupe au centime.
+    const advancePart =
+      v2Final.totals.depositDeductionCents! - v2Final.totals.situationDeductionCents!;
+    expect(v2Final.totals.ttc - advancePart - RETENUE).toBe(v2Final.totals.netToPay);
+
+    // Rangées label/valeur en runs séparés : on vérifie le libellé ET le signe de la valeur.
+    const text = await pdfVisibleText(await new PdfRenderer().renderInvoice(v2Final));
+    expect(text).toContain('Situations deja facturees (hors ce document) :');
+    expect(text).not.toContain('Situations deja facturees (deduit)');
+    expect(text).toContain('488,40');
+    expect(text).not.toContain('-488,40');
+    expect(text).toContain('Acompte deja facture (deduit) :');
+    expect(text).toContain('-120,00');
+    expect(text).toContain('Retenue de garantie (5 %) :');
+    expect(text).toContain('-60,00');
+    expect(text).toContain('Net a payer');
+  });
+
+  it('V2 sans part acompte : aucune rangée de déduction acompte, net = TTC − retenue', async () => {
+    const onlySituations: InvoicePdfData = {
+      ...v2Final,
+      totals: {
+        ...v2Final.totals,
+        depositDeductionCents: 48_840,
+        netToPay: 120_000 - RETENUE,
+      },
+    };
+    const text = await pdfVisibleText(await new PdfRenderer().renderInvoice(onlySituations));
+    expect(text).toContain('Situations deja facturees (hors ce document) :');
+    expect(text).not.toContain('-488,40');
+    expect(text).not.toContain('Acompte deja facture (deduit)');
+    expect(text).not.toContain('Situations deja facturees (deduit)');
+  });
+
+  it('V1 (et adapters sans version) : présentation historique INCHANGÉE, chaque part déduite', async () => {
+    const v1Final: InvoicePdfData = {
+      ...v2Final,
+      // Pièce antérieure : TTC complet du marché, les deux parts sont des déductions réelles.
+      totals: {
+        ...v2Final.totals,
+        ttc: 168_840 + 12_000,
+        netToPay: 168_840 + 12_000 - 60_840 - RETENUE,
+      },
+      settlementSemanticsVersion: undefined,
+    };
+    const text = await pdfVisibleText(await new PdfRenderer().renderInvoice(v1Final));
+    expect(text).toContain('Situations deja facturees (deduit) :');
+    expect(text).toContain('-488,40');
+    expect(text).toContain('Acompte deja facture (deduit) :');
+    expect(text).toContain('-120,00');
+    expect(text).not.toContain('hors ce document');
+  });
+});

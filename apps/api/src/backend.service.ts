@@ -5993,6 +5993,9 @@ export class BackendService {
       issuedAt: inv.issuedAt,
       dueAt: inv.dueAt,
       kind: inv.kind,
+      // V2 : lignes résiduelles — le renderer ne déduit que la part acompte du TTC imprimé
+      // (les situations passent en rangée contextuelle, jamais en déduction).
+      settlementSemanticsVersion: inv.settlementSemanticsVersion,
       lines: inv.lines.map((l, index) => ({
         label: l.label,
         qty: l.qty,

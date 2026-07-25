@@ -55,6 +55,15 @@ export interface InvoicePdfData {
   /** B5 — taux de retenue de garantie imprimé sur la ligne dédiée ; absent/null = aucune. */
   retenueGarantiePct?: number | null;
   /**
+   * Sémantique de règlement de la pièce (Invoice.settlementSemanticsVersion). En V2, les
+   * lignes d'une FINALE sont déjà RÉSIDUELLES (les situations sont retirées des lignes) :
+   * seule la part acompte (`depositDeductionCents − situationDeductionCents`) est déduite du
+   * TTC imprimé ; les situations n'apparaissent qu'en rangée contextuelle, jamais en
+   * déduction — sinon l'arithmétique visible de la pièce ne se recoupe plus (L441-9).
+   * Optionnel ADDITIF : absent = 1 (pièces antérieures imprimées à l'identique).
+   */
+  settlementSemanticsVersion?: 1 | 2;
+  /**
    * B8 — bon de commande client (numéro d'engagement grands comptes/Chorus Pro) : imprimé dans
    * la zone références quand présent. Optionnel (compat ascendante des adapters existants) ;
    * absent ou null = aucune mention. `receivedAt` = date de réception (ISO), null si inconnue.

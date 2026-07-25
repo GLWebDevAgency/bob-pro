@@ -1487,19 +1487,31 @@ export class PdfRenderer implements PdfRendererPort {
       rows.push(...vatRows(data.totals.vatByRate, data.totals.vat, false));
       rows.push({ label: 'Total TTC :', value: money(data.totals.ttc), kind: 'normal' });
       // 242 nonies A — RÉCONCILIATION : ce qui a déjà été facturé sur le marché (situations puis
-      // acompte) est DÉDUIT avant le net à payer, chacun sur sa rangée. situationDeductionCents
-      // (part des situations) ≤ depositDeductionCents (total déjà facturé) : la part acompte est le
-      // reste. Mécanique neutre — label ET valeur en gris, jamais d'accent.
+      // acompte) est déduit avant le net à payer. situationDeductionCents (part des situations)
+      // ≤ depositDeductionCents (total déjà facturé) : la part acompte est le reste. En sémantique
+      // V2 les lignes de la finale sont déjà RÉSIDUELLES (situations retirées des lignes) : seul
+      // l'acompte est une déduction de CE TTC ; imprimer les situations en moins casserait la
+      // réconciliation visible (L441-9) — elles restent une rangée contextuelle sans signe.
+      // Mécanique neutre — label ET valeur en gris, jamais d'accent.
       const alreadyBilled = data.totals.depositDeductionCents ?? 0;
       if (alreadyBilled > 0) {
         const situationPart = data.totals.situationDeductionCents ?? 0;
         const depositPart = alreadyBilled - situationPart;
+        const residualLines = (data.settlementSemanticsVersion ?? 1) === 2;
         if (situationPart > 0)
-          rows.push({
-            label: 'Situations deja facturees (deduit) :',
-            value: `-${money(situationPart)}`,
-            kind: 'retenue',
-          });
+          rows.push(
+            residualLines
+              ? {
+                  label: 'Situations deja facturees (hors ce document) :',
+                  value: money(situationPart),
+                  kind: 'muted',
+                }
+              : {
+                  label: 'Situations deja facturees (deduit) :',
+                  value: `-${money(situationPart)}`,
+                  kind: 'retenue',
+                },
+          );
         if (depositPart > 0)
           rows.push({
             label: 'Acompte deja facture (deduit) :',
