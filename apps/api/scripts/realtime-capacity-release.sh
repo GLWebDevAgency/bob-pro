@@ -7,6 +7,9 @@ phase="${1:-}"
 
 ensure_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+-- Adhesion SET implicite a la creation (Supabase tue tout GRANT d'adhesion vers postgres).
+SET createrole_self_grant = 'set';
+
 SELECT format(
   'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
   'bob_realtime_capacity'
@@ -43,8 +46,12 @@ SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_capacity', member.rolna
    AND member.rolname <> current_user
 \gexec
 
-GRANT bob_realtime_capacity TO CURRENT_USER
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT format(
+  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+  'bob_realtime_capacity'
+)
+WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_realtime_capacity', 'SET')
+\gexec
 SQL
 }
 
@@ -126,6 +133,9 @@ RESET ROLE;
 
 -- grant_app_role() est volontairement large pour les tables métier. Cette autorité globale est
 -- l'exception explicite : aucun SELECT/DML/TRIGGER/REFERENCES runtime, même après un rejeu.
+-- Sous SET ROLE proprietaire : apres le transfert d'ownership, un deployeur NON superuser
+-- (Supabase) ne peut plus ni revoquer ni granter sur ces objets en son nom propre.
+SET LOCAL ROLE bob_realtime_capacity;
 REVOKE ALL ON TABLE public.realtime_global_capacity FROM :"app_role";
 SELECT DISTINCT format(
   'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %s CASCADE',
@@ -149,6 +159,9 @@ GRANT EXECUTE ON FUNCTION public.preflight_realtime_global_capacity_v1(
   TEXT, TEXT, INTEGER, INTEGER, INTEGER
 ) TO :"app_role";
 GRANT EXECUTE ON FUNCTION public.inspect_realtime_global_capacity_v1() TO :"app_role";
+RESET ROLE;
+-- La revocation d'adhesion exige l'ADMIN OPTION sur le role : c'est le deployeur createur
+-- qui la detient, jamais le role sur lui-meme.
 REVOKE bob_realtime_capacity FROM :"app_role" CASCADE;
 REVOKE CREATE ON SCHEMA public FROM bob_realtime_capacity;
 GRANT USAGE ON SCHEMA public TO bob_realtime_capacity;

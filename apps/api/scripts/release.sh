@@ -621,6 +621,74 @@ REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
   FROM :"app_role";
 GRANT EXECUTE ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings()
   TO :"app_role";
+-- Supabase accorde d'office EXECUTE aux roles API PostgREST (anon/authenticated/
+-- service_role) sur toute fonction publique (defaults FOR ROLE postgres) : exposition
+-- RPC indue de fonctions internes. Revocation GENERALE + suppression du default,
+-- conditionnelles (roles absents en CI) — privileges, jamais adhesions.
+SELECT DISTINCT format(
+  'SET ROLE %I; REVOKE ALL ON FUNCTION %s FROM %I; RESET ROLE;',
+  owner.rolname, function.oid::regprocedure, api_role.rolname
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = function.pronamespace
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+  CROSS JOIN LATERAL pg_catalog.aclexplode(
+    COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+  ) AS privilege
+  JOIN pg_catalog.pg_roles AS api_role ON api_role.oid = privilege.grantee
+ WHERE namespace.nspname = 'public'
+   AND api_role.rolname IN ('anon', 'authenticated', 'service_role')
+   AND (owner.rolname = current_user
+        OR pg_catalog.pg_has_role(current_user, owner.oid, 'SET'))
+\gexec
+-- Meme pre-octroi Supabase sur les TABLES et SEQUENCES publiques : revocation des
+-- objets possedes par le deployeur et porteurs d'un grant API, puis des defaults.
+SELECT DISTINCT format(
+  'SET ROLE %I; REVOKE ALL ON TABLE %I.%I FROM %I; RESET ROLE;',
+  owner.rolname, namespace.nspname, relation.relname, api_role.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+  CROSS JOIN LATERAL pg_catalog.aclexplode(
+    COALESCE(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
+  ) AS privilege
+  JOIN pg_catalog.pg_roles AS api_role ON api_role.oid = privilege.grantee
+ WHERE namespace.nspname = 'public'
+   AND relation.relkind IN ('r', 'p', 'v', 'm')
+   AND api_role.rolname IN ('anon', 'authenticated', 'service_role')
+   AND (owner.rolname = current_user
+        OR pg_catalog.pg_has_role(current_user, owner.oid, 'SET'))
+\gexec
+SELECT DISTINCT format(
+  'SET ROLE %I; REVOKE ALL ON SEQUENCE %I.%I FROM %I; RESET ROLE;',
+  owner.rolname, namespace.nspname, relation.relname, api_role.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+  CROSS JOIN LATERAL pg_catalog.aclexplode(
+    COALESCE(relation.relacl, pg_catalog.acldefault('s', relation.relowner))
+  ) AS privilege
+  JOIN pg_catalog.pg_roles AS api_role ON api_role.oid = privilege.grantee
+ WHERE namespace.nspname = 'public'
+   AND relation.relkind = 'S'
+   AND api_role.rolname IN ('anon', 'authenticated', 'service_role')
+   AND (owner.rolname = current_user
+        OR pg_catalog.pg_has_role(current_user, owner.oid, 'SET'))
+\gexec
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE %s FROM %I',
+  current_user, object_kind.clause, api_role.rolname
+)
+  FROM pg_catalog.pg_roles AS api_role
+  CROSS JOIN (VALUES
+    ('EXECUTE ON FUNCTIONS'),
+    ('ALL ON TABLES'),
+    ('ALL ON SEQUENCES')
+  ) AS object_kind(clause)
+ WHERE api_role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
 -- Le runtime invoque uniquement les deux capacités SECURITY DEFINER bornées. Il ne peut jamais
 -- endosser le rôle propriétaire NOLOGIN ni atteindre ses ACL de table sous-jacentes.
 REVOKE bob_mistral_bootstrap_reaper FROM :"app_role" CASCADE;
@@ -633,6 +701,11 @@ SQL
 ensure_mistral_bootstrap_reaper_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+-- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
+-- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+SET createrole_self_grant = 'set';
+
 SELECT format(
   'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
   'bob_mistral_bootstrap_reaper'
@@ -684,8 +757,12 @@ SELECT format('REVOKE %I FROM %I CASCADE', 'bob_mistral_bootstrap_reaper', membe
    AND member_role.rolname <> current_user
 \gexec
 
-GRANT bob_mistral_bootstrap_reaper TO CURRENT_USER
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT format(
+  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+  'bob_mistral_bootstrap_reaper'
+)
+WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_mistral_bootstrap_reaper', 'SET')
+\gexec
 SQL
 }
 
@@ -1175,6 +1252,11 @@ SQL
 ensure_openai_native_maintenance_directory_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
+-- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
+-- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+SET createrole_self_grant = 'set';
+
 SELECT format(
   'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
   'bob_openai_native_maintenance_directory'
@@ -1225,8 +1307,12 @@ SELECT format(
    AND member_role.rolname <> current_user
 \gexec
 
-GRANT bob_openai_native_maintenance_directory TO CURRENT_USER
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT format(
+  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+  'bob_openai_native_maintenance_directory'
+)
+WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_openai_native_maintenance_directory', 'SET')
+\gexec
 SQL
 }
 
@@ -1504,6 +1590,11 @@ SQL
 
 ensure_realtime_reaper_directory_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+-- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
+-- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+SET createrole_self_grant = 'set';
+
 SELECT format(
   'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
   'bob_realtime_reaper_directory'
@@ -1540,8 +1631,12 @@ SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_reaper_directory', memb
    AND member.rolname <> current_user
 \gexec
 
-GRANT bob_realtime_reaper_directory TO CURRENT_USER
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT format(
+  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+  'bob_realtime_reaper_directory'
+)
+WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_realtime_reaper_directory', 'SET')
+\gexec
 SQL
 }
 
@@ -1857,6 +1952,12 @@ ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
+# Adhesion implicite du createur sur tout role cree par les migrations (Supabase tue
+# la connexion sur un GRANT d'adhesion explicite vers postgres). Reglage base, idempotent.
+psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+  -c "SELECT format('ALTER DATABASE %I SET createrole_self_grant = %L', current_database(), 'set')" \
+  | psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1
+
 pnpm --filter @bob/api exec prisma migrate deploy
 node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_openai_native_legacy_gate_pregrant

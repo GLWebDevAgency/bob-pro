@@ -30,17 +30,27 @@ BEGIN
      OR pg_catalog.pg_has_role(app_role_name, 'bob_realtime_reaper_directory', 'SET') THEN
     RAISE EXCEPTION 'Runtime can inherit or SET ROLE to realtime reaper directory';
   END IF;
-  IF (
-    SELECT count(*) FROM pg_catalog.pg_auth_members AS membership
+  -- Sur Supabase le rôle de déploiement n'est PAS superuser : PostgreSQL lui accorde
+  -- d'office l'ADMIN OPTION en créant le rôle, et cette ligne est inamovible (tout
+  -- GRANT/REVOKE d'adhésion visant postgres est fatalement intercepté). L'invariant
+  -- certifié : seul session_user est membre, avec SET (transfert d'ownership), jamais
+  -- d'INHERIT, et le rôle n'est membre de rien. L'ADMIN du créateur est toléré — il
+  -- n'ouvre aucune capacité au rôle runtime.
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
+       AND membership.member <> pg_catalog.to_regrole(session_user)
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
        AND membership.member = pg_catalog.to_regrole(session_user)
-       AND NOT membership.admin_option
        AND NOT membership.inherit_option
        AND membership.set_option
-  ) <> 1 OR (
-    SELECT count(*) FROM pg_catalog.pg_auth_members AS membership
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
-  ) <> 1 OR EXISTS (
+       AND membership.inherit_option
+  ) OR EXISTS (
     SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.member = 'bob_realtime_reaper_directory'::regrole
   ) THEN

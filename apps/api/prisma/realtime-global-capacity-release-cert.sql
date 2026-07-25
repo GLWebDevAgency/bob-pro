@@ -53,17 +53,25 @@ BEGIN
      OR capacity_role.rolreplication OR capacity_role.rolbypassrls THEN
     RAISE EXCEPTION 'Realtime capacity role privilege drift';
   END IF;
-  IF (
-    SELECT count(*) FROM pg_catalog.pg_auth_members AS membership
+  -- Sur Supabase le rôle de déploiement n'est PAS superuser : l'ADMIN OPTION du
+  -- créateur est inamovible (GRANT/REVOKE d'adhésion vers postgres = connexion tuée).
+  -- Invariant certifié : seul session_user membre, avec SET, jamais d'INHERIT, rôle
+  -- membre de rien — l'ADMIN du créateur n'ouvre rien au runtime.
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.roleid = 'bob_realtime_capacity'::regrole
+       AND membership.member <> pg_catalog.to_regrole(session_user)
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.roleid = 'bob_realtime_capacity'::regrole
        AND membership.member = pg_catalog.to_regrole(session_user)
-       AND NOT membership.admin_option
        AND NOT membership.inherit_option
        AND membership.set_option
-  ) <> 1 OR (
-    SELECT count(*) FROM pg_catalog.pg_auth_members AS membership
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.roleid = 'bob_realtime_capacity'::regrole
-  ) <> 1 OR EXISTS (
+       AND membership.inherit_option
+  ) OR EXISTS (
     SELECT 1 FROM pg_catalog.pg_auth_members AS membership
      WHERE membership.member = 'bob_realtime_capacity'::regrole
   ) THEN

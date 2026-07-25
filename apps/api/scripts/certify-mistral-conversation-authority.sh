@@ -23,6 +23,11 @@ provision_mistral_bootstrap_reaper() {
   # membre autorisé, uniquement pour transférer et attester l'ownership des fonctions.
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v runtime_role="$runtime_role" <<'SQL'
+-- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- (connexion tuee) : adhesion SET accordee IMPLICITEMENT a la creation
+-- (createrole_self_grant, PG16+), GRANT explicite conditionnel ci-dessous.
+SET createrole_self_grant = 'set';
+
 SELECT format(
   'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
   'bob_mistral_bootstrap_reaper'
@@ -71,8 +76,12 @@ SELECT format('REVOKE %I FROM %I CASCADE', 'bob_mistral_bootstrap_reaper', membe
    AND member_role.rolname <> current_user
 \gexec
 
-GRANT bob_mistral_bootstrap_reaper TO CURRENT_USER
-  WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
+SELECT format(
+  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
+  'bob_mistral_bootstrap_reaper'
+)
+WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_mistral_bootstrap_reaper', 'SET')
+\gexec
 SQL
 
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \

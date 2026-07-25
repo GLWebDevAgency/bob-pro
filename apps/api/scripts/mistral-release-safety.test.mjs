@@ -85,7 +85,7 @@ test('le runtime ne peut ni supprimer les preuves bootstrap ni omettre leur cert
   );
   assert.match(
     release,
-    /GRANT bob_mistral_bootstrap_reaper TO CURRENT_USER[\s\S]*WITH ADMIN FALSE, INHERIT FALSE, SET TRUE/u,
+    /'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',\s+'bob_mistral_bootstrap_reaper'[\s\S]*pg_has_role\(current_user, 'bob_mistral_bootstrap_reaper', 'SET'\)/u,
   );
   assert.match(
     release,

@@ -12,6 +12,11 @@ import {
 
 const RUN_POSTGRES_CERT =
   process.env.RUN_POSTGRES_MISTRAL_CONVERSATION_CERT === 'true';
+// L'attestation ne s'applique qu'à un keyring CONFIGURÉ : la matrice V1 interdit
+// BOB_LIVE_SUBJECT_HMAC_KEYRING tant que le replay est OFF (résidu = refus de boot),
+// et un déploiement live ON ne peut pas booter sans keyring — le skip ne peut donc
+// jamais masquer une activation réelle.
+const HAS_SUBJECT_KEYRING = (process.env.BOB_LIVE_SUBJECT_HMAC_KEYRING ?? '') !== '';
 
 function configuredSubjectKeys(): BobLiveSubjectHmacKeyRingAdmission {
   const rawVersion = process.env.BOB_LIVE_SUBJECT_KEY_VERSION ?? '1';
@@ -37,7 +42,7 @@ function configuredSubjectKeys(): BobLiveSubjectHmacKeyRingAdmission {
   });
 }
 
-describe.skipIf(!RUN_POSTGRES_CERT)(
+describe.skipIf(!RUN_POSTGRES_CERT || !HAS_SUBJECT_KEYRING)(
   'Bob Live — attestation PostgreSQL du keyring HMAC sujet',
   () => {
     const runtimeUrl = process.env.DATABASE_URL ?? '';

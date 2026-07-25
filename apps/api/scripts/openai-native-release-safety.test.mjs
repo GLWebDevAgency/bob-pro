@@ -471,14 +471,18 @@ test('le certificat refuse tout runtime privilégié et toute dérive de members
     /privileged_role\.rolsuper OR privileged_role\.rolcreatedb[\s\S]*pg_catalog\.pg_has_role\(app_role_name, privileged_role\.oid, 'SET'\)/u,
   );
   assert.match(metadataCert, /OpenAI native runtime role can assume a privileged role/u);
+  // Invariant Supabase-compatible : aucun membre autre que session_user, SET obligatoire
+  // sans INHERIT, et aucune ligne inherit sur le rôle (l'ADMIN implicite du créateur
+  // non-superuser est toléré — GRANT/REVOKE d'adhésion vers postgres = connexion tuée).
   assert.match(
     metadataCert,
-    /membership\.member = pg_catalog\.to_regrole\(session_user\)[\s\S]*AND NOT membership\.admin_option[\s\S]*AND NOT membership\.inherit_option[\s\S]*AND membership\.set_option\) <> 1/u,
+    /membership\.member <> pg_catalog\.to_regrole\(session_user\)/u,
   );
   assert.match(
     metadataCert,
-    /WHERE membership\.roleid =\s+'bob_openai_native_maintenance_directory'::regrole\) <> 1/u,
+    /membership\.member = pg_catalog\.to_regrole\(session_user\)[\s\S]*AND NOT membership\.inherit_option[\s\S]*AND membership\.set_option/u,
   );
+  assert.match(metadataCert, /membership\.inherit_option\s*\)/u);
   assert.match(
     metadataCert,
     /WHERE membership\.member =\s+'bob_openai_native_maintenance_directory'::regrole/u,
@@ -490,7 +494,7 @@ test('le certificat refuse tout runtime privilégié et toute dérive de members
   );
   assert.match(
     release,
-    /GRANT bob_openai_native_maintenance_directory TO CURRENT_USER\s+WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;/u,
+    /'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',\s+'bob_openai_native_maintenance_directory'[\s\S]*pg_has_role\(current_user, 'bob_openai_native_maintenance_directory', 'SET'\)/u,
   );
 });
 
