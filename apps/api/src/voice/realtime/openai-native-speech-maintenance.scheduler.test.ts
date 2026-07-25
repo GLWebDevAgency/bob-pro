@@ -168,10 +168,19 @@ describe('OpenAiNativeSpeechMaintenanceScheduler', () => {
       .mockRejectedValueOnce(new Error(sensitive))
       .mockResolvedValueOnce({ status: 'unavailable' });
 
-    await expect(scheduler.sweepExpiry()).resolves.toMatchObject({ unavailableTenants: 2 });
+    await expect(scheduler.sweepExpiry()).resolves.toMatchObject({
+      unavailableTenants: 2,
+      claimUnacknowledged: false,
+    });
     expect(JSON.stringify(vi.mocked(logger.audit).mock.calls)).not.toContain(sensitive);
     expect(JSON.stringify(vi.mocked(logger.audit).mock.calls)).not.toContain('company-');
-    expect(maintenance.acknowledgeDueCompanyIds).not.toHaveBeenCalled();
+    // Sémantique reaper : la page ENTIÈREMENT TENTÉE est acquittée malgré les échecs —
+    // les tenants en panne restent dus et seront redécouverts, sans figer le lane (ni le
+    // retrait des versions de clés) pour les autres tenants.
+    expect(maintenance.acknowledgeDueCompanyIds).toHaveBeenCalledWith({
+      lane: 'expiry',
+      claimId: expect.any(String),
+    });
   });
 
   it('ne perd jamais une page non acquittée et expose un ACK devenu obsolète', async () => {
@@ -236,7 +245,12 @@ describe('OpenAiNativeSpeechMaintenanceScheduler', () => {
       dependenciesBlocked: 1,
       saturatedTenants: 1,
     });
-    expect(maintenance.acknowledgeDueCompanyIds).not.toHaveBeenCalled();
+    // Les purges bloquées par dépendance restent dues (leurs lignes persistent) : elles
+    // n'empêchent pas l'acquittement de la page ni l'avancée des autres tenants.
+    expect(maintenance.acknowledgeDueCompanyIds).toHaveBeenCalledWith({
+      lane: 'retention',
+      claimId: expect.any(String),
+    });
   });
 
   it('ne chevauche pas une même lane tout en laissant les deux lanes avancer', async () => {

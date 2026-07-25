@@ -257,12 +257,11 @@ export class OpenAiNativeSpeechMaintenanceScheduler implements OnApplicationShut
       }
       summary.saturatedTenants = saturated.size;
       if (due.claimId !== null) {
-        if (
-          queue.length === 0
-          && summary.unavailableTenants === 0
-          && !summary.claimUnacknowledged
-          && !this.stopping
-        ) {
+        // Alignement sur le reaper : la page est ACKée dès qu'elle a été ENTIÈREMENT TENTÉE
+        // sous un claim possédé. Un tenant en échec reste dû (ses lignes persistent) et sera
+        // redécouvert au passage suivant — il ne fige jamais le lane pour les autres tenants
+        // ni le retrait des versions de clés (head-of-line blocking).
+        if (queue.length === 0 && !summary.claimUnacknowledged && !this.stopping) {
           try {
             const ack = await this.maintenance.acknowledgeDueCompanyIds({
               lane: 'expiry', claimId: due.claimId,
@@ -351,13 +350,10 @@ export class OpenAiNativeSpeechMaintenanceScheduler implements OnApplicationShut
       }
       summary.saturatedTenants = saturated.size;
       if (due.claimId !== null) {
-        if (
-          queue.length === 0
-          && summary.unavailableTenants === 0
-          && summary.dependenciesBlocked === 0
-          && !summary.claimUnacknowledged
-          && !this.stopping
-        ) {
+        // Même sémantique que le lane expiry : page entièrement tentée + claim possédé = ACK.
+        // Les purges bloquées par dépendance restent dues et seront redécouvertes ; elles ne
+        // bloquent pas l'avancée du curseur pour les autres tenants.
+        if (queue.length === 0 && !summary.claimUnacknowledged && !this.stopping) {
           try {
             const ack = await this.maintenance.acknowledgeDueCompanyIds({
               lane: 'retention', claimId: due.claimId,
