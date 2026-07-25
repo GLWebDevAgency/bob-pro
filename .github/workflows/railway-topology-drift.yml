@@ -34,7 +34,7 @@ jobs:
           - railway_environment: staging
             github_environment: railway-topology-staging
           - railway_environment: production
-            github_environment: production
+            github_environment: railway-topology-production
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

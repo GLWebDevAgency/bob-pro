@@ -317,7 +317,10 @@ test('le workflow isole les secrets, les branches et les incidents de topologie'
 
   assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' \}\}/u);
   assert.match(workflow, /github_environment: railway-topology-staging/u);
-  assert.match(workflow, /github_environment: production/u);
+  // Le moniteur lit la topologie avec un jeton scoped par environnement — jamais le jeton
+  // de déploiement de l'environnement GitHub `production` (least-privilege, posé le 25/07).
+  assert.match(workflow, /github_environment: railway-topology-production/u);
+  assert.doesNotMatch(workflow, /github_environment: production$/mu);
   assert.match(workflow, /RAILWAY_TOKEN: \$\{\{ secrets\.RAILWAY_TOKEN \}\}/u);
   assert.doesNotMatch(workflow, /RAILWAY_STAGING_TOKEN/u);
   assert.match(workflow, /cancel-in-progress: false/u);
