@@ -128,6 +128,63 @@ describe('QuoteDraftService — identité JWT, isolation et CAS', () => {
     expect(await persistence.quoteDraftSlots.get({ companyId: 'company-a', ownerUserId: 'owner-a' }))
       .toBeNull();
   });
+
+  it('laisse lire mais bloque save/delete legacy pendant la possession AgentMission', async () => {
+    const { persistence, service } = harness();
+    const principal = { companyId: 'company-a', userId: 'owner-a' } satisfies Principal;
+    await asPrincipal(principal, () =>
+      service.saveCurrent({ expectedRevision: 0, payload: payload('mission-owned') }),
+    );
+    persistence.agentMissionDraftFence.setOwned(true);
+
+    expect(await asPrincipal(principal, () => service.getCurrent())).toMatchObject({
+      ok: true,
+      value: { slot: { revision: 1 } },
+    });
+    expect(await asPrincipal(principal, () =>
+      service.saveCurrent({ expectedRevision: 1, payload: payload('forbidden-update') }),
+    )).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'quote_draft_slot',
+        reason: 'owned_by_agent_mission',
+      },
+    });
+    expect(await asPrincipal(principal, () =>
+      service.deleteCurrent({ expectedRevision: 1 }),
+    )).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'quote_draft_slot',
+        reason: 'owned_by_agent_mission',
+      },
+    });
+  });
+
+  it.each([
+    ['closed', { kind: 'forbidden', reason: 'company_closed' }],
+    ['missing', { kind: 'not_found', entity: 'company', id: 'current' }],
+  ] as const)(
+    'refuse save/delete sans exécuter le writer lorsque la société est %s',
+    async (reason, expectedError) => {
+      const { persistence, service } = harness();
+      const principal = { companyId: 'company-a', userId: 'owner-a' } satisfies Principal;
+      persistence.agentMissionDraftFence.setCompanyUnavailable(reason);
+
+      expect(await asPrincipal(principal, () =>
+        service.saveCurrent({ expectedRevision: 0, payload: payload('must-not-exist') }),
+      )).toEqual({ ok: false, error: expectedError });
+      expect(await asPrincipal(principal, () =>
+        service.deleteCurrent({ expectedRevision: 1 }),
+      )).toEqual({ ok: false, error: expectedError });
+      expect(await persistence.quoteDraftSlots.get({
+        companyId: principal.companyId,
+        ownerUserId: principal.userId,
+      })).toBeNull();
+    },
+  );
 });
 
 describe('QuoteDraftController — frontière HTTP stricte', () => {

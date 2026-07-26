@@ -9,6 +9,7 @@ import {
   Put,
 } from '@nestjs/common';
 import { unwrap } from '../http/result';
+import { WithoutTenantPersistenceTransaction } from '../persistence/tenant-persistence.interceptor';
 import { QuoteDraftService } from './quote-draft.service';
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
@@ -40,6 +41,7 @@ function exactBody(value: unknown, allowed: readonly string[]): Record<string, u
  * n'est accepté dans le chemin, les query params ou le body : le service lit uniquement le JWT.
  */
 @Controller('quote-drafts')
+@WithoutTenantPersistenceTransaction()
 export class QuoteDraftController {
   constructor(private readonly quoteDrafts: QuoteDraftService) {}
 

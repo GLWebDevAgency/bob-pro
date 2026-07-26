@@ -1,16 +1,25 @@
 import { type Result, err, ok } from '../../shared-kernel/result';
+import { jsonUtf8ByteLength } from '../../shared-kernel/json-size';
 import { sha256Hex } from '../../shared-kernel/sha256';
 import { type Instant } from '../../shared-kernel/time';
 import {
   AGENT_MISSION_EVENT_RETENTION_MS,
+  AGENT_MISSION_START_OUTCOMES,
   type AgentMissionEventDataV1,
+  type AgentMissionStartConflictOutcome,
+  type AgentMissionStartDirectDraftOutcome,
   type AgentMissionTransitionEvent,
 } from './agent-mission-event';
 
 export const AGENT_MISSION_KIND = 'quote_creation' as const;
 export type AgentMissionKind = typeof AGENT_MISSION_KIND;
 
-export const AGENT_MISSION_STATUSES = ['active', 'completed', 'cancelled', 'expired'] as const;
+/**
+ * États réellement persistables en M1. `completed` reste un état cible de la roadmap M2, mais
+ * M1 s'arrête volontairement à `awaiting_lines` et ne doit donc jamais créer une ligne que son
+ * propre core serait incapable de réhydrater.
+ */
+export const AGENT_MISSION_STATUSES = ['active', 'cancelled', 'expired'] as const;
 export type AgentMissionStatus = (typeof AGENT_MISSION_STATUSES)[number];
 
 export const QUOTE_CREATION_MISSION_PHASES = [
@@ -31,6 +40,54 @@ export const AGENT_MISSION_HARD_TTL_MS = 7 * AGENT_MISSION_IDLE_TTL_MS;
 export const AGENT_MISSION_RETENTION_MS = AGENT_MISSION_EVENT_RETENTION_MS;
 export const AGENT_MISSION_MAX_CUSTOMER_CHOICES = 5;
 export const AGENT_MISSION_INT4_MAX = 2_147_483_647;
+export const AGENT_MISSION_MAX_PAYLOAD_BYTES = 64 * 1024;
+export const QUOTE_MISSION_PAYLOAD_KEYS = ['schema', 'version', 'draft', 'decision'] as const;
+export const QUOTE_MISSION_DRAFT_REFERENCE_KEYS = [
+  'sessionId',
+  'slotRevision',
+  'contentRevision',
+] as const;
+export const QUOTE_MISSION_DECISION_KINDS = [
+  'existing_draft',
+  'confirm_draft_discard',
+  'customer',
+] as const;
+export const QUOTE_MISSION_DRAFT_DECISION_KEYS = [
+  'kind',
+  'decisionId',
+  'choiceSetRevision',
+  'expectedDraftSessionId',
+  'expectedDraftSlotRevision',
+  'expectedDraftContentRevision',
+  'choices',
+  'choiceSetHash',
+] as const;
+export const QUOTE_MISSION_CUSTOMER_DECISION_KEYS = [
+  'kind',
+  'decisionId',
+  'choiceSetRevision',
+  'candidates',
+  'choiceSetHash',
+] as const;
+export const QUOTE_MISSION_ACTION_CHOICE_KEYS = ['choiceId', 'action'] as const;
+export const QUOTE_MISSION_CUSTOMER_CANDIDATE_KEYS = ['choiceId', 'customerId'] as const;
+export const QUOTE_MISSION_EXISTING_DRAFT_ACTIONS = [
+  'resume_existing',
+  'request_discard',
+] as const;
+export const QUOTE_MISSION_CONFIRM_DISCARD_ACTIONS = [
+  'confirm_discard',
+  'keep_existing',
+] as const;
+export const AGENT_MISSION_CONTEXT_BINDING_KEYS = [
+  'realtimeSessionId',
+  'contextRevision',
+  'contextDigest',
+  'screenName',
+  'screenInstanceId',
+  'acknowledgedAt',
+] as const;
+export const AGENT_MISSION_CONTEXT_SCREEN_NAMES = ['/devis/new'] as const;
 
 export interface QuoteMissionDraftReferenceV1 {
   readonly sessionId: string;
@@ -129,6 +186,7 @@ export type AgentMissionError =
         | 'invalid_revision'
         | 'invalid_instant'
         | 'invalid_value'
+        | 'payload_too_large'
         | 'inconsistent_state';
     }
   | {
@@ -164,6 +222,7 @@ export type AgentMissionError =
 export type AgentMissionResult<T> = Result<T, AgentMissionError>;
 
 export type AgentMissionAction =
+  | 'join_active'
   | 'resume_existing_draft'
   | 'request_draft_discard'
   | 'keep_existing_draft'
@@ -200,11 +259,11 @@ export type StartQuoteAgentMissionInput = {
   readonly createdAt: Instant;
 } & (
   | {
-      readonly startOutcome: 'no_slot' | 'empty_slot_adopted';
+      readonly startOutcome: AgentMissionStartDirectDraftOutcome;
       readonly draft: QuoteMissionDraftReferenceV1;
     }
   | {
-      readonly startOutcome: 'draft_conflict';
+      readonly startOutcome: AgentMissionStartConflictOutcome;
       readonly existingDraft: QuoteMissionDraftReferenceV1;
       readonly decision: ExistingDraftChoiceIds;
     }
@@ -371,7 +430,7 @@ function sameDraft(left: QuoteMissionDraftReferenceV1, right: QuoteMissionDraftR
 function parseDraft(value: unknown, field: string): AgentMissionResult<QuoteMissionDraftReferenceV1> {
   if (
     !isPlainRecord(value)
-    || !exactKeys(value, ['sessionId', 'slotRevision', 'contentRevision'])
+    || !exactKeys(value, QUOTE_MISSION_DRAFT_REFERENCE_KEYS)
   ) {
     return invalid(field, 'invalid_shape');
   }
@@ -540,16 +599,7 @@ function parseDecision(
   }
 
   if (value['kind'] === 'existing_draft') {
-    if (!exactKeys(value, [
-      'kind',
-      'decisionId',
-      'choiceSetRevision',
-      'expectedDraftSessionId',
-      'expectedDraftSlotRevision',
-      'expectedDraftContentRevision',
-      'choices',
-      'choiceSetHash',
-    ])) {
+    if (!exactKeys(value, QUOTE_MISSION_DRAFT_DECISION_KEYS)) {
       return invalid('payload.decision', 'invalid_shape');
     }
     const draft = parseDraft({
@@ -565,12 +615,12 @@ function parseDecision(
     const second = value['choices'][1];
     if (
       !isPlainRecord(first)
-      || !exactKeys(first, ['choiceId', 'action'])
-      || first['action'] !== 'resume_existing'
+      || !exactKeys(first, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || first['action'] !== QUOTE_MISSION_EXISTING_DRAFT_ACTIONS[0]
       || !isCanonicalUuid(first['choiceId'])
       || !isPlainRecord(second)
-      || !exactKeys(second, ['choiceId', 'action'])
-      || second['action'] !== 'request_discard'
+      || !exactKeys(second, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || second['action'] !== QUOTE_MISSION_EXISTING_DRAFT_ACTIONS[1]
       || !isCanonicalUuid(second['choiceId'])
     ) {
       return invalid('payload.decision.choices', 'invalid_value');
@@ -588,16 +638,7 @@ function parseDecision(
   }
 
   if (value['kind'] === 'confirm_draft_discard') {
-    if (!exactKeys(value, [
-      'kind',
-      'decisionId',
-      'choiceSetRevision',
-      'expectedDraftSessionId',
-      'expectedDraftSlotRevision',
-      'expectedDraftContentRevision',
-      'choices',
-      'choiceSetHash',
-    ])) {
+    if (!exactKeys(value, QUOTE_MISSION_DRAFT_DECISION_KEYS)) {
       return invalid('payload.decision', 'invalid_shape');
     }
     const draft = parseDraft({
@@ -613,12 +654,12 @@ function parseDecision(
     const second = value['choices'][1];
     if (
       !isPlainRecord(first)
-      || !exactKeys(first, ['choiceId', 'action'])
-      || first['action'] !== 'confirm_discard'
+      || !exactKeys(first, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || first['action'] !== QUOTE_MISSION_CONFIRM_DISCARD_ACTIONS[0]
       || !isCanonicalUuid(first['choiceId'])
       || !isPlainRecord(second)
-      || !exactKeys(second, ['choiceId', 'action'])
-      || second['action'] !== 'keep_existing'
+      || !exactKeys(second, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || second['action'] !== QUOTE_MISSION_CONFIRM_DISCARD_ACTIONS[1]
       || !isCanonicalUuid(second['choiceId'])
     ) {
       return invalid('payload.decision.choices', 'invalid_value');
@@ -636,7 +677,7 @@ function parseDecision(
   }
 
   if (value['kind'] === 'customer') {
-    if (!exactKeys(value, ['kind', 'decisionId', 'choiceSetRevision', 'candidates', 'choiceSetHash'])) {
+    if (!exactKeys(value, QUOTE_MISSION_CUSTOMER_DECISION_KEYS)) {
       return invalid('payload.decision', 'invalid_shape');
     }
     if (
@@ -650,7 +691,7 @@ function parseDecision(
     const customerIds = new Set<string>();
     for (let index = 0; index < value['candidates'].length; index += 1) {
       const candidate = value['candidates'][index];
-      if (!isPlainRecord(candidate) || !exactKeys(candidate, ['choiceId', 'customerId'])) {
+      if (!isPlainRecord(candidate) || !exactKeys(candidate, QUOTE_MISSION_CUSTOMER_CANDIDATE_KEYS)) {
         return invalid(`payload.decision.candidates[${index}]`, 'invalid_shape');
       }
       if (!isCanonicalUuid(candidate['choiceId'])) {
@@ -692,7 +733,12 @@ function parsePayload(
   missionId: string,
   revision: number,
 ): AgentMissionResult<QuoteCreationMissionPayloadV1> {
-  if (!isPlainRecord(value) || !exactKeys(value, ['schema', 'version', 'draft', 'decision'])) {
+  const payloadBytes = jsonUtf8ByteLength(value);
+  if (payloadBytes === null) return invalid('payload', 'invalid_shape');
+  if (payloadBytes > AGENT_MISSION_MAX_PAYLOAD_BYTES) {
+    return invalid('payload', 'payload_too_large');
+  }
+  if (!isPlainRecord(value) || !exactKeys(value, QUOTE_MISSION_PAYLOAD_KEYS)) {
     return invalid('payload', 'invalid_shape');
   }
   if (value['schema'] !== AGENT_MISSION_PAYLOAD_SCHEMA) return invalid('payload.schema', 'invalid_value');
@@ -712,14 +758,7 @@ function parsePayload(
 }
 
 function parseBinding(value: unknown): AgentMissionResult<AgentMissionContextBinding> {
-  if (!isPlainRecord(value) || !exactKeys(value, [
-    'realtimeSessionId',
-    'contextRevision',
-    'contextDigest',
-    'screenName',
-    'screenInstanceId',
-    'acknowledgedAt',
-  ])) {
+  if (!isPlainRecord(value) || !exactKeys(value, AGENT_MISSION_CONTEXT_BINDING_KEYS)) {
     return invalid('currentBinding', 'invalid_shape');
   }
   if (!isCanonicalUuid(value['realtimeSessionId'])) return invalid('currentBinding.realtimeSessionId', 'invalid_uuid');
@@ -727,7 +766,9 @@ function parseBinding(value: unknown): AgentMissionResult<AgentMissionContextBin
   if (typeof value['contextDigest'] !== 'string' || !SHA256.test(value['contextDigest'])) {
     return invalid('currentBinding.contextDigest', 'invalid_digest');
   }
-  if (value['screenName'] !== '/devis/new') return invalid('currentBinding.screenName', 'invalid_value');
+  if (value['screenName'] !== AGENT_MISSION_CONTEXT_SCREEN_NAMES[0]) {
+    return invalid('currentBinding.screenName', 'invalid_value');
+  }
   if (!isCanonicalIdentifier(value['screenInstanceId'], MAX_SCREEN_INSTANCE_LENGTH)) {
     return invalid('currentBinding.screenInstanceId', 'invalid_identifier');
   }
@@ -795,7 +836,6 @@ function parseSnapshot(value: unknown): AgentMissionResult<AgentMissionSnapshot>
   if (!isCanonicalIdentifier(value['ownerUserId'])) return invalid('ownerUserId', 'invalid_identifier');
   if (value['kind'] !== AGENT_MISSION_KIND) return invalid('kind', 'invalid_value');
   if (!AGENT_MISSION_STATUSES.includes(value['status'] as AgentMissionStatus)) return invalid('status', 'invalid_value');
-  if (value['status'] === 'completed') return invalid('status', 'invalid_value');
   if (!QUOTE_CREATION_MISSION_PHASES.includes(value['phase'] as QuoteCreationMissionPhase)) {
     return invalid('phase', 'invalid_value');
   }
@@ -904,7 +944,7 @@ export class AgentMission {
   static start(input: StartQuoteAgentMissionInput): AgentMissionResult<AgentMissionTransition> {
     if (!isPlainRecord(input)) return invalid('$', 'invalid_shape');
     const startOutcome = input['startOutcome'];
-    if (!isOneOf(['no_slot', 'empty_slot_adopted', 'draft_conflict'] as const, startOutcome)) {
+    if (!isOneOf(AGENT_MISSION_START_OUTCOMES, startOutcome)) {
       return invalid('startOutcome', 'invalid_value');
     }
     const shape = requireExactInput(
@@ -1442,6 +1482,24 @@ export class AgentMission {
     });
   }
 
+  joinActive(input: {
+    readonly expectedRevision: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, ['expectedRevision', 'occurredAt']);
+    if (!shape.ok) return shape;
+    const ready = this.authorize('join_active', input.expectedRevision, input.occurredAt);
+    if (!ready.ok) return ready;
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: this.snapshot.phase,
+      draft: this.snapshot.payload.draft,
+      decision: this.snapshot.payload.decision,
+      currentBinding: this.snapshot.currentBinding,
+      data: { kind: 'mission_joined' },
+    });
+  }
+
   cancel(input: {
     readonly expectedRevision: number;
     readonly reason: 'user_cancelled' | 'manual_handoff';
@@ -1480,12 +1538,14 @@ export class AgentMission {
     const epoch = instantEpoch(input.occurredAt);
     if (epoch === null) return invalid('occurredAt', 'invalid_instant');
     if (epoch < Date.parse(this.snapshot.updatedAt)) return err({ code: 'agent_mission_clock_regression' });
-    const hardExpired = epoch >= Date.parse(this.snapshot.hardExpiresAt);
-    const idleExpired = epoch >= Date.parse(this.snapshot.idleExpiresAt);
-    if (!hardExpired && !idleExpired) return this.invalidTransition('expire');
+    const hardExpiresAt = Date.parse(this.snapshot.hardExpiresAt);
+    const idleExpiresAt = Date.parse(this.snapshot.idleExpiresAt);
+    const hardIsEffectiveDeadline = hardExpiresAt <= idleExpiresAt;
+    const effectiveExpiresAt = hardIsEffectiveDeadline ? hardExpiresAt : idleExpiresAt;
+    if (epoch < effectiveExpiresAt) return this.invalidTransition('expire');
     return this.terminalTransition('expired', input.occurredAt, {
       kind: 'mission_expired',
-      reason: hardExpired ? 'hard_ttl' : 'idle_ttl',
+      reason: hardIsEffectiveDeadline ? 'hard_ttl' : 'idle_ttl',
     });
   }
 

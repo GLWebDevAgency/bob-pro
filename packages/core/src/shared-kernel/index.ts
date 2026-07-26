@@ -1,4 +1,5 @@
 export * from './result';
+export * from './json-size';
 export * from './money';
 export * from './percentage';
 export * from './identifiers';

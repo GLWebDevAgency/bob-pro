@@ -21,6 +21,11 @@ import {
   PrismaFiscalProfileRepository,
   PrismaSequenceCounter,
 } from './repositories';
+import {
+  PrismaAgentMissionDraftFence,
+  PrismaAgentMissionUnitOfWork,
+} from './agent-mission.persistence';
+import type { AgentMissionUnitOfWorkPort } from '@bob/core';
 import { PrismaVoiceTraceRepository } from '../voice-traces';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
@@ -122,6 +127,7 @@ export class PrismaPersistence implements Persistence {
   readonly expenseCreationRequests: PrismaExpenseCreationRequestStore;
   readonly quoteCreationRequests: PrismaQuoteCreationRequestStore;
   readonly quoteDraftSlots: PrismaQuoteDraftSlotRepository;
+  readonly agentMissionDraftFence: PrismaAgentMissionDraftFence;
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
@@ -139,6 +145,10 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new PrismaRealtimeAdmission(this.prisma, policy);
+  }
+
+  createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort {
+    return new PrismaAgentMissionUnitOfWork(this.prisma);
   }
 
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
@@ -282,6 +292,7 @@ export class PrismaPersistence implements Persistence {
     this.expenseCreationRequests = new PrismaExpenseCreationRequestStore(prisma);
     this.quoteCreationRequests = new PrismaQuoteCreationRequestStore(prisma);
     this.quoteDraftSlots = new PrismaQuoteDraftSlotRepository(prisma);
+    this.agentMissionDraftFence = new PrismaAgentMissionDraftFence(prisma);
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);

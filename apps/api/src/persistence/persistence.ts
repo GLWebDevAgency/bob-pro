@@ -1,5 +1,7 @@
 import type {
   AccountingEntryRepository,
+  AgentMissionUnitOfWorkPort,
+  AgentMissionDraftFencePort,
   BankBalanceSnapshotRepository,
   CashMovementProjectionPort,
   CatalogueRepository,
@@ -128,6 +130,7 @@ export interface Persistence {
   expenseCreationRequests: ExpenseCreationRequestStore;
   quoteCreationRequests: QuoteCreationRequestStore;
   quoteDraftSlots: QuoteDraftSlotRepository;
+  agentMissionDraftFence: AgentMissionDraftFencePort;
   accountingEntries: AccountingEntryRepository;
   chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
@@ -144,6 +147,11 @@ export interface Persistence {
   counters: SequenceCounterPort;
   cabinet: CabinetInfrastructure;
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort;
+  /**
+   * Autorité transactionnelle owner-scopée des missions Jarvis. `null` est fail-closed pour les
+   * doubles qui ne peuvent pas prouver RLS, verrou distribué et horloge PostgreSQL.
+   */
+  createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null;
   /** Inspection agrégée globale, séparée des commandes tenantées d'admission. */
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector;
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort;

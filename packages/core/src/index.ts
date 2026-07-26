@@ -71,6 +71,8 @@ export * from './domain/company/registration-number';
 export * from './domain/ocr/ocr-extraction';
 export * from './domain/banking/bank-balance-snapshot';
 export * from './domain/banking/bank-balance-freshness';
+export * from './domain/agent/agent-mission';
+export * from './domain/agent/agent-mission-event';
 
 // Domaine Cabinet — tenant, memberships, invitations, RBAC et release flags
 export * from './domain/cabinet/cabinet-permissions';
@@ -158,6 +160,13 @@ export * from './application/clients/derive-aged-balance';
 export * from './application/clients/derive-customer-financial-metrics';
 export * from './application/clients/update-customer';
 export * from './application/quote-drafts/quote-draft-slot';
+export * from './application/ports/agent-mission-fingerprint';
+export * from './application/ports/agent-mission-repository';
+export * from './application/ports/agent-mission-unit-of-work';
+export * from './application/agent-missions/agent-mission-application';
+export * from './application/agent-missions/start-quote-agent-mission';
+export * from './application/agent-missions/get-active-agent-mission';
+export * from './application/agent-missions/cancel-quote-agent-mission';
 export * from './application/accounting/derive-sig';
 export * from './application/accounting/derive-closing-review';
 export * from './application/pilotage/derive-business-review';

@@ -11,6 +11,10 @@ export interface IsolatedTransactionOptions {
   readonly timeoutMs: number;
 }
 
+export interface IsolatedOwnerTransactionOptions extends IsolatedTransactionOptions {
+  readonly readOnly: boolean;
+}
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
   // PRISMA_TRANSACTION_TIMEOUT_MS : les certifications du rituel de release s'exécutent
@@ -90,6 +94,32 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
       await this.setCompanyContext(tx, companyId);
       return txStorage.run(tx, () => fn(tx));
     }, options === undefined ? undefined : {
+      maxWait: options.maxWaitMs,
+      timeout: options.timeoutMs,
+    });
+  }
+
+  /**
+   * Transaction isolée société + propriétaire pour une autorité durable owner-scopée.
+   *
+   * Le mode lecture pose `SET TRANSACTION READ ONLY` AVANT la première requête. Les GUC sont
+   * ensuite paramétrés dans cette même transaction ; aucun repository ne peut changer de client
+   * Prisma au milieu d'une mission.
+   */
+  withIsolatedOwner<T>(
+    companyId: string,
+    ownerUserId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    options: IsolatedOwnerTransactionOptions,
+  ): Promise<T> {
+    return this.$transaction(async (tx) => {
+      if (options.readOnly) {
+        await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      }
+      await this.setCompanyContext(tx, companyId);
+      await tx.$executeRaw`SELECT set_config('app.current_user_id', ${ownerUserId}, true)`;
+      return txStorage.run(tx, () => fn(tx));
+    }, {
       maxWait: options.maxWaitMs,
       timeout: options.timeoutMs,
     });

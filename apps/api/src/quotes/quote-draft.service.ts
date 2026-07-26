@@ -49,6 +49,12 @@ function invalidRevision(field: string): AppError {
   };
 }
 
+function unavailableCompany(reason: 'missing' | 'closed'): AppError {
+  return reason === 'closed'
+    ? appForbidden('company_closed')
+    : appNotFound('company', 'current');
+}
+
 /**
  * Autorité serveur du slot de brouillon. L'identité n'est jamais un argument public : société et
  * propriétaire proviennent exclusivement du Principal établi par le JWT, puis sont tous deux
@@ -109,18 +115,29 @@ export class QuoteDraftService {
         }],
       }));
     }
-    return this.inAuthenticatedOwnerScope(async (identity) => {
-      const result = await this.persistence.quoteDraftSlots.upsert({
-        ...identity,
+    const identity = this.identity();
+    if (!identity.ok) return Promise.resolve(identity);
+    return this.persistence.agentMissionDraftFence.runLegacyMutationIfUnowned(
+      identity.value,
+      () => this.persistence.quoteDraftSlots.upsert({
+        ...identity.value,
         expectedRevision: input.expectedRevision,
         payload: payload.value,
-      });
+      }),
+    ).then((fenced) => {
+      if (fenced.status === 'owned_by_agent_mission') {
+        return err(appConflict('quote_draft_slot', 'owned_by_agent_mission'));
+      }
+      if (fenced.status === 'company_unavailable') {
+        return err(unavailableCompany(fenced.reason));
+      }
+      const result = fenced.value;
       if (result.status === 'revision_conflict') {
         return err(appConflict('quote_draft_slot', 'stale_revision'));
       }
       this.logger.audit('quote_draft.saved', {
-        companyId: identity.companyId,
-        ownerUserId: identity.ownerUserId,
+        companyId: identity.value.companyId,
+        ownerUserId: identity.value.ownerUserId,
         revision: result.slot.revision,
         outcome: result.status,
       });
@@ -134,11 +151,22 @@ export class QuoteDraftService {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
       return Promise.resolve(err(invalidRevision('expectedRevision')));
     }
-    return this.inAuthenticatedOwnerScope(async (identity) => {
-      const result = await this.persistence.quoteDraftSlots.delete({
-        ...identity,
+    const identity = this.identity();
+    if (!identity.ok) return Promise.resolve(identity);
+    return this.persistence.agentMissionDraftFence.runLegacyMutationIfUnowned(
+      identity.value,
+      () => this.persistence.quoteDraftSlots.delete({
+        ...identity.value,
         expectedRevision: input.expectedRevision,
-      });
+      }),
+    ).then((fenced) => {
+      if (fenced.status === 'owned_by_agent_mission') {
+        return err(appConflict('quote_draft_slot', 'owned_by_agent_mission'));
+      }
+      if (fenced.status === 'company_unavailable') {
+        return err(unavailableCompany(fenced.reason));
+      }
+      const result = fenced.value;
       if (result.status === 'not_found') {
         return err(appNotFound('quote_draft_slot', 'current'));
       }
@@ -146,8 +174,8 @@ export class QuoteDraftService {
         return err(appConflict('quote_draft_slot', 'stale_revision'));
       }
       this.logger.audit('quote_draft.deleted', {
-        companyId: identity.companyId,
-        ownerUserId: identity.ownerUserId,
+        companyId: identity.value.companyId,
+        ownerUserId: identity.value.ownerUserId,
         revision: input.expectedRevision,
       });
       return ok({ deleted: true as const });

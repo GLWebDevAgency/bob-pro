@@ -1,0 +1,423 @@
+import { createHash } from 'node:crypto';
+import { HttpException } from '@nestjs/common';
+import { HTTP_CODE_METADATA, MODULE_METADATA } from '@nestjs/common/constants';
+import { Test } from '@nestjs/testing';
+import type {
+  AgentMission,
+  AgentMissionEvent,
+  AgentMissionFingerprintPort,
+  AgentMissionOwner,
+  AgentMissionQuoteDraftSlot,
+  AgentMissionReadTransaction,
+  AgentMissionTransaction,
+  AgentMissionUnitOfWorkPort,
+  AgentMissionWriteExecution,
+} from '@bob/core';
+import { describe, expect, it, vi } from 'vitest';
+import { AppModule } from '../app.module';
+import { AppLogger, requestContext } from '../observability/logger';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
+import { AgentMissionController } from './agent-mission.controller';
+import {
+  AGENT_MISSION_FINGERPRINTS,
+} from './agent-mission-fingerprint.provider';
+import {
+  AGENT_MISSION_HTTP_AUTHORITY,
+  DisabledAgentMissionHttpAuthority,
+  agentMissionHttpAuthorityProvider,
+  type AgentMissionHttpAuthority,
+} from './agent-mission-http-authority';
+import { AgentMissionModule } from './agent-mission.module';
+import { AgentMissionService } from './agent-mission.service';
+
+function serviceSpies() {
+  return {
+    getCurrent: vi.fn(async () => ({ ok: true as const, value: { mission: null } })),
+    start: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'created',
+        startOutcome: 'no_slot',
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    cancel: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'cancelled',
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+  };
+}
+
+function controller(
+  authority: AgentMissionHttpAuthority = new DisabledAgentMissionHttpAuthority(),
+) {
+  const spies = serviceSpies();
+  return {
+    spies,
+    controller: new AgentMissionController(
+      spies as unknown as AgentMissionService,
+      authority,
+    ),
+  };
+}
+
+function statusResponse() {
+  return { status: vi.fn() };
+}
+
+const DATABASE_NOW = '2026-07-26T12:00:00.000Z';
+
+class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
+  mission: AgentMission | null = null;
+  readonly events: AgentMissionEvent[] = [];
+  slot: AgentMissionQuoteDraftSlot | null = null;
+  transactions = 0;
+
+  async readQuoteCreationOwner<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionReadTransaction) => Promise<T>,
+  ): Promise<T> {
+    return work({
+      databaseNow: async () => DATABASE_NOW,
+      missions: {
+        findActive: async () => this.ownedMission(owner, true),
+        findById: async ({ missionId }) => {
+          const mission = this.ownedMission(owner, false);
+          return mission?.id === missionId ? mission : null;
+        },
+      },
+    });
+  }
+
+  async runQuoteCreationOwner<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionTransaction) => Promise<T>,
+  ): Promise<AgentMissionWriteExecution<T>> {
+    this.transactions += 1;
+    const value = await work({
+      databaseNow: async () => DATABASE_NOW,
+      missions: {
+        findActive: async () => this.ownedMission(owner, true),
+        findById: async ({ missionId }) => {
+          const mission = this.ownedMission(owner, false);
+          return mission?.id === missionId ? mission : null;
+        },
+        findActiveForUpdate: async () => this.ownedMission(owner, true),
+        findByIdForUpdate: async ({ missionId }) => {
+          const mission = this.ownedMission(owner, false);
+          return mission?.id === missionId ? mission : null;
+        },
+        insert: async (mission) => {
+          if (this.mission !== null) throw new Error('duplicate mission fixture');
+          this.mission = mission;
+        },
+        updateCas: async ({ mission, expectedRevision }) => {
+          if (this.mission?.revision !== expectedRevision) return 'revision_conflict';
+          this.mission = mission;
+          return 'updated';
+        },
+      },
+      events: {
+        findByCommandId: async ({ commandId }) => (
+          this.events.find((event) => event.toSnapshot().commandId === commandId) ?? null
+        ),
+        append: async (event) => {
+          this.events.push(event);
+        },
+      },
+      quoteDrafts: {
+        getForUpdate: async () => this.slot,
+        create: async ({ payload }) => {
+          if (this.slot !== null) return null;
+          this.slot = {
+            ...owner,
+            revision: 1,
+            payloadVersion: 1,
+            payload,
+            agentMissionId: null,
+            createdAt: DATABASE_NOW,
+            updatedAt: DATABASE_NOW,
+          };
+          return this.slot;
+        },
+        claim: async ({
+          missionId,
+          expectedSlotRevision,
+          expectedDraftSessionId,
+        }) => {
+          if (
+            this.slot === null
+            || this.slot.agentMissionId !== null
+            || this.slot.revision !== expectedSlotRevision
+            || this.slot.payload.draft.sessionId !== expectedDraftSessionId
+          ) {
+            return null;
+          }
+          this.slot = { ...this.slot, agentMissionId: missionId };
+          return this.slot;
+        },
+        release: async ({ missionId }) => {
+          if (this.slot?.agentMissionId !== missionId) return false;
+          this.slot = { ...this.slot, agentMissionId: null };
+          return true;
+        },
+      },
+    });
+    return { status: 'executed', value };
+  }
+
+  private ownedMission(owner: AgentMissionOwner, activeOnly: boolean): AgentMission | null {
+    if (this.mission === null) return null;
+    const snapshot = this.mission.toSnapshot();
+    if (
+      snapshot.companyId !== owner.companyId
+      || snapshot.ownerUserId !== owner.ownerUserId
+      || (activeOnly && snapshot.status !== 'active')
+    ) {
+      return null;
+    }
+    return this.mission;
+  }
+}
+
+const TEST_FINGERPRINTS: AgentMissionFingerprintPort = {
+  sign(canonicalRequest) {
+    return {
+      keyVersion: 1,
+      hmac: createHash('sha256').update(canonicalRequest).digest('hex'),
+    };
+  },
+  matches(canonicalRequest, fingerprint) {
+    if (fingerprint.keyVersion !== 1) return null;
+    return fingerprint.hmac === createHash('sha256').update(canonicalRequest).digest('hex');
+  },
+};
+
+describe('AgentMissionController M1-A', () => {
+  it('fixe la baseline idempotente à 200 avant le statut dynamique 201 de la création', () => {
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.start,
+    )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.cancel,
+    )).toBe(200);
+  });
+
+  it.each([
+    ['get', (candidate: AgentMissionController) => candidate.getCurrent()],
+    ['start', (candidate: AgentMissionController) => candidate.start(
+      { forged: true },
+      statusResponse(),
+    )],
+    ['cancel', (candidate: AgentMissionController) => candidate.cancel('not-a-uuid', null)],
+  ] as const)(
+    'l’autorité production refuse %s avant validation métier et appel de service',
+    async (_operation, invoke) => {
+      const { controller: candidate, spies } = controller();
+
+      const caught = await invoke(candidate).catch((error: unknown) => error);
+
+      expect(caught).toBeInstanceOf(HttpException);
+      expect((caught as HttpException).getStatus()).toBe(503);
+      expect((caught as HttpException).getResponse()).toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'agent_mission_http_capability' },
+      });
+      expect(spies.getCurrent).not.toHaveBeenCalled();
+      expect(spies.start).not.toHaveBeenCalled();
+      expect(spies.cancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it('une autorité de test explicite ouvre le contrat exact, jamais un champ forgé', async () => {
+    const authority: AgentMissionHttpAuthority = {
+      authorize: vi.fn(async () => true),
+    };
+    const { controller: candidate, spies } = controller(authority);
+
+    const invalid = await candidate.start(
+      {
+        commandId: '10000000-0000-4000-8000-000000000001',
+        companyId: 'forged',
+      },
+      statusResponse(),
+    ).catch((error: unknown) => error);
+    expect(invalid).toBeInstanceOf(HttpException);
+    expect((invalid as HttpException).getStatus()).toBe(422);
+    expect(spies.start).not.toHaveBeenCalled();
+
+    const response = statusResponse();
+    await expect(candidate.start(
+      { commandId: '10000000-0000-4000-8000-000000000001' },
+      response,
+    )).resolves.toMatchObject({
+      outcome: 'created',
+      startOutcome: 'no_slot',
+    });
+    expect(response.status).toHaveBeenCalledWith(201);
+    expect(spies.start).toHaveBeenCalledWith({
+      commandId: '10000000-0000-4000-8000-000000000001',
+    });
+  });
+
+  it('AppModule importe la tranche verticale et celle-ci déclare ses vrais providers', async () => {
+    const appImports = Reflect.getMetadata(MODULE_METADATA.IMPORTS, AppModule) as unknown[];
+    const controllers = Reflect.getMetadata(
+      MODULE_METADATA.CONTROLLERS,
+      AgentMissionModule,
+    ) as unknown[];
+    const providers = Reflect.getMetadata(
+      MODULE_METADATA.PROVIDERS,
+      AgentMissionModule,
+    ) as unknown[];
+
+    expect(appImports).toContain(AgentMissionModule);
+    expect(controllers).toEqual([AgentMissionController]);
+    expect(providers).toContain(AgentMissionService);
+    expect(providers).toContain(agentMissionHttpAuthorityProvider);
+    expect(agentMissionHttpAuthorityProvider).toEqual({
+      provide: AGENT_MISSION_HTTP_AUTHORITY,
+      useClass: DisabledAgentMissionHttpAuthority,
+    });
+    await expect(new DisabledAgentMissionHttpAuthority().authorize(
+      'start_quote_creation',
+    )).resolves.toBe(false);
+  });
+
+  it('compile la DI runtime et traverse controller → service → use case → UoW réel de test', async () => {
+    const unitOfWork = new RecordingAgentMissionUnitOfWork();
+    const persistence = {
+      createAgentMissionUnitOfWork: vi.fn(() => unitOfWork),
+    } as unknown as Persistence;
+    const logger = { audit: vi.fn() };
+    const authority: AgentMissionHttpAuthority = { authorize: vi.fn(async () => true) };
+    const moduleRef = await Test.createTestingModule({
+      imports: [AgentMissionModule],
+    })
+      .overrideProvider(PERSISTENCE)
+      .useValue(persistence)
+      .overrideProvider(AppLogger)
+      .useValue(logger)
+      .overrideProvider(AGENT_MISSION_HTTP_AUTHORITY)
+      .useValue(authority)
+      .overrideProvider(AGENT_MISSION_FINGERPRINTS)
+      .useValue(TEST_FINGERPRINTS)
+      .compile();
+
+    try {
+      const candidate = moduleRef.get(AgentMissionController);
+      const startCommand = '10000000-0000-4000-8000-000000000001';
+      const joinCommand = '10000000-0000-4000-8000-000000000002';
+      const cancelCommand = '10000000-0000-4000-8000-000000000003';
+      const outputs = await requestContext.run(
+        {
+          correlationId: 'agent-mission-module-composition',
+          principal: { userId: 'owner-1', companyId: 'company-1' },
+        },
+        async () => {
+          const createdResponse = statusResponse();
+          const replayResponse = statusResponse();
+          const joinResponse = statusResponse();
+          const created = await candidate.start(
+            { commandId: startCommand },
+            createdResponse,
+          );
+          const replayed = await candidate.start(
+            { commandId: startCommand },
+            replayResponse,
+          );
+          const joined = await candidate.start(
+            { commandId: joinCommand },
+            joinResponse,
+          );
+          const cancelled = await candidate.cancel(created.mission.id, {
+            commandId: cancelCommand,
+            expectedMissionRevision: joined.mission.revision,
+          });
+          return {
+            created,
+            replayed,
+            joined,
+            cancelled,
+            statuses: {
+              created: createdResponse.status,
+              replayed: replayResponse.status,
+              joined: joinResponse.status,
+            },
+          };
+        },
+      );
+
+      expect(outputs.created).toMatchObject({ outcome: 'created', startOutcome: 'no_slot' });
+      expect(outputs.replayed).toMatchObject({ outcome: 'replayed' });
+      expect(outputs.joined).toMatchObject({ outcome: 'joined_active' });
+      expect(outputs.cancelled).toMatchObject({
+        outcome: 'cancelled',
+        mission: { status: 'cancelled', actionable: false },
+      });
+      expect(outputs.statuses.created).toHaveBeenCalledWith(201);
+      expect(outputs.statuses.replayed).toHaveBeenCalledWith(200);
+      expect(outputs.statuses.joined).toHaveBeenCalledWith(200);
+      expect(unitOfWork.slot?.agentMissionId).toBeNull();
+      expect(unitOfWork.events.map((event) => event.toSnapshot().eventType)).toEqual([
+        'mission_started',
+        'mission_joined',
+        'mission_cancelled',
+      ]);
+      expect(logger.audit).toHaveBeenCalledTimes(2);
+      expect(logger.audit).toHaveBeenNthCalledWith(
+        1,
+        'agent_mission.started',
+        expect.objectContaining({ outcome: 'created' }),
+      );
+      expect(logger.audit).toHaveBeenNthCalledWith(
+        2,
+        'agent_mission.cancelled',
+        expect.objectContaining({ outcome: 'cancelled' }),
+      );
+      expect(persistence.createAgentMissionUnitOfWork).toHaveBeenCalledTimes(4);
+    } finally {
+      await moduleRef.close();
+    }
+  });
+
+  it('compile les providers production et refuse avant toute création d’UoW', async () => {
+    const persistence = {
+      createAgentMissionUnitOfWork: vi.fn(),
+    } as unknown as Persistence;
+    const moduleRef = await Test.createTestingModule({
+      imports: [AgentMissionModule],
+    })
+      .overrideProvider(PERSISTENCE)
+      .useValue(persistence)
+      .overrideProvider(AppLogger)
+      .useValue({ audit: vi.fn() })
+      .compile();
+
+    try {
+      const candidate = moduleRef.get(AgentMissionController);
+      const caught = await requestContext.run(
+        {
+          correlationId: 'agent-mission-production-authority',
+          principal: { userId: 'owner-1', companyId: 'company-1' },
+        },
+        () => candidate.start(
+          { commandId: 'not-even-validated' },
+          statusResponse(),
+        )
+          .catch((error: unknown) => error),
+      );
+      expect(caught).toBeInstanceOf(HttpException);
+      expect((caught as HttpException).getStatus()).toBe(503);
+      expect(persistence.createAgentMissionUnitOfWork).not.toHaveBeenCalled();
+    } finally {
+      await moduleRef.close();
+    }
+  });
+});

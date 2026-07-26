@@ -507,6 +507,18 @@ describe('quote draft shared model', () => {
     expect(hasUnsavedQuoteDraftChanges(selectedVat)).toBe(true);
   });
 
+  it('ne traite jamais une déclaration d’urgence seule comme un brouillon vide', () => {
+    const urgent = value(
+      applyQuoteDraftCommand(createQuoteDraft('draft-urgent'), {
+        type: 'set_urgent_repair',
+        requested: true,
+      }),
+    );
+    expect(urgent.flow.draft.urgentRepairRequested).toBe(true);
+    expect(hasMeaningfulQuoteDraft(urgent)).toBe(true);
+    expect(hasUnsavedQuoteDraftChanges(urgent)).toBe(true);
+  });
+
   it('refuse un taux sans contexte fiscal confirmé', () => {
     expect(
       applyQuoteDraftCommand(createQuoteDraft('draft-1'), {

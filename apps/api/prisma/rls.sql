@@ -22,6 +22,8 @@ BEGIN
     'expense_creation_requests',
     'quote_creation_requests',
     'quote_draft_slots',
+    'agent_missions',
+    'agent_mission_events',
     'documents',
     'document_analyses',
     'document_folders',
@@ -169,6 +171,95 @@ CREATE POLICY quote_draft_slot_owner_delete ON quote_draft_slots FOR DELETE
     "companyId" = current_setting('app.current_company_id', true)
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
   );
+
+-- Les missions sont plus fines que le tenant : société + propriétaire JWT, puis capability
+-- interne exacte pour les INSERT/UPDATE. Les événements restent append-only.
+DROP POLICY IF EXISTS agent_missions_owner_select ON agent_missions;
+DROP POLICY IF EXISTS agent_missions_owner_insert ON agent_missions;
+DROP POLICY IF EXISTS agent_missions_owner_update ON agent_missions;
+CREATE POLICY agent_missions_owner_select ON agent_missions FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY agent_missions_owner_insert ON agent_missions FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY agent_missions_owner_update ON agent_missions FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+DROP POLICY IF EXISTS agent_mission_events_owner_select ON agent_mission_events;
+DROP POLICY IF EXISTS agent_mission_events_owner_insert ON agent_mission_events;
+CREATE POLICY agent_mission_events_owner_select ON agent_mission_events FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY agent_mission_events_owner_insert ON agent_mission_events FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+REVOKE ALL ON TABLE agent_missions FROM PUBLIC;
+REVOKE ALL ON TABLE agent_mission_events FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
+
+DO $$
+DECLARE
+  exposed_role text;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::text[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_missions FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_mission_events FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_mutation_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_quote_draft_agent_mission_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION reject_agent_mission_event_mutation_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION require_agent_mission_event_v1() FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
 
 DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestations;
 CREATE POLICY tenant_isolation ON catalogue_prestations
