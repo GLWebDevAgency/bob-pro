@@ -237,3 +237,13 @@ model Intervention {
 - **Critères de succès bêta (mesurables)** : taux d'encaissement Fly Services > 80 % à 60 j d'émission ; zéro facture « émise jamais transmise » > 7 j ; 100 % des passages avec fiche signée synchronisée ; les 8 entités RATP saisies avec canal + conditions + BC exigé ; contrats saisis avec alertes de renouvellement actives.
 
 Prochaine étape : validation fondateur avant tout code.
+> 3. **Connecteur boîte mail (ajout fondateur 26/07, vague P1)** : au-delà de l'intérim Brevo
+>    (P0 — display name société + Reply-To, repli universel conservé), Bob doit pouvoir préparer
+>    les emails de factures/relances **en brouillon dans la boîte réelle du client** (Gmail /
+>    Outlook), demander validation dans l'app (et à la voix), puis **envoyer depuis cette boîte**
+>    — délivrabilité native (SPF/DKIM du client), réponses et classement dans SA messagerie.
+>    Conception port-first : `EmailConnectorPort` (domaine), adapters Gmail API + Microsoft
+>    Graph, jetons OAuth par société chiffrés au repos, Brevo en adapter de repli. Contrainte
+>    actée : scope Gmail `send` = restreint (vérification Google CASA longue) → bêta en mode
+>    test (≤100 utilisateurs), vérification lancée en parallèle. Flux brouillon→validation→envoi
+>    aligné sur la parité humain↔Bob et la confirmation obligatoire.
