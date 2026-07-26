@@ -39,6 +39,8 @@ import {
   type DraftRelanceActionInput,
   type SendRelanceActionInput,
   type SendRelanceActionOutput,
+  type SendInvoiceActionInput,
+  type SendInvoiceActionOutput,
   type CreateQuoteActionInput,
   type RecordExpenseActionInput,
   type RecordExpenseSettlementDeclaration,
@@ -727,6 +729,36 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => exportFecAction(input),
     };
     tools.push(exportFec as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL envoyer_facture (PR-01 « Encaisser ») : envoi EMAIL réel de la facture
+  // ÉMISE — MÊME endpoint POST /invoices/:id/send que le bouton mobile (philosophie papa vocal :
+  // « envoie la facture » réussit à la voix). Gardes fail-closed du use case restituées.
+  const sendInvoiceAction = actions.sendInvoice?.bind(actions);
+  if (sendInvoiceAction) {
+    const envoyerFacture: Tool<SendInvoiceActionInput, SendInvoiceActionOutput> = {
+      name: 'envoyer_facture',
+      description:
+        'Envoie RÉELLEMENT la facture ÉMISE au client par e-mail (lien de consultation + PDF joint, expéditeur = la société). Refus honnête si la pièce est un brouillon ou si le client n’a pas d’e-mail.',
+      mutating: true,
+      outbound: true,
+      compliance: 'medium',
+      riskTier: 'outbound',
+      parse: (raw): Result<SendInvoiceActionInput, AppError> => {
+        const r = raw as { invoiceId?: unknown };
+        if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
+          return err(appValidation('invoiceId', 'Facture manquante.'));
+        return ok({ invoiceId: r.invoiceId });
+      },
+      projectPublicResult: (output): ToolPublicResult => {
+        if (output.deliveryStatus === 'queued' || output.deliveryStatus === 'sent') {
+          return { deliveryStatus: output.deliveryStatus };
+        }
+        return {};
+      },
+      run: (input) => sendInvoiceAction(input),
+    };
+    tools.push(envoyerFacture as AnyTool);
   }
 
   // —— Outil OPTIONNEL envoyer_relance (parité C15 TODO ② — C25) : ENVOI réel, même endpoint

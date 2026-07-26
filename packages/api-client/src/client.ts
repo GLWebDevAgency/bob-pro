@@ -876,6 +876,21 @@ export type AskBobClientInput = Readonly<{ message: string }> &
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 export type UpdateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
+/** PR-01 « Encaisser » — envoi EMAIL réel d'une facture ÉMISE (POST /invoices/:id/send).
+ * `recipientEmail` absent = e-mail de la fiche client (refus actionnable si aucun). */
+export interface SendInvoiceClientInput {
+  invoiceId: string;
+  recipientEmail?: string;
+}
+
+export interface SendInvoiceClientOutput {
+  number: string;
+  recipient: string;
+  /** `sent` = clé déjà livrée (dédup d'un retry) ; `queued` = job durable en outbox. */
+  deliveryStatus: 'queued' | 'sent';
+  jobId: string;
+}
+
 /** Envoi RÉEL d'une relance ciblée (C25 ② — endpoint POST /invoices/:id/relance, DTO serveur
  * constaté : { jobId, status, tone }). Le serveur choisit le ton via le plan @bob/core
  * (deriveRelancePlan ; automatique déduplié par palier, manuel par jour) et livre email + miroir
@@ -1475,6 +1490,13 @@ export interface BobClient {
   /** Lien public de VISUALISATION d'une facture (POST /invoices/:id/view-link) — SANS AUCUN
    * effet sortant, facture ÉMISE uniquement (jamais un brouillon). */
   createInvoiceViewLink(invoiceId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>>;
+  /** PR-01 « Encaisser » : envoi EMAIL réel de la facture ÉMISE (POST /invoices/:id/send) —
+   * geste explicite confirmé, lien public + PDF archivé joint, expéditeur perçu = la société.
+   * OPTIONNELLE (compat transports existants) — le client HTTP et le client local de démo
+   * l'implémentent tous les deux (parité stricte). */
+  sendInvoice?(
+    input: SendInvoiceClientInput,
+  ): Promise<Result<SendInvoiceClientOutput, AppError>>;
   /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
    * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */
   sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;

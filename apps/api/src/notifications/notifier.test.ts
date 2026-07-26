@@ -51,6 +51,59 @@ describe('BrevoEmailNotifier', () => {
     expect(JSON.stringify(audit.mock.calls)).not.toContain('Devis D2026-001');
   });
 
+  it('PR-01 facture : pièce jointe + Reply-To + Cc + nom d’expéditeur société — From INCHANGÉ (domaine vérifié)', async () => {
+    const fetchFn = vi.fn(async (_input: string, _init: RequestInit) => new Response(JSON.stringify({ messageId: 'm-2' }), { status: 201 }));
+    const notifier = new BrevoEmailNotifier(
+      logger,
+      {
+        apiKey: 'secret-key',
+        senderEmail: 'hello@bobpro.fr',
+        senderName: 'Bob Pro',
+        baseUrl: 'https://api.brevo.com/v3',
+      },
+      fetchFn,
+    );
+
+    await notifier.send({
+      channel: 'email',
+      to: 'compta@ratp-cap.fr',
+      subject: 'Facture F-2026-0042 — Fly Services',
+      body: 'Bonjour,\nVoici votre facture.',
+      idempotencyKey: '79e27b85-d458-445e-a759-e8b1a49e1641',
+      senderName: 'Fly Services',
+      replyTo: 'contact@fly-services.fr',
+      cc: ['contact@fly-services.fr'],
+      attachments: [
+        { filename: 'facture-F-2026-0042.pdf', mimeType: 'application/pdf', contentBase64: 'JVBERi0xLjc=' },
+      ],
+    });
+
+    const [, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
+    const payload = JSON.parse(String(init.body));
+    // Amendement fondateur : display name = la société, ADRESSE From = domaine vérifié Brevo.
+    expect(payload.sender).toEqual({ name: 'Fly Services', email: 'hello@bobpro.fr' });
+    expect(payload.replyTo).toEqual({ email: 'contact@fly-services.fr', name: 'Fly Services' });
+    expect(payload.cc).toEqual([{ email: 'contact@fly-services.fr' }]);
+    expect(payload.attachment).toEqual([
+      { name: 'facture-F-2026-0042.pdf', content: 'JVBERi0xLjc=' },
+    ]);
+  });
+
+  it('sans extensions : payload historique inchangé (ni replyTo, ni cc, ni attachment)', async () => {
+    const fetchFn = vi.fn(async (_input: string, _init: RequestInit) => new Response(JSON.stringify({ messageId: 'm-3' }), { status: 201 }));
+    const notifier = new BrevoEmailNotifier(
+      logger,
+      { apiKey: 'k', senderEmail: 'hello@bobpro.fr', senderName: 'Bob Pro', baseUrl: 'https://api.brevo.com/v3' },
+      fetchFn,
+    );
+    await notifier.send({ channel: 'email', to: 'a@b.fr', subject: 's', body: 'b' });
+    const payload = JSON.parse(String(fetchFn.mock.calls[0]![1].body));
+    expect(payload.sender).toEqual({ name: 'Bob Pro', email: 'hello@bobpro.fr' });
+    expect(payload).not.toHaveProperty('replyTo');
+    expect(payload).not.toHaveProperty('cc');
+    expect(payload).not.toHaveProperty('attachment');
+  });
+
   it('considère le duplicate_parameter d’une même clé comme un accusé provider', async () => {
     const duplicate = vi.fn(async () => new Response(
       JSON.stringify({ code: 'duplicate_parameter', message: 'Key already used' }),

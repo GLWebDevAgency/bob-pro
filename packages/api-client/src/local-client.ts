@@ -237,6 +237,8 @@ import type {
   CreateQuoteSignatureLinkOutput,
   CreateDocumentViewLinkOutput,
   SendRelanceClientOutput,
+  SendInvoiceClientInput,
+  SendInvoiceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
   NotificationReadThroughInput,
@@ -3719,6 +3721,71 @@ export class LocalBobClient implements BobClient {
     }).execute({ invoiceId: input.invoiceId });
     if (!accounting.ok) return accounting;
     return issued;
+  }
+
+  /** PR-01 (adaptateur DÉMO) : mêmes gardes que le serveur (pièce émise uniquement, destinataire
+   * résolu — refus actionnable sinon), mais l'« envoi » alimente le fil local au lieu du mailer :
+   * le mode démo journalise, il ne contacte jamais un tiers. Dédup par facture + jour. */
+  async sendInvoice(
+    input: SendInvoiceClientInput,
+  ): Promise<Result<SendInvoiceClientOutput, AppError>> {
+    await this.ready;
+    const invoice = await this.invoices.findById(input.invoiceId);
+    if (!invoice) return err({ kind: 'not_found', entity: 'invoice', id: input.invoiceId });
+    if (invoice.number === null || invoice.issuedAt === null) {
+      return err({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'invoice',
+            message: 'Cette facture est un brouillon : émets-la d’abord, puis envoie-la.',
+          },
+        ],
+      });
+    }
+    if (invoice.status === 'cancelled') {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'invoice', message: 'Facture annulée : rien à envoyer.' }],
+      });
+    }
+    const customer = await this.customers.findById(invoice.customerId);
+    const recipient = input.recipientEmail?.trim().toLowerCase() || customer?.email || null;
+    if (recipient === null || customer === null) {
+      return err({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'customer.email',
+            message: `Aucune adresse e-mail pour ${customer?.name ?? 'ce client'}. Complète sa fiche client, puis renvoie la facture — ou partage le lien de consultation.`,
+          },
+        ],
+      });
+    }
+    const dedupeKey = `delivery:${input.invoiceId}:${this.clock.today()}`;
+    const existing = this.relanceDedupe.get(dedupeKey);
+    if (existing) {
+      return ok({
+        number: invoice.number,
+        recipient,
+        deliveryStatus: 'sent',
+        jobId: existing,
+      });
+    }
+    const item: NotificationView = {
+      id: `notif-${(this.notificationSeq += 1)}`,
+      kind: 'invoice-delivery',
+      title: `Facture ${invoice.number} envoyée`,
+      body: null, // sémantique serveur : payload purgé après livraison (hygiène PII)
+      channel: 'email',
+      status: 'done',
+      route: `/facture/${invoice.id}`,
+      readAt: null,
+      createdAt: this.clock.now(),
+    };
+    this.notifications.unshift(item);
+    this.relanceDedupe.set(dedupeKey, item.id);
+    return ok({ number: invoice.number, recipient, deliveryStatus: 'queued', jobId: item.id });
   }
 
   /** C25 ② (adaptateur DÉMO) : mêmes règles que le serveur (plan @bob/core, dédup quotidienne,

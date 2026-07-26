@@ -32,6 +32,9 @@ import {
   CreateBankBalanceSnapshot,
   BANK_BALANCE_FRESHNESS_POLICY_V1,
   deriveKnownReceivables,
+  SendInvoice,
+  type InvoiceArchivePdfPort,
+  type NotificationEmailAttachment,
   SystemClock,
   parisDateOnly,
   deriveRelancePlan,
@@ -1642,6 +1645,96 @@ export class BackendService {
       expiresAt: link.value.expiresAt,
     });
   }
+
+  /**
+   * PR-01 « Encaisser » — envoi EMAIL réel de la facture ÉMISE (POST /invoices/:id/send, patron
+   * deliveryStatus de sendQuote). Geste EXPLICITE de l'artisan, jamais un effet de bord de
+   * l'émission : lien public de consultation + PDF ARCHIVÉ joint, expéditeur perçu = la société
+   * (display name + Reply-To — amendement fondateur), copie à l'e-mail de la société. L'outbox
+   * transactionnelle livre (worker cron) — aucun réseau tiers dans la requête HTTP.
+   */
+  async sendInvoice(
+    invoiceId: string,
+    input?: { recipientEmail?: string },
+  ): Promise<
+    Result<
+      {
+        number: string;
+        recipient: string;
+        deliveryStatus: 'queued' | 'sent';
+        jobId: string;
+      },
+      AppError
+    >
+  > {
+    if (!(await this.ownedInvoice(invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', invoiceId) };
+    const sent = await new SendInvoice({
+      invoices: this.p.invoices,
+      customers: this.p.customers,
+      companies: this.p.companies,
+      quotes: this.p.quotes,
+      publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
+      clock: this.clock,
+      outbox: {
+        enqueue: async (order) => {
+          const job = await this.notificationDelivery.enqueue(order);
+          return { jobId: job.id, status: job.status === 'cancelled' ? 'failed' : job.status };
+        },
+      },
+      archivePdf: this.invoiceArchivePdfPort(),
+      viewUrlOf: publicDocumentViewUrl,
+    }).execute({
+      invoiceId,
+      ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
+    });
+    if (!sent.ok) return sent;
+    // Jamais le contenu dans les journaux — corrélation technique seulement.
+    this.logger.audit('invoice.email_queued', {
+      invoiceId,
+      number: sent.value.number,
+      jobId: sent.value.jobId,
+      deliveryStatus: sent.value.deliveryStatus,
+    });
+    return sent;
+  }
+
+  /** PDF ARCHIVÉ (immuable) de la pièce émise, en base64 pour la pièce jointe e-mail — même
+   *  vérification d'intégrité octet à octet que le service public (fail-closed : archive
+   *  absente/ambiguë = indisponibilité à réparer, jamais une régénération). */
+  private invoiceArchivePdfPort(): InvoiceArchivePdfPort {
+    return {
+      loadIssuedInvoicePdf: async (
+        companyId: string,
+        invoiceId: string,
+      ): Promise<Result<NotificationEmailAttachment, AppError>> => {
+        const documents = await this.p.documents.findByEntity(companyId, 'invoice', invoiceId);
+        const archivedCandidates = documents.filter(
+          (document) => document.kind === 'invoice_pdf' && document.status === 'active',
+        );
+        if (archivedCandidates.length !== 1) return err(appUnavailable('invoice-archive'));
+        const archive = archivedCandidates[0]!.toProps();
+        const bytes = await this.loadVerifiedArchivedPdfBytes(
+          companyId,
+          {
+            storageKey: archive.storageKey,
+            mimeType: archive.mimeType,
+            byteSize: archive.byteSize,
+            sha256: archive.sha256,
+          },
+          'invoice-archive',
+        );
+        if (!bytes.ok) return bytes;
+        return ok({
+          filename: archive.filename,
+          mimeType: archive.mimeType,
+          contentBase64: Buffer.from(bytes.value).toString('base64'),
+        });
+      },
+    };
+  }
+
   async refuseQuote(quoteId: string) {
     if (!(await this.ownedQuote(quoteId)))
       return { ok: false as const, error: appNotFound('quote', quoteId) };
@@ -4033,6 +4126,9 @@ export class BackendService {
             input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
+      // PR-01 (parité papa vocal) — envoyer_facture : MÊME use case SendInvoice que le bouton
+      // mobile et POST /invoices/:id/send (gardes fail-closed restituées, refus actionnables).
+      sendInvoice: async (input: { invoiceId: string }) => this.sendInvoice(input.invoiceId),
       issueInvoice: async (input) =>
         this.issueInvoice({
           invoiceId: input.invoiceId,

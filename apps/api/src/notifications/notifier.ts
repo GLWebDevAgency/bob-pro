@@ -56,11 +56,37 @@ export class BrevoEmailNotifier implements NotificationPort {
       throw new Error('La clé d’idempotence Brevo doit être un UUID.');
     }
     const body = {
-      sender: { name: this.opts.senderName, email: this.opts.senderEmail },
+      // Amendement fondateur (26/07) : l'expéditeur PERÇU est la société utilisatrice — display
+      // name = nom de la société quand le payload le porte. L'ADRESSE `From` reste TOUJOURS le
+      // domaine vérifié du provider (un From sur un domaine non vérifié serait refusé/spam) ;
+      // les réponses reviennent à la société via Reply-To.
+      sender: {
+        name: notification.senderName ?? this.opts.senderName,
+        email: this.opts.senderEmail,
+      },
       to: [{ email: notification.to }],
       subject: notification.subject,
       textContent: notification.body,
       htmlContent: textToHtml(notification.body),
+      ...(notification.replyTo
+        ? {
+            replyTo: {
+              email: notification.replyTo,
+              ...(notification.senderName ? { name: notification.senderName } : {}),
+            },
+          }
+        : {}),
+      ...(notification.cc && notification.cc.length > 0
+        ? { cc: notification.cc.map((email) => ({ email })) }
+        : {}),
+      ...(notification.attachments && notification.attachments.length > 0
+        ? {
+            attachment: notification.attachments.map((a) => ({
+              name: a.filename,
+              content: a.contentBase64,
+            })),
+          }
+        : {}),
       ...(notification.idempotencyKey
         ? { headers: { idempotencyKey: notification.idempotencyKey } }
         : {}),

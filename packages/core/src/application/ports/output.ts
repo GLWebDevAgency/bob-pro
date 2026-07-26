@@ -179,6 +179,14 @@ export interface PdfRendererPort {
 
 export type NotificationChannel = 'email' | 'sms';
 
+/** Pièce jointe d'un e-mail sortant — octets encodés base64, résolus PAR L'APPELANT depuis une
+ *  archive immuable (jamais régénérés à la livraison : le payload d'outbox reste figé). */
+export interface NotificationEmailAttachment {
+  filename: string;
+  mimeType: string;
+  contentBase64: string;
+}
+
 export interface Notification {
   channel: NotificationChannel;
   to: string;
@@ -189,6 +197,19 @@ export interface Notification {
    * l'utilisent pour rendre un retry idempotent après un accusé provider perdu.
    */
   idempotencyKey?: string;
+  /**
+   * Nom d'expéditeur AFFICHÉ (amendement fondateur 26/07) : la SOCIÉTÉ utilisatrice, jamais
+   * « Bob Pro ». L'adresse `From` reste le domaine VÉRIFIÉ du provider (un From sur un domaine
+   * non vérifié serait refusé/spam) — seul le display name change. Absent = nom par défaut.
+   */
+  senderName?: string;
+  /** Adresse de réponse (Reply-To) : l'e-mail de la société — les réponses clients lui
+   *  reviennent au lieu de mourir chez le sender technique. Absent = pas de Reply-To. */
+  replyTo?: string;
+  /** Copies (Cc) — ex. copie à l'artisan de la facture envoyée à son client. */
+  cc?: string[];
+  /** Pièces jointes (e-mail uniquement) — ex. PDF archivé de la facture émise. */
+  attachments?: NotificationEmailAttachment[];
 }
 
 export interface NotificationPort {

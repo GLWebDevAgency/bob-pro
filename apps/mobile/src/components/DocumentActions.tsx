@@ -22,6 +22,7 @@ import {
   useInvoicePaymentLink,
   useDeleteDraftInvoice,
   useScheduleEmbargoPayment,
+  useSendInvoice,
   appErrorMessage,
 } from '../data/hooks';
 import {
@@ -1042,6 +1043,7 @@ export function InvoiceActions({
   const createCreditNote = useCreateCreditNote();
   const deleteDraft = useDeleteDraftInvoice();
   const scheduleEmbargo = useScheduleEmbargoPayment();
+  const sendInvoice = useSendInvoice();
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow encaissement/émission).
   const { showError, errorSheet } = useErrorSheet();
   const { busy, lock, run } = useActionLock(showError);
@@ -1304,8 +1306,45 @@ export function InvoiceActions({
   // la parité voix↔tap est structurelle : même condition, même hook (useInvoicePaymentLink).
   if (isPaymentLinkEligible(invoice.status)) {
     const remaining = collectRemainingCents(invoice);
+    // PR-01 « Encaisser » — envoi EMAIL réel de la pièce émise (le trou n° 1 : émise jamais
+    // transmise). Geste CONFIRMÉ (sortant vers un tiers) ; le résultat dit le VRAI destinataire
+    // et le VRAI statut (« en file » ≠ « reçue » — deliveryStatus honnête, jamais fabriqué).
+    const sendByEmail = (): void =>
+      void (async () => {
+        const ok = await confirm({
+          title: t('facture.sendConfirmTitle', { personality }),
+          message: t('facture.sendConfirmBody', { personality }),
+          challenge: challengeFor(OUTBOUND, 'confirm_all'),
+        });
+        if (!ok) return;
+        await run('send', async () => {
+          try {
+            const out = await sendInvoice.mutateAsync({ invoiceId: invoice.id });
+            showError(
+              t('facture.sendQueuedTitle', { personality }),
+              t(
+                out.deliveryStatus === 'sent'
+                  ? 'facture.sendAlreadySentBody'
+                  : 'facture.sendQueuedBody',
+                { personality, params: { number: out.number, recipient: out.recipient } },
+              ),
+            );
+          } catch (e) {
+            showError('Oups', appErrorMessage(e));
+          }
+        });
+      })();
     return (
       <>
+      <View style={{ marginBottom: 8 }}>
+        <Button
+          title={t('facture.sendButton', { personality })}
+          variant="secondary"
+          loading={busy === 'send'}
+          disabled={!!busy}
+          onPress={sendByEmail}
+        />
+      </View>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         {remaining > 0 ? (
           <View style={{ flex: 1 }}>

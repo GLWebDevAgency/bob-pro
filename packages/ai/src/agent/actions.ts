@@ -301,6 +301,21 @@ export interface SendRelanceActionOutput {
   tone?: string;
 }
 
+/** Outil envoyer_facture (PR-01 « Encaisser ») : envoi EMAIL réel d'une facture ÉMISE — même
+ * use case SendInvoice (@bob/core) que le bouton mobile. Gardes fail-closed restituées telles
+ * quelles (brouillon refusé, destinataire manquant = refus actionnable — jamais contournées). */
+export interface SendInvoiceActionInput {
+  invoiceId: string;
+}
+
+export interface SendInvoiceActionOutput {
+  number: string;
+  recipient: string;
+  /** `sent` = déjà livrée (dédup d'un retry) ; `queued` = job durable, worker à suivre. */
+  deliveryStatus: 'queued' | 'sent';
+  jobId: string;
+}
+
 /** Outil creer_devis (parité C15 TODO ④) — mêmes entrées que le use case CreateQuote de l'UI. */
 export interface CreateQuoteActionInput {
   customerId: string;
@@ -591,6 +606,10 @@ export interface BobActions {
   /** Envoi réel de relance (C25 ②) — même endpoint que le bouton « Relancer » de l'écran
    * Notifications (client.sendRelance). Sortant : plancher de confirmation dans le registre. */
   sendRelance?(input: SendRelanceActionInput): Promise<Result<SendRelanceActionOutput, AppError>>;
+  /** PR-01 « Encaisser » — « envoie la facture » : MÊME endpoint POST /invoices/:id/send que le
+   * bouton (SendInvoice @bob/core — pièce émise uniquement, lien public + PDF archivé joint,
+   * expéditeur perçu = la société). Sortant vers un tiers : confirmation du registre. */
+  sendInvoice?(input: SendInvoiceActionInput): Promise<Result<SendInvoiceActionOutput, AppError>>;
   /** Preuve d'un règlement fournisseur déjà exécuté — écriture comptable : palier accounting. */
   recordExpensePayment?(input: RecordExpensePaymentActionInput): Promise<
     Result<{ status: string; alreadyRecorded: boolean; paymentEntryId: string }, AppError>

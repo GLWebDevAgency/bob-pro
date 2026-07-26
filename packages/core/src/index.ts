@@ -118,6 +118,7 @@ export * from './application/billing/create-quote';
 export * from './application/billing/compose-standalone-invoice';
 export * from './application/billing/line-input-validation';
 export * from './application/billing/send-quote';
+export * from './application/billing/send-invoice';
 export * from './application/billing/sign-quote';
 export * from './application/billing/exercise-retractation';
 export * from './application/billing/refuse-quote';

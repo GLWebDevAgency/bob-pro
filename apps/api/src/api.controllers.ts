@@ -1025,6 +1025,29 @@ function parseComposeInvoiceBody(body: Record<string, unknown>): {
 }
 
 /** Suivi MANUEL de transmission : champ absent = inchangé, null = effacé, sinon AAAA-MM-JJ. */
+/** PR-01 — corps OPTIONNEL de POST /invoices/:id/send : `recipientEmail` (contact choisi) seul
+ *  champ autorisé ; body absent/vide = destinataire résolu depuis la fiche client (use case). */
+function parseSendInvoiceBody(body: unknown): { recipientEmail?: string } {
+  if (body === undefined || body === null) return {};
+  if (typeof body !== 'object' || Array.isArray(body)) {
+    throwValidationIssues([{ field: 'body', message: 'Objet JSON attendu.' }]);
+  }
+  const record = body as Record<string, unknown>;
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(record)) {
+    if (field !== 'recipientEmail') {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  if ('recipientEmail' in record && typeof record.recipientEmail !== 'string') {
+    issues.push({ field: 'recipientEmail', message: 'Adresse e-mail attendue (chaîne).' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return typeof record.recipientEmail === 'string'
+    ? { recipientEmail: record.recipientEmail }
+    : {};
+}
+
 function parseInvoiceTransmissionBody(body: Record<string, unknown>): {
   depositedAt?: string | null;
   acceptedAt?: string | null;
@@ -2628,6 +2651,14 @@ export class InvoicesController {
   @Throttle({ default: { limit: 5, ttl: 10_000 } })
   async sendRelance(@Param('id') id: string) {
     return unwrap(await this.relances.sendRelance(id));
+  }
+  /** PR-01 « Encaisser » : envoi EMAIL réel de la facture ÉMISE (patron deliveryStatus de
+   * sendQuote) — geste explicite confirmé côté client, lien public + PDF archivé joint,
+   * expéditeur perçu = la société. Throttlé : action sortante vers un tiers. */
+  @Post(':id/send')
+  @Throttle({ default: { limit: 5, ttl: 10_000 } })
+  async send(@Param('id') id: string, @Body() body: unknown) {
+    return unwrap(await this.backend.sendInvoice(id, parseSendInvoiceBody(body)));
   }
   @Get(':id')
   async get(@Param('id') id: string) {

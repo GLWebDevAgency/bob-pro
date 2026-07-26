@@ -81,6 +81,8 @@ import type {
   CreateQuoteSignatureLinkOutput,
   CreateDocumentViewLinkOutput,
   SendRelanceClientOutput,
+  SendInvoiceClientInput,
+  SendInvoiceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
   NotificationReadThroughInput,
@@ -3388,6 +3390,14 @@ export class HttpBobClient implements BobClient {
   /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */
   sendRelance(invoiceId: string) {
     return this.req<SendRelanceClientOutput>('POST', `/invoices/${invoiceId}/relance`);
+  }
+  /** PR-01 : envoi EMAIL réel de la facture émise (POST /invoices/:id/send — patron deliveryStatus). */
+  sendInvoice(input: SendInvoiceClientInput) {
+    return this.req<SendInvoiceClientOutput>(
+      'POST',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/send`,
+      input.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {},
+    );
   }
   listNotifications() {
     return this.req<NotificationView[]>('GET', '/notifications');

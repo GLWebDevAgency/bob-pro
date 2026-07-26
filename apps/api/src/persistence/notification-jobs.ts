@@ -25,10 +25,14 @@ export interface NotificationJob {
    *  support durable (courriel choisi par le consommateur — art. D221-5, IV c. conso).
    *  `embargo-scheduled-payment` : encaissement PROGRAMMÉ à l'expiration de l'embargo L221-10
    *  (défaut légal du flow « encaisser » pendant la fenêtre) — job planifié via notBefore,
-   *  livré SEUL à J+7 avec un message honnête au client. */
+   *  livré SEUL à J+7 avec un message honnête au client.
+   *  `invoice-delivery` : envoi EMAIL de la facture ÉMISE au client (PR-01 « Encaisser ») —
+   *  geste explicite de l'artisan, jamais un effet de bord de l'émission ; payload = lien
+   *  public + PDF archivé joint, expéditeur perçu = la société (amendement fondateur). */
   kind:
     | 'quote-signature'
     | 'invoice-relance'
+    | 'invoice-delivery'
     | 'weekly-digest'
     | 'retractation-acknowledgment'
     | 'embargo-scheduled-payment';

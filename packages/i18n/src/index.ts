@@ -3156,6 +3156,39 @@ const legacyFr = {
     pro: 'Le partage du lien est ouvert.',
     direct: 'Partage ouvert.',
   },
+  // PR-01 « Encaisser » — envoi EMAIL réel de la facture émise (bouton confirmé, jamais un
+  // effet de bord de l'émission). Le résultat dit le VRAI destinataire et le VRAI statut :
+  // « en file » (outbox, worker à suivre) n'est jamais présenté comme « reçue ».
+  'facture.sendButton': {
+    pote: 'Envoyer par e-mail',
+    pro: 'Envoyer par e-mail',
+    direct: 'Envoyer',
+  },
+  'facture.sendConfirmTitle': {
+    pote: 'Envoyer la facture ?',
+    pro: 'Envoyer la facture',
+    direct: 'Envoyer ?',
+  },
+  'facture.sendConfirmBody': {
+    pote: 'Ton client reçoit un e-mail au nom de ta société, avec le lien de consultation et le PDF joint. Rien d’autre ne part.',
+    pro: 'Votre client recevra un e-mail au nom de votre société, avec le lien de consultation et le PDF joint.',
+    direct: 'E-mail au client : lien + PDF. Au nom de ta société.',
+  },
+  'facture.sendQueuedTitle': {
+    pote: 'C’est parti !',
+    pro: 'Envoi programmé',
+    direct: 'Parti.',
+  },
+  'facture.sendQueuedBody': {
+    pote: 'La facture {number} part chez {recipient} — je te préviens si l’envoi échoue.',
+    pro: 'La facture {number} est en cours d’envoi à {recipient}. Vous serez averti en cas d’échec.',
+    direct: '{number} → {recipient}. Alerte si échec.',
+  },
+  'facture.sendAlreadySentBody': {
+    pote: 'Cet envoi de la facture {number} à {recipient} est déjà parti — rien à renvoyer.',
+    pro: 'Cet envoi de la facture {number} à {recipient} a déjà été effectué.',
+    direct: 'Déjà envoyée : {number} → {recipient}.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },

@@ -4,6 +4,7 @@ import {
   DocumentsController,
   ExpensesController,
   HealthController,
+  InvoicesController,
   PublicSignatureController,
   QuotesController,
 } from './api.controllers';
@@ -708,5 +709,83 @@ describe('DocumentsController B9 — GET /documents/search & /documents/suggest'
     expect(backend.suggestSalesDocuments).toHaveBeenCalledWith({ query: '' });
     await controller.suggest('mart');
     expect(backend.suggestSalesDocuments).toHaveBeenCalledWith({ query: 'mart' });
+  });
+});
+
+describe('InvoicesController — POST :id/send (PR-01 « Encaisser »)', () => {
+  const relances = {} as never;
+
+  it('transmet le deliveryStatus honnête du backend (queued) et le destinataire réel', async () => {
+    const backend = {
+      sendInvoice: vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          number: 'F-2026-0042',
+          recipient: 'compta@ratp-cap.fr',
+          deliveryStatus: 'queued' as const,
+          jobId: 'job-1',
+        },
+      })),
+    };
+    const controller = new InvoicesController(backend as unknown as BackendService, relances);
+
+    const response = await controller.send('inv-1', {});
+    expect(response).toEqual({
+      number: 'F-2026-0042',
+      recipient: 'compta@ratp-cap.fr',
+      deliveryStatus: 'queued',
+      jobId: 'job-1',
+    });
+    expect(backend.sendInvoice).toHaveBeenCalledWith('inv-1', {});
+  });
+
+  it('body absent accepté (destinataire = fiche client) ; recipientEmail transmis quand fourni', async () => {
+    const backend = {
+      sendInvoice: vi.fn(async () => ({
+        ok: true as const,
+        value: { number: 'F-1', recipient: 'x@y.fr', deliveryStatus: 'sent' as const, jobId: 'j' },
+      })),
+    };
+    const controller = new InvoicesController(backend as unknown as BackendService, relances);
+
+    await controller.send('inv-1', undefined);
+    expect(backend.sendInvoice).toHaveBeenLastCalledWith('inv-1', {});
+    await controller.send('inv-1', { recipientEmail: 'contact@client.fr' });
+    expect(backend.sendInvoice).toHaveBeenLastCalledWith('inv-1', {
+      recipientEmail: 'contact@client.fr',
+    });
+  });
+
+  it('rejette un champ non autorisé sans appeler le métier (fail-closed)', async () => {
+    const backend = { sendInvoice: vi.fn() };
+    const controller = new InvoicesController(backend as unknown as BackendService, relances);
+
+    await expect(controller.send('inv-1', { to: 'x@y.fr' })).rejects.toBeInstanceOf(HttpException);
+    await expect(controller.send('inv-1', { recipientEmail: 42 })).rejects.toBeInstanceOf(
+      HttpException,
+    );
+    expect(backend.sendInvoice).not.toHaveBeenCalled();
+  });
+
+  it('restitue le refus actionnable du use case (422 validation — jamais un faux succès)', async () => {
+    const backend = {
+      sendInvoice: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          kind: 'validation' as const,
+          issues: [{ field: 'customer.email', message: 'Aucune adresse e-mail pour RATP CAP.' }],
+        },
+      })),
+    };
+    const controller = new InvoicesController(backend as unknown as BackendService, relances);
+
+    let thrown: unknown;
+    try {
+      await controller.send('inv-1', {});
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(422);
   });
 });

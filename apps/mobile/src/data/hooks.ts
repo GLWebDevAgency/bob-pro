@@ -1206,6 +1206,29 @@ export function useCreateInvoiceViewLink() {
   });
 }
 
+/** PR-01 « Encaisser » : envoi EMAIL réel de la facture ÉMISE (POST /invoices/:id/send) —
+ * geste explicite CONFIRMÉ côté appelant (sortant vers un tiers, jamais un effet de bord). */
+export function useSendInvoice() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { invoiceId: string; recipientEmail?: string }) => {
+      if (client.sendInvoice === undefined) {
+        throw { kind: 'unavailable', service: 'invoice-delivery' };
+      }
+      const r = await client.sendInvoice(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      // L'état dérivé « émise jamais transmise » et le fil de notifications changent.
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
+      void qc.invalidateQueries({ queryKey: keys.notifications });
+    },
+  });
+}
+
 export function useSignQuote() {
   const client = useBobClient();
   const qc = useQueryClient();
