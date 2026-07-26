@@ -158,6 +158,12 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
   Le propriétaire NOLOGIN est créé par le déployeur avec
   `createrole_self_grant='set'`; après transfert, toute DDL/ACL s'exécute sous `SET ROLE`
   propriétaire. Le runtime reste non-superuser, non-owner et sans `BYPASSRLS`.
+- Le train absorbe le garde-fou de release Supabase découvert pendant sa revue globale : les rôles
+  propriétaires Mistral, OpenAI native, reaper et capacité sont acquis uniquement par
+  `createrole_self_grant='set'` au moment de leur création. Aucun script de release ou de
+  certification n'émet de `GRANT ... TO CURRENT_USER`, même conditionnel. Un rôle préexistant que
+  le déployeur ne peut pas endosser fait échouer le rituel avec une remédiation explicite ; il
+  n'autorise jamais un fallback qui peut tuer la connexion Supabase.
 - Le script de release est modifié seulement après intégration séquentielle du travail Claude déjà
   présent sur ce fichier. Aucun contournement ni écrasement n'est autorisé.
 - Ordre obligatoire : PR → Supabase staging certifié → fusion → production. Cette tranche ne
@@ -188,12 +194,16 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
       d'englober l'UoW owner,
       et le test AppModule prouve zéro requête mission quand elle refuse.
 - [x] Aucun flag, texte marketing, mock ou donnée de démonstration n'est ajouté au runtime.
+- [x] Les quatre autorités NOLOGIN du train de release n'ont aucun fallback d'adhésion explicite ;
+      les tests exigent l'acquisition implicite `SET` sans héritage et le refus fail-closed d'un
+      owner préexistant inaccessible.
 - [ ] La migration et le certificat sont rejoués avec succès sur Supabase staging.
 
 ## 7. Definition of Done M1-A
 
 - [x] Tests ciblés core/API/Prisma/PostgreSQL verts.
 - [x] Typecheck et lint des packages touchés verts.
+- [x] Suite globale verte dans le worktree candidat, y compris les contrats de release historiques.
 - [ ] Build API + garde d'artefact verts depuis un checkout propre du commit candidat.
 - [x] Review adversariale correctness/sécurité, architecture/parité et release Supabase terminée ;
       tous les P0/P1 sont corrigés.
@@ -211,4 +221,7 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
   rollback, couplage mission/event et ACL exactes ;
 - mêmes 34 scénarios verts via le mode TCP externe utilisé par le job CI ;
 - gardes migration + release : 14 tests Node verts ;
+- suite globale monorepo : 15 tâches sur 15 vertes, dont 259 contrats de release API ;
+- garde owners Supabase : 2 contrats statiques verts et preuve PostgreSQL 17 avec déployeur
+  non-superuser, chemin nominal puis owner préexistant inaccessible refusé avant DDL ;
 - typecheck `core`, `api`, `mobile` et lint `core`, `api`, mobile ciblé verts.

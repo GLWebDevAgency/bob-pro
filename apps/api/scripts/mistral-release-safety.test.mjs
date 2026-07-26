@@ -83,9 +83,14 @@ test('le runtime ne peut ni supprimer les preuves bootstrap ni omettre leur cert
     release,
     /REVOKE bob_mistral_bootstrap_reaper FROM :"app_role"/u,
   );
+  assert.doesNotMatch(
+    release,
+    /GRANT\s+(?:%I|bob_mistral_bootstrap_reaper)\s+TO\s+CURRENT_USER/iu,
+  );
+  assert.match(release, /SET createrole_self_grant = 'set'/u);
   assert.match(
     release,
-    /'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',\s+'bob_mistral_bootstrap_reaper'[\s\S]*pg_has_role\(current_user, 'bob_mistral_bootstrap_reaper', 'SET'\)/u,
+    /membership\.set_option[\s\S]*NOT membership\.inherit_option[\s\S]*bob_mistral_bootstrap_reaper is not available through implicit SET membership/u,
   );
   assert.match(
     release,

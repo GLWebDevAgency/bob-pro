@@ -721,9 +721,9 @@ SQL
 ensure_mistral_bootstrap_reaper_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
--- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- Supabase intercepte fatalement tout GRANT/REVOKE d'adhesion visant postgres
 -- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
--- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+-- (createrole_self_grant, PG16+), sans aucun fallback GRANT explicite.
 SET createrole_self_grant = 'set';
 
 SELECT format(
@@ -733,6 +733,39 @@ SELECT format(
 WHERE NOT EXISTS (
   SELECT 1 FROM pg_roles WHERE rolname = 'bob_mistral_bootstrap_reaper'
 ) \gexec
+
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  owner_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_mistral_bootstrap_reaper';
+
+  IF NOT pg_catalog.pg_has_role(current_user, owner_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = owner_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_mistral_bootstrap_reaper is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
 
 -- Un role DIRECT_URL CREATEROLE non-superuser peut verrouiller ces attributs, mais PostgreSQL
 -- lui interdit de reaffirmer NOSUPERUSER/NOBYPASSRLS/NOREPLICATION, meme a false. On atteste donc
@@ -768,21 +801,41 @@ SELECT format('REVOKE %I FROM %I CASCADE', parent_role.rolname, 'bob_mistral_boo
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS parent_role ON parent_role.oid = membership.roleid
  WHERE membership.member = 'bob_mistral_bootstrap_reaper'::regrole
+   AND parent_role.rolname <> 'postgres'
 \gexec
 
 SELECT format('REVOKE %I FROM %I CASCADE', 'bob_mistral_bootstrap_reaper', member_role.rolname)
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
  WHERE membership.roleid = 'bob_mistral_bootstrap_reaper'::regrole
-   AND member_role.rolname <> current_user
+   AND member_role.rolname NOT IN (current_user, 'postgres')
 \gexec
 
-SELECT format(
-  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
-  'bob_mistral_bootstrap_reaper'
-)
-WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_mistral_bootstrap_reaper', 'SET')
-\gexec
+DO $$
+DECLARE
+  owner_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_mistral_bootstrap_reaper';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = owner_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+     WHERE membership.roleid = owner_oid
+       AND member_role.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_mistral_bootstrap_reaper has an unexpected member; membership remediation must be performed outside this release without targeting postgres';
+  END IF;
+END;
+$$;
 SQL
 }
 
@@ -1272,9 +1325,9 @@ SQL
 ensure_openai_native_maintenance_directory_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="${APP_DATABASE_ROLE:-}" <<'SQL'
--- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- Supabase intercepte fatalement tout GRANT/REVOKE d'adhesion visant postgres
 -- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
--- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+-- (createrole_self_grant, PG16+), sans aucun fallback GRANT explicite.
 SET createrole_self_grant = 'set';
 
 SELECT format(
@@ -1285,6 +1338,39 @@ WHERE NOT EXISTS (
   SELECT 1 FROM pg_catalog.pg_roles
    WHERE rolname = 'bob_openai_native_maintenance_directory'
 ) \gexec
+
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  owner_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_openai_native_maintenance_directory';
+
+  IF NOT pg_catalog.pg_has_role(current_user, owner_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = owner_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_openai_native_maintenance_directory is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
 
 ALTER ROLE bob_openai_native_maintenance_directory
   NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -1316,6 +1402,7 @@ SELECT format(
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS parent_role ON parent_role.oid = membership.roleid
  WHERE membership.member = 'bob_openai_native_maintenance_directory'::regrole
+   AND parent_role.rolname <> 'postgres'
 \gexec
 SELECT format(
   'REVOKE %I FROM %I CASCADE',
@@ -1324,15 +1411,34 @@ SELECT format(
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
  WHERE membership.roleid = 'bob_openai_native_maintenance_directory'::regrole
-   AND member_role.rolname <> current_user
+   AND member_role.rolname NOT IN (current_user, 'postgres')
 \gexec
 
-SELECT format(
-  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
-  'bob_openai_native_maintenance_directory'
-)
-WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_openai_native_maintenance_directory', 'SET')
-\gexec
+DO $$
+DECLARE
+  owner_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_openai_native_maintenance_directory';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = owner_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+     WHERE membership.roleid = owner_oid
+       AND member_role.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_openai_native_maintenance_directory has an unexpected member; membership remediation must be performed outside this release without targeting postgres';
+  END IF;
+END;
+$$;
 SQL
 }
 
@@ -1610,9 +1716,9 @@ SQL
 
 ensure_realtime_reaper_directory_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
--- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- Supabase intercepte fatalement tout GRANT/REVOKE d'adhesion visant postgres
 -- (connexion tuee) : l'adhesion SET est donc accordee IMPLICITEMENT a la creation
--- (createrole_self_grant, PG16+), et le GRANT explicite devient conditionnel.
+-- (createrole_self_grant, PG16+), sans aucun fallback GRANT explicite.
 SET createrole_self_grant = 'set';
 
 SELECT format(
@@ -1622,6 +1728,39 @@ SELECT format(
 WHERE NOT EXISTS (
   SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_reaper_directory'
 ) \gexec
+
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  owner_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_realtime_reaper_directory';
+
+  IF NOT pg_catalog.pg_has_role(current_user, owner_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = owner_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_realtime_reaper_directory is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
 
 ALTER ROLE bob_realtime_reaper_directory
   NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
@@ -1643,20 +1782,40 @@ SELECT format('REVOKE %I FROM %I CASCADE', parent.rolname, 'bob_realtime_reaper_
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS parent ON parent.oid = membership.roleid
  WHERE membership.member = 'bob_realtime_reaper_directory'::regrole
+   AND parent.rolname <> 'postgres'
 \gexec
 SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_reaper_directory', member.rolname)
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
  WHERE membership.roleid = 'bob_realtime_reaper_directory'::regrole
-   AND member.rolname <> current_user
+   AND member.rolname NOT IN (current_user, 'postgres')
 \gexec
 
-SELECT format(
-  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
-  'bob_realtime_reaper_directory'
-)
-WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_realtime_reaper_directory', 'SET')
-\gexec
+DO $$
+DECLARE
+  owner_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_realtime_reaper_directory';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = owner_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+     WHERE membership.roleid = owner_oid
+       AND member.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_realtime_reaper_directory has an unexpected member; membership remediation must be performed outside this release without targeting postgres';
+  END IF;
+END;
+$$;
 SQL
 }
 

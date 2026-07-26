@@ -52,7 +52,19 @@ describe('Mistral conversation terminal receipt migration', () => {
 
     for (const provisioning of [release, certification]) {
       expect(provisioning).toContain(
-        'GRANT bob_mistral_bootstrap_reaper TO CURRENT_USER',
+        "SET createrole_self_grant = 'set'",
+      );
+      expect(provisioning).toContain(
+        'bob_mistral_bootstrap_reaper is not available through implicit SET membership',
+      );
+      expect(provisioning).toContain(
+        'membership.set_option',
+      );
+      expect(provisioning).toContain(
+        'NOT membership.inherit_option',
+      );
+      expect(provisioning).not.toMatch(
+        /GRANT\s+(?:%I|bob_mistral_bootstrap_reaper)\s+TO\s+CURRENT_USER/iu,
       );
       expect(provisioning).toContain(
         'REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I CASCADE',

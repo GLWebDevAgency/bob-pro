@@ -492,9 +492,14 @@ test('le certificat refuse tout runtime privilégié et toute dérive de members
     metadataCert,
     /pg_has_role\(\s*app_role_name,\s*'bob_openai_native_maintenance_directory',\s*'SET'\s*\)/u,
   );
+  assert.doesNotMatch(
+    release,
+    /GRANT\s+(?:%I|bob_openai_native_maintenance_directory)\s+TO\s+CURRENT_USER/iu,
+  );
+  assert.match(release, /SET createrole_self_grant = 'set'/u);
   assert.match(
     release,
-    /'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',\s+'bob_openai_native_maintenance_directory'[\s\S]*pg_has_role\(current_user, 'bob_openai_native_maintenance_directory', 'SET'\)/u,
+    /membership\.set_option[\s\S]*NOT membership\.inherit_option[\s\S]*bob_openai_native_maintenance_directory is not available through implicit SET membership/u,
   );
 });
 

@@ -18,6 +18,39 @@ WHERE NOT EXISTS (
   SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'bob_realtime_capacity'
 ) \gexec
 
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  owner_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_realtime_capacity';
+
+  IF NOT pg_catalog.pg_has_role(current_user, owner_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = owner_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_realtime_capacity is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
+
 ALTER ROLE bob_realtime_capacity
   NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
 
@@ -38,20 +71,40 @@ SELECT format('REVOKE %I FROM %I CASCADE', parent.rolname, 'bob_realtime_capacit
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS parent ON parent.oid = membership.roleid
  WHERE membership.member = 'bob_realtime_capacity'::regrole
+   AND parent.rolname <> 'postgres'
 \gexec
 SELECT format('REVOKE %I FROM %I CASCADE', 'bob_realtime_capacity', member.rolname)
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
  WHERE membership.roleid = 'bob_realtime_capacity'::regrole
-   AND member.rolname <> current_user
+   AND member.rolname NOT IN (current_user, 'postgres')
 \gexec
 
-SELECT format(
-  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
-  'bob_realtime_capacity'
-)
-WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_realtime_capacity', 'SET')
-\gexec
+DO $$
+DECLARE
+  owner_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_realtime_capacity';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = owner_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+     WHERE membership.roleid = owner_oid
+       AND member.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_realtime_capacity has an unexpected member; membership remediation must be performed outside this release without targeting postgres';
+  END IF;
+END;
+$$;
 SQL
 }
 
