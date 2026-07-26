@@ -747,7 +747,7 @@ BEGIN
   IF pg_catalog.has_table_privilege(
        current_user,
        cancellation_relation.oid,
-       'UPDATE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN'
+       'UPDATE,TRUNCATE,REFERENCES,TRIGGER'
      )
      OR pg_catalog.has_any_column_privilege(
        current_user,
@@ -765,6 +765,20 @@ BEGIN
        'EXECUTE'
      ) THEN
     RAISE EXCEPTION 'Realtime cancellation fence runtime ACL drift';
+  END IF;
+  -- MAINTAIN n'existe qu'à partir de PostgreSQL 17. Le certificat est aussi rejoué par les
+  -- lanes PostgreSQL 16 et par Supabase : ne jamais soumettre ce mot-clé à
+  -- has_table_privilege sur un serveur plus ancien. Le contrôle ACL exact ci-dessous refuse
+  -- déjà tout grant relationnel inattendu ; ce test conserve en plus la détection des droits
+  -- MAINTAIN hérités lorsque le serveur sait les évaluer.
+  IF pg_catalog.current_setting('server_version_num')::INTEGER >= 170000 THEN
+    IF pg_catalog.has_table_privilege(
+         current_user,
+         cancellation_relation.oid,
+         'MAINTAIN'
+       ) THEN
+      RAISE EXCEPTION 'Realtime cancellation fence runtime MAINTAIN ACL drift';
+    END IF;
   END IF;
   IF EXISTS (
     SELECT 1

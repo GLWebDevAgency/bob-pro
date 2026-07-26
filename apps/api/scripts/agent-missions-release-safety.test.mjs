@@ -719,6 +719,16 @@ test('le fence d’annulation est certifié comme autorité tenantée et invisib
   );
   assert.match(
     realtimeReleaseCertificate,
+    /server_version_num'\)::INTEGER >= 170000[\s\S]*?has_table_privilege\([\s\S]*?cancellation_relation\.oid,[\s\S]*?'MAINTAIN'[\s\S]*?Realtime cancellation fence runtime MAINTAIN ACL drift/u,
+    'Le contrôle MAINTAIN doit rester actif sur PostgreSQL 17 sans casser les releases PostgreSQL 16/Supabase.',
+  );
+  assert.equal(
+    realtimeReleaseCertificate.match(/'MAINTAIN'/gu)?.length,
+    1,
+    'Tout appel MAINTAIN supplémentaire pourrait contourner la garde de version PostgreSQL.',
+  );
+  assert.match(
+    realtimeReleaseCertificate,
     /bob_mistral_bootstrap_reaper[\s\S]*?cancellation_relation\.oid/u,
   );
   assert.match(
