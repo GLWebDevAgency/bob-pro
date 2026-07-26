@@ -577,6 +577,9 @@ export interface BobActions {
     /** Override RESPONSABILISÉ de l'embargo L221-10 (émission = demande de paiement) — `true`
      * strict après confirmation dédiée (safetyFloor) ; journalisé serveur. Jamais implicite. */
     embargoOverride?: boolean;
+    /** PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » — `true` strict après
+     * confirmation explicite (risque de rejet énoncé) ; journalisé serveur. Jamais implicite. */
+    purchaseOrderOverride?: boolean;
   }): Promise<Result<{ number: string }, AppError>>;
   // —— Mutation, OPTIONNELLES (parité C15 TODO ③④⑤⑥, C20/C40) ——
   // Optionnelles pour rester rétro-compatibles avec les hôtes existants (apps/api) : le registre

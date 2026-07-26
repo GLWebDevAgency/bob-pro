@@ -202,6 +202,8 @@ const INVOICE_ISSUE_FIELDS = new Set([
   'terms',
   // Override RESPONSABILISÉ de l'embargo L221-10 (`true` strict, journalisé côté use case).
   'override',
+  // PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » (`true` strict, journalisé).
+  'purchaseOrderOverride',
 ]);
 const SERVICE_PERIOD_FIELDS = new Set(['start', 'end']);
 const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
@@ -232,6 +234,8 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'paymentTerms',
   // Canal de facturation (email | chorus | portail) — guide de transmission dérivé à l'émission.
   'billingChannel',
+  // PR-04 — garde « BC obligatoire » par client (désactivée par défaut, amendement fondateur).
+  'requiresPurchaseOrder',
   'isInternational',
   'isSubcontractingBtp',
 ]);
@@ -644,7 +648,13 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
     !validOptionalString(body.contactName) ||
     !validOptionalString(body.paymentTermsLabel) ||
     !validOptionalBoolean(body.isInternational) ||
-    !validOptionalBoolean(body.isSubcontractingBtp)
+    !validOptionalBoolean(body.isSubcontractingBtp) ||
+    // PR-04 — booléen strict OU null (retour au défaut « non exigé »).
+    !(
+      body.requiresPurchaseOrder === undefined ||
+      body.requiresPurchaseOrder === null ||
+      typeof body.requiresPurchaseOrder === 'boolean'
+    )
   ) {
     throwValidationIssues([{ field: 'body', message: 'Fiche client invalide.' }]);
   }
@@ -722,6 +732,10 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
       : {}),
     ...(paymentTerms !== undefined ? { paymentTerms } : {}),
     ...(billingChannel !== undefined ? { billingChannel } : {}),
+    // PR-04 — booléen strict ; null = retour au défaut (champ absent côté domaine).
+    ...(body.requiresPurchaseOrder !== undefined && body.requiresPurchaseOrder !== null
+      ? { requiresPurchaseOrder: body.requiresPurchaseOrder as boolean }
+      : {}),
     ...(body.isInternational !== undefined
       ? { isInternational: body.isInternational as boolean }
       : {}),
@@ -2694,6 +2708,7 @@ export class InvoicesController {
       deliveryAddress?: string;
       operationCategory?: 'goods' | 'services' | 'mixed';
       embargoOverride?: boolean;
+      purchaseOrderOverride?: boolean;
     } = { invoiceId: id };
     if (body !== undefined && body !== null) {
       assertJsonObjectBody(body);
@@ -2764,6 +2779,14 @@ export class InvoicesController {
           issues.push({ field: 'override', message: 'Booléen attendu.' });
         } else if (body.override === true) {
           input.embargoOverride = true;
+        }
+      }
+      // PR-04 — override de la garde « BC obligatoire » : même discipline (`true` strict).
+      if ('purchaseOrderOverride' in body) {
+        if (typeof body.purchaseOrderOverride !== 'boolean') {
+          issues.push({ field: 'purchaseOrderOverride', message: 'Booléen attendu.' });
+        } else if (body.purchaseOrderOverride === true) {
+          input.purchaseOrderOverride = true;
         }
       }
       if (issues.length > 0) throwValidationIssues(issues);

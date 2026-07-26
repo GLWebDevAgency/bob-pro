@@ -58,6 +58,9 @@ export interface CustomerListItem {
   /** A4 — sous-traitance BTP (autoliquidation) ; absent ⇒ false. Même raison : un remplacement
    *  complet depuis la fiche ne doit jamais effacer un fait fiscal. */
   isSubcontractingBtp?: boolean;
+  /** PR-04 — ce client exige un n° de bon de commande avant émission (garde IssueInvoice) ;
+   *  absent ⇒ false (compat serveurs antérieurs — jamais une exigence inventée). */
+  requiresPurchaseOrder?: boolean;
 }
 
 export class ListCustomers {
@@ -139,6 +142,8 @@ export class ListCustomers {
         isInternational: customer.isInternational(),
         paymentTermsLabel: customer.toProps().paymentTermsLabel ?? null,
         isSubcontractingBtp: customer.isSubcontractingBtp,
+        // PR-04 — garde « BC obligatoire » (toggle fiche client, préservé au remplacement).
+        requiresPurchaseOrder: customer.requiresPurchaseOrder,
       });
     }
     return ok(items);

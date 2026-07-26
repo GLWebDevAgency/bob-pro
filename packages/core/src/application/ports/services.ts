@@ -51,6 +51,21 @@ export interface EmbargoOverrideAuditPort {
   }): Promise<void>;
 }
 
+/** PR-04 — journal de l'émission SANS bon de commande d'un client qui l'exige : l'override est
+ *  RESPONSABILISÉ (confirmation explicite) et TOUJOURS tracé — fail-closed sans port câblé. */
+export interface PurchaseOrderOverrideAuditPort {
+  purchaseOrderOverridden(event: {
+    /** Toujours 'invoice.purchase_order_overridden' — figé pour l'exploitation du journal. */
+    type: 'invoice.purchase_order_overridden';
+    invoiceId: string;
+    companyId: string;
+    customerId: string;
+    invoiceKind: string;
+    /** Horodatage serveur de la confirmation de l'artisan. */
+    occurredAt: Instant;
+  }): Promise<void>;
+}
+
 export interface CashflowSnapshotPort {
   /** E9 : vatDue est OPTIONNEL — la position de TVA réelle se dérive des factures (E2,
    *  deriveVatPosition) ; le champ ne sert plus que de repli aux implémentations amont. */

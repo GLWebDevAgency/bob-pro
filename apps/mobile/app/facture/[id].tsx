@@ -501,7 +501,13 @@ export default function FactureDetail() {
         hasInvoiceActions(inv) || canCreateCreditNote(inv) ? (
           // withCreditNote (A6) : « Créer un avoir » — détail uniquement, jamais en liste.
           // onDraftDeleted (R6) : le brouillon supprimé n'existe plus, l'écran de détail se ferme.
-          <InvoiceActions invoice={inv} withCreditNote onDraftDeleted={() => router.back()} />
+          <InvoiceActions
+            invoice={inv}
+            withCreditNote
+            onDraftDeleted={() => router.back()}
+            // PR-04 : « saisir le BC maintenant » ouvre la feuille BC de CETTE fiche.
+            onRequestPurchaseOrder={openPoSheet}
+          />
         ) : null
       }
       nextStepAction={

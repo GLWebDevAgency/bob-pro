@@ -67,6 +67,21 @@ export type DomainError =
       quoteId: string;
       message: string;
     }
+  | {
+      /**
+       * PR-04 — garde « BC obligatoire » : la fiche client exige un n° de bon de commande
+       * (grands comptes/collectivités — une facture sans n° d'engagement est rejetée par
+       * l'acheteur, cas RATP CAP). `message` = texte honnête et ACTIONNABLE (CTA « saisir le
+       * BC maintenant ») ; `overridable` signale l'affordance d'émission SANS BC, confirmée
+       * et JOURNALISÉE (invoice.purchase_order_overridden).
+       */
+      code: 'PURCHASE_ORDER_REQUIRED';
+      invoiceId: string;
+      customerId: string;
+      customerName: string;
+      message: string;
+      overridable: true;
+    }
   | { code: 'MISSING_SIREN_FOR_EINVOICE'; customerId: string }
   | { code: 'CABINET_MEMBER_ALREADY_EXISTS'; cabinetId: string; userId: string }
   | { code: 'CABINET_LAST_ADMIN_REQUIRED'; cabinetId: string }

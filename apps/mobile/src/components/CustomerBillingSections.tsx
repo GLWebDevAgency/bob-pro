@@ -38,7 +38,7 @@ import {
 export function buildCustomerReplacementPayload(
   customer: CustomerListItem,
   patch: Partial<
-    Pick<UpdateCustomerClientInput, 'paymentTerms' | 'billingChannel'>
+    Pick<UpdateCustomerClientInput, 'paymentTerms' | 'billingChannel' | 'requiresPurchaseOrder'>
   > & { clearPaymentTerms?: boolean },
 ): UpdateCustomerClientInput {
   const paymentTerms =
@@ -49,6 +49,14 @@ export function buildCustomerReplacementPayload(
         : (customer.paymentTerms ?? undefined);
   const billingChannel =
     patch.billingChannel !== undefined ? patch.billingChannel : (customer.billingChannel ?? undefined);
+  // PR-04 — garde « BC obligatoire » : patchée explicitement, sinon PRÉSERVÉE telle quelle
+  // (un remplacement complet depuis la fiche ne doit jamais désactiver la garde en silence).
+  const requiresPurchaseOrder =
+    patch.requiresPurchaseOrder !== undefined
+      ? patch.requiresPurchaseOrder
+      : customer.requiresPurchaseOrder === true
+        ? true
+        : undefined;
   return {
     type: customer.type,
     name: customer.name,
@@ -63,6 +71,7 @@ export function buildCustomerReplacementPayload(
     ...(customer.paymentTermsLabel != null ? { paymentTermsLabel: customer.paymentTermsLabel } : {}),
     ...(paymentTerms !== undefined ? { paymentTerms } : {}),
     ...(billingChannel !== undefined ? { billingChannel } : {}),
+    ...(requiresPurchaseOrder !== undefined ? { requiresPurchaseOrder } : {}),
     ...(customer.isInternational === true ? { isInternational: true } : {}),
     ...(customer.isSubcontractingBtp === true ? { isSubcontractingBtp: true } : {}),
   };
@@ -234,6 +243,43 @@ export function CustomerBillingSections({ customer }: { customer: CustomerListIt
         <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 3 }]}>
           {t(CHANNEL_HINT[billingChannelTypeOf(customer.billingChannel ?? null)], { personality })}
         </Text>
+      </Card>
+
+      {/* ── PR-04 — Garde « BC obligatoire » (par client, désactivée par défaut) ── */}
+      <SectionHeader
+        title={t('poGuard.sectionTitle', { personality })}
+        action={editAction(
+          customer.requiresPurchaseOrder === true
+            ? t('poGuard.disable', { personality })
+            : t('poGuard.enable', { personality }),
+          () => {
+            if (update.isPending) return;
+            update.mutate({
+              id: customer.id,
+              patch: buildCustomerReplacementPayload(customer, {
+                requiresPurchaseOrder: customer.requiresPurchaseOrder !== true,
+              }),
+            });
+          },
+        )}
+      />
+      <Card radius={18} padding={16} style={{ marginTop: 0, marginBottom: 16 }}>
+        <Text style={[font('body', 700), { fontSize: 15, color: colors.ink900 }]}>
+          {t(customer.requiresPurchaseOrder === true ? 'poGuard.on' : 'poGuard.off', {
+            personality,
+          })}
+        </Text>
+        <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 3 }]}>
+          {t('poGuard.hint', { personality })}
+        </Text>
+        <View style={{ marginTop: 8 }}>
+          <LegalHint
+            label={t('legal.poGuard.inline', { personality })}
+            lawKey="legal.poGuard.law"
+            whyKey="legal.poGuard.why"
+            source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+          />
+        </View>
       </Card>
 
       {/* ── Feuille : conditions de paiement ── */}

@@ -423,6 +423,82 @@ export const billingTerrainFr = {
     pro: 'Une échéance erronée déclenche relances et pénalités à tort. Bob dérive l’échéance de la condition légale du client : vos relances restent exactes.',
     direct: 'Échéance juste = relances justes.',
   },
+  // ── PR-04 — Garde « BC obligatoire » par client (désactivée par défaut) ───────
+  'poGuard.sectionTitle': {
+    pote: 'Bon de commande',
+    pro: 'Bon de commande',
+    direct: 'Bon de commande',
+  },
+  'poGuard.on': {
+    pote: 'BC obligatoire avant émission',
+    pro: 'N° de commande exigé avant émission',
+    direct: 'BC obligatoire',
+  },
+  'poGuard.off': {
+    pote: 'Pas de BC exigé',
+    pro: 'Aucun n° de commande exigé',
+    direct: 'BC non exigé',
+  },
+  'poGuard.hint': {
+    pote: 'Activé, Bob refuse d’émettre une facture pour ce client sans n° de bon de commande — fini les factures rejetées.',
+    pro: 'Une fois activée, l’émission d’une facture sans n° de bon de commande est bloquée pour ce client.',
+    direct: 'Activé = pas d’émission sans n° de BC.',
+  },
+  'poGuard.enable': {
+    pote: 'Activer',
+    pro: 'Activer',
+    direct: 'Activer',
+  },
+  'poGuard.disable': {
+    pote: 'Désactiver',
+    pro: 'Désactiver',
+    direct: 'Désactiver',
+  },
+  'legal.poGuard.inline': {
+    pote: 'Grands comptes et acheteurs publics rejettent toute facture sans n° de commande — Bob te protège du rejet.',
+    pro: 'Les grands comptes et acheteurs publics rejettent une facture sans n° de commande — la garde vous protège du rejet.',
+    direct: 'Sans n° de BC : facture rejetée.',
+  },
+  'legal.poGuard.law': {
+    pote: 'Les acheteurs publics (Chorus Pro) et beaucoup de grands comptes exigent le n° d’engagement ou de commande sur la facture — sans lui, la pièce est rejetée à réception et le délai de paiement ne court pas. La référence voyage aussi dans la facture électronique (champ BT-13 de la norme EN 16931).',
+    pro: 'Les acheteurs publics (Chorus Pro) et de nombreux grands comptes exigent le n° d’engagement ou de commande sur la facture : sans lui, la pièce est rejetée à réception et le délai de paiement ne court pas. La référence est portée par la facture électronique (BT-13, norme EN 16931).',
+    direct: 'Chorus/grands comptes : n° d’engagement exigé. Sans lui : rejet, délai gelé.',
+  },
+  'legal.poGuard.why': {
+    pote: 'Une facture rejetée, c’est 45 à 60 jours d’encaissement perdus puis tout à refaire — Bob bloque AVANT, quand c’est encore simple de saisir le BC.',
+    pro: 'Une facture rejetée représente 45 à 60 jours d’encaissement perdus et une réémission. Bob bloque en amont, lorsque la saisie du BC est encore simple.',
+    direct: 'Rejet = 45-60 j perdus. Bloquer avant coûte 10 secondes.',
+  },
+  'poGuard.sheetTitle': {
+    pote: 'Bon de commande manquant',
+    pro: 'Bon de commande manquant',
+    direct: 'BC manquant',
+  },
+  'poGuard.ctaAttach': {
+    pote: 'Saisir le bon de commande',
+    pro: 'Saisir le bon de commande',
+    direct: 'Saisir le BC',
+  },
+  'poGuard.ctaOverride': {
+    pote: 'Émettre sans BC (tracé)',
+    pro: 'Émettre sans bon de commande (tracé)',
+    direct: 'Émettre sans BC',
+  },
+  'poGuard.overrideConfirmTitle': {
+    pote: 'Émettre sans BC ?',
+    pro: 'Émettre sans bon de commande',
+    direct: 'Sans BC ?',
+  },
+  'poGuard.overrideConfirmBody': {
+    pote: 'Ce client exige un n° de commande : sans lui, la facture risque d’être rejetée et le paiement repoussé. Ton choix sera journalisé.',
+    pro: 'Ce client exige un n° de commande : sans lui, la facture risque un rejet et un report du paiement. Cette décision sera journalisée.',
+    direct: 'Risque : rejet + paiement repoussé. Décision journalisée.',
+  },
+  'poGuard.cancel': {
+    pote: 'Annuler',
+    pro: 'Annuler',
+    direct: 'Annuler',
+  },
   'terms.dueAtIssued': {
     pote: 'Échéance : {date} — {label}',
     pro: 'Échéance : {date} — {label}',

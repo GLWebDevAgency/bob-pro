@@ -56,6 +56,17 @@ describe('décision BT-23 mobile', () => {
     expect(EMPTY_INVOICE_ISSUE_DECISION).toEqual({
       operationCategory: null,
       embargoOverride: false,
+      purchaseOrderOverride: false,
+    });
+
+    // PR-04 — la 3e décision (BC) se préserve elle aussi, quel que soit l'ordre des refus.
+    const poThenCategory = mergeInvoiceIssueDecision(
+      mergeInvoiceIssueDecision(EMPTY_INVOICE_ISSUE_DECISION, { purchaseOrderOverride: true }),
+      { operationCategory: 'mixed' },
+    );
+    expect(invoiceIssueDecisionInput(poThenCategory)).toEqual({
+      operationCategory: 'mixed',
+      purchaseOrderOverride: true,
     });
   });
 });

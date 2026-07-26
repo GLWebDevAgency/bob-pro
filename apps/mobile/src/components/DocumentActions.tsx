@@ -61,6 +61,7 @@ import {
   isOperationCategoryRequiredError,
   mergeInvoiceIssueDecision,
   parseInvoiceOperationCategoryChoice,
+  purchaseOrderRequiredMessageOf,
 } from './invoice-operation-category.logic';
 
 /**
@@ -1035,6 +1036,7 @@ export function InvoiceActions({
   invoice,
   withCreditNote = false,
   onDraftDeleted,
+  onRequestPurchaseOrder,
 }: {
   invoice: InvoiceView;
   /** A6 : propose « Créer un avoir » (détail de pièce uniquement — action rare, pas en liste). */
@@ -1042,6 +1044,9 @@ export function InvoiceActions({
   /** R6 : après suppression du brouillon, l'écran de DÉTAIL quitte la pièce qui n'existe plus
    * (la liste, elle, se contente du refetch — aucun callback à fournir). */
   onDraftDeleted?: () => void;
+  /** PR-04 : CTA « saisir le BC maintenant » du refus PURCHASE_ORDER_REQUIRED — le détail de
+   * pièce ouvre sa feuille BC ; sans callback (liste), on route vers la fiche facture. */
+  onRequestPurchaseOrder?: () => void;
 }): ReactNode {
   const issue = useIssueInvoice();
   const pay = useRegisterPayment();
@@ -1068,17 +1073,22 @@ export function InvoiceActions({
   // L221-10 exige ensuite un second passage, sinon le replay perdrait la qualification fiscale.
   const [operationCategoryOpen, setOperationCategoryOpen] = useState(false);
   const [issueDecision, setIssueDecision] = useState(EMPTY_INVOICE_ISSUE_DECISION);
+  // PR-04 — refus « BC obligatoire » : message actionnable du domaine, feuille dédiée (CTA
+  // « saisir le BC » d'abord, override confirmé et tracé ensuite).
+  const [poGuardMessage, setPoGuardMessage] = useState<string | null>(null);
 
   const clearIssueDecision = (): void => {
     setIssueDecision(EMPTY_INVOICE_ISSUE_DECISION);
     setOperationCategoryOpen(false);
     setEmbargoPrompt(null);
     setEmbargoStage('choice');
+    setPoGuardMessage(null);
   };
 
   const attemptIssue = async (input: {
     operationCategory?: FrenchOperationCategory;
     embargoOverride?: boolean;
+    purchaseOrderOverride?: boolean;
   }): Promise<void> => {
     const nextDecision = mergeInvoiceIssueDecision(issueDecision, input);
     try {
@@ -1099,7 +1109,19 @@ export function InvoiceActions({
         // Une seule décision à la fois : l'éventuelle feuille embargo disparaît avant BT-23.
         setEmbargoPrompt(null);
         setEmbargoStage('choice');
+        setPoGuardMessage(null);
         setOperationCategoryOpen(true);
+        return;
+      }
+      // PR-04 — le client exige un BC et la pièce n'en porte pas : décision structurée (jamais
+      // un « Oups » en cul-de-sac), le chemin SÛR d'abord (saisir le BC), l'override ensuite.
+      const poMessage = purchaseOrderRequiredMessageOf(error);
+      if (poMessage !== null) {
+        setIssueDecision(nextDecision);
+        setOperationCategoryOpen(false);
+        setEmbargoPrompt(null);
+        setEmbargoStage('choice');
+        setPoGuardMessage(poMessage);
         return;
       }
       const prompt = embargoPromptOf(
@@ -1113,10 +1135,75 @@ export function InvoiceActions({
       }
       setIssueDecision(nextDecision);
       setOperationCategoryOpen(false);
+      setPoGuardMessage(null);
       setEmbargoStage('choice');
       setEmbargoPrompt(prompt);
     }
   };
+
+  /** PR-04 — émettre SANS le BC exigé : confirmation dédiée (risque de rejet énoncé), action
+   * JOURNALISÉE serveur (invoice.purchase_order_overridden) — jamais implicite. */
+  const overridePurchaseOrderIssue = (): void =>
+    void (async () => {
+      const ok = await confirm({
+        title: t('poGuard.overrideConfirmTitle', { personality }),
+        message: t('poGuard.overrideConfirmBody', { personality }),
+        challenge: challengeFor(FISCAL, 'confirm_all'),
+        destructive: true,
+      });
+      if (!ok) return;
+      setPoGuardMessage(null);
+      await run('issue', () => attemptIssue({ purchaseOrderOverride: true }));
+    })();
+
+  const poGuardSheet = (
+    <Sheet
+      visible={poGuardMessage !== null}
+      onClose={() => {
+        if (!busy) clearIssueDecision();
+      }}
+      accessibilityLabel={t('poGuard.sheetTitle', { personality })}
+    >
+      <Text
+        accessibilityRole="header"
+        style={[font('cardTitle'), { color: semantic.warning, marginBottom: 8 }]}
+      >
+        {t('poGuard.sheetTitle', { personality })}
+      </Text>
+      <Text style={[font('sub'), { color: semantic.warning, lineHeight: 20, marginBottom: 10 }]}>
+        {poGuardMessage ?? ''}
+      </Text>
+      <LegalHint
+        label={t('legal.poGuard.inline', { personality })}
+        lawKey="legal.poGuard.law"
+        whyKey="legal.poGuard.why"
+        source="EN 16931 (BT-13) · exigence des acheteurs publics et grands comptes (Chorus Pro : n° d'engagement)"
+      />
+      <View style={{ gap: 8, marginTop: 14, marginBottom: 8 }}>
+        <Button
+          title={t('poGuard.ctaAttach', { personality })}
+          onPress={() => {
+            clearIssueDecision();
+            if (onRequestPurchaseOrder) onRequestPurchaseOrder();
+            else router.push(`/facture/${invoice.id}`);
+          }}
+        />
+        <Button
+          title={t('poGuard.ctaOverride', { personality })}
+          variant="secondary"
+          loading={busy === 'issue'}
+          disabled={!!busy}
+          onPress={overridePurchaseOrderIssue}
+        />
+        <Button
+          title={t('poGuard.cancel', { personality })}
+          variant="secondary"
+          disabled={!!busy}
+          onPress={clearIssueDecision}
+        />
+      </View>
+    </Sheet>
+  );
 
   /** DÉFAUT légal : programme le message client (le devis parent porte la fenêtre embargo). */
   const scheduleEmbargoDefault = () =>
@@ -1303,6 +1390,7 @@ export function InvoiceActions({
       </View>
       {embargoSheet}
       {operationCategorySheet}
+      {poGuardSheet}
       <GateSheet gate={gate} onClose={() => setGate(null)} />
       {errorSheet}
       </>

@@ -716,6 +716,21 @@ export class LocalBobClient implements BobClient {
       this.embargoOverrideEvents.push(event);
     },
   };
+  /** PR-04 — journal LOCAL de l'émission sans BC (invoice.purchase_order_overridden) : parité
+   *  serveur (fail-closed du use case sans journal) ; observable par les tests. */
+  readonly purchaseOrderOverrideEvents: {
+    type: 'invoice.purchase_order_overridden';
+    invoiceId: string;
+    companyId: string;
+    customerId: string;
+    invoiceKind: string;
+    occurredAt: string;
+  }[] = [];
+  private readonly purchaseOrderOverrideAudit = {
+    purchaseOrderOverridden: async (event: (typeof this.purchaseOrderOverrideEvents)[number]) => {
+      this.purchaseOrderOverrideEvents.push(event);
+    },
+  };
   /** Encaissements PROGRAMMÉS à J+7 (embargo L221-10) — parité démo du job outbox serveur. */
   readonly embargoScheduledPayments: {
     quoteId: string;
@@ -3701,6 +3716,8 @@ export class LocalBobClient implements BobClient {
       clock,
       // Override L221-10 : parité serveur — journalisé localement, fail-closed sans journal.
       audit: this.embargoOverrideAudit,
+      // PR-04 — garde « BC obligatoire » : même parité (override journalisé localement).
+      purchaseOrderAudit: this.purchaseOrderOverrideAudit,
     }).execute(issueInput);
     if (!issued.ok) {
       const missingTerms =

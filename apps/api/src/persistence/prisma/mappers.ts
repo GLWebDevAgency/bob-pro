@@ -304,6 +304,8 @@ interface CustomerRow {
   billingChorusServiceCode: string | null;
   billingPortailNom: string | null;
   billingPortailUrl: string | null;
+  /** PR-04 — garde « BC obligatoire » par client ; NULL = non exigé (défaut). */
+  requiresPurchaseOrder: boolean | null;
 }
 
 const BILLING_CHANNEL_TYPES = new Set<CustomerBillingChannelType>(['email', 'chorus', 'portail']);
@@ -350,6 +352,8 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
     }
     props.billingChannel = channel;
   }
+  // PR-04 : NULL = non exigé (le champ reste absent — comportement historique inchangé).
+  if (row.requiresPurchaseOrder !== null) props.requiresPurchaseOrder = row.requiresPurchaseOrder;
   return props;
 }
 
@@ -377,6 +381,7 @@ export function customerPropsToCreate(p: CustomerProps) {
     billingChorusServiceCode: channel?.type === 'chorus' ? (channel.chorusServiceCode ?? null) : null,
     billingPortailNom: channel?.type === 'portail' ? (channel.portailNom ?? null) : null,
     billingPortailUrl: channel?.type === 'portail' ? (channel.portailUrl ?? null) : null,
+    requiresPurchaseOrder: p.requiresPurchaseOrder ?? null,
     isSubcontractingBtp: p.isSubcontractingBtp ?? false,
   };
 }

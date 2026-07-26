@@ -1532,6 +1532,9 @@ export function useIssueInvoice() {
        *  `true` strict après la feuille de confirmation dédiée ; journalisé serveur. Sans lui,
        *  l'override confirmé à la génération finissait en cul-de-sac « Oups » à l'émission. */
       embargoOverride?: boolean;
+      /** PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » — `true` strict après
+       *  confirmation dédiée (risque de rejet énoncé) ; journalisé serveur. */
+      purchaseOrderOverride?: boolean;
     }) => {
       const r = await client.issueInvoice({
         invoiceId: input.invoiceId,
@@ -1539,6 +1542,7 @@ export function useIssueInvoice() {
           ? {}
           : { operationCategory: input.operationCategory }),
         ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+        ...(input.purchaseOrderOverride === true ? { purchaseOrderOverride: true } : {}),
       });
       if (!r.ok) throw r.error;
       return r.value;

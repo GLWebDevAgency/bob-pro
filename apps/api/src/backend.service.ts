@@ -146,6 +146,7 @@ import {
   urgentRepairQuoteMention,
   urgentRepairRetractationLines,
   type EmbargoOverrideAuditPort,
+  type PurchaseOrderOverrideAuditPort,
   // Embargo L221-10 : défaut légal = encaissement PROGRAMMÉ à J+7 (outbox planifiée) — le
   // dérivé domaine décide de la fenêtre, le message client vient de la même source unique.
   offPremisesPaymentEmbargo,
@@ -1970,6 +1971,23 @@ export class BackendService {
       },
     };
   }
+
+  /** PR-04 — journal de l'émission SANS bon de commande d'un client qui l'exige (override
+   *  confirmé) : même doctrine que l'embargo — l'événement est TOUJOURS écrit, jamais le nom
+   *  du client dans les journaux techniques. */
+  private purchaseOrderOverrideAudit(): PurchaseOrderOverrideAuditPort {
+    return {
+      purchaseOrderOverridden: async (event) => {
+        this.logger.audit('invoice.purchase_order_overridden', {
+          invoiceId: event.invoiceId,
+          companyId: event.companyId,
+          customerId: event.customerId,
+          invoiceKind: event.invoiceKind,
+          occurredAt: event.occurredAt,
+        });
+      },
+    };
+  }
   /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
   async updateQuoteLine(input: {
     quoteId: string;
@@ -2131,6 +2149,8 @@ export class BackendService {
     operationCategory?: 'goods' | 'services' | 'mixed';
     /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict uniquement, journalisé. */
     embargoOverride?: boolean;
+    /** PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » — `true` strict, journalisé. */
+    purchaseOrderOverride?: boolean;
   }) {
     // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
     const locator = await this.ownedInvoice(input.invoiceId);
@@ -2178,6 +2198,7 @@ export class BackendService {
           deliveryAddress?: string;
           operationCategory?: 'goods' | 'services' | 'mixed';
           embargoOverride?: boolean;
+          purchaseOrderOverride?: boolean;
         } =
           paymentTermsDays === null || paymentTermsDays === undefined
             ? { invoiceId: input.invoiceId, ...emissionData }
@@ -2192,6 +2213,7 @@ export class BackendService {
               };
         // Jamais implicite : seul `true` strict traverse jusqu'au use case (qui journalise).
         if (input.embargoOverride === true) issueInput.embargoOverride = true;
+        if (input.purchaseOrderOverride === true) issueInput.purchaseOrderOverride = true;
 
         const issued = await new IssueInvoice({
           invoices: this.p.invoices,
@@ -2203,6 +2225,7 @@ export class BackendService {
           uow: this.p,
           clock: this.clock,
           audit: this.embargoOverrideAudit(),
+          purchaseOrderAudit: this.purchaseOrderOverrideAudit(),
         }).execute(issueInput);
         if (!issued.ok) {
           const missingTerms =
@@ -4175,6 +4198,8 @@ export class BackendService {
           // Override L221-10 : `true` strict uniquement (le safetyFloor du registre impose la
           // confirmation dédiée ; le use case journalise payment.embargo_overridden).
           ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+          // PR-04 : même discipline — l'émission sans BC exigé est confirmée puis journalisée.
+          ...(input.purchaseOrderOverride === true ? { purchaseOrderOverride: true } : {}),
         }),
       // Embargo L221-10 — le DÉFAUT légal est exécutable À LA VOIX (parité avec le bouton
       // « Programmer l'encaissement ») : sans lui, seul le chemin RISQUÉ (override) serait

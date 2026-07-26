@@ -224,6 +224,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       invoiceId: string;
       operationCategory?: FrenchOperationCategory;
       embargoOverride?: boolean;
+      purchaseOrderOverride?: boolean;
     },
     { number: string }
   > = {
@@ -235,7 +236,10 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       '(biens et prestations indépendants), puis rejoue avec le choix explicite. Ne choisis jamais seul. ' +
       'Si le serveur refuse pour embargo L221-10 (signature à domicile, 7 jours), explique le refus honnête et propose le DÉFAUT ' +
       '(programmer_encaissement_embargo) ; « embargoOverride: true » n’est permis qu’après avoir reformulé le risque concret ' +
-      '(contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée.',
+      '(contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée. ' +
+      'Si le serveur refuse pour bon de commande manquant (PURCHASE_ORDER_REQUIRED : ce client exige un n° de commande), ' +
+      'propose D’ABORD lier_bon_commande (saisir le BC) ; « purchaseOrderOverride: true » n’est permis qu’après avoir énoncé ' +
+      'le risque réel (facture rejetée par le client) et obtenu une confirmation explicite — l’action est tracée.',
     mutating: true,
     outbound: false,
     compliance: 'high',
@@ -244,11 +248,13 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       invoiceId: string;
       operationCategory?: FrenchOperationCategory;
       embargoOverride?: boolean;
+      purchaseOrderOverride?: boolean;
     }, AppError> => {
       const r = raw as {
         invoiceId?: unknown;
         operationCategory?: unknown;
         embargoOverride?: unknown;
+        purchaseOrderOverride?: unknown;
       };
       if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
         return err(appValidation('invoiceId', 'Facture manquante.'));
@@ -260,12 +266,16 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       // Override L221-10 : booléen strict — seul `true` traverse (jamais par truthiness).
       if (r.embargoOverride !== undefined && typeof r.embargoOverride !== 'boolean')
         return err(appValidation('embargoOverride', 'Booléen attendu.'));
+      // PR-04 — override de la garde « BC obligatoire » : même discipline stricte.
+      if (r.purchaseOrderOverride !== undefined && typeof r.purchaseOrderOverride !== 'boolean')
+        return err(appValidation('purchaseOrderOverride', 'Booléen attendu.'));
       return ok({
         invoiceId: r.invoiceId,
         ...(r.operationCategory === undefined
           ? {}
           : { operationCategory: r.operationCategory as FrenchOperationCategory }),
         ...(r.embargoOverride === true ? { embargoOverride: true } : {}),
+        ...(r.purchaseOrderOverride === true ? { purchaseOrderOverride: true } : {}),
       });
     },
     riskTier: 'fiscal',

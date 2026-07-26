@@ -3367,11 +3367,13 @@ export class HttpBobClient implements BobClient {
   }
   issueInvoice(input: IssueInvoiceInput) {
     // Override L221-10 : le contrat HTTP porte `override: true` (jamais le nom interne du use
-    // case) — strictement explicite, retiré du corps sinon.
-    const { embargoOverride, ...rest } = input;
+    // case) — strictement explicite, retiré du corps sinon. PR-04 : même discipline pour
+    // l'override de la garde « BC obligatoire » (`purchaseOrderOverride: true` strict).
+    const { embargoOverride, purchaseOrderOverride, ...rest } = input;
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, {
       ...rest,
       ...(embargoOverride === true ? { override: true } : {}),
+      ...(purchaseOrderOverride === true ? { purchaseOrderOverride: true } : {}),
     });
   }
   deleteDraftInvoice(invoiceId: string) {

@@ -120,6 +120,12 @@ export interface CustomerProps {
   paymentTerms?: CustomerPaymentTerms;
   /** Canal de facturation du client ; undefined = email (défaut, jamais un canal inventé). */
   billingChannel?: CustomerBillingChannel;
+  /**
+   * PR-04 — garde « BC obligatoire » PAR CLIENT (amendement fondateur : désactivée par défaut).
+   * undefined/absent = non exigé (comportement historique) ; true = l'émission d'une facture
+   * sans n° de bon de commande est refusée (IssueInvoice, override confirmé journalisé).
+   */
+  requiresPurchaseOrder?: boolean;
   isInternational?: boolean;
   isSubcontractingBtp?: boolean;
 }
@@ -208,6 +214,9 @@ export class Customer {
       ...(p.paymentTermsLabel !== undefined ? { paymentTermsLabel: p.paymentTermsLabel } : {}),
       ...(p.paymentTerms !== undefined ? { paymentTerms: { ...p.paymentTerms, label: p.paymentTerms.label.trim() } } : {}),
       ...(billingChannel !== undefined ? { billingChannel } : {}),
+      ...(p.requiresPurchaseOrder !== undefined
+        ? { requiresPurchaseOrder: p.requiresPurchaseOrder === true }
+        : {}),
       ...(p.isInternational !== undefined ? { isInternational: p.isInternational } : {}),
       ...(p.isSubcontractingBtp !== undefined ? { isSubcontractingBtp: p.isSubcontractingBtp } : {}),
     };
@@ -248,6 +257,10 @@ export class Customer {
   /** Canal de facturation du client (copie défensive) ; undefined = email par défaut. */
   get billingChannel(): CustomerBillingChannel | undefined {
     return this.p.billingChannel ? { ...this.p.billingChannel } : undefined;
+  }
+  /** PR-04 — ce client exige un n° de bon de commande AVANT émission (false = défaut). */
+  get requiresPurchaseOrder(): boolean {
+    return this.p.requiresPurchaseOrder === true;
   }
   get address(): Address {
     return { ...this.p.address };

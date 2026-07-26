@@ -285,6 +285,8 @@ describe('customer mappers — aucune métrique synthétique persistée', () => 
     billingChorusServiceCode: null,
     billingPortailNom: null,
     billingPortailUrl: null,
+    // PR-04 — fiche historique SANS garde « BC obligatoire » (NULL = non exigé).
+    requiresPurchaseOrder: null,
     isSubcontractingBtp: false,
   };
 
@@ -473,6 +475,7 @@ describe('B4/canal — customer mappers : conditions de paiement + canal de fact
     billingChorusServiceCode: 'SERV-42' as string | null,
     billingPortailNom: null as string | null,
     billingPortailUrl: null as string | null,
+    requiresPurchaseOrder: null as boolean | null,
     isSubcontractingBtp: false,
   };
 
@@ -513,6 +516,16 @@ describe('B4/canal — customer mappers : conditions de paiement + canal de fact
       type: 'portail',
       portailNom: 'Portail Vinci',
       portailUrl: 'https://f.vinci.com',
+    });
+  });
+
+  it('PR-04 — round-trip garde « BC obligatoire » : NULL = champ absent (défaut), true préservé', () => {
+    expect(customerRowToProps(row)).not.toHaveProperty('requiresPurchaseOrder');
+    const props = customerRowToProps({ ...row, requiresPurchaseOrder: true });
+    expect(props.requiresPurchaseOrder).toBe(true);
+    expect(customerPropsToCreate(props)).toMatchObject({ requiresPurchaseOrder: true });
+    expect(customerPropsToCreate(customerRowToProps(row))).toMatchObject({
+      requiresPurchaseOrder: null,
     });
   });
 });

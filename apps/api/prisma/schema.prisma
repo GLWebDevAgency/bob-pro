@@ -555,6 +555,11 @@ model Customer {
   billingChorusServiceCode String?
   billingPortailNom        String?
   billingPortailUrl        String?
+  /// PR-04 — garde « BC obligatoire » PAR CLIENT (amendement fondateur : désactivée par
+  /// défaut). NULL = non exigé (comportement historique inchangé) ; true = l'émission d'une
+  /// facture sans n° de bon de commande est refusée (override confirmé JOURNALISÉ possible).
+  /// Cas RATP CAP : plus jamais une facture sans n° d'engagement.
+  requiresPurchaseOrder    Boolean?
   isSubcontractingBtp      Boolean      @default(false)
   chantiers                Chantier[]
   quotes                   Quote[]

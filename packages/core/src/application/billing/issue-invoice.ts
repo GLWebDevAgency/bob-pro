@@ -39,6 +39,7 @@ import {
   type SequenceCounterPort,
   type ClockPort,
   type EmbargoOverrideAuditPort,
+  type PurchaseOrderOverrideAuditPort,
   type UnitOfWorkPort,
 } from '../ports/services';
 import { TxDomainError } from './tx-error';
@@ -75,6 +76,13 @@ export interface IssueInvoiceInput {
    * rétracté (protections du CLIENT, non contournables).
    */
   embargoOverride?: boolean;
+  /**
+   * PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » (`true` strict, jamais
+   * implicite) : le client exige un n° de commande mais l'artisan émet SANS (BC pas encore
+   * reçu, urgence) en confirmant le risque de rejet — événement
+   * invoice.purchase_order_overridden JOURNALISÉ dans la transaction (fail-closed sans port).
+   */
+  purchaseOrderOverride?: boolean;
 }
 
 export interface IssueInvoiceDeps {
@@ -95,6 +103,11 @@ export interface IssueInvoiceDeps {
    * refusé comme un embargo ordinaire (jamais d'override sans trace écrite).
    */
   audit?: EmbargoOverrideAuditPort;
+  /**
+   * PR-04 — journal de l'émission sans BC d'un client qui l'exige : même doctrine fail-closed
+   * (port absent → `purchaseOrderOverride` refusé comme la garde ordinaire).
+   */
+  purchaseOrderAudit?: PurchaseOrderOverrideAuditPort;
 }
 
 /** Sentinelle applicative : force le rollback UoW tout en préservant le contrat AppError exact. */
@@ -242,6 +255,42 @@ export class IssueInvoice {
               { field: 'customer', message: STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE },
             ],
           });
+        }
+
+        // PR-04 — garde « BC obligatoire » (pattern résolution B4 : le fait du CLIENT est relu
+        // DANS la transaction) : ce client exige un n° de commande, la pièce n'en porte aucun →
+        // refus ACTIONNABLE avant tout compteur (une facture RATP CAP sans n° d'engagement est
+        // rejetée à réception : mieux vaut bloquer ici que perdre 45 jours). L'AVOIR est exempté
+        // (il rectifie une pièce fautive). Override RESPONSABILISÉ : `true` strict + port
+        // d'audit câblé → événement invoice.purchase_order_overridden journalisé DANS la
+        // transaction (fail-closed : trace impossible = émission annulée).
+        if (
+          invoice.kind !== 'credit_note'
+          && customer.requiresPurchaseOrder
+          && invoice.purchaseOrder === null
+        ) {
+          if (input.purchaseOrderOverride === true && this.deps.purchaseOrderAudit !== undefined) {
+            await this.deps.purchaseOrderAudit.purchaseOrderOverridden({
+              type: 'invoice.purchase_order_overridden',
+              invoiceId: invoice.id,
+              companyId: company.id,
+              customerId: customer.id,
+              invoiceKind: invoice.kind,
+              occurredAt: at,
+            });
+          } else {
+            throw new TxDomainError({
+              code: 'PURCHASE_ORDER_REQUIRED',
+              invoiceId: invoice.id,
+              customerId: customer.id,
+              customerName: customer.name,
+              message:
+                `${customer.name} exige un n° de bon de commande : saisis-le sur la facture ` +
+                'avant d’émettre — sans lui, la pièce sera rejetée par ton client. ' +
+                'Tu peux aussi émettre sans BC en confirmant ce risque (tracé).',
+              overridable: true,
+            });
+          }
         }
 
         // B4 — résolution de l'échéance : conditions EXPLICITES pour cette pièce (priorité 1) >
