@@ -447,3 +447,78 @@ export function assertQuoteDraftSlotIdentity(input: {
 export function assertQuoteDraftExpectedRevision(value: number, allowZero: boolean): void {
   if (!safeRevision(value, allowZero)) throw new Error('QUOTE_DRAFT_SLOT_REVISION_INVALID');
 }
+
+/** Brouillon serveur initial, construit sans donnée métier inventée. */
+export function createEmptyQuoteDraftPayload(sessionId: string): QuoteDraftPayloadResult {
+  return parseQuoteDraftPayload({
+    schema: QUOTE_DRAFT_PAYLOAD_SCHEMA,
+    version: QUOTE_DRAFT_PAYLOAD_VERSION,
+    draft: {
+      sessionId,
+      contentRevision: 0,
+      stagingRevision: 0,
+      step: 'client',
+      customer: null,
+      lines: [],
+      lineMetadata: [],
+      lineForm: {
+        label: '',
+        quantity: '1',
+        unitPrice: '',
+        category: 'labor',
+      },
+      vatDecision: null,
+      depositPct: 30,
+      signMode: null,
+    },
+  });
+}
+
+export interface QuoteDraftMeaningfulContent {
+  /** `recap` existe dans l'état UI mais n'est volontairement jamais sérialisé dans le slot. */
+  readonly step: QuoteDraftStep | 'recap';
+  readonly hasCustomer: boolean;
+  readonly lineCount: number;
+  readonly lineForm: {
+    readonly label: string;
+    readonly quantity: string;
+    readonly unitPrice: string;
+  };
+  readonly hasVatDecision: boolean;
+  readonly depositPct: number;
+  readonly signMode: 'onsite' | 'remote' | null;
+  readonly urgentRepairRequested: boolean;
+}
+
+/**
+ * Autorité pure du conflit de brouillon. Les compteurs de révision ne suffisent jamais à déclarer
+ * du contenu utilisateur : seule la saisie durable effectivement présente est significative.
+ */
+export function isMeaningfulQuoteDraftContent(input: QuoteDraftMeaningfulContent): boolean {
+  return (
+    input.step !== 'client'
+    || input.hasCustomer
+    || input.lineCount > 0
+    || input.lineForm.label.trim() !== ''
+    || input.lineForm.quantity.trim() !== '1'
+    || input.lineForm.unitPrice.trim() !== ''
+    || input.hasVatDecision
+    || input.depositPct !== 30
+    || input.signMode !== null
+    || input.urgentRepairRequested
+  );
+}
+
+export function isMeaningfulQuoteDraftPayload(payload: QuoteDraftPayloadV1): boolean {
+  const draft = payload.draft;
+  return isMeaningfulQuoteDraftContent({
+    step: draft.step,
+    hasCustomer: draft.customer !== null,
+    lineCount: draft.lines.length,
+    lineForm: draft.lineForm,
+    hasVatDecision: draft.vatDecision !== null,
+    depositPct: draft.depositPct,
+    signMode: draft.signMode,
+    urgentRepairRequested: draft.urgentRepairRequested === true,
+  });
+}

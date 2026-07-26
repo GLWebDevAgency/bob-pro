@@ -36,6 +36,7 @@ import { QuoteDraftController } from './quotes/quote-draft.controller';
 import { QuoteDraftService } from './quotes/quote-draft.service';
 import { DiagnosticAssessmentController } from './diagnostic/diagnostic-assessment.controller';
 import { DiagnosticAssessmentService } from './diagnostic/diagnostic-assessment.service';
+import { AgentMissionModule } from './agent-missions/agent-mission.module';
 import {
   HealthController,
   CustomersController,
@@ -81,6 +82,7 @@ import {
     PersistenceModule,
     RealtimeVoiceModule,
     FiscalModule,
+    AgentMissionModule,
   ],
   controllers: [
     HealthController,

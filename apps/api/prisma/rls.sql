@@ -22,6 +22,8 @@ BEGIN
     'expense_creation_requests',
     'quote_creation_requests',
     'quote_draft_slots',
+    'agent_missions',
+    'agent_mission_events',
     'documents',
     'document_analyses',
     'document_folders',
@@ -169,6 +171,95 @@ CREATE POLICY quote_draft_slot_owner_delete ON quote_draft_slots FOR DELETE
     "companyId" = current_setting('app.current_company_id', true)
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
   );
+
+-- Les missions sont plus fines que le tenant : société + propriétaire JWT, puis capability
+-- interne exacte pour les INSERT/UPDATE. Les événements restent append-only.
+DROP POLICY IF EXISTS agent_missions_owner_select ON agent_missions;
+DROP POLICY IF EXISTS agent_missions_owner_insert ON agent_missions;
+DROP POLICY IF EXISTS agent_missions_owner_update ON agent_missions;
+CREATE POLICY agent_missions_owner_select ON agent_missions FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY agent_missions_owner_insert ON agent_missions FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY agent_missions_owner_update ON agent_missions FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "id"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+DROP POLICY IF EXISTS agent_mission_events_owner_select ON agent_mission_events;
+DROP POLICY IF EXISTS agent_mission_events_owner_insert ON agent_mission_events;
+CREATE POLICY agent_mission_events_owner_select ON agent_mission_events FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY agent_mission_events_owner_insert ON agent_mission_events FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
+REVOKE ALL ON TABLE agent_missions FROM PUBLIC;
+REVOKE ALL ON TABLE agent_mission_events FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
+
+DO $$
+DECLARE
+  exposed_role text;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::text[] LOOP
+    IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_missions FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_mission_events FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_mutation_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_quote_draft_agent_mission_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION reject_agent_mission_event_mutation_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION require_agent_mission_event_v1() FROM %I',
+        exposed_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
 
 DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestations;
 CREATE POLICY tenant_isolation ON catalogue_prestations
@@ -851,13 +942,60 @@ REVOKE ALL ON FUNCTION public.retained_openai_native_proof_hmac_key_bindings() F
 REVOKE ALL ON FUNCTION public.guard_realtime_native_speech_slo_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.guard_realtime_native_delivery_delete_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(
-  TEXT, INTEGER, UUID
-) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
-  FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
-  FROM PUBLIC;
+-- À la première release, le déployeur possède encore ces fonctions. Aux replays suivants,
+-- elles appartiennent déjà à l'autorité NOLOGIN. Supabase refuse alors toute modification ACL
+-- exécutée directement par le déployeur : normaliser exclusivement sous l'owner exact.
+DO $directory_function_owner$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid IN (
+       'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+       'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+       'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+     )
+       AND function.proowner <> (
+         SELECT role.oid
+           FROM pg_catalog.pg_roles AS role
+          WHERE role.rolname = current_user
+       )
+       AND NOT pg_catalog.pg_has_role(current_user, function.proowner, 'SET')
+  ) THEN
+    RAISE EXCEPTION
+      'OpenAI native maintenance directory function has an unexpected owner during RLS replay';
+  END IF;
+END;
+$directory_function_owner$;
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; RESET ROLE;',
+  owner.rolname,
+  function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ WHERE function.oid IN (
+   'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+   'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+   'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+ )
+\gexec
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; RESET ROLE;',
+  owner.rolname,
+  function.oid::regprocedure,
+  exposed_role.rolname
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ CROSS JOIN pg_catalog.pg_roles AS exposed_role
+ WHERE function.oid IN (
+   'public.list_realtime_native_speech_maintenance_tenants_v1(text,integer,uuid)'::regprocedure,
+   'public.ack_realtime_native_speech_maintenance_tenants_v1(text,uuid)'::regprocedure,
+   'public.renew_realtime_native_speech_maintenance_claim_v1(text,uuid)'::regprocedure
+ )
+   AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
 REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM PUBLIC;
 ALTER TABLE public.realtime_native_speech_maintenance_cursors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.realtime_native_speech_maintenance_cursors FORCE ROW LEVEL SECURITY;
@@ -888,18 +1026,6 @@ BEGIN
       );
       EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON FUNCTION public.deny_realtime_native_delivery_truncate_v1() FROM %I',
-        exposed_role
-      );
-      EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID) FROM %I',
-        exposed_role
-      );
-      EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID) FROM %I',
-        exposed_role
-      );
-      EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID) FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(

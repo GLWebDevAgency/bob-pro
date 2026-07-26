@@ -304,15 +304,15 @@ Chaque objectif passe par quatre états seulement : `specified`, `implemented`, 
 `released`. Le passage d'état exige un lien vers un commit et une preuve ; le pourcentage estimé ne
 remplace jamais ce registre.
 
-| Objectif | État au 2026-07-21 | Prochaine preuve attendue |
+| Objectif | État au 2026-07-26 | Prochaine preuve attendue |
 | --- | --- | --- |
 | O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
 | O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés | suites globales + scanner Railway sur Storage cible + train 0/1 + checkout propre |
 | O3 — GPT Realtime | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, configuration audio et autorité native durable testés ; runtime fermé | dispatcher/ACK natifs, autorité acoustique hybride [spécifiée](SPEC_OPENAI_HYBRID_SPEECH.md), barge-in audité AEC et QA device sans requête Mistral |
-| O4 — mission continue | specified | scénario devis E2E voix/tap sur vrais use cases |
+| O4 — mission continue | implemented partiellement — tranche M1-A `start/get/cancel`, journal et brouillon atomiques certifiée sur CI + Supabase staging au SHA runtime `6e7dfd4b`; endpoints production toujours fermés | capability Realtime non forgeable, puis scénario devis E2E voix/tap |
 | O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
 | O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
-| O7 — release reproductible | specified | pipeline au commit candidat + smoke prod/staging |
+| O7 — release reproductible | implemented partiellement — M1-A certifié par CI `30192221987`, contrats natifs `30192221980` et release réelle Supabase staging au SHA runtime `6e7dfd4b` (`112/112`, replay owner-aware, RLS et cleanup verts) | fusion de la PR M1-A, puis smoke cible des tranches activables ; aucune production dans M1-A |
 | O8 — Plateforme Agréée réelle | specified | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié |
 
 ## 8. Changement de cap

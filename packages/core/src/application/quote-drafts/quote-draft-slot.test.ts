@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   QUOTE_DRAFT_PAYLOAD_SCHEMA,
   QUOTE_DRAFT_PAYLOAD_VERSION,
+  createEmptyQuoteDraftPayload,
+  isMeaningfulQuoteDraftPayload,
   parseQuoteDraftPayload,
   type QuoteDraftPayloadV1,
 } from './quote-draft-slot';
@@ -69,5 +71,56 @@ describe('QuoteDraftPayloadV1', () => {
       ...input,
       draft: { ...input.draft, proposal: { id: 'proposal-1' } },
     })).toEqual({ ok: false, error: { code: 'invalid_shape', path: '$.draft' } });
+  });
+
+  it('construit un slot initial honnête et non significatif', () => {
+    const result = createEmptyQuoteDraftPayload('draft-session-empty');
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        draft: {
+          sessionId: 'draft-session-empty',
+          contentRevision: 0,
+          stagingRevision: 0,
+          step: 'client',
+          customer: null,
+          lines: [],
+          depositPct: 30,
+        },
+      },
+    });
+    if (result.ok) expect(isMeaningfulQuoteDraftPayload(result.value)).toBe(false);
+  });
+
+  it.each([
+    ['client', { customer: { id: 'customer-1', name: 'Camping Les Pins' } }],
+    ['ligne en préparation', { lineForm: { label: 'Main-d’œuvre', quantity: '1', unitPrice: '', category: 'labor' } }],
+    ['quantité en préparation', { lineForm: { label: '', quantity: '2', unitPrice: '', category: 'labor' } }],
+    ['prix en préparation', { lineForm: { label: '', quantity: '1', unitPrice: '55', category: 'labor' } }],
+    ['acompte modifié', { depositPct: 0 }],
+    ['signature choisie', { signMode: 'remote' }],
+    ['urgence confirmée', { urgentRepairRequested: true }],
+  ])('considère significatif le contenu durable %s', (_label, patch) => {
+    const empty = createEmptyQuoteDraftPayload('draft-session-meaningful');
+    if (!empty.ok) throw new Error('fixture vide invalide');
+    const candidate = {
+      ...empty.value,
+      draft: { ...empty.value.draft, ...patch },
+    } as QuoteDraftPayloadV1;
+    expect(isMeaningfulQuoteDraftPayload(candidate)).toBe(true);
+  });
+
+  it('n’interprète pas une révision seule comme une donnée utilisateur', () => {
+    const empty = createEmptyQuoteDraftPayload('draft-session-revisions');
+    if (!empty.ok) throw new Error('fixture vide invalide');
+    const candidate: QuoteDraftPayloadV1 = {
+      ...empty.value,
+      draft: {
+        ...empty.value.draft,
+        contentRevision: 42,
+        stagingRevision: 12,
+      },
+    };
+    expect(isMeaningfulQuoteDraftPayload(candidate)).toBe(false);
   });
 });

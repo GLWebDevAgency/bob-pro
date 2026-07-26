@@ -9,7 +9,9 @@ import {
   OnboardingController,
   QuotesController,
 } from '../api.controllers';
+import { AgentMissionController } from '../agent-missions/agent-mission.controller';
 import type { Persistence } from './persistence';
+import { QuoteDraftController } from '../quotes/quote-draft.controller';
 import {
   AllowsMissingCompanyRow,
   TenantPersistenceInterceptor,
@@ -246,6 +248,60 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
     expect(companies.findById).toHaveBeenCalledWith('co-1');
     expect(next.handle).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    [
+      'mission agent',
+      AgentMissionController.prototype.start,
+      AgentMissionController,
+      '/agent-missions/quote-creation/start',
+    ],
+    [
+      'mutation brouillon legacy',
+      QuoteDraftController.prototype.saveCurrent,
+      QuoteDraftController,
+      '/quote-drafts/current',
+    ],
+  ] as const)(
+    'admet %s sous transaction courte puis laisse son UoW s’exécuter sans transaction HTTP imbriquée',
+    async (_label, handler, controller, url) => {
+      let transactionOpen = false;
+      const runWithTenant = vi.fn(async (_companyId: string, work: () => Promise<unknown>) => {
+        transactionOpen = true;
+        try {
+          return await work();
+        } finally {
+          transactionOpen = false;
+        }
+      });
+      const companies = { findById: vi.fn(async () => openCompany) };
+      const interceptor = new TenantPersistenceInterceptor(
+        { runWithTenant, companies } as unknown as Persistence,
+        new Reflector(),
+      );
+      const next = {
+        handle: vi.fn(() => {
+          expect(transactionOpen).toBe(false);
+          return of('handler-outside-admission');
+        }),
+      } satisfies CallHandler;
+
+      const value = await requestContext.run(
+        {
+          correlationId: 'tenant-isolated-owner-uow-test',
+          principal: { userId: 'user-1', companyId: 'co-1' },
+        },
+        () => lastValueFrom(interceptor.intercept(
+          contextFor(handler as (...args: never[]) => unknown, url, controller, 'POST'),
+          next,
+        )),
+      );
+
+      expect(value).toBe('handler-outside-admission');
+      expect(runWithTenant).toHaveBeenCalledOnce();
+      expect(next.handle).toHaveBeenCalledOnce();
+    },
+  );
 
   it('refuse un worker tenant après une clôture déjà commitée', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());

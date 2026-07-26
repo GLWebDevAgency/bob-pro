@@ -3,6 +3,7 @@ import {
   AGENT_MISSION_HARD_TTL_MS,
   AGENT_MISSION_IDLE_TTL_MS,
   AGENT_MISSION_INT4_MAX,
+  AGENT_MISSION_MAX_PAYLOAD_BYTES,
   AGENT_MISSION_RETENTION_MS,
   AgentMission,
   computeQuoteMissionChoiceSetHash,
@@ -870,6 +871,25 @@ describe('AgentMission — ACK écran et résolution client', () => {
 });
 
 describe('AgentMission — terminalité, horloge et table de transitions', () => {
+  it('journalise un join actif sans changer le contexte et prolonge seulement le TTL idle', () => {
+    const mission = awaitingChoice();
+    const before = mission.toSnapshot();
+    const joined = value(mission.joinActive({
+      expectedRevision: mission.revision,
+      occurredAt: at(4),
+    }));
+
+    expectTransition(joined, mission.revision, mission.revision + 1, 'mission_joined');
+    expect(joined.event.data).toEqual({ kind: 'mission_joined' });
+    expect(joined.mission.toSnapshot()).toMatchObject({
+      phase: before.phase,
+      payload: before.payload,
+      currentBinding: before.currentBinding,
+      updatedAt: at(4),
+      idleExpiresAt: at(1_444),
+    });
+  });
+
   it.each([
     ['awaiting_quote_screen', () => noSlotMission()],
     ['awaiting_draft_decision', () => conflictMission()],
@@ -898,7 +918,7 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
     })).toMatchObject({ ok: false, error: { code: 'agent_mission_terminal', status: 'cancelled' } });
   });
 
-  it('expire uniquement après le TTL, distingue idle/hard et reste read-only avant transition', () => {
+  it('expire à la première échéance effective, même si le worker intervient après la seconde', () => {
     const idleBoundary = new Date(Date.parse(CREATED_AT) + AGENT_MISSION_IDLE_TTL_MS).toISOString();
     const hardBoundary = new Date(Date.parse(CREATED_AT) + AGENT_MISSION_HARD_TTL_MS).toISOString();
     const mission = noSlotMission();
@@ -916,7 +936,23 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
     expect(idle.mission.status).toBe('expired');
 
     const hard = value(mission.expire({ expectedRevision: 1, occurredAt: hardBoundary }));
-    expect(hard.event.data).toEqual({ kind: 'mission_expired', reason: 'hard_ttl' });
+    expect(hard.event.data).toEqual({ kind: 'mission_expired', reason: 'idle_ttl' });
+
+    const original = mission.toSnapshot();
+    const tieUpdatedAt = new Date(
+      Date.parse(CREATED_AT) + AGENT_MISSION_HARD_TTL_MS - AGENT_MISSION_IDLE_TTL_MS,
+    ).toISOString();
+    const tie = AgentMission.rehydrate({
+      ...original,
+      updatedAt: tieUpdatedAt,
+      idleExpiresAt: original.hardExpiresAt,
+    });
+    expect(tie.ok).toBe(true);
+    if (!tie.ok) return;
+    expect(value(tie.value.expire({
+      expectedRevision: tie.value.revision,
+      occurredAt: original.hardExpiresAt,
+    })).event.data).toEqual({ kind: 'mission_expired', reason: 'hard_ttl' });
   });
 
   it('refuse toute mutation active arrivée après expiration et toute régression d’horloge', () => {
@@ -1002,6 +1038,22 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
 });
 
 describe('AgentMission — bornes de persistance et frontières runtime', () => {
+  it('rejette le payload brut au-delà de 64 KiB avant toute persistance', () => {
+    const snapshot = noSlotMission().toSnapshot();
+    const oversized = {
+      ...snapshot,
+      payload: {
+        ...snapshot.payload,
+        padding: 'x'.repeat(AGENT_MISSION_MAX_PAYLOAD_BYTES),
+      },
+    };
+
+    expect(AgentMission.rehydrate(oversized)).toMatchObject({
+      ok: false,
+      error: { field: 'payload', reason: 'payload_too_large' },
+    });
+  });
+
   it('accepte int4 max à la relecture puis refuse tout incrément avec une erreur structurée', () => {
     const snapshot = { ...noSlotMission().toSnapshot(), revision: AGENT_MISSION_INT4_MAX };
     const mission = value(AgentMission.rehydrate(snapshot));

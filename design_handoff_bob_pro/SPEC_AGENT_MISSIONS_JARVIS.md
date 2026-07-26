@@ -301,6 +301,9 @@ L'ancienne liaison devient seulement historique dans les événements.
 - TTL inactif glissant V1 : 24 heures après la dernière transition autorisée ;
 - plafond absolu V1 : 7 jours après création ;
 - rétention des missions terminales et événements V1 : 90 jours, sans contenu vocal ;
+  `retentionExpiresAt` d'un événement est une éligibilité minimale, jamais une autorité de purge
+  isolée : aucun reçu n'est supprimé tant que sa mission existe ou reste en rétention, et la future
+  purge retire journal + mission atomiquement seulement quand toutes leurs échéances sont dues ;
 - l'expiration terminalise la mission mais ne supprime jamais le `QuoteDraftSlot` ;
 - une reprise ultérieure démarre une nouvelle mission et propose le brouillon réel existant ;
 - `GET` reste strictement read-only : si l'horloge DB montre une expiration non encore drainée, la

@@ -5,6 +5,7 @@ import {
   devisEdit,
   devisNext,
   formatEUR,
+  isMeaningfulQuoteDraftContent,
   isVatRate,
   startDevis,
   type CataloguePrestation,
@@ -364,15 +365,17 @@ export function hasStagedQuoteDraftLine(state: QuoteDraftState): boolean {
 export function hasMeaningfulQuoteDraft(state: QuoteDraftState): boolean {
   const draft = state.flow.draft;
   return (
-    state.flow.step !== 'client' ||
-    draft.customerId !== null ||
-    draft.lines.length > 0 ||
-    draft.tvaContext !== null ||
-    draft.vatRate !== null ||
-    draft.signerName !== null ||
-    draft.signMode !== null ||
-    draft.depositPct !== 30 ||
-    hasStagedQuoteDraftLine(state)
+    isMeaningfulQuoteDraftContent({
+      step: state.flow.step,
+      hasCustomer: draft.customerId !== null,
+      lineCount: draft.lines.length,
+      lineForm: state.lineForm,
+      hasVatDecision: draft.tvaContext !== null || draft.vatRate !== null,
+      depositPct: draft.depositPct,
+      signMode: draft.signMode,
+      urgentRepairRequested: draft.urgentRepairRequested === true,
+    })
+    || draft.signerName !== null
   );
 }
 

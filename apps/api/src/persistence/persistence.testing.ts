@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DocumentFolder, DEFAULT_DOCUMENT_FOLDERS } from '@bob/core';
+import type { AgentMissionUnitOfWorkPort } from '@bob/core';
 import { seedCompany, seedCustomers } from '@bob/core/testing';
 import type { Persistence } from './persistence';
 import { InMemorySalesDocumentSearchRepository } from './sales-document-search.in-memory';
@@ -16,6 +17,7 @@ import { InMemoryDocumentAnalysisStore } from './document-analyses.testing';
 import { InMemoryExpenseCreationRequestStore } from './expense-creation-requests.testing';
 import { InMemoryQuoteCreationRequestStore } from './quote-creation-requests.testing';
 import { InMemoryQuoteDraftSlotRepository } from './quote-draft-slots.testing';
+import { InMemoryAgentMissionDraftFence } from './agent-mission-draft-fence.testing';
 import { InMemoryCompanyBillingSettingsRepository } from './billing-settings.testing';
 import { InMemoryDiagnosticAssessmentRepository } from './diagnostic-assessment.testing';
 import { InMemoryRealtimeAdmission } from '../voice/realtime/realtime-admission.testing';
@@ -121,6 +123,7 @@ export class InMemoryPersistence implements Persistence {
   readonly expenseCreationRequests = new InMemoryExpenseCreationRequestStore();
   readonly quoteCreationRequests = new InMemoryQuoteCreationRequestStore();
   readonly quoteDraftSlots = new InMemoryQuoteDraftSlotRepository();
+  readonly agentMissionDraftFence = new InMemoryAgentMissionDraftFence();
   readonly accountingEntries = new InMemoryAccountingEntryRepository();
   readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
@@ -140,6 +143,11 @@ export class InMemoryPersistence implements Persistence {
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new InMemoryRealtimeAdmission(policy);
+  }
+  createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null {
+    // Les tests HTTP positifs remplacent explicitement l'autorité M1-A. Un double générique ne
+    // simule jamais abusivement RLS, advisory locks ou transaction_timestamp().
+    return null;
   }
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {
     return new DisabledRealtimeGlobalCapacityInspector();

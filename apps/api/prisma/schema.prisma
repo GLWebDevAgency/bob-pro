@@ -336,6 +336,8 @@ model Company {
   expenseCreationRequests                     ExpenseCreationRequest[]
   quoteCreationRequests                       QuoteCreationRequest[]
   quoteDraftSlots                             QuoteDraftSlot[]
+  agentMissions                               AgentMission[]
+  agentMissionEvents                          AgentMissionEvent[]
   documents                                   StoredDocument[]
   documentFolders                             DocumentFolder[]
   folderDeletionPlans                         DocumentFolderDeletionPlan[]
@@ -439,16 +441,86 @@ model BankBalanceSnapshot {
 /// porte le compare-and-swap afin qu'un appareil périmé ne puisse jamais écraser un autre appareil.
 model QuoteDraftSlot {
   companyId      String
-  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  company        Company       @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   ownerUserId    String
-  revision       Int      @default(1)
-  payloadVersion Int      @default(1)
+  revision       Int           @default(1)
+  payloadVersion Int           @default(1)
   payload        Json
-  createdAt      DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+  /// Marqueur additif de possession. NULL conserve exactement le contrat writer N-1.
+  agentMissionId String?       @db.Uuid
+  agentMission   AgentMission? @relation("AgentMissionQuoteDraft", fields: [agentMissionId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  createdAt      DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime      @updatedAt @db.Timestamptz(6)
 
   @@id([companyId, ownerUserId], name: "quote_draft_slot_owner")
+  @@unique([agentMissionId, companyId, ownerUserId], map: "quote_draft_slots_agent_mission_owner_key")
   @@map("quote_draft_slots")
+}
+
+/// Mission métier provider-neutral : uniquement identifiants, révisions, décisions structurées et
+/// digests. Aucun transcript, nom client, montant ou texte LLM n'est persistant ici.
+model AgentMission {
+  id                 String              @id @db.Uuid
+  companyId          String
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  ownerUserId        String
+  kind               String
+  status             String
+  phase              String
+  revision           Int
+  payloadVersion     Int
+  payload            Json
+  currentBinding     Json?
+  idleExpiresAt      DateTime            @db.Timestamptz(6)
+  hardExpiresAt      DateTime            @db.Timestamptz(6)
+  terminalAt         DateTime?           @db.Timestamptz(6)
+  retentionExpiresAt DateTime            @db.Timestamptz(6)
+  createdAt          DateTime            @db.Timestamptz(6)
+  updatedAt          DateTime            @db.Timestamptz(6)
+  events             AgentMissionEvent[] @relation("AgentMissionEvents")
+  quoteDraftSlots    QuoteDraftSlot[]    @relation("AgentMissionQuoteDraft")
+
+  @@unique([id, companyId, ownerUserId], map: "agent_missions_owner_binding_key")
+  @@index([companyId, ownerUserId, kind, status], map: "agent_missions_owner_status_idx")
+  @@index([retentionExpiresAt], map: "agent_missions_retention_idx")
+  @@map("agent_missions")
+}
+
+/// Journal append-only d'une mission. Le payload `data` est une union fermée sans texte libre.
+model AgentMissionEvent {
+  id                                 String       @id @db.Uuid
+  companyId                          String
+  company                            Company      @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  ownerUserId                        String
+  missionId                          String       @db.Uuid
+  mission                            AgentMission @relation("AgentMissionEvents", fields: [missionId, companyId, ownerUserId], references: [id, companyId, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  sequence                           Int
+  eventType                          String
+  eventVersion                       Int
+  actor                              String
+  commandId                          String       @db.Uuid
+  requestFingerprintHmac             String       @db.Char(64)
+  fingerprintKeyVersion              Int
+  fingerprintCanonicalizationVersion Int
+  missionRevisionBefore              Int
+  missionRevisionAfter               Int
+  draftSlotRevisionBefore            Int?
+  draftSlotRevisionAfter             Int?
+  draftContentRevisionBefore         Int?
+  draftContentRevisionAfter          Int?
+  realtimeSessionId                  String?      @db.Uuid
+  turnId                             String?      @db.Uuid
+  contextRevision                    Int?
+  contextDigest                      String?      @db.Char(64)
+  data                               Json
+  occurredAt                         DateTime     @db.Timestamptz(6)
+  retentionExpiresAt                 DateTime     @db.Timestamptz(6)
+
+  @@unique([companyId, ownerUserId, commandId], map: "agent_mission_events_owner_command_key")
+  @@unique([missionId, sequence], map: "agent_mission_events_sequence_key")
+  @@index([companyId, ownerUserId, missionId, occurredAt], map: "agent_mission_events_owner_timeline_idx")
+  @@index([retentionExpiresAt], map: "agent_mission_events_retention_idx")
+  @@map("agent_mission_events")
 }
 
 model Customer {

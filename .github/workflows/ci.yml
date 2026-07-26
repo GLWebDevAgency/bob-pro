@@ -40,6 +40,47 @@ jobs:
       - run: pnpm build
       - run: pnpm lint
 
+  agent-missions-postgres-certification:
+    # La CI générale utilise historiquement un déployeur superuser. Cette preuve séparée reproduit
+    # le contrat Supabase : bootstrap superuser limité à la création des rôles, puis migrations,
+    # ACL, writer N-1 et tests exécutés par bob_deployer non-superuser sur PostgreSQL 17.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGENT_MISSION_CERT_SUPER_URL: postgresql://postgres@localhost:5432/postgres
+      AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL: postgresql://bob_deployer@localhost:5432/postgres
+      AGENT_MISSION_CERT_DIRECT_URL: postgresql://bob_deployer@localhost:5432/bob_agent_mission_cert
+      AGENT_MISSION_CERT_RUNTIME_URL: postgresql://bob_app@localhost:5432/bob_agent_mission_cert
+      AGENT_MISSION_CERT_AUDITOR_URL: postgresql://bob_cert_auditor@localhost:5432/bob_agent_mission_cert
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - name: Certify AgentMission with a non-superuser deployer
+        run: sh apps/api/scripts/certify-agent-missions-local.sh
+
   rls-certification:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -60,6 +101,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_ci
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
+      CI_POSTGRES_SUPER_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_ci
+      CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_ci
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
@@ -102,6 +145,8 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Reproduce the non-superuser Supabase deployer and Data API defaults
+        run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
       # `release.sh` exécute les certifications sur le vrai code API. Un checkout CI neuf
       # ne possède ni Prisma Client généré ni les `dist/` des dépendances workspace : construire
       # toute la fermeture topologique évite de certifier un environnement différent de celui
@@ -135,6 +180,7 @@ jobs:
           );
           SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
+        id: release_schema
         run: sh apps/api/scripts/release.sh
       - name: Activate archive/settlement/outbox v2 and certify the post-deploy contract
         run: |
@@ -187,20 +233,26 @@ jobs:
           pnpm --filter @bob/api exec vitest run
           src/voice/realtime/realtime-voice-usage.prisma.postgres.test.ts
       - name: Close shared Bob Live capacity after PostgreSQL certificates
-        if: always()
+        if: ${{ always() && steps.release_schema.outcome == 'success' }}
         run: |
           BOB_LIVE_ENABLED=false \
             sh apps/api/scripts/realtime-capacity-release.sh configure
-          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config(
+            'bob.ci_realtime_capacity_actual_count',
+            (SELECT count(*)::TEXT FROM realtime_session_leases),
+            TRUE
+          );
+          SET LOCAL ROLE bob_realtime_capacity;
           DO $$
+          DECLARE actual_count INTEGER :=
+            current_setting('bob.ci_realtime_capacity_actual_count')::INTEGER;
           BEGIN
             IF NOT EXISTS (
               SELECT 1 FROM realtime_global_capacity AS capacity
                WHERE capacity.id = 1
                  AND capacity.mode = 'closed'
-                 AND capacity."usedSessions" = (
-                   SELECT count(*)::INTEGER FROM realtime_session_leases
-                 )
+                 AND capacity."usedSessions" = actual_count
             ) THEN
               RAISE EXCEPTION 'Bob Live capacity teardown is not closed or exact';
             END IF;
@@ -231,6 +283,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_global_capacity
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_global_capacity
+      CI_POSTGRES_SUPER_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_global_capacity
+      CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_global_capacity
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
@@ -266,6 +320,8 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Reproduce the non-superuser Supabase deployer and Data API defaults
+        run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
       - run: pnpm --filter "@bob/api..." run build
       - name: Create isolated non-superuser app role
         run: |
@@ -286,6 +342,7 @@ jobs:
           );
           SQL
       - name: Install and certify the isolated capacity schema
+        id: release_schema
         run: sh apps/api/scripts/release.sh
       - name: Certify Bob Live global N/N+1 capacity and rollback on isolated PostgreSQL
         run: |
@@ -303,20 +360,26 @@ jobs:
             pnpm --filter @bob/api exec vitest run \
               src/voice/realtime/realtime-capacity.postgres.test.ts
       - name: Close isolated Bob Live capacity after certification
-        if: always()
+        if: ${{ always() && steps.release_schema.outcome == 'success' }}
         run: |
           BOB_LIVE_ENABLED=false \
             sh apps/api/scripts/realtime-capacity-release.sh configure
-          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config(
+            'bob.ci_realtime_capacity_actual_count',
+            (SELECT count(*)::TEXT FROM realtime_session_leases),
+            TRUE
+          );
+          SET LOCAL ROLE bob_realtime_capacity;
           DO $$
+          DECLARE actual_count INTEGER :=
+            current_setting('bob.ci_realtime_capacity_actual_count')::INTEGER;
           BEGIN
             IF NOT EXISTS (
               SELECT 1 FROM realtime_global_capacity AS capacity
                WHERE capacity.id = 1
                  AND capacity.mode = 'closed'
-                 AND capacity."usedSessions" = (
-                   SELECT count(*)::INTEGER FROM realtime_session_leases
-                 )
+                 AND capacity."usedSessions" = actual_count
             ) THEN
               RAISE EXCEPTION 'Isolated Bob Live capacity teardown is not closed or exact';
             END IF;
@@ -347,6 +410,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bob_ephemeral_key_rotation
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_key_rotation
+      CI_POSTGRES_SUPER_URL: postgresql://postgres:postgres@localhost:5432/bob_ephemeral_key_rotation
+      CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_key_rotation
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
@@ -382,6 +447,8 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Reproduce the non-superuser Supabase deployer and Data API defaults
+        run: sh apps/api/scripts/bootstrap-supabase-ci-postgres.sh
       - run: pnpm --filter "@bob/api..." run build
       - name: Create non-superuser app role
         run: |
@@ -408,6 +475,7 @@ jobs:
           );
           SQL
       - name: Install and certify the isolated schema
+        id: release_schema
         run: sh apps/api/scripts/release.sh
       - name: Certify OpenAI native subject/proof rotation and writer-retire races
         env:
@@ -428,20 +496,26 @@ jobs:
           pnpm --filter @bob/api exec vitest run \
             src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
       - name: Close isolated Mistral capacity after rotation certificate
-        if: always()
+        if: ${{ always() && steps.release_schema.outcome == 'success' }}
         run: |
           BOB_LIVE_ENABLED=false \
             sh apps/api/scripts/realtime-capacity-release.sh configure
-          psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT set_config(
+            'bob.ci_realtime_capacity_actual_count',
+            (SELECT count(*)::TEXT FROM realtime_session_leases),
+            TRUE
+          );
+          SET LOCAL ROLE bob_realtime_capacity;
           DO $$
+          DECLARE actual_count INTEGER :=
+            current_setting('bob.ci_realtime_capacity_actual_count')::INTEGER;
           BEGIN
             IF NOT EXISTS (
               SELECT 1 FROM realtime_global_capacity AS capacity
                WHERE capacity.id = 1
                  AND capacity.mode = 'closed'
-                 AND capacity."usedSessions" = (
-                   SELECT count(*)::INTEGER FROM realtime_session_leases
-                 )
+                 AND capacity."usedSessions" = actual_count
             ) THEN
               RAISE EXCEPTION 'Mistral capacity teardown is not closed or exact';
             END IF;

@@ -23,9 +23,9 @@ provision_mistral_bootstrap_reaper() {
   # membre autorisé, uniquement pour transférer et attester l'ownership des fonctions.
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v runtime_role="$runtime_role" <<'SQL'
--- Supabase intercepte fatalement tout GRANT d'adhesion vers le role postgres
+-- Supabase intercepte fatalement tout GRANT/REVOKE d'adhesion visant postgres
 -- (connexion tuee) : adhesion SET accordee IMPLICITEMENT a la creation
--- (createrole_self_grant, PG16+), GRANT explicite conditionnel ci-dessous.
+-- (createrole_self_grant, PG16+), sans aucun fallback GRANT explicite.
 SET createrole_self_grant = 'set';
 
 SELECT format(
@@ -35,6 +35,39 @@ SELECT format(
 WHERE NOT EXISTS (
   SELECT 1 FROM pg_roles WHERE rolname = 'bob_mistral_bootstrap_reaper'
 ) \gexec
+
+DO $$
+DECLARE
+  deployer_oid OID;
+  deployer_is_superuser BOOLEAN;
+  owner_oid OID;
+BEGIN
+  SELECT role.oid, role.rolsuper
+    INTO STRICT deployer_oid, deployer_is_superuser
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = current_user;
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_mistral_bootstrap_reaper';
+
+  IF NOT pg_catalog.pg_has_role(current_user, owner_oid, 'SET')
+     OR (
+       NOT deployer_is_superuser
+       AND NOT EXISTS (
+         SELECT 1
+           FROM pg_catalog.pg_auth_members AS membership
+          WHERE membership.roleid = owner_oid
+            AND membership.member = deployer_oid
+            AND membership.set_option
+            AND NOT membership.inherit_option
+       )
+     ) THEN
+    RAISE EXCEPTION
+      'bob_mistral_bootstrap_reaper is not available through implicit SET membership; create it as this deployer with createrole_self_grant=set before retrying';
+  END IF;
+END;
+$$;
 
 -- CREATEROLE suffit pour verrouiller les attributs administrables. PostgreSQL reserve la
 -- reassertion de NOSUPERUSER/NOBYPASSRLS/NOREPLICATION au superuser : on les atteste donc sans
@@ -67,21 +100,41 @@ SELECT format('REVOKE %I FROM %I CASCADE', parent_role.rolname, 'bob_mistral_boo
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS parent_role ON parent_role.oid = membership.roleid
  WHERE membership.member = 'bob_mistral_bootstrap_reaper'::regrole
+   AND parent_role.rolname <> 'postgres'
 \gexec
 
 SELECT format('REVOKE %I FROM %I CASCADE', 'bob_mistral_bootstrap_reaper', member_role.rolname)
-  FROM pg_catalog.pg_auth_members AS membership
+ FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
  WHERE membership.roleid = 'bob_mistral_bootstrap_reaper'::regrole
-   AND member_role.rolname <> current_user
+   AND member_role.rolname NOT IN (current_user, 'postgres')
 \gexec
 
-SELECT format(
-  'GRANT %I TO CURRENT_USER WITH ADMIN FALSE, INHERIT FALSE, SET TRUE',
-  'bob_mistral_bootstrap_reaper'
-)
-WHERE NOT pg_catalog.pg_has_role(current_user, 'bob_mistral_bootstrap_reaper', 'SET')
-\gexec
+DO $$
+DECLARE
+  owner_oid OID;
+BEGIN
+  SELECT role.oid
+    INTO STRICT owner_oid
+    FROM pg_catalog.pg_roles AS role
+   WHERE role.rolname = 'bob_mistral_bootstrap_reaper';
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.member = owner_oid
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+      JOIN pg_catalog.pg_roles AS member_role ON member_role.oid = membership.member
+     WHERE membership.roleid = owner_oid
+       AND member_role.rolname <> current_user
+  ) THEN
+    RAISE EXCEPTION
+      'bob_mistral_bootstrap_reaper has an unexpected member; membership remediation must be performed outside this certification without targeting postgres';
+  END IF;
+END;
+$$;
 SQL
 
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \

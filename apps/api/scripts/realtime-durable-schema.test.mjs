@@ -170,7 +170,10 @@ test('all durable stores are FORCE RLS and runtime ACLs are least-privilege', ()
   }
   assert.match(mistralIngress, /ALTER TABLE "realtime_mistral_ingress_tickets" FORCE ROW LEVEL SECURITY/u);
   assert.match(rls, /'realtime_mistral_ingress_tickets'/u);
-  assert.match(release, /REVOKE DELETE ON TABLE public\.realtime_speech_artifacts/u);
+  assert.match(
+    release,
+    /REVOKE DELETE, TRUNCATE ON TABLE[\s\S]*public\.realtime_speech_artifacts/u,
+  );
   assert.match(release, /public\.realtime_control_grants,[\s\S]*public\.realtime_control_consumptions,[\s\S]*public\.realtime_voice_usage_events/u);
   assert.match(release, /REVOKE INSERT, UPDATE, DELETE ON TABLE public\.realtime_voice_usage_daily/u);
 });

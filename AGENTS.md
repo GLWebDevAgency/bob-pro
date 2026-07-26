@@ -97,6 +97,41 @@ Fallback readable channel:
 - When committing code, include only the coherent change set you own.
 - Mention the agent in the commit body if useful, but keep commit subjects product-focused.
 
+## Release Lessons — 25 July 2026
+
+These rules come from observed staging/production incidents and are permanent:
+
+- CI on an ephemeral superuser PostgreSQL never proves Supabase production. ACL and membership
+  certifications must run as a non-superuser deployer. On Supabase, use
+  `createrole_self_grant='set'` at role creation instead of granting membership back to the
+  deployer; run post-transfer operations under `SET ROLE` to the owner; and explicitly revoke the
+  default `anon`, `authenticated`, and `service_role` exposure on every new public table or
+  function. Replay every new release SQL script against Supabase staging before merge.
+- Every expand migration has a writer N-1 test. It inserts the exact N-1 row shape under every
+  intermediate and final trigger state. Put `SET LOCAL lock_timeout` and
+  `SET LOCAL statement_timeout` at the start of every migration. If `NOT VALID` is used,
+  validation is a later migration. Generate CHECK value lists from their TypeScript source of
+  truth and guard them against drift.
+- A domain semantic change requires an exhaustive consumer audit in the same commit: renderer,
+  PDF, Factur-X, API, mobile, export, and any persisted immutable artifact. Add an end-to-end
+  integration test for the visible result.
+- A paginated maintenance protocol acknowledges a page once the owned page was entirely attempted.
+  Individual failures remain due and are rediscovered; one failing tenant must not freeze every
+  other tenant or key rotation.
+- Agents never self-authorize a founder decision. Record the date and channel of the actual founder
+  instruction and obtain the other agent's countersignature before changing the flag matrix or
+  unique publication list. Resolve an “À confirmer” item explicitly; never overwrite it.
+- Describe a fix truthfully. If correctness is restored by closing a capability, state the closed
+  capability, product impact, and fallback instead of calling it a transparent correction.
+- Environment law is `PR -> validated staging -> production`. Only production APKs target
+  production Railway; preview, development, and simulators target staging. Never relink a working
+  directory to another environment without a recorded handoff.
+- Any publication requirement that needs unavailable founder input is marked
+  `[BLOQUÉ FONDATEUR : <input>]`; a Definition of Done must remain executable.
+- Every CI/monitoring output has an explicit empty-value default. One incident creates one issue
+  without periodic noise. Tokens are environment-scoped, and a secret is considered available only
+  after it is actually installed and verified.
+
 ## Final Response Rule
 
 When replying to the user, summarize:

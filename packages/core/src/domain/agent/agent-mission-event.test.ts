@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_MISSION_ACTORS,
+  AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES,
+  AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES,
+  AGENT_MISSION_CORRELATION_USER_EVENT_TYPES,
+  AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES,
+  AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES,
+  AGENT_MISSION_DRAFT_REPLACE_EVENT_TYPES,
+  AGENT_MISSION_DRAFT_START_EVENT_TYPES,
   AGENT_MISSION_EVENT_RETENTION_MS,
   AGENT_MISSION_EVENT_TYPES,
   AGENT_MISSION_EVENT_INT4_MAX,
+  AGENT_MISSION_EVENT_MAX_DATA_BYTES,
+  AGENT_MISSION_START_EXISTING_SLOT_OUTCOMES,
+  AGENT_MISSION_START_CONFLICT_OUTCOMES,
+  AGENT_MISSION_START_DIRECT_DRAFT_OUTCOMES,
+  AGENT_MISSION_START_NEW_SLOT_OUTCOMES,
+  AGENT_MISSION_START_OUTCOMES,
+  AGENT_MISSION_SYSTEM_ACTORS,
+  AGENT_MISSION_TAP_ACTORS,
+  AGENT_MISSION_USER_ACTORS,
+  AGENT_MISSION_VOICE_ACTORS,
   AgentMissionEvent,
   type AgentMissionEventDataV1,
   type AgentMissionEventSnapshot,
@@ -12,6 +30,7 @@ import {
 const EVENT_ID = '00000000-0000-4000-8000-000000000010';
 const MISSION_ID = '00000000-0000-4000-8000-000000000011';
 const COMMAND_ID = '00000000-0000-4000-8000-000000000012';
+const SYSTEM_COMMAND_ID = '00000000-0000-8000-8000-000000000012';
 const SESSION_ID = '00000000-0000-4000-8000-000000000013';
 const TURN_ID = '00000000-0000-4000-8000-000000000014';
 const CHOICE_ID = '00000000-0000-4000-8000-000000000015';
@@ -52,6 +71,7 @@ function dataFor(type: AgentMissionEventType): AgentMissionEventDataV1 {
   switch (type) {
     case 'mission_started':
       return { kind: type, startOutcome: 'no_slot' };
+    case 'mission_joined':
     case 'draft_resume_selected':
     case 'draft_discard_requested':
     case 'draft_discard_cancelled':
@@ -89,6 +109,7 @@ function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnaps
   return event({
     eventType,
     actor,
+    commandId: actor === 'system' ? SYSTEM_COMMAND_ID : COMMAND_ID,
     sequence: isStart ? 1 : 4,
     missionRevisionBefore: isStart ? 0 : 3,
     missionRevisionAfter: isStart ? 1 : 4,
@@ -105,6 +126,60 @@ function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnaps
 }
 
 describe('AgentMissionEvent', () => {
+  it('partage des partitions exhaustives et disjointes avec les CHECK SQL générés', () => {
+    const expectExactPartition = (
+      universe: readonly string[],
+      partitions: readonly (readonly string[])[],
+    ): void => {
+      const flattened = partitions.flat();
+      expect(new Set(flattened)).toEqual(new Set(universe));
+      expect(flattened).toHaveLength(universe.length);
+    };
+
+    expectExactPartition(AGENT_MISSION_EVENT_TYPES, [
+      AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES,
+      AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES,
+      AGENT_MISSION_CORRELATION_USER_EVENT_TYPES,
+    ]);
+    expectExactPartition(AGENT_MISSION_EVENT_TYPES, [
+      AGENT_MISSION_DRAFT_START_EVENT_TYPES,
+      AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES,
+      AGENT_MISSION_DRAFT_REPLACE_EVENT_TYPES,
+      AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES,
+    ]);
+    expectExactPartition(AGENT_MISSION_ACTORS, [
+      AGENT_MISSION_VOICE_ACTORS,
+      AGENT_MISSION_TAP_ACTORS,
+      AGENT_MISSION_SYSTEM_ACTORS,
+    ]);
+    expect(new Set(AGENT_MISSION_USER_ACTORS)).toEqual(new Set([
+      ...AGENT_MISSION_VOICE_ACTORS,
+      ...AGENT_MISSION_TAP_ACTORS,
+    ]));
+    expectExactPartition(AGENT_MISSION_START_OUTCOMES, [
+      AGENT_MISSION_START_NEW_SLOT_OUTCOMES,
+      AGENT_MISSION_START_EXISTING_SLOT_OUTCOMES,
+    ]);
+    expectExactPartition(AGENT_MISSION_START_OUTCOMES, [
+      AGENT_MISSION_START_DIRECT_DRAFT_OUTCOMES,
+      AGENT_MISSION_START_CONFLICT_OUTCOMES,
+    ]);
+  });
+
+  it('rejette les données brutes au-delà de 32 KiB avant toute persistance', () => {
+    const source = validEventFor('mission_started');
+    expect(AgentMissionEvent.record({
+      ...source,
+      data: {
+        ...source.data,
+        padding: 'x'.repeat(AGENT_MISSION_EVENT_MAX_DATA_BYTES),
+      },
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'data', reason: 'payload_too_large' },
+    });
+  });
+
   it.each(AGENT_MISSION_EVENT_TYPES)('valide l’union exacte %s sans texte libre', (eventType) => {
     const result = AgentMissionEvent.record(validEventFor(eventType));
 
@@ -117,6 +192,34 @@ describe('AgentMissionEvent', () => {
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.data)).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('transcript');
+  });
+
+  it.each(AGENT_MISSION_CORRELATION_USER_EVENT_TYPES)(
+    '%s réserve UUID v4 aux commandes utilisateur',
+    (eventType) => {
+      expect(AgentMissionEvent.record(validEventFor(eventType)).ok).toBe(true);
+      expect(AgentMissionEvent.record({
+        ...validEventFor(eventType),
+        commandId: SYSTEM_COMMAND_ID,
+      })).toMatchObject({
+        ok: false,
+        error: { field: 'commandId', reason: 'invalid_uuid_version' },
+      });
+    },
+  );
+
+  it.each([
+    ...AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES,
+    ...AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES,
+  ])('%s réserve UUID v8 aux commandes système', (eventType) => {
+    expect(AgentMissionEvent.record(validEventFor(eventType)).ok).toBe(true);
+    expect(AgentMissionEvent.record({
+      ...validEventFor(eventType),
+      commandId: COMMAND_ID,
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'commandId', reason: 'invalid_uuid_version' },
+    });
   });
 
   it('rejette toute clé inconnue dans l’enveloppe et dans data', () => {
@@ -351,21 +454,33 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
   });
 
   it.each(userEvents)('%s refuse l’acteur système', (eventType) => {
-    expect(AgentMissionEvent.record({ ...validEventFor(eventType), actor: 'system' })).toMatchObject({
+    expect(AgentMissionEvent.record({
+      ...validEventFor(eventType),
+      actor: 'system',
+      commandId: SYSTEM_COMMAND_ID,
+    })).toMatchObject({
       ok: false,
       error: { field: 'actor', reason: 'inconsistent_event' },
     });
   });
 
   it.each(['user_voice', 'user_tap'] as const)('screen_acknowledged refuse l’acteur %s', (actor) => {
-    expect(AgentMissionEvent.record({ ...validEventFor('screen_acknowledged'), actor })).toMatchObject({
+    expect(AgentMissionEvent.record({
+      ...validEventFor('screen_acknowledged'),
+      actor,
+      commandId: COMMAND_ID,
+    })).toMatchObject({
       ok: false,
       error: { field: 'actor', reason: 'inconsistent_event' },
     });
   });
 
   it.each(['user_voice', 'user_tap'] as const)('mission_expired refuse l’acteur %s', (actor) => {
-    expect(AgentMissionEvent.record({ ...validEventFor('mission_expired'), actor })).toMatchObject({
+    expect(AgentMissionEvent.record({
+      ...validEventFor('mission_expired'),
+      actor,
+      commandId: COMMAND_ID,
+    })).toMatchObject({
       ok: false,
       error: { field: 'actor', reason: 'inconsistent_event' },
     });
