@@ -114,6 +114,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         subjectHash: createHash('sha256').update(`subject:${suffix}:${label}`, 'utf8').digest('hex'),
         sessionId: randomUUID(),
         maxSessionSeconds: 900,
+        subjectHashCandidates: [createHash('sha256').update(`subject:${suffix}:${label}`, 'utf8').digest('hex')],
+        principalBindingHash: createHash('sha256').update(`subject:${suffix}:${label}`, 'utf8').digest('hex'),
+        agentMissionBinding: null,
       });
       if (!result.allowed) throw new Error(`Unexpected admission denial: ${result.denial}`);
       return result.lease;

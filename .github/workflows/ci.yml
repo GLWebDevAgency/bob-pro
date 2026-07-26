@@ -181,7 +181,7 @@ jobs:
           SQL
       - name: Expand schema, spool outbox and certify the mixed-version phase
         id: release_schema
-        run: sh apps/api/scripts/release.sh
+        run: BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
       - name: Activate archive/settlement/outbox v2 and certify the post-deploy contract
         run: |
           DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
@@ -189,7 +189,7 @@ jobs:
           INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
             sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
-          sh apps/api/scripts/release.sh
+          BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
       - name: Certify Bob Live admission and fair reaper on ephemeral PostgreSQL
         env:
           RUN_POSTGRES_REALTIME_ADMISSION_CERT: 'true'
@@ -343,7 +343,7 @@ jobs:
           SQL
       - name: Install and certify the isolated capacity schema
         id: release_schema
-        run: sh apps/api/scripts/release.sh
+        run: BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
       - name: Certify Bob Live global N/N+1 capacity and rollback on isolated PostgreSQL
         run: |
           BOB_LIVE_ENABLED=false \
@@ -476,7 +476,9 @@ jobs:
           SQL
       - name: Install and certify the isolated schema
         id: release_schema
-        run: sh apps/api/scripts/release.sh
+        run: BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh
+      - name: Open isolated Mistral capacity after the predeploy certificate
+        run: sh apps/api/scripts/realtime-capacity-release.sh configure
       - name: Certify OpenAI native subject/proof rotation and writer-retire races
         env:
           RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT: 'true'

@@ -5,7 +5,8 @@
   "scripts": {
     "generate": "prisma generate",
     "migrate": "prisma migrate deploy",
-    "release": "sh scripts/release.sh",
+    "release:predeploy": "BOB_RELEASE_PHASE=predeploy sh scripts/release.sh",
+    "release:postdeploy": "BOB_RELEASE_PHASE=postdeploy sh scripts/release.sh",
     "archive:audit": "node dist/document-archive-audit.main.js",
     "release-flag:ops": "node scripts/release-flag-ops.mjs",
     "cabinet-pilot:bootstrap": "node scripts/bootstrap-cabinet-pilot.mjs",

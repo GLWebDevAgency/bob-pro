@@ -67,6 +67,18 @@ const assertImplicitSetAuthority = (source, roleName) => {
   assert.match(authorityBlock, /WHERE membership\.roleid = owner_oid/u);
 };
 
+const assertNoSuperuserOnlyRoleReplay = (source, roleName) => {
+  const marker = `ALTER ROLE ${roleName}`;
+  const start = source.indexOf(marker);
+  const end = source.indexOf(';', start);
+  assert.ok(start >= 0 && end > start, `${roleName} doit verrouiller ses attributs administrables`);
+  assert.doesNotMatch(
+    source.slice(start, end + 1),
+    /\b(?:NOSUPERUSER|NOREPLICATION|NOBYPASSRLS)\b/u,
+    `${roleName} ne doit pas réaffirmer des attributs réservés au superuser Supabase`,
+  );
+};
+
 test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET implicite', () => {
   for (const roleName of [
     'bob_mistral_bootstrap_reaper',
@@ -77,6 +89,18 @@ test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET impli
   }
   assertImplicitSetAuthority(capacityRelease, 'bob_realtime_capacity');
   assertImplicitSetAuthority(
+    mistralCertification,
+    'bob_mistral_bootstrap_reaper',
+  );
+  for (const roleName of [
+    'bob_mistral_bootstrap_reaper',
+    'bob_openai_native_maintenance_directory',
+    'bob_realtime_reaper_directory',
+  ]) {
+    assertNoSuperuserOnlyRoleReplay(release, roleName);
+  }
+  assertNoSuperuserOnlyRoleReplay(capacityRelease, 'bob_realtime_capacity');
+  assertNoSuperuserOnlyRoleReplay(
     mistralCertification,
     'bob_mistral_bootstrap_reaper',
   );

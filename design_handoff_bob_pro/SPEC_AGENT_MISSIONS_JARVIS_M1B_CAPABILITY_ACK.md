@@ -4,7 +4,7 @@
 >
 > Objectif parent : O4 — mission continue
 >
-> Base : `origin/main@f2e7343c`
+> Base : `origin/main@3f1a5549`
 >
 > Dépend de : `SPEC_AGENT_MISSIONS_JARVIS.md`,
 > `SPEC_AGENT_MISSIONS_JARVIS_M1A_SERVER.md`, ADR-0006
@@ -88,6 +88,9 @@ ajoute donc une capability opaque de possession :
   `bam1_<43 caractères base64url>` ;
 - secret retourné une seule fois dans le bootstrap N+1 ;
 - seul son SHA-256 canonique est persisté dans `RealtimeSessionLease` ;
+- le résultat d'admission atteste ce hash dans une preuve sibling séparée de
+  `RealtimeAdmissionLease` ; l'orchestrateur compare preuve, version et décision avant de rendre
+  le secret, afin qu'aucun spread de lease ne le propage vers lifecycle/ticket/release ;
 - secret conservé uniquement en mémoire volatile mobile, jamais dans AsyncStorage, SecureStore,
   SQLite, logs, métriques, traces, analytics ou crash reports ;
 - secret présenté dans `X-Bob-Agent-Mission-Capability` sur chaque route Mission.
@@ -101,19 +104,25 @@ fois au `RealtimeSessionController`, qui en devient l'unique propriétaire et le
 méthode appelée après dispose échoue localement avant réseau. Les clients local/in-memory de test
 implémentent le même contrat mais ne fabriquent jamais de capability.
 
+La remise est volontairement **at-most-once**. Une réponse bootstrap perdue n'est jamais rejouée à
+partir du hash durable, qui ne permet pas de reconstruire le secret : le serveur termine/libère la
+session incomplète, et le client repart avec un nouveau `sessionHandle`. Le produit ne présente
+donc pas ce cas comme une reprise transparente.
+
 L'autorisation reste la conjonction de faits que le client ne peut pas choisir :
 
 - principal JWT request-scoped ;
 - `companyId` et `userId` dérivés du principal ;
 - `principalBindingHash = SHA-256("bob.agent-mission.principal-lock.v1\0" + companyId + "\0" +
-  userId)` dérivé côté serveur, jamais persisté ni loggé ;
+userId)` dérivé côté serveur, jamais persisté ni loggé ;
 - tous les `subjectHash` HMAC calculés côté serveur depuis les versions retenues du keyring Bob
   Live ;
 - hash de la capability présentée ;
 - lease durable V1 active et non expirée correspondant à exactement un candidat.
 
 `sessionHandle`, tenant, owner, version, digest et hash fournis par le client ne sont jamais une
-preuve. Lors d'une admission, le serveur prend d'abord un advisory lock tenanté sur
+preuve. Lors de **toute** admission serveur N+1, y compris champ omis, `null` et Mistral, le serveur
+prend d'abord un advisory lock tenanté sur
 `principalBindingHash`, stable et indépendant des versions HMAC, via
 `pg_advisory_xact_lock` **dans la transaction**. Il verrouille ensuite toutes les lignes candidates
 par ordre `subjectHash, sessionId` avant de décider ou d'insérer ; le verrou stable protège aussi
@@ -122,6 +131,36 @@ seule lease active. L'input distingue le binding HMAC courant, seul autorisé po
 `INSERT`, de la liste courant+historiques. Recherche de lease, replay de `sessionId` et quotas
 utilisateur minute/heure agrègent toute cette liste : une rotation ne remet ni la session active ni
 les quotas à zéro.
+
+Une annulation explicite est une autorité, même si elle atteint le serveur avant l'`INSERT` de la
+lease. `claimTermination` prend donc le même verrou stable et écrit, dans la même transaction, un
+fence d'annulation pour chaque hash sujet courant/historique. Zéro lease n'est déclaré terminé
+qu'après le commit de ces fences. `reserve` refuse tout fence vivant correspondant au
+`sessionHandle`, et un trigger `BEFORE INSERT` applique le même refus aux writers N-1 qui ne
+connaissent pas encore la table. Les fences expirent deux heures après la première annulation ;
+un retry idempotent ne prolonge pas ce délai. Si une rotation HMAC ajoute un candidat lors d'un
+retry, le nouveau fence hérite du plus ancien `cancelledAt` encore présent et de sa même échéance :
+la rotation ne recrée jamais une fenêtre de deux heures. Ils ne comptent ni dans les quotas, ni
+dans la capacité, et ne contiennent ni `userId`, ni `principalBindingHash`, ni secret/token.
+
+Le déploiement qui introduit ce protocole suit un cutover en deux phases :
+
+1. `predeploy` ferme les nouvelles admissions Bob Live et, si le prédécesseur ne publie pas encore
+   `realtimeAdmissionCancellationFence=v1`, attend l'autorité globale `closed|0` avant d'appliquer
+   l'expand puis la validate ;
+2. le pipeline déploie N, prouve l'unique réplique, la readiness du SHA/environnement exacts et la
+   capability `v1`, puis exécute immédiatement le `postdeploy` comme unique autorité de
+   réouverture ;
+3. `postdeploy` est une phase explicite obligatoire, ferme avant le build et toute mutation
+   d'autorité, exige la bijection stricte entre toutes les migrations locales et appliquées,
+   n'appelle jamais `prisma migrate deploy`, recertifie le schéma sous le nouveau binaire et ne
+   rouvre qu'en dernier geste.
+
+Sur les releases suivantes, un prédécesseur qui publie déjà la capability ferme toujours les
+nouvelles admissions, mais ses sessions vivantes peuvent terminer pendant le rollout sans imposer
+un drain zéro préalable. Le trigger protège un INSERT N-1 après qu'un pod N a posé le fence ; aucun
+mécanisme DB ne peut en revanche inventer le fence d'un ancien pod qui a déjà traité un hangup sans
+écriture.
 
 Lors d'une requête HTTP, l'UoW lit/verrouille d'abord toutes les leases correspondant aux hashes
 candidats **sans filtrer par capability**, puis exige exactement une lease V1 active et vivante.
@@ -186,11 +225,11 @@ leases V1. Une coupure immédiate relève d'une future commande durable de termi
 
 La requête initiale a trois formes distinctes :
 
-| Requête | Réponse | Effet |
-| --- | --- | --- |
-| champ omis | réponse historique sans les deux clés | mobile N inchangé |
-| `agentMissionProtocolVersion: null` | version `null`, capability `null` | parcours historique explicitement négocié |
-| `agentMissionProtocolVersion: 1` | `1` + secret si éligible, sinon deux `null` | capability durable ou parcours historique explicite |
+| Requête                             | Réponse                                     | Effet                                               |
+| ----------------------------------- | ------------------------------------------- | --------------------------------------------------- |
+| champ omis                          | réponse historique sans les deux clés       | mobile N inchangé                                   |
+| `agentMissionProtocolVersion: null` | version `null`, capability `null`           | parcours historique explicitement négocié           |
+| `agentMissionProtocolVersion: 1`    | `1` + secret si éligible, sinon deux `null` | capability durable ou parcours historique explicite |
 
 Une réponse N+1 porte exactement les deux clés `agentMissionProtocolVersion` et
 `agentMissionCapability`, soit toutes deux nulles, soit `1` et un secret canonique. Toute autre
@@ -252,6 +291,26 @@ CHECK :
 - aucun backfill ne transforme une lease historique en capability ;
 - un writer N-1 qui omet les quatre colonnes continue à écrire quatre `NULL` ;
 - une négociation `null/null` insère explicitement quatre `NULL`.
+
+Une table additive porte le fence de course hangup/bootstrap :
+
+```text
+realtime_admission_cancellation_fences
+  companyId     TEXT
+  sessionId     UUID
+  subjectHash   CHAR(64)
+  cancelledAt   TIMESTAMPTZ
+  expiresAt     TIMESTAMPTZ
+  PRIMARY KEY (companyId, sessionId, subjectHash)
+```
+
+- une annulation insère tous les hashes candidats avec `ON CONFLICT DO NOTHING` ;
+- `expiresAt = cancelledAt + 2 heures`, sans `UPDATE` ni prolongation ;
+- index `(companyId, expiresAt, sessionId, subjectHash)` pour purge bornée ;
+- `FORCE ROW LEVEL SECURITY`, policy tenant et ACL runtime `SELECT/INSERT/DELETE` seulement ;
+- `PUBLIC`, `anon`, `authenticated`, `service_role` et le reaper global n'ont aucun accès direct ;
+- le trigger de lease refuse tout triplet possédant un fence vivant ;
+- l'annuaire reaper inclut la prochaine expiration de fence et la purge est paginée.
 
 La contrainte est créée `NOT VALID`, puis validée dans une migration ultérieure. Chaque migration
 commence par `SET LOCAL lock_timeout` et `SET LOCAL statement_timeout`. La liste de valeurs du
@@ -432,6 +491,9 @@ commande, contenu, secret ou hash.
 - [ ] Seul un provider/transport/mode présent dans l'allowlist serveur certifiée peut négocier `1`.
 - [ ] Version, hash de capability et version de release flag sont dans l'INSERT de la lease avant
       provider/bootstrap ; le release flag autoritaire a été relu dans cette transaction.
+- [ ] La preuve renvoyée par l'adapter atteste exactement le hash/version insérés, reste séparée
+      de la lease et est corrélée au secret en mémoire avant provider ; toute divergence libère la
+      lease et n'émet aucune capability.
 - [ ] Le quartet de capability est immuable après cet INSERT : une lease historique entièrement
       `NULL` ne peut jamais être promue en V1 par `UPDATE`, et une lease V1 ne peut changer ni
       version, ni horodatage, ni hash, ni version de flag.
@@ -469,12 +531,20 @@ commande, contenu, secret ou hash.
       que les mutations ; une ambiguïté résiduelle est refusée sans choix silencieux.
 - [ ] Le nouvel INSERT utilise seulement le binding courant, tandis que lease existante, replay de
       `sessionId` et quotas utilisateur agrègent courant+historiques sans reset lors d'une rotation.
+- [ ] Hangup, contexte et confirmation retrouvent une lease créée sous un hash historique ; zéro
+      ou plusieurs correspondances échouent fermées sans choisir silencieusement.
+- [ ] Un hangup reçu avant `reserve` committe les fences courant+historiques avant de répondre ;
+      l'INSERT applicatif et un writer N-1 sont ensuite refusés, sans lease, événement de quota,
+      capacité consommée ni appel provider survivant.
+- [ ] Un retry de hangup ne prolonge pas le fence ; sa purge est bornée, tenantée et reflétée dans
+      l'annuaire reaper, sans persister le `principalBindingHash`.
 - [ ] Chaque lecture/mutation revalide la lease dans la même UoW.
 - [ ] Le GET est `REPEATABLE READ READ ONLY`, sans verrou d'écriture ; toute mutation verrouille
       toutes les leases candidates par ordre canonique, filtre les seules actives/vivantes avant le
       test d'unicité, puis compare le hash en temps constant.
 - [ ] Le secret n'est ni persisté côté mobile, ni loggé, ni placé dans métriques/traces/crash
-      reports ; seul son hash serveur est durable.
+      reports ; seul son hash serveur est durable. Une redaction de défense masque en plus tout
+      motif canonique `bam1_…` qui atteindrait malgré tout logs ou scrubbing télémétrique.
 - [ ] Le DTO mobile/React n'expose jamais le secret ; `HttpBobClient` le pose/efface en mémoire,
       ajoute le header lui-même et refuse localement une méthode Mission sans capability.
 
@@ -492,6 +562,14 @@ commande, contenu, secret ou hash.
 - [ ] Expand puis validate séparés, timeouts bornés et listes CHECK générées.
 - [ ] Le writer N-1 exact fonctionne sous les triggers/contraintes de chaque état intermédiaire,
       avant et après validate.
+- [ ] Le writer N-1 insère une lease sans fence et échoue avec un fence vivant exact ; FORCE RLS
+      empêche lecture/écriture inter-tenant et les rôles Data API ne possèdent aucun droit.
+- [ ] Le premier cutover ferme et draine `closed|0` avant migrate ; une reprise partielle ne saute
+      jamais ce drain ; `postdeploy` refuse toute migration locale en attente et n'appelle jamais
+      `prisma migrate deploy`.
+- [ ] La phase est toujours explicite ; la réouverture n'arrive que par `postdeploy`, après preuve
+      d'une réplique, readiness du SHA/environnement exacts et
+      `realtimeAdmissionCancellationFence=v1` sur le binaire déployé.
 - [ ] `boundAt = reservedAt` est prouvé ; le writer N-1 et une négociation `null/null` laissent les
       quatre colonnes Mission à `NULL`.
 - [ ] RLS/ACL/inter-tenant/deux owners passent sur PostgreSQL 17 avec rôle runtime

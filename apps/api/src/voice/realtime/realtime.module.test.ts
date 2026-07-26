@@ -19,6 +19,7 @@ import {
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import {
   REALTIME_DURABLE_CONTROLS,
+  REALTIME_AGENT_MISSION_ADMISSION,
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   REALTIME_AGENT_TURN,
@@ -26,6 +27,7 @@ import {
   REALTIME_SPEECH_SOURCE_POLICY,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
+import { DurableRealtimeAgentMissionAdmissionGate } from './realtime-agent-mission-admission';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
 import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
@@ -160,6 +162,25 @@ function durable(): MistralConversationDurableAuthority {
 
 describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('compose obligatoirement le gate durable lorsque le master AgentMission est ON', () => {
+    validSpeechRuntimeEnvironment('openai');
+    const missionSecret = Buffer.alloc(32, 91).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({
+      1: missionSecret,
+    }));
+    const provider = moduleFactory(REALTIME_AGENT_MISSION_ADMISSION);
+    const persistence = {
+      cabinet: { flags: {} },
+      runWithIdentity: vi.fn(),
+    } as unknown as Persistence;
+
+    expect(provider.inject).toEqual([PERSISTENCE]);
+    expect(provider.useFactory(persistence))
+      .toBeInstanceOf(DurableRealtimeAgentMissionAdmissionGate);
+  });
 
   it('reste dormant et ne sollicite jamais la persistance sans opt-in', async () => {
     validMistralEnvironment();

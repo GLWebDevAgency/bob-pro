@@ -24,11 +24,12 @@ BEGIN
        AND relation.relname IN (
          'agent_missions',
          'agent_mission_events',
+         'realtime_admission_cancellation_fences',
          'release_flags',
          'release_flag_subjects',
          'release_flag_audit_events'
        )
-  ) <> 5 THEN
+  ) <> 6 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT';
   END IF;
 
@@ -43,6 +44,8 @@ BEGIN
          'reject_agent_mission_event_mutation_v1',
          'guard_agent_mission_event_append_v1',
          'require_agent_mission_event_v1',
+         'guard_realtime_admission_cancellation_fence_v1',
+         'sync_realtime_admission_cancellation_schedule_v1',
          'revalidate_agent_mission_release_flag_v1'
        )
        AND (
@@ -52,7 +55,7 @@ BEGIN
            AND function.pronargs = 3
          )
        )
-  ) <> 6 THEN
+  ) <> 8 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT';
   END IF;
 
@@ -67,6 +70,7 @@ BEGIN
          AND relation.relname IN (
            'agent_missions',
            'agent_mission_events',
+           'realtime_admission_cancellation_fences',
            'release_flags',
            'release_flag_subjects',
            'release_flag_audit_events'
@@ -84,6 +88,8 @@ BEGIN
            'reject_agent_mission_event_mutation_v1',
            'guard_agent_mission_event_append_v1',
            'require_agent_mission_event_v1',
+           'guard_realtime_admission_cancellation_fence_v1',
+           'sync_realtime_admission_cancellation_schedule_v1',
            'revalidate_agent_mission_release_flag_v1'
          )
          AND (
@@ -114,6 +120,11 @@ WITH desired_acl(relation_name, granted_privileges, revoked_privileges) AS (
       'agent_mission_events'::TEXT,
       'SELECT, INSERT'::TEXT,
       'UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'::TEXT
+    ),
+    (
+      'realtime_admission_cancellation_fences'::TEXT,
+      'SELECT, INSERT, DELETE'::TEXT,
+      'UPDATE, TRUNCATE, REFERENCES, TRIGGER'::TEXT
     ),
     (
       'release_flags'::TEXT,
@@ -171,6 +182,7 @@ SELECT pg_catalog.format(
  WHERE relation.relname IN (
    'agent_missions',
    'agent_mission_events',
+   'realtime_admission_cancellation_fences',
    'release_flags',
    'release_flag_subjects',
    'release_flag_audit_events'
@@ -209,6 +221,8 @@ SELECT pg_catalog.format(
    'reject_agent_mission_event_mutation_v1',
    'guard_agent_mission_event_append_v1',
    'require_agent_mission_event_v1',
+   'guard_realtime_admission_cancellation_fence_v1',
+   'sync_realtime_admission_cancellation_schedule_v1',
    'revalidate_agent_mission_release_flag_v1'
  )
    AND (

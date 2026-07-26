@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RealtimeAdmissionPolicy } from './realtime-admission';
@@ -35,6 +35,10 @@ function deferred<T>(): Deferred<T> {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function certificationSubjectHash(namespace: string): string {
+  return createHash('sha256').update(`bob.realtime.cert.${namespace}`, 'utf8').digest('hex');
 }
 
 async function waitForBlockedBy(
@@ -1114,6 +1118,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       companyId,
       subjectHash,
       maxSessionSeconds: 900,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      agentMissionBinding: null,
     })));
     expect(results.filter((result) => result.allowed)).toHaveLength(1);
     expect(results.filter((result) => !result.allowed)).toEqual([
@@ -1124,14 +1131,422 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     expect(await admissions[0]!.release({ ...winner.lease, providerTermination: 'not_created' })).toEqual({ ok: true, reason: null });
   }, 30_000);
 
+  it('sérialise la rotation HMAC courant/historique sur le principal stable', async () => {
+    const previousSubjectHash = 'a'.repeat(64);
+    const currentSubjectHash = 'b'.repeat(64);
+    const principalBindingHash = 'c'.repeat(64);
+    const results = await Promise.all([
+      admissions[0]!.reserve({
+        companyId,
+        subjectHash: previousSubjectHash,
+        subjectHashCandidates: [previousSubjectHash, currentSubjectHash],
+        principalBindingHash,
+        agentMissionBinding: null,
+        maxSessionSeconds: 60,
+      }),
+      admissions[1]!.reserve({
+        companyId,
+        subjectHash: currentSubjectHash,
+        subjectHashCandidates: [currentSubjectHash, previousSubjectHash],
+        principalBindingHash,
+        agentMissionBinding: null,
+        maxSessionSeconds: 60,
+      }),
+    ]);
+
+    expect(results.filter((result) => result.allowed)).toHaveLength(1);
+    expect(results.filter((result) => !result.allowed)).toEqual([
+      expect.objectContaining({ allowed: false, denial: 'active_lease' }),
+    ]);
+    const rows = await admin.realtimeSessionLease.findMany({
+      where: {
+        companyId,
+        subjectHash: { in: [previousSubjectHash, currentSubjectHash] },
+      },
+    });
+    expect(rows).toHaveLength(1);
+    const winner = results.find((result) => result.allowed);
+    if (!winner?.allowed) throw new Error('Rotated admission winner missing.');
+    await admissions[0]!.release({
+      ...winner.lease,
+      providerTermination: 'not_created',
+    });
+  }, 30_000);
+
+  it('persiste le quartet V1 exact et ferme toute décision flag devenue périmée', async () => {
+    const [enabledFlag] = await admin.$queryRaw<Array<{ version: number }>>`
+      UPDATE release_flags
+         SET enabled = TRUE,
+             "killSwitch" = FALSE,
+             version = version + 1,
+             "updatedByUserId" = 'system:postgres-cert',
+             "updatedAt" = clock_timestamp()
+       WHERE key = 'bob.agent_missions.quote.v1'
+         AND environment::text = 'staging'
+      RETURNING version
+    `;
+    if (!enabledFlag) throw new Error('AgentMission staging release flag missing.');
+    const subjectHash = 'd'.repeat(64);
+    const principalBindingHash = 'e'.repeat(64);
+    const capability = `bam1_${Buffer.alloc(32, 77).toString('base64url')}`;
+    const capabilityHash = createHash('sha256')
+      .update(capability, 'utf8')
+      .digest('hex');
+
+    try {
+      const legacySubjectHash = certificationSubjectHash('capability-race-legacy');
+      const v1SubjectHash = certificationSubjectHash('capability-race-v1');
+      const racePrincipalBindingHash = certificationSubjectHash('capability-race-principal');
+      const raced = await Promise.all([
+        admissions[0]!.reserve({
+          companyId,
+          subjectHash: legacySubjectHash,
+          subjectHashCandidates: [legacySubjectHash, v1SubjectHash],
+          principalBindingHash: racePrincipalBindingHash,
+          agentMissionBinding: null,
+          maxSessionSeconds: 60,
+        }),
+        admissions[1]!.reserve({
+          companyId,
+          subjectHash: v1SubjectHash,
+          subjectHashCandidates: [v1SubjectHash, legacySubjectHash],
+          principalBindingHash: racePrincipalBindingHash,
+          agentMissionBinding: {
+            protocolVersion: 1,
+            capabilityHash,
+            releaseFlagKey: 'bob.agent_missions.quote.v1',
+            releaseEnvironment: 'staging',
+            releaseFlagVersion: enabledFlag.version,
+            principalBindingHash: racePrincipalBindingHash,
+          },
+          maxSessionSeconds: 60,
+        }),
+      ]);
+      expect(raced.filter((result) => result.allowed)).toHaveLength(1);
+      expect(await admin.realtimeSessionLease.count({
+        where: {
+          companyId,
+          subjectHash: { in: [legacySubjectHash, v1SubjectHash] },
+        },
+      })).toBe(1);
+      const raceWinner = raced.find((result) => result.allowed);
+      if (!raceWinner?.allowed) throw new Error('Legacy/V1 race winner missing.');
+      await admissions[0]!.release({
+        ...raceWinner.lease,
+        providerTermination: 'not_created',
+      });
+
+      const admitted = await admissions[0]!.reserve({
+        companyId,
+        subjectHash,
+        subjectHashCandidates: [subjectHash, 'f'.repeat(64)],
+        principalBindingHash,
+        agentMissionBinding: {
+          protocolVersion: 1,
+          capabilityHash,
+          releaseFlagKey: 'bob.agent_missions.quote.v1',
+          releaseEnvironment: 'staging',
+          releaseFlagVersion: enabledFlag.version,
+          principalBindingHash,
+        },
+        maxSessionSeconds: 60,
+      });
+      if (!admitted.allowed) {
+        throw new Error(`Unexpected AgentMission admission denial: ${admitted.denial}`);
+      }
+      expect(admitted.agentMissionProof).toEqual({
+        protocolVersion: 1,
+        capabilityHash,
+        releaseFlagVersion: enabledFlag.version,
+      });
+      const row = await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId,
+            subjectHash,
+          },
+        },
+      });
+      expect(row.agentMissionProtocolVersion).toBe(1);
+      expect(row.agentMissionProtocolBoundAt).toEqual(row.reservedAt);
+      expect(row.agentMissionCapabilityHash?.trim()).toBe(capabilityHash);
+      expect(row.agentMissionReleaseFlagVersion).toBe(enabledFlag.version);
+      expect(JSON.stringify(row)).not.toContain(capability);
+      await admissions[0]!.release({
+        ...admitted.lease,
+        providerTermination: 'not_created',
+      });
+
+      const nullSubjectHash = '4'.repeat(64);
+      const legacy = await admissions[0]!.reserve({
+        companyId,
+        subjectHash: nullSubjectHash,
+        subjectHashCandidates: [nullSubjectHash],
+        principalBindingHash: '5'.repeat(64),
+        agentMissionBinding: null,
+        maxSessionSeconds: 60,
+      });
+      if (!legacy.allowed) throw new Error(`Unexpected legacy denial: ${legacy.denial}`);
+      expect(legacy.agentMissionProof).toBeNull();
+      const legacyRow = await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId,
+            subjectHash: nullSubjectHash,
+          },
+        },
+      });
+      expect({
+        protocolVersion: legacyRow.agentMissionProtocolVersion,
+        boundAt: legacyRow.agentMissionProtocolBoundAt,
+        capabilityHash: legacyRow.agentMissionCapabilityHash,
+        releaseFlagVersion: legacyRow.agentMissionReleaseFlagVersion,
+      }).toEqual({
+        protocolVersion: null,
+        boundAt: null,
+        capabilityHash: null,
+        releaseFlagVersion: null,
+      });
+      await admissions[0]!.release({
+        ...legacy.lease,
+        providerTermination: 'not_created',
+      });
+
+      const [revokedFlag] = await admin.$queryRaw<Array<{ version: number }>>`
+        UPDATE release_flags
+           SET "killSwitch" = TRUE,
+               version = version + 1,
+               "updatedByUserId" = 'system:postgres-cert',
+               "updatedAt" = clock_timestamp()
+         WHERE key = 'bob.agent_missions.quote.v1'
+           AND environment::text = 'staging'
+        RETURNING version
+      `;
+      if (!revokedFlag) throw new Error('AgentMission staging flag revocation failed.');
+      const rejectedSubjectHash = '0'.repeat(64);
+      await expect(admissions[1]!.reserve({
+        companyId,
+        subjectHash: rejectedSubjectHash,
+        subjectHashCandidates: [rejectedSubjectHash],
+        principalBindingHash: '9'.repeat(64),
+        agentMissionBinding: {
+          protocolVersion: 1,
+          capabilityHash,
+          releaseFlagKey: 'bob.agent_missions.quote.v1',
+          releaseEnvironment: 'staging',
+          // Preuve préliminaire antérieure au kill-switch/version courant.
+          releaseFlagVersion: enabledFlag.version,
+          principalBindingHash: '9'.repeat(64),
+        },
+        maxSessionSeconds: 60,
+      })).resolves.toEqual({
+        allowed: false,
+        denial: 'unavailable',
+        retryAt: null,
+      });
+      expect(await admin.realtimeSessionLease.count({
+        where: { companyId, subjectHash: rejectedSubjectHash },
+      })).toBe(0);
+      expect(await admin.realtimeAdmissionEvent.count({
+        where: { companyId, subjectHash: rejectedSubjectHash },
+      })).toBe(0);
+    } finally {
+      await admin.$executeRaw`
+        UPDATE release_flags
+           SET enabled = FALSE,
+               "killSwitch" = FALSE,
+               version = version + 1,
+               "updatedByUserId" = 'system:postgres-cert-cleanup',
+               "updatedAt" = clock_timestamp()
+         WHERE key = 'bob.agent_missions.quote.v1'
+           AND environment::text = 'staging'
+      `;
+    }
+  }, 30_000);
+
+  it('fence durablement un hangup avant bootstrap, sans prolonger le TTL, puis purge par page', async () => {
+    const sessionId = randomUUID();
+    const currentSubjectHash = certificationSubjectHash('cancellation-current');
+    const historicalSubjectHash = certificationSubjectHash('cancellation-historical');
+    const rotatedSubjectHash = certificationSubjectHash('cancellation-rotated');
+    const principalBindingHash = certificationSubjectHash('cancellation-principal');
+    const input = {
+      companyId: otherCompanyId,
+      subjectHashCandidates: [currentSubjectHash, historicalSubjectHash],
+      principalBindingHash,
+      sessionId,
+    };
+
+    await expect(admissions[0]!.claimTermination(input)).resolves.toEqual({
+      ok: true,
+      claim: null,
+      pending: false,
+    });
+    const firstFences = await admin.$queryRaw<Array<{
+      subjectHash: string;
+      cancelledAt: Date;
+      expiresAt: Date;
+    }>>`
+      SELECT trim("subjectHash") AS "subjectHash", "cancelledAt", "expiresAt"
+        FROM realtime_admission_cancellation_fences
+       WHERE "companyId" = ${otherCompanyId}
+         AND "sessionId" = ${sessionId}::uuid
+       ORDER BY "subjectHash"
+    `;
+    expect(firstFences.map(({ subjectHash }) => subjectHash)).toEqual(
+      [currentSubjectHash, historicalSubjectHash].sort(),
+    );
+    expect(firstFences.every(({ cancelledAt, expiresAt }) =>
+      expiresAt.getTime() - cancelledAt.getTime() === 2 * 60 * 60 * 1_000)).toBe(true);
+
+    const rotatedInput = {
+      ...input,
+      subjectHashCandidates: [
+        rotatedSubjectHash,
+        ...input.subjectHashCandidates,
+      ],
+    };
+    await expect(admissions[1]!.claimTermination(rotatedInput)).resolves.toEqual({
+      ok: true,
+      claim: null,
+      pending: false,
+    });
+    const retriedFences = await admin.$queryRaw<Array<{
+      subjectHash: string;
+      cancelledAt: Date;
+      expiresAt: Date;
+    }>>`
+      SELECT trim("subjectHash") AS "subjectHash", "cancelledAt", "expiresAt"
+        FROM realtime_admission_cancellation_fences
+       WHERE "companyId" = ${otherCompanyId}
+         AND "sessionId" = ${sessionId}::uuid
+       ORDER BY "subjectHash"
+    `;
+    expect(retriedFences.map(({ subjectHash }) => subjectHash)).toEqual(
+      [currentSubjectHash, historicalSubjectHash, rotatedSubjectHash].sort(),
+    );
+    expect(retriedFences.every(({ cancelledAt, expiresAt }) => (
+      cancelledAt.getTime() === firstFences[0]!.cancelledAt.getTime()
+      && expiresAt.getTime() === firstFences[0]!.expiresAt.getTime()
+    ))).toBe(true);
+
+    await expect(admissions[0]!.reserve({
+      companyId: otherCompanyId,
+      subjectHash: currentSubjectHash,
+      subjectHashCandidates: rotatedInput.subjectHashCandidates,
+      principalBindingHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    })).resolves.toEqual({
+      allowed: false,
+      denial: 'active_lease',
+      retryAt: null,
+    });
+    const [postDenial] = await admin.$queryRaw<Array<{
+      leases: number;
+      events: number;
+      scheduleDueAt: Date | null;
+    }>>`
+      SELECT
+        (
+          SELECT count(*)::int
+            FROM realtime_session_leases
+           WHERE "companyId" = ${otherCompanyId}
+             AND "sessionId" = ${sessionId}::uuid
+        ) AS leases,
+        (
+          SELECT count(*)::int
+            FROM realtime_admission_events
+           WHERE "companyId" = ${otherCompanyId}
+             AND "sessionId" = ${sessionId}::uuid
+        ) AS events,
+        (
+          SELECT "nextLeaseDueAt"
+            FROM realtime_reaper_tenant_schedule
+           WHERE "companyId" = ${otherCompanyId}
+        ) AS "scheduleDueAt"
+    `;
+    expect(postDenial).toEqual({
+      leases: 0,
+      events: 0,
+      scheduleDueAt: firstFences[0]!.expiresAt,
+    });
+
+    await admin.$executeRaw`
+      DELETE FROM realtime_admission_cancellation_fences
+       WHERE "companyId" = ${otherCompanyId}
+    `;
+    await admin.$executeRaw`
+      DELETE FROM realtime_reaper_tenant_schedule
+       WHERE "companyId" = ${otherCompanyId}
+    `;
+    await admin.$executeRaw`
+      INSERT INTO realtime_admission_cancellation_fences (
+        "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+      )
+      SELECT ${otherCompanyId}, pg_catalog.gen_random_uuid(),
+             (
+               pg_catalog.md5('cancel-a-' || source.position::text)
+               || pg_catalog.md5('cancel-b-' || source.position::text)
+             )::char(64),
+             statement_timestamp() - interval '3 hours',
+             statement_timestamp() - interval '1 hour'
+        FROM pg_catalog.generate_series(1, 1001) AS source(position)
+    `;
+    await expect(admissions[0]!.claimExpired({
+      companyId: otherCompanyId,
+      limit: 1,
+    })).resolves.toEqual({ ok: true, claims: [] });
+    const [afterFirstPurge] = await admin.$queryRaw<Array<{
+      fences: number;
+      due: boolean;
+    }>>`
+      SELECT
+        (
+          SELECT count(*)::int
+            FROM realtime_admission_cancellation_fences
+           WHERE "companyId" = ${otherCompanyId}
+        ) AS fences,
+        EXISTS (
+          SELECT 1
+            FROM realtime_reaper_tenant_schedule
+           WHERE "companyId" = ${otherCompanyId}
+             AND "nextLeaseDueAt" <= statement_timestamp()
+        ) AS due
+    `;
+    expect(afterFirstPurge).toEqual({ fences: 1, due: true });
+    await expect(admissions[1]!.claimExpired({
+      companyId: otherCompanyId,
+      limit: 1,
+    })).resolves.toEqual({ ok: true, claims: [] });
+    const [afterSecondPurge] = await admin.$queryRaw<Array<{
+      fences: number;
+      schedules: number;
+    }>>`
+      SELECT
+        (
+          SELECT count(*)::int
+            FROM realtime_admission_cancellation_fences
+           WHERE "companyId" = ${otherCompanyId}
+        ) AS fences,
+        (
+          SELECT count(*)::int
+            FROM realtime_reaper_tenant_schedule
+           WHERE "companyId" = ${otherCompanyId}
+        ) AS schedules
+    `;
+    expect(afterSecondPurge).toEqual({ fences: 0, schedules: 0 });
+  }, 30_000);
+
   it('partage le quota glissant utilisateur entre répliques et utilise l’horloge DB', async () => {
-    const subjectHash = '2'.repeat(64);
+    const subjectHash = certificationSubjectHash('sliding-user-quota');
     for (let index = 0; index < 2; index += 1) {
-      const result = await admissions[index]!.reserve({ companyId, subjectHash, maxSessionSeconds: 900 });
+      const result = await admissions[index]!.reserve({ companyId, subjectHash, maxSessionSeconds: 900, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
       if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
       await admissions[index]!.release({ ...result.lease, providerTermination: 'not_created' });
     }
-    const denied = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 900 });
+    const denied = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 900, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     expect(denied).toMatchObject({ allowed: false, denial: 'user_minute' });
     if (denied.allowed) throw new Error('Expected sliding-window denial.');
     expect(Date.parse(denied.retryAt!)).toBeGreaterThan(Date.now() - 5_000);
@@ -1139,7 +1554,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   it('fence les transitions CAS et ne libère pas un provider sans hangup confirmé', async () => {
     const subjectHash = '3'.repeat(64);
-    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     const forged = { ...result.lease, leaseToken: `${result.lease.leaseToken}-forged` };
     expect(await admissions[0]!.bindProvider({ ...forged, providerId: 'openai', providerCallId: 'rtc_cert_1' })).toEqual({ ok: false, reason: 'rejected' });
@@ -1162,11 +1577,17 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       companyId,
       subjectHash: '9'.repeat(64),
       maxSessionSeconds: 60,
+      subjectHashCandidates: ['9'.repeat(64)],
+      principalBindingHash: '9'.repeat(64),
+      agentMissionBinding: null,
     });
     const mistral = await admissions[1]!.reserve({
       companyId,
       subjectHash: 'a'.repeat(64),
       maxSessionSeconds: 60,
+      subjectHashCandidates: ['a'.repeat(64)],
+      principalBindingHash: 'a'.repeat(64),
+      agentMissionBinding: null,
     });
     if (!openai.allowed || !mistral.allowed) throw new Error('Provider identity leases missing.');
     expect(await admissions[0]!.bindProvider({
@@ -1184,6 +1605,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       companyId,
       subjectHash: 'b'.repeat(64),
       maxSessionSeconds: 60,
+      subjectHashCandidates: ['b'.repeat(64)],
+      principalBindingHash: 'b'.repeat(64),
+      agentMissionBinding: null,
     });
     if (!duplicate.allowed) throw new Error('Duplicate identity test lease missing.');
     expect(await admissions[0]!.bindProvider({
@@ -1206,7 +1630,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   it('fence le reaper et isole strictement les deux tenants', async () => {
     const subjectHash = '4'.repeat(64);
-    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     await admissions[0]!.bindProvider({ ...result.lease, providerId: 'mistral', providerCallId: 'rtc_cert_stale' });
     await admin.$executeRaw`
@@ -1214,7 +1638,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
          SET "leaseExpiresAt" = "reservedAt" + interval '1 microsecond'
        WHERE "companyId" = ${companyId} AND "subjectHash" = ${subjectHash}
     `;
-    const blocked = await admissions[1]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const blocked = await admissions[1]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     expect(blocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
     if (blocked.allowed || !blocked.reapingClaim) throw new Error('Reaping claim missing.');
     expect(blocked.reapingClaim.providerId).toBe('mistral');
@@ -1243,7 +1667,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   it('émet la preuve hard-expired depuis clock_timestamp et la lie à l’identité complète', async () => {
     const subjectHash = '6'.repeat(64);
-    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     await admissions[0]!.bindProvider({
       ...result.lease,
@@ -1282,19 +1706,21 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   it('réclame une terminaison explicite depuis une autre réplique sans exposer le callId au client', async () => {
     const subjectHash = '5'.repeat(64);
-    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     await admissions[0]!.bindProvider({ ...result.lease, providerId: 'mistral', providerCallId: 'rtc_cross_replica' });
     await admissions[0]!.activate(result.lease);
 
     expect(await admissions[1]!.claimTermination({
       companyId,
-      subjectHash,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
       sessionId: '00000000-0000-4000-8000-999999999999',
     })).toEqual({ ok: true, claim: null, pending: false });
     const termination = await admissions[1]!.claimTermination({
       companyId,
-      subjectHash,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
       sessionId: result.lease.sessionId,
     });
     expect(termination.ok).toBe(true);
@@ -1311,7 +1737,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
 
   it('persiste le contexte écran entre répliques avec révision et RLS fail-closed', async () => {
     const subjectHash = '8'.repeat(64);
-    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     await admissions[0]!.bindProvider({ ...result.lease, providerId: 'openai', providerCallId: 'rtc_context_replica' });
     const identity = { companyId, subjectHash, sessionId: result.lease.sessionId };
@@ -1372,7 +1798,15 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
   it('fence les retries bootstrap par le session handle UUID fourni par le mobile', async () => {
     const subjectHash = '6'.repeat(64);
     const sessionId = randomUUID();
-    const input = { companyId, subjectHash, sessionId, maxSessionSeconds: 60 };
+    const input = {
+      companyId,
+      subjectHash,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    };
     const results = await Promise.all([
       admissions[0]!.reserve(input),
       admissions[1]!.reserve(input),
@@ -1386,7 +1820,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     expect(winner.lease.sessionId).toBe(sessionId);
     await admissions[0]!.release({ ...winner.lease, providerTermination: 'not_created' });
     expect(await admissions[1]!.reserve(input)).toEqual({ allowed: false, denial: 'active_lease', retryAt: null });
-    expect(await admissions[0]!.reserve({ ...input, subjectHash: '7'.repeat(64) })).toEqual({
+    expect(await admissions[0]!.reserve({ ...input, subjectHash: '7'.repeat(64) , subjectHashCandidates: ['7'.repeat(64)], principalBindingHash: '7'.repeat(64), agentMissionBinding: null })).toEqual({
       allowed: false,
       denial: 'unavailable',
       retryAt: null,

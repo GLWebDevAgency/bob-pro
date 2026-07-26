@@ -434,6 +434,7 @@ BEGIN
 
   FOREACH relation_name IN ARRAY ARRAY[
     'realtime_admission_events',
+    'realtime_admission_cancellation_fences',
     'realtime_session_leases',
     'realtime_mistral_conversation_bootstrap_tickets',
     'realtime_mistral_conversation_missions'
@@ -684,12 +685,16 @@ BEGIN
       ) OR pg_catalog.has_table_privilege(
         exposed_role, 'public.realtime_reaper_directory_cursor',
         'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+      ) OR pg_catalog.has_table_privilege(
+        exposed_role, 'public.realtime_admission_cancellation_fences',
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
       ) OR EXISTS (
         SELECT 1 FROM unnest(ARRAY[
           'public.list_realtime_reaper_tenants_v1(integer,uuid)'::regprocedure::oid,
           'public.ack_realtime_reaper_tenants_v1(uuid)'::regprocedure::oid,
           'public.renew_realtime_reaper_tenants_claim_v1(uuid)'::regprocedure::oid,
-          'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure::oid
+          'public.sync_realtime_reaper_tenant_schedule_v1()'::regprocedure::oid,
+          'public.sync_realtime_admission_cancellation_schedule_v1()'::regprocedure::oid
         ]) AS candidate(oid)
          WHERE pg_catalog.has_function_privilege(exposed_role, candidate.oid, 'EXECUTE')
       )

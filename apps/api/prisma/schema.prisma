@@ -356,6 +356,7 @@ model Company {
   bankBalanceSnapshots                        BankBalanceSnapshot[]
   counters                                    DocumentCounter[]
   realtimeAdmissionEvents                     RealtimeAdmissionEvent[]
+  realtimeAdmissionCancellationFences         RealtimeAdmissionCancellationFence[]
   realtimeSessionLeases                       RealtimeSessionLease[]
   realtimeMistralTickets                      RealtimeMistralIngressTicket[]
   realtimeMistralConversationBootstrapTickets RealtimeMistralConversationBootstrapTicket[]
@@ -1545,6 +1546,22 @@ model RealtimeAdmissionEvent {
   @@index([companyId, admittedAt], map: "realtime_admission_events_tenant_window_idx")
   @@index([companyId, subjectHash, admittedAt], map: "realtime_admission_events_subject_window_idx")
   @@map("realtime_admission_events")
+}
+
+/// Fence éphémère d'une annulation Bob Live reçue avant ou pendant le bootstrap. Une ligne est
+/// écrite pour chaque hash HMAC courant/historique ; aucune identité brute ou hash principal stable
+/// n'est persisté.
+model RealtimeAdmissionCancellationFence {
+  companyId   String   @db.Text
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "realtime_admission_cancellation_fences_company_fkey")
+  sessionId   String   @db.Uuid
+  subjectHash String   @db.Char(64)
+  cancelledAt DateTime @db.Timestamptz(6)
+  expiresAt   DateTime @db.Timestamptz(6)
+
+  @@id([companyId, sessionId, subjectHash], name: "realtime_admission_cancellation_fence", map: "realtime_admission_cancellation_fence_pkey")
+  @@index([companyId, expiresAt, sessionId, subjectHash], map: "realtime_admission_cancellation_fences_tenant_expiry_idx")
+  @@map("realtime_admission_cancellation_fences")
 }
 
 /// Bail distribué unique par tenant + sujet. Le token 256 bits reste dans le processus qui l'a

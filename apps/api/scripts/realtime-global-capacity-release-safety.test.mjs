@@ -94,27 +94,34 @@ test('la configuration live est tout-ou-rien et possède une version monotone', 
     /globalCapacity\.globalMaxSessions > env\.BOB_LIVE_GATEWAY_MAX_CONNECTIONS/u,
   );
   assert.match(releaseHelper, /selected_version <= state_row\."configVersion"/u);
-  assert.match(releaseHelper, /actual_count <> 0/u);
-  assert.match(releaseHelper, /Realtime capacity projection mismatch/u);
+  assert.match(releaseHelper, /state_row\."usedSessions" <> 0/u);
+  assert.doesNotMatch(releaseHelper, /count\(\*\)::TEXT FROM public\.realtime_session_leases/u);
 });
 
 test('la fermeture et l’activation sérialisent singleton puis projection sans cycle de verrous', () => {
+  const closeExisting = releaseHelper.slice(
+    releaseHelper.indexOf('close_existing()'),
+    releaseHelper.indexOf('configure()'),
+  );
   const configure = releaseHelper.slice(releaseHelper.indexOf('configure()'));
   assert.doesNotMatch(
-    configure,
+    `${closeExisting}\n${configure}`,
     /LOCK TABLE public\.realtime_session_leases/u,
     'Le rollout ne doit jamais verrouiller leases avant le singleton utilisé par le trigger.',
   );
   assert.equal(
     (
-      configure.match(
-        /SET LOCAL ROLE bob_realtime_capacity;[\s\S]*?SELECT id FROM public\.realtime_global_capacity WHERE id = 1 FOR UPDATE;[\s\S]*?RESET ROLE;[\s\S]*?SELECT set_config\([\s\S]*?count\(\*\)::TEXT FROM public\.realtime_session_leases/gu,
+      releaseHelper.match(
+        /SET LOCAL ROLE bob_realtime_capacity;[\s\S]*?SELECT id FROM public\.realtime_global_capacity WHERE id = 1 FOR UPDATE;/gu,
       ) ?? []
     ).length,
     2,
   );
-  assert.equal((configure.match(/SET LOCAL statement_timeout = '5s';/gu) ?? []).length, 2);
-  assert.equal((configure.match(/SET LOCAL lock_timeout = '2s';/gu) ?? []).length, 2);
+  assert.doesNotMatch(`${closeExisting}\n${configure}`, /FROM public\.realtime_session_leases/u);
+  assert.match(configure, /state_row\."usedSessions" > selected_global_max/u);
+  assert.equal((releaseHelper.match(/SET LOCAL statement_timeout = '5s';/gu) ?? []).length, 2);
+  assert.equal((releaseHelper.match(/SET LOCAL lock_timeout = '2s';/gu) ?? []).length, 2);
+  assert.match(releaseHelper, /close-existing\) close_existing/u);
 });
 
 test('la release ferme d’abord, certifie en lecture seule, puis active en dernier', () => {
@@ -143,7 +150,8 @@ test('la release ferme d’abord, certifie en lecture seule, puis active en dern
   assert.match(metadataCert, /^ROLLBACK;$/mu);
   assert.doesNotMatch(metadataCert, /__[A-Z_]+__/u);
   assert.doesNotMatch(metadataCert, /^\s*(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\s/imu);
-  assert.match(metadataCert, /"usedSessions" <> lease_count/u);
+  assert.match(metadataCert, /capacity_row\."usedSessions" < 0/u);
+  assert.doesNotMatch(metadataCert, /FROM public\.realtime_session_leases/u);
   assert.match(metadataCert, /confdeltype = 'r'/u);
   assert.match(metadataCert, /trigger\.tgenabled = 'A'/u);
 });

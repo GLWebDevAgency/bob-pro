@@ -28,6 +28,14 @@ const capabilityValidatePath = path.join(
   apiDir,
   'prisma/migrations/20260726050000_agent_mission_realtime_lease_validate/migration.sql',
 );
+const cancellationExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726060000_realtime_admission_cancellation_fence_expand/migration.sql',
+);
+const cancellationValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260726070000_realtime_admission_cancellation_fence_validate/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');
 const agentMissionRlsReplayPath = path.join(
@@ -42,6 +50,8 @@ const [
   capabilityFlagFence,
   capabilityExpand,
   capabilityValidate,
+  cancellationExpand,
+  cancellationValidate,
   schema,
   rls,
   agentMissionRlsReplay,
@@ -52,6 +62,8 @@ const [
   readFile(capabilityFlagFencePath, 'utf8'),
   readFile(capabilityExpandPath, 'utf8'),
   readFile(capabilityValidatePath, 'utf8'),
+  readFile(cancellationExpandPath, 'utf8'),
+  readFile(cancellationValidatePath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
@@ -84,6 +96,8 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['capability flag fence', capabilityFlagFence],
     ['capability expand', capabilityExpand],
     ['capability validate', capabilityValidate],
+    ['cancellation expand', cancellationExpand],
+    ['cancellation validate', cancellationValidate],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -94,6 +108,107 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     );
     assert.match(sql, /\bCOMMIT;/u, `${name}: commit absent`);
   }
+});
+
+test('le fence d’annulation est expand-only, tenanté et protège le writer N-1', () => {
+  assert.match(schema, /model RealtimeAdmissionCancellationFence/u);
+  assert.match(
+    schema,
+    /map: "realtime_admission_cancellation_fences_company_fkey"/u,
+  );
+  assert.match(
+    schema,
+    /@@id\(\[companyId, sessionId, subjectHash\],[\s\S]*?map: "realtime_admission_cancellation_fence_pkey"/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /CREATE TABLE public\.realtime_admission_cancellation_fences/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /realtime_admission_cancellation_fences_company_fkey[\s\S]*?NOT VALID;/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /realtime_admission_cancellation_fences_shape_check[\s\S]*?NOT VALID;/u,
+  );
+  assert.doesNotMatch(cancellationExpand, /VALIDATE CONSTRAINT/u);
+  assert.match(
+    cancellationValidate,
+    /VALIDATE CONSTRAINT realtime_admission_cancellation_fences_company_fkey/u,
+  );
+  assert.match(
+    cancellationValidate,
+    /VALIDATE CONSTRAINT realtime_admission_cancellation_fences_shape_check/u,
+  );
+  const companiesNoForce = cancellationValidate.indexOf(
+    'ALTER TABLE public.companies\n  NO FORCE ROW LEVEL SECURITY',
+  );
+  const fenceNoForce = cancellationValidate.indexOf(
+    'ALTER TABLE public.realtime_admission_cancellation_fences\n  NO FORCE ROW LEVEL SECURITY',
+    companiesNoForce,
+  );
+  const validateForeignKey = cancellationValidate.indexOf(
+    'VALIDATE CONSTRAINT realtime_admission_cancellation_fences_company_fkey',
+  );
+  const validateShape = cancellationValidate.indexOf(
+    'VALIDATE CONSTRAINT realtime_admission_cancellation_fences_shape_check',
+  );
+  const fenceForce = cancellationValidate.indexOf(
+    'ALTER TABLE public.realtime_admission_cancellation_fences\n  FORCE ROW LEVEL SECURITY',
+    validateShape,
+  );
+  const companiesForce = cancellationValidate.indexOf(
+    'ALTER TABLE public.companies\n  FORCE ROW LEVEL SECURITY',
+    fenceForce,
+  );
+  assert.ok(
+    companiesNoForce >= 0
+      && fenceNoForce > companiesNoForce
+      && validateForeignKey > fenceNoForce
+      && validateShape > validateForeignKey
+      && fenceForce > validateShape
+      && companiesForce > fenceForce,
+    'La validation non-superuser doit désactiver puis restaurer FORCE RLS atomiquement.',
+  );
+  assert.match(cancellationExpand, /FORCE ROW LEVEL SECURITY/u);
+  assert.match(
+    cancellationExpand,
+    /CREATE TRIGGER realtime_session_lease_00_admission_cancellation_fence_guard[\s\S]*?BEFORE INSERT/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /"expiresAt" = "cancelledAt" \+ INTERVAL '2 hours'/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /ON public\.realtime_admission_cancellation_fences \([\s\S]*?"companyId", "expiresAt", "sessionId", "subjectHash"/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /REFERENCING NEW TABLE AS new_rows[\s\S]*?sync_realtime_admission_cancellation_schedule_v1/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /guard_realtime_admission_cancellation_fence_v1\(\)[\s\S]*?SECURITY INVOKER[\s\S]*?SET row_security = on/u,
+  );
+  assert.match(
+    cancellationExpand,
+    /sync_realtime_admission_cancellation_schedule_v1\(\)[\s\S]*?SECURITY INVOKER[\s\S]*?SET statement_timeout = '4s'[\s\S]*?SET lock_timeout = '1s'/u,
+  );
+  assert.doesNotMatch(cancellationExpand, /principalBindingHash|userId|leaseToken/u);
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(cancellationExpand, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.match(rls, /tenant_isolation ON realtime_admission_cancellation_fences/u);
+  assert.match(
+    agentMissionRlsReplay,
+    /realtime_admission_cancellation_fences[\s\S]*?FROM PUBLIC/u,
+  );
+  assert.match(
+    agentMissionRlsReplay,
+    /guard_realtime_admission_cancellation_fence_v1\(\)[\s\S]*?sync_realtime_admission_cancellation_schedule_v1\(\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
+  );
 });
 
 test('la capability Realtime reste nullable et sa forme est expand puis validate', () => {

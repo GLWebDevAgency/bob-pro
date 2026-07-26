@@ -21,6 +21,7 @@ import {
   type RealtimeAdmissionPort,
   type RealtimeAdmissionReserveInput,
   type RealtimeAdmissionResult,
+  type RealtimeAdmissionSessionLookupInput,
 } from './realtime-admission';
 import { RealtimeCallLifecycle } from './realtime-call-lifecycle';
 import {
@@ -34,6 +35,7 @@ import {
 import {
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -101,6 +103,12 @@ import {
   realtimeAgentMissionBootstrapBinding,
   type RealtimeAgentMissionNegotiationRequest,
 } from './realtime-agent-mission-negotiation';
+import {
+  agentMissionPrincipalBindingHash,
+  DisabledRealtimeAgentMissionAdmissionGate,
+  type RealtimeAgentMissionAdmissionGate,
+  type RealtimeAgentMissionAdmissionPreparation,
+} from './realtime-agent-mission-admission';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
@@ -546,6 +554,50 @@ function resumeSubjectBindings(
   });
 }
 
+function admissionSessionLookup(
+  settings: RealtimeVoiceSettings,
+  companyId: string,
+  userId: string,
+  sessionId: string,
+): RealtimeAdmissionSessionLookupInput | null {
+  const bindings = resumeSubjectBindings(settings, companyId, userId);
+  if (bindings === null) return null;
+  return {
+    companyId,
+    subjectHashCandidates: [
+      bindings.subjectHash,
+      ...bindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+    ],
+    principalBindingHash: agentMissionPrincipalBindingHash(companyId, userId),
+    sessionId,
+  };
+}
+
+/**
+ * Corrèle le secret conservé par l'orchestrateur avec la preuve effectivement écrite par
+ * l'admission. Toute divergence ferme le bootstrap avant le premier appel provider.
+ */
+export function admittedAgentMissionCapability(
+  prepared: RealtimeAgentMissionAdmissionPreparation,
+  proof: Extract<RealtimeAdmissionResult, { allowed: true }>['agentMissionProof'],
+): string | null {
+  if (prepared.binding === null) {
+    if (proof !== null) {
+      throw new Error('AgentMission admission returned an unexpected durable proof.');
+    }
+    return null;
+  }
+  if (
+    proof === null
+    || proof.protocolVersion !== prepared.binding.protocolVersion
+    || proof.capabilityHash !== prepared.binding.capabilityHash
+    || proof.releaseFlagVersion !== prepared.binding.releaseFlagVersion
+  ) {
+    throw new Error('AgentMission admission proof does not match the prepared capability.');
+  }
+  return prepared.capability;
+}
+
 function retryAfterSeconds(retryAt: string | null, fallback: number): number {
   const at = retryAt === null ? Number.NaN : Date.parse(retryAt);
   if (!Number.isFinite(at)) return fallback;
@@ -605,6 +657,7 @@ function providerErrorClass(error: unknown): string {
     'realtime_admission_bind_rejected',
     'realtime_admission_bind_expired',
     'realtime_admission_bind_unavailable',
+    'realtime_bootstrap_fenced',
   ]);
   return allowed.has(value) ? value : 'provider_unknown';
 }
@@ -653,6 +706,10 @@ export class RealtimeVoiceService {
     @Optional()
     @Inject(MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME)
     private readonly conversationRuntime: MistralConversationRuntimeCapability | null = null,
+    @Optional()
+    @Inject(REALTIME_AGENT_MISSION_ADMISSION)
+    private readonly agentMissionAdmission: RealtimeAgentMissionAdmissionGate =
+      new DisabledRealtimeAgentMissionAdmissionGate(),
   ) {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
@@ -726,9 +783,6 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
-    const agentMissionBinding = realtimeAgentMissionBootstrapBinding(
-      parsed.value.agentMissionNegotiation,
-    );
     if (parsed.value.speechDelivery !== this.settings.speechDelivery) {
       return this.finishError('validation', startedAt, {
         kind: 'validation',
@@ -771,9 +825,48 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
+    const subjectBindings = resumeSubjectBindings(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+    );
+    if (subjectBindings === null) {
+      return this.finishError(
+        'misconfigured',
+        startedAt,
+        appUnavailable('bob-live-admission-identity', 60),
+      );
+    }
+    const principalBindingHash = agentMissionPrincipalBindingHash(
+      principal.companyId,
+      principal.userId,
+    );
+    let preparedAgentMission: RealtimeAgentMissionAdmissionPreparation;
+    try {
+      preparedAgentMission = await this.agentMissionAdmission.prepare({
+        negotiation: parsed.value.agentMissionNegotiation,
+        companyId: principal.companyId,
+        userId: principal.userId,
+        providerId: 'openai',
+        transport: 'webrtc',
+        speechDelivery: parsed.value.speechDelivery,
+      });
+    } catch {
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     const reserveInput: RealtimeAdmissionReserveInput = {
       companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
+      subjectHash: subjectBindings.subjectHash,
+      subjectHashCandidates: [
+        subjectBindings.subjectHash,
+        ...subjectBindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+      ],
+      principalBindingHash,
+      agentMissionBinding: preparedAgentMission.binding,
       maxSessionSeconds: this.settings.maxSessionSeconds,
       ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
     };
@@ -785,6 +878,26 @@ export class RealtimeVoiceService {
     }
 
     const lease = admission.lease;
+    let agentMissionBinding: ReturnType<typeof realtimeAgentMissionBootstrapBinding>;
+    try {
+      agentMissionBinding = realtimeAgentMissionBootstrapBinding(
+        parsed.value.agentMissionNegotiation,
+        admittedAgentMissionCapability(
+          preparedAgentMission,
+          admission.agentMissionProof,
+        ),
+      );
+    } catch {
+      await this.admission.release({
+        ...lease,
+        providerTermination: 'not_created',
+      }).catch(() => undefined);
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     let speechSourcePolicy: RealtimeSpeechSourcePolicy | null = null;
     if (parsed.value.speechDelivery === 'audited-signed-url-v1') {
       try {
@@ -904,6 +1017,22 @@ export class RealtimeVoiceService {
           ),
         },
       });
+      if (signal?.aborted) throw new Error('bootstrap_aborted');
+      const finalResolution = await this.admission.resolveSession({
+        companyId: lease.companyId,
+        subjectHashCandidates: reserveInput.subjectHashCandidates,
+        principalBindingHash: reserveInput.principalBindingHash,
+        sessionId: lease.sessionId,
+      });
+      if (
+        !finalResolution.ok
+        || finalResolution.identity === null
+        || finalResolution.identity.companyId !== lease.companyId
+        || finalResolution.identity.subjectHash !== lease.subjectHash
+        || finalResolution.identity.sessionId !== lease.sessionId
+      ) {
+        throw new Error('realtime_bootstrap_fenced');
+      }
       if (signal?.aborted) throw new Error('bootstrap_aborted');
       const elapsedSeconds = (performance.now() - startedAt) / 1_000;
       this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome: 'ok' });
@@ -1220,32 +1349,37 @@ export class RealtimeVoiceService {
       };
     }
 
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+
+    const termination = await this.admission.claimTermination(lookup);
+    if (!termination.ok) return { ok: false, error: appUnavailable('bob-live-admission', 10) };
+    // Le fence durable précède toute fermeture process-local : un bootstrap concurrent, y
+    // compris sur une autre réplique, doit perdre la course avant que l’UI puisse croire la
+    // session terminée. Ce détachement ne touche ni provider ni lease : le claim ci-dessus est
+    // désormais leur unique propriétaire.
     try {
-      const local = await this.sideband.closeSession({
+      this.sideband.fenceAndDetachSession({
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle,
       });
-      if (local === 'confirmed') return ok({ ended: true });
-      if (local === 'pending_reaper') {
-        this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
-        return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
-      }
     } catch {
       // Une autre réplique ou le reaper durable reprend ci-dessous.
     }
-
-    const subjectHash = admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId);
-    const termination = await this.admission.claimTermination({
-      companyId: principal.companyId,
-      subjectHash,
-      sessionId: sessionHandle,
-    });
-    if (!termination.ok) return { ok: false, error: appUnavailable('bob-live-admission', 10) };
     if (!termination.claim) {
-      return termination.pending
-        ? { ok: false, error: appUnavailable('bob-live-hangup', 10) }
-        : ok({ ended: true });
+      if (termination.pending) {
+        this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
+        return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
+      }
+      return ok({ ended: true });
     }
 
     try {
@@ -1295,10 +1429,24 @@ export class RealtimeVoiceService {
         error: { kind: 'validation', issues: [{ field: 'context', message: 'Contexte écran invalide ou trop volumineux.' }] },
       };
     }
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+    const resolved = await this.admission.resolveSession(lookup);
+    if (!resolved.ok) {
+      return { ok: false, error: appUnavailable('bob-live-admission', 5) };
+    }
+    if (resolved.identity === null) {
+      return { ok: false, error: appNotFound('realtime_session', 'redacted') };
+    }
     const result = await this.admission.updateContext({
-      companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
-      sessionId: sessionHandle,
+      ...resolved.identity,
       ...parsed.value,
     });
     if (result.ok) {
@@ -1345,16 +1493,26 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeControlAcknowledgementBody(body);
     if (!parsed.ok) return parsed;
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+    const resolved = await this.admission.resolveSession(lookup);
+    if (!resolved.ok) {
+      return { ok: false, error: appUnavailable('bob-live-admission', 1) };
+    }
+    if (resolved.identity === null) {
+      return { ok: false, error: appNotFound('realtime_control', 'redacted') };
+    }
     let consumed: Awaited<ReturnType<RealtimeDurableControlPort['consume']>>;
     try {
       consumed = await this.controls.consume({
-        companyId: principal.companyId,
-        subjectHash: admissionSubjectHash(
-          this.settings.safetySecret,
-          principal.companyId,
-          principal.userId,
-        ),
-        sessionId: sessionHandle,
+        ...resolved.identity,
         turnId: parsed.value.turnId,
         acknowledgementId: parsed.value.acknowledgementId,
         contextRevision: parsed.value.contextRevision,
@@ -1372,11 +1530,7 @@ export class RealtimeVoiceService {
     const control = safeApprovedControl(consumed.control, parsed.value);
     if (!control) return { ok: false, error: appNotFound('realtime_control', 'redacted') };
     const stillCurrent = await this.isCurrentContextVersion(
-      {
-        companyId: principal.companyId,
-        subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
-        sessionId: sessionHandle,
-      },
+      resolved.identity,
       {
         version: 1,
         revision: control.contextRevision,
@@ -1505,13 +1659,30 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
+    const subjectBindings = resumeSubjectBindings(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+    );
+    if (subjectBindings === null) {
+      return this.finishError(
+        'misconfigured',
+        startedAt,
+        appUnavailable('bob-live-admission-identity', 60),
+      );
+    }
     const reserveInput: RealtimeAdmissionReserveInput = {
       companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(
-        this.settings.safetySecret,
+      subjectHash: subjectBindings.subjectHash,
+      subjectHashCandidates: [
+        subjectBindings.subjectHash,
+        ...subjectBindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+      ],
+      principalBindingHash: agentMissionPrincipalBindingHash(
         principal.companyId,
         principal.userId,
       ),
+      agentMissionBinding: null,
       maxSessionSeconds: this.settings.maxSessionSeconds,
       ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
     };
@@ -1522,6 +1693,22 @@ export class RealtimeVoiceService {
       return this.finishError(error.kind, startedAt, error);
     }
     const lease = admission.lease;
+    try {
+      admittedAgentMissionCapability(
+        { capability: null, binding: null },
+        admission.agentMissionProof,
+      );
+    } catch {
+      await this.admission.release({
+        ...lease,
+        providerTermination: 'not_created',
+      }).catch(() => undefined);
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     let speechSourcePolicy: RealtimeSpeechSourcePolicy;
     try {
       if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');

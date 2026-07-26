@@ -12,6 +12,7 @@ import {
   type RealtimeAdmissionPort,
   type RealtimeAdmissionReserveInput,
   type RealtimeAdmissionResult,
+  type RealtimeAdmissionSessionLookupInput,
   type RealtimeContextIdentity,
   type RealtimeContextReadResult,
   type RealtimeContextSnapshot,
@@ -24,6 +25,7 @@ import {
   type RealtimeReapingBatchResult,
   type RealtimeReapingClaim,
   type RealtimeReleaseInput,
+  type RealtimeSessionIdentityResolution,
   type RealtimeTerminationClaimResult,
 } from './realtime-admission';
 
@@ -32,11 +34,28 @@ const TENANT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 
+/** Réduit le bruit des fixtures legacy tout en gardant le nouveau contrat d'identité explicite. */
+export function realtimeAdmissionLegacyTestBinding(subjectHash: string) {
+  return {
+    subjectHashCandidates: [subjectHash],
+    principalBindingHash: subjectHash,
+    agentMissionBinding: null,
+  } as const;
+}
+
 interface AdmissionEvent {
   companyId: string;
   subjectHash: string;
   admittedAt: number;
   sessionId: string;
+}
+
+interface MemoryCancellationFence {
+  companyId: string;
+  subjectHash: string;
+  sessionId: string;
+  cancelledAt: number;
+  expiresAt: number;
 }
 
 interface MemoryLease {
@@ -76,6 +95,18 @@ function validContextIdentity(input: RealtimeContextIdentity): boolean {
   return validIdentity(input) && SESSION_ID_PATTERN.test(input.sessionId);
 }
 
+function validSessionLookup(input: RealtimeAdmissionSessionLookupInput): boolean {
+  const candidates = input.subjectHashCandidates;
+  return TENANT_ID_PATTERN.test(input.companyId)
+    && Array.isArray(candidates)
+    && candidates.length >= 1
+    && candidates.length <= 32
+    && candidates.every((candidate) => SUBJECT_HASH_PATTERN.test(candidate))
+    && new Set(candidates).size === candidates.length
+    && SUBJECT_HASH_PATTERN.test(input.principalBindingHash)
+    && SESSION_ID_PATTERN.test(input.sessionId);
+}
+
 function cloneRealtimeContextSnapshot(snapshot: RealtimeContextSnapshot): RealtimeContextSnapshot {
   return {
     version: snapshot.version,
@@ -103,6 +134,7 @@ function addSeconds(at: number, seconds: number): number {
  */
 export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
   private readonly leases = new Map<string, MemoryLease>();
+  private readonly cancellationFences = new Map<string, MemoryCancellationFence>();
   private events: AdmissionEvent[] = [];
 
   constructor(
@@ -118,10 +150,20 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
   }
 
   async reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult> {
+    const candidates = input.subjectHashCandidates;
     if (
       this.policy.globalCapacity === null
       ||
       !validIdentity(input)
+      || !Array.isArray(candidates)
+      || candidates.length < 1
+      || candidates.length > 32
+      || candidates.some((subjectHash) => !SUBJECT_HASH_PATTERN.test(subjectHash))
+      || new Set(candidates).size !== candidates.length
+      || !candidates.includes(input.subjectHash)
+      || !SUBJECT_HASH_PATTERN.test(input.principalBindingHash)
+      // Le double mémoire ne peut pas revalider le flag durable dans la transaction : V1 ferme.
+      || input.agentMissionBinding !== null
       || (input.sessionId !== undefined && !SESSION_ID_PATTERN.test(input.sessionId))
       || !Number.isInteger(input.maxSessionSeconds)
       || input.maxSessionSeconds < 1
@@ -131,19 +173,51 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     }
 
     const now = this.now();
+    for (const [fenceKey, fence] of this.cancellationFences) {
+      if (fence.expiresAt <= now) this.cancellationFences.delete(fenceKey);
+    }
+    if (
+      input.sessionId
+      && candidates.some((subjectHash) => this.cancellationFences.has(
+        this.cancellationKey(input.companyId, input.sessionId!, subjectHash),
+      ))
+    ) {
+      return { allowed: false, denial: 'active_lease', retryAt: null };
+    }
     const key = this.key(input.companyId, input.subjectHash);
-    const existing = this.leases.get(key);
-    if (existing) {
-      const stale = existing.leaseExpiresAt <= now || existing.hardExpiresAt <= now;
-      if (!stale) {
-        return {
-          allowed: false,
-          denial: existing.state === 'reaping' ? 'session_reaping' : 'active_lease',
-          retryAt: iso(existing.leaseExpiresAt),
-        };
-      }
+    const candidateSet = new Set(candidates);
+    const existingRows = [...this.leases.values()]
+      .filter((lease) => (
+        lease.companyId === input.companyId
+        && candidateSet.has(lease.subjectHash)
+      ))
+      .sort((left, right) => (
+        left.subjectHash.localeCompare(right.subjectHash)
+        || left.sessionId.localeCompare(right.sessionId)
+      ));
+    const blockingRows = existingRows.filter((existing) => (
+      (existing.state === 'reaping' && existing.leaseExpiresAt > now)
+      || (
+        existing.state !== 'reaping'
+        && existing.leaseExpiresAt > now
+        && existing.hardExpiresAt > now
+      )
+    ));
+    if (blockingRows.length > 1) {
+      return { allowed: false, denial: 'unavailable', retryAt: null };
+    }
+    const blocking = blockingRows[0];
+    if (blocking) {
+      return {
+        allowed: false,
+        denial: blocking.state === 'reaping' ? 'session_reaping' : 'active_lease',
+        retryAt: iso(blocking.leaseExpiresAt),
+      };
+    }
+    for (const existing of existingRows) {
+      const existingKey = this.key(existing.companyId, existing.subjectHash);
       if (existing.providerId === null && existing.providerCallId === null) {
-        this.leases.delete(key);
+        this.leases.delete(existingKey);
       } else {
         if (existing.providerId === null || existing.providerCallId === null) {
           return { allowed: false, denial: 'unavailable', retryAt: null };
@@ -162,13 +236,13 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     if (input.sessionId) {
       const replay = this.events.find((event) => event.sessionId === input.sessionId);
       if (replay) {
-        return replay.companyId === input.companyId && replay.subjectHash === input.subjectHash
+        return replay.companyId === input.companyId && candidateSet.has(replay.subjectHash)
           ? { allowed: false, denial: 'active_lease', retryAt: null }
           : { allowed: false, denial: 'unavailable', retryAt: null };
       }
     }
     const tenantEvents = this.events.filter((event) => event.companyId === input.companyId);
-    const userEvents = tenantEvents.filter((event) => event.subjectHash === input.subjectHash);
+    const userEvents = tenantEvents.filter((event) => candidateSet.has(event.subjectHash));
     const denied = this.quotaDenial(userEvents, tenantEvents, now);
     if (denied) return denied;
 
@@ -218,6 +292,7 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     return {
       allowed: true,
       denial: null,
+      agentMissionProof: null,
       lease: {
         companyId: input.companyId,
         subjectHash: input.subjectHash,
@@ -317,6 +392,11 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     if (!TENANT_ID_PATTERN.test(input.companyId)) return { ok: false, reason: 'unavailable' };
     const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
     const now = this.now();
+    for (const [fenceKey, fence] of this.cancellationFences) {
+      if (fence.companyId === input.companyId && fence.expiresAt <= now) {
+        this.cancellationFences.delete(fenceKey);
+      }
+    }
     const claims: RealtimeReapingClaim[] = [];
     for (const [key, lease] of this.leases) {
       if (claims.length >= limit) break;
@@ -332,19 +412,93 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     return { ok: true, claims };
   }
 
-  async claimTermination(input: {
-    companyId: string;
-    subjectHash: string;
-    sessionId: string;
-  }): Promise<RealtimeTerminationClaimResult> {
-    if (!validIdentity(input) || !SESSION_ID_PATTERN.test(input.sessionId)) {
+  async resolveSession(
+    input: RealtimeAdmissionSessionLookupInput,
+  ): Promise<RealtimeSessionIdentityResolution> {
+    if (!validSessionLookup(input)) return { ok: false, reason: 'unavailable' };
+    const now = this.now();
+    const hasLiveCancellationFence = input.subjectHashCandidates.some((subjectHash) => {
+      const fence = this.cancellationFences.get(
+        this.cancellationKey(input.companyId, input.sessionId, subjectHash),
+      );
+      if (!fence) return false;
+      if (fence.expiresAt <= now) {
+        this.cancellationFences.delete(
+          this.cancellationKey(input.companyId, input.sessionId, subjectHash),
+        );
+        return false;
+      }
+      return true;
+    });
+    if (hasLiveCancellationFence) return { ok: true, identity: null };
+    const matches = input.subjectHashCandidates
+      .map((subjectHash) => this.leases.get(this.key(input.companyId, subjectHash)))
+      .filter((lease): lease is MemoryLease => (
+        lease?.sessionId === input.sessionId
+        && lease.state === 'active'
+        && lease.providerId !== null
+        && lease.providerCallId !== null
+        && lease.leaseExpiresAt > now
+        && lease.hardExpiresAt > now
+      ));
+    if (matches.length > 1) return { ok: false, reason: 'unavailable' };
+    const lease = matches[0];
+    return {
+      ok: true,
+      identity: lease
+        ? {
+            companyId: lease.companyId,
+            subjectHash: lease.subjectHash,
+            sessionId: lease.sessionId,
+          }
+        : null,
+    };
+  }
+
+  async claimTermination(
+    input: RealtimeAdmissionSessionLookupInput,
+  ): Promise<RealtimeTerminationClaimResult> {
+    if (!validSessionLookup(input)) {
       return { ok: false, reason: 'unavailable' };
     }
-    const key = this.key(input.companyId, input.subjectHash);
-    const lease = this.leases.get(key);
-    if (!lease || lease.sessionId !== input.sessionId) {
+    const matches = input.subjectHashCandidates
+      .map((subjectHash) => ({
+        key: this.key(input.companyId, subjectHash),
+        lease: this.leases.get(this.key(input.companyId, subjectHash)),
+      }))
+      .filter((candidate): candidate is { key: string; lease: MemoryLease } => (
+        candidate.lease?.sessionId === input.sessionId
+      ));
+    const now = this.now();
+    const canonicalCancelledAt = input.subjectHashCandidates.reduce(
+      (earliest, subjectHash) => {
+        const existing = this.cancellationFences.get(
+          this.cancellationKey(input.companyId, input.sessionId, subjectHash),
+        );
+        return existing && existing.cancelledAt < earliest
+          ? existing.cancelledAt
+          : earliest;
+      },
+      now,
+    );
+    for (const subjectHash of input.subjectHashCandidates) {
+      const fenceKey = this.cancellationKey(input.companyId, input.sessionId, subjectHash);
+      if (!this.cancellationFences.has(fenceKey)) {
+        this.cancellationFences.set(fenceKey, {
+          companyId: input.companyId,
+          subjectHash,
+          sessionId: input.sessionId,
+          cancelledAt: canonicalCancelledAt,
+          expiresAt: canonicalCancelledAt + 7_200_000,
+        });
+      }
+    }
+    if (matches.length > 1) return { ok: false, reason: 'unavailable' };
+    const matched = matches[0];
+    if (!matched) {
       return { ok: true, claim: null, pending: false };
     }
+    const { key, lease } = matched;
     if (lease.providerId === null && lease.providerCallId === null) {
       this.leases.delete(key);
       return { ok: true, claim: null, pending: false };
@@ -352,7 +506,7 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     if (lease.providerId === null || lease.providerCallId === null) {
       return { ok: false, reason: 'unavailable' };
     }
-    const claim = this.claimLeaseForReaping(lease, this.now());
+    const claim = this.claimLeaseForReaping(lease, now);
     return { ok: true, claim, pending: claim === null };
   }
 
@@ -515,6 +669,10 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     return `${companyId}\u0000${subjectHash}`;
   }
 
+  private cancellationKey(companyId: string, sessionId: string, subjectHash: string): string {
+    return `${companyId}\u0000${sessionId}\u0000${subjectHash}`;
+  }
+
   private rejected(): RealtimeAdmissionMutationResult {
     return { ok: false, reason: 'rejected' };
   }
@@ -574,6 +732,7 @@ export class InProcessRealtimeAdmission extends InMemoryRealtimeAdmission {
     return {
       allowed: true,
       denial: null,
+      agentMissionProof: null,
       lease: {
         companyId: input.companyId,
         subjectHash,

@@ -51,8 +51,11 @@ BEGIN
 END;
 $$;
 
+-- Un CREATEROLE non-superuser peut verrouiller les attributs administrables, mais PostgreSQL lui
+-- interdit de réaffirmer NOSUPERUSER/NOBYPASSRLS/NOREPLICATION, même à false. Ils sont attestés
+-- juste après, sans rendre le rejeu Supabase dépendant d'un superuser.
 ALTER ROLE bob_realtime_capacity
-  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
 
 DO $$
 DECLARE authority pg_catalog.pg_roles%ROWTYPE;
@@ -221,6 +224,26 @@ GRANT USAGE ON SCHEMA public TO bob_realtime_capacity;
 SQL
 }
 
+close_existing() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SET LOCAL statement_timeout = '5s';
+SET LOCAL lock_timeout = '2s';
+-- Même ordre que l'admission et les triggers : singleton d'abord. Verrouiller la table des
+-- leases avant cette ligne créerait un cycle table -> singleton / singleton -> INSERT sous charge.
+SET LOCAL ROLE bob_realtime_capacity;
+SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
+DO $$
+BEGIN
+  -- `usedSessions` est l'autorité globale transactionnelle. Un count direct des leases est
+  -- interdit ici : sous FORCE RLS un déployeur Supabase non-superuser observerait un faux zéro.
+  UPDATE public.realtime_global_capacity
+     SET mode = 'closed', revision = revision + 1, "updatedAt" = clock_timestamp()
+   WHERE id = 1 AND mode = 'active';
+END;
+$$;
+SQL
+}
+
 configure() {
   ensure_role
   if [ "${BOB_LIVE_ENABLED+x}" = x ]; then
@@ -230,35 +253,7 @@ configure() {
   fi
 
   if [ "$live_enabled" != "true" ]; then
-    psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
-SET LOCAL statement_timeout = '5s';
-SET LOCAL lock_timeout = '2s';
--- Même ordre que l'admission et les triggers : singleton d'abord. Verrouiller la table des
--- leases avant cette ligne créerait un cycle table -> singleton / singleton -> INSERT sous charge.
-SET LOCAL ROLE bob_realtime_capacity;
-SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-RESET ROLE;
-SELECT set_config(
-  'bob.realtime_capacity_actual_count',
-  (SELECT count(*)::TEXT FROM public.realtime_session_leases),
-  TRUE
-);
-SET LOCAL ROLE bob_realtime_capacity;
-DO $$
-DECLARE actual_count INTEGER := current_setting('bob.realtime_capacity_actual_count')::INTEGER;
-DECLARE projected_count INTEGER;
-BEGIN
-  SELECT "usedSessions" INTO STRICT projected_count
-    FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-  IF projected_count <> actual_count THEN
-    RAISE EXCEPTION 'Realtime capacity projection mismatch';
-  END IF;
-  UPDATE public.realtime_global_capacity
-     SET mode = 'closed', revision = revision + 1, "updatedAt" = clock_timestamp()
-   WHERE id = 1 AND mode = 'active';
-END;
-$$;
-SQL
+    close_existing
     return 0
   fi
 
@@ -282,28 +277,21 @@ SET LOCAL statement_timeout = '5s';
 SET LOCAL lock_timeout = '2s';
 -- Le singleton est l'unique point de sérialisation. Une écriture N-1 déjà commencée attendra
 -- dans son trigger puis sera soit projetée avant ce verrou, soit refusée après la fermeture.
--- Aucun verrou de table n'est nécessaire pour rendre count(*) cohérent avec la projection.
+-- `usedSessions`, maintenu par les triggers ALWAYS, est l'autorité globale ; la table source
+-- tenantée ne doit jamais être comptée depuis le déployeur sous FORCE RLS.
 SET LOCAL ROLE bob_realtime_capacity;
 SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-RESET ROLE;
 SELECT set_config('bob.realtime.capacity_provider', :'provider', TRUE);
 SELECT set_config('bob.realtime.capacity_model', :'model', TRUE);
 SELECT set_config('bob.realtime.capacity_global_max', :'global_max', TRUE);
 SELECT set_config('bob.realtime.capacity_provider_max', :'provider_max', TRUE);
 SELECT set_config('bob.realtime.capacity_config_version', :'config_version', TRUE);
-SELECT set_config(
-  'bob.realtime.capacity_actual_count',
-  (SELECT count(*)::TEXT FROM public.realtime_session_leases),
-  TRUE
-);
-SET LOCAL ROLE bob_realtime_capacity;
 DO $$
 DECLARE selected_provider TEXT := current_setting('bob.realtime.capacity_provider');
 DECLARE selected_model TEXT := current_setting('bob.realtime.capacity_model');
 DECLARE selected_global_max INTEGER := current_setting('bob.realtime.capacity_global_max')::INTEGER;
 DECLARE selected_provider_max INTEGER := current_setting('bob.realtime.capacity_provider_max')::INTEGER;
 DECLARE selected_version INTEGER := current_setting('bob.realtime.capacity_config_version')::INTEGER;
-DECLARE actual_count INTEGER := current_setting('bob.realtime.capacity_actual_count')::INTEGER;
 DECLARE state_row public.realtime_global_capacity%ROWTYPE;
 DECLARE same_configuration BOOLEAN;
 BEGIN
@@ -317,10 +305,7 @@ BEGIN
 
   SELECT * INTO STRICT state_row
     FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-  IF state_row."usedSessions" <> actual_count THEN
-    RAISE EXCEPTION 'Realtime capacity projection mismatch';
-  END IF;
-  IF actual_count > selected_global_max THEN
+  IF state_row."usedSessions" > selected_global_max THEN
     RAISE EXCEPTION 'Realtime capacity cannot activate below current usage';
   END IF;
 
@@ -340,11 +325,11 @@ BEGIN
   IF state_row.mode <> 'closed' THEN
     RAISE EXCEPTION 'Realtime capacity must be closed before activation';
   END IF;
-  IF state_row."configVersion" IS NULL AND actual_count <> 0 THEN
+  IF state_row."configVersion" IS NULL AND state_row."usedSessions" <> 0 THEN
     RAISE EXCEPTION 'Initial realtime capacity activation requires a complete drain';
   END IF;
   IF state_row."configVersion" IS NOT NULL AND NOT same_configuration THEN
-    IF actual_count <> 0 OR selected_version <= state_row."configVersion" THEN
+    IF state_row."usedSessions" <> 0 OR selected_version <= state_row."configVersion" THEN
       RAISE EXCEPTION 'Realtime capacity reconfiguration requires drain and newer version';
     END IF;
   END IF;
@@ -369,6 +354,7 @@ SQL
 case "$phase" in
   ensure) ensure_role ;;
   provision) provision ;;
+  close-existing) close_existing ;;
   configure) configure ;;
-  *) echo "usage: $0 <ensure|provision|configure>" >&2; exit 2 ;;
+  *) echo "usage: $0 <ensure|provision|close-existing|configure>" >&2; exit 2 ;;
 esac

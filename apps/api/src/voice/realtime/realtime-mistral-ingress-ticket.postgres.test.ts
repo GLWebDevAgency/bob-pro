@@ -135,6 +135,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live Mistral ingress — certification 
       companyId,
       subjectHash: subject,
       maxSessionSeconds: 120,
+      subjectHashCandidates: [subject],
+      principalBindingHash: subject,
+      agentMissionBinding: null,
     });
     if (!result.allowed) throw new Error(`Unexpected admission denial: ${result.denial}`);
     return result.lease;

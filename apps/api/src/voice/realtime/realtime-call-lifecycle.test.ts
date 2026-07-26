@@ -36,6 +36,10 @@ function admissionStub(overrides: Partial<RealtimeAdmissionPort> = {}): Realtime
       claim: null,
       pending: false,
     }),
+    resolveSession: vi.fn<RealtimeAdmissionPort['resolveSession']>().mockResolvedValue({
+      ok: true,
+      identity: null,
+    }),
     completeReaping: vi.fn<RealtimeAdmissionPort['completeReaping']>().mockResolvedValue(okMutation()),
     updateContext: vi.fn<RealtimeAdmissionPort['updateContext']>().mockResolvedValue({
       ok: false,
@@ -204,6 +208,20 @@ describe('RealtimeCallLifecycle', () => {
     hangup.resolve();
     await expect(Promise.all([first, second])).resolves.toEqual(['confirmed', 'confirmed']);
     expect(admission.release).toHaveBeenCalledOnce();
+  });
+
+  it('cède la terminaison au claim durable sans effet provider ni release local', async () => {
+    const admission = admissionStub();
+    const provider = providerStub();
+    const subject = lifecycle({ admission, provider });
+    await subject.activate();
+
+    subject.fenceAfterDurableTerminationClaim();
+
+    await expect(subject.terminate('user')).resolves.toBe('pending_reaper');
+    expect(provider.hangupCall).not.toHaveBeenCalled();
+    expect(admission.release).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('raccroche au hard cap absolu et annule les heartbeats suivants', async () => {

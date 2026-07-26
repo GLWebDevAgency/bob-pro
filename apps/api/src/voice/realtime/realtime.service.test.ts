@@ -35,6 +35,14 @@ import {
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
 import type { MistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
 import type { MistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
+import {
+  hashRealtimeAgentMissionCapability,
+  type RealtimeAgentMissionNegotiationRequest,
+} from './realtime-agent-mission-negotiation';
+import {
+  agentMissionPrincipalBindingHash,
+  type RealtimeAgentMissionAdmissionGate,
+} from './realtime-agent-mission-admission';
 
 const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const AUDITED_BOOTSTRAP_BINDING = {
@@ -137,6 +145,13 @@ function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): Realtim
     contextChanged: vi.fn(),
     consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
     closeForPrincipal: vi.fn(async () => undefined),
+    fenceAndDetachSession: vi.fn(({ sessionHandle }) => {
+      const lifecycle = sessions.get(sessionHandle);
+      if (!lifecycle) return 'not_found' as const;
+      lifecycle.fenceAfterDurableTerminationClaim();
+      sessions.delete(sessionHandle);
+      return 'detached' as const;
+    }),
     closeSession: vi.fn(async ({ sessionHandle }) => {
       const lifecycle = sessions.get(sessionHandle);
       if (!lifecycle) return 'not_found' as const;
@@ -165,6 +180,10 @@ function tracedAdmission(base: RealtimeAdmissionPort, order: string[]): Realtime
     renew: (input) => base.renew(input),
     release: async (input) => { order.push('release'); return base.release(input); },
     claimExpired: (input) => base.claimExpired(input),
+    resolveSession: async (input) => {
+      order.push('resolve');
+      return base.resolveSession(input);
+    },
     claimTermination: (input) => base.claimTermination(input),
     completeReaping: (input) => base.completeReaping(input),
     updateContext: (input) => base.updateContext(input),
@@ -186,7 +205,176 @@ function successfulProviderCreate(callId: string) {
   });
 }
 
+function missionCapableAdmission(
+  base: InMemoryRealtimeAdmission,
+  order: string[] = [],
+): RealtimeAdmissionPort {
+  return {
+    ...tracedAdmission(base, order),
+    reserve: async (input) => {
+      order.push('reserve');
+      const binding = input.agentMissionBinding;
+      const result = await base.reserve({
+        ...input,
+        agentMissionBinding: null,
+      });
+      if (!result.allowed) return result;
+      return {
+        ...result,
+        agentMissionProof: binding === null
+          ? null
+          : {
+              protocolVersion: binding.protocolVersion,
+              capabilityHash: binding.capabilityHash,
+              releaseFlagVersion: binding.releaseFlagVersion,
+            },
+      };
+    },
+  };
+}
+
+function missionGate(
+  capability: string,
+  requested: RealtimeAgentMissionNegotiationRequest['requested'] = 'v1',
+): RealtimeAgentMissionAdmissionGate {
+  return {
+    prepare: vi.fn(async (input) => {
+      if (input.negotiation.requested !== requested) {
+        return { capability: null, binding: null } as const;
+      }
+      return {
+        capability,
+        binding: {
+          protocolVersion: 1,
+          capabilityHash: hashRealtimeAgentMissionCapability(capability),
+          releaseFlagKey: 'bob.agent_missions.quote.v1',
+          releaseEnvironment: 'staging',
+          releaseFlagVersion: 7,
+          principalBindingHash: agentMissionPrincipalBindingHash(
+            input.companyId,
+            input.userId,
+          ),
+        },
+      } as const;
+    }),
+  };
+}
+
 describe('RealtimeVoiceService', () => {
+  it('rend la capability V1 uniquement après la preuve durable corrélée et avant aucun provider', async () => {
+    const order: string[] = [];
+    const capability = `bam1_${Buffer.alloc(32, 73).toString('base64url')}`;
+    const gate = missionGate(capability);
+    const base = admission();
+    const reserve = missionCapableAdmission(base, order);
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(async (input) => {
+        order.push('provider');
+        await input.onCallCreated('rtc_agent_mission_v1');
+        return { answerSdp: OFFER_SDP, callId: 'rtc_agent_mission_v1' };
+      }),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      reserve,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      gate,
+    );
+
+    const result = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 1,
+      sdp: OFFER_SDP,
+    }));
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        agentMissionProtocolVersion: 1,
+        agentMissionCapability: capability,
+      },
+    });
+    expect(order.indexOf('reserve')).toBeLessThan(order.indexOf('provider'));
+    expect(gate.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'openai',
+      transport: 'webrtc',
+      speechDelivery: 'audited-signed-url-v1',
+      companyId: 'company-1',
+      userId: 'user-1',
+    }));
+    const serialized = JSON.stringify(result);
+    expect(serialized.match(/bam1_[A-Za-z0-9_-]{43}/gu)).toEqual([capability]);
+    if (result.ok) {
+      await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
+    }
+  });
+
+  it.each([
+    {
+      label: 'négociation omise',
+      body: { ...AUDITED_BOOTSTRAP_BINDING, sdp: OFFER_SDP },
+      requested: 'omitted' as const,
+    },
+    {
+      label: 'négociation null',
+      body: {
+        ...AUDITED_BOOTSTRAP_BINDING,
+        agentMissionProtocolVersion: null,
+        sdp: OFFER_SDP,
+      },
+      requested: 'null' as const,
+    },
+  ])('libère la lease si un gate fautif injecte une capability sur $label', async ({
+    body,
+    requested,
+  }) => {
+    const capability = `bam1_${Buffer.alloc(32, 74).toString('base64url')}`;
+    const gate = missionGate(capability, requested);
+    const base = admission();
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      missionCapableAdmission(base),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      gate,
+    );
+
+    await expect(runAsPrincipal(() => service.createCall(body))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-agent-mission-admission' },
+    });
+    expect(provider.createCall).not.toHaveBeenCalled();
+    expect(base.snapshot().leases).toHaveLength(0);
+  });
+
   it('valide strictement l’epoch et le curseur du ticket de reprise', () => {
     expect(parseRealtimeResumeTicketBody({
       missionConnectionEpoch: 3,
@@ -474,6 +662,9 @@ describe('RealtimeVoiceService', () => {
       subjectHash,
       sessionId: '00000000-0000-4000-8000-000000000040',
       maxSessionSeconds: 60,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      agentMissionBinding: null,
     });
     if (!reserved.allowed) throw new Error('Mistral reservation expected.');
     const providerSessionId = 'mistral_explicit_local';
@@ -522,6 +713,9 @@ describe('RealtimeVoiceService', () => {
       subjectHash,
       sessionId: '00000000-0000-4000-8000-000000000041',
       maxSessionSeconds: 60,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      agentMissionBinding: null,
     });
     if (!stale.allowed) throw new Error('Stale Mistral reservation expected.');
     await durable.bindProvider({
@@ -1391,11 +1585,12 @@ describe('RealtimeVoiceService', () => {
       createCall: successfulProviderCreate('rtc_12345678'),
       hangupCall: vi.fn(async () => undefined),
     };
+    const sideband = sidebandStub();
     const service = new RealtimeVoiceService(
       SETTINGS,
       provider,
       admission(1, () => 10_000),
-      sidebandStub({ terminateAfterAttach: true }),
+      sideband,
       new Metrics(),
       loggerStub(),
       undefined,
@@ -1410,6 +1605,8 @@ describe('RealtimeVoiceService', () => {
       ...AUDITED_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
     }));
+    if (!first.ok) throw new Error('First bootstrap should be admitted.');
+    await runAsPrincipal(() => service.hangup(first.value.sessionHandle));
     const second = await runAsPrincipal(() => service.createCall({
       ...AUDITED_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
@@ -1514,6 +1711,7 @@ describe('RealtimeVoiceService', () => {
       contextChanged: vi.fn(),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
+      fenceAndDetachSession: vi.fn(() => 'not_found' as const),
       closeSession: vi.fn(async () => 'not_found' as const),
     };
     const service = new RealtimeVoiceService(
@@ -1554,13 +1752,23 @@ describe('RealtimeVoiceService', () => {
       contextChanged: vi.fn(),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
+      fenceAndDetachSession: vi.fn(() => 'not_found' as const),
       closeSession: vi.fn(async () => 'pending_reaper' as const),
     };
     const metrics = new Metrics();
+    const durable = admission();
+    const pendingAdmission: RealtimeAdmissionPort = {
+      ...tracedAdmission(durable, []),
+      claimTermination: vi.fn(async () => ({
+        ok: true as const,
+        claim: null,
+        pending: true,
+      })),
+    };
     const service = new RealtimeVoiceService(
       SETTINGS,
       provider,
-      admission(),
+      pendingAdmission,
       sideband,
       metrics,
       loggerStub(),
@@ -1584,6 +1792,7 @@ describe('RealtimeVoiceService', () => {
         value: 1,
       }),
     ]));
+    expect(pendingAdmission.claimTermination).toHaveBeenCalledOnce();
   });
 
   it('ne déclare pas terminé un hangup déjà revendiqué par une autre réplique', async () => {
@@ -1611,6 +1820,47 @@ describe('RealtimeVoiceService', () => {
       ok: false,
       error: { kind: 'unavailable', service: 'bob-live-hangup', retryAfterSeconds: 10 },
     });
+    expect(provider.hangupCall).not.toHaveBeenCalled();
+  });
+
+  it('un hangup reçu avant le bootstrap interdit tout appel provider sur ce handle', async () => {
+    const handle = '00000000-0000-4000-8000-000000000097';
+    const durable = admission();
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(async () => ({
+        answerSdp: OFFER_SDP,
+        callId: 'rtc_must_not_exist',
+      })),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    await expect(runAsPrincipal(() => service.hangup(handle))).resolves.toEqual({
+      ok: true,
+      value: { ended: true },
+    });
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'conflict', entity: 'realtime_session' },
+    });
+    expect(provider.createCall).not.toHaveBeenCalled();
     expect(provider.hangupCall).not.toHaveBeenCalled();
   });
 
@@ -1644,9 +1894,93 @@ describe('RealtimeVoiceService', () => {
     }));
 
     expect(result.ok).toBe(true);
-    expect(order.slice(0, 5)).toEqual(['reserve', 'provider', 'bind', 'sideband', 'activate']);
+    expect(order.slice(0, 6))
+      .toEqual(['reserve', 'provider', 'bind', 'sideband', 'activate', 'resolve']);
     expect(order.filter((step) => step === 'bind')).toHaveLength(1);
     if (result.ok) await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
+  });
+
+  it('ne rend aucune capability si un hangup gagne pendant la finalisation du bootstrap', async () => {
+    const handle = '00000000-0000-4000-8000-000000000096';
+    const capability = `bam1_${Buffer.alloc(32, 75).toString('base64url')}`;
+    const durable = missionCapableAdmission(admission());
+    const claimTermination = vi.spyOn(durable, 'claimTermination');
+    const attached = deferred<void>();
+    const finishAttach = deferred<void>();
+    let lifecycle: NonNullable<
+      Parameters<RealtimeSidebandControl['attach']>[0]['lifecycle']
+    > | null = null;
+    const sideband: RealtimeSidebandControl = {
+      attach: vi.fn(async (input) => {
+        if (!input.lifecycle) throw new Error('missing_lifecycle');
+        lifecycle = input.lifecycle;
+        await input.lifecycle.activate();
+        attached.resolve(undefined);
+        await finishAttach.promise;
+      }),
+      contextChanged: vi.fn(),
+      consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
+      closeForPrincipal: vi.fn(async () => undefined),
+      fenceAndDetachSession: vi.fn(() => {
+        lifecycle?.fenceAfterDurableTerminationClaim();
+        return 'detached' as const;
+      }),
+      closeSession: vi.fn(async () => {
+        if (!lifecycle) return 'not_found' as const;
+        return lifecycle.terminate('user');
+      }),
+    };
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_bootstrap_hangup_race'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      missionGate(capability),
+    );
+
+    const bootstrap = runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 1,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }));
+    await attached.promise;
+    await expect(runAsPrincipal(() => service.hangup(handle))).resolves.toEqual({
+      ok: true,
+      value: { ended: true },
+    });
+    finishAttach.resolve(undefined);
+
+    const result = await bootstrap;
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'openai-realtime',
+        cause: 'realtime_bootstrap_fenced',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(capability);
+    expect(provider.hangupCall).toHaveBeenCalledOnce();
+    expect(claimTermination).toHaveBeenCalledOnce();
+    expect(claimTermination.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(sideband.fenceAndDetachSession).mock.invocationCallOrder[0]!,
+    );
   });
 
   it('compense exactement une fois si le bind durable échoue dès la publication de Location', async () => {
@@ -1720,7 +2054,8 @@ describe('RealtimeVoiceService', () => {
     const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
     await expect(durable.claimTermination({
       companyId: 'company-1',
-      subjectHash,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
       sessionId: handle,
     })).resolves.toEqual({ ok: true, claim: null, pending: false });
   });
@@ -1756,7 +2091,12 @@ describe('RealtimeVoiceService', () => {
     expect(provider.hangupCall).toHaveBeenCalledOnce();
     expect(provider.hangupCall).toHaveBeenCalledWith('rtc_aborted_bootstrap');
     const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
-    await expect(durable.claimTermination({ companyId: 'company-1', subjectHash, sessionId: handle }))
+    await expect(durable.claimTermination({
+      companyId: 'company-1',
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      sessionId: handle,
+    }))
       .resolves.toEqual({ ok: true, claim: null, pending: false });
   });
 
@@ -1769,6 +2109,9 @@ describe('RealtimeVoiceService', () => {
       subjectHash,
       sessionId: handle,
       maxSessionSeconds: SETTINGS.maxSessionSeconds,
+      subjectHashCandidates: [subjectHash],
+      principalBindingHash: subjectHash,
+      agentMissionBinding: null,
     });
     if (!reserved.allowed) throw new Error('réservation attendue');
     await durable.bindProvider({
@@ -1796,6 +2139,62 @@ describe('RealtimeVoiceService', () => {
     });
     expect(provider.hangupCall).toHaveBeenCalledOnce();
     expect(provider.hangupCall).toHaveBeenCalledWith('rtc_remote_replica');
+  });
+
+  it('retrouve et termine une lease créée avec la clé HMAC historique', async () => {
+    const handle = '00000000-0000-4000-8000-000000000011';
+    const previousSecret = 'previous-subject-secret-at-least-32-chars';
+    const currentSecret = 'current-subject-secret-at-least-32-chars!!';
+    const historicalSubjectHash = admissionSubjectHash(
+      previousSecret,
+      'company-1',
+      'user-1',
+    );
+    const durable = admission();
+    const reserved = await durable.reserve({
+      companyId: 'company-1',
+      subjectHash: historicalSubjectHash,
+      subjectHashCandidates: [historicalSubjectHash],
+      principalBindingHash: agentMissionPrincipalBindingHash('company-1', 'user-1'),
+      agentMissionBinding: null,
+      sessionId: handle,
+      maxSessionSeconds: SETTINGS.maxSessionSeconds,
+    });
+    if (!reserved.allowed) throw new Error('réservation historique attendue');
+    await durable.bindProvider({
+      ...reserved.lease,
+      providerId: 'openai',
+      providerCallId: 'rtc_hmac_rotated',
+    });
+    await durable.activate(reserved.lease);
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const rotatedSettings: RealtimeVoiceSettings = {
+      ...SETTINGS,
+      safetySecret: currentSecret,
+      subjectKeyVersion: 2,
+      subjectHmacKeyRing: [
+        { version: 1, secret: previousSecret },
+        { version: 2, secret: currentSecret },
+      ],
+    };
+    const service = new RealtimeVoiceService(
+      rotatedSettings,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+    );
+
+    await expect(runAsPrincipal(() => service.hangup(handle))).resolves.toEqual({
+      ok: true,
+      value: { ended: true },
+    });
+    expect(provider.hangupCall).toHaveBeenCalledOnce();
+    expect(provider.hangupCall).toHaveBeenCalledWith('rtc_hmac_rotated');
   });
 
   it('publie un contexte monotone lié au sujet puis le fige au début du tour monobrain', async () => {

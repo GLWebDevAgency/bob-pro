@@ -2121,7 +2121,13 @@ export class HealthController {
       // Capacité de compatibilité mixed-version : cette révision refuse tout XML/Factur-X B2C
       // sur l'endpoint ET rend son PDF sans enveloppe hybride. Le pipeline vérifie ce marqueur
       // sur toutes les anciennes répliques avant d'appliquer les migrations archive V2.
-      capabilities: { documentArchiveB2cHttpFence: 'v1' as const },
+      capabilities: {
+        documentArchiveB2cHttpFence: 'v1' as const,
+        // Un prédécesseur portant ce marqueur écrit le fence d'annulation durable sur tout
+        // hangup. Le pipeline peut alors éviter un drain total lors des releases suivantes ;
+        // son absence impose le cutover fermé et drainé.
+        realtimeAdmissionCancellationFence: 'v1' as const,
+      },
       release: readReleaseMetadata(),
       network: { clientIpSource: clientIpSourceForRequest(request) },
     };

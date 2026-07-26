@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
+import {
+  InMemoryRealtimeAdmission,
+  realtimeAdmissionLegacyTestBinding,
+} from './realtime-admission.testing';
 import {
   hashRealtimeLeaseToken,
   validateRealtimeAdmissionPolicy,
@@ -50,6 +53,93 @@ function screenContext(label = 'Facture FA-2026-042') {
 }
 
 describe('Bob Live — admission durable de parité mémoire', () => {
+  it('agrège lease, replay et quota entre les bindings sujet courant et historiques', async () => {
+    const principalBindingHash = 'd'.repeat(64);
+    const current = '1'.repeat(64);
+    const historical = '2'.repeat(64);
+    const sessionId = '00000000-0000-4000-8000-000000000099';
+    const oncePerMinute = new InMemoryRealtimeAdmission({
+      ...policy,
+      userLimitPerMinute: 1,
+    }, Date.now, entropy());
+    const first = await oncePerMinute.reserve({
+      companyId: COMPANY_A,
+      subjectHash: current,
+      subjectHashCandidates: [current, historical],
+      principalBindingHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    });
+    const lease = allowed(first);
+
+    await expect(oncePerMinute.reserve({
+      companyId: COMPANY_A,
+      subjectHash: historical,
+      subjectHashCandidates: [historical, current],
+      principalBindingHash,
+      agentMissionBinding: null,
+      maxSessionSeconds: 60,
+    })).resolves.toMatchObject({
+      allowed: false,
+      denial: 'active_lease',
+    });
+
+    await oncePerMinute.release({
+      ...lease,
+      providerTermination: 'not_created',
+    });
+    await expect(oncePerMinute.reserve({
+      companyId: COMPANY_A,
+      subjectHash: historical,
+      subjectHashCandidates: [historical, current],
+      principalBindingHash,
+      agentMissionBinding: null,
+      maxSessionSeconds: 60,
+    })).resolves.toMatchObject({
+      allowed: false,
+      denial: 'user_minute',
+    });
+    await expect(oncePerMinute.reserve({
+      companyId: COMPANY_A,
+      subjectHash: historical,
+      subjectHashCandidates: [historical, current],
+      principalBindingHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    })).resolves.toMatchObject({
+      allowed: false,
+      denial: 'active_lease',
+    });
+  });
+
+  it('refuse V1 dans le double mémoire qui ne peut pas revalider le flag SQL', async () => {
+    const admission = new InMemoryRealtimeAdmission(policy, Date.now, entropy());
+    const result = await admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      subjectHashCandidates: [SUBJECT_A],
+      principalBindingHash: 'd'.repeat(64),
+      agentMissionBinding: {
+        protocolVersion: 1,
+        capabilityHash: 'c'.repeat(64),
+        releaseFlagKey: 'bob.agent_missions.quote.v1',
+        releaseEnvironment: 'staging',
+        releaseFlagVersion: 7,
+        principalBindingHash: 'd'.repeat(64),
+      },
+      maxSessionSeconds: 60,
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      denial: 'unavailable',
+      retryAt: null,
+    });
+    expect(admission.snapshot()).toEqual({ events: [], leases: [] });
+  });
+
   it('valide les invariants de politique avant tout trafic', () => {
     expect(() => validateRealtimeAdmissionPolicy(policy)).not.toThrow();
     expect(() => validateRealtimeAdmissionPolicy({ ...policy, userLimitPerHour: 1 })).toThrow(/hourly quota/i);
@@ -63,6 +153,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 900,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     })).resolves.toMatchObject({ allowed: false, denial: 'unavailable' });
 
     const boundedPolicy: RealtimeAdmissionPolicy = {
@@ -80,16 +171,19 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 900,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     }));
     allowed(await bounded.reserve({
       companyId: COMPANY_B,
       subjectHash: SUBJECT_B,
       maxSessionSeconds: 900,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_B),
     }));
     await expect(bounded.reserve({
       companyId: 'company-c',
       subjectHash: 'c'.repeat(64),
       maxSessionSeconds: 900,
+      ...realtimeAdmissionLegacyTestBinding('c'.repeat(64)),
     })).resolves.toMatchObject({ allowed: false, denial: 'global_capacity' });
 
     await bounded.release({ ...first, providerTermination: 'not_created' });
@@ -97,18 +191,19 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: 'company-c',
       subjectHash: 'c'.repeat(64),
       maxSessionSeconds: 900,
+      ...realtimeAdmissionLegacyTestBinding('c'.repeat(64)),
     })).resolves.toMatchObject({ allowed: true, denial: null });
   });
 
   it('réserve un bail unique sans conserver userId ni token brut', async () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
-    const first = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 });
+    const first = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     const lease = allowed(first);
     expect(lease.leaseToken).toHaveLength(70);
     expect(hashRealtimeLeaseToken(lease.leaseToken)).toMatch(/^[a-f0-9]{64}$/);
 
-    const duplicate = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 });
+    const duplicate = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(duplicate).toMatchObject({ allowed: false, denial: 'active_lease' });
     const serialized = JSON.stringify(admission.snapshot());
     expect(serialized).not.toContain(lease.leaseToken);
@@ -116,7 +211,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(serialized).not.toContain('user_id');
 
     now += 1;
-    const otherTenant = await admission.reserve({ companyId: COMPANY_B, subjectHash: SUBJECT_A, maxSessionSeconds: 900 });
+    const otherTenant = await admission.reserve({ companyId: COMPANY_B, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(otherTenant.allowed).toBe(true);
   });
 
@@ -124,23 +219,23 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
     const reserveAndAbort = async () => {
-      const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 }));
+      const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }));
       expect(await admission.release({ ...lease, providerTermination: 'not_created' })).toEqual({ ok: true, reason: null });
     };
 
     await reserveAndAbort();
     now += 1_000;
     await reserveAndAbort();
-    const minuteDenied = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 });
+    const minuteDenied = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(minuteDenied).toMatchObject({ allowed: false, denial: 'user_minute' });
 
     now += 61_000;
     await reserveAndAbort();
-    const hourDenied = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 });
+    const hourDenied = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(hourDenied).toMatchObject({ allowed: false, denial: 'user_hour' });
 
     now += 3_600_000;
-    expect((await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900 })).allowed).toBe(true);
+    expect((await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) })).allowed).toBe(true);
   });
 
   it('agrège les quotas tenant entre sujets distincts', async () => {
@@ -149,18 +244,18 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     const admission = new InMemoryRealtimeAdmission(tenantPolicy, () => now, entropy());
     const subjects = [SUBJECT_A, SUBJECT_B, 'c'.repeat(64), 'd'.repeat(64)];
     for (const subjectHash of subjects) {
-      const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash, maxSessionSeconds: 900 }));
+      const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash, maxSessionSeconds: 900, subjectHashCandidates: [subjectHash], principalBindingHash: subjectHash, agentMissionBinding: null }));
       await admission.release({ ...lease, providerTermination: 'not_created' });
       now += 1;
     }
-    const denied = await admission.reserve({ companyId: COMPANY_A, subjectHash: 'e'.repeat(64), maxSessionSeconds: 900 });
+    const denied = await admission.reserve({ companyId: COMPANY_A, subjectHash: 'e'.repeat(64), maxSessionSeconds: 900, ...realtimeAdmissionLegacyTestBinding('e'.repeat(64)) });
     expect(denied).toMatchObject({ allowed: false, denial: 'tenant_minute' });
   });
 
   it('fence bind/activate/renew/release par session et token hashé', async () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
-    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
+    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }));
     const bad = { ...lease, leaseToken: `${lease.leaseToken}-forged` };
     expect(await admission.bindProvider({ ...bad, providerId: 'openai', providerCallId: 'call_123' })).toEqual({ ok: false, reason: 'rejected' });
     const bound = await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_123' });
@@ -187,11 +282,13 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     }));
     const mistralLease = allowed(await admission.reserve({
       companyId: COMPANY_A,
       subjectHash: SUBJECT_B,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_B),
     }));
     expect(await admission.bindProvider({
       ...openaiLease,
@@ -208,6 +305,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: 'c'.repeat(64),
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding('c'.repeat(64)),
     }));
     expect(await admission.bindProvider({
       ...thirdLease,
@@ -227,6 +325,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     }));
     const context = screenContext('Facture <ignore> `FA-2026-042`');
 
@@ -288,6 +387,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     }));
     await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_context_revision' });
     await admission.activate(lease);
@@ -354,6 +454,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     }));
     await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_context_expired' });
     await admission.activate(lease);
@@ -377,8 +478,8 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     const admission = new InMemoryRealtimeAdmission(policy, Date.now, entropy());
     const sessionId = '00000000-0000-4000-8000-123456789012';
     const [first, concurrent] = await Promise.all([
-      admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, sessionId, maxSessionSeconds: 60 }),
-      admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, sessionId, maxSessionSeconds: 60 }),
+      admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, sessionId, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }),
+      admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, sessionId, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }),
     ]);
     expect(first.allowed).toBe(true);
     expect(concurrent).toMatchObject({ allowed: false, denial: 'active_lease' });
@@ -390,18 +491,21 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       subjectHash: SUBJECT_A,
       sessionId,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     })).toEqual({ allowed: false, denial: 'active_lease', retryAt: null });
     expect(await admission.reserve({
       companyId: COMPANY_A,
       subjectHash: SUBJECT_B,
       sessionId,
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_B),
     })).toEqual({ allowed: false, denial: 'unavailable', retryAt: null });
     expect(await admission.reserve({
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
       sessionId: 'not-a-uuid',
       maxSessionSeconds: 60,
+      ...realtimeAdmissionLegacyTestBinding(SUBJECT_A),
     })).toEqual({ allowed: false, denial: 'unavailable', retryAt: null });
     expect(admission.snapshot().events).toHaveLength(1);
   });
@@ -409,18 +513,18 @@ describe('Bob Live — admission durable de parité mémoire', () => {
   it('conserve un appel provider expiré sous reaping jusqu’au hangup confirmé', async () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
-    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
+    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }));
     await admission.bindProvider({ ...lease, providerId: 'mistral', providerCallId: 'call_stale' });
     now += 16_000;
 
-    const blocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 });
+    const blocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(blocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
     if (blocked.allowed || !blocked.reapingClaim) throw new Error('Expected fenced reaping claim.');
     expect(blocked.reapingClaim.providerId).toBe('mistral');
     expect(blocked.reapingClaim.providerCallId).toBe('call_stale');
     expect(blocked.reapingClaim.hardExpiryProof).toBeNull();
 
-    const stillBlocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 });
+    const stillBlocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) });
     expect(stillBlocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
     expect(stillBlocked.allowed || stillBlocked.reapingClaim).toBeUndefined();
     expect(await admission.completeReaping({
@@ -440,12 +544,12 @@ describe('Bob Live — admission durable de parité mémoire', () => {
   it('récolte un bail sans provider directement et ne prolonge jamais au-delà du hard cap', async () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
-    const orphan = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
+    const orphan = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }));
     now += 16_000;
     expect(await admission.claimExpired({ companyId: COMPANY_A })).toEqual({ ok: true, claims: [] });
     expect(admission.snapshot().leases).toHaveLength(0);
 
-    const active = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_B, maxSessionSeconds: 60 }));
+    const active = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_B, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_B) }));
     await admission.bindProvider({ ...active, providerId: 'openai', providerCallId: 'call_hard_cap' });
     await admission.activate(active);
     now = Date.parse(active.hardExpiresAt);
@@ -472,18 +576,34 @@ describe('Bob Live — admission durable de parité mémoire', () => {
 
   it('réclame une terminaison explicite inter-répliques avec un fence sessionId', async () => {
     const admission = new InMemoryRealtimeAdmission(policy, Date.now, entropy());
-    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
+    const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60, ...realtimeAdmissionLegacyTestBinding(SUBJECT_A) }));
     await admission.bindProvider({ ...lease, providerId: 'mistral', providerCallId: 'call_cross_replica' });
     await admission.activate(lease);
+    const rotatedSubjectHash = 'd'.repeat(64);
 
     expect(await admission.claimTermination({
       companyId: COMPANY_A,
-      subjectHash: SUBJECT_A,
+      subjectHashCandidates: [rotatedSubjectHash, SUBJECT_A],
+      principalBindingHash: 'e'.repeat(64),
       sessionId: '00000000-0000-4000-8000-999999999999',
     })).toEqual({ ok: true, claim: null, pending: false });
+    expect(await admission.resolveSession({
+      companyId: COMPANY_A,
+      subjectHashCandidates: [rotatedSubjectHash, SUBJECT_A],
+      principalBindingHash: 'e'.repeat(64),
+      sessionId: lease.sessionId,
+    })).toEqual({
+      ok: true,
+      identity: {
+        companyId: COMPANY_A,
+        subjectHash: SUBJECT_A,
+        sessionId: lease.sessionId,
+      },
+    });
     const claimed = await admission.claimTermination({
       companyId: COMPANY_A,
-      subjectHash: SUBJECT_A,
+      subjectHashCandidates: [rotatedSubjectHash, SUBJECT_A],
+      principalBindingHash: 'e'.repeat(64),
       sessionId: lease.sessionId,
     });
     expect(claimed.ok).toBe(true);
@@ -491,9 +611,16 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(claimed.claim.providerId).toBe('mistral');
     expect(claimed.claim.providerCallId).toBe('call_cross_replica');
     expect(claimed.claim.hardExpiryProof).toBeNull();
+    expect(await admission.resolveSession({
+      companyId: COMPANY_A,
+      subjectHashCandidates: [rotatedSubjectHash, SUBJECT_A],
+      principalBindingHash: 'e'.repeat(64),
+      sessionId: lease.sessionId,
+    })).toEqual({ ok: true, identity: null });
     expect(await admission.claimTermination({
       companyId: COMPANY_A,
-      subjectHash: SUBJECT_A,
+      subjectHashCandidates: [rotatedSubjectHash, SUBJECT_A],
+      principalBindingHash: 'e'.repeat(64),
       sessionId: lease.sessionId,
     })).toEqual({ ok: true, claim: null, pending: true });
     expect(await admission.completeReaping({
@@ -502,6 +629,55 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       sessionId: lease.sessionId,
       reaperToken: claimed.claim.reaperToken,
     })).toEqual({ ok: true, reason: null });
+  });
+
+  it('bloque un reserve postérieur au hangup sans prolonger le fence lors du replay', async () => {
+    let now = Date.parse('2026-07-26T12:00:00.000Z');
+    const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
+    const sessionId = '00000000-0000-4000-8000-777777777777';
+    const lookup = {
+      companyId: COMPANY_A,
+      subjectHashCandidates: [SUBJECT_A, 'd'.repeat(64)],
+      principalBindingHash: 'e'.repeat(64),
+      sessionId,
+    } as const;
+
+    await expect(admission.claimTermination(lookup)).resolves.toEqual({
+      ok: true,
+      claim: null,
+      pending: false,
+    });
+    await expect(admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      subjectHashCandidates: lookup.subjectHashCandidates,
+      principalBindingHash: lookup.principalBindingHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    })).resolves.toEqual({
+      allowed: false,
+      denial: 'active_lease',
+      retryAt: null,
+    });
+
+    now += 3_600_000;
+    const rotatedLookup = {
+      ...lookup,
+      subjectHashCandidates: [...lookup.subjectHashCandidates, 'f'.repeat(64)],
+    } as const;
+    await admission.claimTermination(rotatedLookup);
+    now += 3_600_001;
+    const afterOriginalExpiry = await admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      subjectHashCandidates: rotatedLookup.subjectHashCandidates,
+      principalBindingHash: lookup.principalBindingHash,
+      agentMissionBinding: null,
+      sessionId,
+      maxSessionSeconds: 60,
+    });
+    expect(afterOriginalExpiry.allowed).toBe(true);
   });
 
   it('refuse explicitement l’ancien contrat contenant le userId brut', () => {

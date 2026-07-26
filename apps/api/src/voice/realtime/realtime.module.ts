@@ -20,6 +20,7 @@ import {
   OpenAiRealtimeCallAdapter,
 } from './openai-realtime-call.adapter';
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
+import { buildRealtimeAgentMissionAdmissionGate } from './realtime-agent-mission-admission';
 import { RealtimeGlobalCapacityMonitor } from './realtime-capacity-monitor';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
@@ -98,6 +99,7 @@ import {
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_GLOBAL_CAPACITY_INSPECTOR,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
@@ -388,6 +390,13 @@ const admissionProvider: Provider = {
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) =>
     persistence.createRealtimeAdmission(realtimeAdmissionPolicyFromEnv(loadEnv())),
+};
+
+const agentMissionAdmissionProvider: Provider = {
+  provide: REALTIME_AGENT_MISSION_ADMISSION,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) =>
+    buildRealtimeAgentMissionAdmissionGate(persistence, loadEnv()),
 };
 
 const mistralIngressTicketProvider: Provider = {
@@ -729,6 +738,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,
     admissionProvider,
+    agentMissionAdmissionProvider,
     realtimeGlobalCapacityInspectorProvider,
     realtimeGlobalCapacityMonitorProvider,
     mistralIngressTicketProvider,

@@ -238,16 +238,20 @@ describe('Bob Live Mistral — cycle terminaison puis livraison', () => {
   it('le reaper supprime un drain expiré confirmed avant la sélection des claims provider', async () => {
     const h = prismaHarness({
       queries: [[]],
-      // tenant lock, journal, reserved stale, completed Mistral drain
-      executions: [0, 0, 0, 1, 1],
+      // tenant lock, journal, cancellation fences, reserved stale, completed Mistral drain,
+      // then exact schedule reconciliation.
+      executions: [0, 0, 0, 0, 1, 1],
     });
     const admission = new PrismaRealtimeAdmission(h.prisma, admissionPolicy);
 
     await expect(admission.claimExpired({ companyId: COMPANY, limit: 10 }))
       .resolves.toEqual({ ok: true, claims: [] });
 
-    expect(h.executeRaw).toHaveBeenCalledTimes(5);
-    const terminalCleanup = sqlAt(h.executeRaw, 3);
+    expect(h.executeRaw).toHaveBeenCalledTimes(6);
+    expect(sqlAt(h.executeRaw, 2)).toMatch(
+      /DELETE FROM realtime_admission_cancellation_fences AS fence USING candidates/u,
+    );
+    const terminalCleanup = sqlAt(h.executeRaw, 4);
     expect(terminalCleanup).toMatch(/JOIN realtime_mistral_ingress_tickets AS ticket/u);
     expect(terminalCleanup).toMatch(/ticket\.state IN \('completed', 'abandoned'\)/u);
     expect(terminalCleanup).toMatch(/ticket\."providerTermination" = 'confirmed'/u);

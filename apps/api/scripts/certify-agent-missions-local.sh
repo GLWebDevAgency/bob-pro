@@ -793,6 +793,151 @@ $writer_n1_validate$;
 COMMIT;
 SQL
 
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726060000_realtime_admission_cancellation_fence_expand/migration.sql"
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT, INSERT, DELETE
+  ON TABLE public.realtime_admission_cancellation_fences TO bob_app;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON TABLE public.realtime_reaper_tenant_schedule TO bob_app;
+REVOKE UPDATE, TRUNCATE, REFERENCES, TRIGGER
+  ON TABLE public.realtime_admission_cancellation_fences FROM bob_app;
+RESET ROLE;
+SQL
+
+# Writer admission N-1 exact sous le trigger final de l'expand : sans fence il écrit ; avec un
+# fence vivant il échoue avant lease, capacité et événement.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS reserved_at
+)
+INSERT INTO public.realtime_session_leases (
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+  "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+  "hardExpiresAt", "activatedAt", "updatedAt", version
+)
+SELECT
+  'writer-n1-company', repeat('0', 64), '10000000-0000-4000-8000-000000000007'::uuid,
+  repeat('1', 64), 'reserved', NULL, NULL, NULL, reserved_at,
+  reserved_at + interval '30 seconds', reserved_at + interval '60 seconds',
+  NULL, reserved_at, 1
+FROM authoritative_clock;
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS cancelled_at
+)
+INSERT INTO public.realtime_admission_cancellation_fences (
+  "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+)
+SELECT
+  'writer-n1-company', '10000000-0000-4000-8000-000000000008'::uuid,
+  repeat('b', 64), cancelled_at, cancelled_at + interval '2 hours'
+FROM authoritative_clock;
+
+DO $writer_n1_cancellation_expand$
+BEGIN
+  BEGIN
+    INSERT INTO public.realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+      "hardExpiresAt", "activatedAt", "updatedAt", version
+    ) VALUES (
+      'writer-n1-company', repeat('b', 64),
+      '10000000-0000-4000-8000-000000000008'::uuid,
+      repeat('2', 64), 'reserved', NULL, NULL, NULL, clock_timestamp(),
+      clock_timestamp() + interval '30 seconds', clock_timestamp() + interval '60 seconds',
+      NULL, clock_timestamp(), 1
+    );
+    RAISE EXCEPTION 'REALTIME_CANCELLATION_WRITER_N1_ACCEPTED_AFTER_EXPAND';
+  EXCEPTION
+    WHEN SQLSTATE '55000' THEN NULL;
+  END;
+  IF EXISTS (
+    SELECT 1
+      FROM public.realtime_session_leases
+     WHERE "sessionId" = '10000000-0000-4000-8000-000000000008'::uuid
+  ) THEN
+    RAISE EXCEPTION 'REALTIME_CANCELLATION_LEASE_SURVIVED_AFTER_EXPAND';
+  END IF;
+END;
+$writer_n1_cancellation_expand$;
+COMMIT;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726070000_realtime_admission_cancellation_fence_validate/migration.sql"
+
+# Même preuve après VALIDATE : la migration intermédiaire et l'état final acceptent N-1 seulement
+# quand le handle n'a jamais été annulé.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS reserved_at
+)
+INSERT INTO public.realtime_session_leases (
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+  "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+  "hardExpiresAt", "activatedAt", "updatedAt", version
+)
+SELECT
+  'writer-n1-company', repeat('c', 64), '10000000-0000-4000-8000-000000000009'::uuid,
+  repeat('3', 64), 'reserved', NULL, NULL, NULL, reserved_at,
+  reserved_at + interval '30 seconds', reserved_at + interval '60 seconds',
+  NULL, reserved_at, 1
+FROM authoritative_clock;
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS cancelled_at
+)
+INSERT INTO public.realtime_admission_cancellation_fences (
+  "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+)
+SELECT
+  'writer-n1-company', '10000000-0000-4000-8000-000000000010'::uuid,
+  repeat('e', 64), cancelled_at, cancelled_at + interval '2 hours'
+FROM authoritative_clock;
+
+DO $writer_n1_cancellation_validate$
+BEGIN
+  BEGIN
+    INSERT INTO public.realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+      "hardExpiresAt", "activatedAt", "updatedAt", version
+    ) VALUES (
+      'writer-n1-company', repeat('e', 64),
+      '10000000-0000-4000-8000-000000000010'::uuid,
+      repeat('4', 64), 'reserved', NULL, NULL, NULL, clock_timestamp(),
+      clock_timestamp() + interval '30 seconds', clock_timestamp() + interval '60 seconds',
+      NULL, clock_timestamp(), 1
+    );
+    RAISE EXCEPTION 'REALTIME_CANCELLATION_WRITER_N1_ACCEPTED_AFTER_VALIDATE';
+  EXCEPTION
+    WHEN SQLSTATE '55000' THEN NULL;
+  END;
+  IF EXISTS (
+    SELECT 1
+      FROM public.realtime_session_leases
+     WHERE "sessionId" = '10000000-0000-4000-8000-000000000010'::uuid
+  ) THEN
+    RAISE EXCEPTION 'REALTIME_CANCELLATION_LEASE_SURVIVED_AFTER_VALIDATE';
+  END IF;
+END;
+$writer_n1_cancellation_validate$;
+COMMIT;
+SQL
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_app;
@@ -800,17 +945,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_ap
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_session_leases TO bob_app;
 GRANT SELECT ON TABLE public.release_flags, public.release_flag_subjects TO bob_app;
 
-GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
-GRANT SELECT ON TABLE
-  public.agent_missions,
-  public.agent_mission_events,
-  public.quote_draft_slots,
-  public.realtime_session_leases,
-  public.release_flags,
-  public.release_flag_subjects,
-  public.release_flag_audit_events
-TO bob_cert_auditor;
-GRANT SELECT, INSERT ON TABLE public.companies TO bob_cert_auditor;
 GRANT SELECT ("companyId", "sessionId") ON TABLE public.realtime_session_leases
   TO bob_mistral_bootstrap_reaper;
 RESET ROLE;
@@ -833,6 +967,7 @@ SQL
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
+
 # AGENT_MISSION_CERT_NON_INITIAL_VERSION : une certification rejouable doit suivre la version
 # autoritaire courante, y compris quand un incident maintient volontairement le kill switch armé.
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -879,6 +1014,23 @@ esac
   -v release_flag_version="$agent_mission_release_flag_version" \
   -v release_flag_kill_switch="$agent_mission_release_flag_kill_switch" \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
+GRANT SELECT ON TABLE
+  public.agent_missions,
+  public.agent_mission_events,
+  public.quote_draft_slots,
+  public.realtime_admission_cancellation_fences,
+  public.realtime_session_leases,
+  public.release_flags,
+  public.release_flag_subjects,
+  public.release_flag_audit_events
+TO bob_cert_auditor;
+GRANT SELECT, INSERT ON TABLE public.companies TO bob_cert_auditor;
+RESET ROLE;
+SQL
 
 cd "$ROOT_DIR"
 # Vitest API consomme l'export package réel de @bob/core. Le construire ici rend la preuve

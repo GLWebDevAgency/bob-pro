@@ -119,6 +119,7 @@ export interface RealtimeSidebandAttachInput {
   session: OpenAiRealtimeSessionConfig;
   lifecycle?: {
     activate(): Promise<void>;
+    fenceAfterDurableTerminationClaim(): void;
     terminate(
       reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
     ): Promise<RealtimeCallTerminationOutcome>;
@@ -213,6 +214,15 @@ export interface RealtimeSidebandControl {
     companyId: string;
     sessionHandle: string;
   }): Promise<'not_found' | RealtimeCallTerminationOutcome>;
+  /**
+   * Coupe immédiatement les timers, tours, owner sideband et socket sans appeler le provider ni
+   * muter la lease. Réservé au chemin qui possède déjà un claim de terminaison durable.
+   */
+  fenceAndDetachSession(input: {
+    userId: string;
+    companyId: string;
+    sessionHandle: string;
+  }): 'not_found' | 'detached';
 }
 
 type DecodedSidebandEvent =
@@ -653,6 +663,7 @@ class ManagedSidebandSession {
     private readonly terminateCall: (
       reason: 'user' | 'kill_switch' | 'superseded' | 'max_duration' | 'shutdown',
     ) => Promise<RealtimeCallTerminationOutcome>,
+    private readonly fenceLeaseLifecycle: () => void,
     private readonly runTurn: (input: {
       transcript: string;
       history: readonly AgentHistoryTurn[];
@@ -996,6 +1007,11 @@ class ManagedSidebandSession {
       this.providerSocketTerminated = true;
     } catch { /* déjà fermée */ }
     this.finalize();
+  }
+
+  fenceAndDetachAfterDurableClaim(): void {
+    this.fenceLeaseLifecycle();
+    this.forceDispose();
   }
 
   private failBootstrap(reject: (error: Error) => void, reason: string): void {
@@ -2049,6 +2065,7 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
       () => input.lifecycle?.activate() ?? Promise.resolve(),
       (reason) => input.lifecycle?.terminate(reason)
         ?? this.callProvider.hangupCall(input.callId).then(() => 'confirmed' as const),
+      () => input.lifecycle?.fenceAfterDurableTerminationClaim(),
       (turn) => input.turn?.run(turn) ?? Promise.resolve({
         status: 'failed' as const,
         canonicalSpeech: 'Bob Live n’est pas encore relié au moteur métier.',
@@ -2158,6 +2175,17 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     const session = this.sessionsByPrincipal.get(principalKey(input));
     if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return 'not_found';
     return session.close('user');
+  }
+
+  fenceAndDetachSession(input: {
+    userId: string;
+    companyId: string;
+    sessionHandle: string;
+  }): 'not_found' | 'detached' {
+    const session = this.sessionsByPrincipal.get(principalKey(input));
+    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return 'not_found';
+    session.fenceAndDetachAfterDurableClaim();
+    return 'detached';
   }
 
   async onApplicationShutdown(): Promise<void> {

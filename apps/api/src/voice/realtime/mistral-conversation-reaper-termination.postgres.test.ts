@@ -129,6 +129,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         subjectHash,
         sessionId: randomUUID(),
         maxSessionSeconds,
+        subjectHashCandidates: [subjectHash],
+        principalBindingHash: subjectHash,
+        agentMissionBinding: null,
       });
       if (!reserved.allowed) {
         throw new Error(`Unexpected admission denial: ${reserved.denial}`);
@@ -276,7 +279,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     async function claimExplicit(lease: RealtimeAdmissionLease): Promise<RealtimeReapingClaim> {
       const claimed = await admissions[1].claimTermination({
         companyId,
-        subjectHash: lease.subjectHash,
+        subjectHashCandidates: [lease.subjectHash],
+        principalBindingHash: lease.subjectHash,
         sessionId: lease.sessionId,
       });
       expect(claimed.ok).toBe(true);

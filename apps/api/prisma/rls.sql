@@ -51,6 +51,7 @@ BEGIN
     'fiscal_profiles',
     'document_counters',
     'realtime_admission_events',
+    'realtime_admission_cancellation_fences',
     'realtime_session_leases',
     'realtime_reaper_tenant_schedule',
     'realtime_mistral_ingress_tickets',
@@ -448,6 +449,13 @@ DROP POLICY IF EXISTS realtime_admission_event_reaper_directory_select
   ON realtime_admission_events;
 DROP POLICY IF EXISTS realtime_admission_event_reaper_schedule_select
   ON realtime_admission_events;
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_admission_cancellation_fences;
+DROP POLICY IF EXISTS realtime_admission_cancellation_fence_tenant_isolation
+  ON realtime_admission_cancellation_fences;
+CREATE POLICY tenant_isolation ON realtime_admission_cancellation_fences
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_session_leases;
 CREATE POLICY tenant_isolation ON realtime_session_leases

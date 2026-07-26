@@ -114,6 +114,17 @@ export class RealtimeCallLifecycle {
     return this.terminationPromise;
   }
 
+  /**
+   * Transfère irrévocablement la terminaison au reaper/claim durable. Le lifecycle local ne doit
+   * ensuite ni raccrocher le provider, ni appeler `release` avec l’ancien lease token.
+   */
+  fenceAfterDurableTerminationClaim(): void {
+    if (this.terminationPromise) return;
+    this.stopTimers();
+    this.activated = false;
+    this.terminationPromise = Promise.resolve('pending_reaper');
+  }
+
   private async performActivation(): Promise<void> {
     let result: RealtimeAdmissionMutationResult;
     try {

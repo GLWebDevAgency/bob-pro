@@ -1,17 +1,21 @@
 import { createHash } from 'node:crypto';
 import { parseAgentContext, type AgentContext } from '@bob/ai';
+import type { ReleaseFlagEnvironment } from '@bob/core';
 import { resolveBobLiveEnv, type Env } from '../../config/env';
 import type { RealtimeGlobalCapacityExpectation } from './realtime-capacity';
+import { AGENT_MISSION_PROTOCOL_VERSION } from './realtime-agent-mission-negotiation';
 
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 export const REALTIME_CONTEXT_SCHEMA_VERSION = 1 as const;
+export const REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY =
+  'bob.agent_missions.quote.v1' as const;
 const REALTIME_CONTEXT_MAX_BYTES = 16_384;
-const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 export type RealtimeAdmissionDenial =
   | 'global_capacity'
@@ -142,8 +146,23 @@ export type RealtimeTerminationClaimResult =
   | { ok: true; claim: RealtimeReapingClaim | null; pending: boolean }
   | { ok: false; reason: 'unavailable' };
 
+export interface RealtimeAgentMissionAdmissionProof {
+  protocolVersion: typeof AGENT_MISSION_PROTOCOL_VERSION;
+  capabilityHash: string;
+  releaseFlagVersion: number;
+}
+
 export type RealtimeAdmissionResult =
-  | { allowed: true; denial: null; lease: RealtimeAdmissionLease }
+  | {
+      allowed: true;
+      denial: null;
+      lease: RealtimeAdmissionLease;
+      /**
+       * Attestation de l'INSERT, séparée de la lease pour ne jamais être propagée vers les
+       * tickets, le lifecycle ou les mutations par un spread de credential.
+       */
+      agentMissionProof: RealtimeAgentMissionAdmissionProof | null;
+    }
   | {
       allowed: false;
       denial: RealtimeAdmissionDenial;
@@ -151,10 +170,38 @@ export type RealtimeAdmissionResult =
       reapingClaim?: RealtimeReapingClaim;
     };
 
+/**
+ * Preuve préparée côté serveur pour l'unique INSERT d'admission. Elle ne contient que le hash de
+ * la capability ; son secret one-shot reste dans l'orchestrateur HTTP.
+ */
+export interface RealtimeAgentMissionAdmissionBinding {
+  protocolVersion: typeof AGENT_MISSION_PROTOCOL_VERSION;
+  capabilityHash: string;
+  releaseFlagKey: typeof REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY;
+  releaseEnvironment: ReleaseFlagEnvironment;
+  releaseFlagVersion: number;
+  principalBindingHash: string;
+}
+
 export interface RealtimeAdmissionReserveInput {
   companyId: string;
-  /** HMAC-SHA-256 hex calculé avant le port. Le subject utilisateur brut ne doit jamais être fourni. */
+  /**
+   * Binding HMAC courant, seul autorisé pour le nouvel INSERT. Le subject utilisateur brut ne
+   * traverse jamais le port.
+   */
   subjectHash: string;
+  /**
+   * Bindings courant + historiques, bornés à 32 et dédupliqués. Recherche de lease, replay et
+   * quotas les agrègent afin qu'une rotation HMAC ne crée ni seconde session ni quota neuf.
+   */
+  subjectHashCandidates: readonly string[];
+  /**
+   * SHA-256 stable du couple tenant/propriétaire, indépendant des versions HMAC. Requis sur tous
+   * les chemins N+1, y compris legacy/null, afin qu'ils partagent le même verrou que V1.
+   */
+  principalBindingHash: string;
+  /** `null` conserve le writer historique ; une preuve V1 doit être complète et exacte. */
+  agentMissionBinding: RealtimeAgentMissionAdmissionBinding | null;
   /** Handle opaque UUID choisi par le mobile pour pouvoir annuler pendant le bootstrap. */
   sessionId?: string;
   /** Borne absolue de coût/confidentialité de la session, au plus 900 secondes. */
@@ -178,6 +225,21 @@ export interface RealtimeContextIdentity {
   subjectHash: string;
   sessionId: string;
 }
+
+/**
+ * Identité de recherche dérivée du keyring HMAC complet. Le hash principal stable ne sert qu'au
+ * verrou transactionnel ; il n'est ni renvoyé, ni persisté dans la lease.
+ */
+export interface RealtimeAdmissionSessionLookupInput {
+  companyId: string;
+  subjectHashCandidates: readonly string[];
+  principalBindingHash: string;
+  sessionId: string;
+}
+
+export type RealtimeSessionIdentityResolution =
+  | { ok: true; identity: RealtimeContextIdentity | null }
+  | { ok: false; reason: 'unavailable' };
 
 /** Snapshot canonique stocké : schéma figé, révision client monotone et contexte déjà assaini. */
 export interface RealtimeContextSnapshot {
@@ -211,12 +273,18 @@ export interface RealtimeAdmissionPort {
   renew(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
   release(input: RealtimeReleaseInput): Promise<RealtimeAdmissionMutationResult>;
   claimExpired(input: { companyId: string; limit?: number }): Promise<RealtimeReapingBatchResult>;
-  /** Réclame une terminaison explicite par identité opaque, y compris depuis une autre réplique. */
-  claimTermination(input: {
-    companyId: string;
-    subjectHash: string;
-    sessionId: string;
-  }): Promise<RealtimeTerminationClaimResult>;
+  /**
+   * Résout le hash réellement porté par une session active et vivante pendant une rotation HMAC.
+   * Un fence d'annulation vivant rend la session introuvable ; plusieurs lignes actives candidates
+   * pour le même handle constituent une corruption et échouent fermées.
+   */
+  resolveSession(
+    input: RealtimeAdmissionSessionLookupInput,
+  ): Promise<RealtimeSessionIdentityResolution>;
+  /** Réclame une terminaison explicite, atomique avec le fence d'annulation du bootstrap. */
+  claimTermination(
+    input: RealtimeAdmissionSessionLookupInput,
+  ): Promise<RealtimeTerminationClaimResult>;
   completeReaping(input: Omit<
   RealtimeReapingClaim,
     'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
