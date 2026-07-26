@@ -304,12 +304,12 @@ Chaque objectif passe par quatre états seulement : `specified`, `implemented`, 
 `released`. Le passage d'état exige un lien vers un commit et une preuve ; le pourcentage estimé ne
 remplace jamais ce registre.
 
-| Objectif | État au 2026-07-21 | Prochaine preuve attendue |
+| Objectif | État au 2026-07-26 | Prochaine preuve attendue |
 | --- | --- | --- |
 | O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
 | O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés | suites globales + scanner Railway sur Storage cible + train 0/1 + checkout propre |
 | O3 — GPT Realtime | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, configuration audio et autorité native durable testés ; runtime fermé | dispatcher/ACK natifs, autorité acoustique hybride [spécifiée](SPEC_OPENAI_HYBRID_SPEECH.md), barge-in audité AEC et QA device sans requête Mistral |
-| O4 — mission continue | specified | scénario devis E2E voix/tap sur vrais use cases |
+| O4 — mission continue | implemented partiellement — autorité M1-A `start/get/cancel`, journal et brouillon atomiques implémentés (`2af9aef2`), ACL/release/CI non-superuser implémentées (`09982f89`) | Supabase staging sur le SHA de PR, puis capability Realtime non forgeable et scénario devis E2E voix/tap |
 | O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
 | O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
 | O7 — release reproductible | specified | pipeline au commit candidat + smoke prod/staging |

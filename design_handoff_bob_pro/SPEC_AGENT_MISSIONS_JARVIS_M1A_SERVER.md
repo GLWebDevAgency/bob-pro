@@ -1,6 +1,10 @@
 # SPEC — Agent Missions Jarvis M1-A : autorité serveur `start/get`
 
-**Statut** : `specified`.
+**Statut** : `implemented`.
+
+Ce statut atteste le code et les preuves locales/CI reproductibles des commits `2af9aef2` et
+`09982f89`. Il ne signifie ni `certified` ni `released` : la migration et le certificat doivent
+encore passer sur Supabase staging pour le SHA de PR avant toute fusion.
 
 **Instruction de travail** : continuité Jarvis demandée par le fondateur dans le canal Codex,
 26 juillet 2026. Cette trace autorise le lot technique décrit ici mais ne s'auto-transforme pas
@@ -161,39 +165,50 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
 
 ## 6. Critères d'acceptation binaires
 
-- [ ] Le domaine mission est exporté et les gardes 64/32 KiB ont des tests de borne.
-- [ ] `start` sans slot commit mission + draft + event ou rollbacke les trois.
-- [ ] `start` avec slot significatif ne modifie pas le slot et présente le conflit réel.
-- [ ] Deux starts concurrents produisent une mission active, un événement initial et un join
+- [x] Le domaine mission est exporté et les gardes 64/32 KiB ont des tests de borne.
+- [x] `start` sans slot commit mission + draft + event ou rollbacke les trois.
+- [x] `start` avec slot significatif ne modifie pas le slot et présente le conflit réel.
+- [x] Deux starts concurrents produisent une mission active, un événement initial et un join
       durable pour la commande concurrente.
-- [ ] Le replay exact de tout `commandId` start n'ajoute aucune écriture et reste lié à la mission
+- [x] Le replay exact de tout `commandId` start n'ajoute aucune écriture et reste lié à la mission
       d'origine après sa terminalisation ; aucune garantie d'`idempotency_conflict` sans contenu
       sémantique différent n'est annoncée par M1-A.
-- [ ] `GET` ne voit que l'identité société/propriétaire courante et n'écrit rien.
-- [ ] PUT/DELETE legacy N et N-1 du brouillon sont refusés par PostgreSQL si une mission active
+- [x] `GET` ne voit que l'identité société/propriétaire courante et n'écrit rien.
+- [x] PUT/DELETE legacy N et N-1 du brouillon sont refusés par PostgreSQL si une mission active
       possède le slot ; sans mission, le writer N-1 continue de fonctionner.
-- [ ] Une mission active expirée est terminalisée une fois sous verrou avant le nouveau start.
-- [ ] Annulation et handoff manuel terminalisent la mission, conservent le payload du brouillon
+- [x] Une mission active expirée est terminalisée une fois sous verrou avant le nouveau start.
+- [x] Annulation et handoff manuel terminalisent la mission, conservent le payload du brouillon
       byte-for-byte et libèrent `agentMissionId` dans la même transaction ; une faute rollbacke
       les trois effets.
-- [ ] RLS, ACL, immutabilité, CAS, rollback et writer N-1 passent sur PostgreSQL réel avec les rôles
+- [x] RLS, ACL, immutabilité, CAS, rollback et writer N-1 passent sur PostgreSQL réel avec les rôles
       de production simulés.
-- [ ] Les endpoints sont réellement composés ; pour un JSON transport valide, l'autorité
+- [x] Les endpoints sont réellement composés ; pour un JSON transport valide, l'autorité
       production M1-A refuse après l'admission société courte et avant validation métier/SQL
       mission ; `@WithoutTenantPersistenceTransaction()` empêche toute transaction HTTP externe
       d'englober l'UoW owner,
       et le test AppModule prouve zéro requête mission quand elle refuse.
-- [ ] Aucun flag, texte marketing, mock ou donnée de démonstration n'est ajouté au runtime.
+- [x] Aucun flag, texte marketing, mock ou donnée de démonstration n'est ajouté au runtime.
 - [ ] La migration et le certificat sont rejoués avec succès sur Supabase staging.
 
 ## 7. Definition of Done M1-A
 
-- [ ] Tests ciblés core/API/Prisma/PostgreSQL verts.
-- [ ] Typecheck et lint des packages touchés verts.
+- [x] Tests ciblés core/API/Prisma/PostgreSQL verts.
+- [x] Typecheck et lint des packages touchés verts.
 - [ ] Build API + garde d'artefact verts depuis un checkout propre du commit candidat.
-- [ ] Review adversariale correctness/sécurité, architecture/parité et release Supabase terminée ;
+- [x] Review adversariale correctness/sécurité, architecture/parité et release Supabase terminée ;
       tous les P0/P1 sont corrigés.
 - [ ] Une seule PR, CI complète verte, validation staging consignée, fusion dans `main`, branche et
       worktree supprimés.
-- [ ] Le registre O4 indique seulement `implemented partiellement`; aucune case M1 complète ou
+- [x] Le registre O4 indique seulement `implemented partiellement`; aucune case M1 complète ou
       `certified` n'est cochée.
+
+## 8. Preuves d'implémentation locales
+
+- domaine/use cases : 221 tests ciblés verts ;
+- API/controller/hard fence : 32 tests ciblés verts ;
+- PostgreSQL 17 : 34 scénarios verts avec déployeur non-superuser, FORCE RLS, pré-grants
+  `anon`/`authenticated`/`service_role`, writer N-1 après expand puis après validate, concurrence,
+  rollback, couplage mission/event et ACL exactes ;
+- mêmes 34 scénarios verts via le mode TCP externe utilisé par le job CI ;
+- gardes migration + release : 14 tests Node verts ;
+- typecheck `core`, `api`, `mobile` et lint `core`, `api`, mobile ciblé verts.
