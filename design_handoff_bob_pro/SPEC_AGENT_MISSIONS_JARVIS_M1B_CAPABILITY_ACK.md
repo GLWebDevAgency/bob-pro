@@ -432,6 +432,9 @@ commande, contenu, secret ou hash.
 - [ ] Seul un provider/transport/mode présent dans l'allowlist serveur certifiée peut négocier `1`.
 - [ ] Version, hash de capability et version de release flag sont dans l'INSERT de la lease avant
       provider/bootstrap ; le release flag autoritaire a été relu dans cette transaction.
+- [ ] Le quartet de capability est immuable après cet INSERT : une lease historique entièrement
+      `NULL` ne peut jamais être promue en V1 par `UPDATE`, et une lease V1 ne peut changer ni
+      version, ni horodatage, ni hash, ni version de flag.
 - [ ] Une décision ON est liée au même `principalBindingHash` que la réservation ; une preuve d'un
       autre principal est refusée.
 - [ ] Tout writer global/kill-switch/override verrouille la ligne parente et incrémente sa version

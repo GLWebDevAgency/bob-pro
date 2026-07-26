@@ -2,7 +2,8 @@
 -- Tenant courant = current_setting('app.current_company_id'). L'app doit le poser par requête
 -- (SET LOCAL app.current_company_id = '<companyId>' dans une transaction) et se connecter avec
 -- un rôle applicatif. FORCE garantit que même le propriétaire de la table est soumis aux politiques.
--- À exécuter après les migrations Prisma : psql "$DATABASE_URL" -f prisma/rls.sql
+-- À exécuter après les migrations Prisma :
+-- psql "$DATABASE_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f prisma/rls.sql
 
 DO $$
 DECLARE t text;
@@ -1002,6 +1003,7 @@ SELECT pg_catalog.format(
  )
    AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
 \gexec
+
 REVOKE ALL ON TABLE public.realtime_native_speech_maintenance_cursors FROM PUBLIC;
 ALTER TABLE public.realtime_native_speech_maintenance_cursors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.realtime_native_speech_maintenance_cursors FORCE ROW LEVEL SECURITY;
@@ -2107,3 +2109,7 @@ CREATE POLICY release_flag_subject_select ON release_flag_subjects FOR SELECT
 -- kill-switches et ciblages sont des opérations de release via le rôle privilégié/CI audité,
 -- jamais un réglage qu'un admin cabinet peut auto-activer.
 -- release_flag_audit_events n'a volontairement AUCUNE policy : invisible et non insérable par bob_app.
+
+-- Les fences AgentMission sont partagées avec la preuve PostgreSQL 17 afin que le replay
+-- certifié soit exactement celui de la release.
+\ir agent-mission-realtime-rls-replay.sql

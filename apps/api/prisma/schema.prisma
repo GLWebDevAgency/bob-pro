@@ -1581,6 +1581,12 @@ model RealtimeSessionLease {
   contextAppliedDigest        String?   @db.Char(64)
   contextAppliedAt            DateTime? @db.Timestamptz(6)
   contextAppliedOwnerEpoch    Int?
+  // Négociation AgentMission liée atomiquement à la réservation. Le secret de capability ne
+  // quitte jamais le bootstrap : seule son empreinte SHA-256 est durable.
+  agentMissionProtocolVersion    Int?
+  agentMissionProtocolBoundAt    DateTime? @db.Timestamptz(6)
+  agentMissionCapabilityHash     String?   @db.Char(64)
+  agentMissionReleaseFlagVersion Int?
   sidebandProtocolVersion     Int       @default(2)
   nextSpeechSequence          Int       @default(1)
   updatedAt                   DateTime  @db.Timestamptz(6)

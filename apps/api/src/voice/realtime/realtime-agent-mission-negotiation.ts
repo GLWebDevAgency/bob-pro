@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { ok, type AppError, type Result } from '@bob/core';
 
-export const AGENT_MISSION_PROTOCOL_VERSION = 1 as const;
+export const AGENT_MISSION_PROTOCOL_VERSIONS = [
+  1,
+] as const;
+export const AGENT_MISSION_PROTOCOL_VERSION = AGENT_MISSION_PROTOCOL_VERSIONS[0];
 const AGENT_MISSION_CAPABILITY_PREFIX = 'bam1_';
 const AGENT_MISSION_CAPABILITY_PAYLOAD = /^[A-Za-z0-9_-]{43}$/u;
 

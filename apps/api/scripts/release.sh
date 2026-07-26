@@ -46,6 +46,58 @@ certify_agent_mission_release_acl() {
     -f apps/api/prisma/agent-missions-release-cert.sql
 }
 
+certify_agent_mission_realtime_release_acl() {
+  : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
+  case "$CABINET_RELEASE_ENV" in
+    development|staging|production) ;;
+    *)
+      echo "CABINET_RELEASE_ENV must be development, staging or production" >&2
+      return 1
+      ;;
+  esac
+  connected_role="$(
+    psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SELECT current_user'
+  )"
+  if [ "$connected_role" != "$APP_DATABASE_ROLE" ]; then
+    echo "DATABASE_URL must connect as APP_DATABASE_ROLE for AgentMission realtime certification" >&2
+    return 1
+  fi
+  release_flag_snapshot="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v release_env="$CABINET_RELEASE_ENV" <<'SQL'
+SELECT pg_catalog.format(
+         '%s|%s',
+         flag.version,
+         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END
+       )
+  FROM public.release_flags AS flag
+ WHERE flag.key = 'bob.agent_missions.quote.v1'
+   AND flag.environment = :'release_env'::public."ReleaseEnvironment";
+SQL
+  )"
+  release_flag_version="${release_flag_snapshot%%|*}"
+  release_flag_kill_switch="${release_flag_snapshot#*|}"
+  case "$release_flag_version" in
+    ''|*[!0-9]*|0)
+      echo "AgentMission release flag version is missing or invalid for $CABINET_RELEASE_ENV" >&2
+      return 1
+      ;;
+  esac
+  case "$release_flag_kill_switch" in
+    true|false) ;;
+    *)
+      echo "AgentMission release flag kill switch is missing or invalid for $CABINET_RELEASE_ENV" >&2
+      return 1
+      ;;
+  esac
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" \
+    -v release_env="$CABINET_RELEASE_ENV" \
+    -v release_flag_version="$release_flag_version" \
+    -v release_flag_kill_switch="$release_flag_kill_switch" \
+    -f apps/api/prisma/agent-mission-realtime-release-cert.sql
+}
+
 certify_invoice_settlement_protocol() {
   local_version="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
@@ -2174,6 +2226,18 @@ SQL
   fi
 }
 
+ensure_agent_mission_release_flag_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/agent-mission-release-flag-authority-role.sql
+}
+
+provision_agent_mission_release_flag_authority() {
+  ensure_agent_mission_release_flag_authority_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/agent-mission-release-flag-authority-provision.sql
+}
+
 command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
@@ -2197,6 +2261,7 @@ pnpm --filter '@bob/api...' run build
 ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
+ensure_agent_mission_release_flag_authority_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 # Adhesion implicite du createur sur tout role cree par les migrations (Supabase tue
 # la connexion sur un GRANT d'adhesion explicite vers postgres). Reglage base, idempotent.
@@ -2216,6 +2281,8 @@ psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma
 certify_agent_mission_release_acl
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
+provision_agent_mission_release_flag_authority
+certify_agent_mission_realtime_release_acl
 DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \
   sh apps/api/scripts/realtime-capacity-release.sh provision
 # Toute la suite de certification s'exécute admissions fermées. Un échec ne peut donc jamais
