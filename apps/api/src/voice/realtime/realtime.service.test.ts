@@ -1007,6 +1007,7 @@ describe('RealtimeVoiceService', () => {
         wireContract: 'v3-legacy',
         configVersion: BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
         speechDelivery: 'audited-signed-url-v1',
+        agentMissionNegotiation: { requested: 'omitted' },
       },
     });
 
@@ -1289,6 +1290,60 @@ describe('RealtimeVoiceService', () => {
   it('rejette tout paramètre client qui tenterait de choisir modèle, prompt ou outils', () => {
     const result = parseRealtimeCallBody({ sdp: OFFER_SDP, model: 'evil', tools: [{ name: 'pay' }] });
     expect(result).toMatchObject({ ok: false, error: { kind: 'validation' } });
+  });
+
+  it('distingue la négociation Mission explicite sur les bootstraps WebRTC et Mistral', () => {
+    expect(parseRealtimeCallBody({
+      sdp: OFFER_SDP,
+      agentMissionProtocolVersion: null,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        agentMissionNegotiation: { requested: 'null', protocolVersion: null },
+      },
+    });
+    expect(parseRealtimeCallBody({
+      ...NATIVE_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      agentMissionProtocolVersion: 1,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        agentMissionNegotiation: { requested: 'v1', protocolVersion: 1 },
+      },
+    });
+    expect(parseMistralRealtimeCallBody({
+      context: { version: 1, revision: 1, context: {} },
+      agentMissionProtocolVersion: 1,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        agentMissionNegotiation: { requested: 'v1', protocolVersion: 1 },
+      },
+    });
+  });
+
+  it('refuse une version Mission inconnue au lieu de la rabattre sur le parcours historique', () => {
+    expect(parseRealtimeCallBody({
+      sdp: OFFER_SDP,
+      agentMissionProtocolVersion: 2,
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'agentMissionProtocolVersion' }],
+      },
+    });
+    expect(parseMistralRealtimeCallBody({
+      context: { version: 1, revision: 1, context: {} },
+      agentMissionProtocolVersion: '1',
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'agentMissionProtocolVersion' }],
+      },
+    });
   });
 
   it('rejette un contexte versionné incomplet ou enrichi de champs inconnus', () => {

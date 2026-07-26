@@ -96,6 +96,10 @@ import {
 } from './mistral-conversation-bootstrap-ticket';
 import { isMistralConversationBootstrapReconciliationAttempt } from './mistral-conversation-bootstrap-reconciliation';
 import type { MistralConversationRuntimeCapability } from './mistral-conversation-terminal-replay';
+import {
+  parseRealtimeAgentMissionNegotiation,
+  type RealtimeAgentMissionNegotiationRequest,
+} from './realtime-agent-mission-negotiation';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
@@ -171,6 +175,7 @@ export function parseRealtimeCallBody(
 ): Result<{
   sdp: string;
   sessionHandle?: string;
+  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
 } & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
@@ -182,6 +187,7 @@ export function parseRealtimeCallBody(
       && key !== 'sessionHandle'
       && key !== 'configVersion'
       && key !== 'speechDelivery'
+      && key !== 'agentMissionProtocolVersion'
     ))
   ) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] } };
@@ -209,9 +215,12 @@ export function parseRealtimeCallBody(
   }
   const binding = parseRealtimeBootstrapWireBinding(record);
   if (!binding.ok) return binding;
+  const agentMissionNegotiation = parseRealtimeAgentMissionNegotiation(record);
+  if (!agentMissionNegotiation.ok) return agentMissionNegotiation;
   return ok({
     sdp,
     ...binding.value,
+    agentMissionNegotiation: agentMissionNegotiation.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
   });
 }
@@ -222,6 +231,7 @@ export function parseMistralRealtimeCallBody(
   sessionHandle?: string;
   protocol: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
   context: { version: 1; revision: number; context: unknown };
+  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
 } & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
@@ -231,6 +241,7 @@ export function parseMistralRealtimeCallBody(
     Object.keys(record).some((key) => (
       key !== 'sessionHandle' && key !== 'context' && key !== 'protocol'
       && key !== 'configVersion' && key !== 'speechDelivery'
+      && key !== 'agentMissionProtocolVersion'
     ))
     || !Object.hasOwn(record, 'context')
   ) {
@@ -250,6 +261,8 @@ export function parseMistralRealtimeCallBody(
   }
   const binding = parseRealtimeBootstrapWireBinding(record);
   if (!binding.ok) return binding;
+  const agentMissionNegotiation = parseRealtimeAgentMissionNegotiation(record);
+  if (!agentMissionNegotiation.ok) return agentMissionNegotiation;
   if (binding.value.speechDelivery !== 'audited-signed-url-v1') {
     return {
       ok: false,
@@ -267,6 +280,7 @@ export function parseMistralRealtimeCallBody(
     protocol,
     context: context.value,
     ...binding.value,
+    agentMissionNegotiation: agentMissionNegotiation.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
   });
 }
