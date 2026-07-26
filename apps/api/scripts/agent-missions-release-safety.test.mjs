@@ -353,6 +353,16 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
     /assert_eq\(\(SELECT count\(\*\) FROM release_flag_audit_events\)/u,
   );
   assert.match(
+    cabinetRlsCertificate,
+    /assert_rejected\([\s\S]*?'UPDATE release_flags[\s\S]*?'runtime has no release flag mutation privilege'/u,
+    'La preuve Cabinet doit exiger un refus ACL sur la mutation du flag global.',
+  );
+  assert.doesNotMatch(
+    cabinetRlsCertificate,
+    /WITH changed_flag AS \([\s\S]*?UPDATE release_flags[\s\S]*?assert_eq/u,
+    'Un UPDATE filtré par RLS ne prouve pas l’absence de privilège de mutation.',
+  );
+  assert.match(
     runtimeGrants,
     /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]*?revalidate_agent_mission_release_flag_v1[\s\S]*?agent_mission_fingerprint_key_readiness/u,
   );
