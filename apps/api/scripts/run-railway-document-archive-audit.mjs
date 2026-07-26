@@ -573,7 +573,15 @@ function certifyArchiveAuditServiceInstance(value, autoDeployValue, config) {
   if (serviceInstance.startCommand !== EXPECTED_START_COMMAND) {
     violations.push(`startCommand=${String(serviceInstance.startCommand)}`);
   }
-  if (serviceInstance.builder !== 'DOCKERFILE') {
+  // Schéma Railway moderne : l'enum Builder n'expose plus DOCKERFILE — un build Dockerfile
+  // s'exprime par dockerfilePath posé sous le méta-builder RAILPACK. L'invariant réel
+  // (« l'image vient de NOTRE Dockerfile épinglé ») reste porté par l'égalité stricte de
+  // dockerfilePath, attestée juste en dessous.
+  if (
+    serviceInstance.builder !== 'DOCKERFILE' &&
+    !(serviceInstance.builder === 'RAILPACK' &&
+      serviceInstance.dockerfilePath === EXPECTED_DOCKERFILE_PATH)
+  ) {
     violations.push(`builder=${String(serviceInstance.builder)}`);
   }
   if (serviceInstance.dockerfilePath !== EXPECTED_DOCKERFILE_PATH) {

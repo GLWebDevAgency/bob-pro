@@ -380,7 +380,10 @@ test('refuse toute dérive du service Railway avant la mutation', async (t) => {
   const driftCases = [
     ['config-file', { railwayConfigFile: '/railway.json' }, /railwayConfigFile/u],
     ['start-command', { startCommand: 'node server.js' }, /startCommand/u],
-    ['builder', { builder: 'RAILPACK' }, /builder/u],
+    // Schéma Railway moderne : RAILPACK + dockerfilePath exact = build Dockerfile légitime ;
+    // la dérive de builder ne se prouve donc qu'avec un builder NON adossé à notre Dockerfile
+    // (NIXPACKS) ou un RAILPACK dont le dockerfilePath diverge (cas « dockerfile » ci-dessous).
+    ['builder', { builder: 'NIXPACKS' }, /builder/u],
     ['dockerfile', { dockerfilePath: 'Dockerfile' }, /dockerfilePath/u],
     ['pre-deploy', { preDeployCommand: ['pnpm', 'migrate'] }, /preDeployCommand/u],
     ['cron', { cronSchedule: '0 0 * * *' }, /cronSchedule/u],

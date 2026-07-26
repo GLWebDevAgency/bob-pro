@@ -99,6 +99,14 @@ neuf sur schéma ancien = prod cassée (vécu le 25/07, ~40 min).
    de release se rejoue sur STAGING avant merge.
 8. **EAS cloud ne lit QUE `eas.json`** (`.env` exclu) ; les 2 profils sont verrouillés par la
    matrice (scopes `mobile`, `mobile-preview`, `mobile-production`).
+9. **bwrap est incompatible avec les conteneurs Railway** (namespaces utilisateur interdits) :
+   le one-shot d'audit d'archive ne peut PAS y exécuter son auto-test sandbox. L'audit du
+   26/07 (base VIERGE — zéro octet non-fiable) a été exécuté localement avec sandbox
+   passe-plat (`/usr/bin/env`), tracé ici. **DETTE : re-durcir le sandbox (design GPT à
+   adapter au runtime Railway) AVANT tout audit portant des documents réels.**
+10. **Si le repo repasse PRIVÉ** : toutes les minutes GitHub Actions deviennent payantes
+   (macOS ×10). Alléger alors les déclencheurs (jobs natifs, certifications, cadence du
+   moniteur) ou passer au plan adapté.
 
 ## 6. Jetons & CI
 
