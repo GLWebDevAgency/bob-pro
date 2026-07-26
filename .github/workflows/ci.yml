@@ -109,8 +109,9 @@ jobs:
       RUN_RLS_CERT: 'true'
       RLS_CERT_CLEANUP: 'true'
       # Uniquement sur le Postgres service éphémère et loopback de ce job : le test de rollout
-      # crée la fixture minimale `storage.objects` et une preuve liée à GITHUB_SHA, afin que le
-      # vrai script d'activation soit exercé ensuite. Le garde du test refuse tout hôte distant.
+      # crée la fixture minimale `storage.buckets` + `storage.objects` et une preuve liée à
+      # GITHUB_SHA, afin que le vrai script d'activation soit exercé ensuite. Le garde du test
+      # refuse tout hôte distant.
       DOCUMENT_ARCHIVE_TEST_SEED_ACTIVATION_EVIDENCE: 'true'
       # Bucket canonique de la fixture Storage éphémère. La preuve d'audit et le script de
       # cutover consomment cette même valeur : aucune hypothèse implicite ne peut diverger.
@@ -170,12 +171,21 @@ jobs:
           # migrate proves that the legal-object immutability trigger is attached by the migration.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.buckets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            public BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+          );
           CREATE TABLE IF NOT EXISTS storage.objects (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             bucket_id TEXT NOT NULL,
             name TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            CONSTRAINT "objects_bucketId_fkey"
+              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
             UNIQUE (bucket_id, name)
           );
           SQL
@@ -334,12 +344,21 @@ jobs:
         run: |
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.buckets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            public BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+          );
           CREATE TABLE IF NOT EXISTS storage.objects (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             bucket_id TEXT NOT NULL,
             name TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            CONSTRAINT "objects_bucketId_fkey"
+              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
             UNIQUE (bucket_id, name)
           );
           SQL
@@ -467,12 +486,21 @@ jobs:
           # trigger is physically attached, even in this key-rotation-specific database.
           psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           CREATE SCHEMA IF NOT EXISTS storage;
+          CREATE TABLE IF NOT EXISTS storage.buckets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            public BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+          );
           CREATE TABLE IF NOT EXISTS storage.objects (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             bucket_id TEXT NOT NULL,
             name TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            CONSTRAINT "objects_bucketId_fkey"
+              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
             UNIQUE (bucket_id, name)
           );
           SQL

@@ -195,9 +195,21 @@ test('la CI comporte une autorité active éphémère puis la certification N/N+
   assert.match(isolatedCapacityJob, /RUN_POSTGRES_REALTIME_CAPACITY_CERT/u);
   assert.match(isolatedCapacityJob, /realtime-capacity\.postgres\.test\.ts/u);
 
-  const storage = isolatedCapacityJob.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
+  const buckets = isolatedCapacityJob.indexOf('CREATE TABLE IF NOT EXISTS storage.buckets');
+  const objects = isolatedCapacityJob.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
+  const foreignKey = isolatedCapacityJob.indexOf(
+    'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
+    objects,
+  );
   const release = isolatedCapacityJob.indexOf('sh apps/api/scripts/release.sh');
   const certificate = isolatedCapacityJob.indexOf('RUN_POSTGRES_REALTIME_CAPACITY_CERT');
   const teardown = isolatedCapacityJob.indexOf('Close isolated Bob Live capacity');
-  assert.ok(storage >= 0 && release > storage && certificate > release && teardown > certificate);
+  assert.ok(
+    buckets >= 0
+      && objects > buckets
+      && foreignKey > objects
+      && release > foreignKey
+      && certificate > release
+      && teardown > certificate,
+  );
 });

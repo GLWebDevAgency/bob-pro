@@ -24,6 +24,7 @@ const [
   realtimeModule,
   keyLifecyclePostgresCert,
   rollingGateMigration,
+  documentArchiveRolloutCert,
 ] = await Promise.all([
   readFile(new URL('scripts/release.sh', root), 'utf8'),
   readFile(
@@ -105,6 +106,10 @@ const [
     ),
     'utf8',
   ),
+  readFile(
+    new URL('src/persistence/prisma/document-archive-rollout.postgres.test.ts', root),
+    'utf8',
+  ),
 ]);
 const indexes = [reaperIndex, tenantRetentionIndex, expiryIndex, retentionIndex].join('\n');
 
@@ -125,11 +130,44 @@ test('chaque certificat PostgreSQL de release provisionne Storage avant la migra
     workflowJob('mistral-key-rotation-certification', 'facturx-conformance'),
   ];
   for (const job of jobs) {
-    const storage = job.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
+    const buckets = job.indexOf('CREATE TABLE IF NOT EXISTS storage.buckets');
+    const objects = job.indexOf('CREATE TABLE IF NOT EXISTS storage.objects');
+    const foreignKey = job.indexOf(
+      'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
+      objects,
+    );
     const releaseCall = job.indexOf('sh apps/api/scripts/release.sh');
-    assert.ok(storage >= 0, 'ephemeral Storage vendor surface must be provisioned');
-    assert.ok(releaseCall > storage, 'Storage vendor surface must exist before release.sh');
+    assert.ok(buckets >= 0, 'ephemeral Storage buckets surface must be provisioned');
+    assert.ok(objects > buckets, 'Storage objects must follow their bucket metadata surface');
+    assert.ok(foreignKey > objects, 'Storage objects must retain the Supabase bucket foreign key');
+    assert.ok(releaseCall > foreignKey, 'Storage vendor surface must exist before release.sh');
   }
+});
+
+test('le certificat archive local reproduit le contrat relationnel Supabase Storage', () => {
+  const schema = documentArchiveRolloutCert.indexOf(
+    "admin.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS storage')",
+  );
+  const buckets = documentArchiveRolloutCert.indexOf(
+    'CREATE TABLE IF NOT EXISTS storage.buckets',
+    schema,
+  );
+  const objects = documentArchiveRolloutCert.indexOf(
+    'CREATE TABLE IF NOT EXISTS storage.objects',
+    buckets,
+  );
+  const foreignKey = documentArchiveRolloutCert.indexOf(
+    'FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id)',
+    objects,
+  );
+  const seed = documentArchiveRolloutCert.indexOf(
+    'INSERT INTO storage.buckets (id, name, public)',
+    foreignKey,
+  );
+  assert.ok(
+    schema >= 0 && buckets > schema && objects > buckets && foreignKey > objects && seed > foreignKey,
+    'the opt-in local certificate must provision buckets, objects, their FK, then the bucket row',
+  );
 });
 
 test('la release live exécute une certification metadata-only après migration, ACL et RLS', () => {

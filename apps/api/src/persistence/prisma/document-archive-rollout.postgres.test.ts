@@ -179,10 +179,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       await Promise.all([admin.$connect(), runtime.$connect()]);
 
       if (SEED_EPHEMERAL_ACTIVATION_EVIDENCE) {
-        // `storage.objects` appartient à Supabase et ne doit jamais entrer dans les migrations
-        // Bob. Le PostgreSQL éphémère GitHub n'embarque pas Supabase : ce double minimal existe
-        // donc uniquement sous opt-in + loopback, et la base entière est détruite après le job.
+        // `storage.buckets` et `storage.objects` appartiennent à Supabase et ne doivent jamais
+        // entrer dans les migrations Bob. Le PostgreSQL éphémère GitHub n'embarque pas Supabase :
+        // ce double minimal existe uniquement sous opt-in + loopback et reproduit la FK fournisseur.
         await admin.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS storage');
+        await admin.$executeRawUnsafe(`
+          CREATE TABLE IF NOT EXISTS storage.buckets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            public BOOLEAN NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp()
+          )
+        `);
         await admin.$executeRawUnsafe(`
           CREATE TABLE IF NOT EXISTS storage.objects (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -190,9 +199,16 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             name TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+            CONSTRAINT "objects_bucketId_fkey"
+              FOREIGN KEY (bucket_id) REFERENCES storage.buckets(id),
             UNIQUE (bucket_id, name)
           )
         `);
+        await admin.$executeRaw`
+          INSERT INTO storage.buckets (id, name, public)
+          VALUES (${activationStorageBucket}, ${activationStorageBucket}, false)
+          ON CONFLICT (id) DO NOTHING
+        `;
       }
 
       const [runtimeIdentity] = await runtime.$queryRaw<Array<{ role: string }>>`
