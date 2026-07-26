@@ -12,6 +12,12 @@ cd "$ROOT_DIR"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 
+# Certifications contre la base DISTANTE : le defaut Prisma de 5 s par transaction
+# interactive produit des P2028 de latence WAN sans aucun drift. Rituel uniquement —
+# la variable n'existe pas dans l'environnement runtime Railway.
+PRISMA_TRANSACTION_TIMEOUT_MS="${PRISMA_TRANSACTION_TIMEOUT_MS:-30000}"
+export PRISMA_TRANSACTION_TIMEOUT_MS
+
 if [ "$RUN_RLS_CERT" != "true" ] || [ "$RLS_CERT_CLEANUP" != "true" ]; then
   echo "RUN_RLS_CERT=true and RLS_CERT_CLEANUP=true are mandatory" >&2
   exit 1
@@ -35,12 +41,12 @@ certify_invoice_settlement_protocol() {
   case "$local_version" in
     1)
       RUN_POSTGRES_INVOICE_SETTLEMENT_ROLLOUT_CERT=true \
-        pnpm --filter @bob/api exec vitest run \
+        pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
           src/persistence/prisma/invoice-settlement-rollout.postgres.test.ts
       ;;
     2)
       RUN_POSTGRES_INVOICE_SETTLEMENT_CERT=true \
-        pnpm --filter @bob/api exec vitest run \
+        pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
           src/persistence/prisma/invoice-settlement-semantics.postgres.test.ts
       ;;
     *)
@@ -58,12 +64,12 @@ certify_document_archive_protocol() {
   case "$local_version" in
     1)
       RUN_POSTGRES_DOCUMENT_ARCHIVE_ROLLOUT_CERT=true \
-        pnpm --filter @bob/api exec vitest run \
+        pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
           src/persistence/prisma/document-archive-rollout.postgres.test.ts
       ;;
     2)
       RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
-        pnpm --filter @bob/api exec vitest run \
+        pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
           src/persistence/prisma/document-archive-integrity.postgres.test.ts
       ;;
     *)
@@ -1994,29 +2000,29 @@ psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cabinet-see
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
 psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/cabinet-rls-cert-privileged.sql
 RUN_POSTGRES_DEVICE_REBIND_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/devices.postgres.test.ts
 RUN_POSTGRES_CATALOGUE_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/catalogue-chantiers.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/catalogue-chantiers.postgres.test.ts
 RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-draft-slots.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-draft-slots.postgres.test.ts
 RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-payment-evidence.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/expense-payment-evidence.postgres.test.ts
 RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-billing-settings.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-billing-settings.postgres.test.ts
 RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
 RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
 RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
 RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
 certify_document_archive_protocol
 RUN_POSTGRES_CREDIT_NOTE_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/credit-note-traceability.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/credit-note-traceability.postgres.test.ts
 certify_invoice_settlement_protocol
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
-  pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
 RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
 RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
 DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \

@@ -573,7 +573,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
     await expect(targets(1, companyB)).resolves.toMatchObject([{ bindingId: b.bindingId }]);
   });
 
-  it('lookup provider : FORCE RLS ne révèle que la capacité exacte, jamais le tenant entier', async () => {
+  // 30 s : cette certification enchaîne de nombreux allers-retours SQL et s'exécute aussi
+  // pendant le rituel de release contre la base DISTANTE (Supabase/Railway) — les 5 s par
+  // défaut supposent un Postgres local et produisent des flakes de latence, pas des drifts.
+  it('lookup provider : FORCE RLS ne révèle que la capacité exacte, jamais le tenant entier', { timeout: 30_000 }, async () => {
     const a = fixture(companyA, 'user-a', `ExponentPushToken[${randomUUID().replaceAll('-', '')}]`);
     const aSibling = fixture(companyA, 'user-a', `ExponentPushToken[${randomUUID().replaceAll('-', '')}]`);
     const b = fixture(companyB, 'user-b', `ExponentPushToken[${randomUUID().replaceAll('-', '')}]`);

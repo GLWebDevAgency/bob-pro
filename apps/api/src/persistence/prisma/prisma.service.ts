@@ -13,6 +13,24 @@ export interface IsolatedTransactionOptions {
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
+  // PRISMA_TRANSACTION_TIMEOUT_MS : les certifications du rituel de release s'exécutent
+  // contre la base DISTANTE (latence WAN) — le défaut Prisma de 5 s y produit des P2028
+  // sans aucun drift. Absente en runtime Railway : comportement inchangé.
+  constructor(options?: ConstructorParameters<typeof PrismaClient>[0]) {
+    const timeoutMs = Number(process.env.PRISMA_TRANSACTION_TIMEOUT_MS ?? 0);
+    super(
+      Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? {
+            ...options,
+            transactionOptions: {
+              timeout: timeoutMs,
+              maxWait: Math.min(timeoutMs, 10_000),
+            },
+          }
+        : options,
+    );
+  }
+
   async onModuleInit(): Promise<void> {
     await this.$connect();
   }
