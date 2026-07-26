@@ -18,7 +18,6 @@ flowchart LR
   subgraph Railway["Railway — projet bob-pro-api (215875ca)"]
     RP["env production — service bob-pro-api<br/>europe-west4, 1 replica"]
     RS["env staging — service bob-pro-api<br/>1 replica"]
-    RPG["(legacy) Postgres Railway 'tokaido'<br/>À DÉCOMMISSIONNER"]
   end
   subgraph Supabase
     SBP["bob-pro (cvdkqjczgqoeshputacl)<br/>eu-west-3 — DB + Auth + Storage"]
@@ -48,7 +47,7 @@ Seuls les builds **production** pointent la prod. Preview, dev local et simulate
 | Base + Auth + Storage | Supabase `bob-pro` — ref `cvdkqjczgqoeshputacl`, eu-west-3 ; connexion directe `db.cvdkqjczgqoeshputacl.supabase.co:5432` (IPv4 OK — projet historique) |
 | Buckets | `bob-documents`, `bob-live-audio` (privés) |
 | Rôles DB | `postgres` = déployeur **NON-superuser** (voir §5 pièges) ; `bob_app` = runtime `NOSUPERUSER/NOBYPASSRLS` (FORCE RLS) ; rôles d'autorité NOLOGIN : `bob_mistral_bootstrap_reaper`, `bob_openai_native_maintenance_directory`, `bob_realtime_reaper_directory`, `bob_realtime_capacity` |
-| Protocoles | settlement **V2 ACTIF** (26/07, SHA `9fcf3e76…`) ; archive documentaire **V1** (V2 = après nettoyage prod : audit one-shot puis `activate-document-archive-v2.sh`) |
+| Protocoles | settlement **V2 ACTIF** (26/07, SHA `9fcf3e76…`) ; archive documentaire **V2 ACTIF** (26/07, evidence liée à `9fcf3e76…`, base vierge) |
 | Secrets notables | `OPENAI_API_KEY` **posée** (D3 acté 25/07, inerte tant que Bob Live OFF) ; `RUN_RLS_CERT=true`, `RLS_CERT_CLEANUP=true` ; matrice complète : `design_handoff_bob_pro/MATRICE_FLAGS_V1.md` |
 | Consommateurs | APK **production** uniquement, cabinet web, sign-web |
 
@@ -63,7 +62,7 @@ Seuls les builds **production** pointent la prod. Preview, dev local et simulate
 | Buckets | `bob-documents`, `bob-live-audio` (privés) |
 | Protocoles | settlement **V2 ACTIF** (26/07, SHA `76939376…`) ; mêmes 110 migrations que prod |
 | Spécifique | `CABINET_RELEASE_ENV=staging` ; `DEMO_MODE` selon besoin de test |
-| Legacy | l'ancien Postgres Railway (`tokaido.proxy.rlwy.net`) ne sert PLUS — à décommissionner (coût) |
+| Legacy | Postgres Railway `tokaido` SUPPRIMÉ le 26/07 |
 | Consommateurs | APK **preview**, `apps/mobile/.env` (dev local), simulateur |
 
 ## 4. Rituel de déploiement (ordre STRICT — incident du 25/07 si violé)
