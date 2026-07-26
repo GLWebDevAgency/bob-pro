@@ -10,6 +10,10 @@ export function notificationRoute(job: Pick<NotificationJob, 'kind' | 'dedupeKey
   const [head, id] = job.dedupeKey.split(':');
   if (!id) return null;
   if (job.kind === 'invoice-relance' && head === 'invoice') return `/facture/${id}`;
+  // PR-01/PR-03 : l'envoi de la facture et le rappel de dépôt ramènent sur la fiche facture
+  // (bouton « Envoyer par e-mail », guide de dépôt + « Déposée le »).
+  if (job.kind === 'invoice-delivery' && head === 'invoice') return `/facture/${id}`;
+  if (job.kind === 'invoice-transmission-reminder' && head === 'invoice') return `/facture/${id}`;
   if (job.kind === 'quote-signature' && head === 'quote') return `/devis/${id}`;
   // Le digest hebdo n'a pas d'écran dédié : il ramène sur Aujourd'hui (la carte digest y vit — SPEC pilier 2).
   if (job.kind === 'weekly-digest' && head === 'digest') return '/(tabs)';

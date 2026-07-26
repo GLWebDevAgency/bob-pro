@@ -28,11 +28,14 @@ export interface NotificationJob {
    *  livré SEUL à J+7 avec un message honnête au client.
    *  `invoice-delivery` : envoi EMAIL de la facture ÉMISE au client (PR-01 « Encaisser ») —
    *  geste explicite de l'artisan, jamais un effet de bord de l'émission ; payload = lien
-   *  public + PDF archivé joint, expéditeur perçu = la société (amendement fondateur). */
+   *  public + PDF archivé joint, expéditeur perçu = la société (amendement fondateur).
+   *  `invoice-transmission-reminder` : rappel INTERNE de dépôt portail/Chorus J+2 (PR-03) —
+   *  un seul rappel par facture (clé stable), annulé à la livraison si le dépôt est déclaré. */
   kind:
     | 'quote-signature'
     | 'invoice-relance'
     | 'invoice-delivery'
+    | 'invoice-transmission-reminder'
     | 'weekly-digest'
     | 'retractation-acknowledgment'
     | 'embargo-scheduled-payment';

@@ -9,6 +9,7 @@ import {
   type DeliverableNotificationJob,
   type NotificationJob,
 } from '../persistence/notification-jobs';
+import { invoiceIdOfTransmissionReminderDedupeKey } from './transmission-reminder.service';
 import { NOTIFIER } from '../notifications/notifier';
 import { EXPO_PUSH, type ExpoPushService } from '../notifications/expo-push';
 import { AppLogger } from '../observability/logger';
@@ -268,6 +269,18 @@ export class NotificationDeliveryService {
     companyId: string,
     job: DeliverableNotificationJob,
   ): Promise<string | null> {
+    // PR-03 — rappel de dépôt : si le dépôt a été DÉCLARÉ entre l'enqueue et la livraison,
+    // le rappel est périmé — annulé, jamais livré (extinction par l'état réel).
+    if (job.kind === 'invoice-transmission-reminder') {
+      const invoiceId = invoiceIdOfTransmissionReminderDedupeKey(job.dedupeKey);
+      if (invoiceId === null) return 'dedupe-key-unrecognized';
+      return this.p.runWithTenant(companyId, async () => {
+        const invoice = await this.p.invoices.findById(invoiceId);
+        if (!invoice || invoice.companyId !== companyId) return 'invoice-missing';
+        if (invoice.transmission?.depositedAt != null) return 'transmission-deposited';
+        return null;
+      });
+    }
     if (job.kind !== 'embargo-scheduled-payment') return null;
     const quoteId = quoteIdOfEmbargoScheduledPaymentDedupeKey(job.dedupeKey);
     if (quoteId === null) return 'dedupe-key-unrecognized';
