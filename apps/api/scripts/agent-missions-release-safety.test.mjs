@@ -23,6 +23,7 @@ const [
   reaperReleaseCertificate,
   rls,
   rlsCertificate,
+  cabinetRlsCertificate,
   packageJson,
   ci,
   railway,
@@ -51,6 +52,7 @@ const [
   readFile(path.join(apiDir, 'prisma/realtime-reaper-release-cert.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/rls.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/rls-cert.sql'), 'utf8'),
+  readFile(path.join(apiDir, 'prisma/cabinet-rls-cert.sql'), 'utf8'),
   readFile(path.join(apiDir, 'package.json'), 'utf8'),
   readFile(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8'),
   readFile(path.join(repositoryRoot, '.github/workflows/railway-api.yml'), 'utf8'),
@@ -340,6 +342,15 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
   assert.match(
     runtimeGrants,
     /REVOKE ALL PRIVILEGES ON TABLE public\.%I FROM %I[\s\S]*?'release_flag_audit_events'[\s\S]*?'agent_mission_fingerprint_key_version_floors'[\s\S]*?'agent_mission_fingerprint_key_bindings'/u,
+  );
+  assert.match(
+    cabinetRlsCertificate,
+    /assert_rejected\([\s\S]*?'SELECT count\(\*\) FROM release_flag_audit_events'[\s\S]*?'ops flag audit has no runtime table privilege'/u,
+    'La preuve Cabinet doit attendre un refus SQL, pas confondre absence de rows RLS et absence de privilège.',
+  );
+  assert.doesNotMatch(
+    cabinetRlsCertificate,
+    /assert_eq\(\(SELECT count\(\*\) FROM release_flag_audit_events\)/u,
   );
   assert.match(
     runtimeGrants,
