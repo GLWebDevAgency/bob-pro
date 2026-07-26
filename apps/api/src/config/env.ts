@@ -5,6 +5,7 @@ const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
 const BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS = 32;
 const BOB_LIVE_PROOF_MAX_VERSIONED_KEYS = 2;
+const BOB_AGENT_MISSION_MAX_VERSIONED_KEYS = 32;
 
 /**
  * Verrou de compilation du downlink OpenAI natif.
@@ -154,6 +155,16 @@ const schema = z.object({
   BOB_LIVE_AUDIT_PROVIDER: z.enum(['openai', 'local-whisper']).default('local-whisper'),
   BOB_LIVE_LOCAL_AUDIT_BASE_URL: z.string().url().optional(),
   BOB_LIVE_LOCAL_AUDIT_TOKEN: z.string().trim().min(32).optional(),
+  // Capability métier Mission : dormant sans master. Le keyring est dédié aux fingerprints
+  // append-only des missions et ne doit partager aucun matériau avec Bob Live.
+  BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: z.enum(['true', 'false']).default('false'),
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(2_147_483_647)
+    .optional(),
+  BOB_AGENT_MISSION_HMAC_KEYRING: z.string().trim().min(1).max(16_384).optional(),
   OPENAI_REALTIME_ENABLED: z.enum(['true', 'false']).default('false'),
   OPENAI_REALTIME_MODEL: z.string().trim().min(1).max(100).default('gpt-realtime-2.1'),
   OPENAI_REALTIME_VOICE: z.enum(['marin', 'cedar']).default('marin'),
@@ -369,6 +380,13 @@ export interface ResolvedBobLiveProofKeyRing {
   secret(version: number): string | null;
 }
 
+export interface ResolvedAgentMissionHmacKeyRing {
+  readonly currentVersion: number;
+  readonly versions: readonly number[];
+  /** Secrets canoniques de 32 octets ; aucune valeur réelle ne sort dans les logs/config publics. */
+  secret(version: number): string | null;
+}
+
 function parseBobLiveSubjectHmacSecrets(raw: string): ReadonlyMap<number, string> {
   let parsed: unknown;
   try {
@@ -524,6 +542,78 @@ export function resolveBobLiveProofKeyRing(env: Env): ResolvedBobLiveProofKeyRin
       'BOB_LIVE_PROOF_SECRET doit correspondre à la version courante du keyring preuve.',
     );
   }
+  return Object.freeze({
+    currentVersion,
+    versions,
+    secret: (version: number) => secrets.get(version) ?? null,
+  });
+}
+
+function parseAgentMissionHmacSecrets(raw: string): ReadonlyMap<number, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING doit être un objet JSON valide.');
+  }
+  if (
+    parsed === null
+    || typeof parsed !== 'object'
+    || Array.isArray(parsed)
+    || Object.getPrototypeOf(parsed) !== Object.prototype
+  ) {
+    throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING doit être un objet JSON.');
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > BOB_AGENT_MISSION_MAX_VERSIONED_KEYS) {
+    throw new Error(
+      `BOB_AGENT_MISSION_HMAC_KEYRING doit contenir entre 1 et ${BOB_AGENT_MISSION_MAX_VERSIONED_KEYS} clés.`,
+    );
+  }
+  const secrets = new Map<number, string>();
+  const seenSecrets = new Set<string>();
+  for (const [rawVersion, rawSecret] of entries) {
+    const version = Number(rawVersion);
+    if (
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
+      || !Number.isSafeInteger(version)
+      || version > 2_147_483_647
+      || typeof rawSecret !== 'string'
+      || !MISTRAL_V2_VERSIONED_SECRET.test(rawSecret)
+      || seenSecrets.has(rawSecret)
+    ) {
+      throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING contient une version ou une clé invalide.');
+    }
+    const decoded = Buffer.from(rawSecret, 'base64url');
+    if (decoded.byteLength !== 32 || decoded.toString('base64url') !== rawSecret) {
+      throw new Error(
+        'BOB_AGENT_MISSION_HMAC_KEYRING exige des clés base64url canoniques de 32 octets.',
+      );
+    }
+    secrets.set(version, rawSecret);
+    seenSecrets.add(rawSecret);
+  }
+  return secrets;
+}
+
+export function resolveAgentMissionHmacKeyRing(
+  env: Env,
+): ResolvedAgentMissionHmacKeyRing | null {
+  const currentVersion = env.BOB_AGENT_MISSION_HMAC_KEY_VERSION;
+  const raw = env.BOB_AGENT_MISSION_HMAC_KEYRING;
+  if (currentVersion === undefined && raw === undefined) return null;
+  if (currentVersion === undefined || raw === undefined) {
+    throw new Error(
+      'BOB_AGENT_MISSION_HMAC_KEY_VERSION et BOB_AGENT_MISSION_HMAC_KEYRING sont indissociables.',
+    );
+  }
+  const secrets = parseAgentMissionHmacSecrets(raw);
+  if (!secrets.has(currentVersion)) {
+    throw new Error(
+      'La version courante AgentMission doit exister dans BOB_AGENT_MISSION_HMAC_KEYRING.',
+    );
+  }
+  const versions = Object.freeze([...secrets.keys()].sort((left, right) => left - right));
   return Object.freeze({
     currentVersion,
     versions,
@@ -908,6 +998,26 @@ export function loadEnv(): Env {
     );
   }
   const bobLive = resolveBobLiveEnv(parsed.data);
+  const agentMissionKeyRing = resolveAgentMissionHmacKeyRing(parsed.data);
+  const agentMissionsQuoteV1Enabled =
+    parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
+  if (!agentMissionsQuoteV1Enabled && agentMissionKeyRing !== null) {
+    throw new Error(
+      'Le keyring AgentMission doit être absent lorsque BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false.',
+    );
+  }
+  if (agentMissionsQuoteV1Enabled) {
+    if (agentMissionKeyRing === null) {
+      throw new Error(
+        'BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true exige le keyring HMAC AgentMission complet.',
+      );
+    }
+    if (!bobLive.enabled || bobLive.provider !== 'openai') {
+      throw new Error(
+        'AgentMission devis V1 exige Bob Live actif avec BOB_LIVE_PROVIDER=openai.',
+      );
+    }
+  }
   if (bobLive.provider !== 'openai' && bobLive.speechDelivery !== 'audited-signed-url-v1') {
     throw new Error(
       'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 exige BOB_LIVE_PROVIDER=openai.',
@@ -1016,9 +1126,15 @@ export function loadEnv(): Env {
       if (!secret) throw new Error(`Clé HMAC preuve Bob Live ${version} indisponible.`);
       return secret;
     }) ?? [];
+    const agentMissionSecrets = agentMissionKeyRing?.versions.map((version) => {
+      const secret = agentMissionKeyRing.secret(version);
+      if (!secret) throw new Error(`Clé HMAC AgentMission ${version} indisponible.`);
+      return secret;
+    }) ?? [];
     const dedicatedSecrets = [
       ...subjectHmacSecrets,
       ...proofSecrets,
+      ...agentMissionSecrets,
       bobLive.controlEncryptionSecret,
       ...(parsed.data.BOB_LIVE_USAGE_HMAC_SECRET ? [parsed.data.BOB_LIVE_USAGE_HMAC_SECRET] : []),
       ...(bobLive.localAuditToken ? [bobLive.localAuditToken] : []),
@@ -1035,7 +1151,7 @@ export function loadEnv(): Env {
     ];
     if (new Set(dedicatedSecrets).size !== dedicatedSecrets.length) {
       throw new Error(
-        'Chaque clé Bob Live (identité, preuve, contrôle et audit) doit être dédiée.',
+        'Chaque clé Bob Live et AgentMission (identité, preuve, contrôle et audit) doit être dédiée.',
       );
     }
     if (parsed.data.SUPABASE_REALTIME_AUDIO_BUCKET === parsed.data.SUPABASE_STORAGE_BUCKET) {

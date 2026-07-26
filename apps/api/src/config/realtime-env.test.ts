@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEnv,
+  resolveAgentMissionHmacKeyRing,
   resolveBobLiveEnv,
   resolveBobLiveProofKeyRing,
   resolveBobLiveSubjectHmacKeyRing,
@@ -64,6 +65,72 @@ function enableMistralV2TerminalReplay(): void {
 
 describe('Bob Live — validation de la politique d’admission', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('garde AgentMission dormant sans keyring lorsque le master est OFF', () => {
+    validRealtimeEnv();
+    const env = loadEnv();
+    expect(env.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED).toBe('false');
+    expect(resolveAgentMissionHmacKeyRing(env)).toBeNull();
+  });
+
+  it('impose le bloc AgentMission tout-ou-rien et absent lorsque le master est OFF', () => {
+    validRealtimeEnv();
+    const missionSecret = Buffer.alloc(32, 11).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: missionSecret }));
+    expect(() => loadEnv()).toThrow(/keyring AgentMission doit être absent/u);
+
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', undefined);
+    expect(() => loadEnv()).toThrow(/indissociables/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', undefined);
+    expect(() => loadEnv()).toThrow(/keyring HMAC AgentMission complet/u);
+  });
+
+  it('résout un keyring AgentMission canonique uniquement avec Bob Live OpenAI actif', () => {
+    validRealtimeEnv();
+    const previous = Buffer.alloc(32, 12).toString('base64url');
+    const current = Buffer.alloc(32, 13).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '2');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({
+      1: previous,
+      2: current,
+    }));
+
+    const keyRing = resolveAgentMissionHmacKeyRing(loadEnv());
+    expect(keyRing?.currentVersion).toBe(2);
+    expect(keyRing?.versions).toEqual([1, 2]);
+    expect(keyRing?.secret(1)).toBe(previous);
+    expect(keyRing?.secret(2)).toBe(current);
+    expect(keyRing?.secret(3)).toBeNull();
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: current }));
+    expect(() => loadEnv()).toThrow(/BOB_LIVE_PROVIDER=openai/u);
+  });
+
+  it('refuse une version absente, un secret dupliqué ou une clé AgentMission réutilisée', () => {
+    validRealtimeEnv();
+    const previous = Buffer.alloc(32, 14).toString('base64url');
+    const current = Buffer.alloc(32, 15).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '3');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: previous, 2: current }));
+    expect(() => loadEnv()).toThrow(/version courante AgentMission/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '2');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: current, 2: current }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 2: current }));
+    vi.stubEnv('OPENAI_REALTIME_SAFETY_SECRET', current);
+    expect(() => loadEnv()).toThrow(/doit être dédiée/u);
+  });
 
   it('charge les quotas et baux production par défaut arbitrés', () => {
     validRealtimeEnv();
