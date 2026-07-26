@@ -787,6 +787,16 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
     prismaGenerate >= 0 && firstFingerprintManager > prismaGenerate,
     'Le client Prisma doit être généré avant le premier manager fingerprint sur checkout propre.',
   );
+  const workspaceDependencyBuild = localCertificate.indexOf(
+    'pnpm --filter "@bob/api^..." run build',
+  );
+  const postgresVitest = localCertificate.indexOf(
+    'pnpm --filter @bob/api exec vitest run',
+  );
+  assert.ok(
+    workspaceDependencyBuild >= 0 && postgresVitest > workspaceDependencyBuild,
+    'Toutes les dépendances workspace de l’API doivent être construites avant Vitest.',
+  );
   assert.match(
     localCertificate,
     /CONCURRENCY_MANAGER_LOG[\s\S]*?cat "\$CONCURRENCY_MANAGER_LOG" >&2[\s\S]*?fingerprint manager ended before waiting/u,

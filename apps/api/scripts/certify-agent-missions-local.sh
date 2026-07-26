@@ -2337,10 +2337,11 @@ RESET ROLE;
 SQL
 
 cd "$ROOT_DIR"
-# Vitest API consomme l'export package réel de @bob/core. Le construire ici rend la preuve
-# reproductible depuis un checkout propre et interdit qu'un dist local périmé masque le source
-# certifié (incident UUID système v5/v8 du 26/07/2026).
-pnpm --filter @bob/core build
+# Vitest API consomme les exports package réels de toutes ses dépendances workspace. Les construire
+# dans l'ordre topologique rend la preuve reproductible depuis un checkout propre et interdit qu'un
+# dist local périmé ou absent masque le source certifié (incidents UUID système v5/v8 et @bob/ai
+# introuvable du 26/07/2026).
+pnpm --filter "@bob/api^..." run build
 
 DATABASE_URL="$DATABASE_URL" \
 DIRECT_URL="$DIRECT_URL" \
