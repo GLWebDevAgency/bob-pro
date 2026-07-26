@@ -829,23 +829,28 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       await admin.$executeRaw`ANALYZE realtime_session_leases`;
       await admin.$executeRaw`ANALYZE realtime_reaper_tenant_schedule`;
 
-      const [projection] = await admin.$queryRaw<Array<{
+      const [scheduleProjection] = await admin.$queryRaw<Array<{
         tenants: number;
-        usedSessions: number;
-        globalMaxSessions: number | null;
-        capacityMode: string;
       }>>`
-        SELECT (
-                 SELECT count(*)::int
-                   FROM realtime_reaper_tenant_schedule
-                  WHERE "companyId" LIKE 'reaper-plan-%'
-               ) AS tenants,
-               capacity."usedSessions",
-               capacity."globalMaxSessions",
-               capacity.mode AS "capacityMode"
-          FROM realtime_global_capacity AS capacity
-         WHERE capacity.id = 1
+        SELECT count(*)::int AS tenants
+          FROM realtime_reaper_tenant_schedule
+         WHERE "companyId" LIKE 'reaper-plan-%'
       `;
+      const [capacityProjection] = await admin.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL ROLE bob_realtime_capacity`;
+        return tx.$queryRaw<Array<{
+          usedSessions: number;
+          globalMaxSessions: number | null;
+          capacityMode: string;
+        }>>`
+          SELECT capacity."usedSessions",
+                 capacity."globalMaxSessions",
+                 capacity.mode AS "capacityMode"
+            FROM realtime_global_capacity AS capacity
+           WHERE capacity.id = 1
+        `;
+      });
+      const projection = { ...scheduleProjection, ...capacityProjection };
       expect(projection).toEqual({
         tenants: tenantCount,
         usedSessions: tenantCount,
