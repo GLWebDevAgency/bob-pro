@@ -3,64 +3,104 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
 PG_BIN_DIR="${PG_BIN_DIR:-}"
-
-if [ -z "$PG_BIN_DIR" ]; then
-  discovered_pg_bin_dir=""
-  if [ -x /opt/homebrew/opt/postgresql@17/bin/initdb ]; then
-    PG_BIN_DIR=/opt/homebrew/opt/postgresql@17/bin
-  elif command -v initdb >/dev/null 2>&1; then
-    discovered_pg_bin_dir="$(dirname "$(command -v initdb)")"
-  fi
-  if [ -z "$PG_BIN_DIR" ] && [ -n "$discovered_pg_bin_dir" ] \
-    && [ -x "$discovered_pg_bin_dir/postgres" ]; then
-    PG_BIN_DIR="$discovered_pg_bin_dir"
-  elif [ -z "$PG_BIN_DIR" ]; then
-    echo "PostgreSQL 17 initdb/pg_ctl/psql are required" >&2
-    exit 1
-  fi
-fi
-
-for binary in postgres initdb pg_ctl psql createdb; do
-  if [ ! -x "$PG_BIN_DIR/$binary" ]; then
-    echo "$PG_BIN_DIR/$binary is required" >&2
-    exit 1
-  fi
-done
-
-postgres_major="$(
-  "$PG_BIN_DIR/postgres" --version \
-    | sed -E 's/^postgres \(PostgreSQL\) ([0-9]+)(\..*)?$/\1/'
-)"
-if [ "$postgres_major" != "17" ]; then
-  echo "PostgreSQL 17 is required; found: $("$PG_BIN_DIR/postgres" --version)" >&2
-  exit 1
-fi
-
-CERT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bob-agent-mission-cert.XXXXXX")"
-DATA_DIR="$CERT_ROOT/data"
-SOCKET_DIR="$CERT_ROOT/socket"
-PORT="${AGENT_MISSION_CERT_PORT:-55441}"
-mkdir "$SOCKET_DIR"
+EXTERNAL_SUPER_URL="${AGENT_MISSION_CERT_SUPER_URL:-}"
+CERT_ROOT=""
+DATA_DIR=""
+LOCAL_CLUSTER_STARTED=false
 
 cleanup() {
-  status=$?
+  cleanup_status=$?
   trap - EXIT HUP INT TERM
-  "$PG_BIN_DIR/pg_ctl" -D "$DATA_DIR" -m immediate -w stop >/dev/null 2>&1 || true
-  rm -rf "$CERT_ROOT"
-  exit "$status"
+  if [ "$LOCAL_CLUSTER_STARTED" = "true" ]; then
+    "$PG_BIN_DIR/pg_ctl" -D "$DATA_DIR" -m immediate -w stop >/dev/null 2>&1 || true
+  fi
+  if [ -n "$CERT_ROOT" ]; then
+    rm -rf "$CERT_ROOT"
+  fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT HUP INT TERM
 
-"$PG_BIN_DIR/initdb" -A trust -U postgres -D "$DATA_DIR" >/dev/null
-"$PG_BIN_DIR/pg_ctl" \
-  -D "$DATA_DIR" \
-  -o "-F -p $PORT -k $SOCKET_DIR" \
-  -w start >/dev/null
+if [ -n "$EXTERNAL_SUPER_URL" ]; then
+  : "${AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:?required with AGENT_MISSION_CERT_SUPER_URL}"
+  : "${AGENT_MISSION_CERT_DIRECT_URL:?required with AGENT_MISSION_CERT_SUPER_URL}"
+  : "${AGENT_MISSION_CERT_RUNTIME_URL:?required with AGENT_MISSION_CERT_SUPER_URL}"
+  : "${AGENT_MISSION_CERT_AUDITOR_URL:?required with AGENT_MISSION_CERT_SUPER_URL}"
+  if [ -n "$PG_BIN_DIR" ]; then
+    PSQL_BIN="$PG_BIN_DIR/psql"
+  else
+    PSQL_BIN="$(command -v psql || true)"
+  fi
+  if [ -z "$PSQL_BIN" ] || [ ! -x "$PSQL_BIN" ]; then
+    echo "psql client is required for external AgentMission certification" >&2
+    exit 1
+  fi
+  SUPER_URL="$EXTERNAL_SUPER_URL"
+  DEPLOYER_BOOTSTRAP_URL="$AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL"
+  DIRECT_URL="$AGENT_MISSION_CERT_DIRECT_URL"
+  DATABASE_URL="$AGENT_MISSION_CERT_RUNTIME_URL"
+  CERT_ADMIN_URL="$AGENT_MISSION_CERT_AUDITOR_URL"
+else
+  if [ -n "${AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:-}" ] \
+    || [ -n "${AGENT_MISSION_CERT_DIRECT_URL:-}" ] \
+    || [ -n "${AGENT_MISSION_CERT_RUNTIME_URL:-}" ] \
+    || [ -n "${AGENT_MISSION_CERT_AUDITOR_URL:-}" ]; then
+    echo "External AgentMission certificate URLs require AGENT_MISSION_CERT_SUPER_URL" >&2
+    exit 1
+  fi
 
-SUPER_URL="postgresql://postgres@localhost:$PORT/postgres?host=$SOCKET_DIR"
+  if [ -z "$PG_BIN_DIR" ]; then
+    discovered_pg_bin_dir=""
+    if [ -x /opt/homebrew/opt/postgresql@17/bin/initdb ]; then
+      PG_BIN_DIR=/opt/homebrew/opt/postgresql@17/bin
+    elif command -v initdb >/dev/null 2>&1; then
+      discovered_pg_bin_dir="$(dirname "$(command -v initdb)")"
+    fi
+    if [ -z "$PG_BIN_DIR" ] && [ -n "$discovered_pg_bin_dir" ] \
+      && [ -x "$discovered_pg_bin_dir/postgres" ]; then
+      PG_BIN_DIR="$discovered_pg_bin_dir"
+    elif [ -z "$PG_BIN_DIR" ]; then
+      echo "PostgreSQL 17 initdb/pg_ctl/psql are required" >&2
+      exit 1
+    fi
+  fi
+
+  for binary in postgres initdb pg_ctl psql createdb; do
+    if [ ! -x "$PG_BIN_DIR/$binary" ]; then
+      echo "$PG_BIN_DIR/$binary is required" >&2
+      exit 1
+    fi
+  done
+
+  postgres_major="$(
+    "$PG_BIN_DIR/postgres" --version \
+      | sed -E 's/^postgres \(PostgreSQL\) ([0-9]+)(\..*)?$/\1/'
+  )"
+  if [ "$postgres_major" != "17" ]; then
+    echo "PostgreSQL 17 is required; found: $("$PG_BIN_DIR/postgres" --version)" >&2
+    exit 1
+  fi
+
+  CERT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bob-agent-mission-cert.XXXXXX")"
+  DATA_DIR="$CERT_ROOT/data"
+  SOCKET_DIR="$CERT_ROOT/socket"
+  PORT="${AGENT_MISSION_CERT_PORT:-55441}"
+  mkdir "$SOCKET_DIR"
+
+  "$PG_BIN_DIR/initdb" -A trust -U postgres -D "$DATA_DIR" >/dev/null
+  "$PG_BIN_DIR/pg_ctl" \
+    -D "$DATA_DIR" \
+    -o "-F -p $PORT -k $SOCKET_DIR" \
+    -w start >/dev/null
+  LOCAL_CLUSTER_STARTED=true
+
+  PSQL_BIN="$PG_BIN_DIR/psql"
+  SUPER_URL="postgresql://postgres@localhost:$PORT/postgres?host=$SOCKET_DIR"
+  DEPLOYER_BOOTSTRAP_URL="postgresql://bob_deployer@localhost:$PORT/postgres?host=$SOCKET_DIR"
+fi
+
 server_version_num="$(
-  "$PG_BIN_DIR/psql" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 \
-    -c 'SHOW server_version_num'
+  "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num'
 )"
 case "$server_version_num" in
   17????) ;;
@@ -70,7 +110,7 @@ case "$server_version_num" in
     ;;
 esac
 
-"$PG_BIN_DIR/psql" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 CREATE ROLE bob_deployer
   LOGIN NOSUPERUSER CREATEDB CREATEROLE NOINHERIT BYPASSRLS;
 CREATE ROLE bob_app
@@ -82,15 +122,14 @@ CREATE ROLE authenticated NOLOGIN;
 CREATE ROLE service_role NOLOGIN;
 SQL
 
-DEPLOYER_BOOTSTRAP_URL="postgresql://bob_deployer@localhost:$PORT/postgres?host=$SOCKET_DIR"
-"$PG_BIN_DIR/psql" "$DEPLOYER_BOOTSTRAP_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET createrole_self_grant = 'set';
 CREATE ROLE bob_schema_owner
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 SQL
 
 owner_membership_count="$(
-  "$PG_BIN_DIR/psql" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+  "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 SELECT count(*)
   FROM pg_catalog.pg_auth_members AS membership
   JOIN pg_catalog.pg_roles AS member_role
@@ -108,18 +147,29 @@ if [ "$owner_membership_count" != "1" ]; then
   exit 1
 fi
 
-"$PG_BIN_DIR/createdb" \
-  -h "$SOCKET_DIR" \
-  -p "$PORT" \
-  -U postgres \
-  -O bob_schema_owner \
-  bob_agent_mission_cert
+if [ -z "$EXTERNAL_SUPER_URL" ]; then
+  "$PG_BIN_DIR/createdb" \
+    -h "$SOCKET_DIR" \
+    -p "$PORT" \
+    -U postgres \
+    -O bob_schema_owner \
+    bob_agent_mission_cert
 
-DIRECT_URL="postgresql://bob_deployer@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
-DATABASE_URL="postgresql://bob_app@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
-CERT_ADMIN_URL="postgresql://bob_cert_auditor@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
+  DIRECT_URL="postgresql://bob_deployer@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
+  DATABASE_URL="postgresql://bob_app@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
+  CERT_ADMIN_URL="postgresql://bob_cert_auditor@localhost:$PORT/bob_agent_mission_cert?host=$SOCKET_DIR"
+else
+  "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_catalog.format(
+  'CREATE DATABASE %I OWNER %I',
+  'bob_agent_mission_cert',
+  'bob_schema_owner'
+)
+\gexec
+SQL
+fi
 
-"$PG_BIN_DIR/psql" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 
 -- Supabase accorde ces privilèges Data API par défaut aux nouveaux objets du schéma public.
@@ -207,13 +257,13 @@ CREATE POLICY company_update ON public.companies FOR UPDATE
   WITH CHECK ("id" = current_setting('app.current_company_id', true));
 SQL
 
-"$PG_BIN_DIR/psql" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260726010000_agent_missions_expand/migration.sql"
 
 # Writer N-1 exact, exécuté par le runtime non-superuser sous les triggers finaux de l'expand,
 # avant validation de la FK.
-"$PG_BIN_DIR/psql" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 SELECT set_config('app.current_company_id', 'writer-n1-company', true);
 SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
@@ -234,13 +284,13 @@ UPDATE public.quote_draft_slots
 COMMIT;
 SQL
 
-"$PG_BIN_DIR/psql" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
   -f "$ROOT_DIR/apps/api/prisma/migrations/20260726020000_agent_missions_validate/migration.sql"
 
 # Même writer N-1 après la validation séparée : la preuve couvre ainsi l'état intermédiaire
 # (expand appliqué, FK non validée) et l'état final exact du train.
-"$PG_BIN_DIR/psql" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 BEGIN;
 SELECT set_config('app.current_company_id', 'writer-n1-company', true);
 SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
@@ -262,11 +312,9 @@ $$;
 COMMIT;
 SQL
 
-"$PG_BIN_DIR/psql" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_app;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.agent_missions TO bob_app;
-GRANT SELECT, INSERT ON TABLE public.agent_mission_events TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_app;
 
 GRANT USAGE ON SCHEMA public TO bob_cert_auditor;
@@ -277,6 +325,13 @@ GRANT SELECT ON TABLE
 TO bob_cert_auditor;
 GRANT SELECT, INSERT ON TABLE public.companies TO bob_cert_auditor;
 SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-runtime-grants.sql"
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql"
 
 cd "$ROOT_DIR"
 # Vitest API consomme l'export package réel de @bob/core. Le construire ici rend la preuve

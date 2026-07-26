@@ -40,6 +40,47 @@ jobs:
       - run: pnpm build
       - run: pnpm lint
 
+  agent-missions-postgres-certification:
+    # La CI générale utilise historiquement un déployeur superuser. Cette preuve séparée reproduit
+    # le contrat Supabase : bootstrap superuser limité à la création des rôles, puis migrations,
+    # ACL, writer N-1 et tests exécutés par bob_deployer non-superuser sur PostgreSQL 17.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AGENT_MISSION_CERT_SUPER_URL: postgresql://postgres@localhost:5432/postgres
+      AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL: postgresql://bob_deployer@localhost:5432/postgres
+      AGENT_MISSION_CERT_DIRECT_URL: postgresql://bob_deployer@localhost:5432/bob_agent_mission_cert
+      AGENT_MISSION_CERT_RUNTIME_URL: postgresql://bob_app@localhost:5432/bob_agent_mission_cert
+      AGENT_MISSION_CERT_AUDITOR_URL: postgresql://bob_cert_auditor@localhost:5432/bob_agent_mission_cert
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - name: Certify AgentMission with a non-superuser deployer
+        run: sh apps/api/scripts/certify-agent-missions-local.sh
+
   rls-certification:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

@@ -33,6 +33,19 @@ cleanup_release_on_exit() {
   preserve_exit_status_after_cleanup "$original_status" cleanup_rls_cert
 }
 
+certify_agent_mission_release_acl() {
+  connected_role="$(
+    psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SELECT current_user'
+  )"
+  if [ "$connected_role" != "$APP_DATABASE_ROLE" ]; then
+    echo "DATABASE_URL must connect as APP_DATABASE_ROLE for AgentMission ACL certification" >&2
+    return 1
+  fi
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" \
+    -f apps/api/prisma/agent-missions-release-cert.sql
+}
+
 certify_invoice_settlement_protocol() {
   local_version="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
@@ -701,6 +714,7 @@ REVOKE bob_mistral_bootstrap_reaper FROM :"app_role" CASCADE;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_role";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_role";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_role";
+\i apps/api/prisma/agent-missions-runtime-grants.sql
 SQL
 }
 
@@ -1973,6 +1987,7 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+certify_agent_mission_release_acl
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
 DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \
