@@ -244,6 +244,7 @@ jobs:
           if (payload?.release?.sha !== process.env.EXPECTED_RELEASE_SHA) process.exit(1);
           if (payload?.release?.environment !== process.env.EXPECTED_RELEASE_ENVIRONMENT) process.exit(1);
           if (payload?.capabilities?.realtimeAdmissionCancellationFence !== 'v1') process.exit(1);
+          if (payload?.capabilities?.agentMissionBootstrapReceipt !== 'v1') process.exit(1);
           if (payload?.network?.clientIpSource !== 'railway-x-real-ip') process.exit(1);
           NODE
               then

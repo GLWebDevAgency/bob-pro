@@ -21,7 +21,10 @@ import {
   type AgentMissionFingerprintPort,
 } from '../ports/agent-mission-fingerprint';
 import { type AgentMissionOwner } from '../ports/agent-mission-repository';
-import { type AgentMissionTransaction } from '../ports/agent-mission-unit-of-work';
+import {
+  type AgentMissionCapabilityRejectionReason,
+  type AgentMissionTransaction,
+} from '../ports/agent-mission-unit-of-work';
 import {
   type AppError,
   appConflict,
@@ -82,6 +85,34 @@ export function canonicalAgentMissionCommand(input: AgentMissionOwner & {
     input.missionId ?? null,
     input.expectedRevision ?? null,
     input.reason ?? null,
+  ]);
+}
+
+export function canonicalAgentMissionScreenAckCommand(input: AgentMissionOwner & {
+  readonly commandId: string;
+  readonly missionId: string;
+  readonly expectedMissionRevision: number;
+  readonly realtimeSessionId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly draftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+}): string {
+  return JSON.stringify([
+    'bob.agent-mission.command.v1',
+    'acknowledge_quote_screen',
+    input.companyId,
+    input.ownerUserId,
+    input.commandId,
+    input.missionId,
+    input.expectedMissionRevision,
+    input.realtimeSessionId,
+    input.contextRevision,
+    input.contextDigest,
+    input.draftSessionId,
+    input.expectedDraftSlotRevision,
+    input.expectedDraftContentRevision,
   ]);
 }
 
@@ -211,6 +242,11 @@ export function recordAgentMissionEvent(input: {
   readonly ids: IdGeneratorPort;
   readonly draftBefore: QuoteMissionDraftReferenceV1 | null;
   readonly draftAfter: QuoteMissionDraftReferenceV1;
+  readonly correlation?: {
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+  };
 }): Result<AgentMissionEvent, AppError> {
   const transition = input.transition;
   const occurredAt = transition.event.occurredAt;
@@ -236,10 +272,10 @@ export function recordAgentMissionEvent(input: {
     draftSlotRevisionAfter: input.draftAfter.slotRevision,
     draftContentRevisionBefore: input.draftBefore?.contentRevision ?? null,
     draftContentRevisionAfter: input.draftAfter.contentRevision,
-    realtimeSessionId: null,
+    realtimeSessionId: input.correlation?.realtimeSessionId ?? null,
     turnId: null,
-    contextRevision: null,
-    contextDigest: null,
+    contextRevision: input.correlation?.contextRevision ?? null,
+    contextDigest: input.correlation?.contextDigest ?? null,
     data: transition.event.data,
     occurredAt,
     retentionExpiresAt,
@@ -261,6 +297,14 @@ export function unavailableAgentMissionCompany(
   return reason === 'closed'
     ? appForbidden('company_closed')
     : appNotFound('company', 'current');
+}
+
+export function rejectedAgentMissionCapability(
+  _reason: AgentMissionCapabilityRejectionReason,
+): AppError {
+  // La raison précise alimente uniquement une métrique bornée côté hôte. La réponse publique ne
+  // distingue jamais absence, expiration, ambiguïté ou hash discordant.
+  return appForbidden('agent_mission_capability_invalid');
 }
 
 export async function expireAgentMissionInTransaction(input: {

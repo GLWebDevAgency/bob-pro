@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  AcknowledgeQuoteScreen,
   CancelQuoteAgentMission,
   GetActiveAgentMission,
   StartQuoteAgentMission,
@@ -7,21 +8,47 @@ import {
   sha256Hex,
   type AgentMissionFingerprintPort,
   type AgentMissionOwner,
+  type AgentMissionRealtimeAuthorityProof,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
+  type AcknowledgeQuoteScreenInput,
+  type CancelQuoteAgentMissionInput,
   type Instant,
+  type StartQuoteAgentMissionCommand,
 } from '@bob/core';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaQuoteDraftSlotRepository } from './quote-draft-slots.repository';
 import {
+  prepareRealtimeContext,
+  type RealtimeAdmissionPolicy,
+} from '../../voice/realtime/realtime-admission';
+import { PrismaRealtimeAdmission } from '../../voice/realtime/realtime-admission.prisma';
+import {
   PrismaAgentMissionDraftFence,
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
+import {
+  PrismaAgentMissionFingerprintKeyVersionAuthority,
+} from './agent-mission-fingerprint-key-version.prisma';
+import {
+  fingerprintAgentMissionHmacKey,
+} from '../../agent-missions/agent-mission-fingerprint-key-version';
 import { PrismaService } from './prisma.service';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
+const CERT_FINGERPRINT_KEY = Buffer.alloc(32, 41).toString('base64url');
+const CERT_FINGERPRINT_BINDING = Object.freeze({
+  keyVersion: 1,
+  keyFingerprint: fingerprintAgentMissionHmacKey(CERT_FINGERPRINT_KEY),
+});
+const CERT_RETAINED_FINGERPRINT_BINDING = Object.freeze({
+  keyVersion: 3,
+  keyFingerprint: fingerprintAgentMissionHmacKey(
+    Buffer.alloc(32, 43).toString('base64url'),
+  ),
+});
 
 const FINGERPRINTS: AgentMissionFingerprintPort = {
   sign(canonicalRequest) {
@@ -57,20 +84,74 @@ function meaningfulPayload(sessionId: string) {
   };
 }
 
-function start(uow: AgentMissionUnitOfWorkPort) {
-  return new StartQuoteAgentMission({
-    unitOfWork: uow,
-    fingerprints: FINGERPRINTS,
-    ids: ids(),
+let authorizeOwner: (
+  owner: AgentMissionOwner,
+) => Promise<AgentMissionRealtimeAuthorityProof> = async () => {
+  throw new Error('AgentMission PostgreSQL capability fixture is not initialized.');
+};
+
+function certificationAuthorityProof(
+  owner: AgentMissionOwner,
+): AgentMissionRealtimeAuthorityProof {
+  const key = `${owner.companyId}\u0000${owner.ownerUserId}`;
+  return Object.freeze({
+    subjectHashCandidates: Object.freeze([
+      sha256Hex(`agent-mission-cert-subject:${key}`),
+    ]),
+    principalBindingHash: sha256Hex(`agent-mission-cert-principal:${key}`),
+    capabilityHash: sha256Hex(`agent-mission-cert-capability:${key}`),
   });
 }
 
-function cancel(uow: AgentMissionUnitOfWorkPort) {
-  return new CancelQuoteAgentMission({
+function start(uow: AgentMissionUnitOfWorkPort) {
+  const useCase = new StartQuoteAgentMission({
     unitOfWork: uow,
     fingerprints: FINGERPRINTS,
     ids: ids(),
   });
+  return {
+    execute: async (
+      input: Omit<StartQuoteAgentMissionCommand, 'authority'>,
+      authority?: AgentMissionRealtimeAuthorityProof,
+    ) => useCase.execute({
+      ...input,
+      authority: authority ?? await authorizeOwner(input),
+    }),
+  };
+}
+
+function cancel(uow: AgentMissionUnitOfWorkPort) {
+  const useCase = new CancelQuoteAgentMission({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
+  return {
+    execute: async (
+      input: Omit<CancelQuoteAgentMissionInput, 'authority'>,
+    ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
+  };
+}
+
+function acknowledge(uow: AgentMissionUnitOfWorkPort) {
+  const useCase = new AcknowledgeQuoteScreen({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
+  return {
+    execute: async (
+      input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
+    ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
+  };
+}
+
+function get(uow: AgentMissionUnitOfWorkPort) {
+  const useCase = new GetActiveAgentMission({ unitOfWork: uow });
+  return {
+    execute: async (owner: AgentMissionOwner) =>
+      useCase.execute(owner, await authorizeOwner(owner)),
+  };
 }
 
 function faultAfterWrite(
@@ -78,8 +159,10 @@ function faultAfterWrite(
   failAtWrite: number,
 ): AgentMissionUnitOfWorkPort {
   return {
-    readQuoteCreationOwner: (owner, work) => delegate.readQuoteCreationOwner(owner, work),
-    runQuoteCreationOwner: (owner, work) => delegate.runQuoteCreationOwner(owner, async (tx) => {
+    readQuoteCreationOwner: (owner, authority, work) =>
+      delegate.readQuoteCreationOwner(owner, authority, work),
+    runQuoteCreationOwner: (owner, authority, work) =>
+      delegate.runQuoteCreationOwner(owner, authority, async (tx) => {
       let writes = 0;
       const afterWrite = <T>(value: T): T => {
         writes += 1;
@@ -88,6 +171,7 @@ function faultAfterWrite(
       };
       const wrapped: AgentMissionTransaction = {
         databaseNow: () => tx.databaseNow(),
+        realtime: tx.realtime,
         missions: {
           findActive: (input) => tx.missions.findActive(input),
           findById: (input) => tx.missions.findById(input),
@@ -112,9 +196,10 @@ function faultAfterWrite(
           claim: async (input) => afterWrite(await tx.quoteDrafts.claim(input)),
           release: async (input) => afterWrite(await tx.quoteDrafts.release(input)),
         },
+        quoteScreen: tx.quoteScreen,
       };
       return work(wrapped);
-    }),
+      }),
   };
 }
 
@@ -123,11 +208,11 @@ function withDatabaseNow(
   now: Instant,
 ): AgentMissionUnitOfWorkPort {
   return {
-    readQuoteCreationOwner: (owner, work) =>
-      delegate.readQuoteCreationOwner(owner, (transaction) =>
+    readQuoteCreationOwner: (owner, authority, work) =>
+      delegate.readQuoteCreationOwner(owner, authority, (transaction) =>
         work({ ...transaction, databaseNow: async () => now })),
-    runQuoteCreationOwner: (owner, work) =>
-      delegate.runQuoteCreationOwner(owner, (transaction) =>
+    runQuoteCreationOwner: (owner, authority, work) =>
+      delegate.runQuoteCreationOwner(owner, authority, (transaction) =>
         work({ ...transaction, databaseNow: async () => now })),
   };
 }
@@ -147,6 +232,10 @@ describe.skipIf(!RUN_CERT)(
     let workerB: PrismaService;
     let uowA: PrismaAgentMissionUnitOfWork;
     let uowB: PrismaAgentMissionUnitOfWork;
+    const authorityByOwner = new Map<
+      string,
+      Promise<AgentMissionRealtimeAuthorityProof>
+    >();
 
     beforeAll(async () => {
       if (!DISPOSABLE) {
@@ -171,6 +260,65 @@ describe.skipIf(!RUN_CERT)(
         workerA.$connect(),
         workerB.$connect(),
       ]);
+      authorizeOwner = async (owner) => {
+        const key = `${owner.companyId}\u0000${owner.ownerUserId}`;
+        const existing = authorityByOwner.get(key);
+        if (existing !== undefined) return existing;
+        const creating = (async (): Promise<AgentMissionRealtimeAuthorityProof> => {
+          const authority = certificationAuthorityProof(owner);
+          const subjectHash = authority.subjectHashCandidates[0];
+          if (subjectHash === undefined) {
+            throw new Error('AgentMission PostgreSQL subject hash fixture is missing.');
+          }
+          const sessionId = randomUUID();
+          const reservedAt = new Date();
+          await deployer.$transaction(async (transaction) => {
+            await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+            await transaction.$executeRaw`
+              SELECT set_config('app.current_company_id', ${owner.companyId}, true)
+            `;
+            await transaction.$executeRaw`
+              SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
+            `;
+            await transaction.realtimeSessionLease.create({
+              data: {
+                companyId: owner.companyId,
+                subjectHash,
+                sessionId,
+                leaseTokenHash: sha256Hex(`agent-mission-cert-lease:${key}`),
+                state: 'active',
+                providerId: 'openai',
+                providerCallId: `agent-mission-cert-${sessionId}`,
+                reservedAt,
+                leaseExpiresAt: new Date(reservedAt.getTime() + 10 * 60_000),
+                hardExpiresAt: new Date(reservedAt.getTime() + 20 * 60_000),
+                activatedAt: reservedAt,
+                agentMissionProtocolVersion: 1,
+                agentMissionProtocolBoundAt: reservedAt,
+                agentMissionCapabilityHash: authority.capabilityHash,
+                agentMissionReleaseFlagVersion: 1,
+                updatedAt: reservedAt,
+              },
+            });
+            await transaction.realtimeSessionLease.update({
+              where: {
+                realtime_session_lease_subject: {
+                  companyId: owner.companyId,
+                  subjectHash,
+                },
+              },
+              // Le trigger remplace cette sentinelle par clock_timestamp() et n'autorise qu'une
+              // transition NULL -> reçu sur une lease V1 déjà persistée.
+              data: {
+                agentMissionBootstrapAcknowledgedAt: reservedAt,
+              },
+            });
+          });
+          return authority;
+        })();
+        authorityByOwner.set(key, creating);
+        return creating;
+      };
       for (const [companyId, suffix] of [
         [companyA, '1'],
         [companyB, '2'],
@@ -195,6 +343,112 @@ describe.skipIf(!RUN_CERT)(
         `;
       }
     }, 30_000);
+
+    async function publishQuoteScreenContext(
+      owner: AgentMissionOwner,
+      rawContext?: Readonly<Record<string, unknown>>,
+    ): Promise<{
+      readonly sessionId: string;
+      readonly revision: number;
+      readonly digest: string;
+    }> {
+      const authority = await authorizeOwner(owner);
+      const subjectHash = authority.subjectHashCandidates[0];
+      if (subjectHash === undefined) {
+        throw new Error('AgentMission context fixture subject hash is missing.');
+      }
+      const canonicalContext = {
+        screen: {
+          name: '/devis/new',
+          instanceId: `quote-screen-${randomUUID()}`,
+        },
+        entities: [],
+        capabilities: ['screen.read' as const],
+      };
+      const revision = 3;
+      const prepared = prepareRealtimeContext({
+        version: 1,
+        revision,
+        context: rawContext ?? canonicalContext,
+      });
+      if (prepared === null) {
+        throw new Error('AgentMission context fixture is invalid.');
+      }
+      const lease = await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId: owner.companyId,
+            subjectHash,
+          },
+        },
+      });
+      const updatedAt = new Date(Math.max(Date.now(), lease.reservedAt.getTime() + 1));
+      const ownerLeaseExpiresAt = new Date(Math.min(
+        lease.hardExpiresAt.getTime() - 1,
+        updatedAt.getTime() + 5 * 60_000,
+      ));
+      if (ownerLeaseExpiresAt.getTime() <= updatedAt.getTime()) {
+        throw new Error('AgentMission context fixture lease is already expired.');
+      }
+      const ownerNonce = randomUUID();
+      await deployer.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_company_id', ${owner.companyId}, true)
+        `;
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
+        `;
+        await transaction.realtimeSessionLease.update({
+          where: {
+            realtime_session_lease_subject: {
+              companyId: owner.companyId,
+              subjectHash,
+            },
+          },
+          data: {
+            contextSchemaVersion: 1,
+            contextRevision: revision,
+            contextPayload: JSON.parse(JSON.stringify(
+              rawContext ?? canonicalContext,
+            )) as Prisma.InputJsonValue,
+            contextDigest: prepared.digest,
+            contextUpdatedAt: updatedAt,
+            sidebandOwnerInstanceHash: sha256Hex(`instance:${ownerNonce}`),
+            sidebandOwnerTokenHash: sha256Hex(`token:${ownerNonce}`),
+            sidebandOwnerLeaseExpiresAt: ownerLeaseExpiresAt,
+            sidebandOwnerEpoch: 1,
+            contextAppliedRevision: null,
+            contextAppliedDigest: null,
+            contextAppliedAt: null,
+            contextAppliedOwnerEpoch: null,
+            updatedAt,
+            version: { increment: 1 },
+          },
+        });
+        await transaction.realtimeSessionLease.update({
+          where: {
+            realtime_session_lease_subject: {
+              companyId: owner.companyId,
+              subjectHash,
+            },
+          },
+          data: {
+            contextAppliedRevision: revision,
+            contextAppliedDigest: prepared.digest,
+            contextAppliedAt: updatedAt,
+            contextAppliedOwnerEpoch: 1,
+            updatedAt,
+            version: { increment: 1 },
+          },
+        });
+      });
+      return {
+        sessionId: lease.sessionId,
+        revision,
+        digest: prepared.digest,
+      };
+    }
 
     afterAll(async () => {
       await Promise.allSettled([
@@ -380,8 +634,306 @@ describe.skipIf(!RUN_CERT)(
             'public.require_agent_mission_event_v1()',
             'EXECUTE'
           )
+          OR has_function_privilege(
+            exposed.role_name,
+            'public.guard_realtime_agent_mission_capability_immutable_v1()',
+            'EXECUTE'
+          )
+          OR has_function_privilege(
+            exposed.role_name,
+            'public.guard_realtime_agent_mission_bootstrap_receipt_v1()',
+            'EXECUTE'
+          )
       `;
       expect(exposedFunctions).toEqual([]);
+    });
+
+    it('ferme get/start/cancel/screen-ack avant le reçu durable puis ouvre exactement après ACK', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-pre-bootstrap-receipt-${randomUUID()}`,
+      };
+      const authority = certificationAuthorityProof(owner);
+      const subjectHash = authority.subjectHashCandidates[0];
+      if (subjectHash === undefined) {
+        throw new Error('AgentMission pre-receipt subject fixture is missing.');
+      }
+      const realtimeSessionId = randomUUID();
+      const reservedAt = new Date();
+      const initialLeaseExpiresAt = new Date(reservedAt.getTime() + 15_000);
+      await deployer.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_company_id', ${owner.companyId}, true)
+        `;
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
+        `;
+        await transaction.realtimeSessionLease.create({
+          data: {
+            companyId: owner.companyId,
+            subjectHash,
+            sessionId: realtimeSessionId,
+            leaseTokenHash: sha256Hex(
+              `agent-mission-pre-receipt-lease:${owner.ownerUserId}`,
+            ),
+            state: 'active',
+            providerId: 'openai',
+            providerCallId: `agent-mission-pre-receipt-${realtimeSessionId}`,
+            reservedAt,
+            leaseExpiresAt: initialLeaseExpiresAt,
+            hardExpiresAt: new Date(reservedAt.getTime() + 10 * 60_000),
+            activatedAt: reservedAt,
+            agentMissionProtocolVersion: 1,
+            agentMissionProtocolBoundAt: reservedAt,
+            agentMissionCapabilityHash: authority.capabilityHash,
+            agentMissionReleaseFlagVersion: 1,
+            updatedAt: reservedAt,
+          },
+        });
+      });
+
+      const getResult = await new GetActiveAgentMission({
+        unitOfWork: uowA,
+      }).execute(owner, authority);
+      const startResult = await start(uowA).execute({
+        ...owner,
+        commandId: randomUUID(),
+      }, authority);
+      const cancelResult = await new CancelQuoteAgentMission({
+        unitOfWork: uowA,
+        fingerprints: FINGERPRINTS,
+        ids: ids(),
+      }).execute({
+        ...owner,
+        authority,
+        missionId: randomUUID(),
+        commandId: randomUUID(),
+        expectedRevision: 1,
+        reason: 'user_cancelled',
+        actor: 'user_tap',
+      });
+      const screenAckResult = await new AcknowledgeQuoteScreen({
+        unitOfWork: uowA,
+        fingerprints: FINGERPRINTS,
+        ids: ids(),
+      }).execute({
+        ...owner,
+        authority,
+        missionId: randomUUID(),
+        commandId: randomUUID(),
+        expectedMissionRevision: 1,
+        realtimeSessionId,
+        contextRevision: 1,
+        contextDigest: 'a'.repeat(64),
+        draftSessionId: 'pre-bootstrap-receipt-draft',
+        expectedDraftSlotRevision: 1,
+        expectedDraftContentRevision: 0,
+      });
+
+      for (const result of [
+        getResult,
+        startResult,
+        cancelResult,
+        screenAckResult,
+      ]) {
+        expect(result).toEqual({
+          ok: false,
+          error: {
+            kind: 'forbidden',
+            reason: 'agent_mission_capability_invalid',
+          },
+        });
+      }
+      expect(await admin.agentMission.count({ where: owner })).toBe(0);
+      expect(await admin.agentMissionEvent.count({ where: owner })).toBe(0);
+      expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
+      expect(await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId: owner.companyId,
+            subjectHash,
+          },
+        },
+      })).toMatchObject({
+        sessionId: realtimeSessionId,
+        agentMissionBootstrapAcknowledgedAt: null,
+        version: 1,
+      });
+
+      const admissionPolicy: RealtimeAdmissionPolicy = {
+        globalCapacity: {
+          providerId: 'openai',
+          providerModel: 'gpt-realtime',
+          globalMaxSessions: 100,
+          providerMaxSessions: 100,
+          configVersion: 1,
+        },
+        userLimitPerMinute: 3,
+        userLimitPerHour: 30,
+        tenantLimitPerMinute: 50,
+        tenantLimitPerHour: 1_000,
+        reservationTtlSeconds: 15,
+        activeLeaseSeconds: 30,
+        heartbeatSeconds: 10,
+        reaperLeaseSeconds: 30,
+      };
+      const admission = new PrismaRealtimeAdmission(workerA, admissionPolicy);
+      const receiptInput = {
+        companyId: owner.companyId,
+        subjectHashCandidates: authority.subjectHashCandidates,
+        principalBindingHash: authority.principalBindingHash,
+        sessionId: realtimeSessionId,
+        capabilityHash: authority.capabilityHash,
+      };
+      const acknowledged = await admission.acknowledgeAgentMissionBootstrap(receiptInput);
+      expect(acknowledged).toMatchObject({
+        ok: true,
+        status: 'acknowledged',
+      });
+      const replayed = await admission.acknowledgeAgentMissionBootstrap(receiptInput);
+      expect(replayed).toEqual({
+        ...acknowledged,
+        status: 'replayed',
+      });
+      expect(await new GetActiveAgentMission({
+        unitOfWork: uowA,
+      }).execute(owner, authority)).toEqual({ ok: true, value: null });
+
+      const acknowledgedLease = await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId: owner.companyId,
+            subjectHash,
+          },
+        },
+      });
+      expect(acknowledgedLease.agentMissionBootstrapAcknowledgedAt)
+        .toBeInstanceOf(Date);
+      expect(acknowledgedLease.leaseExpiresAt.getTime())
+        .toBeGreaterThan(initialLeaseExpiresAt.getTime());
+      expect(acknowledgedLease.version).toBe(2);
+    });
+
+    it('sérialise la course reçu/reaper sans double autorité', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-bootstrap-reaper-race-${randomUUID()}`,
+      };
+      const authority = certificationAuthorityProof(owner);
+      const subjectHash = authority.subjectHashCandidates[0];
+      if (subjectHash === undefined) {
+        throw new Error('AgentMission receipt/reaper race subject fixture is missing.');
+      }
+      const realtimeSessionId = randomUUID();
+      const reservedAt = new Date();
+      await deployer.$transaction(async (transaction) => {
+        await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_company_id', ${owner.companyId}, true)
+        `;
+        await transaction.$executeRaw`
+          SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
+        `;
+        await transaction.realtimeSessionLease.create({
+          data: {
+            companyId: owner.companyId,
+            subjectHash,
+            sessionId: realtimeSessionId,
+            leaseTokenHash: sha256Hex(
+              `agent-mission-receipt-reaper-race:${owner.ownerUserId}`,
+            ),
+            state: 'active',
+            providerId: 'openai',
+            providerCallId: `agent-mission-receipt-reaper-race-${realtimeSessionId}`,
+            reservedAt,
+            leaseExpiresAt: new Date(reservedAt.getTime() + 15_000),
+            hardExpiresAt: new Date(reservedAt.getTime() + 10 * 60_000),
+            activatedAt: reservedAt,
+            agentMissionProtocolVersion: 1,
+            agentMissionProtocolBoundAt: reservedAt,
+            agentMissionCapabilityHash: authority.capabilityHash,
+            agentMissionReleaseFlagVersion: 1,
+            updatedAt: reservedAt,
+          },
+        });
+      });
+
+      const admissionPolicy: RealtimeAdmissionPolicy = {
+        globalCapacity: {
+          providerId: 'openai',
+          providerModel: 'gpt-realtime',
+          globalMaxSessions: 100,
+          providerMaxSessions: 100,
+          configVersion: 1,
+        },
+        userLimitPerMinute: 3,
+        userLimitPerHour: 30,
+        tenantLimitPerMinute: 50,
+        tenantLimitPerHour: 1_000,
+        reservationTtlSeconds: 15,
+        activeLeaseSeconds: 30,
+        heartbeatSeconds: 10,
+        reaperLeaseSeconds: 30,
+      };
+      const receiptAdmission = new PrismaRealtimeAdmission(workerA, admissionPolicy);
+      const reaperAdmission = new PrismaRealtimeAdmission(workerB, admissionPolicy);
+      const identity = {
+        companyId: owner.companyId,
+        subjectHashCandidates: authority.subjectHashCandidates,
+        principalBindingHash: authority.principalBindingHash,
+        sessionId: realtimeSessionId,
+      };
+
+      const [receipt, termination] = await Promise.all([
+        receiptAdmission.acknowledgeAgentMissionBootstrap({
+          ...identity,
+          capabilityHash: authority.capabilityHash,
+        }),
+        reaperAdmission.claimTermination(identity),
+      ]);
+
+      expect(termination.ok, JSON.stringify(termination)).toBe(true);
+      if (!termination.ok) return;
+      expect(termination.pending).toBe(false);
+      expect(termination.claim).not.toBeNull();
+      expect(['acknowledged', 'state']).toContain(
+        receipt.ok ? receipt.status : receipt.reason,
+      );
+
+      const lease = await admin.realtimeSessionLease.findUniqueOrThrow({
+        where: {
+          realtime_session_lease_subject: {
+            companyId: owner.companyId,
+            subjectHash,
+          },
+        },
+      });
+      expect(lease.state).toBe('reaping');
+      expect(lease.reaperTokenHash).toMatch(/^[a-f0-9]{64}$/u);
+      expect(lease.agentMissionBootstrapAcknowledgedAt === null)
+        .toBe(!receipt.ok);
+      expect(await new GetActiveAgentMission({
+        unitOfWork: uowA,
+      }).execute(owner, authority)).toEqual({
+        ok: false,
+        error: {
+          kind: 'forbidden',
+          reason: 'agent_mission_capability_invalid',
+        },
+      });
+      expect(await admin.agentMission.count({ where: owner })).toBe(0);
+      expect(await admin.agentMissionEvent.count({ where: owner })).toBe(0);
+      expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
+
+      if (termination.claim !== null) {
+        await expect(reaperAdmission.completeReaping({
+          companyId: termination.claim.companyId,
+          subjectHash: termination.claim.subjectHash,
+          sessionId: termination.claim.sessionId,
+          reaperToken: termination.claim.reaperToken,
+        })).resolves.toEqual({ ok: true, reason: null });
+      }
     });
 
     it('converge sous deux starts simultanés et rejoue le commandId sans event doublé', async () => {
@@ -455,9 +1007,10 @@ describe.skipIf(!RUN_CERT)(
         releaseMissionWork = resolve;
       });
       const gatedUnitOfWork: AgentMissionUnitOfWorkPort = {
-        readQuoteCreationOwner: (scope, work) => uowA.readQuoteCreationOwner(scope, work),
-        runQuoteCreationOwner: (scope, work) =>
-          uowA.runQuoteCreationOwner(scope, async (transaction) => {
+        readQuoteCreationOwner: (scope, authority, work) =>
+          uowA.readQuoteCreationOwner(scope, authority, work),
+        runQuoteCreationOwner: (scope, authority, work) =>
+          uowA.runQuoteCreationOwner(scope, authority, async (transaction) => {
             markMissionWorkEntered();
             await missionWorkCanContinue;
             return work(transaction);
@@ -539,7 +1092,10 @@ describe.skipIf(!RUN_CERT)(
         companyId: `missing-company-${randomUUID()}`,
         ownerUserId: `owner-missing-${randomUUID()}`,
       };
-      expect(await start(uowA).execute({ ...owner, commandId: randomUUID() })).toEqual({
+      expect(await start(uowA).execute(
+        { ...owner, commandId: randomUUID() },
+        certificationAuthorityProof(owner),
+      )).toEqual({
         ok: false,
         error: { kind: 'not_found', entity: 'company', id: 'current' },
       });
@@ -573,6 +1129,192 @@ describe.skipIf(!RUN_CERT)(
       expect(await admin.agentMissionEvent.count({ where: owner })).toBe(1);
     });
 
+    it('ACK écran relit lease, contexte et draft réels, puis rejoue sans écrire', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-screen-ack-${randomUUID()}`,
+      };
+      const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
+      expect(started.ok, JSON.stringify(started)).toBe(true);
+      if (!started.ok || started.value.mission.payload.draft === null) return;
+      const draft = started.value.mission.payload.draft;
+      const context = await publishQuoteScreenContext(owner);
+      const command = {
+        ...owner,
+        missionId: started.value.mission.id,
+        commandId: randomUUID(),
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      };
+
+      const accepted = await acknowledge(uowA).execute(command);
+      expect(accepted, JSON.stringify(accepted)).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'acknowledged',
+          mission: {
+            revision: 2,
+            phase: 'awaiting_customer',
+            currentBinding: {
+              realtimeSessionId: context.sessionId,
+              contextRevision: context.revision,
+              contextDigest: context.digest,
+              screenName: '/devis/new',
+            },
+          },
+        },
+      });
+      const missionAfterAck = await admin.agentMission.findUniqueOrThrow({
+        where: { id: started.value.mission.id },
+      });
+      const eventsAfterAck = await admin.agentMissionEvent.findMany({
+        where: { missionId: started.value.mission.id },
+        orderBy: { sequence: 'asc' },
+      });
+      expect(missionAfterAck).toMatchObject({
+        revision: 2,
+        phase: 'awaiting_customer',
+      });
+      expect(eventsAfterAck).toHaveLength(2);
+      expect(eventsAfterAck[1]).toMatchObject({
+        eventType: 'screen_acknowledged',
+        actor: 'system',
+        commandId: command.commandId,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        turnId: null,
+      });
+
+      const replayed = await acknowledge(uowB).execute(command);
+      expect(replayed).toMatchObject({
+        ok: true,
+        value: { outcome: 'replayed', mission: { revision: 2 } },
+      });
+      expect(await admin.agentMission.findUniqueOrThrow({
+        where: { id: started.value.mission.id },
+      })).toEqual(missionAfterAck);
+      expect(await admin.agentMissionEvent.findMany({
+        where: { missionId: started.value.mission.id },
+        orderBy: { sequence: 'asc' },
+      })).toEqual(eventsAfterAck);
+
+      const collision = await acknowledge(uowA).execute({
+        ...command,
+        expectedDraftContentRevision: command.expectedDraftContentRevision + 1,
+      });
+      expect(collision).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_command',
+          reason: 'fingerprint_mismatch',
+        },
+      });
+      expect(await admin.agentMissionEvent.count({
+        where: { missionId: started.value.mission.id },
+      })).toBe(2);
+    });
+
+    it('ACK écran refuse un payload contexte projetable mais non canonique sans écrire', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-screen-noncanonical-${randomUUID()}`,
+      };
+      const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
+      expect(started.ok, JSON.stringify(started)).toBe(true);
+      if (!started.ok || started.value.mission.payload.draft === null) return;
+      const draft = started.value.mission.payload.draft;
+      const rawContext = {
+        screen: {
+          name: '/devis/new',
+          instanceId: `quote-screen-${randomUUID()}`,
+        },
+        entities: [],
+        capabilities: ['screen.read', 'screen.read'],
+        ignoredByParser: 'must-never-authorize',
+      };
+      const context = await publishQuoteScreenContext(owner, rawContext);
+      const beforeMission = await admin.agentMission.findUniqueOrThrow({
+        where: { id: started.value.mission.id },
+      });
+      const beforeEvents = await admin.agentMissionEvent.findMany({
+        where: { missionId: started.value.mission.id },
+      });
+
+      const rejected = await acknowledge(uowA).execute({
+        ...owner,
+        missionId: started.value.mission.id,
+        commandId: randomUUID(),
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      });
+
+      expect(rejected).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_screen_ack',
+          reason: 'context_stale',
+        },
+      });
+      expect(await admin.agentMission.findUniqueOrThrow({
+        where: { id: started.value.mission.id },
+      })).toEqual(beforeMission);
+      expect(await admin.agentMissionEvent.findMany({
+        where: { missionId: started.value.mission.id },
+      })).toEqual(beforeEvents);
+    });
+
+    it.each([1, 2])(
+      'rollbacke intégralement l’ACK écran après la faute injectée %s',
+      async (failAtWrite) => {
+        const owner = {
+          companyId: companyA,
+          ownerUserId: `owner-screen-rollback-${failAtWrite}-${randomUUID()}`,
+        };
+        const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
+        expect(started.ok, JSON.stringify(started)).toBe(true);
+        if (!started.ok || started.value.mission.payload.draft === null) return;
+        const draft = started.value.mission.payload.draft;
+        const context = await publishQuoteScreenContext(owner);
+
+        await expect(acknowledge(faultAfterWrite(uowA, failAtWrite)).execute({
+          ...owner,
+          missionId: started.value.mission.id,
+          commandId: randomUUID(),
+          expectedMissionRevision: started.value.mission.revision,
+          realtimeSessionId: context.sessionId,
+          contextRevision: context.revision,
+          contextDigest: context.digest,
+          draftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+        })).rejects.toThrow(`injected-write-${failAtWrite}`);
+
+        expect(await admin.agentMission.findUniqueOrThrow({
+          where: { id: started.value.mission.id },
+        })).toMatchObject({
+          revision: 1,
+          phase: 'awaiting_quote_screen',
+          currentBinding: null,
+        });
+        expect(await admin.agentMissionEvent.count({
+          where: { missionId: started.value.mission.id },
+        })).toBe(1);
+      },
+    );
+
     it('RLS masque cross-owner et cross-tenant, tandis que GET reste sans écriture', async () => {
       const owner = { companyId: companyA, ownerUserId: `owner-read-${randomUUID()}` };
       const created = await start(uowA).execute({ ...owner, commandId: randomUUID() });
@@ -582,15 +1324,15 @@ describe.skipIf(!RUN_CERT)(
       const event = await admin.agentMissionEvent.findFirstOrThrow({
         where: { missionId: created.value.mission.id },
       });
-      const get = new GetActiveAgentMission({ unitOfWork: uowA });
+      const getMission = get(uowA);
 
-      expect(await get.execute(owner)).toMatchObject({
+      expect(await getMission.execute(owner)).toMatchObject({
         ok: true,
         value: { status: 'active', actionable: true },
       });
-      expect(await get.execute({ ...owner, ownerUserId: `${owner.ownerUserId}-foreign` }))
+      expect(await getMission.execute({ ...owner, ownerUserId: `${owner.ownerUserId}-foreign` }))
         .toEqual({ ok: true, value: null });
-      expect(await get.execute({ ...owner, companyId: companyB }))
+      expect(await getMission.execute({ ...owner, companyId: companyB }))
         .toEqual({ ok: true, value: null });
       expect(await admin.agentMissionEvent.count({ where: owner })).toBe(before);
 
@@ -940,7 +1682,7 @@ describe.skipIf(!RUN_CERT)(
         where: { quote_draft_slot_owner: owner },
       });
 
-      const projected = await new GetActiveAgentMission({ unitOfWork: uowA }).execute(owner);
+      const projected = await get(uowA).execute(owner);
 
       expect(projected).toMatchObject({
         ok: true,
@@ -1308,6 +2050,126 @@ describe.skipIf(!RUN_CERT)(
         { maxWaitMs: 5_000, timeoutMs: 10_000, readOnly: true },
       )).rejects.toBeDefined();
       expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
+    });
+
+    it('le GET RR ne prend pas le verrou exclusif du principal', async () => {
+      const owner: AgentMissionOwner = {
+        companyId: companyB,
+        ownerUserId: `owner-read-no-principal-lock-${randomUUID()}`,
+      };
+      const authority = await authorizeOwner(owner);
+      const started = await start(uowA).execute(
+        { ...owner, commandId: randomUUID() },
+        authority,
+      );
+      expect(started.ok, JSON.stringify(started)).toBe(true);
+
+      let markLockHeld: (() => void) | undefined;
+      const lockHeld = new Promise<void>((resolve) => {
+        markLockHeld = resolve;
+      });
+      let releaseLock: (() => void) | undefined;
+      const mayReleaseLock = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const lockKey = [
+        'bob-live:principal',
+        owner.companyId,
+        authority.principalBindingHash,
+      ].join(':');
+      const holder = workerB.withIsolatedOwner(
+        owner.companyId,
+        owner.ownerUserId,
+        async (transaction) => {
+          await transaction.$queryRaw<Array<{ locked: boolean }>>`
+            SELECT (
+              pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) IS NULL
+            ) AS "locked"
+          `;
+          markLockHeld?.();
+          await mayReleaseLock;
+        },
+        { maxWaitMs: 5_000, timeoutMs: 10_000, readOnly: false },
+      );
+      await lockHeld;
+
+      const read = get(uowA).execute(owner);
+      const firstOutcome = await Promise.race([
+        read.then((result) => ({ kind: 'read' as const, result })),
+        new Promise<{ readonly kind: 'blocked' }>((resolve) => {
+          setTimeout(() => resolve({ kind: 'blocked' }), 500);
+        }),
+      ]);
+      releaseLock?.();
+      await holder;
+      const completed = await read;
+
+      expect(firstOutcome.kind).toBe('read');
+      expect(completed).toMatchObject({
+        ok: true,
+        value: { id: started.ok ? started.value.mission.id : undefined },
+      });
+    });
+
+    it('la readiness voit les versions globales sans élargir le SELECT tenant du runtime', async () => {
+      await expect(workerA.agentMissionEvent.findMany({
+        where: { companyId: 'writer-n1-company' },
+      })).resolves.toEqual([]);
+      await expect(workerA.$queryRaw`
+        SELECT "keyVersion",
+               "keyFingerprint",
+               retained,
+               "minimumWriterVersion",
+               "highestWriterVersion",
+               "writerEnabled"
+          FROM public.agent_mission_fingerprint_key_readiness(
+            ARRAY[1]::INTEGER[]
+          )
+         ORDER BY "keyVersion"
+      `).resolves.toEqual([
+        {
+          keyVersion: 1,
+          keyFingerprint: CERT_FINGERPRINT_BINDING.keyFingerprint,
+          retained: true,
+          minimumWriterVersion: 1,
+          highestWriterVersion: 1,
+          writerEnabled: true,
+        },
+        {
+          keyVersion: 3,
+          keyFingerprint: CERT_RETAINED_FINGERPRINT_BINDING.keyFingerprint,
+          retained: true,
+          minimumWriterVersion: 1,
+          highestWriterVersion: 1,
+          writerEnabled: true,
+        },
+      ]);
+
+      await expect(
+        new PrismaAgentMissionFingerprintKeyVersionAuthority(
+          workerA,
+          [
+            CERT_FINGERPRINT_BINDING,
+            CERT_RETAINED_FINGERPRINT_BINDING,
+          ],
+          1,
+        ).assertKeyBindings(),
+      ).resolves.toBeUndefined();
+    });
+
+    it('la readiness refuse un runtime dont la version courante régresse sous le floor', async () => {
+      await expect(
+        new PrismaAgentMissionFingerprintKeyVersionAuthority(
+          workerA,
+          [{
+            keyVersion: 2,
+            keyFingerprint: 'b'.repeat(64),
+          }],
+          2,
+        ).assertKeyBindings(),
+      ).rejects.toThrow(
+        'AgentMission fingerprint writer key floor is not ready.',
+      );
     });
   },
 );

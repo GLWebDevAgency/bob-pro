@@ -62,6 +62,7 @@ import {
 } from '../realtime/mistral-conversation-checkpoint-provider';
 import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
+import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
@@ -400,7 +401,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     }
   }, [personality, setSessionPhase]);
 
-  const stopWithReason = useCallback((reason: 'user' | 'background' | 'unmount'): void => {
+  const stopWithReason = useCallback((
+    reason: 'user' | 'background' | 'unmount',
+  ): Promise<void> => {
     // INCONDITIONNEL (P0 review 14/07) : un stop() pendant le bootstrap temps réel (avant que
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
     // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
@@ -408,7 +411,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     driverRef.current = 'idle';
     realtimeMistralCheckpointUsedRef.current = null;
     sessionGenerationRef.current += 1;
-    void realtimeRef.current?.stop(reason);
+    const realtimeStop = realtimeRef.current?.stop(reason) ?? Promise.resolve();
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -420,9 +423,17 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setHandoff(null);
     setReviewRequired(false);
     setSessionPhase('idle');
+    return realtimeStop.catch(() => undefined);
   }, [setSessionPhase, stopSpeaking]);
 
-  const stop = useCallback((): void => stopWithReason('user'), [stopWithReason]);
+  const stop = useCallback((): void => {
+    void stopWithReason('user');
+  }, [stopWithReason]);
+
+  useEffect(
+    () => registerBeforeSignOutCleanup(() => stopWithReason('unmount')),
+    [stopWithReason],
+  );
 
   useEffect(() => {
     const controller = realtimeRef.current;
@@ -435,7 +446,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
     // Defense en profondeur sous la frontiere keyee de _layout : invalider synchroniquement les
     // callbacks UI, puis fermer l'ancienne mission avant qu'un futur start ne capture B.
-    stopWithReason('unmount');
+    void stopWithReason('unmount');
     if (realtimeRef.current === controller) realtimeRef.current = null;
     realtimeControllerClientRef.current = client;
     realtimeMistralCheckpointUsedRef.current = null;
@@ -758,6 +769,16 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         return; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
       }
       if (outcome === 'fallback') return; // onFallback a DÉJÀ relancé la boucle historique
+      if (outcome === 'failed_closed') {
+        driverRef.current = 'idle';
+        realtimeActiveRef.current = false;
+        activeRef.current = false;
+        setActive(false);
+        setIssue('failed');
+        setResponse(t('live.error', { personality }));
+        setSessionPhase('error');
+        return;
+      }
       driverRef.current = 'legacy';
       realtimeActiveRef.current = false;
       const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
@@ -848,7 +869,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       // bandeau d'appel) ne doit pas tuer la session au premier usage du micro.
       const permissionInFlight = voicePermissionRequestInFlight();
       if (shouldStopAgentSessionForAppState(state, permissionInFlight)) {
-        stopWithReason('background');
+        void stopWithReason('background');
         return;
       }
       if (state !== 'background' || !permissionInFlight || permissionRevalidationPending) return;
@@ -859,7 +880,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         waitForLifecycleStabilization: waitForVoicePermissionLifecycleStabilization,
         currentAppState: () => appStateRef.current,
         isMounted: () => mounted,
-        stop: () => stopWithReason('background'),
+        stop: () => { void stopWithReason('background'); },
       }).finally(() => {
         permissionRevalidationPending = false;
       });
@@ -867,7 +888,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     return () => {
       mounted = false;
       subscription.remove();
-      stopWithReason('unmount');
+      void stopWithReason('unmount');
     };
   }, [stopWithReason]);
 

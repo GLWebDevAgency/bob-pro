@@ -131,6 +131,7 @@ function harness(
     createCallGate?: Promise<void>;
     captureGate?: Promise<void>;
     stopCapture?: () => Promise<void>;
+    omitAgentMissionSession?: boolean;
   } = {},
 ) {
   const socket = new FakeSocket();
@@ -180,6 +181,7 @@ function harness(
         configVersion: NEGOTIATION.configVersion,
         maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
         speechDelivery: 'audited-signed-url-v1' as const,
+        ...(input.omitAgentMissionSession === true ? {} : { agentMissionSession: null }),
         speechSourcePolicy: {
           mode: 'signed-url-v1' as const,
           allowedOrigin: 'https://project.supabase.co',
@@ -204,6 +206,7 @@ function harness(
       configVersion: NEGOTIATION.configVersion,
       maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
       speechDelivery: 'audited-signed-url-v1' as const,
+      ...(input.omitAgentMissionSession === true ? {} : { agentMissionSession: null }),
       speechSourcePolicy: {
         mode: 'signed-url-v1' as const,
         allowedOrigin: 'https://project.supabase.co',
@@ -267,6 +270,7 @@ describe('MistralRealtimeTransport', () => {
         configVersion: NEGOTIATION.configVersion,
         speechDelivery: NEGOTIATION.speechDelivery,
         sessionHandle: SESSION,
+        agentMissionProtocolVersion: 1,
       },
       expect.any(AbortSignal),
     );
@@ -276,6 +280,7 @@ describe('MistralRealtimeTransport', () => {
       bargeIn: false,
       remoteAudio: false,
     });
+    expect(h.transport.takeAgentMissionSession()).toBeNull();
 
     h.transport.setMicrophoneEnabled(true);
     await eventually(() => h.transport.state.phase === 'user_speaking');
@@ -333,6 +338,18 @@ describe('MistralRealtimeTransport', () => {
     expect(h.hangup).toHaveBeenCalledWith(SESSION);
     expect(h.startCapture).not.toHaveBeenCalled();
     expect(h.socket.sent).toHaveLength(0);
+  });
+
+  it('échoue fermé si la réponse bootstrap omet le résultat explicite de négociation mission', async () => {
+    const h = harness({ omitAgentMissionSession: true });
+
+    await expect(h.transport.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    expect(h.hangup).toHaveBeenCalledWith(SESSION);
+    expect(h.startCapture).not.toHaveBeenCalled();
+    expect(h.transport.takeAgentMissionSession()).toBeNull();
   });
 
   it('navigation pendant un ticket lié au contexte ferme et émet un seul repli', async () => {

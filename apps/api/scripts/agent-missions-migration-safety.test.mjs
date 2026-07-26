@@ -36,6 +36,30 @@ const cancellationValidatePath = path.join(
   apiDir,
   'prisma/migrations/20260726070000_realtime_admission_cancellation_fence_validate/migration.sql',
 );
+const commandNamespaceExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726080000_agent_mission_event_command_namespace_expand/migration.sql',
+);
+const commandNamespaceValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260726090000_agent_mission_event_command_namespace_validate/migration.sql',
+);
+const commandNamespaceCutoverPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726100000_agent_mission_event_command_namespace_cutover/migration.sql',
+);
+const fingerprintKeyReadinessPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726110000_agent_mission_fingerprint_key_readiness/migration.sql',
+);
+const bootstrapReceiptExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726120000_agent_mission_bootstrap_receipt_expand/migration.sql',
+);
+const bootstrapReceiptValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260726130000_agent_mission_bootstrap_receipt_validate/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');
 const agentMissionRlsReplayPath = path.join(
@@ -52,6 +76,12 @@ const [
   capabilityValidate,
   cancellationExpand,
   cancellationValidate,
+  commandNamespaceExpand,
+  commandNamespaceValidate,
+  commandNamespaceCutover,
+  fingerprintKeyReadiness,
+  bootstrapReceiptExpand,
+  bootstrapReceiptValidate,
   schema,
   rls,
   agentMissionRlsReplay,
@@ -64,6 +94,12 @@ const [
   readFile(capabilityValidatePath, 'utf8'),
   readFile(cancellationExpandPath, 'utf8'),
   readFile(cancellationValidatePath, 'utf8'),
+  readFile(commandNamespaceExpandPath, 'utf8'),
+  readFile(commandNamespaceValidatePath, 'utf8'),
+  readFile(commandNamespaceCutoverPath, 'utf8'),
+  readFile(fingerprintKeyReadinessPath, 'utf8'),
+  readFile(bootstrapReceiptExpandPath, 'utf8'),
+  readFile(bootstrapReceiptValidatePath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
@@ -98,6 +134,12 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['capability validate', capabilityValidate],
     ['cancellation expand', cancellationExpand],
     ['cancellation validate', cancellationValidate],
+    ['command namespace expand', commandNamespaceExpand],
+    ['command namespace validate', commandNamespaceValidate],
+    ['command namespace cutover', commandNamespaceCutover],
+    ['fingerprint key readiness', fingerprintKeyReadiness],
+    ['bootstrap receipt expand', bootstrapReceiptExpand],
+    ['bootstrap receipt validate', bootstrapReceiptValidate],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -108,6 +150,144 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     );
     assert.match(sql, /\bCOMMIT;/u, `${name}: commit absent`);
   }
+});
+
+test('le registre fingerprint lie le matériau, borne les writers et ferme Data API', () => {
+  assert.match(
+    fingerprintKeyReadiness,
+    /CREATE TABLE public\.agent_mission_fingerprint_key_version_floors/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /CREATE TABLE public\.agent_mission_fingerprint_key_bindings/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /UNIQUE \("keyFingerprint"\)[\s\S]*?"keyFingerprint"::TEXT ~ '\^\[a-f0-9\]\{64\}\$'/u,
+  );
+  assert.doesNotMatch(
+    fingerprintKeyReadiness,
+    /CREATE INDEX[\s\S]*?ON public\.agent_mission_events/u,
+    'Le déployeur non-owner ne doit pas créer directement un index sur le journal.',
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /"highestWriterVersion"::BIGINT[\s\S]*?<= "minimumWriterVersion"::BIGINT \+ 1/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /"writerEnabled" BOOLEAN NOT NULL DEFAULT TRUE/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /agent_mission_fingerprint_key_floor_guard_v1[\s\S]*?BEFORE INSERT OR UPDATE OR DELETE/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /AGENT_MISSION_FINGERPRINT_KEY_FLOOR_UNBOUND[\s\S]*?agent_mission_fingerprint_key_floor_binding_required/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /NEW\."writerEnabled" IS DISTINCT FROM OLD\."writerEnabled"[\s\S]*?OLD\."updatedAt" \+ INTERVAL '1 microsecond'/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /agent_mission_fingerprint_key_binding_immutable_v1[\s\S]*?BEFORE UPDATE OR DELETE OR TRUNCATE/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /guard_agent_mission_fingerprint_key_binding_present_v1\(\)[\s\S]*?pg_advisory_xact_lock_shared[\s\S]*?IF NOT FOUND THEN[\s\S]*?RETURN NEW[\s\S]*?AGENT_MISSION_FINGERPRINT_KEY_VERSION_NOT_ADMITTED[\s\S]*?AGENT_MISSION_FINGERPRINT_KEY_VERSION_UNBOUND/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /WITH RECURSIVE[\s\S]*?retained_versions\(version, ordinal\)[\s\S]*?WHERE event\."fingerprintKeyVersion" > retained\.version[\s\S]*?retained\.ordinal < 33/u,
+  );
+  assert.doesNotMatch(
+    fingerprintKeyReadiness,
+    /SELECT DISTINCT event\."fingerprintKeyVersion"/u,
+    'La readiness ne doit pas scanner tout l’index pour DISTINCT sur chaque boot.',
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /trigger sur agent_mission_events est créé par le provisionneur post-migration sous SET ROLE/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /CREATE FUNCTION public\.agent_mission_fingerprint_key_readiness\([\s\S]*?"configuredVersions" INTEGER\[\]/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /RETURNS TABLE \([\s\S]*?"keyVersion" INTEGER,[\s\S]*?"keyFingerprint" TEXT,[\s\S]*?retained BOOLEAN,[\s\S]*?"minimumWriterVersion" INTEGER,[\s\S]*?"highestWriterVersion" INTEGER,[\s\S]*?"writerEnabled" BOOLEAN/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /AGENT_MISSION_FINGERPRINT_KEY_WRITER_DISABLED[\s\S]*?agent_mission_fingerprint_key_writer_disabled/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /LANGUAGE plpgsql[\s\S]*?VOLATILE[\s\S]*?SECURITY DEFINER/u,
+  );
+  assert.match(fingerprintKeyReadiness, /SET search_path = pg_catalog/u);
+  assert.match(fingerprintKeyReadiness, /SET row_security = on/u);
+  assert.match(
+    fingerprintKeyReadiness,
+    /cardinality\("configuredVersions"\) > 32[\s\S]*?count\(DISTINCT configured\.version\)/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /pg_advisory_xact_lock_shared\([\s\S]*?bob-agent-mission-fingerprint-hmac-v1/u,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /LEFT JOIN public\.agent_mission_fingerprint_key_version_floors[\s\S]*?LEFT JOIN public\.agent_mission_fingerprint_key_bindings/u,
+  );
+  assert.ok(
+    (
+      fingerprintKeyReadiness.match(
+        /FORCE ROW LEVEL SECURITY/gmu,
+      ) ?? []
+    ).length >= 2,
+  );
+  assert.match(
+    fingerprintKeyReadiness,
+    /REVOKE ALL PRIVILEGES[\s\S]*?FROM PUBLIC/u,
+  );
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(fingerprintKeyReadiness, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.doesNotMatch(
+    fingerprintKeyReadiness.match(
+      /CREATE FUNCTION public\.agent_mission_fingerprint_key_readiness\([\s\S]*?\$agent_mission_fingerprint_key_readiness\$;/u,
+    )?.[0] ?? '',
+    /\b(?:EXECUTE|format)\b/u,
+  );
+});
+
+test('le namespace commandId ACK est expand, validé puis cutover sans casser writer N-1', () => {
+  assert.match(
+    commandNamespaceExpand,
+    /ADD CONSTRAINT agent_mission_events_envelope_v2_check CHECK \([\s\S]*?\) NOT VALID;/u,
+  );
+  assert.doesNotMatch(commandNamespaceExpand, /VALIDATE CONSTRAINT/u);
+  assert.match(
+    commandNamespaceExpand,
+    /"eventType" IN \([\s\S]*?AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES[\s\S]*?"actor" = 'system'[\s\S]*?-4\[a-f0-9\]\{3\}[\s\S]*?-8\[a-f0-9\]\{3\}/u,
+  );
+  assert.match(
+    commandNamespaceExpand,
+    /AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES[\s\S]*?"actor" = 'system'[\s\S]*?-8\[a-f0-9\]\{3\}/u,
+  );
+  assert.match(
+    commandNamespaceValidate,
+    /VALIDATE CONSTRAINT agent_mission_events_envelope_v2_check;/u,
+  );
+  const dropOld = commandNamespaceCutover.indexOf(
+    'DROP CONSTRAINT agent_mission_events_envelope_check',
+  );
+  const renameNew = commandNamespaceCutover.indexOf(
+    'RENAME CONSTRAINT agent_mission_events_envelope_v2_check',
+  );
+  assert.ok(dropOld >= 0 && renameNew > dropOld);
 });
 
 test('le fence d’annulation est expand-only, tenanté et protège le writer N-1', () => {
@@ -252,6 +432,58 @@ test('la capability Realtime reste nullable et sa forme est expand puis validate
   assert.match(
     agentMissionRlsReplay,
     /guard_realtime_agent_mission_capability_immutable_v1\(\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
+  );
+});
+
+test('le reçu bootstrap V1 reste nullable, one-shot et séparé expand/validate', () => {
+  assert.match(
+    schema,
+    /agentMissionBootstrapAcknowledgedAt\s+DateTime\?\s+@db\.Timestamptz\(6\)/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /ADD COLUMN "agentMissionBootstrapAcknowledgedAt" TIMESTAMPTZ\(6\);/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /realtime_leases_agent_mission_bootstrap_receipt_check[\s\S]*?NOT VALID;/u,
+  );
+  assert.doesNotMatch(bootstrapReceiptExpand, /VALIDATE CONSTRAINT/u);
+  assert.match(
+    bootstrapReceiptValidate,
+    /VALIDATE CONSTRAINT realtime_leases_agent_mission_bootstrap_receipt_check;/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /"agentMissionBootstrapAcknowledgedAt" >= "agentMissionProtocolBoundAt"/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /"agentMissionBootstrapAcknowledgedAt" <= "hardExpiresAt"/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /TG_OP = 'INSERT'[\s\S]*?AGENT_MISSION_BOOTSTRAP_RECEIPT_INSERT_FORBIDDEN/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /OLD\."agentMissionBootstrapAcknowledgedAt" IS NOT NULL[\s\S]*?NEW\."agentMissionBootstrapAcknowledgedAt" IS NULL[\s\S]*?AGENT_MISSION_BOOTSTRAP_RECEIPT_IMMUTABLE/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /NEW\."agentMissionBootstrapAcknowledgedAt" := pg_catalog\.clock_timestamp\(\)/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /CREATE TRIGGER realtime_lease_agent_mission_receipt_insert_v1[\s\S]*?BEFORE INSERT/u,
+  );
+  assert.match(
+    bootstrapReceiptExpand,
+    /CREATE TRIGGER realtime_lease_agent_mission_receipt_update_v1[\s\S]*?BEFORE UPDATE OF "agentMissionBootstrapAcknowledgedAt"/u,
+  );
+  assert.match(
+    agentMissionRlsReplay,
+    /guard_realtime_agent_mission_bootstrap_receipt_v1\(\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
   );
 });
 

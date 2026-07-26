@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ObservabilityModule } from '../observability/observability.module';
 import { PersistenceModule } from '../persistence/persistence.module';
+import { realtimeVoiceSettingsProvider } from '../voice/realtime/realtime-settings.provider';
 import { AgentMissionController } from './agent-mission.controller';
 import { agentMissionFingerprintProvider } from './agent-mission-fingerprint.provider';
 import { agentMissionHttpAuthorityProvider } from './agent-mission-http-authority';
@@ -15,6 +16,7 @@ import { AgentMissionService } from './agent-mission.service';
   controllers: [AgentMissionController],
   providers: [
     AgentMissionService,
+    realtimeVoiceSettingsProvider,
     agentMissionHttpAuthorityProvider,
     agentMissionFingerprintProvider,
   ],

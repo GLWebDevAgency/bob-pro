@@ -16,8 +16,12 @@ const [
   realtimeReleaseCertificate,
   authorityRole,
   authorityProvision,
+  fingerprintReadinessAuthorityRole,
+  fingerprintReadinessAuthorityProvision,
   realtimeRlsReplay,
+  rlsOwnerSplitCertificate,
   reaperReleaseCertificate,
+  rls,
   rlsCertificate,
   packageJson,
   ci,
@@ -34,8 +38,18 @@ const [
   readFile(path.join(apiDir, 'prisma/agent-mission-realtime-release-cert.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-mission-release-flag-authority-role.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-mission-release-flag-authority-provision.sql'), 'utf8'),
+  readFile(
+    path.join(apiDir, 'prisma/agent-mission-fingerprint-readiness-authority-role.sql'),
+    'utf8',
+  ),
+  readFile(
+    path.join(apiDir, 'prisma/agent-mission-fingerprint-readiness-authority-provision.sql'),
+    'utf8',
+  ),
   readFile(path.join(apiDir, 'prisma/agent-mission-realtime-rls-replay.sql'), 'utf8'),
+  readFile(path.join(scriptDir, 'certify-rls-owner-split.sh'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/realtime-reaper-release-cert.sql'), 'utf8'),
+  readFile(path.join(apiDir, 'prisma/rls.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/rls-cert.sql'), 'utf8'),
   readFile(path.join(apiDir, 'package.json'), 'utf8'),
   readFile(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8'),
@@ -57,7 +71,18 @@ test('le chemin de release resserre les ACL après le grant des objets du déplo
   const exactGrant = release.indexOf('\\i apps/api/prisma/agent-missions-runtime-grants.sql');
   const grantTransactionEnd = release.indexOf('\nSQL\n}', exactGrant);
   const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql');
-  const exactCertificate = release.indexOf('certify_agent_mission_release_acl', rlsReplay);
+  const fingerprintProvision = release.indexOf(
+    'provision_agent_mission_fingerprint_readiness_authority',
+    rlsReplay,
+  );
+  const fingerprintStage = release.indexOf(
+    'manage-agent-mission-fingerprint-key-versions.mjs stage',
+    fingerprintProvision,
+  );
+  const exactCertificate = release.indexOf(
+    'certify_agent_mission_release_acl',
+    fingerprintStage,
+  );
   assert.ok(genericGrant >= 0, 'Le grant runtime des tables du déployeur attendu a disparu.');
   assert.ok(
     exactGrant > genericGrant,
@@ -71,6 +96,12 @@ test('le chemin de release resserre les ACL après le grant des objets du déplo
     'Grant générique et ACL exactes doivent partager une transaction.',
   );
   assert.ok(rlsReplay > exactGrant, 'Le replay RLS doit suivre les ACL runtime exactes.');
+  assert.ok(
+    fingerprintProvision > rlsReplay
+      && fingerprintStage > fingerprintProvision
+      && exactCertificate > fingerprintStage,
+    'Le binding/floor doit être stageé après RLS+provision et avant certification.',
+  );
   assert.ok(
     exactCertificate > rlsReplay,
     'Le certificat runtime doit lire le résultat final après le replay RLS.',
@@ -116,7 +147,7 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
   );
   assert.match(
     release,
-    /assert_realtime_cancellation_fence_ready_for_postdeploy\(\)[\s\S]*?20260726060000_realtime_admission_cancellation_fence_expand[\s\S]*?20260726070000_realtime_admission_cancellation_fence_validate[\s\S]*?\$\{cancellation_migrations:-missing\}" != 2/u,
+    /assert_agent_mission_m1b_ready_for_postdeploy\(\)[\s\S]*?20260726040000_agent_mission_realtime_lease_expand[\s\S]*?20260726050000_agent_mission_realtime_lease_validate[\s\S]*?20260726060000_realtime_admission_cancellation_fence_expand[\s\S]*?20260726070000_realtime_admission_cancellation_fence_validate[\s\S]*?20260726080000_agent_mission_event_command_namespace_expand[\s\S]*?20260726090000_agent_mission_event_command_namespace_validate[\s\S]*?20260726100000_agent_mission_event_command_namespace_cutover[\s\S]*?20260726110000_agent_mission_fingerprint_key_readiness[\s\S]*?20260726120000_agent_mission_bootstrap_receipt_expand[\s\S]*?20260726130000_agent_mission_bootstrap_receipt_validate[\s\S]*?\$\{agent_mission_m1b_migrations:-missing\}" != 10/u,
   );
   const postdeployGuard = release.indexOf('if [ "$BOB_RELEASE_PHASE" = postdeploy ]');
   const build = release.indexOf("pnpm --filter '@bob/api...' run build", postdeployGuard);
@@ -130,7 +161,18 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
   );
   assert.match(
     release.slice(postdeployGuard, build),
-    /assert_realtime_cancellation_fence_ready_for_postdeploy[\s\S]*?realtime-capacity-release\.sh close-existing/u,
+    /assert_agent_mission_m1b_ready_for_postdeploy[\s\S]*?realtime-capacity-release\.sh close-existing/u,
+  );
+  const postdeployRetire = release.lastIndexOf(
+    'manage-agent-mission-fingerprint-key-versions.mjs retire',
+  );
+  const postdeployReopen = release.indexOf(
+    'realtime-capacity-release.sh configure',
+    postdeployRetire,
+  );
+  assert.ok(
+    postdeployRetire > build && postdeployReopen > postdeployRetire,
+    'Le retrait N-1 doit suivre la certification du nouveau SHA et précéder la réouverture.',
   );
   assert.match(realtimeCapacityRelease, /close_existing\(\)[\s\S]*?mode = 'closed'/u);
   assert.match(
@@ -185,9 +227,13 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
     "payload?.capabilities?.realtimeAdmissionCancellationFence !== 'v1'",
     exactSha,
   );
+  const bootstrapReceiptCapability = railway.indexOf(
+    "payload?.capabilities?.agentMissionBootstrapReceipt !== 'v1'",
+    deployedCapability,
+  );
   const immediatePostdeployStep = railway.indexOf(
     'Postdeploy certify and reopen Bob Live',
-    deployedCapability,
+    bootstrapReceiptCapability,
   );
   const immediatePostdeploy = railway.indexOf(
     'env BOB_RELEASE_PHASE=postdeploy',
@@ -214,7 +260,8 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
       readiness > topology &&
       exactSha > readiness &&
       deployedCapability > exactSha &&
-      immediatePostdeployStep > deployedCapability &&
+      bootstrapReceiptCapability > deployedCapability &&
+      immediatePostdeployStep > bootstrapReceiptCapability &&
       immediatePostdeploy > immediatePostdeployStep &&
       archiveAudit > immediatePostdeploy &&
       activation > archiveAudit &&
@@ -251,6 +298,14 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
 });
 
 test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale', () => {
+  assert.match(
+    realtimeRlsReplay,
+    /SET LOCAL lock_timeout = '5s';[\s\S]*?SET LOCAL statement_timeout = '60s';/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL lock_timeout = '5s';[\s\S]*?SET LOCAL statement_timeout = '60s';/u,
+  );
   assert.doesNotMatch(runtimeGrants, /\b(?:BEGIN|COMMIT);/u);
   assert.match(runtimeGrants, /pg_has_role\(current_user, owner_oid, 'SET'\)/u);
   assert.match(
@@ -282,10 +337,17 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
     runtimeGrants,
     /'release_flag_subjects'::TEXT,[\s\S]*?'SELECT'::TEXT,[\s\S]*?'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'/u,
   );
-  assert.match(runtimeGrants, /REVOKE ALL PRIVILEGES ON TABLE public\.release_flag_audit_events/u);
   assert.match(
     runtimeGrants,
-    /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]*?revalidate_agent_mission_release_flag_v1/u,
+    /REVOKE ALL PRIVILEGES ON TABLE public\.%I FROM %I[\s\S]*?'release_flag_audit_events'[\s\S]*?'agent_mission_fingerprint_key_version_floors'[\s\S]*?'agent_mission_fingerprint_key_bindings'/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]*?revalidate_agent_mission_release_flag_v1[\s\S]*?agent_mission_fingerprint_key_readiness/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /agent_mission_fingerprint_key_version_floors[\s\S]*?agent_mission_fingerprint_key_bindings/u,
   );
   assert.match(
     runtimeGrants,
@@ -321,6 +383,166 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
   ]) {
     assert.match(releaseCertificate, new RegExp(`${functionName}\\\\?\\(\\)`, 'u'));
   }
+  assert.match(
+    releaseCertificate,
+    /agent_mission_fingerprint_key_readiness\(integer\[\]\)[\s\S]*?RUNTIME_FUNCTION_EXECUTE_MISSING/u,
+  );
+  assert.match(releaseCertificate, /READINESS_FUNCTION_HARDENING_DRIFT/u);
+  assert.match(
+    releaseCertificate,
+    /pg_has_role\([\s\S]*?readiness_authority_oid[\s\S]*?'MEMBER'[\s\S]*?pg_has_role\([\s\S]*?'SET'[\s\S]*?RUNTIME_READINESS_AUTHORITY_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /SELECT DISTINCT protected_owner\.owner_oid[\s\S]*?pg_has_role\(runtime_role\.oid, owner_role_oid, 'MEMBER'\)[\s\S]*?pg_has_role\(runtime_role\.oid, owner_role_oid, 'SET'\)[\s\S]*?RUNTIME_OWNER_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /pg_has_role\(exposed_role_oid, owner_role_oid, 'MEMBER'\)[\s\S]*?pg_has_role\(exposed_role_oid, owner_role_oid, 'SET'\)[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /FOR reachable_role_oid IN[\s\S]*?pg_has_role\(runtime_role\.oid, role\.oid, 'MEMBER'\)[\s\S]*?pg_has_role\(runtime_role\.oid, role\.oid, 'SET'\)[\s\S]*?RUNTIME_ROLE_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /FOR reachable_role_oid IN[\s\S]*?pg_has_role\(exposed_role_oid, role\.oid, 'MEMBER'\)[\s\S]*?pg_has_role\(exposed_role_oid, role\.oid, 'SET'\)[\s\S]*?DATA_API_ROLE_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /FROM public\.agent_mission_fingerprint_key_readiness\([\s\S]*?AGENT_MISSION_READINESS_RUNTIME_EXECUTION_INVALID/u,
+  );
+});
+
+test('la readiness fingerprint utilise un owner NOLOGIN, une colonne et une policy dédiés', () => {
+  const ensure = release.indexOf(
+    'ensure_agent_mission_fingerprint_readiness_authority_role',
+  );
+  const migrate = release.indexOf('prisma migrate deploy', ensure);
+  const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql', migrate);
+  const provision = release.indexOf(
+    'provision_agent_mission_fingerprint_readiness_authority',
+    rlsReplay,
+  );
+  const stage = release.indexOf(
+    'manage-agent-mission-fingerprint-key-versions.mjs stage',
+    provision,
+  );
+  const certificate = release.indexOf('certify_agent_mission_release_acl', stage);
+  assert.ok(
+    ensure >= 0
+      && ensure < migrate
+      && provision > rlsReplay
+      && stage > provision
+      && certificate > stage,
+  );
+  assert.match(fingerprintReadinessAuthorityRole, /SET createrole_self_grant = 'set'/u);
+  assert.match(
+    fingerprintReadinessAuthorityRole,
+    /CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS[\s\S]*?bob_agent_mission_fingerprint_readiness/u,
+  );
+  assert.doesNotMatch(
+    fingerprintReadinessAuthorityRole,
+    /GRANT\s+bob_agent_mission_fingerprint_readiness\s+TO\s+postgres/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /GRANT SELECT \("fingerprintKeyVersion"\)[\s\S]*?agent_mission_events_fingerprint_readiness_select[\s\S]*?TO bob_agent_mission_fingerprint_readiness USING \(true\)/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /GRANT SELECT ON TABLE public\.agent_mission_fingerprint_key_version_floors[\s\S]*?agent_mission_fingerprint_key_floor_readiness_select/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /GRANT SELECT ON TABLE public\.agent_mission_fingerprint_key_bindings[\s\S]*?agent_mission_fingerprint_key_binding_readiness_select/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /REVOKE SELECT \(%I\), INSERT \(%I\), UPDATE \(%I\), REFERENCES \(%I\)[\s\S]*?agent_mission_fingerprint_key_version_floors[\s\S]*?agent_mission_fingerprint_key_bindings/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /has_any_column_privilege\([\s\S]*?agent_mission_fingerprint_key_version_floors[\s\S]*?'INSERT,UPDATE,REFERENCES'[\s\S]*?has_any_column_privilege\([\s\S]*?agent_mission_fingerprint_key_bindings/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /ALTER FUNCTION %s OWNER TO bob_agent_mission_fingerprint_readiness/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /SET LOCAL ROLE %I; DROP TRIGGER IF EXISTS agent_mission_events_00_fingerprint_key_binding_guard_v1[\s\S]*?CREATE TRIGGER agent_mission_events_00_fingerprint_key_binding_guard_v1 BEFORE INSERT/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]*?REVOKE EXECUTE ON FUNCTION %s FROM %I/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /aclexplode\([\s\S]*?guard_agent_mission_fingerprint_key_binding_present_v1\(\)[\s\S]*?privilege\.grantee <> function\.proowner/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /writer_guard\.proacl[\s\S]*?privilege\.grantee <> authority\.oid/u,
+  );
+  assert.match(fingerprintReadinessAuthorityProvision, /SET row_security = on/u);
+  assert.match(fingerprintReadinessAuthorityProvision, /SET search_path = pg_catalog/u);
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /REVOKE CREATE ON SCHEMA public FROM bob_agent_mission_fingerprint_readiness/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /policy\.polroles = ARRAY\[authority\.oid\]::OID\[\][\s\S]*?pg_get_expr\(policy\.polqual/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /agent_mission_fingerprint_key_floor_direct_select[\s\S]*?policy\.polroles = ARRAY\[[\s\S]*?relation\.relowner[\s\S]*?polwithcheck IS NULL[\s\S]*?agent_mission_fingerprint_key_floor_direct_insert[\s\S]*?policy\.polqual IS NULL[\s\S]*?agent_mission_fingerprint_key_floor_direct_update[\s\S]*?policy\.polwithcheck/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /agent_mission_fingerprint_key_binding_direct_select[\s\S]*?relation\.relowner[\s\S]*?polwithcheck IS NULL[\s\S]*?agent_mission_fingerprint_key_binding_direct_insert[\s\S]*?policy\.polqual IS NULL/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /agent_mission_events_owner_select[\s\S]*?pg_get_expr\(policy\.polqual[\s\S]*?app\.current_company_id[\s\S]*?app\.current_user_id[\s\S]*?agent_mission_events_owner_insert[\s\S]*?pg_get_expr\(policy\.polwithcheck[\s\S]*?app\.current_agent_mission_id/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /pg_has_role\(app_role_oid, authority\.oid, 'MEMBER'\)[\s\S]*?pg_has_role\(app_role_oid, authority\.oid, 'SET'\)/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /ALTER FUNCTION public\.guard_agent_mission_fingerprint_key_binding_present_v1\(\)[\s\S]*?VOLATILE[\s\S]*?helper\.provolatile <> 'v'[\s\S]*?writer_guard\.provolatile <> 'v'[\s\S]*?AgentMission fingerprint readiness function authority drift/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /agent_mission_events_00_fingerprint_key_binding_guard_v1[\s\S]*?trigger\.tgtype = 7[\s\S]*?trigger\.tgfoid = writer_guard\.oid/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /SET LOCAL ROLE %I; CREATE INDEX IF NOT EXISTS agent_mission_events_fingerprint_key_version_idx ON public\.agent_mission_events \("fingerprintKeyVersion"\); RESET ROLE;[\s\S]*?agent_mission_events_fingerprint_key_version_idx[\s\S]*?index\.indisvalid[\s\S]*?index\.indnkeyatts = 1[\s\S]*?index\.indkey\[0\] = attribute\.attnum/u,
+  );
+  assert.match(
+    fingerprintReadinessAuthorityProvision,
+    /attribute\.attname = 'writerEnabled'[\s\S]*?attribute\.atttypid = 'pg_catalog\.bool'[\s\S]*?attribute\.attnotnull[\s\S]*?pg_get_expr\([\s\S]*?= 'true'/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /guard_agent_mission_fingerprint_key_binding_present_v1\(\)[\s\S]*?function\.provolatile = 'v'[\s\S]*?AGENT_MISSION_FINGERPRINT_WRITER_GUARD_HARDENING_DRIFT/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;[\s\S]*?current_setting\('bob\.release\.rls_owner_role'\)[\s\S]*?guard_agent_mission_fingerprint_key_binding_present_v1\(\)[\s\S]*?agent_mission_fingerprint_key_readiness\(integer\[\]\)/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;[\s\S]*?current_setting\('bob\.release\.rls_owner_role'\)[\s\S]*?exposed_role\.rolname IN \('anon', 'authenticated', 'service_role'\)/u,
+  );
+  assert.doesNotMatch(
+    rls,
+    /^REVOKE ALL ON FUNCTION (?:guard_agent_mission_fingerprint_key_binding_present_v1\(\)|agent_mission_fingerprint_key_readiness\(INTEGER\[\]\)) FROM PUBLIC;$/mu,
+  );
 });
 
 test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa certification', () => {
@@ -360,7 +582,39 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     realtimeReleaseCertificate,
+    /agentMissionBootstrapAcknowledgedAt[\s\S]*?bootstrap receipt constraint definition drift/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /guard_realtime_agent_mission_bootstrap_receipt_v1\(\)[\s\S]*?receipt_insert_trigger\.tgtype <> 7[\s\S]*?receipt_update_trigger\.tgtype <> 19[\s\S]*?expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /md5\(receipt_guard\.prosrc\)[\s\S]*?receipt_guard\.oid[\s\S]*?<> 2[\s\S]*?bootstrap receipt trigger inventory drift/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
     /has_function_privilege\(current_user, capability_guard\.oid, 'EXECUTE'\)/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /has_function_privilege\([\s\S]*?current_user,[\s\S]*?receipt_guard\.oid,[\s\S]*?'EXECUTE'/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /function\.oid IN \([\s\S]*?capability_guard\.oid,[\s\S]*?receipt_guard\.oid,[\s\S]*?cancellation_guard\.oid,[\s\S]*?cancellation_schedule_sync\.oid[\s\S]*?trigger function exact ACL drift/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /lease_relation\.relacl[\s\S]*?privilege\.grantee <> runtime_role\.oid[\s\S]*?realtime lease exact relation ACL drift/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
+    /retention_reaper_role\.oid[\s\S]*?attribute\.attname NOT IN \('companyId', 'sessionId'\)[\s\S]*?realtime lease exact column ACL drift/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /guard_realtime_agent_mission_capability_immutable_v1[\s\S]*?guard_realtime_agent_mission_bootstrap_receipt_v1[\s\S]*?\) <> 14[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u,
   );
   assert.match(realtimeReleaseCertificate, /pg_temp, public, pg_catalog/u);
   assert.match(
@@ -497,6 +751,38 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
   assert.match(localCertificate, /agent-missions-release-cert\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-role\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-provision\.sql/u);
+  assert.match(
+    localCertificate,
+    /manage-agent-mission-fingerprint-key-versions\.mjs" stage/u,
+  );
+  assert.match(
+    localCertificate,
+    /GRANT UPDATE \("minimumWriterVersion"\)[\s\S]*?GRANT INSERT \("keyFingerprint"\)[\s\S]*?agent-mission-fingerprint-readiness-authority-provision\.sql/u,
+  );
+  assert.match(
+    localCertificate,
+    /AGENT_MISSION_FINGERPRINT_BINDING_UPDATE_ACCEPTED[\s\S]*?AGENT_MISSION_FINGERPRINT_FLOOR_ROLLBACK_ACCEPTED[\s\S]*?AGENT_MISSION_FINGERPRINT_WRITER_OUTSIDE_FLOOR_ACCEPTED/u,
+  );
+  assert.match(
+    localCertificate,
+    /GRANT bob_schema_owner TO bob_app WITH INHERIT FALSE, SET TRUE;[\s\S]*?agent-missions-release-cert\.sql[\s\S]*?REVOKE bob_schema_owner FROM bob_app;/u,
+  );
+  assert.match(
+    localCertificate,
+    /CREATE ROLE bob_agent_mission_cert_rogue[\s\S]*?GRANT bob_agent_mission_cert_rogue TO bob_app WITH INHERIT FALSE, SET TRUE[\s\S]*?GRANT bob_agent_mission_cert_rogue TO authenticated WITH INHERIT FALSE, SET TRUE/u,
+  );
+  assert.match(
+    localCertificate,
+    /bob_agent_mission_writer_guard_rogue[\s\S]*?GRANT EXECUTE[\s\S]*?guard_agent_mission_fingerprint_key_binding_present_v1[\s\S]*?writer_guard_rogue_execute/u,
+  );
+  assert.match(
+    localCertificate,
+    /snapshot-freshness[\s\S]*?wait_for_agent_mission_manager_exclusive_lock[\s\S]*?release_agent_mission_writer_barrier snapshot-freshness[\s\S]*?stage-v2[\s\S]*?release_agent_mission_writer_barrier stage-v2[\s\S]*?retire-v2[\s\S]*?release_agent_mission_writer_barrier retire-v2/u,
+  );
+  assert.match(
+    localCertificate,
+    /certify_agent_mission_fingerprint_floor 2 2 false[\s\S]*?realtime-capacity-release\.sh" configure[\s\S]*?certify_agent_mission_fingerprint_floor 2 2 true[\s\S]*?certify_agent_mission_fingerprint_floor 2 2 false/u,
+  );
   assert.match(localCertificate, /agent-mission-realtime-rls-replay\.sql/u);
   assert.match(localCertificate, /CREATE ROLE bob_mistral_bootstrap_reaper/u);
   assert.match(localCertificate, /CREATE ROLE bob_realtime_reaper_directory/u);
@@ -538,6 +824,29 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
   assert.match(ci, /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u);
   assert.match(localCertificate, /CREATE ROLE bob_deployer[\s\S]*?NOSUPERUSER/u);
   assert.match(localCertificate, /SET createrole_self_grant = 'set'/u);
+  assert.match(ci, /Certify the full RLS replay after an exact schema-owner split/u);
+  assert.match(ci, /sh apps\/api\/scripts\/certify-rls-owner-split\.sh/u);
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /current_database\(\) <> 'bob_ephemeral_ci'[\s\S]*?NOT deployer\.rolcreaterole/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /ALTER TABLE %s OWNER TO bob_rls_schema_owner_cert[\s\S]*?ALTER %s %I\.%I\(%s\) OWNER TO bob_rls_schema_owner_cert/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /psql "\$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \\\s+-f apps\/api\/prisma\/rls\.sql/u,
+  );
+  assert.match(
+    rls,
+    /cardinality\(owner_oids\) <> 1[\s\S]*?pg_has_role\([\s\S]*?session_user[\s\S]*?'SET'[\s\S]*?bob\.release\.rls_owner_role[\s\S]*?SET LOCAL ROLE %I/u,
+  );
+  assert.doesNotMatch(
+    rls,
+    /RESET ROLE/u,
+    'Le replay doit revenir au schema owner exact après chaque owner de fonction.',
+  );
 
   const expand = localCertificate.indexOf('20260726010000_agent_missions_expand');
   const intermediateWriter = localCertificate.indexOf('SET "revision" = 2', expand);
@@ -598,6 +907,99 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
       cancellationValidate > cancellationIntermediateWriter &&
       cancellationFinalWriter > cancellationValidate,
     'Le writer N-1 doit être tenté après cancellation expand puis après validate.',
+  );
+  const eventNamespaceExpand = localCertificate.indexOf(
+    '20260726080000_agent_mission_event_command_namespace_expand',
+    cancellationFinalWriter,
+  );
+  const eventNamespaceExpandN1 = localCertificate.indexOf(
+    'writer-n1-event-expand',
+    eventNamespaceExpand,
+  );
+  const eventNamespaceValidate = localCertificate.indexOf(
+    '20260726090000_agent_mission_event_command_namespace_validate',
+    eventNamespaceExpandN1,
+  );
+  const eventNamespaceValidateN1 = localCertificate.indexOf(
+    'writer-n1-event-validate',
+    eventNamespaceValidate,
+  );
+  const eventNamespaceCutover = localCertificate.indexOf(
+    '20260726100000_agent_mission_event_command_namespace_cutover',
+    eventNamespaceValidateN1,
+  );
+  const eventNamespaceCutoverN1 = localCertificate.indexOf(
+    'writer-n1-event-cutover',
+    eventNamespaceCutover,
+  );
+  const eventNamespaceCutoverN = localCertificate.indexOf(
+    'writer-n-event-cutover',
+    eventNamespaceCutoverN1,
+  );
+  const fingerprintKeyReadiness = localCertificate.indexOf(
+    '20260726110000_agent_mission_fingerprint_key_readiness',
+    eventNamespaceCutoverN,
+  );
+  const fingerprintKeyReadinessN1 = localCertificate.indexOf(
+    'writer-n1-fingerprint-readiness',
+    fingerprintKeyReadiness,
+  );
+  const bootstrapReceiptExpand = localCertificate.indexOf(
+    '20260726120000_agent_mission_bootstrap_receipt_expand',
+    fingerprintKeyReadinessN1,
+  );
+  const bootstrapReceiptExpandN1 = localCertificate.indexOf(
+    'AGENT_MISSION_BOOTSTRAP_WRITER_N1_EXPAND_RECEIPT_DRIFT',
+    bootstrapReceiptExpand,
+  );
+  const bootstrapReceiptValidate = localCertificate.indexOf(
+    '20260726130000_agent_mission_bootstrap_receipt_validate',
+    bootstrapReceiptExpandN1,
+  );
+  const bootstrapReceiptValidateN1 = localCertificate.indexOf(
+    'AGENT_MISSION_BOOTSTRAP_WRITER_N1_VALIDATE_RECEIPT_DRIFT',
+    bootstrapReceiptValidate,
+  );
+  assert.ok(
+    eventNamespaceExpand > cancellationFinalWriter &&
+      eventNamespaceExpandN1 > eventNamespaceExpand &&
+      eventNamespaceValidate > eventNamespaceExpandN1 &&
+      eventNamespaceValidateN1 > eventNamespaceValidate &&
+      eventNamespaceCutover > eventNamespaceValidateN1 &&
+      eventNamespaceCutoverN1 > eventNamespaceCutover &&
+      eventNamespaceCutoverN > eventNamespaceCutoverN1 &&
+      fingerprintKeyReadiness > eventNamespaceCutoverN &&
+      fingerprintKeyReadinessN1 > fingerprintKeyReadiness &&
+      bootstrapReceiptExpand > fingerprintKeyReadinessN1 &&
+      bootstrapReceiptExpandN1 > bootstrapReceiptExpand &&
+      bootstrapReceiptValidate > bootstrapReceiptExpandN1 &&
+      bootstrapReceiptValidateN1 > bootstrapReceiptValidate,
+    'Chaque état, readiness et migration receipt doivent éprouver le writer N-1 exact.',
+  );
+  assert.match(
+    localCertificate,
+    /writer-n1-event-expand[\s\S]*?20000000-0000-8000-8000-000000000005/u,
+  );
+  assert.match(
+    localCertificate,
+    /writer-n-event-cutover[\s\S]*?50000000-0000-4000-8000-000000000005/u,
+  );
+  assert.match(
+    localCertificate,
+    /writer-n1-fingerprint-readiness[\s\S]*?60000000-0000-8000-8000-000000000005/u,
+  );
+  assert.match(
+    localCertificate,
+    /AGENT_MISSION_BOOTSTRAP_RECEIPT_INSERT_ACCEPTED_AFTER_EXPAND[\s\S]*?AGENT_MISSION_BOOTSTRAP_RECEIPT_DB_CLOCK_NOT_PROVEN[\s\S]*?AGENT_MISSION_BOOTSTRAP_RECEIPT_ERASE_ACCEPTED_AFTER_EXPAND/u,
+  );
+  assert.match(localCertificate, /AGENT_MISSION_EVENT_WRITER_NOT_PROVEN/u);
+  assert.match(
+    localCertificate,
+    /GRANT SELECT, INSERT, UPDATE ON TABLE public\.agent_missions TO bob_app/u,
+  );
+  assert.match(
+    localCertificate,
+    /GRANT SELECT, INSERT ON TABLE public\.agent_mission_events TO bob_app/u,
   );
   assert.match(localCertificate, /REALTIME_CANCELLATION_LEASE_SURVIVED_AFTER_EXPAND/u);
   assert.match(localCertificate, /REALTIME_CANCELLATION_LEASE_SURVIVED_AFTER_VALIDATE/u);

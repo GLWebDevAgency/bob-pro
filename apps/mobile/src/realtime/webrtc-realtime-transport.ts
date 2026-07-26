@@ -1,9 +1,11 @@
-import type {
-  BobClient,
-  RealtimeVoiceConfig,
-  RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
-  RealtimeVoiceNativeSpeechDeliveryInput,
-  RealtimeVoiceSpeechSourcePolicy,
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type BobClient,
+  type RealtimeAgentMissionSession,
+  type RealtimeVoiceConfig,
+  type RealtimeVoiceNativeSpeechDeliveryAcknowledgement,
+  type RealtimeVoiceNativeSpeechDeliveryInput,
+  type RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
 import { randomUUID } from 'expo-crypto';
 import type { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
@@ -174,6 +176,7 @@ interface AttemptResources {
   sessionHandle: string | null;
   expectedAudioTransceiver: RTCRtpTransceiver | null;
   remoteAudioTrack: MediaStreamTrack | null;
+  agentMissionSession: RealtimeAgentMissionSession | null;
 }
 
 interface NativeSpeechAcknowledgementAttempt {
@@ -258,6 +261,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private readonly seenNativeSpeechDeliveryIds = new Set<string>();
   private bootstrapAbort: AbortController | null = null;
   private sessionHandle: string | null = null;
+  private agentMissionSession: RealtimeAgentMissionSession | null = null;
   private speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy | null = null;
   private readonly hangupTasks = new Map<string, Promise<void>>();
   private closingPromise: Promise<void> | null = null;
@@ -284,6 +288,12 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
 
   getSessionHandle(): string | null {
     return this.sessionHandle;
+  }
+
+  takeAgentMissionSession(): RealtimeAgentMissionSession | null {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    return session;
   }
 
   /** Capacités internes de la composition auditée ; les jetons ne quittent jamais le processus. */
@@ -316,6 +326,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       sessionHandle: null,
       expectedAudioTransceiver: null,
       remoteAudioTrack: null,
+      agentMissionSession: null,
     };
     if (input.signal?.aborted) throw new RealtimeTransportError('aborted');
     // Une instance est réutilisable : aucun timer de la connexion précédente ne peut survivre
@@ -454,11 +465,22 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           sessionHandle: requestedSessionHandle,
           configVersion: config.configVersion,
           speechDelivery: config.speechDelivery,
+          agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
         },
         bootstrapAbort.signal,
       );
+      if (!bootstrap.ok) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      const agentMissionSession = bootstrap.value.agentMissionSession;
+      if (
+        !Object.hasOwn(bootstrap.value, 'agentMissionSession')
+        || agentMissionSession === undefined
+      ) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      resources.agentMissionSession = agentMissionSession;
       this.assertGeneration(generation);
-      if (!bootstrap.ok) throw new RealtimeTransportError('bootstrap_failed');
       if (
         bootstrap.value.transport !== 'webrtc'
         || bootstrap.value.sessionHandle !== requestedSessionHandle
@@ -493,6 +515,8 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       await this.waitForDataChannel(channel, generation);
       this.assertGeneration(generation);
       this.metrics.markDataChannelOpened();
+      this.agentMissionSession = resources.agentMissionSession;
+      resources.agentMissionSession = null;
       this.transition({ type: 'CONNECTED' });
       this.assertGeneration(generation);
       this.startStats(generation);
@@ -504,6 +528,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
       this.assertGeneration(generation);
     } catch (error) {
+      this.disposeAttemptAgentMissionSession(resources);
       if (generation !== this.generation) {
         const nativeDisposed = this.disposeAttemptResources(resources);
         await this.hangupSession(resources.sessionHandle);
@@ -625,6 +650,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   }
 
   close(_reason: RealtimeCloseReason): Promise<void> {
+    this.disposeAgentMissionSession();
     if (this.closingPromise) {
       // Un connect demandé pendant le hangup précédent attend sans posséder de micro. Une
       // fermeture/background doit néanmoins annuler cette intention, pas la ressusciter ensuite.
@@ -668,6 +694,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       sessionHandle: this.sessionHandle,
       expectedAudioTransceiver: this.expectedAudioTransceiver,
       remoteAudioTrack: this.remoteAudioTrack,
+      agentMissionSession: null,
     };
     this.responseActive = false;
     this.responseGenerationDone = false;
@@ -1801,6 +1828,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   }
 
   private disposeAttemptResources(resources: AttemptResources): boolean {
+    this.disposeAttemptAgentMissionSession(resources);
     resources.bootstrapAbort?.abort();
     // La piste distante est coupée avant le data channel et avant le peer. Son stop fait partie
     // de la preuve de fermeture native : en cas d'échec le lease reste détenu pour un retry.
@@ -1823,6 +1851,18 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const closed = remoteTrackStopped && channelClosed && peerClosed && streamReleased;
     if (closed) processAudioSession.release(resources.audioLease);
     return closed;
+  }
+
+  private disposeAttemptAgentMissionSession(resources: AttemptResources): void {
+    const session = resources.agentMissionSession;
+    resources.agentMissionSession = null;
+    session?.dispose();
+  }
+
+  private disposeAgentMissionSession(): void {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    session?.dispose();
   }
 
   private disposeNativeOnce<T extends object>(

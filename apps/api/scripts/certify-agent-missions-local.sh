@@ -7,15 +7,39 @@ EXTERNAL_SUPER_URL="${AGENT_MISSION_CERT_SUPER_URL:-}"
 CERT_ROOT=""
 DATA_DIR=""
 LOCAL_CLUSTER_STARTED=false
+CONCURRENCY_LOG=""
+CONCURRENCY_MANAGER_LOG=""
+concurrent_writer_pid=""
+concurrent_manager_pid=""
 
 cleanup() {
   cleanup_status=$?
   trap - EXIT HUP INT TERM
+  if [ -n "$concurrent_manager_pid" ] \
+    && kill -0 "$concurrent_manager_pid" 2>/dev/null; then
+    kill "$concurrent_manager_pid" 2>/dev/null || true
+  fi
+  if [ -n "$concurrent_writer_pid" ] \
+    && kill -0 "$concurrent_writer_pid" 2>/dev/null; then
+    kill "$concurrent_writer_pid" 2>/dev/null || true
+  fi
+  if [ -n "$concurrent_manager_pid" ]; then
+    wait "$concurrent_manager_pid" 2>/dev/null || true
+  fi
+  if [ -n "$concurrent_writer_pid" ]; then
+    wait "$concurrent_writer_pid" 2>/dev/null || true
+  fi
   if [ "$LOCAL_CLUSTER_STARTED" = "true" ]; then
     "$PG_BIN_DIR/pg_ctl" -D "$DATA_DIR" -m immediate -w stop >/dev/null 2>&1 || true
   fi
   if [ -n "$CERT_ROOT" ]; then
     rm -rf "$CERT_ROOT"
+  fi
+  if [ -n "$CONCURRENCY_LOG" ]; then
+    rm -f "$CONCURRENCY_LOG"
+  fi
+  if [ -n "$CONCURRENCY_MANAGER_LOG" ]; then
+    rm -f "$CONCURRENCY_MANAGER_LOG"
   fi
   exit "$cleanup_status"
 }
@@ -133,6 +157,8 @@ CREATE ROLE bob_schema_owner
 SQL
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-release-flag-authority-role.sql"
+"$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-role.sql"
 
 owner_membership_count="$(
   "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
@@ -449,6 +475,14 @@ UPDATE public.realtime_global_capacity
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_session_leases TO bob_app;
 RESET ROLE;
 SQL
+
+# Le manager de rotation doit lire l'autorité globale exactement comme en release. Le rôle est
+# créé par le déployeur non-superuser via createrole_self_grant=set, puis les objets lui sont
+# transférés avant toute preuve closed|0.
+PATH="$(dirname "$PSQL_BIN"):$PATH" \
+DIRECT_URL="$DIRECT_URL" \
+APP_DATABASE_ROLE=bob_app \
+sh "$ROOT_DIR/apps/api/scripts/realtime-capacity-release.sh" provision
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
@@ -938,11 +972,1083 @@ $writer_n1_cancellation_validate$;
 COMMIT;
 SQL
 
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726080000_agent_mission_event_command_namespace_expand/migration.sql"
+
+# Les writers d'événement sont testés sur la vraie table, sous FORCE RLS et avec le rôle runtime
+# non-superuser. La forme N-1 garde un commandId v8 pour screen_acknowledged ; la forme N utilise
+# le commandId HTTP v4. Chaque invocation crée une mission et son brouillon réels, puis produit
+# l'ACK dans la même transaction que la révision mission.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.agent_missions TO bob_app;
+GRANT SELECT, INSERT ON TABLE public.agent_mission_events TO bob_app;
+RESET ROLE;
+SQL
+
+certify_agent_mission_event_writer() {
+  writer_owner_user_id="$1"
+  writer_mission_id="$2"
+  writer_start_event_id="$3"
+  writer_start_command_id="$4"
+  writer_ack_event_id="$5"
+  writer_ack_command_id="$6"
+  writer_realtime_session_id="$7"
+  writer_fingerprint_key_version="${8:-1}"
+  writer_barrier_name="${9:-}"
+  writer_application_name="${10:-bob-agent-mission-cert-writer}"
+
+  case "$writer_fingerprint_key_version" in
+    ''|*[!0-9]*|0)
+      echo "AgentMission writer fingerprint key version is invalid" >&2
+      exit 1
+      ;;
+  esac
+  case "$writer_barrier_name" in
+    *[!a-z0-9-]*)
+      echo "AgentMission writer barrier name is invalid" >&2
+      exit 1
+      ;;
+  esac
+
+  PGAPPNAME="$writer_application_name" \
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v owner_user_id="$writer_owner_user_id" \
+    -v mission_id="$writer_mission_id" \
+    -v start_event_id="$writer_start_event_id" \
+    -v start_command_id="$writer_start_command_id" \
+    -v ack_event_id="$writer_ack_event_id" \
+    -v ack_command_id="$writer_ack_command_id" \
+    -v realtime_session_id="$writer_realtime_session_id" \
+    -v fingerprint_key_version="$writer_fingerprint_key_version" \
+    -v writer_barrier_name="$writer_barrier_name" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '10s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', :'owner_user_id', true);
+SELECT set_config('app.current_agent_mission_id', :'mission_id', true);
+SELECT set_config('bob.cert.agent_mission_started_at', clock_timestamp()::TEXT, true);
+
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+  "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+  "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  :'mission_id'::UUID,
+  'writer-n1-company',
+  :'owner_user_id',
+  'quote_creation',
+  'active',
+  'awaiting_quote_screen',
+  1,
+  1,
+  jsonb_build_object(
+    'schema', 'bob.agent-mission.quote-creation',
+    'version', 1,
+    'draft', jsonb_build_object(
+      'sessionId', :'owner_user_id',
+      'slotRevision', 1,
+      'contentRevision', 0
+    ),
+    'decision', 'null'::JSONB
+  ),
+  NULL,
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+  NULL,
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ + INTERVAL '2328 hours',
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ
+);
+
+INSERT INTO public.quote_draft_slots (
+  "companyId", "ownerUserId", "revision", "payloadVersion", "payload", "agentMissionId"
+) VALUES (
+  'writer-n1-company',
+  :'owner_user_id',
+  1,
+  1,
+  jsonb_build_object(
+    'schema', 'bob.quote-draft',
+    'version', 1,
+    'draft', jsonb_build_object(
+      'sessionId', :'owner_user_id',
+      'contentRevision', 0,
+      'stagingRevision', 0,
+      'step', 'client',
+      'customer', 'null'::JSONB,
+      'lines', '[]'::JSONB,
+      'lineMetadata', '[]'::JSONB,
+      'lineForm', jsonb_build_object(
+        'label', '',
+        'quantity', '1',
+        'unitPrice', '',
+        'category', 'labor'
+      ),
+      'vatDecision', 'null'::JSONB,
+      'depositPct', 30,
+      'signMode', 'null'::JSONB
+    )
+  ),
+  :'mission_id'::UUID
+);
+
+INSERT INTO public.agent_mission_events (
+  "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+  "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+  "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+  "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+  "draftSlotRevisionAfter", "draftContentRevisionBefore", "draftContentRevisionAfter",
+  "realtimeSessionId", "turnId", "contextRevision", "contextDigest", "data",
+  "occurredAt", "retentionExpiresAt"
+) VALUES (
+  :'start_event_id'::UUID,
+  'writer-n1-company',
+  :'owner_user_id',
+  :'mission_id'::UUID,
+  1,
+  'mission_started',
+  1,
+  'user_tap',
+  :'start_command_id'::UUID,
+  repeat('1', 64),
+  :'fingerprint_key_version'::INTEGER,
+  1,
+  0,
+  1,
+  NULL,
+  1,
+  NULL,
+  0,
+  NULL,
+  NULL,
+  NULL,
+  NULL,
+  '{"kind":"mission_started","startOutcome":"no_slot"}'::JSONB,
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.agent_mission_started_at')::TIMESTAMPTZ + INTERVAL '2160 hours'
+);
+SELECT set_config(
+  'bob.cert.agent_mission_writer_barrier_name',
+  :'writer_barrier_name',
+  true
+);
+DO $agent_mission_cert_writer_barrier$
+DECLARE
+  barrier_name TEXT :=
+    current_setting('bob.cert.agent_mission_writer_barrier_name');
+  barrier_released BOOLEAN;
+BEGIN
+  IF barrier_name = '' THEN
+    RETURN;
+  END IF;
+  LOOP
+    EXECUTE
+      'SELECT barrier.released FROM public.agent_mission_cert_rotation_barriers AS barrier WHERE barrier.name = $1'
+      INTO barrier_released
+      USING barrier_name;
+    IF barrier_released IS NULL THEN
+      RAISE EXCEPTION 'AGENT_MISSION_CERT_WRITER_BARRIER_MISSING';
+    END IF;
+    EXIT WHEN barrier_released;
+    PERFORM pg_catalog.pg_sleep(0.05);
+  END LOOP;
+END;
+$agent_mission_cert_writer_barrier$;
+COMMIT;
+
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', :'owner_user_id', true);
+SELECT set_config('app.current_agent_mission_id', :'mission_id', true);
+SELECT set_config('bob.cert.agent_mission_id', :'mission_id', true);
+SELECT set_config('bob.cert.agent_mission_ack_command_id', :'ack_command_id', true);
+SELECT set_config('bob.cert.agent_mission_acknowledged_at', clock_timestamp()::TEXT, true);
+
+UPDATE public.agent_missions
+   SET "phase" = 'awaiting_customer',
+       "revision" = 2,
+       "currentBinding" = jsonb_build_object(
+         'realtimeSessionId', :'realtime_session_id',
+         'contextRevision', 1,
+         'contextDigest', repeat('a', 64),
+         'screenName', '/devis/new',
+         'screenInstanceId', :'owner_user_id',
+         'acknowledgedAt', to_char(
+           timezone(
+             'UTC',
+             current_setting('bob.cert.agent_mission_acknowledged_at')::TIMESTAMPTZ
+           ),
+           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+         )
+       ),
+       "updatedAt" =
+         current_setting('bob.cert.agent_mission_acknowledged_at')::TIMESTAMPTZ,
+       "idleExpiresAt" = LEAST(
+         current_setting('bob.cert.agent_mission_acknowledged_at')::TIMESTAMPTZ
+           + INTERVAL '24 hours',
+         "hardExpiresAt"
+       )
+ WHERE "id" = :'mission_id'::UUID;
+
+INSERT INTO public.agent_mission_events (
+  "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+  "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+  "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+  "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+  "draftSlotRevisionAfter", "draftContentRevisionBefore", "draftContentRevisionAfter",
+  "realtimeSessionId", "turnId", "contextRevision", "contextDigest", "data",
+  "occurredAt", "retentionExpiresAt"
+) VALUES (
+  :'ack_event_id'::UUID,
+  'writer-n1-company',
+  :'owner_user_id',
+  :'mission_id'::UUID,
+  2,
+  'screen_acknowledged',
+  1,
+  'system',
+  :'ack_command_id'::UUID,
+  repeat('2', 64),
+  :'fingerprint_key_version'::INTEGER,
+  1,
+  1,
+  2,
+  1,
+  1,
+  0,
+  0,
+  :'realtime_session_id'::UUID,
+  NULL,
+  1,
+  repeat('a', 64),
+  '{"kind":"screen_acknowledged","nextPhase":"awaiting_customer"}'::JSONB,
+  current_setting('bob.cert.agent_mission_acknowledged_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.agent_mission_acknowledged_at')::TIMESTAMPTZ
+    + INTERVAL '2160 hours'
+);
+
+DO $writer_event_certificate$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.agent_missions AS mission
+      JOIN public.agent_mission_events AS event
+        ON event."missionId" = mission."id"
+       AND event."companyId" = mission."companyId"
+       AND event."ownerUserId" = mission."ownerUserId"
+     WHERE mission."id" = current_setting('bob.cert.agent_mission_id')::UUID
+       AND mission."revision" = 2
+       AND mission."phase" = 'awaiting_customer'
+       AND event."sequence" = 2
+       AND event."eventType" = 'screen_acknowledged'
+       AND event."commandId" =
+         current_setting('bob.cert.agent_mission_ack_command_id')::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_EVENT_WRITER_NOT_PROVEN';
+  END IF;
+END;
+$writer_event_certificate$;
+COMMIT;
+SQL
+}
+
+certify_agent_mission_fingerprint_floor() {
+  expected_minimum_writer_version="$1"
+  expected_highest_writer_version="$2"
+  expected_writer_enabled="$3"
+  expected_bound_version_count="${4:-2}"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v expected_minimum="$expected_minimum_writer_version" \
+    -v expected_highest="$expected_highest_writer_version" \
+    -v expected_enabled="$expected_writer_enabled" \
+    -v expected_bound_count="$expected_bound_version_count" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '1s';
+SET LOCAL statement_timeout = '3s';
+SELECT set_config('bob.cert.expected_fingerprint_minimum', :'expected_minimum', true);
+SELECT set_config('bob.cert.expected_fingerprint_highest', :'expected_highest', true);
+SELECT set_config('bob.cert.expected_fingerprint_enabled', :'expected_enabled', true);
+SELECT set_config(
+  'bob.cert.expected_fingerprint_bound_count',
+  :'expected_bound_count',
+  true
+);
+DO $agent_mission_fingerprint_floor_runtime_certificate$
+DECLARE
+  row_count INTEGER;
+BEGIN
+  SELECT count(*)
+    INTO row_count
+    FROM public.agent_mission_fingerprint_key_readiness(ARRAY[1, 2]) AS readiness
+   WHERE readiness."minimumWriterVersion" =
+           current_setting('bob.cert.expected_fingerprint_minimum')::INTEGER
+     AND readiness."highestWriterVersion" =
+           current_setting('bob.cert.expected_fingerprint_highest')::INTEGER
+     AND readiness."writerEnabled" =
+           current_setting('bob.cert.expected_fingerprint_enabled')::BOOLEAN
+     AND readiness."keyFingerprint" ~ '^[a-f0-9]{64}$';
+  IF row_count <>
+       current_setting('bob.cert.expected_fingerprint_bound_count')::INTEGER THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_RUNTIME_FLOOR_MISMATCH';
+  END IF;
+END;
+$agent_mission_fingerprint_floor_runtime_certificate$;
+ROLLBACK;
+SQL
+}
+
+certify_agent_mission_fingerprint_writer_rejected() {
+  rejected_fingerprint_key_version="$1"
+  expected_sqlstate="$2"
+  expected_constraint="$3"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v fingerprint_key_version="$rejected_fingerprint_key_version" \
+    -v expected_sqlstate="$expected_sqlstate" \
+    -v expected_constraint="$expected_constraint" <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config(
+  'app.current_user_id',
+  'writer-n1-fingerprint-readiness',
+  true
+);
+SELECT set_config(
+  'bob.cert.expected_sqlstate',
+  :'expected_sqlstate',
+  true
+);
+SELECT set_config(
+  'bob.cert.expected_constraint',
+  :'expected_constraint',
+  true
+);
+SELECT set_config(
+  'bob.cert.rejected_fingerprint_key_version',
+  :'fingerprint_key_version',
+  true
+);
+DO $agent_mission_fingerprint_writer_rejection_certificate$
+DECLARE
+  observed_constraint TEXT;
+  observed_sqlstate TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_mission_events (
+      "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+      "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+      "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+      "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+      "draftSlotRevisionAfter", "draftContentRevisionBefore",
+      "draftContentRevisionAfter", "realtimeSessionId", "turnId",
+      "contextRevision", "contextDigest", "data", "occurredAt",
+      "retentionExpiresAt"
+    ) VALUES (
+      '71000000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-n1-fingerprint-readiness',
+      '60000000-0000-4000-8000-000000000001'::UUID,
+      3,
+      'screen_acknowledged',
+      1,
+      'system',
+      '71000000-0000-4000-8000-000000000002'::UUID,
+      repeat('7', 64),
+      current_setting(
+        'bob.cert.rejected_fingerprint_key_version'
+      )::INTEGER,
+      1,
+      2,
+      3,
+      1,
+      1,
+      0,
+      0,
+      '71000000-0000-4000-8000-000000000003'::UUID,
+      NULL,
+      1,
+      repeat('7', 64),
+      '{"kind":"screen_acknowledged","nextPhase":"awaiting_customer"}'::JSONB,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP + INTERVAL '2160 hours'
+    );
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_WRITER_UNEXPECTEDLY_ACCEPTED';
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS
+      observed_sqlstate = RETURNED_SQLSTATE,
+      observed_constraint = CONSTRAINT_NAME;
+    IF observed_sqlstate IS DISTINCT FROM current_setting('bob.cert.expected_sqlstate')
+       OR observed_constraint IS DISTINCT FROM
+         current_setting('bob.cert.expected_constraint') THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_FINGERPRINT_WRITER_REJECTION_MISMATCH:%:%',
+        observed_sqlstate,
+        observed_constraint;
+    END IF;
+  END;
+END;
+$agent_mission_fingerprint_writer_rejection_certificate$;
+ROLLBACK;
+SQL
+}
+
+wait_for_agent_mission_writer_pause() {
+  writer_application_name="$1"
+  writer_process_id="$2"
+  wait_attempt=0
+  while [ "$wait_attempt" -lt 200 ]; do
+    writer_shared_lock_count="$(
+      "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 \
+        -v writer_application_name="$writer_application_name" <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_stat_activity AS activity
+  JOIN pg_catalog.pg_locks AS lock
+    ON lock.pid = activity.pid
+ WHERE activity.application_name = :'writer_application_name'
+   AND lock.locktype = 'advisory'
+   AND lock.mode = 'ShareLock'
+   AND lock.granted;
+SQL
+    )"
+    if [ "$writer_shared_lock_count" = "1" ]; then
+      return 0
+    fi
+    if ! kill -0 "$writer_process_id" 2>/dev/null; then
+      wait "$writer_process_id" || true
+      echo "AgentMission concurrent writer ended before holding its shared lock" >&2
+      return 1
+    fi
+    wait_attempt=$((wait_attempt + 1))
+    sleep 0.05
+  done
+  echo "AgentMission concurrent writer shared-lock observation timed out" >&2
+  return 1
+}
+
+wait_for_agent_mission_manager_exclusive_lock() {
+  writer_application_name="$1"
+  manager_process_id="$2"
+  wait_attempt=0
+  while [ "$wait_attempt" -lt 200 ]; do
+    manager_waiting_lock_count="$(
+      "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 \
+        -v writer_application_name="$writer_application_name" <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_locks AS waiting
+ WHERE waiting.locktype = 'advisory'
+   AND waiting.mode = 'ExclusiveLock'
+   AND NOT waiting.granted
+   AND EXISTS (
+     SELECT 1
+       FROM pg_catalog.pg_locks AS held
+       JOIN pg_catalog.pg_stat_activity AS activity
+         ON activity.pid = held.pid
+      WHERE activity.application_name = :'writer_application_name'
+        AND held.locktype = waiting.locktype
+        AND held.database = waiting.database
+        AND held.classid = waiting.classid
+        AND held.objid = waiting.objid
+        AND held.objsubid = waiting.objsubid
+        AND held.mode = 'ShareLock'
+        AND held.granted
+   );
+SQL
+    )"
+    if [ "$manager_waiting_lock_count" = "1" ]; then
+      return 0
+    fi
+    if ! kill -0 "$manager_process_id" 2>/dev/null; then
+      wait "$manager_process_id" || true
+      echo "AgentMission fingerprint manager ended before waiting on the writer lock" >&2
+      return 1
+    fi
+    wait_attempt=$((wait_attempt + 1))
+    sleep 0.05
+  done
+  echo "AgentMission fingerprint manager exclusive-lock observation timed out" >&2
+  return 1
+}
+
+release_agent_mission_writer_barrier() {
+  writer_barrier_name="$1"
+  released_count="$(
+    "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v writer_barrier_name="$writer_barrier_name" <<'SQL'
+SET ROLE bob_schema_owner;
+WITH released AS (
+  UPDATE public.agent_mission_cert_rotation_barriers
+     SET released = TRUE
+   WHERE name = :'writer_barrier_name'
+     AND NOT released
+  RETURNING 1
+)
+SELECT count(*) FROM released;
+RESET ROLE;
+SQL
+  )"
+  if [ "$released_count" != "1" ]; then
+    echo "AgentMission writer barrier was missing or already released" >&2
+    return 1
+  fi
+}
+
+# État intermédiaire : l'ancien writer v8 doit rester accepté quand les deux contraintes sont
+# présentes, même avant VALIDATE.
+certify_agent_mission_event_writer \
+  writer-n1-event-expand \
+  20000000-0000-4000-8000-000000000001 \
+  20000000-0000-4000-8000-000000000002 \
+  20000000-0000-4000-8000-000000000003 \
+  20000000-0000-4000-8000-000000000004 \
+  20000000-0000-8000-8000-000000000005 \
+  20000000-0000-4000-8000-000000000006
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726090000_agent_mission_event_command_namespace_validate/migration.sql"
+
+# État validé mais non cutover : la compatibilité du writer v8 reste obligatoire.
+certify_agent_mission_event_writer \
+  writer-n1-event-validate \
+  30000000-0000-4000-8000-000000000001 \
+  30000000-0000-4000-8000-000000000002 \
+  30000000-0000-4000-8000-000000000003 \
+  30000000-0000-4000-8000-000000000004 \
+  30000000-0000-8000-8000-000000000005 \
+  30000000-0000-4000-8000-000000000006
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726100000_agent_mission_event_command_namespace_cutover/migration.sql"
+
+# État final : N-1 v8 reste accepté pendant le rolling deploy et N peut enfin persister le
+# commandId HTTP v4 sans mensonge de namespace.
+certify_agent_mission_event_writer \
+  writer-n1-event-cutover \
+  40000000-0000-4000-8000-000000000001 \
+  40000000-0000-4000-8000-000000000002 \
+  40000000-0000-4000-8000-000000000003 \
+  40000000-0000-4000-8000-000000000004 \
+  40000000-0000-8000-8000-000000000005 \
+  40000000-0000-4000-8000-000000000006
+certify_agent_mission_event_writer \
+  writer-n-event-cutover \
+  50000000-0000-4000-8000-000000000001 \
+  50000000-0000-4000-8000-000000000002 \
+  50000000-0000-4000-8000-000000000003 \
+  50000000-0000-4000-8000-000000000004 \
+  50000000-0000-4000-8000-000000000005 \
+  50000000-0000-4000-8000-000000000006
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726110000_agent_mission_fingerprint_key_readiness/migration.sql"
+
+# Même une migration fonctionnelle additive est éprouvée avec la forme exacte du writer N-1.
+certify_agent_mission_event_writer \
+  writer-n1-fingerprint-readiness \
+  60000000-0000-4000-8000-000000000001 \
+  60000000-0000-4000-8000-000000000002 \
+  60000000-0000-4000-8000-000000000003 \
+  60000000-0000-4000-8000-000000000004 \
+  60000000-0000-8000-8000-000000000005 \
+  60000000-0000-4000-8000-000000000006
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726120000_agent_mission_bootstrap_receipt_expand/migration.sql"
+
+# Writer admission N-1 exact sous le trigger receipt final de l'expand : la nouvelle colonne est
+# omise, reste NULL et ne confère donc aucune autorité. Le writer N prouve en plus que le reçu est
+# écrit par l'horloge DB une seule fois et ne peut ni être prérempli, ni effacé.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS reserved_at
+)
+INSERT INTO public.realtime_session_leases (
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+  "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+  "hardExpiresAt", "activatedAt", "updatedAt", version
+)
+SELECT
+  'writer-n1-company', repeat('1', 63) || 'a',
+  '70000000-0000-4000-8000-000000000001'::uuid,
+  repeat('2', 63) || 'a', 'reserved', NULL, NULL, NULL, reserved_at,
+  reserved_at + interval '30 seconds', reserved_at + interval '60 seconds',
+  NULL, reserved_at, 1
+FROM authoritative_clock;
+
+DO $writer_n1_bootstrap_receipt_expand$
+DECLARE
+  protocol_bound_at TIMESTAMPTZ;
+  acknowledged_at TIMESTAMPTZ;
+BEGIN
+  IF (
+    SELECT "agentMissionBootstrapAcknowledgedAt"
+      FROM public.realtime_session_leases
+     WHERE "sessionId" = '70000000-0000-4000-8000-000000000001'::uuid
+  ) IS NOT NULL THEN
+    RAISE EXCEPTION 'AGENT_MISSION_BOOTSTRAP_WRITER_N1_EXPAND_RECEIPT_DRIFT';
+  END IF;
+
+  BEGIN
+    INSERT INTO public.realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+      "hardExpiresAt", "activatedAt", "updatedAt", version,
+      "agentMissionProtocolVersion", "agentMissionProtocolBoundAt",
+      "agentMissionCapabilityHash", "agentMissionReleaseFlagVersion",
+      "agentMissionBootstrapAcknowledgedAt"
+    ) VALUES (
+      'writer-n1-company', repeat('3', 63) || 'a',
+      '70000000-0000-4000-8000-000000000002'::uuid,
+      repeat('4', 63) || 'a', 'reserved', NULL, NULL, NULL, clock_timestamp(),
+      clock_timestamp() + interval '30 seconds', clock_timestamp() + interval '60 seconds',
+      NULL, clock_timestamp(), 1, 1, clock_timestamp(), repeat('a', 64), 1,
+      clock_timestamp()
+    );
+    RAISE EXCEPTION 'AGENT_MISSION_BOOTSTRAP_RECEIPT_INSERT_ACCEPTED_AFTER_EXPAND';
+  EXCEPTION
+    WHEN check_violation THEN NULL;
+  END;
+
+  WITH authoritative_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS reserved_at
+  )
+  INSERT INTO public.realtime_session_leases (
+    "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+    "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+    "hardExpiresAt", "activatedAt", "updatedAt", version,
+    "agentMissionProtocolVersion", "agentMissionProtocolBoundAt",
+    "agentMissionCapabilityHash", "agentMissionReleaseFlagVersion"
+  )
+  SELECT
+    'writer-n1-company', repeat('5', 63) || 'a',
+    '70000000-0000-4000-8000-000000000003'::uuid,
+    repeat('6', 63) || 'a', 'active', 'openai', 'receipt-expand-call', NULL, reserved_at,
+    reserved_at + interval '30 seconds', reserved_at + interval '60 seconds',
+    reserved_at, reserved_at, 1, 1, reserved_at, repeat('b', 64), 1
+  FROM authoritative_clock;
+
+  SELECT "agentMissionProtocolBoundAt"
+    INTO STRICT protocol_bound_at
+    FROM public.realtime_session_leases
+   WHERE "sessionId" = '70000000-0000-4000-8000-000000000003'::uuid;
+
+  UPDATE public.realtime_session_leases
+     SET "agentMissionBootstrapAcknowledgedAt" = protocol_bound_at - interval '1 day'
+   WHERE "sessionId" = '70000000-0000-4000-8000-000000000003'::uuid
+  RETURNING "agentMissionBootstrapAcknowledgedAt"
+       INTO STRICT acknowledged_at;
+
+  IF acknowledged_at IS NULL OR acknowledged_at < protocol_bound_at THEN
+    RAISE EXCEPTION 'AGENT_MISSION_BOOTSTRAP_RECEIPT_DB_CLOCK_NOT_PROVEN';
+  END IF;
+
+  BEGIN
+    UPDATE public.realtime_session_leases
+       SET "agentMissionBootstrapAcknowledgedAt" = NULL
+     WHERE "sessionId" = '70000000-0000-4000-8000-000000000003'::uuid;
+    RAISE EXCEPTION 'AGENT_MISSION_BOOTSTRAP_RECEIPT_ERASE_ACCEPTED_AFTER_EXPAND';
+  EXCEPTION
+    WHEN check_violation THEN NULL;
+  END;
+END;
+$writer_n1_bootstrap_receipt_expand$;
+COMMIT;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260726130000_agent_mission_bootstrap_receipt_validate/migration.sql"
+
+# Writer N-1 exact après VALIDATE : même forme historique, même NULL honnête, sous l'état final.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
+
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS reserved_at
+)
+INSERT INTO public.realtime_session_leases (
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+  "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+  "hardExpiresAt", "activatedAt", "updatedAt", version
+)
+SELECT
+  'writer-n1-company', repeat('7', 63) || 'a',
+  '70000000-0000-4000-8000-000000000004'::uuid,
+  repeat('8', 63) || 'a', 'reserved', NULL, NULL, NULL, reserved_at,
+  reserved_at + interval '30 seconds', reserved_at + interval '60 seconds',
+  NULL, reserved_at, 1
+FROM authoritative_clock;
+
+DO $writer_n1_bootstrap_receipt_validate$
+BEGIN
+  IF (
+    SELECT "agentMissionBootstrapAcknowledgedAt"
+      FROM public.realtime_session_leases
+     WHERE "sessionId" = '70000000-0000-4000-8000-000000000004'::uuid
+  ) IS NOT NULL THEN
+    RAISE EXCEPTION 'AGENT_MISSION_BOOTSTRAP_WRITER_N1_VALIDATE_RECEIPT_DRIFT';
+  END IF;
+END;
+$writer_n1_bootstrap_receipt_validate$;
+COMMIT;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql"
+
+# Rejeu réel : un ancien ACL colonne survit à REVOKE table et un grantee arbitraire survit à une
+# simple révocation des rôles connus. On empoisonne les deux surfaces ; le provisionneur doit
+# restaurer les allowlists exactes sous chaque owner.
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE bob_agent_mission_writer_guard_rogue
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+SQL
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+GRANT UPDATE ("minimumWriterVersion")
+  ON TABLE public.agent_mission_fingerprint_key_version_floors
+  TO bob_agent_mission_fingerprint_readiness;
+GRANT INSERT ("keyFingerprint")
+  ON TABLE public.agent_mission_fingerprint_key_bindings
+  TO bob_agent_mission_fingerprint_readiness;
+SET ROLE bob_agent_mission_fingerprint_readiness;
+GRANT EXECUTE
+  ON FUNCTION public.guard_agent_mission_fingerprint_key_binding_present_v1()
+  TO bob_agent_mission_writer_guard_rogue;
+RESET ROLE;
+SQL
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql"
+writer_guard_rogue_execute="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_catalog.has_function_privilege(
+  (
+    SELECT role.oid
+      FROM pg_catalog.pg_roles AS role
+     WHERE role.rolname = 'bob_agent_mission_writer_guard_rogue'
+  ),
+  (
+    SELECT function.oid
+      FROM pg_catalog.pg_proc AS function
+      JOIN pg_catalog.pg_namespace AS namespace
+        ON namespace.oid = function.pronamespace
+     WHERE namespace.nspname = 'public'
+       AND function.proname =
+         'guard_agent_mission_fingerprint_key_binding_present_v1'
+       AND function.pronargs = 0
+  ),
+  'EXECUTE'
+);
+SQL
+)"
+if [ "$writer_guard_rogue_execute" != "f" ]; then
+  echo "AgentMission writer guard retained an arbitrary EXECUTE grantee" >&2
+  exit 1
+fi
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'DROP ROLE bob_agent_mission_writer_guard_rogue'
+
+# Le trigger final est déjà présent mais aucun floor n'est encore armé : le writer N-1 exact doit
+# rester compatible jusqu'au premier stage, sans bypasser ensuite les versions durablement liées.
+certify_agent_mission_event_writer \
+  writer-n1-fingerprint-final-trigger \
+  61000000-0000-4000-8000-000000000001 \
+  61000000-0000-4000-8000-000000000002 \
+  61000000-0000-4000-8000-000000000003 \
+  61000000-0000-4000-8000-000000000004 \
+  61000000-0000-8000-8000-000000000005 \
+  61000000-0000-4000-8000-000000000006
+
+# Barrières locales déterministes : le writer conserve le verrou advisory partagé dans sa
+# transaction, tandis que le manager doit être observé en attente du verrou exclusif exact.
+# Aucun sleep de durée arbitraire ne peut donc produire un faux vert selon la vitesse de Prisma.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+CREATE UNLOGGED TABLE public.agent_mission_cert_rotation_barriers (
+  name TEXT PRIMARY KEY,
+  released BOOLEAN NOT NULL DEFAULT FALSE
+);
+REVOKE ALL ON TABLE public.agent_mission_cert_rotation_barriers FROM PUBLIC;
+REVOKE ALL ON TABLE public.agent_mission_cert_rotation_barriers
+  FROM anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.agent_mission_cert_rotation_barriers TO bob_app;
+INSERT INTO public.agent_mission_cert_rotation_barriers (name)
+VALUES ('snapshot-freshness'), ('stage-v2'), ('retire-v2');
+RESET ROLE;
+SQL
+
+# Preuve discriminante du snapshot post-verrou : le writer v3 committe pendant que le premier
+# stage, configuré volontairement avec la seule clé v1, attend son verrou exclusif. En
+# READ COMMITTED le manager relit ensuite l'event v3 et doit refuser le keyring incomplet. Un
+# snapshot pris avant l'attente accepterait à tort le stage et ferait échouer ce certificat.
+CONCURRENCY_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-snapshot-writer.XXXXXX"
+)"
+certify_agent_mission_event_writer \
+  writer-fingerprint-snapshot-v3 \
+  62000000-0000-4000-8000-000000000001 \
+  62000000-0000-4000-8000-000000000002 \
+  62000000-0000-4000-8000-000000000003 \
+  62000000-0000-4000-8000-000000000004 \
+  62000000-0000-8000-8000-000000000005 \
+  62000000-0000-4000-8000-000000000006 \
+  3 \
+  snapshot-freshness \
+  bob-agent-mission-fingerprint-snapshot-writer \
+  >"$CONCURRENCY_LOG" 2>&1 &
+concurrent_writer_pid=$!
+wait_for_agent_mission_writer_pause \
+  bob-agent-mission-fingerprint-snapshot-writer \
+  "$concurrent_writer_pid"
+
+CONCURRENCY_MANAGER_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-snapshot-manager.XXXXXX"
+)"
+(
+  BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=1 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+) >"$CONCURRENCY_MANAGER_LOG" 2>&1 &
+concurrent_manager_pid=$!
+wait_for_agent_mission_manager_exclusive_lock \
+  bob-agent-mission-fingerprint-snapshot-writer \
+  "$concurrent_manager_pid"
+release_agent_mission_writer_barrier snapshot-freshness
+
+if wait "$concurrent_manager_pid"; then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  echo "AgentMission stage used a stale snapshot across its exclusive-lock wait" >&2
+  exit 1
+fi
+if ! grep -Fq \
+  'agent-mission-fingerprint-key:error:retained-key-missing' \
+  "$CONCURRENCY_MANAGER_LOG"
+then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  echo "AgentMission snapshot race failed for an unrelated reason" >&2
+  exit 1
+fi
+if ! wait "$concurrent_writer_pid"; then
+  cat "$CONCURRENCY_LOG" >&2
+  exit 1
+fi
+rm -f "$CONCURRENCY_LOG" "$CONCURRENCY_MANAGER_LOG"
+CONCURRENCY_LOG=""
+CONCURRENCY_MANAGER_LOG=""
+concurrent_writer_pid=""
+concurrent_manager_pid=""
+
+BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+BOB_AGENT_MISSION_HMAC_KEY_VERSION=1 \
+BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+BOB_LIVE_ENABLED=true \
+BOB_LIVE_PROVIDER=openai \
+DIRECT_URL="$DIRECT_URL" \
+node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+
+if BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=1 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+then
+  echo "AgentMission fingerprint stage accepted another material for version 1" >&2
+  exit 1
+fi
+
+# Le registre et le floor restent protégés même contre le déployeur direct. Toutes les mutations
+# négatives sont contenues dans une transaction rollbackée afin de préserver le scénario nominal.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+DO $agent_mission_fingerprint_key_registry_certificate$
+DECLARE
+  rejected BOOLEAN;
+  observed_constraint TEXT;
+BEGIN
+  rejected := false;
+  BEGIN
+    UPDATE public.agent_mission_fingerprint_key_bindings
+       SET "keyFingerprint" = repeat('f', 64)
+     WHERE "keyVersion" = 1;
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_binding_append_only';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_BINDING_UPDATE_ACCEPTED';
+  END IF;
+
+  rejected := false;
+  BEGIN
+    DELETE FROM public.agent_mission_fingerprint_key_bindings
+     WHERE "keyVersion" = 1;
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_binding_append_only';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_BINDING_DELETE_ACCEPTED';
+  END IF;
+
+  rejected := false;
+  BEGIN
+    EXECUTE 'TRUNCATE TABLE public.agent_mission_fingerprint_key_bindings';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_binding_append_only';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_BINDING_TRUNCATE_ACCEPTED';
+  END IF;
+
+  INSERT INTO public.agent_mission_fingerprint_key_bindings (
+    "keyVersion",
+    "keyFingerprint"
+  ) VALUES (2, repeat('b', 64));
+  UPDATE public.agent_mission_fingerprint_key_version_floors
+     SET "highestWriterVersion" = 2
+   WHERE "keySpace" = 'bob-agent-mission-fingerprint-hmac-v1';
+
+  rejected := false;
+  BEGIN
+    UPDATE public.agent_mission_fingerprint_key_version_floors
+       SET "highestWriterVersion" = 1
+     WHERE "keySpace" = 'bob-agent-mission-fingerprint-hmac-v1';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_floor_monotone';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_FLOOR_ROLLBACK_ACCEPTED';
+  END IF;
+
+  rejected := false;
+  BEGIN
+    UPDATE public.agent_mission_fingerprint_key_version_floors
+       SET "highestWriterVersion" = 3
+     WHERE "keySpace" = 'bob-agent-mission-fingerprint-hmac-v1';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_floor_transition';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_FLOOR_GAP_ACCEPTED';
+  END IF;
+
+  rejected := false;
+  BEGIN
+    DELETE FROM public.agent_mission_fingerprint_key_version_floors
+     WHERE "keySpace" = 'bob-agent-mission-fingerprint-hmac-v1';
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_floor_append_only';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_FLOOR_DELETE_ACCEPTED';
+  END IF;
+END;
+$agent_mission_fingerprint_key_registry_certificate$;
+ROLLBACK;
+SQL
+
+# Après stage [1,1], le trigger du journal accepte le writer courant mais refuse une version 2,
+# avant toute autre validation d'enveloppe. Le test PostgreSQL Vitest qui suit prouve l'acceptation.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config(
+  'app.current_user_id',
+  'writer-n1-fingerprint-readiness',
+  true
+);
+DO $agent_mission_fingerprint_writer_floor_certificate$
+DECLARE
+  rejected BOOLEAN := false;
+  observed_constraint TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_mission_events (
+      "id", "companyId", "ownerUserId", "missionId", "sequence", "eventType",
+      "eventVersion", "actor", "commandId", "requestFingerprintHmac",
+      "fingerprintKeyVersion", "fingerprintCanonicalizationVersion",
+      "missionRevisionBefore", "missionRevisionAfter", "draftSlotRevisionBefore",
+      "draftSlotRevisionAfter", "draftContentRevisionBefore",
+      "draftContentRevisionAfter", "realtimeSessionId", "turnId",
+      "contextRevision", "contextDigest", "data", "occurredAt",
+      "retentionExpiresAt"
+    ) VALUES (
+      '70000000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-n1-fingerprint-readiness',
+      '60000000-0000-4000-8000-000000000001'::UUID,
+      3,
+      'screen_acknowledged',
+      1,
+      'system',
+      '70000000-0000-4000-8000-000000000002'::UUID,
+      repeat('7', 64),
+      2,
+      1,
+      2,
+      3,
+      1,
+      1,
+      0,
+      0,
+      '70000000-0000-4000-8000-000000000003'::UUID,
+      NULL,
+      1,
+      repeat('7', 64),
+      '{"kind":"screen_acknowledged","nextPhase":"awaiting_customer"}'::JSONB,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP + INTERVAL '2160 hours'
+    );
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_writer_range';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_WRITER_OUTSIDE_FLOOR_ACCEPTED';
+  END IF;
+END;
+$agent_mission_fingerprint_writer_floor_certificate$;
+ROLLBACK;
+SQL
+
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
 GRANT USAGE ON SCHEMA public TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_session_leases TO bob_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.realtime_reaper_tenant_schedule TO bob_app;
+GRANT SELECT ON TABLE public.realtime_admission_events TO bob_app;
+GRANT SELECT ON TABLE public.realtime_mistral_ingress_tickets TO bob_app;
 GRANT SELECT ON TABLE public.release_flags, public.release_flag_subjects TO bob_app;
 
 GRANT SELECT ("companyId", "sessionId") ON TABLE public.realtime_session_leases
@@ -961,12 +2067,193 @@ SQL
 "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -v app_role=bob_app \
   -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql"
+
+# Un SET-only vers un owner ne donne aucun privilège effectif tant que le rôle n'est pas assumé.
+# Le certificat doit néanmoins le détecter, car il permettrait ensuite de désactiver FORCE RLS.
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+GRANT bob_schema_owner TO bob_app WITH INHERIT FALSE, SET TRUE;
+SQL
+runtime_owner_membership_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  runtime_owner_membership_rejected=false
+fi
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+REVOKE bob_schema_owner FROM bob_app;
+SQL
+if [ "$runtime_owner_membership_rejected" != "true" ]; then
+  echo "AgentMission release certificate accepted runtime SET membership to a table owner" >&2
+  exit 1
+fi
+
+# Un rôle intermédiaire n'est propriétaire d'aucun objet protégé : l'ancien certificat ne le
+# voyait donc pas. Avec BYPASSRLS + ACL, un simple SET ROLE suffisait pourtant à lire hors tenant.
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE bob_agent_mission_cert_rogue
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT BYPASSRLS;
+GRANT bob_agent_mission_cert_rogue TO bob_app WITH INHERIT FALSE, SET TRUE;
+SQL
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT ON TABLE public.agent_missions TO bob_agent_mission_cert_rogue;
+RESET ROLE;
+SQL
+runtime_intermediate_membership_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  runtime_intermediate_membership_rejected=false
+fi
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+REVOKE SELECT ON TABLE public.agent_missions FROM bob_agent_mission_cert_rogue;
+RESET ROLE;
+SQL
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+REVOKE bob_agent_mission_cert_rogue FROM bob_app;
+SQL
+if [ "$runtime_intermediate_membership_rejected" != "true" ]; then
+  echo "AgentMission release certificate accepted runtime SET through an intermediate role" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT ON TABLE public.agent_missions TO bob_agent_mission_cert_rogue;
+RESET ROLE;
+SQL
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+GRANT bob_agent_mission_cert_rogue TO authenticated WITH INHERIT FALSE, SET TRUE;
+SQL
+data_api_intermediate_membership_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  data_api_intermediate_membership_rejected=false
+fi
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+REVOKE SELECT ON TABLE public.agent_missions FROM bob_agent_mission_cert_rogue;
+RESET ROLE;
+SQL
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+REVOKE bob_agent_mission_cert_rogue FROM authenticated;
+DROP ROLE bob_agent_mission_cert_rogue;
+SQL
+if [ "$data_api_intermediate_membership_rejected" != "true" ]; then
+  echo "AgentMission release certificate accepted Data API SET through an intermediate role" >&2
+  exit 1
+fi
+
 "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -v app_role=bob_app \
   -v release_env=staging \
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
+
+# Le certificat doit refuser tout ACL résiduel vers un rôle arbitraire, même si le runtime et les
+# rôles Data API ne peuvent pas l'assumer aujourd'hui : une adhésion ultérieure ne doit jamais
+# transformer un ancien GRANT oublié en capacité mission.
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE bob_agent_mission_realtime_acl_rogue
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+SQL
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v1()
+  TO bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+realtime_function_acl_drift_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -v release_env=staging \
+  -v release_flag_version=1 \
+  -v release_flag_kill_switch=false \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  realtime_function_acl_drift_rejected=false
+fi
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+REVOKE EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v1()
+  FROM bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+if [ "$realtime_function_acl_drift_rejected" != "true" ]; then
+  echo "AgentMission realtime certificate accepted a rogue trigger-function ACL" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT DELETE ON TABLE public.realtime_session_leases
+  TO bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+realtime_relation_acl_drift_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -v release_env=staging \
+  -v release_flag_version=1 \
+  -v release_flag_kill_switch=false \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  realtime_relation_acl_drift_rejected=false
+fi
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+REVOKE DELETE ON TABLE public.realtime_session_leases
+  FROM bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+if [ "$realtime_relation_acl_drift_rejected" != "true" ]; then
+  echo "AgentMission realtime certificate accepted a rogue relation ACL" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT ("agentMissionBootstrapAcknowledgedAt")
+  ON TABLE public.realtime_session_leases
+  TO bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+realtime_column_acl_drift_rejected=true
+if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -v release_env=staging \
+  -v release_flag_version=1 \
+  -v release_flag_kill_switch=false \
+  -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
+  >/dev/null 2>&1
+then
+  realtime_column_acl_drift_rejected=false
+fi
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+REVOKE SELECT ("agentMissionBootstrapAcknowledgedAt")
+  ON TABLE public.realtime_session_leases
+  FROM bob_agent_mission_realtime_acl_rogue;
+RESET ROLE;
+SQL
+"$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DROP ROLE bob_agent_mission_realtime_acl_rogue;
+SQL
+if [ "$realtime_column_acl_drift_rejected" != "true" ]; then
+  echo "AgentMission realtime certificate accepted a rogue receipt-column ACL" >&2
+  exit 1
+fi
 
 # AGENT_MISSION_CERT_NON_INITIAL_VERSION : une certification rejouable doit suivre la version
 # autoritaire courante, y compris quand un incident maintient volontairement le kill switch armé.
@@ -1024,10 +2311,12 @@ GRANT SELECT ON TABLE
   public.quote_draft_slots,
   public.realtime_admission_cancellation_fences,
   public.realtime_session_leases,
+  public.realtime_mistral_ingress_tickets,
   public.release_flags,
   public.release_flag_subjects,
   public.release_flag_audit_events
 TO bob_cert_auditor;
+GRANT DELETE ON TABLE public.realtime_session_leases TO bob_cert_auditor;
 GRANT SELECT, INSERT ON TABLE public.companies TO bob_cert_auditor;
 RESET ROLE;
 SQL
@@ -1046,3 +2335,289 @@ RUN_AGENT_MISSION_POSTGRES_CERT=true \
 AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE=true \
 pnpm --filter @bob/api exec vitest run \
   src/persistence/prisma/agent-mission.persistence.postgres.test.ts
+
+# Cycle de rotation réel, après les tests métier qui utilisent volontairement la version 1.
+# La preuve couvre deux connexions concurrentes, les snapshots après verrou, le retrait N-1 et
+# l'arrêt/réactivation durable du writer. Les secrets restent des fixtures de certification
+# locales et ne sont jamais affichés.
+certify_agent_mission_fingerprint_floor 1 1 true 2
+
+CONCURRENCY_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-stage-writer.XXXXXX"
+)"
+certify_agent_mission_event_writer \
+  writer-fingerprint-concurrent-stage-v1 \
+  80000000-0000-4000-8000-000000000001 \
+  80000000-0000-4000-8000-000000000002 \
+  80000000-0000-4000-8000-000000000003 \
+  80000000-0000-4000-8000-000000000004 \
+  80000000-0000-8000-8000-000000000005 \
+  80000000-0000-4000-8000-000000000006 \
+  1 \
+  stage-v2 \
+  bob-agent-mission-fingerprint-stage-writer \
+  >"$CONCURRENCY_LOG" 2>&1 &
+concurrent_writer_pid=$!
+wait_for_agent_mission_writer_pause \
+  bob-agent-mission-fingerprint-stage-writer \
+  "$concurrent_writer_pid"
+
+CONCURRENCY_MANAGER_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-stage-manager.XXXXXX"
+)"
+(
+  BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=2 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk","2":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+) >"$CONCURRENCY_MANAGER_LOG" 2>&1 &
+concurrent_manager_pid=$!
+wait_for_agent_mission_manager_exclusive_lock \
+  bob-agent-mission-fingerprint-stage-writer \
+  "$concurrent_manager_pid"
+release_agent_mission_writer_barrier stage-v2
+
+if ! wait "$concurrent_manager_pid"; then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  exit 1
+fi
+if ! wait "$concurrent_writer_pid"; then
+  cat "$CONCURRENCY_LOG" >&2
+  exit 1
+fi
+rm -f "$CONCURRENCY_LOG" "$CONCURRENCY_MANAGER_LOG"
+CONCURRENCY_LOG=""
+CONCURRENCY_MANAGER_LOG=""
+concurrent_writer_pid=""
+concurrent_manager_pid=""
+certify_agent_mission_fingerprint_floor 1 2 true 3
+
+stage_writer_event_count="$(
+  "$PSQL_BIN" "$CERT_ADMIN_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM public.agent_mission_events
+ WHERE id = '80000000-0000-4000-8000-000000000002'::UUID
+   AND "fingerprintKeyVersion" = 1;
+SQL
+)"
+if [ "$stage_writer_event_count" != "1" ]; then
+  echo "AgentMission stage did not wait for the committed shared writer" >&2
+  exit 1
+fi
+
+# Le registre append-only interdit également de réutiliser le même matériau sous une autre
+# version, indépendamment du parseur CLI.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+DO $agent_mission_fingerprint_duplicate_material_certificate$
+DECLARE
+  observed_constraint TEXT;
+  rejected BOOLEAN := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_mission_fingerprint_key_bindings (
+      "keyVersion",
+      "keyFingerprint"
+    )
+    SELECT 4, binding."keyFingerprint"
+      FROM public.agent_mission_fingerprint_key_bindings AS binding
+     WHERE binding."keyVersion" = 2;
+  EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS observed_constraint = CONSTRAINT_NAME;
+    rejected := observed_constraint =
+      'agent_mission_fingerprint_key_binding_fingerprint_key';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_DUPLICATE_MATERIAL_ACCEPTED';
+  END IF;
+END;
+$agent_mission_fingerprint_duplicate_material_certificate$;
+ROLLBACK;
+SQL
+
+# Le master OFF ne peut pas graver un fence pendant que la capacité est encore ouverte : ce
+# chemin est distinct du retire et doit lui aussi échouer fermé, sans muter le floor.
+if BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage \
+  >/dev/null 2>&1
+then
+  echo "AgentMission fingerprint OFF accepted an open Bob Live capacity" >&2
+  exit 1
+fi
+certify_agent_mission_fingerprint_floor 1 2 true 3
+
+# Un retire ne peut pas fermer N tant que la capacité reste ouverte.
+if BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=2 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk","2":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" retire \
+  >/dev/null 2>&1
+then
+  echo "AgentMission fingerprint retire accepted an open Bob Live capacity" >&2
+  exit 1
+fi
+certify_agent_mission_fingerprint_floor 1 2 true 3
+
+PATH="$(dirname "$PSQL_BIN"):$PATH" \
+DIRECT_URL="$DIRECT_URL" \
+sh "$ROOT_DIR/apps/api/scripts/realtime-capacity-release.sh" close-existing
+
+# Le certificat a volontairement écrit des leases N-1 avant l'installation de l'autorité globale.
+# Une base de certification est jetable : l'auditeur BYPASSRLS les draine après fermeture, par
+# DELETE (jamais TRUNCATE), afin d'exercer les triggers de projection `usedSessions` réels.
+"$PSQL_BIN" "$CERT_ADMIN_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'DELETE FROM public.realtime_session_leases'
+
+# Une version encore référencée par les events doit rester dans le keyring de lecture, même si le
+# writer correspondant est sur le point d'être retiré.
+if BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=2 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"2":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" retire \
+  >/dev/null 2>&1
+then
+  echo "AgentMission fingerprint retire dropped a retained key version" >&2
+  exit 1
+fi
+
+CONCURRENCY_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-retire-writer.XXXXXX"
+)"
+certify_agent_mission_event_writer \
+  writer-fingerprint-concurrent-retire-v2 \
+  81000000-0000-4000-8000-000000000001 \
+  81000000-0000-4000-8000-000000000002 \
+  81000000-0000-4000-8000-000000000003 \
+  81000000-0000-4000-8000-000000000004 \
+  81000000-0000-8000-8000-000000000005 \
+  81000000-0000-4000-8000-000000000006 \
+  2 \
+  retire-v2 \
+  bob-agent-mission-fingerprint-retire-writer \
+  >"$CONCURRENCY_LOG" 2>&1 &
+concurrent_writer_pid=$!
+wait_for_agent_mission_writer_pause \
+  bob-agent-mission-fingerprint-retire-writer \
+  "$concurrent_writer_pid"
+
+CONCURRENCY_MANAGER_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-retire-manager.XXXXXX"
+)"
+(
+  BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=2 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk","2":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" retire
+) >"$CONCURRENCY_MANAGER_LOG" 2>&1 &
+concurrent_manager_pid=$!
+wait_for_agent_mission_manager_exclusive_lock \
+  bob-agent-mission-fingerprint-retire-writer \
+  "$concurrent_manager_pid"
+release_agent_mission_writer_barrier retire-v2
+
+if ! wait "$concurrent_manager_pid"; then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  exit 1
+fi
+if ! wait "$concurrent_writer_pid"; then
+  cat "$CONCURRENCY_LOG" >&2
+  exit 1
+fi
+rm -f "$CONCURRENCY_LOG" "$CONCURRENCY_MANAGER_LOG"
+CONCURRENCY_LOG=""
+CONCURRENCY_MANAGER_LOG=""
+concurrent_writer_pid=""
+concurrent_manager_pid=""
+certify_agent_mission_fingerprint_floor 2 2 true 3
+certify_agent_mission_fingerprint_writer_rejected \
+  1 \
+  23514 \
+  agent_mission_fingerprint_key_writer_range
+
+retire_writer_event_count="$(
+  "$PSQL_BIN" "$CERT_ADMIN_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM public.agent_mission_events
+ WHERE id = '81000000-0000-4000-8000-000000000002'::UUID
+   AND "fingerprintKeyVersion" = 2;
+SQL
+)"
+if [ "$retire_writer_event_count" != "1" ]; then
+  echo "AgentMission retire did not wait for the committed shared writer" >&2
+  exit 1
+fi
+
+# Le hard-disable grave un fence writer seulement après closed|0. Il reste ensuite idempotent :
+# Bob Live peut être rouvert pour d'autres usages sans que le retry OFF exige un second drain.
+BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false \
+DIRECT_URL="$DIRECT_URL" \
+node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+certify_agent_mission_fingerprint_floor 2 2 false 3
+certify_agent_mission_fingerprint_writer_rejected \
+  2 \
+  55000 \
+  agent_mission_fingerprint_key_writer_disabled
+
+PATH="$(dirname "$PSQL_BIN"):$PATH" \
+DIRECT_URL="$DIRECT_URL" \
+BOB_LIVE_ENABLED=true \
+BOB_LIVE_PROVIDER=openai \
+OPENAI_REALTIME_MODEL=gpt-realtime \
+BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS=100 \
+BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS=1000 \
+BOB_LIVE_CAPACITY_CONFIG_VERSION=1 \
+sh "$ROOT_DIR/apps/api/scripts/realtime-capacity-release.sh" configure
+
+BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false \
+DIRECT_URL="$DIRECT_URL" \
+node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+certify_agent_mission_fingerprint_floor 2 2 false 3
+
+BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+BOB_AGENT_MISSION_HMAC_KEY_VERSION=2 \
+BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk","2":"KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio","3":"KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys"}' \
+BOB_LIVE_ENABLED=true \
+BOB_LIVE_PROVIDER=openai \
+DIRECT_URL="$DIRECT_URL" \
+node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+certify_agent_mission_fingerprint_floor 2 2 true 3
+certify_agent_mission_event_writer \
+  writer-fingerprint-reenabled-v2 \
+  82000000-0000-4000-8000-000000000001 \
+  82000000-0000-4000-8000-000000000002 \
+  82000000-0000-4000-8000-000000000003 \
+  82000000-0000-4000-8000-000000000004 \
+  82000000-0000-8000-8000-000000000005 \
+  82000000-0000-4000-8000-000000000006 \
+  2
+
+PATH="$(dirname "$PSQL_BIN"):$PATH" \
+DIRECT_URL="$DIRECT_URL" \
+sh "$ROOT_DIR/apps/api/scripts/realtime-capacity-release.sh" close-existing
+BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false \
+DIRECT_URL="$DIRECT_URL" \
+node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage
+certify_agent_mission_fingerprint_floor 2 2 false 3
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+DROP TABLE public.agent_mission_cert_rotation_barriers;
+RESET ROLE;
+SQL
+
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/agent-missions-release-cert.sql"

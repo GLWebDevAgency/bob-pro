@@ -13,6 +13,8 @@ import {
   type RealtimeAdmissionReserveInput,
   type RealtimeAdmissionResult,
   type RealtimeAdmissionSessionLookupInput,
+  type RealtimeAgentMissionBootstrapAcknowledgementInput,
+  type RealtimeAgentMissionBootstrapAcknowledgementResult,
   type RealtimeContextIdentity,
   type RealtimeContextReadResult,
   type RealtimeContextSnapshot,
@@ -453,6 +455,16 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
           }
         : null,
     };
+  }
+
+  async acknowledgeAgentMissionBootstrap(
+    input: RealtimeAgentMissionBootstrapAcknowledgementInput,
+  ): Promise<RealtimeAgentMissionBootstrapAcknowledgementResult> {
+    if (!validSessionLookup(input) || !SUBJECT_HASH_PATTERN.test(input.capabilityHash)) {
+      return { ok: false, reason: 'malformed' };
+    }
+    // Ce double refuse déjà toute réservation V1 : il ne doit jamais fabriquer un reçu/capability.
+    return { ok: false, reason: 'unavailable' };
   }
 
   async claimTermination(

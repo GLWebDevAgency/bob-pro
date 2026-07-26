@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ok } from '@bob/core';
 import type { AgentContext } from '@bob/ai';
-import type { RealtimeVoiceConfig } from '@bob/api-client';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionSession,
+  type RealtimeVoiceConfig,
+} from '@bob/api-client';
 import type { RealtimeResilienceEvent } from '../realtime/realtime-resilience-orchestrator';
 import {
   RealtimeSessionController,
@@ -27,8 +31,36 @@ const NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
   speechDelivery: 'audited-signed-url-v1',
 });
 
+function missionSessionStub(
+  log: string[],
+  label: string,
+): RealtimeAgentMissionSession {
+  let disposed = false;
+  const unused = async (): Promise<never> => {
+    throw new Error('unused_agent_mission_method');
+  };
+  return {
+    protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    realtimeSessionId: `realtime-${label}`,
+    get disposed() {
+      return disposed;
+    },
+    getCurrentQuoteCreation: unused,
+    startQuoteCreation: unused,
+    cancelQuoteCreation: unused,
+    acknowledgeQuoteScreen: unused,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      log.push(`${label}:dispose`);
+    },
+  } as unknown as RealtimeAgentMissionSession;
+}
+
 function harness(
   input: {
+    log?: string[];
+    agentMissionSessions?: readonly (RealtimeAgentMissionSession | null)[];
     available?: boolean;
     handle?: string | null;
     putFails?: boolean;
@@ -52,9 +84,11 @@ function harness(
       fence: import('./realtime-driver').RealtimePublishedFence,
     ) => Promise<boolean>;
     emitCommitOnFinish?: boolean;
+    failAgentMissionNegotiation?: boolean;
   } = {},
 ) {
-  const log: string[] = [];
+  const log: string[] = input.log ?? [];
+  let nextAgentMissionSession = 0;
   let emit: (event: RealtimeResilienceEvent) => void = () => undefined;
   const external: {
     resolveStart: ((phase: string) => void) | null;
@@ -70,6 +104,8 @@ function harness(
     reconnect: null,
   };
   const createTransport = (label: string | null, handle: string | null): RealtimeTransportLike => {
+    let agentMissionSession =
+      input.agentMissionSessions?.[nextAgentMissionSession++] ?? null;
     const trace = (entry: string): void => {
       log.push(label === null ? entry : `${label}:${entry}`);
     };
@@ -94,6 +130,12 @@ function harness(
         return true;
       },
       getSessionHandle: () => handle,
+      takeAgentMissionSession: () => {
+        trace('mission:take');
+        const session = agentMissionSession;
+        agentMissionSession = null;
+        return session;
+      },
       ...(input.synchronizeContext === undefined ? {} : {
         synchronizePublishedContext: async (
           fence: import('./realtime-driver').RealtimePublishedFence,
@@ -115,9 +157,15 @@ function harness(
         const phase = await new Promise<string>((resolve) => {
           external.resolveStart = resolve;
         });
-        return { phase, fallbackChannel: null };
+        return { phase, fallbackChannel: null, lastFailureReason: null };
       }
-      return { phase: 'ready', fallbackChannel: null };
+      return input.failAgentMissionNegotiation === true
+        ? {
+            phase: 'stopped',
+            fallbackChannel: null,
+            lastFailureReason: 'agent_mission_negotiation_failed',
+          }
+        : { phase: 'ready', fallbackChannel: null, lastFailureReason: null };
     },
     stop: async () => {
       log.push('orchestrator:stop');
@@ -214,6 +262,16 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toEqual([]);
   });
 
+  it('retourne failed_closed sans boucle legacy si la négociation mission échoue', async () => {
+    const { controller, log } = harness({ failAgentMissionNegotiation: true });
+
+    await expect(controller.start()).resolves.toBe('failed_closed');
+
+    expect(log).toContain('orchestrator:stop');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(controller.active).toBe(false);
+  });
+
   it('micro FERMÉ à la création → ready → PUBLIE le contexte → PUIS ouvre le micro', async () => {
     const { controller, log, emit } = harness();
     expect(await controller.start()).toBe('realtime');
@@ -224,6 +282,51 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     const micOnIndex = log.indexOf('mic:true');
     expect(publishIndex).toBeGreaterThan(-1);
     expect(micOnIndex).toBeGreaterThan(publishIndex); // JAMAIS le micro avant le contexte
+  });
+
+  it('prend la capability avant le premier await puis la détruit avant le stop transport', async () => {
+    const log: string[] = [];
+    const mission = missionSessionStub(log, 'mission-1');
+    const { controller, emit } = harness({
+      log,
+      agentMissionSessions: [mission],
+    });
+    await controller.start();
+
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(log.indexOf('mission:take')).toBeLessThan(log.indexOf('publish:h-42:r1'));
+    expect(log.indexOf('publish:h-42:r1')).toBeLessThan(log.indexOf('mic:true'));
+
+    await controller.stop('background');
+    expect(log.indexOf('mission-1:dispose')).toBeLessThan(log.indexOf('orchestrator:stop'));
+    expect(log.filter((entry) => entry === 'mission-1:dispose')).toHaveLength(1);
+  });
+
+  it('détruit l ancienne capability avant d adopter puis de réclamer le peer reconnecté', async () => {
+    const log: string[] = [];
+    const firstMission = missionSessionStub(log, 'mission-old');
+    const freshMission = missionSessionStub(log, 'mission-fresh');
+    const h = harness({
+      log,
+      agentMissionSessions: [firstMission, freshMission],
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    h.external.reconnect?.('fresh', 'h-fresh');
+
+    expect(log.indexOf('mission-old:dispose')).toBeLessThan(log.indexOf('fresh:mic:false'));
+    expect(log).not.toContain('fresh:mission:take');
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toContain('fresh:mission:take');
+
+    await h.controller.stop('user');
+    expect(log.filter((entry) => entry === 'mission-old:dispose')).toHaveLength(1);
+    expect(log.filter((entry) => entry === 'mission-fresh:dispose')).toHaveLength(1);
   });
 
   it('attend le vrai foreground avant le micro Realtime', async () => {

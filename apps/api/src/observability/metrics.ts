@@ -34,6 +34,10 @@ export class Metrics {
   readonly bobLiveUsageUnits: Counter<string>;
   readonly bobLiveFallbacks: Counter<string>;
   readonly bobLiveEntitlementChecks: Counter<string>;
+  readonly agentMissionNegotiations: Counter<string>;
+  readonly agentMissionCapabilityRejections: Counter<string>;
+  readonly agentMissionBootstrapReceipts: Counter<string>;
+  readonly agentMissionScreenAcks: Counter<string>;
   readonly cabinetOperations: Counter<string>;
   readonly cabinetAuthorizationDenials: Counter<string>;
   readonly cabinetFlagEvaluations: Counter<string>;
@@ -208,6 +212,30 @@ export class Metrics {
       name: 'bob_live_entitlement_checks_total',
       help: 'Décisions serveur d’accès à Bob Live par plan, avant admission et coût fournisseur.',
       labelNames: ['outcome', 'plan'] as const,
+      registers: [this.registry],
+    });
+    this.agentMissionNegotiations = new Counter({
+      name: 'bob_agent_mission_negotiations_total',
+      help: 'Négociations du protocole Mission, sans identité ni contenu métier.',
+      labelNames: ['requested', 'outcome', 'provider', 'transport'] as const,
+      registers: [this.registry],
+    });
+    this.agentMissionCapabilityRejections = new Counter({
+      name: 'bob_agent_mission_capability_rejections_total',
+      help: 'Capabilities Mission refusées selon une taxonomie bornée, sans secret ni hash.',
+      labelNames: ['operation', 'reason'] as const,
+      registers: [this.registry],
+    });
+    this.agentMissionBootstrapReceipts = new Counter({
+      name: 'bob_agent_mission_bootstrap_receipts_total',
+      help: 'Résultats du reçu applicatif one-shot du bootstrap Mission.',
+      labelNames: ['outcome'] as const,
+      registers: [this.registry],
+    });
+    this.agentMissionScreenAcks = new Counter({
+      name: 'bob_agent_mission_screen_ack_total',
+      help: 'Résultats des ACK écran Mission, sans route libre ni identifiant.',
+      labelNames: ['outcome'] as const,
       registers: [this.registry],
     });
     this.cabinetOperations = new Counter({

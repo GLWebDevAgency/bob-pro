@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DocumentFolder, DEFAULT_DOCUMENT_FOLDERS } from '@bob/core';
 import type { AgentMissionUnitOfWorkPort } from '@bob/core';
+import type {
+  AgentMissionFingerprintKeyBinding,
+  AgentMissionFingerprintKeyVersionAuthority,
+} from '../agent-missions/agent-mission-fingerprint-key-version';
 import { seedCompany, seedCustomers } from '@bob/core/testing';
 import type { Persistence } from './persistence';
 import { InMemorySalesDocumentSearchRepository } from './sales-document-search.in-memory';
@@ -149,6 +153,13 @@ export class InMemoryPersistence implements Persistence {
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null {
     // Les tests HTTP positifs remplacent explicitement l'autorité M1-A. Un double générique ne
     // simule jamais abusivement RLS, advisory locks ou transaction_timestamp().
+    return null;
+  }
+  createAgentMissionFingerprintKeyVersionAuthority(
+    _configuredBindings: readonly AgentMissionFingerprintKeyBinding[],
+    _currentVersion: number,
+  ): AgentMissionFingerprintKeyVersionAuthority | null {
+    // Le harness mémoire ne peut pas attester un agrégat global sous FORCE RLS.
     return null;
   }
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {

@@ -2268,6 +2268,18 @@ ensure_agent_mission_release_flag_authority_role() {
     -f apps/api/prisma/agent-mission-release-flag-authority-role.sql
 }
 
+ensure_agent_mission_fingerprint_readiness_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/agent-mission-fingerprint-readiness-authority-role.sql
+}
+
+provision_agent_mission_fingerprint_readiness_authority() {
+  ensure_agent_mission_fingerprint_readiness_authority_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql
+}
+
 provision_agent_mission_release_flag_authority() {
   ensure_agent_mission_release_flag_authority_role
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
@@ -2372,7 +2384,7 @@ SQL
   done
 }
 
-assert_realtime_cancellation_fence_ready_for_postdeploy() {
+assert_agent_mission_m1b_ready_for_postdeploy() {
   migration_relation="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 SELECT CASE
@@ -2386,20 +2398,28 @@ SQL
     return 1
   fi
 
-  cancellation_migrations="$(
+  agent_mission_m1b_migrations="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 SELECT pg_catalog.count(*)::TEXT
   FROM public._prisma_migrations
  WHERE migration_name IN (
+         '20260726040000_agent_mission_realtime_lease_expand',
+         '20260726050000_agent_mission_realtime_lease_validate',
          '20260726060000_realtime_admission_cancellation_fence_expand',
-         '20260726070000_realtime_admission_cancellation_fence_validate'
+         '20260726070000_realtime_admission_cancellation_fence_validate',
+         '20260726080000_agent_mission_event_command_namespace_expand',
+         '20260726090000_agent_mission_event_command_namespace_validate',
+         '20260726100000_agent_mission_event_command_namespace_cutover',
+         '20260726110000_agent_mission_fingerprint_key_readiness',
+         '20260726120000_agent_mission_bootstrap_receipt_expand',
+         '20260726130000_agent_mission_bootstrap_receipt_validate'
        )
    AND finished_at IS NOT NULL
    AND rolled_back_at IS NULL;
 SQL
   )"
-  if [ "${cancellation_migrations:-missing}" != 2 ]; then
-    echo "BOB_RELEASE_PHASE=postdeploy requires the validated realtime cancellation fence" >&2
+  if [ "${agent_mission_m1b_migrations:-missing}" != 10 ]; then
+    echo "BOB_RELEASE_PHASE=postdeploy requires the complete AgentMission M1-B migration train" >&2
     return 1
   fi
 }
@@ -2430,7 +2450,7 @@ if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
   # Un postdeploy n'est jamais une voie de migration de secours. Cette preuve est placée avant
   # le build et avant toute création/transfert de rôle afin qu'une mauvaise phase reste sans
   # mutation de schéma ou d'autorité.
-  assert_realtime_cancellation_fence_ready_for_postdeploy
+  assert_agent_mission_m1b_ready_for_postdeploy
   # Le postdeploy est l'unique autorité de réouverture. Fermer avant le build et avant toute
   # mutation d'ACL garantit qu'un échec intermédiaire laisse Bob Live indisponible, jamais ouvert
   # sur une release seulement partiellement certifiée.
@@ -2443,6 +2463,7 @@ ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
 ensure_agent_mission_release_flag_authority_role
+ensure_agent_mission_fingerprint_readiness_authority_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
   close_and_drain_realtime_before_cancellation_fence_expand
@@ -2464,6 +2485,8 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_agent_mission_fingerprint_readiness_authority
+node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs stage
 certify_agent_mission_release_acl
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
@@ -2528,6 +2551,10 @@ trap - EXIT HUP INT TERM
 # readiness du SHA et la preuve de retrait N-1 dans le pipeline. Seule une recertification
 # post-déploiement peut réappliquer la configuration live demandée.
 if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
+  # Le nouveau SHA est seul, les admissions sont encore fermées et la capacité doit être drainée.
+  # Le retrait ferme alors le droit d'écriture N-1 ; il reste rejouable tant que son secret est
+  # conservé dans le keyring pour les events durables.
+  node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs retire
   DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
 else
   DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \

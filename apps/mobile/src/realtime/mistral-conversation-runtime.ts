@@ -14,12 +14,14 @@ import {
   type MistralConversationServerEvent,
   type MistralConversationSessionEndReason,
 } from '@bob/ai';
-import type {
-  BobClient,
-  RealtimeVoiceConfig,
-  RealtimeVoiceIssuedBootstrapReconciliation,
-  RealtimeVoiceMistralConversationCall,
-  RealtimeVoiceSpeechSourcePolicy,
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type BobClient,
+  type RealtimeAgentMissionSession,
+  type RealtimeVoiceConfig,
+  type RealtimeVoiceIssuedBootstrapReconciliation,
+  type RealtimeVoiceMistralConversationCall,
+  type RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
 import { AudioModule } from 'expo-audio';
 import { randomUUID } from 'expo-crypto';
@@ -432,6 +434,7 @@ export class MistralConversationTransport
   private call: MissionBinding | null = null;
   private bootstrapTicket: string | null = null;
   private sessionHandle: string | null = null;
+  private agentMissionSession: RealtimeAgentMissionSession | null = null;
   private speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy | null = null;
   private publishedFence: RealtimePublishedContextFence | null = null;
   private contextWaiter: ContextWaiter | null = null;
@@ -462,6 +465,12 @@ export class MistralConversationTransport
 
   getSessionHandle(): string | null {
     return this.sessionHandle;
+  }
+
+  takeAgentMissionSession(): RealtimeAgentMissionSession | null {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    return session;
   }
 
   getProcessAudioLease(): ProcessAudioLease | null {
@@ -562,11 +571,22 @@ export class MistralConversationTransport
         context: { version: 1, revision: 1, context: this.options.getInitialContext() },
         configVersion: this.negotiation.configVersion,
         speechDelivery: this.negotiation.speechDelivery,
+        agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
         sessionHandle: requestedSessionHandle,
       }, lifecycle.signal);
+      if (!callResult.ok) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      const agentMissionSession = callResult.value.agentMissionSession;
+      if (
+        !Object.hasOwn(callResult.value, 'agentMissionSession')
+        || agentMissionSession === undefined
+      ) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      this.agentMissionSession = agentMissionSession;
       this.assertCurrent(generation, lifecycle.signal);
-      if (!callResult.ok
-        || callResult.value.transport !== 'mistral-pcm'
+      if (callResult.value.transport !== 'mistral-pcm'
         || callResult.value.protocol !== MISTRAL_CONVERSATION_PROTOCOL
         || !bootstrapMatches(callResult.value, this.negotiation, requestedSessionHandle)) {
         throw new RealtimeTransportError('bootstrap_failed');
@@ -624,6 +644,7 @@ export class MistralConversationTransport
       this.emit({ type: 'connectivity', state: 'connected' });
       this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
     } catch (error) {
+      this.disposeAgentMissionSession();
       let reason: RealtimeFallbackReason = lifecycle.signal.aborted || generation !== this.generation
         ? 'aborted'
         : error instanceof RealtimeTransportError
@@ -766,6 +787,7 @@ export class MistralConversationTransport
   }
 
   close(reason: RealtimeCloseReason): Promise<void> {
+    this.disposeAgentMissionSession();
     if (this.closeTask) return this.closeTask;
     if (
       this.currentState.phase === 'closed'
@@ -1763,6 +1785,7 @@ export class MistralConversationTransport
   }
 
   private async dispose(hangup: boolean, releaseAudio = true): Promise<void> {
+    this.disposeAgentMissionSession();
     this.lifecycle?.abort();
     this.lifecycle = null;
     this.bootstrapTicket = null;
@@ -1788,6 +1811,12 @@ export class MistralConversationTransport
     this.activeTurn = null;
     this.awaitingAuditedResponse = false;
     this.auditedCapturePauseObserved = false;
+  }
+
+  private disposeAgentMissionSession(): void {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    session?.dispose();
   }
 
   private detachSocket(close: boolean): void {

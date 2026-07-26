@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { sentryDsnRejectionReason } from '@bob/core';
+import {
+  AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUIRED_BUDGET_MS,
+  sentryDsnRejectionReason,
+} from '@bob/core';
 
 const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
@@ -197,7 +200,7 @@ const schema = z.object({
     .min(1)
     .max(100_000)
     .default(1_000),
-  OPENAI_REALTIME_RESERVATION_TTL_SECONDS: z.coerce.number().int().min(10).max(30).default(15),
+  OPENAI_REALTIME_RESERVATION_TTL_SECONDS: z.coerce.number().int().min(10).max(30).default(20),
   OPENAI_REALTIME_ACTIVE_LEASE_SECONDS: z.coerce.number().int().min(20).max(120).default(30),
   OPENAI_REALTIME_HEARTBEAT_SECONDS: z.coerce.number().int().min(5).max(60).default(10),
   OPENAI_REALTIME_REAPER_LEASE_SECONDS: z.coerce.number().int().min(15).max(120).default(30),
@@ -1208,9 +1211,12 @@ export function loadEnv(): Env {
       );
     }
     const bootstrapBudgetMs = bobLive.providerTimeoutMs + bobLive.controlTimeoutMs;
-    if (bobLive.reservationTtlSeconds * 1_000 < bootstrapBudgetMs + 1_000) {
+    if (
+      bobLive.reservationTtlSeconds * 1_000
+      < bootstrapBudgetMs + AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUIRED_BUDGET_MS
+    ) {
       throw new Error(
-        'Le bail de réservation Bob Live doit dépasser le budget bootstrap d’au moins une seconde.',
+        'Le bail de réservation Bob Live doit couvrir le bootstrap et les deux tentatives de reçu AgentMission.',
       );
     }
     if (bobLive.maxCallsPerHour < bobLive.maxCallsPerMinute) {

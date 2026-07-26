@@ -3,7 +3,10 @@ import { isCanonicalAgentMissionUserCommandId } from '../../domain/agent/agent-m
 import { type IdGeneratorPort } from '../ports/services';
 import { type AgentMissionFingerprintPort } from '../ports/agent-mission-fingerprint';
 import { type AgentMissionOwner } from '../ports/agent-mission-repository';
-import { type AgentMissionUnitOfWorkPort } from '../ports/agent-mission-unit-of-work';
+import {
+  type AgentMissionRealtimeAuthorityProof,
+  type AgentMissionUnitOfWorkPort,
+} from '../ports/agent-mission-unit-of-work';
 import { type AppError, appConflict } from '../result';
 import {
   agentMissionDomainError,
@@ -14,6 +17,7 @@ import {
   isCanonicalAgentMissionUuid,
   missingAgentMission,
   recordAgentMissionEvent,
+  rejectedAgentMissionCapability,
   requireAgentMissionFingerprint,
   toAgentMissionView,
   unavailableAgentMissionCompany,
@@ -31,6 +35,7 @@ export interface CancelQuoteAgentMissionInput extends AgentMissionOwner {
    * sa corrélation session/turn/contexte ; cette tranche accepte seulement le tap authentifié.
    */
   readonly actor: 'user_tap';
+  readonly authority: AgentMissionRealtimeAuthorityProof;
 }
 
 export interface CancelQuoteAgentMissionOutput {
@@ -114,6 +119,7 @@ export class CancelQuoteAgentMission {
     try {
       const execution = await this.deps.unitOfWork.runQuoteCreationOwner(
         owner,
+        input.authority,
         async (transaction) => {
         const now = await transaction.databaseNow();
         const consumed = await transaction.events.findByCommandId({
@@ -230,6 +236,9 @@ export class CancelQuoteAgentMission {
       );
       if (execution.status === 'company_unavailable') {
         return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      if (execution.status === 'capability_rejected') {
+        return err(rejectedAgentMissionCapability(execution.reason));
       }
       const result = execution.value;
       return result.kind === 'expired'

@@ -3,7 +3,10 @@ import type { AppLogger } from '../../observability/logger';
 import type {
   RealtimeAdmissionMutationResult,
   RealtimeAdmissionPort,
+  RealtimeAdmissionSessionLookupInput,
   RealtimeLeaseCredential,
+  RealtimeProviderId,
+  RealtimeReapingClaim,
 } from './realtime-admission';
 
 interface RealtimeLocalCallTerminationPort {
@@ -30,6 +33,8 @@ export interface RealtimeCallLifecycleOptions {
   /** Adapter exact qui a créé cet appel local ; le lifecycle n'a pas besoin du port de création. */
   provider: RealtimeLocalCallTerminationPort;
   lease: RealtimeLeaseCredential;
+  terminationLookup: RealtimeAdmissionSessionLookupInput;
+  providerId: RealtimeProviderId;
   providerCallId: string;
   hardExpiresAt: string;
   heartbeatSeconds: number;
@@ -49,13 +54,17 @@ function mutationReason(reason: string | null): string {
  * - aucune I/O provider ne s'exécute dans une transaction d'admission ;
  * - les heartbeats sont récursifs, donc jamais chevauchants ;
  * - toute terminaison est single-flight ;
- * - un bail n'est libéré qu'après un hangup provider confirmé/idempotent ;
- * - en cas d'incertitude, le bail reste durablement visible pour le reaper.
+ * - toute terminaison réclame d'abord l'autorité durable `reaping` ;
+ * - le provider n'est appelé qu'avec l'identité de ce claim ;
+ * - la complétion exige le `reaperToken` possédé ;
+ * - en cas d'incertitude, le claim reste durablement visible pour le reaper.
  */
 export class RealtimeCallLifecycle {
   private readonly admission: RealtimeAdmissionPort;
   private readonly provider: RealtimeLocalCallTerminationPort;
   private readonly lease: RealtimeLeaseCredential;
+  private readonly terminationLookup: RealtimeAdmissionSessionLookupInput;
+  private readonly providerId: RealtimeProviderId;
   private readonly providerCallId: string;
   private readonly hardExpiresAt: string;
   private readonly heartbeatMs: number;
@@ -75,10 +84,22 @@ export class RealtimeCallLifecycle {
     }
     const hardExpiryMs = Date.parse(options.hardExpiresAt);
     if (!Number.isFinite(hardExpiryMs)) throw new Error('realtime_lifecycle_invalid_hard_expiry');
+    if (
+      options.terminationLookup.companyId !== options.lease.companyId
+      || options.terminationLookup.sessionId !== options.lease.sessionId
+      || !options.terminationLookup.subjectHashCandidates.includes(options.lease.subjectHash)
+    ) {
+      throw new Error('realtime_lifecycle_invalid_termination_lookup');
+    }
 
     this.admission = options.admission;
     this.provider = options.provider;
     this.lease = { ...options.lease };
+    this.terminationLookup = {
+      ...options.terminationLookup,
+      subjectHashCandidates: [...options.terminationLookup.subjectHashCandidates],
+    };
+    this.providerId = options.providerId;
     this.providerCallId = options.providerCallId;
     this.hardExpiresAt = options.hardExpiresAt;
     this.heartbeatMs = options.heartbeatSeconds * 1_000;
@@ -103,10 +124,7 @@ export class RealtimeCallLifecycle {
     return this.activationPromise;
   }
 
-  /**
-   * Ferme localement le cycle, puis exige la confirmation provider avant toute libération DB.
-   * Cette méthode ne rejette pas : `pending_reaper` signifie que la preuve durable doit rester.
-   */
+  /** Claim DB d'abord, provider ensuite. Ne rejette pas : `pending_reaper` garde la preuve. */
   terminate(reason: RealtimeCallTerminationReason): Promise<RealtimeCallTerminationOutcome> {
     if (this.terminationPromise) return this.terminationPromise;
     this.stopTimers();
@@ -173,32 +191,68 @@ export class RealtimeCallLifecycle {
 
   private async performTermination(reason: RealtimeCallTerminationReason): Promise<RealtimeCallTerminationOutcome> {
     this.activated = false;
+    let claimed: Awaited<ReturnType<RealtimeAdmissionPort['claimTermination']>>;
     try {
-      await this.provider.hangupCall(this.providerCallId);
+      claimed = await this.admission.claimTermination(this.terminationLookup);
     } catch {
-      this.metricProviderError('lifecycle_hangup_failed');
-      this.warn(`bob.live.lifecycle.termination_pending reason=${reason} class=hangup_failed`);
-      this.audit('bob.live.lifecycle.terminated', { reason, outcome: 'pending_reaper' });
-      return 'pending_reaper';
+      claimed = { ok: false, reason: 'unavailable' };
+    }
+    if (!claimed.ok) {
+      return this.pendingTermination(reason, 'claim_unavailable');
+    }
+    if (claimed.claim === null) {
+      if (claimed.pending) return this.pendingTermination(reason, 'claim_pending');
+      this.audit('bob.live.lifecycle.terminated', { reason, outcome: 'confirmed' });
+      return 'confirmed';
+    }
+    if (!this.matchesExpectedClaim(claimed.claim)) {
+      return this.pendingTermination(reason, 'claim_mismatch');
     }
 
-    let released: RealtimeAdmissionMutationResult;
     try {
-      released = await this.admission.release({
-        ...this.lease,
-        providerTermination: 'confirmed',
+      await this.provider.hangupCall(claimed.claim.providerCallId);
+    } catch {
+      this.metricProviderError('lifecycle_hangup_failed');
+      return this.pendingTermination(reason, 'hangup_failed');
+    }
+
+    let completed: RealtimeAdmissionMutationResult;
+    try {
+      completed = await this.admission.completeReaping({
+        companyId: claimed.claim.companyId,
+        subjectHash: claimed.claim.subjectHash,
+        sessionId: claimed.claim.sessionId,
+        reaperToken: claimed.claim.reaperToken,
       });
     } catch {
-      released = { ok: false, reason: 'unavailable' as const };
+      completed = { ok: false, reason: 'unavailable' as const };
     }
-    if (!released.ok) {
-      this.warn(`bob.live.lifecycle.release_pending class=${mutationReason(released.reason)}`);
-      this.audit('bob.live.lifecycle.terminated', { reason, outcome: 'pending_reaper' });
-      return 'pending_reaper';
+    if (!completed.ok) {
+      return this.pendingTermination(
+        reason,
+        `complete_${mutationReason(completed.reason)}`,
+      );
     }
 
     this.audit('bob.live.lifecycle.terminated', { reason, outcome: 'confirmed' });
     return 'confirmed';
+  }
+
+  private matchesExpectedClaim(claim: RealtimeReapingClaim): boolean {
+    return claim.companyId === this.lease.companyId
+      && claim.subjectHash === this.lease.subjectHash
+      && claim.sessionId === this.lease.sessionId
+      && claim.providerId === this.providerId
+      && claim.providerCallId === this.providerCallId;
+  }
+
+  private pendingTermination(
+    reason: RealtimeCallTerminationReason,
+    errorClass: string,
+  ): RealtimeCallTerminationOutcome {
+    this.warn(`bob.live.lifecycle.termination_pending reason=${reason} class=${errorClass}`);
+    this.audit('bob.live.lifecycle.terminated', { reason, outcome: 'pending_reaper' });
+    return 'pending_reaper';
   }
 
   private stopTimers(): void {

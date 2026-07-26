@@ -16,15 +16,28 @@ import {
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
 import {
+  type AgentMissionReadExecution,
   type AgentMissionReadTransaction,
+  type AgentMissionRealtimeAuthorityProof,
+  type AgentMissionQuoteScreenObservation,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
 } from '../ports/agent-mission-unit-of-work';
 import { type IdGeneratorPort } from '../ports/services';
-import { CancelQuoteAgentMission } from './cancel-quote-agent-mission';
+import {
+  AcknowledgeQuoteScreen,
+  type AcknowledgeQuoteScreenInput,
+} from './acknowledge-quote-screen';
+import {
+  CancelQuoteAgentMission,
+  type CancelQuoteAgentMissionInput,
+} from './cancel-quote-agent-mission';
 import { GetActiveAgentMission } from './get-active-agent-mission';
-import { StartQuoteAgentMission } from './start-quote-agent-mission';
+import {
+  StartQuoteAgentMission,
+  type StartQuoteAgentMissionCommand,
+} from './start-quote-agent-mission';
 import { deriveAgentMissionSystemCommandId } from './agent-mission-application';
 
 const OWNER = {
@@ -38,7 +51,14 @@ const OTHER_OWNER = {
 const START_COMMAND = '10000000-0000-4000-8000-000000000001';
 const SECOND_START_COMMAND = '10000000-0000-4000-8000-000000000002';
 const CANCEL_COMMAND = '10000000-0000-4000-8000-000000000003';
+const ACK_COMMAND = '10000000-0000-4000-8000-000000000004';
 const INITIAL_NOW = '2026-07-26T10:00:00.000Z';
+const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
+const AUTHORITY = Object.freeze({
+  subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
+  principalBindingHash: 'b'.repeat(64),
+  capabilityHash: 'c'.repeat(64),
+}) satisfies AgentMissionRealtimeAuthorityProof;
 
 interface MemoryState {
   readonly missions: Map<string, AgentMission>;
@@ -102,6 +122,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   now = INITIAL_NOW;
   failAtWrite: number | null = null;
   companyUnavailableReason: 'missing' | 'closed' | null = null;
+  screenObservation: AgentMissionQuoteScreenObservation = {
+    status: 'rejected',
+    reason: 'unavailable',
+  };
   readTransactions = 0;
   writeTransactions = 0;
 
@@ -123,12 +147,14 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
 
   async readQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
     work: (transaction: AgentMissionReadTransaction) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<AgentMissionReadExecution<T>> {
     this.readTransactions += 1;
     const state = this.state;
-    return work({
+    const value = await work({
       databaseNow: async () => this.now,
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
       missions: {
         findActive: async ({ kind }) => this.findActive(state, owner, kind),
         findById: async ({ missionId }) => {
@@ -137,10 +163,12 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         },
       },
     });
+    return { status: 'executed', value };
   }
 
   async runQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
     work: (transaction: AgentMissionTransaction) => Promise<T>,
   ): Promise<AgentMissionWriteExecution<T>> {
     this.writeTransactions += 1;
@@ -161,6 +189,7 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     );
     const transaction: AgentMissionTransaction = {
       databaseNow: async () => this.now,
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
       missions: {
         findActive: async ({ kind }) => this.findActive(nextState, owner, kind),
         findById: async ({ missionId }) => {
@@ -260,6 +289,9 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           return true;
         },
       },
+      quoteScreen: {
+        observeForUpdate: async () => this.screenObservation,
+      },
     };
     const output = await work(transaction);
     this.state = nextState;
@@ -284,11 +316,30 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
     fingerprints: FINGERPRINTS,
     ids: new SequenceIds(),
   };
+  const start = new StartQuoteAgentMission(deps);
+  const get = new GetActiveAgentMission({ unitOfWork });
+  const cancel = new CancelQuoteAgentMission(deps);
+  const acknowledge = new AcknowledgeQuoteScreen(deps);
   return {
     unitOfWork,
-    start: new StartQuoteAgentMission(deps),
-    get: new GetActiveAgentMission({ unitOfWork }),
-    cancel: new CancelQuoteAgentMission(deps),
+    start: {
+      execute: (
+        input: Omit<StartQuoteAgentMissionCommand, 'authority'>,
+      ) => start.execute({ ...input, authority: AUTHORITY }),
+    },
+    get: {
+      execute: (owner: AgentMissionOwner) => get.execute(owner, AUTHORITY),
+    },
+    cancel: {
+      execute: (
+        input: Omit<CancelQuoteAgentMissionInput, 'authority'>,
+      ) => cancel.execute({ ...input, authority: AUTHORITY }),
+    },
+    acknowledge: {
+      execute: (
+        input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
+      ) => acknowledge.execute({ ...input, authority: AUTHORITY }),
+    },
   };
 }
 
@@ -665,6 +716,102 @@ describe('AgentMission application M1-A', () => {
         ? unitOfWork.snapshot().missions.get(started.value.mission.id)?.status
         : 'unreachable',
     ).toBe('active');
+  });
+
+  it('ACK écran consomme le commandId v4, emploie les faits autoritaires et se rejoue sans écrire', async () => {
+    const { unitOfWork, start, acknowledge } = useCases();
+    const started = await start.execute({ ...OWNER, commandId: START_COMMAND });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    const contextDigest = 'd'.repeat(64);
+    unitOfWork.screenObservation = {
+      status: 'ready',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 7,
+      contextDigest,
+      screenInstanceId: 'quote-wizard-instance-1',
+      draft,
+      draftHasCustomer: false,
+    };
+    const command = {
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: started.value.mission.revision,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 7,
+      contextDigest,
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    };
+
+    const acknowledged = await acknowledge.execute(command);
+    expect(acknowledged).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'acknowledged',
+        mission: {
+          phase: 'awaiting_customer',
+          currentBinding: {
+            realtimeSessionId: REALTIME_SESSION_ID,
+            contextRevision: 7,
+            contextDigest,
+          },
+        },
+      },
+    });
+    const afterFirst = unitOfWork.snapshot();
+    const ackEvent = afterFirst.events.at(-1)?.toSnapshot();
+    expect(ackEvent).toMatchObject({
+      eventType: 'screen_acknowledged',
+      actor: 'system',
+      commandId: ACK_COMMAND,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 7,
+      contextDigest,
+    });
+    const eventCount = afterFirst.events.length;
+
+    const replayed = await acknowledge.execute(command);
+    expect(replayed).toMatchObject({ ok: true, value: { outcome: 'replayed' } });
+    expect(unitOfWork.snapshot().events).toHaveLength(eventCount);
+  });
+
+  it('ACK écran refuse une session différente de la lease avant toute mutation mission', async () => {
+    const { unitOfWork, start, acknowledge } = useCases();
+    const started = await start.execute({ ...OWNER, commandId: START_COMMAND });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    const revisionBefore = started.value.mission.revision;
+    const eventCount = unitOfWork.snapshot().events.length;
+
+    const rejected = await acknowledge.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: revisionBefore,
+      realtimeSessionId: '30000000-0000-4000-8000-000000000099',
+      contextRevision: 1,
+      contextDigest: 'e'.repeat(64),
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    });
+
+    expect(rejected).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_screen_ack',
+        reason: 'context_stale',
+      },
+    });
+    expect(unitOfWork.snapshot().missions.get(started.value.mission.id)?.revision)
+      .toBe(revisionBefore);
+    expect(unitOfWork.snapshot().events).toHaveLength(eventCount);
   });
 
   it.each([1, 2, 3, 4])(

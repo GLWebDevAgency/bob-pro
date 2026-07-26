@@ -105,6 +105,18 @@ describe('frontières des données du runtime mobile', () => {
     }
   });
 
+  it('Bob Live détruit sa capability volatile avant toute déconnexion', () => {
+    const provider = readFileSync(
+      new URL('../agent/agent-session.tsx', import.meta.url),
+      'utf8',
+    );
+
+    expect(provider).toContain('registerBeforeSignOutCleanup');
+    expect(provider).toMatch(
+      /registerBeforeSignOutCleanup\(\(\)\s*=>\s*stopWithReason\('unmount'\)\)/u,
+    );
+  });
+
   it('le diagnostic consomme les encaissements persistés et aucun compteur de questions fictif', () => {
     const diagnostic = readFileSync(new URL('../../app/diagnostic.tsx', import.meta.url), 'utf8');
 

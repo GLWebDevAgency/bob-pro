@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
+import type { AppError, Result } from '@bob/core';
 import { Metrics } from '../../observability/metrics';
 import { requestContext, setPrincipal, type AppLogger } from '../../observability/logger';
 import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
@@ -9,6 +10,7 @@ import {
 } from './realtime-admission';
 import {
   admissionSubjectHash,
+  agentMissionNegotiationMetricLabels,
   RealtimeVoiceService,
   parseMistralRealtimeCallBody,
   parseRealtimeCallBody,
@@ -25,6 +27,7 @@ import {
   BOB_REALTIME_CONFIG_VERSION,
   BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE,
   type OpenAiRealtimeCallProvider,
+  type RealtimeCallBootstrap,
   type RealtimeVoiceSettings,
 } from './realtime.types';
 import type { MistralRealtimeIngressTicketAuthority } from './realtime-mistral-ingress-ticket';
@@ -184,6 +187,9 @@ function tracedAdmission(base: RealtimeAdmissionPort, order: string[]): Realtime
       order.push('resolve');
       return base.resolveSession(input);
     },
+    acknowledgeAgentMissionBootstrap: (input) => (
+      base.acknowledgeAgentMissionBootstrap(input)
+    ),
     claimTermination: (input) => base.claimTermination(input),
     completeReaping: (input) => base.completeReaping(input),
     updateContext: (input) => base.updateContext(input),
@@ -260,7 +266,226 @@ function missionGate(
   };
 }
 
+function negotiationResult(
+  binding:
+    | Record<never, never>
+    | { agentMissionProtocolVersion: null; agentMissionCapability: null }
+    | { agentMissionProtocolVersion: 1; agentMissionCapability: string },
+): Result<RealtimeCallBootstrap, AppError> {
+  return {
+    ok: true,
+    value: {
+      sessionHandle: '20000000-0000-4000-8000-000000000001',
+      hardExpiresAt: '2026-07-26T12:15:00.000Z',
+      model: 'gpt-realtime',
+      voice: 'marin',
+      configVersion: BOB_REALTIME_CONFIG_VERSION,
+      maxSessionSeconds: 900,
+      transport: 'webrtc',
+      speechDelivery: 'openai-native-webrtc-v1',
+      answerSdp: OFFER_SDP,
+      ...binding,
+    } as RealtimeCallBootstrap,
+  };
+}
+
 describe('RealtimeVoiceService', () => {
+  it('acquitte le bootstrap Mission avec l’identité dérivée et une métrique bornée', async () => {
+    const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+    const acknowledgeAgentMissionBootstrap = vi
+      .fn<RealtimeAdmissionPort['acknowledgeAgentMissionBootstrap']>()
+      .mockResolvedValue({
+        ok: true,
+        status: 'acknowledged',
+        acknowledgedAt: '2026-07-26T12:00:01.000Z',
+        leaseExpiresAt: '2026-07-26T12:00:31.000Z',
+      });
+    const durable = {
+      ...tracedAdmission(admission(), []),
+      acknowledgeAgentMissionBootstrap,
+    };
+    const metrics = new Metrics();
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      {
+        createCall: vi.fn(),
+        hangupCall: vi.fn(),
+      },
+      durable,
+      sidebandStub(),
+      metrics,
+      logger,
+    );
+
+    await expect(runAsPrincipal(() => service.acknowledgeAgentMissionBootstrap(
+      '20000000-0000-4000-8000-000000000001',
+      capability,
+    ))).resolves.toEqual({
+      ok: true,
+      value: { acknowledged: true, replayed: false },
+    });
+    expect(acknowledgeAgentMissionBootstrap).toHaveBeenCalledWith({
+      companyId: 'company-1',
+      subjectHashCandidates: [admissionSubjectHash(
+        SETTINGS.safetySecret!,
+        'company-1',
+        'user-1',
+      )],
+      principalBindingHash: agentMissionPrincipalBindingHash(
+        'company-1',
+        'user-1',
+      ),
+      sessionId: '20000000-0000-4000-8000-000000000001',
+      capabilityHash: hashRealtimeAgentMissionCapability(capability),
+    });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'bob.live.agent_mission.bootstrap_receipt',
+      { outcome: 'acknowledged' },
+    );
+    const metric = (await metrics.registry.getMetricsAsJSON()).find(
+      (candidate) => candidate.name === 'bob_agent_mission_bootstrap_receipts_total',
+    );
+    expect(metric?.values).toEqual(expect.arrayContaining([
+      expect.objectContaining({ labels: { outcome: 'acknowledged' } }),
+    ]));
+    expect(JSON.stringify(vi.mocked(logger.audit).mock.calls)).not.toContain(capability);
+  });
+
+  it.each([
+    ['hash_mismatch', 'forbidden', 'refused'],
+    ['expired', 'forbidden', 'refused'],
+    ['unavailable', 'unavailable', 'error'],
+  ] as const)('ferme le reçu %s sans exposer sa cause publique', async (
+    reason,
+    errorKind,
+    metricOutcome,
+  ) => {
+    const capability = `bam1_${Buffer.alloc(32, 9).toString('base64url')}`;
+    const durable = {
+      ...tracedAdmission(admission(), []),
+      acknowledgeAgentMissionBootstrap: vi
+        .fn<RealtimeAdmissionPort['acknowledgeAgentMissionBootstrap']>()
+        .mockResolvedValue({ ok: false, reason }),
+    };
+    const metrics = new Metrics();
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn() },
+      durable,
+      sidebandStub(),
+      metrics,
+      loggerStub(),
+    );
+
+    await expect(runAsPrincipal(() => service.acknowledgeAgentMissionBootstrap(
+      '20000000-0000-4000-8000-000000000001',
+      capability,
+    ))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: errorKind },
+    });
+    const metric = (await metrics.registry.getMetricsAsJSON()).find(
+      (candidate) => candidate.name === 'bob_agent_mission_bootstrap_receipts_total',
+    );
+    expect(metric?.values).toEqual(expect.arrayContaining([
+      expect.objectContaining({ labels: { outcome: metricOutcome } }),
+    ]));
+  });
+
+  it('borne les labels de négociation Mission sans secret, hash ni identité', () => {
+    const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 1 },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: 1,
+        agentMissionCapability: capability,
+      }),
+    )).toEqual({
+      requested: 'v1',
+      outcome: 'accepted',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 1 },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
+      }),
+    )).toEqual({
+      requested: 'v1',
+      outcome: 'refused',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      {},
+      'openai',
+      negotiationResult({}),
+    )).toEqual({
+      requested: 'omitted',
+      outcome: 'historical',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: null },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
+      }),
+    )).toEqual({
+      requested: 'null',
+      outcome: 'historical',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 99 },
+      'openai',
+      {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{
+            field: 'agentMissionProtocolVersion',
+            message: 'unsupported',
+          }],
+        },
+      },
+    )).toEqual({
+      requested: 'unknown',
+      outcome: 'refused',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 1 },
+      'mistral',
+      negotiationResult({
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
+      }),
+    )).toEqual({
+      requested: 'v1',
+      outcome: 'refused',
+      provider: 'mistral',
+      transport: 'mistral_pcm',
+    });
+    expect(JSON.stringify(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 1 },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: 1,
+        agentMissionCapability: capability,
+      }),
+    ))).not.toContain(capability);
+  });
+
   it('rend la capability V1 uniquement après la preuve durable corrélée et avant aucun provider', async () => {
     const order: string[] = [];
     const capability = `bam1_${Buffer.alloc(32, 73).toString('base64url')}`;

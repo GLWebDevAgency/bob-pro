@@ -30,14 +30,18 @@ SELECT current_user = :'app_role' AS agent_mission_realtime_runtime_role_matches
 DO $agent_mission_realtime_release_certificate$
 DECLARE
   runtime_role pg_catalog.pg_roles%ROWTYPE;
+  retention_reaper_role pg_catalog.pg_roles%ROWTYPE;
   authority pg_catalog.pg_roles%ROWTYPE;
   lease_relation pg_catalog.pg_class%ROWTYPE;
   cancellation_relation pg_catalog.pg_class%ROWTYPE;
   helper pg_catalog.pg_proc%ROWTYPE;
   capability_guard pg_catalog.pg_proc%ROWTYPE;
+  receipt_guard pg_catalog.pg_proc%ROWTYPE;
   cancellation_guard pg_catalog.pg_proc%ROWTYPE;
   cancellation_schedule_sync pg_catalog.pg_proc%ROWTYPE;
   capability_trigger pg_catalog.pg_trigger%ROWTYPE;
+  receipt_insert_trigger pg_catalog.pg_trigger%ROWTYPE;
+  receipt_update_trigger pg_catalog.pg_trigger%ROWTYPE;
   cancellation_guard_trigger pg_catalog.pg_trigger%ROWTYPE;
   cancellation_schedule_trigger pg_catalog.pg_trigger%ROWTYPE;
   capability_attribute pg_catalog.pg_attribute%ROWTYPE;
@@ -88,6 +92,10 @@ BEGIN
   IF runtime_role.rolsuper OR runtime_role.rolbypassrls THEN
     RAISE EXCEPTION 'AgentMission realtime certificate requires a non-superuser runtime role';
   END IF;
+  SELECT *
+    INTO STRICT retention_reaper_role
+    FROM pg_catalog.pg_roles
+   WHERE rolname = 'bob_mistral_bootstrap_reaper';
 
   SELECT relation.*
     INTO STRICT lease_relation
@@ -276,7 +284,12 @@ BEGIN
             6
           ),
           ('agentMissionCapabilityHash'::TEXT, 'character'::pg_catalog.regtype::OID, 68),
-          ('agentMissionReleaseFlagVersion'::TEXT, 'integer'::pg_catalog.regtype::OID, -1)
+          ('agentMissionReleaseFlagVersion'::TEXT, 'integer'::pg_catalog.regtype::OID, -1),
+          (
+            'agentMissionBootstrapAcknowledgedAt'::TEXT,
+            'timestamp with time zone'::pg_catalog.regtype::OID,
+            6
+          )
       ) AS expected(column_name, type_oid, type_modifier)
   LOOP
     SELECT *
@@ -309,6 +322,23 @@ BEGIN
      OR pg_catalog.pg_get_constraintdef(capability_constraint.oid, TRUE) <>
        'CHECK ((("agentMissionProtocolVersion" IS NULL) = ("agentMissionProtocolBoundAt" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionCapabilityHash" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionReleaseFlagVersion" IS NULL) AND ("agentMissionProtocolVersion" IS NULL OR "agentMissionProtocolVersion" = 1 AND isfinite("agentMissionProtocolBoundAt") AND "agentMissionProtocolBoundAt" = "reservedAt" AND "agentMissionCapabilityHash" ~ ''^[a-f0-9]{64}$''::text AND "agentMissionReleaseFlagVersion" >= 1 AND "agentMissionReleaseFlagVersion" <= 2147483647)) IS TRUE)' THEN
     RAISE EXCEPTION 'AgentMission realtime lease constraint definition drift';
+  END IF;
+
+  SELECT *
+    INTO STRICT capability_constraint
+    FROM pg_catalog.pg_constraint AS constraint_row
+   WHERE constraint_row.conrelid = lease_relation.oid
+     AND constraint_row.conname =
+       'realtime_leases_agent_mission_bootstrap_receipt_check';
+  constraint_definition :=
+    pg_catalog.pg_get_constraintdef(capability_constraint.oid, TRUE);
+  IF capability_constraint.contype <> 'c'
+     OR NOT capability_constraint.convalidated
+     OR constraint_definition <>
+       'CHECK (("agentMissionBootstrapAcknowledgedAt" IS NULL OR "agentMissionProtocolVersion" = 1 AND "agentMissionProtocolBoundAt" IS NOT NULL AND "agentMissionCapabilityHash" IS NOT NULL AND isfinite("agentMissionBootstrapAcknowledgedAt") AND "agentMissionBootstrapAcknowledgedAt" >= "agentMissionProtocolBoundAt" AND "agentMissionBootstrapAcknowledgedAt" <= "hardExpiresAt") IS TRUE)' THEN
+    RAISE EXCEPTION
+      'AgentMission bootstrap receipt constraint definition drift: %',
+      constraint_definition;
   END IF;
 
   SELECT *
@@ -370,6 +400,115 @@ BEGIN
      OR capability_trigger.tgconstraint <> 0
      OR expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes THEN
     RAISE EXCEPTION 'AgentMission realtime capability immutability trigger drift';
+  END IF;
+
+  SELECT *
+    INTO STRICT receipt_guard
+    FROM pg_catalog.pg_proc AS function
+   WHERE function.oid =
+     'public.guard_realtime_agent_mission_bootstrap_receipt_v1()'::pg_catalog.regprocedure;
+  IF receipt_guard.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype
+     OR receipt_guard.proowner <> lease_relation.relowner
+     OR receipt_guard.prosecdef
+     OR receipt_guard.proconfig IS DISTINCT FROM ARRAY[
+       'search_path=pg_catalog, public'
+     ]::TEXT[]
+     OR receipt_guard.provolatile <> 'v'
+     OR receipt_guard.proparallel <> 'u'
+     OR receipt_guard.prokind <> 'f'
+     OR receipt_guard.proleakproof
+     OR receipt_guard.proisstrict
+     OR receipt_guard.pronargs <> 0
+     OR receipt_guard.pronargdefaults <> 0
+     OR receipt_guard.prolang <> (
+       SELECT language.oid
+         FROM pg_catalog.pg_language AS language
+        WHERE language.lanname = 'plpgsql'
+     )
+     OR pg_catalog.md5(receipt_guard.prosrc) <>
+       'cc7d684675783921cfc6ae9eb1220f81'
+     OR pg_catalog.has_function_privilege(current_user, receipt_guard.oid, 'EXECUTE')
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.aclexplode(
+           COALESCE(
+             receipt_guard.proacl,
+             pg_catalog.acldefault('f', receipt_guard.proowner)
+           )
+         ) AS privilege
+        WHERE privilege.grantee = 0
+          AND privilege.privilege_type = 'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'AgentMission bootstrap receipt guard function drift';
+  END IF;
+
+  SELECT *
+    INTO STRICT receipt_insert_trigger
+    FROM pg_catalog.pg_trigger AS trigger_row
+   WHERE trigger_row.tgrelid = lease_relation.oid
+     AND trigger_row.tgname =
+       'realtime_lease_agent_mission_receipt_insert_v1';
+  IF receipt_insert_trigger.tgfoid <> receipt_guard.oid
+     OR receipt_insert_trigger.tgtype <> 7
+     OR receipt_insert_trigger.tgenabled <> 'O'
+     OR receipt_insert_trigger.tgisinternal
+     OR receipt_insert_trigger.tgconstraint <> 0
+     OR receipt_insert_trigger.tgconstrrelid <> 0
+     OR receipt_insert_trigger.tgconstrindid <> 0
+     OR receipt_insert_trigger.tgdeferrable
+     OR receipt_insert_trigger.tginitdeferred
+     OR receipt_insert_trigger.tgparentid <> 0
+     OR receipt_insert_trigger.tgnargs <> 0
+     OR pg_catalog.octet_length(receipt_insert_trigger.tgargs) <> 0
+     OR receipt_insert_trigger.tgqual IS NOT NULL
+     OR receipt_insert_trigger.tgattr <> ''::pg_catalog.int2vector THEN
+    RAISE EXCEPTION 'AgentMission bootstrap receipt INSERT trigger drift';
+  END IF;
+
+  SELECT *
+    INTO STRICT receipt_update_trigger
+    FROM pg_catalog.pg_trigger AS trigger_row
+   WHERE trigger_row.tgrelid = lease_relation.oid
+     AND trigger_row.tgname =
+       'realtime_lease_agent_mission_receipt_update_v1';
+  SELECT ARRAY[attribute.attnum::SMALLINT]
+    INTO STRICT expected_trigger_attributes
+    FROM pg_catalog.pg_attribute AS attribute
+   WHERE attribute.attrelid = lease_relation.oid
+     AND attribute.attname = 'agentMissionBootstrapAcknowledgedAt'
+     AND attribute.attnum > 0
+     AND NOT attribute.attisdropped;
+  SELECT pg_catalog.array_agg(
+           trigger_attribute.attribute_number
+           ORDER BY trigger_attribute.attribute_number
+         )
+    INTO STRICT actual_trigger_attributes
+    FROM pg_catalog.unnest(
+      receipt_update_trigger.tgattr::SMALLINT[]
+    ) AS trigger_attribute(attribute_number);
+  IF receipt_update_trigger.tgfoid <> receipt_guard.oid
+     OR receipt_update_trigger.tgtype <> 19
+     OR receipt_update_trigger.tgenabled <> 'O'
+     OR receipt_update_trigger.tgisinternal
+     OR receipt_update_trigger.tgconstraint <> 0
+     OR receipt_update_trigger.tgconstrrelid <> 0
+     OR receipt_update_trigger.tgconstrindid <> 0
+     OR receipt_update_trigger.tgdeferrable
+     OR receipt_update_trigger.tginitdeferred
+     OR receipt_update_trigger.tgparentid <> 0
+     OR receipt_update_trigger.tgnargs <> 0
+     OR pg_catalog.octet_length(receipt_update_trigger.tgargs) <> 0
+     OR receipt_update_trigger.tgqual IS NOT NULL
+     OR expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes THEN
+    RAISE EXCEPTION 'AgentMission bootstrap receipt UPDATE trigger drift';
+  END IF;
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM pg_catalog.pg_trigger AS trigger_row
+     WHERE trigger_row.tgfoid = receipt_guard.oid
+       AND NOT trigger_row.tgisinternal
+  ) <> 2 THEN
+    RAISE EXCEPTION 'AgentMission bootstrap receipt trigger inventory drift';
   END IF;
 
   SELECT *
@@ -538,6 +677,61 @@ BEGIN
      ) THEN
     RAISE EXCEPTION 'AgentMission realtime runtime lease ACL drift';
   END IF;
+  IF pg_catalog.has_function_privilege(
+       current_user,
+       receipt_guard.oid,
+       'EXECUTE'
+     ) THEN
+    RAISE EXCEPTION 'AgentMission bootstrap receipt guard is directly executable';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.aclexplode(
+        COALESCE(
+          lease_relation.relacl,
+          pg_catalog.acldefault('r', lease_relation.relowner)
+        )
+      ) AS privilege
+     WHERE privilege.grantee <> lease_relation.relowner
+       AND (
+         privilege.grantee <> runtime_role.oid
+         OR privilege.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+         OR privilege.is_grantable
+         OR privilege.grantor <> lease_relation.relowner
+       )
+  ) THEN
+    RAISE EXCEPTION 'AgentMission realtime lease exact relation ACL drift';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_attribute AS attribute
+     CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+     WHERE attribute.attrelid = lease_relation.oid
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+       AND privilege.grantee <> lease_relation.relowner
+       AND (
+         privilege.grantee <> retention_reaper_role.oid
+         OR attribute.attname NOT IN ('companyId', 'sessionId')
+         OR privilege.privilege_type <> 'SELECT'
+         OR privilege.is_grantable
+         OR privilege.grantor <> lease_relation.relowner
+       )
+  ) OR (
+    SELECT pg_catalog.count(*)
+      FROM pg_catalog.pg_attribute AS attribute
+     CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
+     WHERE attribute.attrelid = lease_relation.oid
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+       AND attribute.attname IN ('companyId', 'sessionId')
+       AND privilege.grantee = retention_reaper_role.oid
+       AND privilege.privilege_type = 'SELECT'
+       AND NOT privilege.is_grantable
+       AND privilege.grantor = lease_relation.relowner
+  ) <> 2 THEN
+    RAISE EXCEPTION 'AgentMission realtime lease exact column ACL drift';
+  END IF;
 
   FOREACH required_privilege IN ARRAY ARRAY['SELECT', 'INSERT', 'DELETE']::TEXT[] LOOP
     IF NOT pg_catalog.has_table_privilege(
@@ -605,6 +799,8 @@ BEGIN
        COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
      ) AS privilege
      WHERE function.oid IN (
+       capability_guard.oid,
+       receipt_guard.oid,
        cancellation_guard.oid,
        cancellation_schedule_sync.oid
      )
@@ -615,7 +811,7 @@ BEGIN
          OR privilege.grantor <> function.proowner
        )
   ) THEN
-    RAISE EXCEPTION 'Realtime cancellation trigger function exact ACL drift';
+    RAISE EXCEPTION 'AgentMission realtime trigger function exact ACL drift';
   END IF;
 
   FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
@@ -638,6 +834,13 @@ BEGIN
         'EXECUTE'
       ) THEN
         RAISE EXCEPTION '% can execute AgentMission realtime capability guard', exposed_role;
+      END IF;
+      IF pg_catalog.has_function_privilege(
+        exposed_role,
+        receipt_guard.oid,
+        'EXECUTE'
+      ) THEN
+        RAISE EXCEPTION '% can execute AgentMission bootstrap receipt guard', exposed_role;
       END IF;
       IF pg_catalog.has_table_privilege(
            exposed_role,

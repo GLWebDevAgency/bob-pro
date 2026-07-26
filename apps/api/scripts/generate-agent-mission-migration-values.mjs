@@ -27,6 +27,10 @@ const capabilityMigrationPath = path.join(
   apiDir,
   'prisma/migrations/20260726040000_agent_mission_realtime_lease_expand/migration.sql',
 );
+const commandNamespaceMigrationPath = path.join(
+  apiDir,
+  'prisma/migrations/20260726080000_agent_mission_event_command_namespace_expand/migration.sql',
+);
 const frozenCapabilityExpandProtocolVersions = ['1'];
 
 function extractConstArray(source, name) {
@@ -179,13 +183,21 @@ function renderCustomerCandidateChecks(keys, maximumCandidates) {
   }).join('\n');
 }
 
-const [missionTs, eventTs, negotiationTs, currentMigration, currentCapabilityMigration] =
+const [
+  missionTs,
+  eventTs,
+  negotiationTs,
+  currentMigration,
+  currentCapabilityMigration,
+  currentCommandNamespaceMigration,
+] =
   await Promise.all([
   readFile(missionSource, 'utf8'),
   readFile(eventSource, 'utf8'),
   readFile(negotiationSource, 'utf8'),
   readFile(migrationPath, 'utf8'),
   readFile(capabilityMigrationPath, 'utf8'),
+  readFile(commandNamespaceMigrationPath, 'utf8'),
 ]);
 
 const regions = [
@@ -346,17 +358,41 @@ const generatedCapabilityMigration = replaceGeneratedNumericRegion(
   'AGENT_MISSION_PROTOCOL_VERSIONS',
   currentProtocolVersions,
 );
+const commandNamespaceRegionNames = [
+  'AGENT_MISSION_ACTORS',
+  'AGENT_MISSION_USER_ACTORS',
+  'AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES',
+  'AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES',
+  'AGENT_MISSION_CORRELATION_USER_EVENT_TYPES',
+  'AGENT_MISSION_DRAFT_START_EVENT_TYPES',
+];
+const generatedCommandNamespaceMigration = commandNamespaceRegionNames.reduce(
+  (sql, name) => {
+    const region = regions.find((candidate) => candidate.name === name);
+    if (region === undefined) {
+      throw new Error(`AGENT_MISSION_COMMAND_NAMESPACE_REGION_MISSING:${name}`);
+    }
+    return replaceGeneratedRegion(sql, name, region.values);
+  },
+  currentCommandNamespaceMigration,
+);
 
 if (process.argv.includes('--write')) {
   await Promise.all([
     writeFile(migrationPath, generatedMigration, 'utf8'),
     writeFile(capabilityMigrationPath, generatedCapabilityMigration, 'utf8'),
+    writeFile(
+      commandNamespaceMigrationPath,
+      generatedCommandNamespaceMigration,
+      'utf8',
+    ),
   ]);
   process.stdout.write('AgentMission migration value lists generated.\n');
 } else if (process.argv.includes('--check')) {
   if (
     generatedMigration !== currentMigration
     || generatedCapabilityMigration !== currentCapabilityMigration
+    || generatedCommandNamespaceMigration !== currentCommandNamespaceMigration
   ) {
     throw new Error(
       'AGENT_MISSION_SQL_VALUES_DRIFT: run generate-agent-mission-migration-values.mjs --write',

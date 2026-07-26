@@ -237,6 +237,31 @@ export interface RealtimeAdmissionSessionLookupInput {
   sessionId: string;
 }
 
+export interface RealtimeAgentMissionBootstrapAcknowledgementInput
+extends RealtimeAdmissionSessionLookupInput {
+  /** SHA-256 canonique de la capability présentée ; le secret brut ne traverse jamais le port. */
+  capabilityHash: string;
+}
+
+export type RealtimeAgentMissionBootstrapAcknowledgementResult =
+  | {
+      ok: true;
+      status: 'acknowledged' | 'replayed';
+      acknowledgedAt: string;
+      leaseExpiresAt: string;
+    }
+  | {
+      ok: false;
+      reason:
+        | 'malformed'
+        | 'not_found'
+        | 'ambiguous'
+        | 'expired'
+        | 'state'
+        | 'hash_mismatch'
+        | 'unavailable';
+    };
+
 export type RealtimeSessionIdentityResolution =
   | { ok: true; identity: RealtimeContextIdentity | null }
   | { ok: false; reason: 'unavailable' };
@@ -281,6 +306,13 @@ export interface RealtimeAdmissionPort {
   resolveSession(
     input: RealtimeAdmissionSessionLookupInput,
   ): Promise<RealtimeSessionIdentityResolution>;
+  /**
+   * Acquitte une seule fois la possession applicative du bootstrap V1. Avant ce reçu durable,
+   * activate/renew conservent la courte deadline de réservation et l'autorité Mission reste fermée.
+   */
+  acknowledgeAgentMissionBootstrap(
+    input: RealtimeAgentMissionBootstrapAcknowledgementInput,
+  ): Promise<RealtimeAgentMissionBootstrapAcknowledgementResult>;
   /** Réclame une terminaison explicite, atomique avec le fence d'annulation du bootstrap. */
   claimTermination(
     input: RealtimeAdmissionSessionLookupInput,

@@ -190,6 +190,8 @@ jobs:
             sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+      - name: Certify the full RLS replay after an exact schema-owner split
+        run: sh apps/api/scripts/certify-rls-owner-split.sh
       - name: Certify Bob Live admission and fair reaper on ephemeral PostgreSQL
         env:
           RUN_POSTGRES_REALTIME_ADMISSION_CERT: 'true'

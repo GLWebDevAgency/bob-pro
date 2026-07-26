@@ -8,6 +8,7 @@ const COMPANY = 'company-1';
 const SUBJECT = 'a'.repeat(64);
 const SESSION = '11111111-1111-4111-8111-111111111111';
 const PROVIDER_SESSION = 'mistral_session_1';
+const CAPABILITY_HASH = 'c'.repeat(64);
 const HARD_EXPIRES_AT = new Date('2026-07-14T10:00:00.000Z');
 const policy: RealtimeAdmissionPolicy = {
   globalCapacity: {
@@ -46,6 +47,35 @@ function claimed(databaseNow: Date) {
     reaperLeaseExpiresAt: new Date(databaseNow.getTime() + 30_000),
     databaseNow,
     version: 4,
+  };
+}
+
+function receiptLease(overrides: Record<string, unknown> = {}) {
+  return {
+    companyId: COMPANY,
+    subjectHash: SUBJECT,
+    sessionId: SESSION,
+    state: 'active',
+    providerId: 'openai',
+    providerCallId: 'call_agent_mission_1',
+    leaseExpiresAt: new Date('2026-07-26T12:00:15.000Z'),
+    hardExpiresAt: new Date('2026-07-26T12:15:00.000Z'),
+    agentMissionProtocolVersion: 1,
+    agentMissionProtocolBoundAt: new Date('2026-07-26T12:00:00.000Z'),
+    agentMissionCapabilityHash: CAPABILITY_HASH,
+    agentMissionBootstrapAcknowledgedAt: null,
+    version: 3,
+    ...overrides,
+  };
+}
+
+function receiptInput() {
+  return {
+    companyId: COMPANY,
+    subjectHashCandidates: [SUBJECT, 'b'.repeat(64)],
+    principalBindingHash: 'd'.repeat(64),
+    sessionId: SESSION,
+    capabilityHash: CAPABILITY_HASH,
   };
 }
 
@@ -324,6 +354,151 @@ describe('PrismaRealtimeAdmission — résolution après rotation HMAC', () => {
       .join('\n');
     expect(sql).toContain('realtime_admission_cancellation_fences');
     expect(sql).not.toContain('SELECT "companyId", "subjectHash", "sessionId" FROM realtime_session_leases');
+  });
+});
+
+describe('PrismaRealtimeAdmission — reçu durable AgentMission', () => {
+  it('verrouille les candidats, acquitte une fois et convertit la deadline en TTL actif', async () => {
+    const now = new Date('2026-07-26T12:00:01.000Z');
+    const acknowledgedAt = new Date('2026-07-26T12:00:01.001Z');
+    const leaseExpiresAt = new Date('2026-07-26T12:00:31.000Z');
+    const h = harness([
+      [receiptLease()],
+      [{ now }],
+      [{ acknowledgedAt, leaseExpiresAt }],
+    ]);
+
+    await expect(
+      h.value.acknowledgeAgentMissionBootstrap(receiptInput()),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'acknowledged',
+      acknowledgedAt: acknowledgedAt.toISOString(),
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+    });
+
+    const sql = h.queryRaw.mock.calls
+      .map((_, index) => sqlAt(h.queryRaw, index))
+      .join('\n');
+    expect(sql).toContain('ORDER BY "subjectHash", "sessionId" FOR UPDATE');
+    expect(sql).toContain('"agentMissionBootstrapAcknowledgedAt" IS NULL');
+    expect(sql).toContain('make_interval(secs => ?)');
+    expect(sql).toContain('version = version + 1');
+    const cancellationFenceSql = h.queryRaw.mock.calls
+      .map((_, index) => sqlAt(h.queryRaw, index))
+      .find((query) => query.includes('realtime_admission_cancellation_fences'));
+    expect(cancellationFenceSql).toBeDefined();
+    expect(cancellationFenceSql).not.toContain('FOR UPDATE');
+    expect(JSON.stringify(h.queryRaw.mock.calls)).not.toContain('bam1_');
+    expect(h.withIsolatedTenant).toHaveBeenCalledWith(
+      COMPANY,
+      expect.any(Function),
+      { maxWaitMs: 1_000, timeoutMs: 4_000 },
+    );
+  });
+
+  it('rejoue sans UPDATE et sans prolonger une lease déjà acquittée', async () => {
+    const acknowledgedAt = new Date('2026-07-26T12:00:01.001Z');
+    const leaseExpiresAt = new Date('2026-07-26T12:00:31.000Z');
+    const now = new Date('2026-07-26T12:00:02.000Z');
+    const h = harness([
+      [receiptLease({
+        agentMissionBootstrapAcknowledgedAt: acknowledgedAt,
+        leaseExpiresAt,
+      })],
+      [{ now }],
+    ]);
+
+    await expect(
+      h.value.acknowledgeAgentMissionBootstrap(receiptInput()),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'replayed',
+      acknowledgedAt: acknowledgedAt.toISOString(),
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+    });
+    expect(
+      h.queryRaw.mock.calls
+        .map((_, index) => sqlAt(h.queryRaw, index))
+        .join('\n'),
+    ).not.toContain('UPDATE realtime_session_leases');
+  });
+
+  it.each([
+    ['capability différente', { capabilityHash: 'e'.repeat(64) }, 'hash_mismatch'],
+    ['lease expirée', {}, 'expired'],
+    ['lease reaping', {}, 'state'],
+  ] as const)('refuse %s sans écrire le reçu', async (_label, inputPatch, reason) => {
+    const now = new Date(
+      reason === 'expired'
+        ? '2026-07-26T12:00:16.000Z'
+        : '2026-07-26T12:00:01.000Z',
+    );
+    const row = reason === 'state'
+      ? receiptLease({ state: 'reaping' })
+      : receiptLease();
+    const h = harness([[row], [{ now }]]);
+
+    await expect(h.value.acknowledgeAgentMissionBootstrap({
+      ...receiptInput(),
+      ...inputPatch,
+    })).resolves.toEqual({ ok: false, reason });
+    expect(
+      h.queryRaw.mock.calls
+        .map((_, index) => sqlAt(h.queryRaw, index))
+        .join('\n'),
+    ).not.toContain('UPDATE realtime_session_leases');
+  });
+
+  it('refuse une ambiguïté ou un fence vivant sans choisir de lease', async () => {
+    const ambiguous = harness([[
+      receiptLease(),
+      receiptLease({ subjectHash: 'b'.repeat(64) }),
+    ]]);
+    await expect(
+      ambiguous.value.acknowledgeAgentMissionBootstrap(receiptInput()),
+    ).resolves.toEqual({ ok: false, reason: 'ambiguous' });
+
+    const fenced = harness([], [], [{ subjectHash: SUBJECT }]);
+    await expect(
+      fenced.value.acknowledgeAgentMissionBootstrap(receiptInput()),
+    ).resolves.toEqual({ ok: false, reason: 'state' });
+    const sql = fenced.queryRaw.mock.calls
+      .map((_, index) => sqlAt(fenced.queryRaw, index))
+      .join('\n');
+    expect(sql).not.toContain('FROM realtime_session_leases');
+  });
+
+  it('garde la courte deadline à activate et ne la prolonge pas au heartbeat pré-ACK', async () => {
+    const shortDeadline = new Date('2026-07-26T12:00:15.000Z');
+    const credential = {
+      companyId: COMPANY,
+      subjectHash: SUBJECT,
+      sessionId: SESSION,
+      leaseToken: 'l'.repeat(43),
+    };
+    const activated = harness([[{ leaseExpiresAt: shortDeadline }]]);
+    await expect(activated.value.activate(credential)).resolves.toEqual({
+      ok: true,
+      reason: null,
+      leaseExpiresAt: shortDeadline.toISOString(),
+    });
+    expect(sqlAt(activated.queryRaw, 0)).toContain(
+      'WHEN "agentMissionProtocolVersion" = 1 AND "agentMissionBootstrapAcknowledgedAt" IS NULL',
+    );
+
+    const renewed = harness([[], [{ leaseExpiresAt: shortDeadline }]]);
+    await expect(renewed.value.renew(credential)).resolves.toEqual({
+      ok: true,
+      reason: null,
+      leaseExpiresAt: shortDeadline.toISOString(),
+    });
+    expect(sqlAt(renewed.queryRaw, 0)).toContain(
+      '"agentMissionBootstrapAcknowledgedAt" IS NOT NULL',
+    );
+    expect(sqlAt(renewed.queryRaw, 1)).toContain(
+      '"agentMissionBootstrapAcknowledgedAt" IS NULL',
+    );
   });
 });
 

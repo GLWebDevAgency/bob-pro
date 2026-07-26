@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../persistence/prisma/prisma.service';
 import {
@@ -18,6 +18,8 @@ import {
   type RealtimeAdmissionReserveInput,
   type RealtimeAdmissionResult,
   type RealtimeAdmissionSessionLookupInput,
+  type RealtimeAgentMissionBootstrapAcknowledgementInput,
+  type RealtimeAgentMissionBootstrapAcknowledgementResult,
   type RealtimeContextIdentity,
   type RealtimeContextReadResult,
   type RealtimeContextUpdateInput,
@@ -83,6 +85,27 @@ interface SessionIdentityRow {
   companyId: string;
   subjectHash: string;
   sessionId: string;
+}
+
+interface AgentMissionBootstrapReceiptRow {
+  companyId: string;
+  subjectHash: string;
+  sessionId: string;
+  state: string;
+  providerId: RealtimeProviderId | null;
+  providerCallId: string | null;
+  leaseExpiresAt: Date;
+  hardExpiresAt: Date;
+  agentMissionProtocolVersion: number | null;
+  agentMissionProtocolBoundAt: Date | null;
+  agentMissionCapabilityHash: string | null;
+  agentMissionBootstrapAcknowledgedAt: Date | null;
+  version: number;
+}
+
+interface AgentMissionBootstrapReceiptMutationRow {
+  acknowledgedAt: Date;
+  leaseExpiresAt: Date;
 }
 
 interface AgentMissionReleaseFlagRevalidationRow {
@@ -192,6 +215,17 @@ function validSessionLookup(input: RealtimeAdmissionSessionLookupInput): boolean
     && isRealtimeSessionId(input.sessionId);
 }
 
+function validAgentMissionBootstrapAcknowledgement(
+  input: RealtimeAgentMissionBootstrapAcknowledgementInput,
+): boolean {
+  return validSessionLookup(input) && isRealtimeSubjectHash(input.capabilityHash);
+}
+
+function capabilityHashesMatch(left: string, right: string): boolean {
+  if (!isRealtimeSubjectHash(left) || !isRealtimeSubjectHash(right)) return false;
+  return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
+}
+
 /**
  * Admission distribuée Bob Live. Chaque réserve ouvre une transaction tenant très courte ; aucun
  * appel réseau provider n'est exécuté sous verrou. L'advisory lock tenant sérialise les compteurs
@@ -231,16 +265,17 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
         if (!now) return deniedUnavailable();
 
         if (input.sessionId) {
+          // Le fence est insert/delete-only. Le lock advisory tenant+principal sérialise déjà
+          // sa lecture avec cancel ; un row-lock exigerait à tort le privilège SQL UPDATE.
           const cancellationFences = await tx.$queryRaw<Array<{ subjectHash: string }>>`
             SELECT "subjectHash"
               FROM realtime_admission_cancellation_fences
              WHERE "companyId" = ${input.companyId}
                AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
-               AND "sessionId" = ${input.sessionId}::uuid
-               AND "expiresAt" > ${now}
+             AND "sessionId" = ${input.sessionId}::uuid
+             AND "expiresAt" > ${now}
              ORDER BY "subjectHash"
-             FOR UPDATE
-          `;
+        `;
           if (cancellationFences.length > 0) {
             return { allowed: false, denial: 'active_lease', retryAt: null };
           }
@@ -544,10 +579,15 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
       const rows = await tx.$queryRaw<UpdatedLeaseRow[]>`
         UPDATE realtime_session_leases
            SET state = 'active', "activatedAt" = clock_timestamp(),
-               "leaseExpiresAt" = LEAST(
-                 clock_timestamp() + make_interval(secs => ${this.policy.activeLeaseSeconds}),
-                 "hardExpiresAt"
-               ),
+               "leaseExpiresAt" = CASE
+                 WHEN "agentMissionProtocolVersion" = 1
+                      AND "agentMissionBootstrapAcknowledgedAt" IS NULL
+                   THEN "leaseExpiresAt"
+                 ELSE LEAST(
+                   clock_timestamp() + make_interval(secs => ${this.policy.activeLeaseSeconds}),
+                   "hardExpiresAt"
+                 )
+               END,
                "updatedAt" = clock_timestamp(), version = version + 1
          WHERE "companyId" = ${input.companyId}
            AND "subjectHash" = ${input.subjectHash}
@@ -597,12 +637,38 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
            AND state = 'active'
            AND "providerId" IS NOT NULL
            AND "providerCallId" IS NOT NULL
+           AND (
+             "agentMissionProtocolVersion" IS NULL
+             OR "agentMissionBootstrapAcknowledgedAt" IS NOT NULL
+           )
            AND "leaseExpiresAt" > clock_timestamp()
            AND "hardExpiresAt" > clock_timestamp()
         RETURNING "leaseExpiresAt"
       `;
-      return rows[0]
-        ? { ok: true, reason: null, leaseExpiresAt: rows[0].leaseExpiresAt.toISOString() }
+      if (rows[0]) {
+        return { ok: true, reason: null, leaseExpiresAt: rows[0].leaseExpiresAt.toISOString() };
+      }
+      const [pendingReceipt] = await tx.$queryRaw<UpdatedLeaseRow[]>`
+        SELECT "leaseExpiresAt"
+          FROM realtime_session_leases
+         WHERE "companyId" = ${input.companyId}
+           AND "subjectHash" = ${input.subjectHash}
+           AND "sessionId" = ${input.sessionId}::uuid
+           AND "leaseTokenHash" = ${hashRealtimeLeaseToken(input.leaseToken)}
+           AND state = 'active'
+           AND "providerId" IS NOT NULL
+           AND "providerCallId" IS NOT NULL
+           AND "agentMissionProtocolVersion" = 1
+           AND "agentMissionBootstrapAcknowledgedAt" IS NULL
+           AND "leaseExpiresAt" > clock_timestamp()
+           AND "hardExpiresAt" > clock_timestamp()
+      `;
+      return pendingReceipt
+        ? {
+            ok: true,
+            reason: null,
+            leaseExpiresAt: pendingReceipt.leaseExpiresAt.toISOString(),
+          }
         : this.classifyMutationMiss(tx, input);
     });
   }
@@ -633,6 +699,8 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
       return await this.withBoundedReaperTenant(input.companyId, async (tx) => {
         await this.lockTenant(tx, input.companyId);
         await tx.$executeRaw`
+          -- Le verrou advisory tenant rend SKIP LOCKED inutile et conserve l'ACL minimale
+          -- SELECT+DELETE de ce registre immuable.
           WITH candidates AS (
             SELECT event.id
               FROM realtime_admission_events AS event
@@ -654,7 +722,6 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
              WHERE fence."companyId" = ${input.companyId}
                AND fence."expiresAt" <= clock_timestamp()
              ORDER BY fence."expiresAt", fence."sessionId", fence."subjectHash"
-             FOR UPDATE OF fence SKIP LOCKED
              LIMIT ${REAPER_CANCELLATION_CLEANUP_LIMIT}
           )
           DELETE FROM realtime_admission_cancellation_fences AS fence
@@ -763,6 +830,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
           || timeouts.lockTimeout !== ADMISSION_LOCK_TIMEOUT
         ) throw new Error('realtime_session_lookup_timeout_fence_rejected');
         await this.lockAdmission(tx, input.companyId, input.principalBindingHash);
+        // Même invariant que reserve/cancel : sérialisation advisory, aucune autorité UPDATE.
         const cancellationFences = await tx.$queryRaw<Array<{ subjectHash: string }>>`
           SELECT "subjectHash"
             FROM realtime_admission_cancellation_fences
@@ -771,7 +839,6 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
              AND "sessionId" = ${input.sessionId}::uuid
              AND "expiresAt" > clock_timestamp()
            ORDER BY "subjectHash"
-           FOR UPDATE
         `;
         if (cancellationFences.length > 0) {
           return { ok: true as const, identity: null };
@@ -808,6 +875,119 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
     }
   }
 
+  async acknowledgeAgentMissionBootstrap(
+    input: RealtimeAgentMissionBootstrapAcknowledgementInput,
+  ): Promise<RealtimeAgentMissionBootstrapAcknowledgementResult> {
+    if (!validAgentMissionBootstrapAcknowledgement(input)) {
+      return { ok: false, reason: 'malformed' };
+    }
+    const subjectHashCandidates = [...input.subjectHashCandidates].sort();
+    try {
+      return await this.prisma.withIsolatedTenant(input.companyId, async (tx) => {
+        const [timeouts] = await tx.$queryRaw<AdmissionTimeoutRow[]>`
+          SELECT set_config('statement_timeout', ${ADMISSION_STATEMENT_TIMEOUT}, true)
+                   AS "statementTimeout",
+                 set_config('lock_timeout', ${ADMISSION_LOCK_TIMEOUT}, true) AS "lockTimeout"
+        `;
+        if (
+          timeouts?.statementTimeout !== ADMISSION_STATEMENT_TIMEOUT
+          || timeouts.lockTimeout !== ADMISSION_LOCK_TIMEOUT
+        ) throw new Error('agent_mission_bootstrap_receipt_timeout_fence_rejected');
+
+        await this.lockAdmission(tx, input.companyId, input.principalBindingHash);
+        // Un ACK ne row-lock jamais le fence insert/delete-only : bob_app n'a pas UPDATE.
+        const cancellationFences = await tx.$queryRaw<Array<{ subjectHash: string }>>`
+          SELECT "subjectHash"
+            FROM realtime_admission_cancellation_fences
+           WHERE "companyId" = ${input.companyId}
+             AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
+             AND "sessionId" = ${input.sessionId}::uuid
+             AND "expiresAt" > clock_timestamp()
+           ORDER BY "subjectHash"
+        `;
+        if (cancellationFences.length > 0) return { ok: false as const, reason: 'state' as const };
+
+        const rows = await tx.$queryRaw<AgentMissionBootstrapReceiptRow[]>`
+          SELECT "companyId", "subjectHash", "sessionId", state, "providerId", "providerCallId",
+                 "leaseExpiresAt", "hardExpiresAt", "agentMissionProtocolVersion",
+                 "agentMissionProtocolBoundAt", "agentMissionCapabilityHash",
+                 "agentMissionBootstrapAcknowledgedAt", version
+            FROM realtime_session_leases
+           WHERE "companyId" = ${input.companyId}
+             AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
+             AND "sessionId" = ${input.sessionId}::uuid
+           ORDER BY "subjectHash", "sessionId"
+           FOR UPDATE
+        `;
+        if (rows.length > 1) return { ok: false as const, reason: 'ambiguous' as const };
+        const row = rows[0];
+        if (!row) return { ok: false as const, reason: 'not_found' as const };
+
+        const [{ now }] = await tx.$queryRaw<ClockRow[]>`SELECT clock_timestamp() AS now`;
+        if (!now) return { ok: false as const, reason: 'unavailable' as const };
+        if (
+          row.state !== 'active'
+          || row.providerId === null
+          || row.providerCallId === null
+          || row.agentMissionProtocolVersion !== 1
+          || row.agentMissionProtocolBoundAt === null
+          || row.agentMissionCapabilityHash === null
+        ) return { ok: false as const, reason: 'state' as const };
+        if (
+          row.leaseExpiresAt.getTime() <= now.getTime()
+          || row.hardExpiresAt.getTime() <= now.getTime()
+        ) return { ok: false as const, reason: 'expired' as const };
+
+        const storedCapabilityHash = row.agentMissionCapabilityHash.trim();
+        if (!capabilityHashesMatch(storedCapabilityHash, input.capabilityHash)) {
+          return { ok: false as const, reason: 'hash_mismatch' as const };
+        }
+        if (row.agentMissionBootstrapAcknowledgedAt !== null) {
+          return {
+            ok: true as const,
+            status: 'replayed' as const,
+            acknowledgedAt: row.agentMissionBootstrapAcknowledgedAt.toISOString(),
+            leaseExpiresAt: row.leaseExpiresAt.toISOString(),
+          };
+        }
+
+        const [acknowledged] = await tx.$queryRaw<AgentMissionBootstrapReceiptMutationRow[]>`
+          UPDATE realtime_session_leases
+             SET "agentMissionBootstrapAcknowledgedAt" = clock_timestamp(),
+                 "leaseExpiresAt" = LEAST(
+                   clock_timestamp() + make_interval(secs => ${this.policy.activeLeaseSeconds}),
+                   "hardExpiresAt"
+                 ),
+                 "updatedAt" = clock_timestamp(),
+                 version = version + 1
+           WHERE "companyId" = ${row.companyId}
+             AND "subjectHash" = ${row.subjectHash}
+             AND "sessionId" = ${row.sessionId}::uuid
+             AND version = ${row.version}
+             AND state = 'active'
+             AND "providerId" = ${row.providerId}
+             AND "providerCallId" = ${row.providerCallId}
+             AND "agentMissionProtocolVersion" = 1
+             AND "agentMissionCapabilityHash" = ${storedCapabilityHash}
+             AND "agentMissionBootstrapAcknowledgedAt" IS NULL
+             AND "leaseExpiresAt" > clock_timestamp()
+             AND "hardExpiresAt" > clock_timestamp()
+          RETURNING "agentMissionBootstrapAcknowledgedAt" AS "acknowledgedAt",
+                    "leaseExpiresAt"
+        `;
+        if (!acknowledged) return { ok: false as const, reason: 'unavailable' as const };
+        return {
+          ok: true as const,
+          status: 'acknowledged' as const,
+          acknowledgedAt: acknowledged.acknowledgedAt.toISOString(),
+          leaseExpiresAt: acknowledged.leaseExpiresAt.toISOString(),
+        };
+      }, ADMISSION_TRANSACTION_OPTIONS);
+    } catch {
+      return { ok: false, reason: 'unavailable' };
+    }
+  }
+
   async claimTermination(
     input: RealtimeAdmissionSessionLookupInput,
   ): Promise<RealtimeTerminationClaimResult> {
@@ -827,6 +1007,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
         await this.lockAdmission(tx, input.companyId, input.principalBindingHash);
         const [{ now }] = await tx.$queryRaw<ClockRow[]>`SELECT clock_timestamp() AS now`;
         if (!now) return { ok: false as const, reason: 'unavailable' as const };
+        // Le lock advisory protège la canonicalisation sans élargir les ACL du fence.
         const existingFences = await tx.$queryRaw<CancellationFenceClockRow[]>`
           SELECT "cancelledAt"
             FROM realtime_admission_cancellation_fences
@@ -834,7 +1015,6 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
              AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
              AND "sessionId" = ${input.sessionId}::uuid
            ORDER BY "subjectHash"
-           FOR UPDATE
         `;
         const canonicalCancelledAt = existingFences.reduce(
           (earliest, fence) => (

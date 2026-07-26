@@ -14,6 +14,22 @@ const LEASE: RealtimeLeaseCredential = {
   sessionId: '00000000-0000-4000-8000-000000000001',
   leaseToken: 'lease-token-with-more-than-thirty-two-characters',
 };
+const TERMINATION_LOOKUP = {
+  companyId: LEASE.companyId,
+  subjectHashCandidates: [LEASE.subjectHash],
+  principalBindingHash: 'b'.repeat(64),
+  sessionId: LEASE.sessionId,
+} as const;
+const TERMINATION_CLAIM = {
+  companyId: LEASE.companyId,
+  subjectHash: LEASE.subjectHash,
+  sessionId: LEASE.sessionId,
+  providerId: 'openai' as const,
+  providerCallId: 'rtc_lifecycle_1',
+  reaperToken: 'reaper-token-with-more-than-thirty-two-characters',
+  reaperLeaseExpiresAt: new Date(NOW + 30_000).toISOString(),
+  hardExpiryProof: null,
+};
 
 function okMutation(): RealtimeAdmissionMutationResult {
   return { ok: true, reason: null };
@@ -33,13 +49,16 @@ function admissionStub(overrides: Partial<RealtimeAdmissionPort> = {}): Realtime
     claimExpired: vi.fn<RealtimeAdmissionPort['claimExpired']>().mockResolvedValue({ ok: true, claims: [] }),
     claimTermination: vi.fn<RealtimeAdmissionPort['claimTermination']>().mockResolvedValue({
       ok: true,
-      claim: null,
+      claim: TERMINATION_CLAIM,
       pending: false,
     }),
     resolveSession: vi.fn<RealtimeAdmissionPort['resolveSession']>().mockResolvedValue({
       ok: true,
       identity: null,
     }),
+    acknowledgeAgentMissionBootstrap: vi
+      .fn<RealtimeAdmissionPort['acknowledgeAgentMissionBootstrap']>()
+      .mockResolvedValue({ ok: false, reason: 'unavailable' }),
     completeReaping: vi.fn<RealtimeAdmissionPort['completeReaping']>().mockResolvedValue(okMutation()),
     updateContext: vi.fn<RealtimeAdmissionPort['updateContext']>().mockResolvedValue({
       ok: false,
@@ -73,6 +92,8 @@ function lifecycle(input: {
     admission: input.admission ?? admissionStub(),
     provider: input.provider ?? providerStub(),
     lease: LEASE,
+    terminationLookup: TERMINATION_LOOKUP,
+    providerId: 'openai',
     providerCallId: 'rtc_lifecycle_1',
     hardExpiresAt: input.hardExpiresAt ?? new Date(NOW + 60_000).toISOString(),
     heartbeatSeconds: input.heartbeatSeconds ?? 10,
@@ -90,6 +111,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function eventually(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  throw new Error('condition_not_reached');
+}
+
 describe('RealtimeCallLifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -101,7 +130,7 @@ describe('RealtimeCallLifecycle', () => {
     vi.useRealTimers();
   });
 
-  it('active le CAS avant le premier heartbeat puis respecte l’ordre hangup -> release', async () => {
+  it('active le CAS puis respecte strictement claim DB -> hangup -> complete', async () => {
     const order: string[] = [];
     const admission = admissionStub({
       activate: vi.fn(async () => {
@@ -112,8 +141,12 @@ describe('RealtimeCallLifecycle', () => {
         order.push('renew');
         return okMutation();
       }),
-      release: vi.fn(async () => {
-        order.push('release');
+      claimTermination: vi.fn(async () => {
+        order.push('claim');
+        return { ok: true as const, claim: TERMINATION_CLAIM, pending: false };
+      }),
+      completeReaping: vi.fn(async () => {
+        order.push('complete');
         return okMutation();
       }),
     });
@@ -129,7 +162,7 @@ describe('RealtimeCallLifecycle', () => {
     expect(order).toEqual(['activate', 'renew']);
 
     await expect(subject.terminate('user')).resolves.toBe('confirmed');
-    expect(order).toEqual(['activate', 'renew', 'hangup', 'release']);
+    expect(order).toEqual(['activate', 'renew', 'claim', 'hangup', 'complete']);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -165,10 +198,13 @@ describe('RealtimeCallLifecycle', () => {
     await expect(subject.terminate('bootstrap_failed')).resolves.toBe('confirmed');
 
     expect(admission.activate).not.toHaveBeenCalled();
+    expect(admission.claimTermination).toHaveBeenCalledWith(TERMINATION_LOOKUP);
     expect(provider.hangupCall).toHaveBeenCalledOnce();
-    expect(admission.release).toHaveBeenCalledWith({
-      ...LEASE,
-      providerTermination: 'confirmed',
+    expect(admission.completeReaping).toHaveBeenCalledWith({
+      companyId: LEASE.companyId,
+      subjectHash: LEASE.subjectHash,
+      sessionId: LEASE.sessionId,
+      reaperToken: TERMINATION_CLAIM.reaperToken,
     });
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -184,13 +220,67 @@ describe('RealtimeCallLifecycle', () => {
 
     await expect(subject.terminate('kill_switch')).resolves.toBe('pending_reaper');
 
-    expect(admission.release).not.toHaveBeenCalled();
+    expect(admission.completeReaping).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
       'bob.live.lifecycle.termination_pending reason=kill_switch class=hangup_failed',
       'BobLive',
     );
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('secret network failure');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('n appelle jamais le provider sans claim durable possédé', async () => {
+    const admission = admissionStub({
+      claimTermination: vi.fn<RealtimeAdmissionPort['claimTermination']>().mockResolvedValue({
+        ok: false,
+        reason: 'unavailable',
+      }),
+    });
+    const provider = providerStub();
+    const logger = { warn: vi.fn(), audit: vi.fn() };
+    const subject = lifecycle({ admission, provider, logger });
+
+    await expect(subject.terminate('shutdown')).resolves.toBe('pending_reaper');
+
+    expect(provider.hangupCall).not.toHaveBeenCalled();
+    expect(admission.completeReaping).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'bob.live.lifecycle.termination_pending reason=shutdown class=claim_unavailable',
+      'BobLive',
+    );
+  });
+
+  it('refuse un claim discordant sans raccrocher une identité provider étrangère', async () => {
+    const admission = admissionStub({
+      claimTermination: vi.fn(async () => ({
+        ok: true as const,
+        claim: { ...TERMINATION_CLAIM, providerCallId: 'rtc_foreign' },
+        pending: false,
+      })),
+    });
+    const provider = providerStub();
+    const subject = lifecycle({ admission, provider });
+
+    await expect(subject.terminate('user')).resolves.toBe('pending_reaper');
+
+    expect(provider.hangupCall).not.toHaveBeenCalled();
+    expect(admission.completeReaping).not.toHaveBeenCalled();
+  });
+
+  it('laisse le claim reaping récupérable si sa complétion CAS échoue', async () => {
+    const admission = admissionStub({
+      completeReaping: vi.fn<RealtimeAdmissionPort['completeReaping']>().mockResolvedValue({
+        ok: false,
+        reason: 'unavailable',
+      }),
+    });
+    const provider = providerStub();
+    const subject = lifecycle({ admission, provider });
+
+    await expect(subject.terminate('max_duration')).resolves.toBe('pending_reaper');
+
+    expect(provider.hangupCall).toHaveBeenCalledWith(TERMINATION_CLAIM.providerCallId);
+    expect(admission.completeReaping).toHaveBeenCalledOnce();
   });
 
   it('coalesce les fermetures concurrentes et ne raccroche/libère qu’une fois', async () => {
@@ -202,15 +292,16 @@ describe('RealtimeCallLifecycle', () => {
 
     const first = subject.terminate('user');
     const second = subject.terminate('shutdown');
-    await Promise.resolve();
+    await eventually(() => hangupCall.mock.calls.length === 1);
     expect(hangupCall).toHaveBeenCalledOnce();
 
     hangup.resolve();
     await expect(Promise.all([first, second])).resolves.toEqual(['confirmed', 'confirmed']);
-    expect(admission.release).toHaveBeenCalledOnce();
+    expect(admission.claimTermination).toHaveBeenCalledOnce();
+    expect(admission.completeReaping).toHaveBeenCalledOnce();
   });
 
-  it('cède la terminaison au claim durable sans effet provider ni release local', async () => {
+  it('cède la terminaison à un claim durable externe sans effet provider ni complétion locale', async () => {
     const admission = admissionStub();
     const provider = providerStub();
     const subject = lifecycle({ admission, provider });
@@ -220,7 +311,8 @@ describe('RealtimeCallLifecycle', () => {
 
     await expect(subject.terminate('user')).resolves.toBe('pending_reaper');
     expect(provider.hangupCall).not.toHaveBeenCalled();
-    expect(admission.release).not.toHaveBeenCalled();
+    expect(admission.claimTermination).not.toHaveBeenCalled();
+    expect(admission.completeReaping).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -240,7 +332,7 @@ describe('RealtimeCallLifecycle', () => {
 
     expect(admission.renew).toHaveBeenCalledTimes(2);
     expect(provider.hangupCall).toHaveBeenCalledOnce();
-    expect(admission.release).toHaveBeenCalledOnce();
+    expect(admission.completeReaping).toHaveBeenCalledOnce();
     expect(logger.audit).toHaveBeenCalledWith('bob.live.lifecycle.terminated', {
       reason: 'hard_expiry',
       outcome: 'confirmed',
@@ -262,7 +354,7 @@ describe('RealtimeCallLifecycle', () => {
       await vi.advanceTimersByTimeAsync(10_000);
 
       expect(provider.hangupCall).toHaveBeenCalledOnce();
-      expect(admission.release).toHaveBeenCalledOnce();
+      expect(admission.completeReaping).toHaveBeenCalledOnce();
       expect(logger.audit).toHaveBeenCalledWith('bob.live.lifecycle.terminated', {
         reason: 'lease_lost',
         outcome: 'confirmed',
@@ -280,7 +372,7 @@ describe('RealtimeCallLifecycle', () => {
 
     await expect(subject.activate()).rejects.toThrow('realtime_lifecycle_activate_expired');
     expect(provider.hangupCall).toHaveBeenCalledOnce();
-    expect(admission.release).toHaveBeenCalledOnce();
+    expect(admission.completeReaping).toHaveBeenCalledOnce();
     expect(admission.renew).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });

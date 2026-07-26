@@ -27,9 +27,11 @@ BEGIN
          'realtime_admission_cancellation_fences',
          'release_flags',
          'release_flag_subjects',
-         'release_flag_audit_events'
+         'release_flag_audit_events',
+         'agent_mission_fingerprint_key_version_floors',
+         'agent_mission_fingerprint_key_bindings'
        )
-  ) <> 6 THEN
+  ) <> 8 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT';
   END IF;
 
@@ -44,9 +46,15 @@ BEGIN
          'reject_agent_mission_event_mutation_v1',
          'guard_agent_mission_event_append_v1',
          'require_agent_mission_event_v1',
+         'guard_realtime_agent_mission_capability_immutable_v1',
+         'guard_realtime_agent_mission_bootstrap_receipt_v1',
          'guard_realtime_admission_cancellation_fence_v1',
          'sync_realtime_admission_cancellation_schedule_v1',
-         'revalidate_agent_mission_release_flag_v1'
+         'revalidate_agent_mission_release_flag_v1',
+         'guard_agent_mission_fingerprint_key_floor_v1',
+         'guard_agent_mission_fingerprint_key_binding_immutable_v1',
+         'guard_agent_mission_fingerprint_key_binding_present_v1',
+         'agent_mission_fingerprint_key_readiness'
        )
        AND (
          function.pronargs = 0
@@ -54,8 +62,12 @@ BEGIN
            function.proname = 'revalidate_agent_mission_release_flag_v1'
            AND function.pronargs = 3
          )
+         OR (
+           function.proname = 'agent_mission_fingerprint_key_readiness'
+           AND function.pronargs = 1
+         )
        )
-  ) <> 8 THEN
+  ) <> 14 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT';
   END IF;
 
@@ -73,7 +85,9 @@ BEGIN
            'realtime_admission_cancellation_fences',
            'release_flags',
            'release_flag_subjects',
-           'release_flag_audit_events'
+           'release_flag_audit_events',
+           'agent_mission_fingerprint_key_version_floors',
+           'agent_mission_fingerprint_key_bindings'
          )
          AND relation.relkind IN ('r', 'p')
       UNION ALL
@@ -88,15 +102,25 @@ BEGIN
            'reject_agent_mission_event_mutation_v1',
            'guard_agent_mission_event_append_v1',
            'require_agent_mission_event_v1',
+           'guard_realtime_agent_mission_capability_immutable_v1',
+           'guard_realtime_agent_mission_bootstrap_receipt_v1',
            'guard_realtime_admission_cancellation_fence_v1',
            'sync_realtime_admission_cancellation_schedule_v1',
-           'revalidate_agent_mission_release_flag_v1'
+           'revalidate_agent_mission_release_flag_v1',
+           'guard_agent_mission_fingerprint_key_floor_v1',
+           'guard_agent_mission_fingerprint_key_binding_immutable_v1',
+           'guard_agent_mission_fingerprint_key_binding_present_v1',
+           'agent_mission_fingerprint_key_readiness'
          )
          AND (
            function.pronargs = 0
            OR (
              function.proname = 'revalidate_agent_mission_release_flag_v1'
              AND function.pronargs = 3
+           )
+           OR (
+             function.proname = 'agent_mission_fingerprint_key_readiness'
+             AND function.pronargs = 1
            )
          )
     ) AS object_owner(object_name, owner_oid)
@@ -185,14 +209,17 @@ SELECT pg_catalog.format(
    'realtime_admission_cancellation_fences',
    'release_flags',
    'release_flag_subjects',
-   'release_flag_audit_events'
+   'release_flag_audit_events',
+   'agent_mission_fingerprint_key_version_floors',
+   'agent_mission_fingerprint_key_bindings'
  )
  ORDER BY relation.relname, attribute.attnum
 \gexec
 
 SELECT pg_catalog.format(
-  'SET ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.release_flag_audit_events FROM %I; RESET ROLE;',
+  'SET ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.%I FROM %I; RESET ROLE;',
   owner.rolname,
+  relation.relname,
   :'app_role'
 )
   FROM pg_catalog.pg_class AS relation
@@ -200,7 +227,11 @@ SELECT pg_catalog.format(
     ON namespace.oid = relation.relnamespace
    AND namespace.nspname = 'public'
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
- WHERE relation.relname = 'release_flag_audit_events'
+ WHERE relation.relname IN (
+   'release_flag_audit_events',
+   'agent_mission_fingerprint_key_version_floors',
+   'agent_mission_fingerprint_key_bindings'
+ )
    AND relation.relkind IN ('r', 'p')
 \gexec
 
@@ -221,15 +252,25 @@ SELECT pg_catalog.format(
    'reject_agent_mission_event_mutation_v1',
    'guard_agent_mission_event_append_v1',
    'require_agent_mission_event_v1',
+   'guard_realtime_agent_mission_capability_immutable_v1',
+   'guard_realtime_agent_mission_bootstrap_receipt_v1',
    'guard_realtime_admission_cancellation_fence_v1',
    'sync_realtime_admission_cancellation_schedule_v1',
-   'revalidate_agent_mission_release_flag_v1'
+   'revalidate_agent_mission_release_flag_v1',
+   'guard_agent_mission_fingerprint_key_floor_v1',
+   'guard_agent_mission_fingerprint_key_binding_immutable_v1',
+   'guard_agent_mission_fingerprint_key_binding_present_v1',
+   'agent_mission_fingerprint_key_readiness'
  )
    AND (
      function.pronargs = 0
      OR (
        function.proname = 'revalidate_agent_mission_release_flag_v1'
        AND function.pronargs = 3
+     )
+     OR (
+       function.proname = 'agent_mission_fingerprint_key_readiness'
+       AND function.pronargs = 1
      )
    )
  ORDER BY function.proname
@@ -246,6 +287,11 @@ SELECT pg_catalog.format(
     ON namespace.oid = function.pronamespace
    AND namespace.nspname = 'public'
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
- WHERE function.proname = 'revalidate_agent_mission_release_flag_v1'
+ WHERE (
+   function.proname = 'revalidate_agent_mission_release_flag_v1'
    AND function.pronargs = 3
+ ) OR (
+   function.proname = 'agent_mission_fingerprint_key_readiness'
+   AND function.pronargs = 1
+ )
 \gexec

@@ -99,6 +99,8 @@ import {
 import { isMistralConversationBootstrapReconciliationAttempt } from './mistral-conversation-bootstrap-reconciliation';
 import type { MistralConversationRuntimeCapability } from './mistral-conversation-terminal-replay';
 import {
+  hashRealtimeAgentMissionCapability,
+  isRealtimeAgentMissionCapability,
   parseRealtimeAgentMissionNegotiation,
   realtimeAgentMissionBootstrapBinding,
   type RealtimeAgentMissionNegotiationRequest,
@@ -109,6 +111,9 @@ import {
   type RealtimeAgentMissionAdmissionGate,
   type RealtimeAgentMissionAdmissionPreparation,
 } from './realtime-agent-mission-admission';
+import { realtimeSubjectBindings } from './realtime-principal-binding';
+
+export { admissionSubjectHash } from './realtime-principal-binding';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
@@ -291,6 +296,68 @@ export function parseMistralRealtimeCallBody(
     ...binding.value,
     agentMissionNegotiation: agentMissionNegotiation.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
+  });
+}
+
+export type AgentMissionNegotiationMetricLabels = Readonly<{
+  requested: 'omitted' | 'null' | 'v1' | 'unknown';
+  outcome: 'historical' | 'accepted' | 'refused' | 'error';
+  provider: 'openai' | 'mistral' | 'unknown';
+  transport: 'webrtc' | 'mistral_pcm' | 'unknown';
+}>;
+
+function requestedAgentMissionProtocol(
+  body: unknown,
+): AgentMissionNegotiationMetricLabels['requested'] {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return 'unknown';
+  const record = body as Record<string, unknown>;
+  if (!Object.hasOwn(record, 'agentMissionProtocolVersion')) return 'omitted';
+  if (record.agentMissionProtocolVersion === null) return 'null';
+  return record.agentMissionProtocolVersion === 1 ? 'v1' : 'unknown';
+}
+
+export function agentMissionNegotiationMetricLabels(
+  body: unknown,
+  provider: RealtimeVoiceSettings['provider'],
+  result: Result<RealtimeCallBootstrap, AppError>,
+): AgentMissionNegotiationMetricLabels {
+  const requested = requestedAgentMissionProtocol(body);
+  const providerLabel = provider === 'openai' || provider === 'mistral'
+    ? provider
+    : 'unknown';
+  const transport = provider === 'openai'
+    ? 'webrtc'
+    : provider === 'mistral'
+      ? 'mistral_pcm'
+      : 'unknown';
+  if (!result.ok) {
+    const unsupportedVersion = result.error.kind === 'validation'
+      && result.error.issues.some(
+        (issue) => issue.field === 'agentMissionProtocolVersion',
+      );
+    return Object.freeze({
+      requested,
+      outcome: unsupportedVersion ? 'refused' : 'error',
+      provider: providerLabel,
+      transport,
+    });
+  }
+  if (requested === 'omitted' || requested === 'null') {
+    return Object.freeze({
+      requested,
+      outcome: 'historical',
+      provider: providerLabel,
+      transport,
+    });
+  }
+  const accepted = requested === 'v1'
+    && result.value.agentMissionProtocolVersion === 1
+    && isRealtimeAgentMissionCapability(result.value.agentMissionCapability);
+  return Object.freeze({
+    requested,
+    outcome: accepted ? 'accepted' : 'refused',
+    provider: providerLabel,
+    transport,
   });
 }
 
@@ -496,71 +563,13 @@ function safeApprovedControl(
   };
 }
 
-export function admissionSubjectHash(secret: string, companyId: string, userId: string): string {
-  return createHmac('sha256', secret)
-    .update('bob-pro:realtime-admission:v1\u0000', 'utf8')
-    .update(companyId, 'utf8')
-    .update('\u0000', 'utf8')
-    .update(userId, 'utf8')
-    .digest('hex');
-}
-
-function resumeSubjectBindings(
-  settings: RealtimeVoiceSettings,
-  companyId: string,
-  userId: string,
-): {
-  readonly subjectHash: string;
-  readonly subjectKeyVersion: number;
-  readonly historicalSubjectBindings: readonly Readonly<{
-    subjectHash: string;
-    subjectKeyVersion: number;
-  }>[];
-} | null {
-  if (!settings.safetySecret) return null;
-  const configured = settings.subjectHmacKeyRing ?? [];
-  const keyRing = configured.length === 0
-    ? [{ version: settings.subjectKeyVersion, secret: settings.safetySecret }]
-    : configured;
-  if (keyRing.length > 32) return null;
-
-  const versions = new Set<number>();
-  const secrets = new Set<string>();
-  const bindings: Array<Readonly<{ subjectHash: string; subjectKeyVersion: number }>> = [];
-  for (const entry of keyRing) {
-    if (
-      !Number.isSafeInteger(entry.version)
-      || entry.version < 1
-      || entry.version > 0x7fff_ffff
-      || typeof entry.secret !== 'string'
-      || entry.secret.length < 32
-      || versions.has(entry.version)
-      || secrets.has(entry.secret)
-    ) return null;
-    versions.add(entry.version);
-    secrets.add(entry.secret);
-    bindings.push(Object.freeze({
-      subjectHash: admissionSubjectHash(entry.secret, companyId, userId),
-      subjectKeyVersion: entry.version,
-    }));
-  }
-  const current = bindings.find((binding) => binding.subjectKeyVersion === settings.subjectKeyVersion);
-  const currentConfig = keyRing.find((entry) => entry.version === settings.subjectKeyVersion);
-  if (!current || currentConfig?.secret !== settings.safetySecret) return null;
-  return Object.freeze({
-    subjectHash: current.subjectHash,
-    subjectKeyVersion: current.subjectKeyVersion,
-    historicalSubjectBindings: Object.freeze(bindings.filter((binding) => binding !== current)),
-  });
-}
-
 function admissionSessionLookup(
   settings: RealtimeVoiceSettings,
   companyId: string,
   userId: string,
   sessionId: string,
 ): RealtimeAdmissionSessionLookupInput | null {
-  const bindings = resumeSubjectBindings(settings, companyId, userId);
+  const bindings = realtimeSubjectBindings(settings, companyId, userId);
   if (bindings === null) return null;
   return {
     companyId,
@@ -775,7 +784,106 @@ export class RealtimeVoiceService {
     };
   }
 
-  async createCall(body: unknown, signal?: AbortSignal): Promise<Result<RealtimeCallBootstrap, AppError>> {
+  async acknowledgeAgentMissionBootstrap(
+    sessionHandle: string,
+    presentedCapability: unknown,
+  ): Promise<Result<{ acknowledged: true; replayed: boolean }, AppError>> {
+    const principal = getPrincipal();
+    if (
+      !principal?.userId
+      || !principal.companyId
+      || !isRealtimeSessionId(sessionHandle)
+      || !isRealtimeAgentMissionCapability(presentedCapability)
+    ) {
+      this.metrics.agentMissionCapabilityRejections.inc({
+        operation: 'bootstrap_ack',
+        reason: presentedCapability === undefined ? 'missing' : 'malformed',
+      });
+      this.metrics.agentMissionBootstrapReceipts.inc({ outcome: 'refused' });
+      return { ok: false, error: appForbidden('agent_mission_bootstrap_receipt_rejected') };
+    }
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      this.metrics.agentMissionBootstrapReceipts.inc({ outcome: 'error' });
+      return {
+        ok: false,
+        error: appUnavailable('agent_mission_bootstrap_receipt', 5),
+      };
+    }
+
+    const acknowledgement = await this.admission.acknowledgeAgentMissionBootstrap({
+      ...lookup,
+      capabilityHash: hashRealtimeAgentMissionCapability(presentedCapability),
+    });
+    if (!acknowledgement.ok) {
+      const unavailable = acknowledgement.reason === 'unavailable';
+      this.metrics.agentMissionBootstrapReceipts.inc({
+        outcome: unavailable ? 'error' : 'refused',
+      });
+      if (!unavailable) {
+        this.metrics.agentMissionCapabilityRejections.inc({
+          operation: 'bootstrap_ack',
+          reason: acknowledgement.reason,
+        });
+      }
+      return unavailable
+        ? {
+            ok: false,
+            error: appUnavailable('agent_mission_bootstrap_receipt', 5),
+          }
+        : {
+            ok: false,
+            error: appForbidden('agent_mission_bootstrap_receipt_rejected'),
+          };
+    }
+    this.metrics.agentMissionBootstrapReceipts.inc({
+      outcome: acknowledgement.status,
+    });
+    this.logger.audit('bob.live.agent_mission.bootstrap_receipt', {
+      outcome: acknowledgement.status,
+    });
+    return ok({
+      acknowledged: true,
+      replayed: acknowledgement.status === 'replayed',
+    });
+  }
+
+  async createCall(
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeCallBootstrap, AppError>> {
+    try {
+      const result = await this.createCallWithoutAgentMissionMetric(body, signal);
+      this.metrics.agentMissionNegotiations.inc(
+        agentMissionNegotiationMetricLabels(body, this.settings.provider, result),
+      );
+      return result;
+    } catch (cause) {
+      this.metrics.agentMissionNegotiations.inc({
+        requested: requestedAgentMissionProtocol(body),
+        outcome: 'error',
+        provider: this.settings.provider === 'openai' || this.settings.provider === 'mistral'
+          ? this.settings.provider
+          : 'unknown',
+        transport: this.settings.provider === 'openai'
+          ? 'webrtc'
+          : this.settings.provider === 'mistral'
+            ? 'mistral_pcm'
+            : 'unknown',
+      });
+      throw cause;
+    }
+  }
+
+  private async createCallWithoutAgentMissionMetric(
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const startedAt = performance.now();
     if (!this.settings.enabled) return this.finishError('disabled', startedAt, appForbidden('Bob Live est désactivé.'));
     if (this.settings.provider === 'mistral') {
@@ -825,7 +933,7 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
-    const subjectBindings = resumeSubjectBindings(
+    const subjectBindings = realtimeSubjectBindings(
       this.settings,
       principal.companyId,
       principal.userId,
@@ -953,6 +1061,13 @@ export class RealtimeVoiceService {
         admission: this.admission,
         provider: this.provider,
         lease,
+        terminationLookup: {
+          companyId: lease.companyId,
+          subjectHashCandidates: reserveInput.subjectHashCandidates,
+          principalBindingHash: reserveInput.principalBindingHash,
+          sessionId: lease.sessionId,
+        },
+        providerId: this.settings.provider,
         providerCallId: registeredProviderCallId,
         hardExpiresAt: lease.hardExpiresAt,
         heartbeatSeconds: this.settings.heartbeatSeconds,
@@ -1121,7 +1236,7 @@ export class RealtimeVoiceService {
       || signal.aborted
     ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
 
-    const subjectBindings = resumeSubjectBindings(
+    const subjectBindings = realtimeSubjectBindings(
       this.settings,
       principal.companyId,
       principal.userId,
@@ -1659,7 +1774,7 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
-    const subjectBindings = resumeSubjectBindings(
+    const subjectBindings = realtimeSubjectBindings(
       this.settings,
       principal.companyId,
       principal.userId,

@@ -110,10 +110,10 @@ import {
   REALTIME_SPEECH_SOURCE_POLICY,
 } from './realtime.tokens';
 import {
-  realtimeVoiceSettingsFromEnv,
   type OpenAiRealtimeCallProvider,
   type RealtimeVoiceSettings,
 } from './realtime.types';
+import { realtimeVoiceSettingsProvider } from './realtime-settings.provider';
 
 const REALTIME_SPEECH_RUNTIME = Symbol('REALTIME_SPEECH_RUNTIME');
 
@@ -298,11 +298,6 @@ export async function buildVerifiedRealtimeSpeechRuntime(
   await keyVersions.assertCurrentKeyVersions();
   return buildRealtimeSpeechRuntime(persistence, env);
 }
-
-const settingsProvider: Provider = {
-  provide: REALTIME_VOICE_SETTINGS,
-  useFactory: (): RealtimeVoiceSettings => realtimeVoiceSettingsFromEnv(loadEnv()),
-};
 
 const realtimeGlobalCapacityInspectorProvider: Provider = {
   provide: REALTIME_GLOBAL_CAPACITY_INSPECTOR,
@@ -733,7 +728,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
   imports: [PersistenceModule],
   controllers: [RealtimeVoiceController],
   providers: [
-    settingsProvider,
+    realtimeVoiceSettingsProvider,
     openAiProvider,
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,

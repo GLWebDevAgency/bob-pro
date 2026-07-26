@@ -23,7 +23,7 @@ function validRealtimeEnv(): void {
   vi.stubEnv('OPENAI_REALTIME_MAX_CALLS_PER_HOUR', '30');
   vi.stubEnv('OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE', '50');
   vi.stubEnv('OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR', '1000');
-  vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '15');
+  vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '20');
   vi.stubEnv('OPENAI_REALTIME_ACTIVE_LEASE_SECONDS', '30');
   vi.stubEnv('OPENAI_REALTIME_HEARTBEAT_SECONDS', '10');
   vi.stubEnv('OPENAI_REALTIME_REAPER_LEASE_SECONDS', '30');
@@ -139,7 +139,7 @@ describe('Bob Live — validation de la politique d’admission', () => {
       OPENAI_REALTIME_MAX_CALLS_PER_HOUR: 30,
       OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE: 50,
       OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR: 1_000,
-      OPENAI_REALTIME_RESERVATION_TTL_SECONDS: 15,
+      OPENAI_REALTIME_RESERVATION_TTL_SECONDS: 20,
       OPENAI_REALTIME_ACTIVE_LEASE_SECONDS: 30,
       OPENAI_REALTIME_HEARTBEAT_SECONDS: 10,
       OPENAI_REALTIME_REAPER_LEASE_SECONDS: 30,
@@ -185,8 +185,12 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(() => loadEnv()).toThrow(/quota Bob Live utilisateur horaire/i);
   });
 
-  it('refuse une réservation plus courte que le bootstrap borné', () => {
+  it('refuse une réservation plus courte que bootstrap plus deux reçus bornés', () => {
     validRealtimeEnv();
+    vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '15');
+    expect(() => loadEnv()).toThrow(/deux tentatives de reçu AgentMission/i);
+
+    vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '20');
     vi.stubEnv('OPENAI_REALTIME_PROVIDER_TIMEOUT_MS', '6000');
     vi.stubEnv('OPENAI_REALTIME_SIDEBAND_TIMEOUT_MS', '5000');
     expect(() => loadEnv()).toThrow(/budget bootstrap Bob Live/i);

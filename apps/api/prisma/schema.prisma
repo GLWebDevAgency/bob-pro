@@ -531,7 +531,31 @@ model AgentMissionEvent {
   @@unique([missionId, sequence], map: "agent_mission_events_sequence_key")
   @@index([companyId, ownerUserId, missionId, occurredAt], map: "agent_mission_events_owner_timeline_idx")
   @@index([retentionExpiresAt], map: "agent_mission_events_retention_idx")
+  @@index([fingerprintKeyVersion], map: "agent_mission_events_fingerprint_key_version_idx")
   @@map("agent_mission_events")
+}
+
+/// Plage globale monotone des une ou deux versions HMAC autorisées à produire de nouveaux events.
+/// Sa transition stage/retire est sérialisée avec chaque writer par advisory lock PostgreSQL.
+model AgentMissionFingerprintKeyVersionFloor {
+  keySpace             String   @id(map: "agent_mission_fingerprint_key_floor_pkey") @db.VarChar(64)
+  minimumWriterVersion Int
+  highestWriterVersion Int
+  writerEnabled        Boolean  @default(true)
+  createdAt            DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("agent_mission_fingerprint_key_version_floors")
+}
+
+/// Engagement SHA-256 global et append-only du matériau HMAC associé à une version de fingerprint
+/// AgentMission. Aucun secret n'est stocké et le runtime n'accède jamais directement à la table.
+model AgentMissionFingerprintKeyBinding {
+  keyVersion     Int      @id(map: "agent_mission_fingerprint_key_binding_pkey")
+  keyFingerprint String   @unique(map: "agent_mission_fingerprint_key_binding_fingerprint_key") @db.Char(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("agent_mission_fingerprint_key_bindings")
 }
 
 model Customer {
@@ -1604,6 +1628,9 @@ model RealtimeSessionLease {
   agentMissionProtocolBoundAt    DateTime? @db.Timestamptz(6)
   agentMissionCapabilityHash     String?   @db.Char(64)
   agentMissionReleaseFlagVersion Int?
+  // Reçu applicatif one-shot : tant qu'il est NULL, le bail V1 conserve sa courte deadline
+  // de bootstrap et aucune route AgentMission ne peut utiliser la capability.
+  agentMissionBootstrapAcknowledgedAt DateTime? @db.Timestamptz(6)
   sidebandProtocolVersion     Int       @default(2)
   nextSpeechSequence          Int       @default(1)
   updatedAt                   DateTime  @db.Timestamptz(6)

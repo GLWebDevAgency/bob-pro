@@ -1,15 +1,25 @@
+import { timingSafeEqual } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   AgentMission,
   AgentMissionEvent,
   parseQuoteDraftPayload,
+  type AgentMissionAuthorizedRealtimeLease,
+  type AgentMissionCapabilityRejectionReason,
   type AgentMissionDraftFenceResult,
   type AgentMissionEventRepositoryPort,
   type AgentMissionDraftFencePort,
   type AgentMissionOwner,
+  type AgentMissionQuoteScreenAuthorityPort,
+  type AgentMissionQuoteScreenFences,
+  type AgentMissionQuoteScreenObservation,
   type AgentMissionQuoteDraftRepositoryPort,
   type AgentMissionQuoteDraftSlot,
   type AgentMissionReadRepositoryPort,
+  type AgentMissionReadTransaction,
+  type AgentMissionRealtimeAuthorityProof,
   type AgentMissionRepositoryPort,
+  type AgentMissionReadExecution,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
@@ -21,12 +31,16 @@ import {
   type AgentMissionEvent as AgentMissionEventRow,
   type QuoteDraftSlot as QuoteDraftSlotRow,
 } from '@prisma/client';
+import { prepareRealtimeContext } from '../../voice/realtime/realtime-admission';
 import type { PrismaService } from './prisma.service';
 
 const OWNER_TRANSACTION_OPTIONS = {
   maxWaitMs: 5_000,
   timeoutMs: 15_000,
 } as const;
+
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const MAX_SUBJECT_HASH_CANDIDATES = 32;
 
 const MISSION_COLUMNS = Prisma.sql`
   "id",
@@ -57,6 +71,107 @@ const QUOTE_DRAFT_COLUMNS = Prisma.sql`
   "createdAt",
   "updatedAt"
 `;
+
+interface AgentMissionAuthorityLeaseRow {
+  readonly subjectHash: string;
+  readonly sessionId: string;
+  readonly state: string;
+  readonly leaseExpiresAt: Date;
+  readonly hardExpiresAt: Date;
+  readonly contextSchemaVersion: number | null;
+  readonly contextRevision: number | null;
+  readonly contextPayload: Prisma.JsonValue | null;
+  readonly contextDigest: string | null;
+  readonly contextUpdatedAt: Date | null;
+  readonly sidebandOwnerLeaseExpiresAt: Date | null;
+  readonly sidebandOwnerEpoch: number;
+  readonly contextAppliedRevision: number | null;
+  readonly contextAppliedDigest: string | null;
+  readonly contextAppliedAt: Date | null;
+  readonly contextAppliedOwnerEpoch: number | null;
+  readonly agentMissionProtocolVersion: number | null;
+  readonly agentMissionProtocolBoundAt: Date | null;
+  readonly agentMissionCapabilityHash: string | null;
+  readonly agentMissionReleaseFlagVersion: number | null;
+  readonly agentMissionBootstrapAcknowledgedAt: Date | null;
+}
+
+type AgentMissionAuthorityResolution =
+  | {
+      readonly status: 'authorized';
+      readonly lease: AgentMissionAuthorityLeaseRow;
+      readonly databaseNow: Date;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly reason: AgentMissionCapabilityRejectionReason;
+    };
+
+function canonicalAuthorityProof(
+  proof: AgentMissionRealtimeAuthorityProof,
+): {
+  readonly subjectHashCandidates: readonly string[];
+  readonly principalBindingHash: string;
+  readonly capabilityHash: string;
+} | null {
+  if (
+    !Array.isArray(proof.subjectHashCandidates)
+    || proof.subjectHashCandidates.length < 1
+    || proof.subjectHashCandidates.length > MAX_SUBJECT_HASH_CANDIDATES
+    || !SHA256_HEX.test(proof.principalBindingHash)
+    || !SHA256_HEX.test(proof.capabilityHash)
+  ) return null;
+  const subjectHashCandidates = [...proof.subjectHashCandidates];
+  if (
+    subjectHashCandidates.some((candidate) => !SHA256_HEX.test(candidate))
+    || new Set(subjectHashCandidates).size !== subjectHashCandidates.length
+  ) return null;
+  subjectHashCandidates.sort();
+  return Object.freeze({
+    subjectHashCandidates: Object.freeze(subjectHashCandidates),
+    principalBindingHash: proof.principalBindingHash,
+    capabilityHash: proof.capabilityHash,
+  });
+}
+
+function exactCapabilityHash(expected: string, actual: string): boolean {
+  const expectedBytes = Buffer.from(expected, 'hex');
+  const actualBytes = Buffer.from(actual, 'hex');
+  return expectedBytes.byteLength === 32
+    && actualBytes.byteLength === 32
+    && timingSafeEqual(expectedBytes, actualBytes);
+}
+
+function validAuthorityLeaseAt(
+  row: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
+): boolean {
+  return row.state === 'active'
+    && row.leaseExpiresAt.getTime() > databaseNow.getTime()
+    && row.hardExpiresAt.getTime() > databaseNow.getTime()
+    && row.agentMissionProtocolVersion === 1
+    && row.agentMissionProtocolBoundAt instanceof Date
+    && row.agentMissionBootstrapAcknowledgedAt instanceof Date
+    && typeof row.agentMissionCapabilityHash === 'string'
+    && SHA256_HEX.test(row.agentMissionCapabilityHash)
+    && Number.isSafeInteger(row.agentMissionReleaseFlagVersion)
+    && (row.agentMissionReleaseFlagVersion ?? 0) >= 1;
+}
+
+function rejectedAuthorityReason(
+  rows: readonly AgentMissionAuthorityLeaseRow[],
+  databaseNow: Date,
+): AgentMissionCapabilityRejectionReason {
+  if (rows.length === 0) return 'not_found';
+  if (rows.some((row) => (
+    row.state === 'active'
+    && (
+      row.leaseExpiresAt.getTime() <= databaseNow.getTime()
+      || row.hardExpiresAt.getTime() <= databaseNow.getTime()
+    )
+  ))) return 'expired';
+  return 'state';
+}
 
 function toInputJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -189,6 +304,137 @@ async function acquireQuoteCreationOwnerLock(
       pg_advisory_xact_lock(hashtextextended(${ownerLockKey}, 0)) IS NULL
     ) AS "locked"
   `;
+}
+
+async function acquireAgentMissionPrincipalLock(
+  transaction: Prisma.TransactionClient,
+  companyId: string,
+  principalBindingHash: string,
+): Promise<void> {
+  const lockKey = `bob-live:principal:${companyId}:${principalBindingHash}`;
+  await transaction.$queryRaw<Array<{ locked: boolean }>>`
+    SELECT (
+      pg_advisory_xact_lock(hashtextextended(${lockKey}, 0)) IS NULL
+    ) AS "locked"
+  `;
+}
+
+async function databaseClock(
+  transaction: Prisma.TransactionClient,
+): Promise<Date> {
+  const rows = await transaction.$queryRaw<Array<{ now: Date }>>`
+    SELECT clock_timestamp() AS "now"
+  `;
+  const now = rows[0]?.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error('AGENT_MISSION_DATABASE_CLOCK_UNAVAILABLE');
+  }
+  return now;
+}
+
+const AUTHORITY_LEASE_COLUMNS = Prisma.sql`
+  btrim("subjectHash") AS "subjectHash",
+  "sessionId",
+  state,
+  "leaseExpiresAt",
+  "hardExpiresAt",
+  "contextSchemaVersion",
+  "contextRevision",
+  "contextPayload",
+  btrim("contextDigest") AS "contextDigest",
+  "contextUpdatedAt",
+  "sidebandOwnerLeaseExpiresAt",
+  "sidebandOwnerEpoch",
+  "contextAppliedRevision",
+  btrim("contextAppliedDigest") AS "contextAppliedDigest",
+  "contextAppliedAt",
+  "contextAppliedOwnerEpoch",
+  "agentMissionProtocolVersion",
+  "agentMissionProtocolBoundAt",
+  btrim("agentMissionCapabilityHash") AS "agentMissionCapabilityHash",
+  "agentMissionReleaseFlagVersion",
+  "agentMissionBootstrapAcknowledgedAt"
+`;
+
+async function readAuthorityLeaseRows(
+  transaction: Prisma.TransactionClient,
+  companyId: string,
+  subjectHashCandidates: readonly string[],
+): Promise<AgentMissionAuthorityLeaseRow[]> {
+  return transaction.$queryRaw<AgentMissionAuthorityLeaseRow[]>`
+    SELECT ${AUTHORITY_LEASE_COLUMNS}
+    FROM public.realtime_session_leases
+    WHERE "companyId" = ${companyId}
+      AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
+    ORDER BY "subjectHash", "sessionId"
+  `;
+}
+
+async function lockAuthorityLeaseRows(
+  transaction: Prisma.TransactionClient,
+  companyId: string,
+  subjectHashCandidates: readonly string[],
+): Promise<AgentMissionAuthorityLeaseRow[]> {
+  return transaction.$queryRaw<AgentMissionAuthorityLeaseRow[]>`
+    SELECT ${AUTHORITY_LEASE_COLUMNS}
+    FROM public.realtime_session_leases
+    WHERE "companyId" = ${companyId}
+      AND "subjectHash" IN (${Prisma.join(subjectHashCandidates)})
+    ORDER BY "subjectHash", "sessionId"
+    FOR UPDATE
+  `;
+}
+
+async function resolveAgentMissionAuthority(
+  transaction: Prisma.TransactionClient,
+  owner: AgentMissionOwner,
+  proof: AgentMissionRealtimeAuthorityProof,
+  lockRows: boolean,
+): Promise<AgentMissionAuthorityResolution> {
+  const canonical = canonicalAuthorityProof(proof);
+  if (canonical === null) {
+    return { status: 'rejected', reason: 'malformed' };
+  }
+  if (lockRows) {
+    await acquireAgentMissionPrincipalLock(
+      transaction,
+      owner.companyId,
+      canonical.principalBindingHash,
+    );
+  }
+  const rows = lockRows
+    ? await lockAuthorityLeaseRows(
+        transaction,
+        owner.companyId,
+        canonical.subjectHashCandidates,
+      )
+    : await readAuthorityLeaseRows(
+        transaction,
+        owner.companyId,
+        canonical.subjectHashCandidates,
+      );
+  const now = await databaseClock(transaction);
+  const eligible = rows.filter((row) => validAuthorityLeaseAt(row, now));
+  if (eligible.length === 0) {
+    return {
+      status: 'rejected',
+      reason: rejectedAuthorityReason(rows, now),
+    };
+  }
+  if (eligible.length !== 1) {
+    return { status: 'rejected', reason: 'ambiguous' };
+  }
+  const lease = eligible[0]!;
+  if (
+    lease.agentMissionCapabilityHash === null
+    || !exactCapabilityHash(
+      canonical.capabilityHash,
+      lease.agentMissionCapabilityHash,
+    )
+  ) {
+    return { status: 'rejected', reason: 'hash_mismatch' };
+  }
+  return { status: 'authorized', lease, databaseNow: now };
 }
 
 async function lockOpenCompanyForMissionWrite(
@@ -466,23 +712,111 @@ implements AgentMissionQuoteDraftRepositoryPort {
   }
 }
 
+function authorizedRealtimeLease(
+  lease: AgentMissionAuthorityLeaseRow,
+): AgentMissionAuthorizedRealtimeLease {
+  return Object.freeze({ realtimeSessionId: lease.sessionId });
+}
+
+class PrismaAgentMissionQuoteScreenAuthority
+implements AgentMissionQuoteScreenAuthorityPort {
+  constructor(
+    private readonly transaction: Prisma.TransactionClient,
+    private readonly lease: AgentMissionAuthorityLeaseRow,
+  ) {}
+
+  async observeForUpdate(
+    owner: AgentMissionOwner,
+    fences: AgentMissionQuoteScreenFences,
+  ): Promise<AgentMissionQuoteScreenObservation> {
+    const databaseNow = new Date(fences.databaseNow);
+    if (
+      Number.isNaN(databaseNow.getTime())
+      || fences.realtimeSessionId !== this.lease.sessionId
+      || this.lease.contextSchemaVersion !== 1
+      || this.lease.contextRevision !== fences.contextRevision
+      || this.lease.contextAppliedRevision !== fences.contextRevision
+      || this.lease.contextDigest !== fences.contextDigest
+      || !(this.lease.contextUpdatedAt instanceof Date)
+      || this.lease.contextAppliedDigest !== fences.contextDigest
+      || !(this.lease.contextAppliedAt instanceof Date)
+      || this.lease.contextAppliedOwnerEpoch !== this.lease.sidebandOwnerEpoch
+      || this.lease.sidebandOwnerLeaseExpiresAt === null
+      || this.lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
+      || this.lease.contextPayload === null
+    ) {
+      return { status: 'rejected', reason: 'context_stale' };
+    }
+
+    const prepared = prepareRealtimeContext({
+      version: this.lease.contextSchemaVersion,
+      revision: this.lease.contextRevision,
+      context: this.lease.contextPayload,
+    });
+    if (
+      prepared === null
+      || !isDeepStrictEqual(this.lease.contextPayload, prepared.snapshot.context)
+      || prepared.digest !== this.lease.contextDigest
+      || prepared.digest !== this.lease.contextAppliedDigest
+      || prepared.digest !== fences.contextDigest
+      || prepared.snapshot.context.screen.name !== '/devis/new'
+    ) {
+      return { status: 'rejected', reason: 'context_stale' };
+    }
+
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      SELECT ${QUOTE_DRAFT_COLUMNS}
+      FROM public.quote_draft_slots
+      WHERE "companyId" = ${owner.companyId}
+        AND "ownerUserId" = ${owner.ownerUserId}
+      LIMIT 1
+      FOR UPDATE
+    `;
+    const row = rows[0];
+    if (row === undefined) return { status: 'rejected', reason: 'draft_stale' };
+    let draft: AgentMissionQuoteDraftSlot;
+    try {
+      draft = quoteDraftFromRow(row);
+    } catch {
+      return { status: 'rejected', reason: 'unavailable' };
+    }
+    if (
+      draft.agentMissionId !== fences.missionId
+      || draft.payload.draft.sessionId !== fences.draftSessionId
+      || draft.revision !== fences.expectedDraftSlotRevision
+      || draft.payload.draft.contentRevision !== fences.expectedDraftContentRevision
+    ) {
+      return { status: 'rejected', reason: 'draft_stale' };
+    }
+    return {
+      status: 'ready',
+      realtimeSessionId: this.lease.sessionId,
+      contextRevision: this.lease.contextAppliedRevision,
+      contextDigest: this.lease.contextAppliedDigest,
+      screenInstanceId: prepared.snapshot.context.screen.instanceId,
+      draft: {
+        sessionId: draft.payload.draft.sessionId,
+        slotRevision: draft.revision,
+        contentRevision: draft.payload.draft.contentRevision,
+      },
+      draftHasCustomer: draft.payload.draft.customer !== null,
+    };
+  }
+}
+
 function createWriteTransaction(
   transaction: Prisma.TransactionClient,
+  lease: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
 ): AgentMissionTransaction {
+  const instant = databaseNow.toISOString();
   return {
-    databaseNow: async () => {
-      const rows = await transaction.$queryRaw<Array<{ now: Date }>>`
-        SELECT clock_timestamp() AS "now"
-      `;
-      const now = rows[0]?.now;
-      if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
-        throw new Error('AGENT_MISSION_DATABASE_CLOCK_UNAVAILABLE');
-      }
-      return now.toISOString();
-    },
+    databaseNow: async () => instant,
+    realtime: authorizedRealtimeLease(lease),
     missions: new PrismaAgentMissionRepository(transaction),
     events: new PrismaAgentMissionEventRepository(transaction),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
+    quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
   };
 }
 
@@ -491,31 +825,48 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
 
   readQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
-    work: Parameters<AgentMissionUnitOfWorkPort['readQuoteCreationOwner']>[1],
-  ): Promise<T> {
+    authority: AgentMissionRealtimeAuthorityProof,
+    work: (transaction: AgentMissionReadTransaction) => Promise<T>,
+  ): Promise<AgentMissionReadExecution<T>> {
+    if (canonicalAuthorityProof(authority) === null) {
+      return Promise.resolve({ status: 'capability_rejected', reason: 'malformed' });
+    }
     return this.prisma.withIsolatedOwner(owner.companyId, owner.ownerUserId, async (transaction) => {
       await setTransactionTimeouts(transaction);
+      const resolution = await resolveAgentMissionAuthority(
+        transaction,
+        owner,
+        authority,
+        false,
+      );
+      if (resolution.status === 'rejected') {
+        return { status: 'capability_rejected', reason: resolution.reason } as const;
+      }
       const missions = new PrismaAgentMissionReadRepository(transaction);
-      return work({
-        databaseNow: async () => {
-          const rows = await transaction.$queryRaw<Array<{ now: Date }>>`
-            SELECT clock_timestamp() AS "now"
-          `;
-          const now = rows[0]?.now;
-          if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
-            throw new Error('AGENT_MISSION_DATABASE_CLOCK_UNAVAILABLE');
-          }
-          return now.toISOString();
-        },
-        missions,
-      });
-    }, { ...OWNER_TRANSACTION_OPTIONS, readOnly: true }) as Promise<T>;
+      const instant = resolution.databaseNow.toISOString();
+      return {
+        status: 'executed',
+        value: await work({
+          databaseNow: async () => instant,
+          realtime: authorizedRealtimeLease(resolution.lease),
+          missions,
+        }),
+      } as const;
+    }, {
+      ...OWNER_TRANSACTION_OPTIONS,
+      readOnly: true,
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    }) as Promise<AgentMissionReadExecution<T>>;
   }
 
   runQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
+    authority: AgentMissionRealtimeAuthorityProof,
     work: (transaction: AgentMissionTransaction) => Promise<T>,
   ): Promise<AgentMissionWriteExecution<T>> {
+    if (canonicalAuthorityProof(authority) === null) {
+      return Promise.resolve({ status: 'capability_rejected', reason: 'malformed' });
+    }
     return this.prisma.withIsolatedOwner(owner.companyId, owner.ownerUserId, async (transaction) => {
       await setTransactionTimeouts(transaction);
       const company = await lockOpenCompanyForMissionWrite(transaction, owner.companyId);
@@ -523,9 +874,22 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         return { status: 'company_unavailable', reason: company } as const;
       }
       await acquireQuoteCreationOwnerLock(transaction, owner);
+      const resolution = await resolveAgentMissionAuthority(
+        transaction,
+        owner,
+        authority,
+        true,
+      );
+      if (resolution.status === 'rejected') {
+        return { status: 'capability_rejected', reason: resolution.reason } as const;
+      }
       return {
         status: 'executed',
-        value: await work(createWriteTransaction(transaction)),
+        value: await work(createWriteTransaction(
+          transaction,
+          resolution.lease,
+          resolution.databaseNow,
+        )),
       } as const;
     }, { ...OWNER_TRANSACTION_OPTIONS, readOnly: false });
   }

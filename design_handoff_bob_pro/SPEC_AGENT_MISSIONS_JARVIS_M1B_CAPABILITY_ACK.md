@@ -1,10 +1,10 @@
 # Bob AgentMission M1-B — capability Realtime durable et ACK écran
 
-> Statut : `specified`
+> Statut : `implemented`
 >
 > Objectif parent : O4 — mission continue
 >
-> Base : `origin/main@3f1a5549`
+> Base : `origin/main@89170c1f`
 >
 > Dépend de : `SPEC_AGENT_MISSIONS_JARVIS.md`,
 > `SPEC_AGENT_MISSIONS_JARVIS_M1A_SERVER.md`, ADR-0006
@@ -25,9 +25,12 @@ M1-B installe l'autorité minimale qui manque :
    de possession aléatoire dans la même transaction que la lease Realtime ;
 3. le secret de capability n'est rendu qu'au mobile N+1, conservé en mémoire vive et présenté sur
    chaque requête Mission ;
-4. chaque route Mission revalide, dans sa propre transaction métier, la possession et la lease
-   active du principal dérivé côté serveur ;
-5. l'ACK `/devis/new` lie atomiquement mission, contexte sideband appliqué et brouillon réel.
+4. le mobile acquitte explicitement et durablement la réception du bootstrap avant que le handle
+   soit exposé au transport ; sans ce reçu, le heartbeat ne prolonge pas la lease et aucune route
+   Mission ne peut l'utiliser ;
+5. chaque route Mission revalide, dans sa propre transaction métier, la possession, le reçu et la
+   lease active du principal dérivé côté serveur ;
+6. l'ACK `/devis/new` lie atomiquement mission, contexte sideband appliqué et brouillon réel.
 
 Le résultat n'est pas encore le devis vocal complet. Il rend la prochaine tranche M1-C possible
 sans ouvrir une faille d'autorité ni fabriquer un état local.
@@ -36,9 +39,10 @@ sans ouvrir une faille d'autorité ni fabriquer un état local.
 
 Une requête authentifiée ne peut lire ou muter une mission devis que si le serveur retrouve
 **exactement une** lease Bob Live active du même principal, négociée en protocole mission V1 lors
-de son admission et dont le hash correspond au secret de possession présenté. Un ACK écran accepté
-produit exactement une nouvelle révision Mission, un event `screen_acknowledged` corrélé et une
-liaison au contexte/draft autoritaires, ou ne produit rien.
+de son admission, explicitement acquittée par le mobile et dont le hash correspond au secret de
+possession présenté. Un ACK écran accepté produit exactement une nouvelle révision Mission, un
+event `screen_acknowledged` corrélé et une liaison au contexte/draft autoritaires, ou ne produit
+rien.
 
 ## 3. Périmètre
 
@@ -56,6 +60,8 @@ liaison au contexte/draft autoritaires, ou ne produit rien.
   uniquement en mémoire mobile et interdite aux logs, métriques, traces et crash reports ;
 - persistance atomique de la version, du hash de capability et de la version de release flag dans
   `RealtimeSessionLease` ;
+- reçu de bootstrap durable, idempotent et lié à la même capability, obligatoire avant exposition
+  du handle au transport ou autorité Mission ;
 - autorité HTTP request-scoped dérivée du JWT et des HMAC serveur ;
 - revalidation de la lease dans la même UoW que chaque lecture/mutation Mission ;
 - use case et route `screen-acks` ;
@@ -95,19 +101,28 @@ ajoute donc une capability opaque de possession :
   SQLite, logs, métriques, traces, analytics ou crash reports ;
 - secret présenté dans `X-Bob-Agent-Mission-Capability` sur chaque route Mission.
 
-Le décodeur `HttpBobClient` est la seule frontière mobile qui voit le secret wire. Il l'encapsule
-immédiatement dans un handle de session opaque, non sérialisable, dont le champ privé ajoute
-lui-même le header aux méthodes Mission et dont `dispose()` efface la référence. Ni le DTO remis à
-React ni les transports n'exposent une chaîne de secret. Le transport transfère ce handle une seule
-fois au `RealtimeSessionController`, qui en devient l'unique propriétaire et le dispose avant tout
+Le décodeur `HttpBobClient` est la seule frontière mobile qui voit le secret wire. Après décodage
+strict, il envoie obligatoirement le reçu de bootstrap authentifié par JWT + capability. Il
+n'encapsule et ne retourne le secret dans un handle de session opaque, non sérialisable, qu'après
+succès ou rejeu idempotent de ce reçu. Le champ privé du handle ajoute lui-même le header aux
+méthodes Mission et `dispose()` efface la référence. Ni le DTO remis à React ni les transports
+n'exposent une chaîne de secret. Le transport transfère ce handle une seule fois au
+`RealtimeSessionController`, qui en devient l'unique propriétaire et le dispose avant tout
 `await` sur erreur, abort, fallback, background, hangup, logout ou changement d'identité. Une
 méthode appelée après dispose échoue localement avant réseau. Les clients local/in-memory de test
 implémentent le même contrat mais ne fabriquent jamais de capability.
 
-La remise est volontairement **at-most-once**. Une réponse bootstrap perdue n'est jamais rejouée à
-partir du hash durable, qui ne permet pas de reconstruire le secret : le serveur termine/libère la
-session incomplète, et le client repart avec un nouveau `sessionHandle`. Le produit ne présente
-donc pas ce cas comme une reprise transparente.
+La remise du secret est volontairement **at-most-once** ; son acquisition d'autorité est
+**at-least-once idempotente** par le reçu explicite. Une réponse bootstrap perdue avant réception
+du secret n'est jamais rejouée à partir du hash durable, qui ne permet pas de le reconstruire. Une
+réponse de reçu perdue est rejouée une fois par le client avec la même capability tant que la
+courte fenêtre de réception est vivante. Le budget de réservation couvre le bootstrap serveur,
+deux tentatives de reçu de quatre secondes et une seconde de marge ; une configuration plus courte
+échoue au boot. Avant reçu, `activate` conserve `leaseExpiresAt` comme deadline de réception
+issue du TTL de réservation et `renew` ne la prolonge jamais. À expiration, le reaper existant
+claim la lease, termine le provider puis la supprime. Le client repart ensuite uniquement après un
+nouveau geste utilisateur et avec un nouveau `sessionHandle`; le produit ne présente pas ce cas
+comme une reprise transparente.
 
 L'autorisation reste la conjonction de faits que le client ne peut pas choisir :
 
@@ -148,9 +163,9 @@ Le déploiement qui introduit ce protocole suit un cutover en deux phases :
 1. `predeploy` ferme les nouvelles admissions Bob Live et, si le prédécesseur ne publie pas encore
    `realtimeAdmissionCancellationFence=v1`, attend l'autorité globale `closed|0` avant d'appliquer
    l'expand puis la validate ;
-2. le pipeline déploie N, prouve l'unique réplique, la readiness du SHA/environnement exacts et la
-   capability `v1`, puis exécute immédiatement le `postdeploy` comme unique autorité de
-   réouverture ;
+2. le pipeline déploie N, prouve l'unique réplique, la readiness du SHA/environnement exacts, la
+   capability d'annulation `v1` et `agentMissionBootstrapReceipt=v1`, puis exécute immédiatement
+   le `postdeploy` comme unique autorité de réouverture ;
 3. `postdeploy` est une phase explicite obligatoire, ferme avant le build et toute mutation
    d'autorité, exige la bijection stricte entre toutes les migrations locales et appliquées,
    n'appelle jamais `prisma migrate deploy`, recertifie le schéma sous le nouveau binaire et ne
@@ -162,11 +177,11 @@ un drain zéro préalable. Le trigger protège un INSERT N-1 après qu'un pod N 
 mécanisme DB ne peut en revanche inventer le fence d'un ancien pod qui a déjà traité un hangup sans
 écriture.
 
-Lors d'une requête HTTP, l'UoW lit/verrouille d'abord toutes les leases correspondant aux hashes
+Lors d'une requête HTTP Mission, l'UoW lit/verrouille d'abord toutes les leases correspondant aux hashes
 candidats **sans filtrer par capability**, puis exige exactement une lease V1 active et vivante.
-Seulement ensuite, elle compare en temps constant son hash stocké au hash de la capability
-présentée. Zéro ou plusieurs leases, ou un hash différent, échouent fermés avant tout accès
-Mission.
+Cette lease doit porter un reçu de bootstrap non nul. Seulement ensuite, elle compare en temps
+constant son hash stocké au hash de la capability présentée. Zéro ou plusieurs leases, reçu absent
+ou hash différent échouent fermés avant tout accès Mission.
 
 ### 4.2 Éligibilité figée à l'admission
 
@@ -257,7 +272,8 @@ d'exposer les repositories Mission, une mutation :
    par tenant, sans filtre capability et par ordre `subjectHash, sessionId` identique à
    l'admission ;
 5. dans cet ensemble verrouillé, filtrage des seules leases `state=active`, TTL/hard TTL vivants,
-   `agentMissionProtocolVersion=1`, binding exact non nul et release flag versionné ;
+   `agentMissionProtocolVersion=1`, reçu de bootstrap non nul, binding exact non nul et release
+   flag versionné ;
 6. exigence d'exactement une lease ainsi admissible, puis comparaison en temps constant du hash de
    capability. Une ancienne candidate expirée, historique ou `reaping` n'est pas choisie et ne rend
    pas ambiguë l'unique lease active.
@@ -278,6 +294,7 @@ agentMissionProtocolVersion    INTEGER NULL
 agentMissionProtocolBoundAt    TIMESTAMPTZ NULL
 agentMissionCapabilityHash     CHAR(64) NULL
 agentMissionReleaseFlagVersion INTEGER NULL
+agentMissionBootstrapAcknowledgedAt TIMESTAMPTZ NULL
 ```
 
 CHECK :
@@ -291,6 +308,10 @@ CHECK :
 - aucun backfill ne transforme une lease historique en capability ;
 - un writer N-1 qui omet les quatre colonnes continue à écrire quatre `NULL` ;
 - une négociation `null/null` insère explicitement quatre `NULL`.
+- le reçu reste `NULL` pour tout writer historique et toute lease V1 avant acquittement ;
+- seul le passage `NULL → clock_timestamp()` est autorisé, exactement une fois, sur une lease V1 ;
+- un reçu non nul est fini, postérieur ou égal au binding et antérieur ou égal au hard cap ;
+- le rejeu exact ne réécrit ni le reçu ni la deadline active.
 
 Une table additive porte le fence de course hangup/bootstrap :
 
@@ -327,6 +348,14 @@ POST /voice/realtime/calls
     ...bootstrap existant
   }
 
+POST /voice/realtime/calls/:sessionHandle/agent-mission-bootstrap-acknowledgements
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
+  body absent
+  response {
+    acknowledged: true,
+    replayed: boolean
+  }
+
 GET /agent-missions/current/quote-creation
   header X-Bob-Agent-Mission-Capability: <secret canonique>
   body absent
@@ -352,6 +381,13 @@ POST /agent-missions/:missionId/cancel
   header X-Bob-Agent-Mission-Capability: <secret canonique>
   body { commandId, expectedMissionRevision }
 ```
+
+Le reçu de bootstrap dérive tenant, owner, bindings HMAC et `principalBindingHash` côté serveur,
+verrouille les candidats dans le même ordre que l'admission, exige exactement une lease V1
+`active`, liée au provider, vivante, non `reaping`, puis compare la capability en temps constant.
+Il écrit une seule fois le timestamp DB et convertit atomiquement la deadline courte en TTL actif.
+Un rejeu exact répond `200` sans écriture ni prolongation ; mauvaise capability, ambiguïté,
+expiration et état invalide échouent sous une erreur générique sans révéler la cause.
 
 Les champs de `screen-acks` sont des fences attendues, jamais l'autorité. La route relit les faits
 réels dans la même transaction. Le header est obligatoire, borné et parsé canoniquement avant
@@ -400,12 +436,18 @@ preuves d'authentification réévaluées à chaque requête, jamais des données
 
 - abort avant remise du bootstrap : aucune ouverture micro/uplink, handle mobile disposé s'il
   existe et lease libérée/terminée par le chemin autoritaire ;
+- bootstrap V1 reçu mais reçu durable non acquitté : aucun handle n'est exposé, aucun heartbeat ne
+  prolonge la lease et aucune opération Mission n'est autorisée ; échec/abort du reçu déclenche le
+  hangup de la session et reste fatal sans fallback ;
 - réponse N+1 absente, mal formée, inconnue, timeout ou 5xx : résultat racine
   `fail_closed(agent_mission_negotiation_failed)`, non reconnectable et sans repli legacy/Mistral ;
 - background, hangup, logout ou changement d'identité : le controller mobile dispose synchroniquement le
   handle **avant tout `await`**, puis termine/libère la session ;
-- le reaper passe la lease à `reaping` sous claim possédé avant tout appel externe ; une capability
-  liée à une lease `reaping`, terminée ou expirée est refusée ;
+- toute terminaison serveur — requête HTTP, fermeture sideband, kill-switch, heartbeat perdu,
+  hard cap ou shutdown — passe d'abord la lease à `reaping` sous claim durable possédé, puis
+  appelle le provider avec l'identité de ce claim et ne complète qu'avec son `reaperToken` ;
+  aucun lifecycle process-local n'appelle le provider avant ce claim. Une capability liée à une
+  lease `reaping`, terminée ou expirée est refusée ;
 - un handle est transférable une seule fois au controller, non copiable et inutilisable après
   `dispose()`.
 
@@ -424,9 +466,48 @@ Règles :
 - master absent/`false` : les deux variables de keyring AgentMission sont absentes ;
 - master `true` : keyring complet, version active présente, secrets sans placeholder ;
 - passage d'un environnement déjà actif à master `false` interdit tant que le drain des leases V1
-  n'est pas prouvé ; le release flag OFF est le mécanisme normal de fermeture des admissions ;
+  n'est pas prouvé : le manager prend le verrou exclusif, relit le floor durable et, si
+  `writerEnabled=true`, exige la capacité `closed|0` puis persiste `writerEnabled=false` dans la
+  même transaction. Un environnement jamais stageé et un retry OFF observant déjà
+  `writerEnabled=false` sont des no-op ; tout writer reste refusé par le trigger tant que ce fence
+  durable est désarmé. Le release flag OFF reste le mécanisme normal de fermeture des admissions ;
 - secret dédié, distinct de sujet/preuve/usage/contrôle/audit Bob Live ;
-- une version retirée mais encore référencée par un event fait échouer la readiness ;
+- le manager applique le même prérequis que le boot (`Bob Live actif + provider OpenAI`) et vérifie
+  la dédication face aux scalaires et keyrings Bob Live **avant** toute insertion append-only ;
+- chaque secret canonique est engagé par une empreinte SHA-256 domain-separated de ses 32 octets
+  décodés dans un registre global append-only ; une même version ne peut jamais désigner un autre
+  matériau et un même matériau ne peut pas être réutilisé sous une autre version ;
+- le rituel `stage` privilégié prend le verrou advisory exclusif
+  `bob-agent-mission-fingerprint-hmac-v1`, insère sans écrasement les bindings configurés, puis
+  relit et compare exactement chaque empreinte et version retenue avant d'armer un floor writer
+  monotone `[N,N]` ou `[N,N+1]`. Au premier stage d'une version `N+1`, la présence de la clé
+  adjacente `N` arme directement `[N,N+1]` afin de ne jamais couper le writer précédent ; si cette
+  clé n'est pas configurée, `closed|0` est exigé avant d'armer `[N+1,N+1]` ;
+- chaque writer d'event prend le verrou advisory partagé du même keyspace ; avant le tout premier
+  floor, la forme N-1 reste compatible, mais le stage exclusif attend ces writers puis inclut tous
+  leurs events dans son snapshot. La transaction manager est `READ COMMITTED` : le SELECT de
+  readiness prend son snapshot **après** l'attente du verrou exclusif, afin de voir le commit du
+  dernier writer partagé. Le trigger writer est explicitement `VOLATILE`, réarmé et certifié à
+  chaque provisionnement : ses sous-requêtes prennent donc un snapshot frais après l'attente du
+  verrou partagé, même si une dérive DDL avait tenté de le rendre `STABLE`. Après stage, toute
+  version hors floor ou sans binding est
+  refusée. Une écriture tardive et une rotation concurrente ne peuvent donc pas contourner le
+  snapshot ;
+- `stage(N+1)` est la seule transition qui étend `[N,N]` vers `[N,N+1]`. `retire(N)` exige la
+  capacité Bob Live `closed|0` verrouillée dans la même transaction, puis ferme durablement le
+  floor en `[N+1,N+1]` avant que le secret N puisse être retiré de la configuration. Pendant la
+  fenêtre `[N,N+1]`, le runtime N reste volontairement admis et un replay de `stage(N)` ne réduit
+  jamais le floor ; le `postdeploy` du SHA N+1 exécute `retire` après toutes les certifications et
+  avant la réouverture. Un retry de ce retire déjà commité est idempotent ;
+- la readiness runtime prend ce verrou en partagé et compare les bindings durables aux secrets
+  configurés, y compris les versions encore référencées par un event ; une version retirée,
+  non liée ou liée à un autre matériau fait échouer le boot. L'appelant arme explicitement
+  `lock_timeout=1s` et `statement_timeout=3s`, et un index btree exact sur
+  `agent_mission_events.fingerprintKeyVersion` sert au plus 33 probes récursifs `min puis > N`
+  par index seek ; aucun `DISTINCT` n'épuise le journal à chaque boot ;
+- retirer une ancienne version de la configuration exige le floor déjà retiré, zéro event retenu
+  sous cette version et le drain de tous les writers qui pouvaient encore l'émettre ; les bindings
+  restent append-only et ne sont jamais supprimés ;
 - aucune valeur réelle n'est committée ;
 - **[BLOQUÉ FONDATEUR : keyring HMAC AgentMission de production et destination de secrets
   approuvée]** ;
@@ -447,8 +528,8 @@ La certification positive est une opération bornée sur le SHA candidat :
 3. garder le flag global OFF ; créer/activer uniquement l'override du compte interne après
    autorisation fondateur datée+canal et contre-signature Claude+GPT de la ligne exacte dans
    `MATRICE_FLAGS_V1.md`, puis enregistrer sa version ;
-4. exécuter bootstrap V1 → start → contexte sideband appliqué → `screen-ACK`, puis vérifier les
-   lignes DB et événements attendus sous RLS avec le rôle runtime ;
+4. exécuter bootstrap V1 → reçu durable → start → contexte sideband appliqué → `screen-ACK`, puis
+   vérifier les lignes DB et événements attendus sous RLS avec le rôle runtime ;
 5. désactiver/retirer l'override, incrémenter la version parente, terminer la lease de test et
    prouver zéro lease V1 active ;
 6. remettre le master à OFF, retirer les deux variables de keyring, redéployer le même SHA et
@@ -467,14 +548,21 @@ Les noms et labels autorisés sont fermés :
   `requested=omitted|null|v1|unknown`, `outcome=historical|accepted|refused|error`,
   `provider=openai|mistral|unknown`, `transport=webrtc|mistral_pcm|unknown` ;
 - `bob_agent_mission_capability_rejections_total{operation,reason}` avec
-  `operation=get|start|cancel|screen_ack` et
+  `operation=bootstrap_ack|get|start|cancel|screen_ack` et
   `reason=missing|malformed|not_found|ambiguous|expired|state|hash_mismatch` ;
+- `bob_agent_mission_bootstrap_receipts_total{outcome}` avec
+  `outcome=acknowledged|replayed|refused|error` ;
 - `bob_agent_mission_screen_ack_total{outcome}` avec
   `outcome=accepted|replayed|conflict|context_stale|draft_stale|unavailable`.
 
 Tout champ source vide ou inconnu devient explicitement `unknown` quand ce label l'autorise ; il ne
 produit jamais une chaîne vide. Aucun label ne porte tenant, utilisateur, session, mission,
 commande, contenu, secret ou hash.
+
+Les événements d'audit Mission utilisent uniquement des pseudonymes HMAC séparés par namespace
+(`tenant`, `owner`, `mission`) et les transitions allowlistées. Ils ne journalisent jamais les
+identifiants bruts société/utilisateur/mission, même si le logger général accepte encore ces clés
+pour d'autres domaines.
 
 ## 9. Critères d'acceptation binaires
 
@@ -491,6 +579,11 @@ commande, contenu, secret ou hash.
 - [ ] Seul un provider/transport/mode présent dans l'allowlist serveur certifiée peut négocier `1`.
 - [ ] Version, hash de capability et version de release flag sont dans l'INSERT de la lease avant
       provider/bootstrap ; le release flag autoritaire a été relu dans cette transaction.
+- [ ] Une lease V1 activée mais non acquittée conserve la courte deadline de réception ; aucun
+      heartbeat ne la prolonge. Le reçu valide l'étend une seule fois au TTL actif et son rejeu ne
+      prolonge rien.
+- [ ] Une réponse de reçu perdue après commit déclenche exactement un rejeu avec la même capability ;
+      le TTL de réservation couvre le bootstrap, les deux tentatives bornées et une marge explicite.
 - [ ] La preuve renvoyée par l'adapter atteste exactement le hash/version insérés, reste séparée
       de la lease et est corrélée au secret en mémoire avant provider ; toute divergence libère la
       lease et n'émet aucune capability.
@@ -514,8 +607,10 @@ commande, contenu, secret ou hash.
       `agent_mission_negotiation_failed` et seul `null/null` explicite autorise l'historique.
 - [ ] Côté mobile, abort, background, hangup, logout et changement d'identité disposent le handle
       avant tout `await`.
-- [ ] Côté serveur, le reaper passe atomiquement la lease à `reaping` avant l'appel externe ; toute
-      capability de cette lease est ensuite refusée.
+- [ ] Côté serveur, HTTP, sideband, kill-switch, heartbeat, hard cap et shutdown passent
+      atomiquement la lease à `reaping` avant l'appel externe ; le provider reçoit uniquement
+      l'identité du claim durable, la complétion exige son `reaperToken`, et toute capability de
+      cette lease est refusée dès le claim.
 - [ ] Les tests croisés OpenAI/Mistral prouvent qu'aucune clé ni aucun appel du provider secondaire
       n'est requis ou déclenché.
 
@@ -524,6 +619,11 @@ commande, contenu, secret ou hash.
 - [ ] Le runtime compose l'autorité durable à la place du provider disabled.
 - [ ] Sans secret canonique, hash exact et lease V1 active unique : zéro requête
       Mission/draft/event.
+- [ ] Sans reçu durable de bootstrap : `get/start/cancel/screen-ack` sont tous refusés avant la
+      moindre requête Mission/draft/event.
+- [ ] Le reçu valide, son rejeu exact, mauvaise capability, cross-tenant, ambiguïté, expiration,
+      état `reaping` et la course reçu/reaper ont des résultats binaires, sans choix silencieux ni
+      double autorité.
 - [ ] `reserved`, `bound`, `reaping`, expirée, mauvais tenant et autre owner du même tenant sont
       refusés.
 - [ ] Deux admissions concurrentes sous anciennes/nouvelles versions HMAC convergent vers une seule
@@ -545,6 +645,8 @@ commande, contenu, secret ou hash.
 - [ ] Le secret n'est ni persisté côté mobile, ni loggé, ni placé dans métriques/traces/crash
       reports ; seul son hash serveur est durable. Une redaction de défense masque en plus tout
       motif canonique `bam1_…` qui atteindrait malgré tout logs ou scrubbing télémétrique.
+- [ ] Les audits `agent_mission.*` ne contiennent aucun identifiant brut ; leurs références
+      tenant/owner/mission sont des pseudonymes HMAC namespace-isolés issus du keyring Mission.
 - [ ] Le DTO mobile/React n'expose jamais le secret ; `HttpBobClient` le pose/efface en mémoire,
       ajoute le header lui-même et refuse localement une méthode Mission sans capability.
 
@@ -562,6 +664,8 @@ commande, contenu, secret ou hash.
 - [ ] Expand puis validate séparés, timeouts bornés et listes CHECK générées.
 - [ ] Le writer N-1 exact fonctionne sous les triggers/contraintes de chaque état intermédiaire,
       avant et après validate.
+- [ ] La colonne de reçu nullable reste compatible N-1 ; son trigger autorise uniquement
+      `NULL → timestamp DB` sur V1 et refuse remplacement, effacement ou reçu historique.
 - [ ] Le writer N-1 insère une lease sans fence et échoue avec un fence vivant exact ; FORCE RLS
       empêche lecture/écriture inter-tenant et les rôles Data API ne possèdent aucun droit.
 - [ ] Le premier cutover ferme et draine `closed|0` avant migrate ; une reprise partielle ne saute
@@ -569,13 +673,37 @@ commande, contenu, secret ou hash.
       `prisma migrate deploy`.
 - [ ] La phase est toujours explicite ; la réouverture n'arrive que par `postdeploy`, après preuve
       d'une réplique, readiness du SHA/environnement exacts et
-      `realtimeAdmissionCancellationFence=v1` sur le binaire déployé.
+      `realtimeAdmissionCancellationFence=v1` avec `agentMissionBootstrapReceipt=v1` sur le binaire
+      déployé.
 - [ ] `boundAt = reservedAt` est prouvé ; le writer N-1 et une négociation `null/null` laissent les
       quatre colonnes Mission à `NULL`.
 - [ ] RLS/ACL/inter-tenant/deux owners passent sur PostgreSQL 17 avec rôle runtime
       non-superuser, non-owner, sans `BYPASSRLS`.
+- [ ] Le registre fingerprint est append-only, sans secret ni accès table runtime ; le stage
+      privilégié lie exactement version et matériau sous verrou exclusif, tandis que readiness et
+      writers prennent le verrou partagé. Le floor monotone accepte au plus N/N+1 et son retire
+      exige `closed|0` sous verrou. Même version + autre secret, rollback de version, version non
+      liée, matériau réutilisé, ancien writer après retire et retrait d'une version encore retenue
+      échouent fermés.
+- [ ] Le cycle réel PostgreSQL prouve `[N,N] → [N,N+1] → [N+1,N+1]`, un writer partagé concurrent
+      commité avant le snapshot du stage au moyen de barrières observables et du verrou advisory
+      exact — aucun `sleep` arbitraire ne tient lieu de preuve —, le trigger `VOLATILE`, puis
+      `writerEnabled=true → false → true → false`. Le premier OFF exige `closed|0`, son retry déjà
+      désactivé n'exige plus de drain, et tous les writers sont refusés pendant l'état désactivé.
+- [ ] La fonction de readiness est réellement appelée via `DATABASE_URL` par le rôle runtime ;
+      sa sortie est bornée et canonique, ses ACL exactes n'accordent `EXECUTE` qu'au propriétaire
+      et au runtime, et l'inventaire RLS exact ne contient aucune policy permissive inattendue.
+- [ ] La fonction writer-guard `SECURITY DEFINER` possède une ACL exacte : seul son owner peut
+      l'exécuter. Le provisionneur révoque aussi tout grantee arbitraire hérité d'une release
+      antérieure ; runtime, Data API et rôle empoisonné échouent tous fermés.
+- [ ] Les memberships de `bob_app`, `anon`, `authenticated` et `service_role` sont vérifiées par
+      fermeture transitive `MEMBER|SET`, pas seulement contre les owners connus : tout rôle
+      intermédiaire atteignable, même non-owner, fait échouer le certificat.
 - [ ] ACL/memberships et opérations post-transfert passent sous owner explicite ; aucune exposition
-      implicite `anon`, `authenticated` ou `service_role` ne subsiste.
+      implicite `anon`, `authenticated` ou `service_role` ne subsiste. Le fichier de release
+      `rls.sql` complet est réellement rejoué après transfert vers un owner de schéma exact, par un
+      déployeur `CREATEROLE` non-superuser qui ne possède plus les tables, puis FORCE RLS et
+      l'absence d'ownership du déployeur sont certifiées.
 - [ ] Le train SQL et les certifications sont rejoués sur Supabase staging avec déployeur
       non-superuser avant fusion.
 
@@ -585,11 +713,11 @@ commande, contenu, secret ou hash.
 - [ ] Typecheck, lint, suites globales et builds API/mobile verts depuis checkout propre.
 - [ ] Review adversariale correctness/sécurité, architecture/parité et UX/accessibilité ;
       tous P0/P1 corrigés.
-- [ ] Les trois familles de métriques de §8.2 utilisent exactement leurs labels bornés, avec défaut
+- [ ] Les quatre familles de métriques de §8.2 utilisent exactement leurs labels bornés, avec défaut
       explicite et sans contenu ; elles n'affirment pas que O5/SLO appareil est certifié.
 - [ ] Une seule PR, CI complète verte, puis fenêtre staging de §8.1 contre-signée : smoke positif
-      bootstrap→start→screen-ACK, preuve DB, drain zéro, override/master/keyring remis à OFF/absents,
-      puis fusion.
+      bootstrap→reçu durable→start→screen-ACK, preuve DB, drain zéro, override/master/keyring remis
+      à OFF/absents, puis fusion.
 - [ ] Après certification, aucune variable/ligne de release flag persistante, promesse publique ou
       production n'est activée ; la fenêtre staging interne est tracée avec début, fin et acteur.
 
@@ -600,3 +728,22 @@ cochées avec des preuves reproductibles liées au SHA exact, dont le smoke stag
 retour OFF. Sans ce smoke, le statut maximal est `implemented`. L'existence du code ou un typecheck
 vert ne suffisent pas. O4 reste `implemented partiellement` tant que M1-C n'a pas livré le parcours
 mobile devis jusqu'à `awaiting_lines`. O5 reste partiel tant que la preuve device/SLO n'existe pas.
+
+### 10.1 Preuves locales du statut `implemented`
+
+État vérifié avant gel du SHA candidat :
+
+- Core : 197 fichiers / 2 298 tests, typecheck, lint et artefact de production certifié ;
+- API Client : 23 fichiers / 447 tests, typecheck, lint et artefact de production certifié ;
+- API : 206 fichiers / 2 392 tests, 298 tests de contrats release, typecheck, lint et artefact de
+  production certifié ;
+- Mobile : 123 fichiers / 1 285 tests et typecheck ;
+- PostgreSQL 17 réel : 43 scénarios AgentMission, dont writer N-1, runtime non-superuser,
+  owner-split de type Supabase, RLS/ACL exactes et course reçu/reaper ;
+- review adversariale : retry après réponse ACK perdue, budget TTL des deux tentatives et course
+  PostgreSQL réelle corrigés puis rejoués ;
+- `git diff --check` et syntaxe de chaque script shell modifié : verts.
+
+Ces preuves ne promeuvent pas le lot à `certified`. Restent obligatoires sur le SHA figé : checkout
+propre, CI complète, rejeu Supabase staging avec déployeur non-superuser, contre-signature de la
+fenêtre interne, smoke positif de §8.1 puis preuve du retour intégral à OFF.

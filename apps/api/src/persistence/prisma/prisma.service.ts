@@ -13,6 +13,7 @@ export interface IsolatedTransactionOptions {
 
 export interface IsolatedOwnerTransactionOptions extends IsolatedTransactionOptions {
   readonly readOnly: boolean;
+  readonly isolationLevel?: Prisma.TransactionIsolationLevel;
 }
 
 @Injectable()
@@ -122,6 +123,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     }, {
       maxWait: options.maxWaitMs,
       timeout: options.timeoutMs,
+      ...(options.isolationLevel === undefined
+        ? {}
+        : { isolationLevel: options.isolationLevel }),
     });
   }
 

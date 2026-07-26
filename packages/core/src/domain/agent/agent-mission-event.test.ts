@@ -109,7 +109,7 @@ function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnaps
   return event({
     eventType,
     actor,
-    commandId: actor === 'system' ? SYSTEM_COMMAND_ID : COMMAND_ID,
+    commandId: eventType === 'mission_expired' ? SYSTEM_COMMAND_ID : COMMAND_ID,
     sequence: isStart ? 1 : 4,
     missionRevisionBefore: isStart ? 0 : 3,
     missionRevisionAfter: isStart ? 1 : 4,
@@ -208,19 +208,30 @@ describe('AgentMissionEvent', () => {
     },
   );
 
-  it.each([
-    ...AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES,
-    ...AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES,
-  ])('%s réserve UUID v8 aux commandes système', (eventType) => {
+  it.each(AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES)(
+    '%s réserve UUID v8 aux commandes système',
+    (eventType) => {
     expect(AgentMissionEvent.record(validEventFor(eventType)).ok).toBe(true);
     expect(AgentMissionEvent.record({
       ...validEventFor(eventType),
       commandId: COMMAND_ID,
     })).toMatchObject({
       ok: false,
-      error: { field: 'commandId', reason: 'invalid_uuid_version' },
-    });
-  });
+        error: { field: 'commandId', reason: 'invalid_uuid_version' },
+      });
+    },
+  );
+
+  it.each(AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES)(
+    '%s consomme la commande UUID v4 du client et relit les ACK N-1 en UUID v8',
+    (eventType) => {
+      expect(AgentMissionEvent.record(validEventFor(eventType)).ok).toBe(true);
+      expect(AgentMissionEvent.record({
+        ...validEventFor(eventType),
+        commandId: SYSTEM_COMMAND_ID,
+      }).ok).toBe(true);
+    },
+  );
 
   it('rejette toute clé inconnue dans l’enveloppe et dans data', () => {
     expect(AgentMissionEvent.record({ ...event(), transcript: 'secret' })).toMatchObject({

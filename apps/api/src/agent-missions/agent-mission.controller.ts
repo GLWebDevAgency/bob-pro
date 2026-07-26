@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Header,
+  Headers,
   HttpCode,
   HttpException,
   HttpStatus,
@@ -11,7 +12,6 @@ import {
   Post,
   Res,
 } from '@nestjs/common';
-import { appUnavailable, err } from '@bob/core';
 import { unwrap } from '../http/result';
 import { WithoutTenantPersistenceTransaction } from '../persistence/tenant-persistence.interceptor';
 import {
@@ -59,17 +59,23 @@ export class AgentMissionController {
     private readonly authority: AgentMissionHttpAuthority,
   ) {}
 
-  private async requireAuthority(operation: AgentMissionHttpOperation): Promise<void> {
-    if (!await this.authority.authorize(operation)) {
-      unwrap(err(appUnavailable('agent_mission_http_capability')));
-    }
+  private requireAuthority(
+    operation: AgentMissionHttpOperation,
+    capability: string | undefined,
+  ) {
+    return unwrap(this.authority.prepare(operation, capability));
   }
 
   @Get('current/quote-creation')
   @Header('Cache-Control', 'private, no-store')
-  async getCurrent() {
-    await this.requireAuthority('get_current_quote_creation');
-    return unwrap(await this.missions.getCurrent());
+  async getCurrent(
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority(
+      'get_current_quote_creation',
+      capability,
+    );
+    return unwrap(await this.missions.getCurrent(authorization));
   }
 
   @Post('quote-creation/start')
@@ -78,10 +84,12 @@ export class AgentMissionController {
   async start(
     @Body() value: unknown,
     @Res({ passthrough: true }) response: StatusResponse,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
   ) {
-    await this.requireAuthority('start_quote_creation');
+    const authorization = this.requireAuthority('start_quote_creation', capability);
     const body = exactBody(value, ['commandId']);
     const result = unwrap(await this.missions.start({
+      authorization,
       commandId: body.commandId as string,
     }));
     response.status(result.outcome === 'created' ? HttpStatus.CREATED : HttpStatus.OK);
@@ -94,13 +102,51 @@ export class AgentMissionController {
   async cancel(
     @Param('missionId') missionId: string,
     @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
   ) {
-    await this.requireAuthority('cancel_quote_creation');
+    const authorization = this.requireAuthority('cancel_quote_creation', capability);
     const body = exactBody(value, ['commandId', 'expectedMissionRevision']);
     return unwrap(await this.missions.cancel({
+      authorization,
       missionId,
       commandId: body.commandId as string,
       expectedMissionRevision: body.expectedMissionRevision as number,
+    }));
+  }
+
+  @Post(':missionId/screen-acks')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store')
+  async acknowledgeScreen(
+    @Param('missionId') missionId: string,
+    @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority(
+      'acknowledge_quote_screen',
+      capability,
+    );
+    const body = exactBody(value, [
+      'commandId',
+      'expectedMissionRevision',
+      'realtimeSessionId',
+      'contextRevision',
+      'contextDigest',
+      'draftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+    ]);
+    return unwrap(await this.missions.acknowledgeScreen({
+      authorization,
+      missionId,
+      commandId: body.commandId as string,
+      expectedMissionRevision: body.expectedMissionRevision as number,
+      realtimeSessionId: body.realtimeSessionId as string,
+      contextRevision: body.contextRevision as number,
+      contextDigest: body.contextDigest as string,
+      draftSessionId: body.draftSessionId as string,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+      expectedDraftContentRevision: body.expectedDraftContentRevision as number,
     }));
   }
 }

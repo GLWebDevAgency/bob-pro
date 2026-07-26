@@ -1,4 +1,7 @@
-import type { RealtimeVoiceControlReference } from '@bob/api-client';
+import type {
+  RealtimeAgentMissionSession,
+  RealtimeVoiceControlReference,
+} from '@bob/api-client';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProcessAudioLease } from '../audio';
 import type {
@@ -61,6 +64,7 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
   lease: ProcessAudioLease | null = LEASE;
   policy = POLICY as typeof POLICY | null;
   emitCommitOnFinish = false;
+  missionSession: RealtimeAgentMissionSession | null = null;
 
   subscribe(listener: (event: RealtimeTransportEvent) => void): () => void {
     this.listeners.add(listener);
@@ -95,6 +99,11 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
   }
   async close(reason: string): Promise<void> { this.log.push(`uplink:close:${reason}`); }
   getSessionHandle(): string | null { return this.sessionHandle; }
+  takeAgentMissionSession(): RealtimeAgentMissionSession | null {
+    const session = this.missionSession;
+    this.missionSession = null;
+    return session;
+  }
   getProcessAudioLease(): ProcessAudioLease | null { return this.lease; }
   getSpeechSourcePolicy() { return this.policy; }
   metricsSnapshot(): RealtimeTransportMetrics { return METRICS; }
@@ -176,6 +185,16 @@ describe('RealtimeAuditedConversationTransport', () => {
       remoteAudio: true,
     });
     expect(value.transport.completionMode).toBe('continuous');
+  });
+
+  it('relaie la capability opaque exactement une fois sans la copier dans le wrapper', () => {
+    const value = harness();
+    const session = { dispose: vi.fn() } as unknown as RealtimeAgentMissionSession;
+    value.uplink.missionSession = session;
+
+    expect(value.transport.takeAgentMissionSession()).toBe(session);
+    expect(value.transport.takeAgentMissionSession()).toBeNull();
+    expect(session.dispose).not.toHaveBeenCalled();
   });
 
   it('coupe localement Bob avant de publier la parole utilisateur puis relaie seulement l’ACK acoustique', async () => {

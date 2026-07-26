@@ -5,10 +5,12 @@
 -- À exécuter après les migrations Prisma :
 -- psql "$DATABASE_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f prisma/rls.sql
 
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+
 DO $$
-DECLARE t text;
-BEGIN
-  FOR t IN SELECT unnest(ARRAY[
+DECLARE
+  table_names TEXT[] := ARRAY[
     'companies',
     'company_billing_settings',
     'company_diagnostic_assessments',
@@ -26,6 +28,8 @@ BEGIN
     'quote_draft_slots',
     'agent_missions',
     'agent_mission_events',
+    'agent_mission_fingerprint_key_version_floors',
+    'agent_mission_fingerprint_key_bindings',
     'documents',
     'document_analyses',
     'document_folders',
@@ -82,9 +86,52 @@ BEGIN
     'release_flags',
     'release_flag_subjects',
     'release_flag_audit_events'
-  ]) LOOP
-    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+  ]::TEXT[];
+  t TEXT;
+  found_table_count INTEGER;
+  owner_oids OID[];
+  rls_owner_name TEXT;
+BEGIN
+  SELECT pg_catalog.count(*),
+         pg_catalog.array_agg(DISTINCT relation.relowner)
+    INTO found_table_count, owner_oids
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.relnamespace = 'public'::pg_catalog.regnamespace
+     AND relation.relkind IN ('r', 'p')
+     AND relation.relname = ANY (table_names);
+
+  IF found_table_count <> pg_catalog.cardinality(table_names)
+     OR pg_catalog.cardinality(owner_oids) <> 1 THEN
+    RAISE EXCEPTION
+      'RLS replay requires every protected table to exist under one exact schema owner';
+  END IF;
+  rls_owner_name := pg_catalog.pg_get_userbyid(owner_oids[1]);
+  IF rls_owner_name IS NULL
+     OR NOT pg_catalog.pg_has_role(
+       session_user,
+       owner_oids[1],
+       'SET'
+     ) THEN
+    RAISE EXCEPTION
+      'RLS replay schema owner is not available through SET ROLE to the deployer';
+  END IF;
+
+  PERFORM pg_catalog.set_config(
+    'bob.release.rls_owner_role',
+    rls_owner_name,
+    TRUE
+  );
+  EXECUTE pg_catalog.format('SET LOCAL ROLE %I', rls_owner_name);
+
+  FOREACH t IN ARRAY table_names LOOP
+    EXECUTE pg_catalog.format(
+      'ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY',
+      t
+    );
+    EXECUTE pg_catalog.format(
+      'ALTER TABLE public.%I FORCE ROW LEVEL SECURITY',
+      t
+    );
   END LOOP;
 END $$;
 
@@ -224,11 +271,33 @@ CREATE POLICY agent_mission_events_owner_insert ON agent_mission_events FOR INSE
 
 REVOKE ALL ON TABLE agent_missions FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_events FROM PUBLIC;
+REVOKE ALL ON TABLE agent_mission_fingerprint_key_version_floors FROM PUBLIC;
+REVOKE ALL ON TABLE agent_mission_fingerprint_key_bindings FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_fingerprint_key_floor_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_fingerprint_key_binding_immutable_v1() FROM PUBLIC;
+
+-- Après la première release, ces deux fonctions appartiennent à l'autorité readiness NOLOGIN.
+-- Le rejeu RLS doit donc révoquer sous leur propriétaire exact : le déployeur Supabase n'hérite
+-- volontairement pas de ce rôle et une révocation directe casserait la deuxième release.
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;',
+  owner.rolname,
+  function.oid::pg_catalog.regprocedure,
+  current_setting('bob.release.rls_owner_role')
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ WHERE function.oid IN (
+   'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
+   'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
+ )
+ ORDER BY function.oid
+\gexec
 
 DO $$
 DECLARE
@@ -242,6 +311,14 @@ BEGIN
       );
       EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON TABLE agent_mission_events FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_mission_fingerprint_key_version_floors FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_mission_fingerprint_key_bindings FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
@@ -264,10 +341,36 @@ BEGIN
         'REVOKE ALL PRIVILEGES ON FUNCTION require_agent_mission_event_v1() FROM %I',
         exposed_role
       );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_fingerprint_key_floor_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_fingerprint_key_binding_immutable_v1() FROM %I',
+        exposed_role
+      );
     END IF;
   END LOOP;
 END;
 $$;
+
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;',
+  owner.rolname,
+  function.oid::pg_catalog.regprocedure,
+  exposed_role.rolname,
+  current_setting('bob.release.rls_owner_role')
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ CROSS JOIN pg_catalog.pg_roles AS exposed_role
+ WHERE function.oid IN (
+   'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
+   'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
+ )
+   AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
+ ORDER BY function.oid, exposed_role.rolname
+\gexec
 
 DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestations;
 CREATE POLICY tenant_isolation ON catalogue_prestations
@@ -973,9 +1076,9 @@ BEGIN
        AND function.proowner <> (
          SELECT role.oid
            FROM pg_catalog.pg_roles AS role
-          WHERE role.rolname = current_user
+          WHERE role.rolname = session_user
        )
-       AND NOT pg_catalog.pg_has_role(current_user, function.proowner, 'SET')
+       AND NOT pg_catalog.pg_has_role(session_user, function.proowner, 'SET')
   ) THEN
     RAISE EXCEPTION
       'OpenAI native maintenance directory function has an unexpected owner during RLS replay';
@@ -983,9 +1086,10 @@ BEGIN
 END;
 $directory_function_owner$;
 SELECT pg_catalog.format(
-  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; RESET ROLE;',
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;',
   owner.rolname,
-  function.oid::regprocedure
+  function.oid::regprocedure,
+  current_setting('bob.release.rls_owner_role')
 )
   FROM pg_catalog.pg_proc AS function
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
@@ -996,10 +1100,11 @@ SELECT pg_catalog.format(
  )
 \gexec
 SELECT pg_catalog.format(
-  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; RESET ROLE;',
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;',
   owner.rolname,
   function.oid::regprocedure,
-  exposed_role.rolname
+  exposed_role.rolname,
+  current_setting('bob.release.rls_owner_role')
 )
   FROM pg_catalog.pg_proc AS function
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner

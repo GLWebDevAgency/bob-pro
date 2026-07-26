@@ -39,6 +39,7 @@ describe('HealthController readiness contract', () => {
         capabilities: {
           documentArchiveB2cHttpFence: 'v1',
           realtimeAdmissionCancellationFence: 'v1',
+          agentMissionBootstrapReceipt: 'v1',
         },
         network: { clientIpSource: 'railway-x-real-ip' },
       });

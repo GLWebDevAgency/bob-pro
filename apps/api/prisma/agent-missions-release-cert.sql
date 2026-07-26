@@ -21,7 +21,13 @@ DECLARE
   privilege_name TEXT;
   exposed_role_name TEXT;
   exposed_role_oid OID;
+  owner_role_oid OID;
+  reachable_role_oid OID;
   runtime_role pg_catalog.pg_roles%ROWTYPE;
+  readiness_authority_oid OID :=
+    pg_catalog.to_regrole('bob_agent_mission_fingerprint_readiness');
+  readiness_row_count INTEGER;
+  readiness_invalid_count INTEGER;
 BEGIN
   SELECT *
     INTO STRICT runtime_role
@@ -30,8 +36,41 @@ BEGIN
   IF runtime_role.rolsuper OR runtime_role.rolbypassrls THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_ROLE_MUST_ENFORCE_RLS';
   END IF;
+  IF readiness_authority_oid IS NULL
+     OR pg_catalog.pg_has_role(
+       runtime_role.oid,
+       readiness_authority_oid,
+       'MEMBER'
+     )
+     OR pg_catalog.pg_has_role(
+       runtime_role.oid,
+       readiness_authority_oid,
+       'SET'
+     ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_READINESS_AUTHORITY_MEMBERSHIP_FORBIDDEN';
+  END IF;
+  -- L'allowlist de membership du runtime est vide. Même un rôle intermédiaire non-owner peut
+  -- porter BYPASSRLS ou des ACL protégées, puis devenir effectif après SET ROLE. pg_has_role
+  -- évalue toute la chaîne, pas seulement pg_auth_members au premier niveau.
+  FOR reachable_role_oid IN
+    SELECT role.oid
+      FROM pg_catalog.pg_roles AS role
+     WHERE role.oid <> runtime_role.oid
+       AND (
+         pg_catalog.pg_has_role(runtime_role.oid, role.oid, 'MEMBER')
+         OR pg_catalog.pg_has_role(runtime_role.oid, role.oid, 'SET')
+       )
+  LOOP
+    RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_ROLE_MEMBERSHIP_FORBIDDEN:%',
+      pg_catalog.pg_get_userbyid(reachable_role_oid);
+  END LOOP;
 
-  FOREACH table_name IN ARRAY ARRAY['agent_missions', 'agent_mission_events']::TEXT[] LOOP
+  FOREACH table_name IN ARRAY ARRAY[
+    'agent_missions',
+    'agent_mission_events',
+    'agent_mission_fingerprint_key_version_floors',
+    'agent_mission_fingerprint_key_bindings'
+  ]::TEXT[] LOOP
     table_oid := pg_catalog.to_regclass(pg_catalog.format('public.%I', table_name));
     IF table_oid IS NULL THEN
       RAISE EXCEPTION 'AGENT_MISSION_TABLE_MISSING:%', table_name;
@@ -44,6 +83,25 @@ BEGIN
          AND relforcerowsecurity
     ) THEN
       RAISE EXCEPTION 'AGENT_MISSION_FORCE_RLS_MISSING:%', table_name;
+    END IF;
+  END LOOP;
+
+  FOREACH table_name IN ARRAY ARRAY[
+    'agent_mission_fingerprint_key_version_floors',
+    'agent_mission_fingerprint_key_bindings'
+  ]::TEXT[] LOOP
+    IF pg_catalog.has_table_privilege(
+         current_user,
+         pg_catalog.to_regclass(pg_catalog.format('public.%I', table_name)),
+         'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+       )
+       OR pg_catalog.has_any_column_privilege(
+         current_user,
+         pg_catalog.to_regclass(pg_catalog.format('public.%I', table_name)),
+         'SELECT,INSERT,UPDATE,REFERENCES'
+       ) THEN
+      RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_CRYPTO_TABLE_PRIVILEGE_FORBIDDEN:%',
+        table_name;
     END IF;
   END LOOP;
 
@@ -112,7 +170,12 @@ BEGIN
        coalesce(relation.relacl, pg_catalog.acldefault('r', relation.relowner))
      ) AS privilege
      WHERE namespace.nspname = 'public'
-       AND relation.relname IN ('agent_missions', 'agent_mission_events')
+       AND relation.relname IN (
+         'agent_missions',
+         'agent_mission_events',
+         'agent_mission_fingerprint_key_version_floors',
+         'agent_mission_fingerprint_key_bindings'
+       )
        AND privilege.grantee = 0
   ) THEN
     RAISE EXCEPTION 'AGENT_MISSION_PUBLIC_TABLE_PRIVILEGE_FORBIDDEN';
@@ -124,7 +187,12 @@ BEGIN
       JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
      CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
      WHERE namespace.nspname = 'public'
-       AND relation.relname IN ('agent_missions', 'agent_mission_events')
+       AND relation.relname IN (
+         'agent_missions',
+         'agent_mission_events',
+         'agent_mission_fingerprint_key_version_floors',
+         'agent_mission_fingerprint_key_bindings'
+       )
        AND attribute.attnum > 0
        AND NOT attribute.attisdropped
        AND privilege.grantee = 0
@@ -137,7 +205,10 @@ BEGIN
     'guard_quote_draft_agent_mission_v1()',
     'reject_agent_mission_event_mutation_v1()',
     'guard_agent_mission_event_append_v1()',
-    'require_agent_mission_event_v1()'
+    'require_agent_mission_event_v1()',
+    'guard_agent_mission_fingerprint_key_floor_v1()',
+    'guard_agent_mission_fingerprint_key_binding_immutable_v1()',
+    'guard_agent_mission_fingerprint_key_binding_present_v1()'
   ]::TEXT[] LOOP
     function_oid := pg_catalog.to_regprocedure('public.' || function_name);
     IF function_oid IS NULL THEN
@@ -163,6 +234,172 @@ BEGIN
     END IF;
   END LOOP;
 
+  function_name := 'guard_agent_mission_fingerprint_key_binding_present_v1()';
+  function_oid := pg_catalog.to_regprocedure('public.' || function_name);
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid = function_oid
+       AND function.prosecdef
+       AND function.provolatile = 'v'
+       AND function.proconfig @> ARRAY[
+         'search_path=pg_catalog',
+         'row_security=on',
+         'lock_timeout=1s',
+         'statement_timeout=3s'
+       ]::TEXT[]
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FINGERPRINT_WRITER_GUARD_HARDENING_DRIFT';
+  END IF;
+
+  function_name := 'agent_mission_fingerprint_key_readiness(integer[])';
+  function_oid := pg_catalog.to_regprocedure('public.' || function_name);
+  IF function_oid IS NULL THEN
+    RAISE EXCEPTION 'AGENT_MISSION_FUNCTION_MISSING:%', function_name;
+  END IF;
+  IF NOT pg_catalog.has_function_privilege(current_user, function_oid, 'EXECUTE') THEN
+    RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_FUNCTION_EXECUTE_MISSING:%', function_name;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     WHERE function.oid = function_oid
+       AND function.prosecdef
+       AND function.provolatile = 'v'
+       AND function.proconfig @> ARRAY[
+         'search_path=pg_catalog',
+         'row_security=on',
+         'lock_timeout=1s',
+         'statement_timeout=3s'
+       ]::TEXT[]
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_READINESS_FUNCTION_HARDENING_DRIFT';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     CROSS JOIN LATERAL pg_catalog.aclexplode(
+       coalesce(
+         function.proacl,
+         pg_catalog.acldefault('f', function.proowner)
+       )
+     ) AS privilege
+     WHERE function.oid = function_oid
+       AND privilege.grantee = 0
+       AND privilege.privilege_type = 'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_PUBLIC_FUNCTION_EXECUTE_FORBIDDEN:%', function_name;
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     CROSS JOIN LATERAL pg_catalog.aclexplode(
+       coalesce(
+         function.proacl,
+         pg_catalog.acldefault('f', function.proowner)
+       )
+     ) AS privilege
+     WHERE function.oid = function_oid
+       AND privilege.privilege_type = 'EXECUTE'
+       AND privilege.grantee NOT IN (
+         function.proowner,
+         (SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user)
+       )
+  ) OR EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS function
+     CROSS JOIN LATERAL pg_catalog.aclexplode(
+       coalesce(
+         function.proacl,
+         pg_catalog.acldefault('f', function.proowner)
+       )
+     ) AS privilege
+     WHERE function.oid = function_oid
+       AND privilege.privilege_type = 'EXECUTE'
+       AND privilege.grantee = (
+         SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+       )
+       AND privilege.is_grantable
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_READINESS_FUNCTION_ACL_DRIFT';
+  END IF;
+
+  -- Un rôle NOINHERIT peut ne présenter aucun privilège effectif avant SET ROLE, puis devenir
+  -- owner et désactiver RLS/triggers. L'inventaire porte donc sur les owners eux-mêmes, pas
+  -- seulement sur has_*_privilege dans l'identité courante.
+  FOR owner_role_oid IN
+    SELECT DISTINCT protected_owner.owner_oid
+      FROM (
+        SELECT relation.relowner AS owner_oid
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid IN (
+           'public.agent_missions'::pg_catalog.regclass,
+           'public.agent_mission_events'::pg_catalog.regclass,
+           'public.agent_mission_fingerprint_key_version_floors'::pg_catalog.regclass,
+           'public.agent_mission_fingerprint_key_bindings'::pg_catalog.regclass
+         )
+        UNION
+        SELECT function.proowner AS owner_oid
+          FROM pg_catalog.pg_proc AS function
+         WHERE function.oid IN (
+           'public.guard_agent_mission_mutation_v1()'::pg_catalog.regprocedure,
+           'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
+           'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_event_append_v1()'::pg_catalog.regprocedure,
+           'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_fingerprint_key_floor_v1()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_fingerprint_key_binding_immutable_v1()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
+           'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
+         )
+      ) AS protected_owner
+  LOOP
+    IF pg_catalog.pg_has_role(runtime_role.oid, owner_role_oid, 'MEMBER')
+       OR pg_catalog.pg_has_role(runtime_role.oid, owner_role_oid, 'SET') THEN
+      RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_OWNER_MEMBERSHIP_FORBIDDEN:%',
+        pg_catalog.pg_get_userbyid(owner_role_oid);
+    END IF;
+  END LOOP;
+
+  -- Exécution réelle via DATABASE_URL : les métadonnées seules ne prouvent pas FORCE RLS.
+  SELECT pg_catalog.count(*)::INTEGER,
+         pg_catalog.count(*) FILTER (
+           WHERE readiness."keyVersion" < 1
+              OR readiness."keyVersion" > 2147483647
+              OR (
+                readiness."keyFingerprint" IS NOT NULL
+                AND readiness."keyFingerprint" !~ '^[a-f0-9]{64}$'
+              )
+              OR readiness.retained IS NULL
+              OR (
+                (readiness."minimumWriterVersion" IS NULL)
+                <> (readiness."highestWriterVersion" IS NULL)
+              )
+              OR (
+                (readiness."minimumWriterVersion" IS NULL)
+                <> (readiness."writerEnabled" IS NULL)
+              )
+              OR (
+                readiness."minimumWriterVersion" IS NOT NULL
+                AND (
+                  readiness."minimumWriterVersion" < 1
+                  OR readiness."highestWriterVersion"
+                    < readiness."minimumWriterVersion"
+                  OR readiness."highestWriterVersion"::BIGINT
+                    > readiness."minimumWriterVersion"::BIGINT + 1
+                )
+              )
+         )::INTEGER
+    INTO readiness_row_count, readiness_invalid_count
+    FROM public.agent_mission_fingerprint_key_readiness(
+      ARRAY[1]::INTEGER[]
+    ) AS readiness;
+  IF readiness_row_count < 1
+     OR readiness_row_count > 34
+     OR readiness_invalid_count <> 0 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_READINESS_RUNTIME_EXECUTION_INVALID';
+  END IF;
+
   FOREACH exposed_role_name IN ARRAY ARRAY[
     'anon', 'authenticated', 'service_role'
   ]::TEXT[] LOOP
@@ -170,7 +407,59 @@ BEGIN
     IF exposed_role_oid IS NULL THEN
       RAISE EXCEPTION 'AGENT_MISSION_DATA_API_ROLE_MISSING:%', exposed_role_name;
     END IF;
-    FOREACH table_name IN ARRAY ARRAY['agent_missions', 'agent_mission_events']::TEXT[] LOOP
+    FOR reachable_role_oid IN
+      SELECT role.oid
+        FROM pg_catalog.pg_roles AS role
+       WHERE role.oid <> exposed_role_oid
+         AND (
+           pg_catalog.pg_has_role(exposed_role_oid, role.oid, 'MEMBER')
+           OR pg_catalog.pg_has_role(exposed_role_oid, role.oid, 'SET')
+         )
+    LOOP
+      RAISE EXCEPTION 'AGENT_MISSION_DATA_API_ROLE_MEMBERSHIP_FORBIDDEN:%:%',
+        exposed_role_name,
+        pg_catalog.pg_get_userbyid(reachable_role_oid);
+    END LOOP;
+    FOR owner_role_oid IN
+      SELECT DISTINCT protected_owner.owner_oid
+        FROM (
+          SELECT relation.relowner AS owner_oid
+            FROM pg_catalog.pg_class AS relation
+           WHERE relation.oid IN (
+             'public.agent_missions'::pg_catalog.regclass,
+             'public.agent_mission_events'::pg_catalog.regclass,
+             'public.agent_mission_fingerprint_key_version_floors'::pg_catalog.regclass,
+             'public.agent_mission_fingerprint_key_bindings'::pg_catalog.regclass
+           )
+          UNION
+          SELECT function.proowner AS owner_oid
+            FROM pg_catalog.pg_proc AS function
+           WHERE function.oid IN (
+             'public.guard_agent_mission_mutation_v1()'::pg_catalog.regprocedure,
+             'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
+             'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_event_append_v1()'::pg_catalog.regprocedure,
+             'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_fingerprint_key_floor_v1()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_fingerprint_key_binding_immutable_v1()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
+             'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
+           )
+        ) AS protected_owner
+    LOOP
+      IF pg_catalog.pg_has_role(exposed_role_oid, owner_role_oid, 'MEMBER')
+         OR pg_catalog.pg_has_role(exposed_role_oid, owner_role_oid, 'SET') THEN
+        RAISE EXCEPTION 'AGENT_MISSION_DATA_API_OWNER_MEMBERSHIP_FORBIDDEN:%:%',
+          exposed_role_name,
+          pg_catalog.pg_get_userbyid(owner_role_oid);
+      END IF;
+    END LOOP;
+    FOREACH table_name IN ARRAY ARRAY[
+      'agent_missions',
+      'agent_mission_events',
+      'agent_mission_fingerprint_key_version_floors',
+      'agent_mission_fingerprint_key_bindings'
+    ]::TEXT[] LOOP
       FOREACH privilege_name IN ARRAY ARRAY[
         'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
       ]::TEXT[] LOOP
@@ -201,7 +490,10 @@ BEGIN
       'guard_quote_draft_agent_mission_v1()',
       'reject_agent_mission_event_mutation_v1()',
       'guard_agent_mission_event_append_v1()',
-      'require_agent_mission_event_v1()'
+      'require_agent_mission_event_v1()',
+      'guard_agent_mission_fingerprint_key_floor_v1()',
+      'guard_agent_mission_fingerprint_key_binding_immutable_v1()',
+      'guard_agent_mission_fingerprint_key_binding_present_v1()'
     ]::TEXT[] LOOP
       IF pg_catalog.has_function_privilege(
         exposed_role_oid,
@@ -212,6 +504,15 @@ BEGIN
           exposed_role_name, function_name;
       END IF;
     END LOOP;
+    function_name := 'agent_mission_fingerprint_key_readiness(integer[])';
+    IF pg_catalog.has_function_privilege(
+      exposed_role_oid,
+      pg_catalog.to_regprocedure('public.' || function_name),
+      'EXECUTE'
+    ) THEN
+      RAISE EXCEPTION 'AGENT_MISSION_DATA_API_FUNCTION_EXECUTE_FORBIDDEN:%:%',
+        exposed_role_name, function_name;
+    END IF;
   END LOOP;
 END;
 $agent_mission_acl_certificate$;

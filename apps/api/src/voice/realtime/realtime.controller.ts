@@ -4,7 +4,9 @@ import {
   Delete,
   Get,
   Header,
+  Headers,
   HttpCode,
+  HttpException,
   HttpStatus,
   Inject,
   Optional,
@@ -76,6 +78,48 @@ export class RealtimeVoiceController {
     } finally {
       request.removeListener('aborted', abort);
     }
+  }
+
+  @Post('calls/:sessionHandle/agent-mission-bootstrap-acknowledgements')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
+  @Header('Vary', 'Authorization, X-Bob-Agent-Mission-Capability')
+  @Header('Referrer-Policy', 'no-referrer')
+  async acknowledgeAgentMissionBootstrap(
+    @Param('sessionHandle') sessionHandle: string,
+    @Body() body: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    if (
+      body !== undefined
+      && (
+        body === null
+        || typeof body !== 'object'
+        || Array.isArray(body)
+        || Object.keys(body).length !== 0
+      )
+    ) {
+      throw new HttpException(
+        {
+          ok: false,
+          error: {
+            kind: 'validation',
+            issues: [{ field: 'body', message: 'Le reçu de bootstrap ne prend aucun champ.' }],
+          },
+        },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return unwrap(
+      await this.realtime.acknowledgeAgentMissionBootstrap(
+        sessionHandle,
+        capability,
+      ),
+    );
   }
 
   @Post('calls/:sessionHandle/resume-tickets')

@@ -197,13 +197,17 @@ interface HarnessOptions {
   readonly vadStopError?: Error;
   readonly vadQuarantined?: boolean;
   readonly onVadStart?: (input: BobLiveNativeVadSessionInput) => void;
+  readonly omitAgentMissionSession?: boolean;
 }
 
 function uuid(sequence: number): string {
   return `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`;
 }
 
-function call(input: RealtimeVoiceCallInput): RealtimeVoiceMistralConversationCall {
+function call(
+  input: RealtimeVoiceCallInput,
+  includeAgentMissionSession = true,
+): RealtimeVoiceMistralConversationCall {
   if (input.transport !== 'mistral-pcm' || input.protocol !== MISTRAL_CONVERSATION_PROTOCOL) {
     throw new Error('unexpected_create_input');
   }
@@ -226,6 +230,7 @@ function call(input: RealtimeVoiceCallInput): RealtimeVoiceMistralConversationCa
     configVersion: NEGOTIATION.configVersion,
     maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
     speechDelivery: 'audited-signed-url-v1',
+    ...(includeAgentMissionSession ? { agentMissionSession: null } : {}),
     speechSourcePolicy: {
       mode: 'signed-url-v1',
       allowedOrigin: 'https://project.supabase.co',
@@ -457,7 +462,9 @@ function harness(options: HarnessOptions = {}) {
     scrubRequiredCheckpoint: vi.fn(async () => undefined),
   };
 
-  const createRealtimeVoiceCall = vi.fn(async (input: RealtimeVoiceCallInput) => ok(call(input)));
+  const createRealtimeVoiceCall = vi.fn(async (input: RealtimeVoiceCallInput) => ok(
+    call(input, options.omitAgentMissionSession !== true),
+  ));
   const reconcileRealtimeVoiceBootstrap: RuntimeClient['reconcileRealtimeVoiceBootstrap'] = vi.fn(
     async () => {
       const next = reconciliation.shift();
@@ -674,6 +681,7 @@ describe('MistralConversationTransport', () => {
         configVersion: NEGOTIATION.configVersion,
         speechDelivery: NEGOTIATION.speechDelivery,
         sessionHandle: SESSION,
+        agentMissionProtocolVersion: 1,
       },
       expect.any(AbortSignal),
     );
@@ -694,6 +702,17 @@ describe('MistralConversationTransport', () => {
     expect(h.transport.state.phase).toBe('ready');
     expect(h.transport.getSessionHandle()).toBe(SESSION);
     expect(h.vadPort.start).not.toHaveBeenCalled();
+  });
+
+  it('refuse le bootstrap v2 si le serveur omet la négociation mission explicite', async () => {
+    const h = harness({ omitAgentMissionSession: true });
+
+    await expect(h.transport.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    expect(h.hangupRealtimeVoiceCall).toHaveBeenCalledWith(SESSION);
+    expect(h.transport.takeAgentMissionSession()).toBeNull();
   });
 
   it('n’acquiert la session VAD continue qu’après session.ready et son fence publié', async () => {

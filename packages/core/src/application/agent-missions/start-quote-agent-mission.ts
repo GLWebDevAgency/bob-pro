@@ -17,7 +17,10 @@ import {
   type AgentMissionOwner,
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
-import { type AgentMissionUnitOfWorkPort } from '../ports/agent-mission-unit-of-work';
+import {
+  type AgentMissionRealtimeAuthorityProof,
+  type AgentMissionUnitOfWorkPort,
+} from '../ports/agent-mission-unit-of-work';
 import {
   type AppError,
   appConflict,
@@ -31,6 +34,7 @@ import {
   recordAgentMissionEvent,
   requireAgentMissionFingerprint,
   toAgentMissionView,
+  rejectedAgentMissionCapability,
   unavailableAgentMissionCompany,
   verifyAgentMissionFingerprint,
   type AgentMissionViewV1,
@@ -38,6 +42,7 @@ import {
 
 export interface StartQuoteAgentMissionCommand extends AgentMissionOwner {
   readonly commandId: string;
+  readonly authority: AgentMissionRealtimeAuthorityProof;
 }
 
 export interface StartQuoteAgentMissionOutput {
@@ -108,6 +113,7 @@ export class StartQuoteAgentMission {
     try {
       const execution = await this.deps.unitOfWork.runQuoteCreationOwner(
         owner,
+        input.authority,
         async (transaction) => {
         const now = await transaction.databaseNow();
         const consumed = await transaction.events.findByCommandId({
@@ -302,8 +308,11 @@ export class StartQuoteAgentMission {
         } satisfies StartQuoteAgentMissionOutput;
         },
       );
-      return execution.status === 'company_unavailable'
-        ? err(unavailableAgentMissionCompany(execution.reason))
+      if (execution.status === 'company_unavailable') {
+        return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      return execution.status === 'capability_rejected'
+        ? err(rejectedAgentMissionCapability(execution.reason))
         : ok(execution.value);
     } catch (cause) {
       if (cause instanceof StartQuoteAgentMissionAbort) return err(cause.appError);

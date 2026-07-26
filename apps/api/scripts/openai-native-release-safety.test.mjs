@@ -536,11 +536,11 @@ test('les helpers trigger/directory restent révoqués et provider_stream physiq
   );
   assert.match(
     rls,
-    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; RESET ROLE;/u,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;[\s\S]*?current_setting\('bob\.release\.rls_owner_role'\)/u,
   );
   assert.match(
     rls,
-    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; RESET ROLE;/u,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;[\s\S]*?current_setting\('bob\.release\.rls_owner_role'\)/u,
   );
   assert.match(
     fenceAdd,

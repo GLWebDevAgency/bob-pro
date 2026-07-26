@@ -117,33 +117,100 @@ provision() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="$APP_DATABASE_ROLE" <<'SQL'
 DO $$
-DECLARE object_owner NAME;
+DECLARE
+  capacity_owner_oid OID := 'bob_realtime_capacity'::regrole;
+  deployer_oid OID := current_user::regrole;
+  object_owner_oid OID;
 BEGIN
-  SELECT pg_catalog.pg_get_userbyid(relation.relowner)
-    INTO STRICT object_owner
-    FROM pg_catalog.pg_class AS relation
-   WHERE relation.oid = 'public.realtime_global_capacity'::regclass;
-  IF object_owner NOT IN (current_user, 'bob_realtime_capacity') THEN
-    RAISE EXCEPTION 'Realtime capacity table has an unexpected owner';
-  END IF;
+  FOR object_owner_oid IN
+    SELECT DISTINCT protected_object.owner_oid
+      FROM (
+        SELECT relation.relowner AS owner_oid
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+        UNION
+        SELECT function.proowner AS owner_oid
+          FROM pg_catalog.pg_proc AS function
+         WHERE function.oid IN (
+           'public.sync_realtime_global_capacity_v1()'::regprocedure,
+           'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+           'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+           'public.inspect_realtime_global_capacity_v1()'::regprocedure
+         )
+      ) AS protected_object
+  LOOP
+    IF object_owner_oid NOT IN (deployer_oid, capacity_owner_oid)
+       AND NOT pg_catalog.pg_has_role(deployer_oid, object_owner_oid, 'SET') THEN
+      RAISE EXCEPTION 'Realtime capacity object has an owner unavailable to the deployer';
+    END IF;
+  END LOOP;
 
   IF EXISTS (
-    SELECT 1 FROM pg_catalog.pg_proc AS function
+    SELECT 1
+      FROM (
+        SELECT relation.relowner AS owner_oid
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+        UNION
+        SELECT function.proowner AS owner_oid
+          FROM pg_catalog.pg_proc AS function
+         WHERE function.oid IN (
+           'public.sync_realtime_global_capacity_v1()'::regprocedure,
+           'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+           'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+           'public.inspect_realtime_global_capacity_v1()'::regprocedure
+         )
+      ) AS protected_object
+     WHERE protected_object.owner_oid NOT IN (deployer_oid, capacity_owner_oid)
+  ) AND NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.roleid = capacity_owner_oid
+       AND membership.member = deployer_oid
+       AND membership.admin_option
+  ) THEN
+    RAISE EXCEPTION
+      'Realtime capacity owner transfer requires the deployer ADMIN OPTION created with the role';
+  END IF;
+END;
+$$;
+
+-- Le schéma et les objets peuvent déjà appartenir à un rôle de schéma distinct. Chaque opération
+-- post-transfert est exécutée sous son owner exact ; aucune élévation permanente n'est accordée.
+SELECT format(
+  'SET LOCAL ROLE %I; GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_namespace AS namespace
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = namespace.nspowner
+ WHERE namespace.nspname = 'public'
+\gexec
+
+SELECT DISTINCT format(
+  'GRANT bob_realtime_capacity TO %I WITH INHERIT FALSE, SET TRUE',
+  owner.rolname
+)
+  FROM (
+    SELECT relation.relowner AS owner_oid
+      FROM pg_catalog.pg_class AS relation
+     WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+    UNION
+    SELECT function.proowner AS owner_oid
+      FROM pg_catalog.pg_proc AS function
      WHERE function.oid IN (
        'public.sync_realtime_global_capacity_v1()'::regprocedure,
        'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
        'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
        'public.inspect_realtime_global_capacity_v1()'::regprocedure
      )
-       AND pg_catalog.pg_get_userbyid(function.proowner)
-           NOT IN (current_user, 'bob_realtime_capacity')
-  ) THEN
-    RAISE EXCEPTION 'Realtime capacity function has an unexpected owner';
-  END IF;
-END;
-$$;
+  ) AS protected_object
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = protected_object.owner_oid
+ WHERE protected_object.owner_oid NOT IN (
+   current_user::regrole,
+   'bob_realtime_capacity'::regrole
+ )
+\gexec
 
-GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_capacity;
 SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_capacity', function.oid::regprocedure)
   FROM pg_catalog.pg_proc AS function
  WHERE function.oid IN (
@@ -152,15 +219,51 @@ SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_capacity', function.oid::
    'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
    'public.inspect_realtime_global_capacity_v1()'::regprocedure
  )
-   AND function.proowner = (
-     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   AND function.proowner = current_user::regrole
+\gexec
+SELECT format(
+  'SET LOCAL ROLE %I; ALTER FUNCTION %s OWNER TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname,
+  function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ WHERE function.oid IN (
+   'public.sync_realtime_global_capacity_v1()'::regprocedure,
+   'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+   'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+   'public.inspect_realtime_global_capacity_v1()'::regprocedure
+ )
+   AND function.proowner NOT IN (
+     current_user::regrole,
+     'bob_realtime_capacity'::regrole
+   )
+\gexec
+SELECT format(
+  'SET LOCAL ROLE %I; ALTER TABLE public.realtime_global_capacity OWNER TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+   AND relation.relowner NOT IN (
+     current_user::regrole,
+     'bob_realtime_capacity'::regrole
    )
 \gexec
 SELECT format('ALTER TABLE public.realtime_global_capacity OWNER TO bob_realtime_capacity')
- WHERE pg_catalog.pg_get_userbyid((
-   SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+ WHERE (
+   SELECT relation.relowner
+     FROM pg_catalog.pg_class AS relation
     WHERE relation.oid = 'public.realtime_global_capacity'::regclass
- )) = current_user
+ ) = current_user::regrole
+\gexec
+
+SELECT format('REVOKE bob_realtime_capacity FROM %I CASCADE', member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE membership.roleid = 'bob_realtime_capacity'::regrole
+   AND membership.member <> current_user::regrole
 \gexec
 
 SET LOCAL ROLE bob_realtime_capacity;

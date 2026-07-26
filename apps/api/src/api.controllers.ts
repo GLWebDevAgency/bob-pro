@@ -2127,6 +2127,9 @@ export class HealthController {
         // hangup. Le pipeline peut alors éviter un drain total lors des releases suivantes ;
         // son absence impose le cutover fermé et drainé.
         realtimeAdmissionCancellationFence: 'v1' as const,
+        // Le client V1 acquitte durablement le bootstrap avant de prendre le micro ou
+        // d'exposer son handle. Sans ce marqueur, le pipeline interdit la réouverture.
+        agentMissionBootstrapReceipt: 'v1' as const,
       },
       release: readReleaseMetadata(),
       network: { clientIpSource: clientIpSourceForRequest(request) },
