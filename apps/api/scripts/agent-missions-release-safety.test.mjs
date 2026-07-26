@@ -885,24 +885,49 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
   );
   assert.match(
     rlsOwnerSplitCertificate,
-    /SET LOCAL createrole_self_grant = 'set'[\s\S]*?bool_or\(membership\.set_option\)[\s\S]*?bool_or\(membership\.admin_option\)[\s\S]*?bool_or\(membership\.inherit_option\)/u,
+    /COALESCE\(pg_catalog\.bool_or\(membership\.set_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.admin_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.inherit_option\), FALSE\)/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,
-    /NOT has_set_membership[\s\S]*?NOT has_admin_membership[\s\S]*?has_inherit_membership/u,
+    /membership\.roleid = owner_oid[\s\S]*?membership\.member = deployer_oid[\s\S]*?NOT has_set_membership[\s\S]*?NOT has_admin_membership[\s\S]*?has_inherit_membership/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /owner_role\.rolcanlogin[\s\S]*?owner_role\.rolsuper[\s\S]*?owner_role\.rolcreatedb[\s\S]*?owner_role\.rolcreaterole[\s\S]*?owner_role\.rolinherit[\s\S]*?owner_role\.rolreplication[\s\S]*?NOT owner_role\.rolbypassrls/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /pg_has_role\(deployer_oid, owner_oid, 'USAGE'\)[\s\S]*?RLS_OWNER_SPLIT_CERT_EFFECTIVE_INHERITANCE_DRIFT/u,
   );
   assert.doesNotMatch(
     rlsOwnerSplitCertificate,
-    /membership\.admin_option\s+AND\s+membership\.set_option/u,
+    /membership\.(?:admin_option|set_option)\s*\)?\s+AND\s+\(?\s*membership\.(?:admin_option|set_option)/u,
     'Les grants ADMIN implicite et SET peuvent avoir des grantors distincts sur PostgreSQL 16+.',
   );
-  assert.match(
-    rlsOwnerSplitCertificate,
-    /ALTER TABLE %s OWNER TO bob_rls_schema_owner_cert[\s\S]*?ALTER %s %I\.%I\(%s\) OWNER TO bob_rls_schema_owner_cert/u,
+  assert.deepEqual(
+    rlsOwnerSplitCertificate.match(/^(?:GRANT|REVOKE)[^\n]+;$/gmu),
+    [
+      'GRANT CREATE ON SCHEMA public TO bob_rls_schema_owner_cert;',
+      'REVOKE CREATE ON SCHEMA public FROM bob_rls_schema_owner_cert;',
+      'GRANT USAGE ON SCHEMA public TO bob_rls_schema_owner_cert;',
+    ],
+    'Le certificat ne doit contenir aucun GRANT/REVOKE d’adhésion explicite.',
   );
   assert.match(
     rlsOwnerSplitCertificate,
-    /psql "\$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \\\s+-f apps\/api\/prisma\/rls\.sql/u,
+    /GRANT CREATE ON SCHEMA public TO bob_rls_schema_owner_cert;[\s\S]*?ALTER TABLE %s OWNER TO bob_rls_schema_owner_cert[\s\S]*?ALTER %s %I\.%I\(%s\) OWNER TO bob_rls_schema_owner_cert[\s\S]*?\\i apps\/api\/prisma\/rls\.sql[\s\S]*?RESET ROLE;[\s\S]*?REVOKE CREATE ON SCHEMA public FROM bob_rls_schema_owner_cert;[\s\S]*?GRANT USAGE ON SCHEMA public TO bob_rls_schema_owner_cert;/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /has_schema_privilege\([\s\S]*?'bob_rls_schema_owner_cert'[\s\S]*?'public'[\s\S]*?'CREATE'[\s\S]*?OR NOT pg_catalog\.has_schema_privilege\([\s\S]*?'USAGE'[\s\S]*?RLS_OWNER_SPLIT_CERT_SCHEMA_ACL_DRIFT/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /node apps\/api\/scripts\/assert-database-pair\.mjs[\s\S]*?psql "\$DATABASE_URL"[\s\S]*?RLS_OWNER_SPLIT_CERT_RUNTIME_ROLE_IS_PRIVILEGED[\s\S]*?INSERT INTO public\.cabinets[\s\S]*?INSERT INTO public\.cabinet_members[\s\S]*?app_is_active_cabinet_member[\s\S]*?app_has_cabinet_role[\s\S]*?ROLLBACK;/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /psql "\$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'[\s\S]*?\\i apps\/api\/prisma\/rls\.sql[\s\S]*?RLS_OWNER_SPLIT_CERT_SCHEMA_ACL_DRIFT[\s\S]*?^SQL$/mu,
   );
   assert.match(
     rls,

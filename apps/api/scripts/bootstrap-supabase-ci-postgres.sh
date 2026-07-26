@@ -185,6 +185,17 @@ CREATE ROLE postgres
 -- certificats de cleanup exercent le même geste sans transmettre SUPERUSER au déployeur.
 GRANT SET ON PARAMETER session_replication_role TO postgres;
 
+-- Le rejeu RLS possède des helpers SECURITY DEFINER qui lisent des tables FORCE RLS avec
+-- row_security=off. Leur owner doit donc être BYPASSRLS, tout en restant NOLOGIN. Le déployeur
+-- non-superuser crée d'abord ce rôle avec son adhésion SET implicite (jamais de GRANT visant
+-- postgres) ; l'admin interne ne fait ensuite qu'attacher l'attribut réservé au superuser.
+SET createrole_self_grant = 'set';
+SET ROLE postgres;
+CREATE ROLE bob_rls_schema_owner_cert
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+RESET ROLE;
+ALTER ROLE bob_rls_schema_owner_cert BYPASSRLS;
+
 SELECT pg_catalog.format(
   'ALTER DATABASE %I OWNER TO %I',
   current_database(),
@@ -240,6 +251,10 @@ DECLARE
   bootstrap_admin pg_catalog.pg_roles%ROWTYPE;
   internal_admin pg_catalog.pg_roles%ROWTYPE;
   data_api_role pg_catalog.pg_roles%ROWTYPE;
+  rls_owner pg_catalog.pg_roles%ROWTYPE;
+  has_set_membership BOOLEAN;
+  has_admin_membership BOOLEAN;
+  has_inherit_membership BOOLEAN;
 BEGIN
   SELECT *
     INTO STRICT deployer
@@ -277,6 +292,46 @@ BEGIN
    WHERE rolname = 'bob_ci_supabase_admin';
   IF internal_admin.rolcanlogin OR NOT internal_admin.rolsuper THEN
     RAISE EXCEPTION 'SUPABASE_CI_INTERNAL_ADMIN_PROFILE_MISMATCH';
+  END IF;
+
+  SELECT *
+    INTO STRICT rls_owner
+    FROM pg_catalog.pg_roles
+   WHERE rolname = 'bob_rls_schema_owner_cert';
+  IF rls_owner.rolcanlogin
+     OR rls_owner.rolsuper
+     OR rls_owner.rolcreatedb
+     OR rls_owner.rolcreaterole
+     OR rls_owner.rolinherit
+     OR rls_owner.rolreplication
+     OR NOT rls_owner.rolbypassrls THEN
+    RAISE EXCEPTION 'SUPABASE_CI_RLS_OWNER_PROFILE_MISMATCH';
+  END IF;
+
+  SELECT COALESCE(pg_catalog.bool_or(membership.set_option), FALSE),
+         COALESCE(pg_catalog.bool_or(membership.admin_option), FALSE),
+         COALESCE(pg_catalog.bool_or(membership.inherit_option), FALSE)
+    INTO STRICT has_set_membership, has_admin_membership, has_inherit_membership
+    FROM pg_catalog.pg_auth_members AS membership
+   WHERE membership.roleid = rls_owner.oid
+     AND membership.member = current_user::pg_catalog.regrole;
+  IF NOT pg_catalog.pg_has_role(current_user, rls_owner.oid, 'SET')
+     OR pg_catalog.pg_has_role(current_user, rls_owner.oid, 'USAGE')
+     OR NOT has_set_membership
+     OR NOT has_admin_membership
+     OR has_inherit_membership
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_auth_members AS membership
+        WHERE membership.roleid = rls_owner.oid
+          AND membership.member <> current_user::pg_catalog.regrole
+     )
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_auth_members AS membership
+        WHERE membership.member = rls_owner.oid
+     ) THEN
+    RAISE EXCEPTION 'SUPABASE_CI_RLS_OWNER_MEMBERSHIP_MISMATCH';
   END IF;
 
   FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP

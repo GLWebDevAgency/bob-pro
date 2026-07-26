@@ -236,6 +236,18 @@ test('le bootstrap CI borne le client loopback, le service Docker et les pré-gr
   );
   assert.match(
     ciBootstrap,
+    /SET createrole_self_grant = 'set';[\s\S]*?SET ROLE postgres;[\s\S]*?CREATE ROLE bob_rls_schema_owner_cert[\s\S]*?NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;[\s\S]*?RESET ROLE;[\s\S]*?ALTER ROLE bob_rls_schema_owner_cert BYPASSRLS;/u,
+  );
+  assert.match(
+    ciBootstrap,
+    /SUPABASE_CI_RLS_OWNER_PROFILE_MISMATCH[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.set_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.admin_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.inherit_option\), FALSE\)[\s\S]*?SUPABASE_CI_RLS_OWNER_MEMBERSHIP_MISMATCH/u,
+  );
+  assert.match(
+    ciBootstrap,
+    /pg_has_role\(current_user, rls_owner\.oid, 'SET'\)[\s\S]*?pg_has_role\(current_user, rls_owner\.oid, 'USAGE'\)/u,
+  );
+  assert.match(
+    ciBootstrap,
     /has_parameter_privilege\([\s\S]*?'session_replication_role',[\s\S]*?'SET'/u,
   );
   assert.match(ciBootstrap, /ALTER ROLE bob_ci_supabase_admin NOLOGIN/u);
