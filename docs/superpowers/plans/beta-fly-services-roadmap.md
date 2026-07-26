@@ -1,5 +1,18 @@
 # Bêta Fly Services — Feuille de route en 3 vagues
 
+> **AMENDEMENTS FONDATEUR — 26/07/2026 (validation orale du plan complet : « toutes les PR, on
+> construit tout »)** :
+>
+> 1. **Envoi email des factures (P0)** : l'expéditeur PERÇU par le destinataire est la société
+>    utilisatrice de Bob (ex. Fly Services), jamais « Bob Pro ». Mécanique de délivrabilité
+>    honnête : nom d'expéditeur affiché = nom de la société + `Reply-To` = email de la société
+>    (un `From` sur un domaine non vérifié serait refusé par Brevo ou classé spam) ; évolution
+>    ultérieure optionnelle : vérification du domaine du client chez Brevo pour un `From` natif.
+> 2. **Garde BC (P0)** : le blocage « pas d'émission sans bon de commande » est PAR CLIENT et
+>    désactivé par défaut — RATP/publics l'activent, tous les autres clients restent en
+>    facturation directe sans BC.
+
+
 > Compagnon d'exécution de `docs/strategy/beta-fly-services-gap-analysis.md`. Chaque vague est justifiée par l'usage réel de Fly Services, découpée en PR petites et testables. Gouvernance : nous sommes en **cap V1 / feature freeze** — chaque ajout ci-dessous suppose l'accord commun Claude+GPT puis le GO fondateur ; PR → staging validé → prod (loi des environnements) ; aucun build EAS sans GO explicite.
 
 ## Boussole
