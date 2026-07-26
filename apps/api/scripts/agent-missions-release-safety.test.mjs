@@ -23,20 +23,20 @@ const [
   readFile(path.join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8'),
 ]);
 
-test('le chemin de release resserre les ACL après le grant générique puis les certifie', () => {
+test('le chemin de release resserre les ACL après le grant des objets du déployeur puis les certifie', () => {
   const grantFunctionStart = release.indexOf('grant_app_role()');
   const singleTransaction = release.indexOf(
     'psql "$DIRECT_URL" -X --single-transaction',
     grantFunctionStart,
   );
   const genericGrant = release.indexOf(
-    'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public',
+    "'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO %I'",
   );
   const exactGrant = release.indexOf('\\i apps/api/prisma/agent-missions-runtime-grants.sql');
   const grantTransactionEnd = release.indexOf('\nSQL\n}', exactGrant);
   const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql');
   const exactCertificate = release.indexOf('certify_agent_mission_release_acl', rlsReplay);
-  assert.ok(genericGrant >= 0, 'Le grant runtime générique attendu a disparu.');
+  assert.ok(genericGrant >= 0, 'Le grant runtime des tables du déployeur attendu a disparu.');
   assert.ok(exactGrant > genericGrant, 'Les ACL exactes doivent être appliquées après le grant générique.');
   assert.ok(
     grantFunctionStart >= 0

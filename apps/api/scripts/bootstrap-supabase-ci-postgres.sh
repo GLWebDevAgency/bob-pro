@@ -5,14 +5,25 @@ set -eu
 : "${CI_POSTGRES_ADMIN_URL:?CI_POSTGRES_ADMIN_URL ephemeral internal admin URL is required}"
 : "${DIRECT_URL:?DIRECT_URL release URL is required}"
 
+if [ "${GITHUB_ACTIONS:-false}" != "true" ] \
+  && [ "${BOB_SUPABASE_CI_BOOTSTRAP_CONFIRMATION:-}" != "EPHEMERAL_LOOPBACK_ONLY" ]; then
+  echo "Supabase CI bootstrap is restricted to GitHub Actions or an explicitly confirmed ephemeral local cluster" >&2
+  exit 1
+fi
+
 # Ce harnais ne doit jamais devenir un outil d'exploitation. Il reproduit uniquement, sur le
 # PostgreSQL loopback jetable de GitHub Actions, le profil Supabase où `postgres` est le déployeur
 # LOGIN non-superuser (CREATEROLE + BYPASSRLS) et où un superuser interne distinct reste caché.
 node - "$CI_POSTGRES_SUPER_URL" "$CI_POSTGRES_ADMIN_URL" "$DIRECT_URL" <<'NODE'
 const [bootstrapRaw, adminRaw, directRaw] = process.argv.slice(2);
 const allowedHosts = new Set(['localhost', '127.0.0.1', '::1']);
+const allowedDatabases = new Set([
+  '/bob_ephemeral_ci',
+  '/bob_ephemeral_global_capacity',
+  '/bob_ephemeral_key_rotation',
+]);
 
-const parse = (raw, name, expectedUser) => {
+const parse = (raw, name, expectedUser, expectedPassword) => {
   let parsed;
   try {
     parsed = new URL(raw);
@@ -25,15 +36,37 @@ const parse = (raw, name, expectedUser) => {
   if (!allowedHosts.has(parsed.hostname.toLowerCase())) {
     throw new Error(`${name} must target loopback; remote databases are forbidden`);
   }
+  if (parsed.search !== '' || parsed.hash !== '') {
+    throw new Error(`${name} must not contain connection parameters or fragments`);
+  }
+  if (parsed.port === '') {
+    throw new Error(`${name} must use an explicit ephemeral port`);
+  }
+  if (!allowedDatabases.has(parsed.pathname)) {
+    throw new Error(`${name} must target an allowlisted ephemeral CI database`);
+  }
   if (decodeURIComponent(parsed.username) !== expectedUser) {
     throw new Error(`${name} must use the expected ephemeral identity`);
+  }
+  if (decodeURIComponent(parsed.password) !== expectedPassword) {
+    throw new Error(`${name} must use the expected ephemeral credential`);
   }
   return parsed;
 };
 
-const bootstrap = parse(bootstrapRaw, 'CI_POSTGRES_SUPER_URL', 'postgres');
-const admin = parse(adminRaw, 'CI_POSTGRES_ADMIN_URL', 'bob_ci_supabase_admin');
-const direct = parse(directRaw, 'DIRECT_URL', 'postgres');
+const bootstrap = parse(
+  bootstrapRaw,
+  'CI_POSTGRES_SUPER_URL',
+  'postgres',
+  'postgres',
+);
+const admin = parse(
+  adminRaw,
+  'CI_POSTGRES_ADMIN_URL',
+  'bob_ci_supabase_admin',
+  'bob_ci_supabase_admin',
+);
+const direct = parse(directRaw, 'DIRECT_URL', 'postgres', 'postgres');
 for (const candidate of [admin, direct]) {
   if (
     bootstrap.hostname.toLowerCase() !== candidate.hostname.toLowerCase()
@@ -45,11 +78,80 @@ for (const candidate of [admin, direct]) {
 }
 NODE
 
-psql "$CI_POSTGRES_SUPER_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+# Aucun PG* ambiant ne peut substituer un service, un socket ou un autre endpoint aux URI validées.
+unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGSERVICE PGSERVICEFILE PGOPTIONS
+
+bootstrap_network_mode=loopback
+if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  # Le runner atteint le service PostgreSQL via localhost, mais Docker DNAT présente au serveur
+  # deux adresses RFC1918. Les URI restent strictement loopback et sans paramètre libpq.
+  bootstrap_network_mode=github-actions-service
+fi
+
+psql "$CI_POSTGRES_SUPER_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v bootstrap_network_mode="$bootstrap_network_mode" <<'SQL'
+SELECT pg_catalog.set_config(
+  'bob.supabase_ci_bootstrap_network_mode',
+  :'bootstrap_network_mode',
+  TRUE
+);
 DO $bootstrap$
 DECLARE
   bootstrap_role pg_catalog.pg_roles%ROWTYPE;
+  bootstrap_network_mode TEXT :=
+    current_setting('bob.supabase_ci_bootstrap_network_mode');
+  server_address INET := pg_catalog.inet_server_addr();
+  client_address INET := pg_catalog.inet_client_addr();
 BEGIN
+  IF bootstrap_network_mode NOT IN ('loopback', 'github-actions-service')
+     OR server_address IS NULL
+     OR client_address IS NULL
+     OR (
+       bootstrap_network_mode = 'loopback'
+       AND NOT (
+         server_address <<= pg_catalog.inet '127.0.0.0/8'
+         OR server_address = pg_catalog.inet '::1'
+       )
+     )
+     OR (
+       bootstrap_network_mode = 'github-actions-service'
+       AND NOT (
+         server_address <<= pg_catalog.inet '127.0.0.0/8'
+         OR server_address = pg_catalog.inet '::1'
+         OR (
+           (
+             server_address <<= pg_catalog.inet '10.0.0.0/8'
+             OR server_address <<= pg_catalog.inet '172.16.0.0/12'
+             OR server_address <<= pg_catalog.inet '192.168.0.0/16'
+             OR server_address <<= pg_catalog.inet 'fc00::/7'
+           )
+           AND (
+             client_address <<= pg_catalog.inet '10.0.0.0/8'
+             OR client_address <<= pg_catalog.inet '172.16.0.0/12'
+             OR client_address <<= pg_catalog.inet '192.168.0.0/16'
+             OR client_address <<= pg_catalog.inet 'fc00::/7'
+           )
+         )
+       )
+     )
+     OR current_database() NOT IN (
+       'bob_ephemeral_ci',
+       'bob_ephemeral_global_capacity',
+       'bob_ephemeral_key_rotation'
+     )
+     OR current_setting('server_version_num')::INTEGER < 160000
+     OR EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_class AS relation
+         JOIN pg_catalog.pg_namespace AS namespace
+           ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname NOT LIKE 'pg\_%' ESCAPE '\'
+          AND namespace.nspname <> 'information_schema'
+          AND relation.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+     ) THEN
+    RAISE EXCEPTION 'SUPABASE_CI_BOOTSTRAP_TARGET_IS_NOT_EPHEMERAL_LOOPBACK';
+  END IF;
+
   SELECT *
     INTO STRICT bootstrap_role
     FROM pg_catalog.pg_roles
@@ -94,14 +196,18 @@ DO $data_api$
 DECLARE
   api_role TEXT;
 BEGIN
-  FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
+  FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated']::TEXT[] LOOP
     IF pg_catalog.to_regrole(api_role) IS NULL THEN
       EXECUTE pg_catalog.format(
-        'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+        'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS',
         api_role
       );
     END IF;
   END LOOP;
+  IF pg_catalog.to_regrole('service_role') IS NULL THEN
+    CREATE ROLE service_role
+      NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION BYPASSRLS;
+  END IF;
 END;
 $data_api$;
 
@@ -131,7 +237,9 @@ DECLARE
   api_role TEXT;
   expected RECORD;
   deployer pg_catalog.pg_roles%ROWTYPE;
+  bootstrap_admin pg_catalog.pg_roles%ROWTYPE;
   internal_admin pg_catalog.pg_roles%ROWTYPE;
+  data_api_role pg_catalog.pg_roles%ROWTYPE;
 BEGIN
   SELECT *
     INTO STRICT deployer
@@ -156,6 +264,14 @@ BEGIN
   END IF;
 
   SELECT *
+    INTO STRICT bootstrap_admin
+    FROM pg_catalog.pg_roles
+   WHERE rolname = 'bob_ci_bootstrap_superuser';
+  IF bootstrap_admin.rolcanlogin OR NOT bootstrap_admin.rolsuper THEN
+    RAISE EXCEPTION 'SUPABASE_CI_BOOTSTRAP_ADMIN_PROFILE_MISMATCH';
+  END IF;
+
+  SELECT *
     INTO STRICT internal_admin
     FROM pg_catalog.pg_roles
    WHERE rolname = 'bob_ci_supabase_admin';
@@ -164,7 +280,18 @@ BEGIN
   END IF;
 
   FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::TEXT[] LOOP
-    IF pg_catalog.to_regrole(api_role) IS NULL
+    SELECT *
+      INTO STRICT data_api_role
+      FROM pg_catalog.pg_roles
+     WHERE rolname = api_role;
+    IF data_api_role.rolcanlogin
+       OR data_api_role.rolsuper
+       OR data_api_role.rolcreatedb
+       OR data_api_role.rolcreaterole
+       OR data_api_role.rolreplication
+       OR NOT data_api_role.rolinherit
+       OR (api_role = 'service_role' AND NOT data_api_role.rolbypassrls)
+       OR (api_role <> 'service_role' AND data_api_role.rolbypassrls)
        OR NOT pg_catalog.has_schema_privilege(api_role, 'public', 'USAGE') THEN
       RAISE EXCEPTION 'SUPABASE_CI_DATA_API_ROLE_MISSING:%', api_role;
     END IF;

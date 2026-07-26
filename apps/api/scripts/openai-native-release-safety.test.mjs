@@ -400,23 +400,27 @@ test('le runtime ne reçoit que DELETE tenanté et les trois capacités director
     /REVOKE ALL ON TABLE public\.realtime_native_speech_maintenance_cursors FROM :"app_role"/u,
   );
   for (const signature of [
-    'list_realtime_native_speech_maintenance_tenants_v1\\(TEXT, INTEGER, UUID\\)',
-    'ack_realtime_native_speech_maintenance_tenants_v1\\(TEXT, UUID\\)',
-    'renew_realtime_native_speech_maintenance_claim_v1\\(TEXT, UUID\\)',
+    'list_realtime_native_speech_maintenance_tenants_v1\\(\\s*TEXT, INTEGER, UUID\\s*\\)',
+    'ack_realtime_native_speech_maintenance_tenants_v1\\(\\s*TEXT, UUID\\s*\\)',
+    'renew_realtime_native_speech_maintenance_claim_v1\\(\\s*TEXT, UUID\\s*\\)',
   ]) {
     assert.match(
       release,
-      new RegExp(`REVOKE ALL ON FUNCTION public\\.${signature}\\s+FROM :"app_role"`, 'u'),
-    );
-    assert.match(
-      release,
-      new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${signature}\\s+TO :"app_role"`, 'u'),
+      new RegExp(`REVOKE ALL ON FUNCTION public\\.${signature}\\s+FROM PUBLIC`, 'u'),
     );
     assert.match(
       release,
       new RegExp(`ALTER FUNCTION public\\.${signature}\\s+SECURITY DEFINER`, 'u'),
     );
   }
+  assert.match(
+    release,
+    /REVOKE ALL ON FUNCTION %s FROM %I CASCADE[\s\S]*privilege\.grantee <> function\.proowner/u,
+  );
+  assert.match(
+    release,
+    /GRANT EXECUTE ON FUNCTION %s TO %I[\s\S]*WHERE :'app_role' <> ''[\s\S]*function\.oid IN/u,
+  );
   assert.match(
     release,
     /GRANT SELECT, UPDATE ON TABLE public\.realtime_native_speech_maintenance_cursors\s+TO bob_openai_native_maintenance_directory/u,
@@ -521,6 +525,22 @@ test('les helpers trigger/directory restent révoqués et provider_stream physiq
   assert.match(
     release,
     /REVOKE ALL ON FUNCTION\s+public\.renew_realtime_native_speech_maintenance_claim_v1\s*\(\s*TEXT, UUID\s*\)\s+FROM PUBLIC/u,
+  );
+  assert.doesNotMatch(
+    rls,
+    /REVOKE ALL ON FUNCTION\s+public\.list_realtime_native_speech_maintenance_tenants_v1/u,
+  );
+  assert.match(
+    rls,
+    /OpenAI native maintenance directory function has an unexpected owner during RLS replay/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; RESET ROLE;/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; RESET ROLE;/u,
   );
   assert.match(
     fenceAdd,

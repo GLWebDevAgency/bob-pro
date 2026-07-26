@@ -427,7 +427,74 @@ grant_app_role() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="$APP_DATABASE_ROLE" <<'SQL'
 GRANT USAGE ON SCHEMA public TO :"app_role";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_role";
+-- Le rejeu d'une release rencontre des objets déjà transférés à leurs autorités NOLOGIN.
+-- Un GRANT ... ON ALL TABLES exécuté comme déployeur échoue alors sur Supabase et, pire,
+-- masquerait le propriétaire exact en CI superuser. Le socle large ne cible donc que les
+-- relations encore possédées par le déployeur. Chaque autorité globale reconstruit ensuite
+-- ses ACL minimales sous SET ROLE dans son provisioner dédié.
+SELECT pg_catalog.format(
+  'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE %I.%I TO %I',
+  namespace.nspname,
+  relation.relname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+ WHERE namespace.nspname = 'public'
+   AND relation.relkind IN ('r', 'p', 'v', 'f')
+   -- Cette autorité globale reste fermée jusqu'à son provisioner owner-aware. Même au premier
+   -- déploiement, elle ne traverse jamais une fenêtre DML ouverte au runtime.
+   AND relation.relname <> 'realtime_global_capacity'
+   AND relation.relowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+SELECT pg_catalog.format(
+  'GRANT SELECT ON TABLE %I.%I TO %I',
+  namespace.nspname,
+  relation.relname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+ WHERE namespace.nspname = 'public'
+   AND relation.relkind = 'm'
+   AND relation.relowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
+-- Une ancienne release a pu accorder du DML à cette autorité avant son transfert d'ownership.
+-- L'exclusion du grant ci-dessus empêche toute nouvelle ouverture ; cette normalisation retire
+-- aussi le reliquat historique immédiatement, sous l'owner exact, dans la même transaction.
+DO $capacity_runtime_acl_owner$
+DECLARE
+  capacity_owner OID;
+BEGIN
+  SELECT relation.relowner
+    INTO STRICT capacity_owner
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid = 'public.realtime_global_capacity'::regclass;
+
+  IF capacity_owner <> (
+       SELECT role.oid
+         FROM pg_catalog.pg_roles AS role
+        WHERE role.rolname = current_user
+     )
+     AND NOT pg_catalog.pg_has_role(current_user, capacity_owner, 'SET') THEN
+    RAISE EXCEPTION
+      'realtime_global_capacity has an owner unavailable through SET membership';
+  END IF;
+END;
+$capacity_runtime_acl_owner$;
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.realtime_global_capacity FROM %I; RESET ROLE;',
+  owner.rolname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+\gexec
 -- TRUNCATE n'est jamais une capacité runtime. La liste explicite répare aussi un ancien ACL,
 -- y compris sur le lease dont le DELETE ciblé reste nécessaire à l'autorité de terminaison.
 REVOKE TRUNCATE ON TABLE
@@ -439,7 +506,6 @@ REVOKE TRUNCATE ON TABLE
   public.realtime_mistral_conversation_commands,
   public.realtime_session_leases
 FROM :"app_role";
-REVOKE ALL ON TABLE public.realtime_global_capacity FROM :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
 -- suffisent pas : un futur changement de policy ne doit pas reactiver leur mutation.
 REVOKE UPDATE, DELETE ON TABLE
@@ -600,18 +666,6 @@ SELECT DISTINCT format(
  )
    AND privilege.grantee <> function.proowner
 \gexec
-REVOKE ALL ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
-  FROM :"app_role";
-REVOKE ALL ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
-  FROM :"app_role";
-REVOKE ALL ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
-  FROM :"app_role";
-GRANT EXECUTE ON FUNCTION public.list_realtime_native_speech_maintenance_tenants_v1(TEXT, INTEGER, UUID)
-  TO :"app_role";
-GRANT EXECUTE ON FUNCTION public.ack_realtime_native_speech_maintenance_tenants_v1(TEXT, UUID)
-  TO :"app_role";
-GRANT EXECUTE ON FUNCTION public.renew_realtime_native_speech_maintenance_claim_v1(TEXT, UUID)
-  TO :"app_role";
 REVOKE ALL ON FUNCTION public.assert_realtime_control_grant_binding_v3(
   TEXT, INTEGER, UUID, UUID, TEXT, UUID, UUID, INTEGER, CHAR(64),
   TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ
@@ -711,7 +765,20 @@ SELECT format(
 -- Le runtime invoque uniquement les deux capacités SECURITY DEFINER bornées. Il ne peut jamais
 -- endosser le rôle propriétaire NOLOGIN ni atteindre ses ACL de table sous-jacentes.
 REVOKE bob_mistral_bootstrap_reaper FROM :"app_role" CASCADE;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_role";
+SELECT pg_catalog.format(
+  'GRANT USAGE, SELECT, UPDATE ON SEQUENCE %I.%I TO %I',
+  namespace.nspname,
+  relation.relname,
+  :'app_role'
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+ WHERE namespace.nspname = 'public'
+   AND relation.relkind = 'S'
+   AND relation.relowner = (
+     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   )
+\gexec
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_role";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_role";
 \i apps/api/prisma/agent-missions-runtime-grants.sql
