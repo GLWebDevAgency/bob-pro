@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { professionalAdvanceRecoveryGuard } from './professional-advance-recovery';
+import {
+  PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE,
+  professionalAdvanceRecoveryGuard,
+} from './professional-advance-recovery';
 
 describe('professionalAdvanceRecoveryGuard', () => {
   it.each(['b2b', 'b2g'] as const)(
@@ -12,10 +15,29 @@ describe('professionalAdvanceRecoveryGuard', () => {
       });
       expect(result).toMatchObject({
         ok: false,
-        error: { code: 'VALIDATION', field: 'advanceRecovery' },
+        error: {
+          code: 'VALIDATION',
+          field: 'advanceRecovery',
+          message: PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE,
+        },
       });
     },
   );
+
+  it('le refus SUGGÈRE le repli conforme (écran ET voix) — jamais un cul-de-sac sec', () => {
+    // Décision fondateur 25/07 : le message sert tel quel à la voix (bob-agent) et aux
+    // feuilles d'erreur — il doit porter le chemin équivalent, pas seulement la fermeture.
+    expect(PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE).toContain('situation de travaux');
+    expect(PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE).toContain(
+      'même encaissement, conforme',
+    );
+    // Le motif technique reste dit (liste des facturables : stringContaining('Factur-X EXTENDED')).
+    expect(PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE).toContain('Factur-X EXTENDED');
+    // Et la promesse fail-closed demeure : aucun numéro légal consommé par le refus.
+    expect(PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE).toContain(
+      'Aucun numéro de facture ne sera consommé',
+    );
+  });
 
   it('refuse la finale professionnelle qui reprend une avance, mais pas une finale ordinaire', () => {
     expect(

@@ -66,10 +66,15 @@ export function SituationSheet({
   visible,
   quote,
   onClose,
+  initialPercent = null,
 }: {
   visible: boolean;
   quote: QuoteView;
   onClose: () => void;
+  /** Graine du % à l'OUVERTURE (repli acompte pro : la situation n°1 à 30 %) — null = la
+   *  proposition honnête calculée (defaultSituationPercent). Jamais imposée : le clamp au
+   *  reste facturable s'applique pareil, et steppers/postes restent maîtres. */
+  initialPercent?: number | null;
 }) {
   const { colors, semantic, personality, controls } = useTheme();
   const invoices = useInvoices();
@@ -93,10 +98,11 @@ export function SituationSheet({
     [quote.lines, basis.marketHtCents],
   );
   const proposedFromPostes = situationPercentFromPostes(basis, postes, checkedPostes);
-  // À chaque OUVERTURE : proposition honnête recalculée depuis la base réelle du moment.
+  // À chaque OUVERTURE : proposition honnête recalculée depuis la base réelle du moment — ou
+  // la graine de l'appelant (repli acompte pro), clampée ensuite comme tout autre réglage.
   useEffect(() => {
     if (visible) {
-      setPercent(defaultSituationPercent(basis));
+      setPercent(initialPercent ?? defaultSituationPercent(basis));
       setCheckedPostes(new Set());
     }
     // La base est volontairement relue à l'ouverture uniquement : un refetch pendant le réglage

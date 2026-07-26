@@ -16,6 +16,7 @@ import {
   useRefuseQuote,
   useCreateCreditNote,
   useGenerateInvoice,
+  useInvoices,
   useIssueInvoice,
   useRegisterPayment,
   useInvoicePaymentLink,
@@ -44,6 +45,10 @@ import {
   reconcileLinkedInvoicesEcho,
   type QuoteInvoiceLinksState,
 } from './quote-invoice-actions.logic';
+import {
+  deriveProfessionalAdvanceFallback,
+  hasLivingSituationSibling,
+} from './professional-advance-fallback.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
 import { SituationSheet } from './SituationSheet';
 import { resolveCollectAccountingPreview } from './collect-accounting-preview';
@@ -350,8 +355,9 @@ export const QuoteActions = forwardRef<
     quote: QuoteView;
     customerName: string;
     linkedInvoices?: QuoteLinkedInvoices;
-    /** Qualité du client (fiche) — pilote le conseil du canal de signature (B2C non urgent)
-     *  et rien d'autre : les gardes légales restent au SERVEUR. Absent = pas de conseil. */
+    /** Qualité du client (fiche) — pilote le conseil du canal de signature (B2C non urgent),
+     *  l'AFFICHAGE du chemin acompte (B2C seul) et son repli « Situation n°1 » (B2B/B2G) :
+     *  les gardes légales, elles, restent au SERVEUR. Absent = fail-closed, rien d'ouvert. */
     customerType?: 'b2c' | 'b2b' | 'b2g' | null;
   }
 >(function QuoteActions(
@@ -365,6 +371,9 @@ export const QuoteActions = forwardRef<
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const scheduleEmbargo = useScheduleEmbargoPayment();
+  // Pièces sœurs (cache partagé useInvoices — mêmes données que la frise et SituationSheet) :
+  // nourrit le repli acompte pro (« n°1 » honnête : aucune situation vivante déjà créée).
+  const invoices = useInvoices();
   // Feuille d'erreur premium locale (plus aucun Alert natif dans le flow) — partagée par le
   // verrou d'action et les remontées embargo/génération.
   const { showError, errorSheet } = useErrorSheet();
@@ -385,6 +394,12 @@ export const QuoteActions = forwardRef<
   // B2 : feuille « Facturer une situation » — devis signé sans facture finale (le solde final
   // déduit automatiquement acompte + situations émises, GenerateInvoiceFromQuote).
   const [situationOpen, setSituationOpen] = useState(false);
+  // Repli acompte pro (décision fondateur 25/07) : feuille d'explication légale (LegalHint
+  // EN 16931 / art. 289 bis CGI) au point de décision, puis graine du % de la situation n°1
+  // (30, TOUJOURS modifiable dans la feuille). `null` = ouverture générique : la feuille
+  // calcule elle-même sa proposition honnête.
+  const [advanceFallbackOpen, setAdvanceFallbackOpen] = useState(false);
+  const [situationSeed, setSituationSeed] = useState<number | null>(null);
   // R4 : choix de signature (Sur place / Envoyer le lien) puis, si « Sur place », le pad lui-même.
   const [signChoiceOpen, setSignChoiceOpen] = useState(false);
   const [onsiteOpen, setOnsiteOpen] = useState(false);
@@ -409,6 +424,9 @@ export const QuoteActions = forwardRef<
   // La reprise d'avance structurée concerne le chemin B2B/B2G. Tant qu'EXTENDED + PA ne sont
   // pas certifiés, seul le B2C (PDF/e-reporting distinct) peut ouvrir le choix d'acompte.
   // `null` reste fail-closed : une fiche client absente ne rend jamais l'action disponible.
+  // Le B2B/B2G n'est plus un refus sec pour autant : le Sheet de choix porte son REPLI —
+  // « Situation n°1 — 30 % du marché » (deriveProfessionalAdvanceFallback, même encaissement,
+  // conforme), expliqué par LegalHint avant toute création.
   const depositPathAvailable = customerType === 'b2c';
   useImperativeHandle(
     ref,
@@ -876,12 +894,35 @@ export const QuoteActions = forwardRef<
       );
     }
 
+    // Repli acompte pro (décision fondateur 25/07) : là où l'acompte fermé aurait été proposé,
+    // le chemin ÉQUIVALENT conforme — « Situation n°1 — 30 % du marché » (logique PURE testée ;
+    // fail-closed : fiche client absente, devis sans acompte ou situation déjà vivante = pas
+    // d'option numérotée, l'entrée générique « Facturer une situation » reste seule).
+    const advanceFallback = deriveProfessionalAdvanceFallback({
+      customerType,
+      depositPct: quote.depositPct,
+      hasSituationSibling: hasLivingSituationSibling(quote.id, invoices.data ?? []),
+    });
     // État (a) : aucune facture liée — Sheet de choix. « 100 % » toujours ; « acompte » UNIQUEMENT
     // si le devis SIGNÉ en porte un (arbitrage 1 : le % est celui du contrat signé, jamais un autre).
     const choiceOptions = [
       { value: 'final', label: 'Facture de 100 %' },
       ...(depositPathAvailable && quote.depositPct !== null
         ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
+        : []),
+      // Le repli occupe la PLACE de l'acompte fermé : sélectionner ouvre d'abord l'explication
+      // légale (LegalHint) — jamais une écriture directe.
+      ...(advanceFallback.offered
+        ? [
+            {
+              value: 'advance_fallback',
+              label: t('advanceFallback.option', {
+                personality,
+                params: { pct: advanceFallback.initialPercent },
+              }),
+              description: t('advanceFallback.optionHint', { personality }),
+            },
+          ]
         : []),
       // B2 : la situation vit dans le MÊME choix que l'acompte et la finale — un seul geste,
       // la feuille dédiée règle le % (marché déjà facturé visible, garde cumul au serveur).
@@ -907,16 +948,72 @@ export const QuoteActions = forwardRef<
           onOther={() => setChoiceOpen(false)}
           onSelect={(values) => {
             setChoiceOpen(false);
+            if (values[0] === 'advance_fallback') {
+              setAdvanceFallbackOpen(true);
+              return;
+            }
             if (values[0] === 'situation') {
+              setSituationSeed(null);
               setSituationOpen(true);
               return;
             }
             void generateInvoice(values[0] === 'deposit' ? 'deposit' : 'final');
           }}
         />
+        {/* Repli acompte pro — LegalHint AU POINT DE DÉCISION (même pattern que la feuille
+            conseil du canal, item 4) : la loi en français simple (EN 16931/Factur-X sans
+            reprise d'avance fiable), pourquoi Bob protège, la source citée, le bénéfice du
+            repli — puis le choix reste 100 % libre : ouvrir la situation n°1 ou repartir. */}
+        <Sheet
+          visible={advanceFallbackOpen}
+          onClose={() => setAdvanceFallbackOpen(false)}
+          accessibilityLabel={t('advanceFallback.sheetTitle', { personality })}
+        >
+          <Text
+            accessibilityRole="header"
+            style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8, lineHeight: 22 }]}
+          >
+            {t('advanceFallback.sheetTitle', { personality })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginBottom: 10 }]}>
+            {t('advanceFallback.sheetBody', {
+              personality,
+              params: { pct: advanceFallback.initialPercent },
+            })}
+          </Text>
+          <View style={{ marginBottom: 14 }}>
+            <LegalHint
+              label={t('legal.advanceFallback.inline', { personality })}
+              lawKey="legal.advanceFallback.law"
+              whyKey="legal.advanceFallback.why"
+              source="art. 289 bis du CGI · norme EN 16931 (Factur-X)"
+            />
+          </View>
+          <View style={{ gap: 8, marginBottom: 8 }}>
+            <Button
+              title={t('advanceFallback.confirm', {
+                personality,
+                params: { pct: advanceFallback.initialPercent },
+              })}
+              disabled={!!busy}
+              onPress={() => {
+                setAdvanceFallbackOpen(false);
+                setSituationSeed(advanceFallback.initialPercent);
+                setSituationOpen(true);
+              }}
+            />
+            <Button
+              title={t('advanceFallback.cancel', { personality })}
+              variant="secondary"
+              disabled={!!busy}
+              onPress={() => setAdvanceFallbackOpen(false)}
+            />
+          </View>
+        </Sheet>
         <SituationSheet
           visible={situationOpen}
           quote={quote}
+          initialPercent={situationSeed}
           onClose={() => setSituationOpen(false)}
         />
         {embargoSheet}

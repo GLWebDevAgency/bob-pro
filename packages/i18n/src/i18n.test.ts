@@ -1480,6 +1480,66 @@ describe('devis — confirmation honnête quand le client n’a pas d’e-mail',
   });
 });
 
+describe('repli acompte professionnel — situation n°1 (B2B/B2G, décision fondateur 25/07)', () => {
+  it('toutes les clés du repli existent sur les 3 tons, jamais une clé brute à l’écran', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      for (const key of [
+        'advanceFallback.option',
+        'advanceFallback.optionHint',
+        'advanceFallback.sheetTitle',
+        'advanceFallback.sheetBody',
+        'advanceFallback.confirm',
+        'advanceFallback.cancel',
+        'legal.advanceFallback.inline',
+        'legal.advanceFallback.law',
+        'legal.advanceFallback.why',
+      ] as const) {
+        const copy = t(key, { personality, params: { pct: 30 } });
+        expect(copy.length).toBeGreaterThan(0);
+        // Une clé absente serait renvoyée telle quelle par `t` — jamais à l'écran.
+        expect(copy.startsWith('advanceFallback.')).toBe(false);
+        expect(copy.startsWith('legal.')).toBe(false);
+      }
+    }
+  });
+
+  it('ne promet JAMAIS une facture d’acompte : l’option et le CTA nomment une SITUATION', () => {
+    // La pièce créée par le repli est une situation de travaux. Son libellé de choix et son
+    // bouton de confirmation ne doivent jamais s'appeler « acompte » — sinon l'artisan croit
+    // émettre la pièce que la garde Factur-X vient précisément de fermer (promesse trompeuse).
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      for (const key of ['advanceFallback.option', 'advanceFallback.confirm'] as const) {
+        const copy = t(key, { personality, params: { pct: 30 } });
+        expect(copy.toLowerCase()).toContain('situation');
+        expect(copy).toContain('30');
+        expect(copy.toLowerCase()).not.toContain('acompte');
+      }
+    }
+  });
+
+  it('le % par défaut reste MODIFIABLE d’après la copy — jamais un 30 % imposé', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const body = t('advanceFallback.sheetBody', { personality, params: { pct: 30 } });
+      expect(body).toContain('30');
+      // Chaque ton dit que le pourcentage se règle avant création.
+      expect(body.toLowerCase()).toMatch(/règle|réglable/u);
+    }
+  });
+
+  it('la loi cite le format en cause (EN 16931/Factur-X) et le refus de donnée fausse ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const law = t('legal.advanceFallback.law', { personality });
+      expect(law).toContain('16931');
+      expect(law).toContain('Factur-X');
+      expect(law.toLowerCase()).toMatch(/fausse|erronée/u);
+      const why = t('legal.advanceFallback.why', { personality });
+      // Le bénéfice du repli : même encaissement, pièces justes — dit dans « pourquoi ».
+      expect(why.toLowerCase()).toMatch(/encaisses pareil|encaissement identique/u);
+      expect(why.toLowerCase()).toContain('situation');
+    }
+  });
+});
+
 describe('position de trésorerie — les DEUX nombres, sur les 3 humeurs', () => {
   // Le solde constaté seul faisait croire à un bug (facture encaissée, solde figé). La copy doit
   // TOUJOURS porter le constaté daté À CÔTÉ de l'estimé, et ne jamais présenter l'estimé comme

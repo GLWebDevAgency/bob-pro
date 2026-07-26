@@ -294,6 +294,59 @@ export const billingTerrainFr = {
     direct: 'Déjà couvert par le facturé.',
   },
 
+  // ── Repli acompte professionnel (B2B/B2G — décision fondateur 25/07) ───────
+  // L'acompte pro reste FERMÉ (professionalAdvanceRecoveryGuard, fail-closed : EN 16931/
+  // Factur-X sans reprise d'avance fiable). Le repli propose l'équivalent CONFORME au moment
+  // exact où l'artisan aurait cherché l'acompte : la situation n°1 — 30 % du marché par
+  // défaut, TOUJOURS modifiable dans la feuille situation (steppers maîtres, cumul serveur).
+  // HONNÊTETÉ : l'option et le CTA nomment une SITUATION — jamais « facture d'acompte » pour
+  // la pièce créée (testé) ; « acompte » n'apparaît que pour dire l'équivalence ou la fermeture.
+  'advanceFallback.option': {
+    pote: 'Situation n°1 — {pct} % du marché',
+    pro: 'Situation n°1 — {pct} % du marché',
+    direct: 'Situation n°1 — {pct} %',
+  },
+  'advanceFallback.optionHint': {
+    pote: 'Même encaissement que l’acompte prévu, en version conforme e-facture.',
+    pro: 'Encaissement équivalent à l’acompte prévu, conforme à la facturation électronique.',
+    direct: 'Encaissement équivalent, conforme.',
+  },
+  'advanceFallback.sheetTitle': {
+    pote: 'Pas d’acompte pro — la situation fait pareil',
+    pro: 'Acompte professionnel fermé — l’équivalent conforme',
+    direct: 'Acompte pro fermé. Situation n°1.',
+  },
+  'advanceFallback.sheetBody': {
+    pote: 'Client pro ou public : la facture d’acompte reste fermée, alors Bob te propose la situation n°1 — tu factures {pct} % du marché tout de suite, même encaissement, pièce conforme. Le pourcentage se règle avant de créer, et la facture finale déduira les situations émises.',
+    pro: 'Pour un client professionnel ou public, la facture d’acompte reste fermée. La situation n°1 la remplace : {pct} % du marché facturés dès maintenant, encaissement identique, pièce conforme. Le pourcentage est réglable avant création, et la facture finale déduira les situations émises.',
+    direct: 'Acompte pro fermé. Situation n°1 : {pct} % du marché, même encaissement, conforme. Pourcentage réglable ; la finale déduit les situations émises.',
+  },
+  'advanceFallback.confirm': {
+    pote: 'Ouvrir la situation n°1 ({pct} %)',
+    pro: 'Ouvrir la situation n°1 ({pct} %)',
+    direct: 'Situation n°1 ({pct} %)',
+  },
+  'advanceFallback.cancel': {
+    pote: 'Pas maintenant',
+    pro: 'Pas maintenant',
+    direct: 'Annuler',
+  },
+  'legal.advanceFallback.inline': {
+    pote: 'Même argent encaissé, zéro donnée fiscale fausse — Bob te met sur le chemin conforme.',
+    pro: 'Encaissement préservé, aucune donnée fiscale erronée : le chemin conforme est proposé d’office.',
+    direct: 'Même encaissement, zéro donnée fausse.',
+  },
+  'legal.advanceFallback.law': {
+    pote: 'Pour un client pro ou public, ta facture part en format électronique structuré (Factur-X, norme EN 16931). Ce format ne sait pas encore exprimer de façon fiable la reprise d’un acompte sur la facture finale — une facture qui déclare mal cette reprise transmet une donnée fiscale fausse à l’administration.',
+    pro: 'Pour un client professionnel ou public, la facture est transmise en format électronique structuré (Factur-X, norme EN 16931). Ce format ne permet pas encore d’exprimer de manière fiable la reprise d’un acompte sur la facture finale : une pièce qui déclarerait mal cette reprise transmettrait une donnée fiscale erronée à l’administration.',
+    direct: 'B2B/B2G = facture électronique structurée (Factur-X, EN 16931). La reprise d’acompte n’y est pas exprimable de façon fiable : la déclarer quand même = donnée fiscale fausse.',
+  },
+  'legal.advanceFallback.why': {
+    pote: 'Bob refuse d’émettre une donnée fiscale fausse en ton nom. La situation de travaux facture une part du marché sans reprise à déclarer : tu encaisses pareil, et tes pièces restent justes et transmissibles.',
+    pro: 'Bob refuse d’émettre une donnée fiscale erronée en votre nom. La situation de travaux facture une part du marché sans reprise d’acompte à déclarer : encaissement identique, pièces exactes et transmissibles.',
+    direct: 'Bob n’émet pas de donnée fausse. La situation facture une part du marché sans reprise : encaissement identique, pièces justes.',
+  },
+
   // ── B4 — Conditions de paiement par client ─────────────────────────────────
   'terms.sectionTitle': {
     pote: 'Conditions de paiement',
