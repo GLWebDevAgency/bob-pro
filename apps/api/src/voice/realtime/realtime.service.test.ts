@@ -566,6 +566,7 @@ describe('RealtimeVoiceService', () => {
 
     const result = await runAsPrincipal(() => service.createCall({
       ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: null,
       sessionHandle: '00000000-0000-4000-8000-000000000042',
       context: {
         version: 1,
@@ -578,7 +579,14 @@ describe('RealtimeVoiceService', () => {
       },
     }));
 
-    expect(result).toMatchObject({ ok: true, value: { transport: 'mistral-pcm' } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
+      },
+    });
     expect(issue).toHaveBeenCalledOnce();
     expect(terminations.state()).toEqual({ activeConnections: 0, terminalProofs: 1 });
     expect(durable.snapshot().leases).toEqual([
@@ -634,6 +642,7 @@ describe('RealtimeVoiceService', () => {
     const config = await runAsPrincipal(() => service.publicConfig());
     const result = await runAsPrincipal(() => service.createCall({
       ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 1,
       sessionHandle: '00000000-0000-4000-8000-000000000031',
       context,
     }));
@@ -651,6 +660,8 @@ describe('RealtimeVoiceService', () => {
         companyId: 'company-1',
         ticket: 'T'.repeat(43),
         protocol: 'bob.mistral-pcm.v1',
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
         contextRevision: 3,
         contextDigest: 'd'.repeat(64),
         speechSourcePolicy: TEST_SPEECH_SOURCE_POLICY.policyForSession(
@@ -756,6 +767,9 @@ describe('RealtimeVoiceService', () => {
         fullDuplexCertified: false,
       },
     });
+    if (!result.ok) throw new Error('bootstrap Mistral v2 attendu');
+    expect(result.value).not.toHaveProperty('agentMissionProtocolVersion');
+    expect(result.value).not.toHaveProperty('agentMissionCapability');
     expect(issue).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'user-1',
       subjectKeyVersion: 7,
@@ -936,6 +950,7 @@ describe('RealtimeVoiceService', () => {
     const result = await runAsPrincipal(() => service.createCall({
       ...AUDITED_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
+      agentMissionProtocolVersion: null,
       sessionHandle: '00000000-0000-4000-8000-000000000001',
     }));
 
@@ -946,6 +961,8 @@ describe('RealtimeVoiceService', () => {
       speechDelivery: 'audited-signed-url-v1',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
+      agentMissionProtocolVersion: null,
+      agentMissionCapability: null,
       sessionHandle: '00000000-0000-4000-8000-000000000001',
       speechSourcePolicy: TEST_SPEECH_SOURCE_POLICY.policyForSession(
         'company-1',
@@ -1027,6 +1044,8 @@ describe('RealtimeVoiceService', () => {
     });
     if (!result.ok) throw new Error('bootstrap legacy attendu');
     expect(result.value).not.toHaveProperty('speechDelivery');
+    expect(result.value).not.toHaveProperty('agentMissionProtocolVersion');
+    expect(result.value).not.toHaveProperty('agentMissionCapability');
   });
 
   it('natif OpenAI : annonce le contrat explicite et ne construit jamais de policy signée', async () => {
@@ -1060,6 +1079,7 @@ describe('RealtimeVoiceService', () => {
     const result = await runAsPrincipal(() => service.createCall({
       ...NATIVE_BOOTSTRAP_BINDING,
       sdp: OFFER_SDP,
+      agentMissionProtocolVersion: 1,
       sessionHandle: '00000000-0000-4000-8000-000000000002',
     }));
 
@@ -1068,6 +1088,8 @@ describe('RealtimeVoiceService', () => {
       value: {
         transport: 'webrtc',
         speechDelivery: 'openai-native-webrtc-v1',
+        agentMissionProtocolVersion: null,
+        agentMissionCapability: null,
       },
     });
     if (result.ok) expect(result.value).not.toHaveProperty('speechSourcePolicy');

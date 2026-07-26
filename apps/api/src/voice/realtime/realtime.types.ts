@@ -1,5 +1,6 @@
 import type { MistralConversationSessionEndReason } from '@bob/ai';
 import { resolveBobLiveEnv, type BobLiveAuditProviderId, type BobLiveProviderId, type Env } from '../../config/env';
+import type { RealtimeAgentMissionBootstrapBinding } from './realtime-agent-mission-negotiation';
 
 export const BOB_REALTIME_CONFIG_VERSION = 'bob-live-provider-neutral-v4';
 export const BOB_REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
@@ -169,10 +170,11 @@ export type MistralConversationInitialCallBootstrap = (
   | RealtimeLegacyAuditedCallBootstrapCommon
 ) & MistralConversationInitialCallBootstrapBody;
 
-export type RealtimeCallBootstrap =
+export type RealtimeCallBootstrap = (
   | OpenAiRealtimeCallBootstrap
   | MistralRealtimeCallBootstrap
-  | MistralConversationInitialCallBootstrap;
+  | MistralConversationInitialCallBootstrap
+) & RealtimeAgentMissionBootstrapBinding;
 
 export interface RealtimeVoiceResumeTicketIssued {
   readonly status: 'issued';

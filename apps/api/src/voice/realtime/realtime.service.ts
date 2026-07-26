@@ -98,6 +98,7 @@ import { isMistralConversationBootstrapReconciliationAttempt } from './mistral-c
 import type { MistralConversationRuntimeCapability } from './mistral-conversation-terminal-replay';
 import {
   parseRealtimeAgentMissionNegotiation,
+  realtimeAgentMissionBootstrapBinding,
   type RealtimeAgentMissionNegotiationRequest,
 } from './realtime-agent-mission-negotiation';
 
@@ -725,6 +726,9 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
+    const agentMissionBinding = realtimeAgentMissionBootstrapBinding(
+      parsed.value.agentMissionNegotiation,
+    );
     if (parsed.value.speechDelivery !== this.settings.speechDelivery) {
       return this.finishError('validation', startedAt, {
         kind: 'validation',
@@ -922,12 +926,14 @@ export class RealtimeVoiceService {
       if (parsed.value.speechDelivery === 'openai-native-webrtc-v1') {
         return ok({
           ...bootstrap,
+          ...agentMissionBinding,
           speechDelivery: 'openai-native-webrtc-v1',
         });
       }
       if (speechSourcePolicy === null) throw new Error('speech_source_policy_missing');
       return ok({
         ...bootstrap,
+        ...agentMissionBinding,
         ...(parsed.value.wireContract === 'v4'
           ? { speechDelivery: 'audited-signed-url-v1' as const }
           : {}),
@@ -1447,6 +1453,9 @@ export class RealtimeVoiceService {
   ): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const parsed = parseMistralRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
+    const agentMissionBinding = realtimeAgentMissionBootstrapBinding(
+      parsed.value.agentMissionNegotiation,
+    );
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
       return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
@@ -1569,6 +1578,7 @@ export class RealtimeVoiceService {
       });
       return ok({
         transport: 'mistral-pcm',
+        ...agentMissionBinding,
         websocketUrl: this.settings.mistralWebsocketUrl,
         ...bootstrap,
         model: this.settings.model,
@@ -1616,6 +1626,7 @@ export class RealtimeVoiceService {
     });
     return ok({
       transport: 'mistral-pcm',
+      ...agentMissionBinding,
       websocketUrl: this.settings.mistralWebsocketUrl,
       companyId: issued.bootstrap.companyId,
       ticket: issued.bootstrap.ticket,
