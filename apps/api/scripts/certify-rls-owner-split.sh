@@ -42,17 +42,25 @@ DO $rls_owner_split_membership$
 DECLARE
   deployer_oid OID := current_user::pg_catalog.regrole;
   owner_oid OID := 'bob_rls_schema_owner_cert'::pg_catalog.regrole;
+  has_set_membership BOOLEAN;
+  has_admin_membership BOOLEAN;
+  has_inherit_membership BOOLEAN;
 BEGIN
+  -- PostgreSQL 16+ peut matérialiser deux grants directs : ADMIN implicite depuis le bootstrap
+  -- superuser, puis SET depuis le créateur via createrole_self_grant. Les options doivent donc
+  -- être agrégées par couple role/member, jamais exigées sur une même ligne de grantor.
+  SELECT COALESCE(pg_catalog.bool_or(membership.set_option), FALSE),
+         COALESCE(pg_catalog.bool_or(membership.admin_option), FALSE),
+         COALESCE(pg_catalog.bool_or(membership.inherit_option), FALSE)
+    INTO STRICT has_set_membership, has_admin_membership, has_inherit_membership
+    FROM pg_catalog.pg_auth_members AS membership
+   WHERE membership.roleid = owner_oid
+     AND membership.member = deployer_oid;
+
   IF NOT pg_catalog.pg_has_role(deployer_oid, owner_oid, 'SET')
-     OR NOT EXISTS (
-       SELECT 1
-         FROM pg_catalog.pg_auth_members AS membership
-        WHERE membership.roleid = owner_oid
-          AND membership.member = deployer_oid
-          AND membership.admin_option
-          AND membership.set_option
-          AND NOT membership.inherit_option
-     ) THEN
+     OR NOT has_set_membership
+     OR NOT has_admin_membership
+     OR has_inherit_membership THEN
     RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_IMPLICIT_SET_MEMBERSHIP_MISSING';
   END IF;
 END;

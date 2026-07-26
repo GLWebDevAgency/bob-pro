@@ -885,6 +885,19 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
   );
   assert.match(
     rlsOwnerSplitCertificate,
+    /SET LOCAL createrole_self_grant = 'set'[\s\S]*?bool_or\(membership\.set_option\)[\s\S]*?bool_or\(membership\.admin_option\)[\s\S]*?bool_or\(membership\.inherit_option\)/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /NOT has_set_membership[\s\S]*?NOT has_admin_membership[\s\S]*?has_inherit_membership/u,
+  );
+  assert.doesNotMatch(
+    rlsOwnerSplitCertificate,
+    /membership\.admin_option\s+AND\s+membership\.set_option/u,
+    'Les grants ADMIN implicite et SET peuvent avoir des grantors distincts sur PostgreSQL 16+.',
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
     /ALTER TABLE %s OWNER TO bob_rls_schema_owner_cert[\s\S]*?ALTER %s %I\.%I\(%s\) OWNER TO bob_rls_schema_owner_cert/u,
   );
   assert.match(
