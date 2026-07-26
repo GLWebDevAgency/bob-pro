@@ -3,8 +3,9 @@
 **Statut** : `implemented`.
 
 Ce statut atteste le code et les preuves locales/CI reproductibles des commits `2af9aef2` et
-`09982f89`. Il ne signifie ni `certified` ni `released` : la migration et le certificat doivent
-encore passer sur Supabase staging pour le SHA de PR avant toute fusion.
+`09982f89`, ainsi que le hardening Supabase `88f6f590`. Il ne signifie ni `certified` ni
+`released` : la migration et le certificat doivent encore passer sur Supabase staging pour le SHA
+de PR avant toute fusion.
 
 **Instruction de travail** : continuité Jarvis demandée par le fondateur dans le canal Codex,
 26 juillet 2026. Cette trace autorise le lot technique décrit ici mais ne s'auto-transforme pas
@@ -203,8 +204,10 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
 
 - [x] Tests ciblés core/API/Prisma/PostgreSQL verts.
 - [x] Typecheck et lint des packages touchés verts.
-- [x] Suite globale verte dans le worktree candidat, y compris les contrats de release historiques.
-- [ ] Build API + garde d'artefact verts depuis un checkout propre du commit candidat.
+- [x] Suite globale verte depuis un checkout détaché propre, y compris les contrats de release
+      historiques.
+- [x] Build API + garde d'artefact verts depuis le checkout détaché propre du commit runtime
+      `88f6f590`.
 - [x] Review adversariale correctness/sécurité, architecture/parité et release Supabase terminée ;
       tous les P0/P1 sont corrigés.
 - [ ] Une seule PR, CI complète verte, validation staging consignée, fusion dans `main`, branche et
@@ -222,6 +225,8 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
 - mêmes 34 scénarios verts via le mode TCP externe utilisé par le job CI ;
 - gardes migration + release : 14 tests Node verts ;
 - suite globale monorepo : 15 tâches sur 15 vertes, dont 259 contrats de release API ;
+- checkout détaché propre `88f6f590` : build topologique `core → ai → api`, artefacts core/AI/API
+  certifiés, 15 tâches de test sur 15 et 17 tâches de typecheck sur 17 vertes, lint core/API vert ;
 - garde owners Supabase : 2 contrats statiques verts et preuve PostgreSQL 17 avec déployeur
   non-superuser, chemin nominal puis owner préexistant inaccessible refusé avant DDL ;
 - typecheck `core`, `api`, `mobile` et lint `core`, `api`, mobile ciblé verts.
