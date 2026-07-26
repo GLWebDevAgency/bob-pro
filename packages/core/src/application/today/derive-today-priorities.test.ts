@@ -508,3 +508,124 @@ describe('deriveTodayPriorities', () => {
     });
   });
 });
+
+// ── PR-02 « Encaisser » — facture ÉMISE jamais transmise (état 100 % dérivé) ──
+
+describe('deriveTodayPriorities — facture_a_transmettre (PR-02)', () => {
+  const neverSent = {
+    emailDeliveredAt: null,
+    transmission: null,
+  } as const;
+
+  it('émise sans envoi constaté ni dépôt déclaré → priorité, montant = reste à encaisser', () => {
+    const priorities = derive({
+      invoices: [
+        invoiceFixture({
+          id: 'inv-1',
+          number: 'F-2026-0042',
+          totals: totalsOf(120000),
+          paid: 20000,
+          dueAt: '2026-08-01', // pas encore échue : pas de relance, la transmission d'abord
+          ...neverSent,
+        }),
+      ],
+    });
+    expect(priorities).toEqual([
+      {
+        kind: 'facture_a_transmettre',
+        id: 'facture-a-transmettre-inv-1',
+        invoiceId: 'inv-1',
+        customerId: 'cust-1',
+        customerName: 'M. Martin',
+        docNumber: 'F-2026-0042',
+        amountCents: 100000,
+      },
+    ]);
+  });
+
+  it('éteinte dès qu’un job d’envoi a réussi (emailDeliveredAt) OU qu’un dépôt est déclaré', () => {
+    const delivered = derive({
+      invoices: [
+        invoiceFixture({
+          id: 'inv-1',
+          dueAt: '2026-08-01',
+          emailDeliveredAt: '2026-07-09T10:00:00.000Z',
+          transmission: null,
+        }),
+      ],
+    });
+    expect(delivered).toEqual([]);
+    const deposited = derive({
+      invoices: [
+        invoiceFixture({
+          id: 'inv-1',
+          dueAt: '2026-08-01',
+          emailDeliveredAt: null,
+          transmission: { depositedAt: '2026-07-08', acceptedAt: null },
+        }),
+      ],
+    });
+    expect(deposited).toEqual([]);
+  });
+
+  it('fail-closed : faits non transportés (undefined) → AUCUNE priorité (jamais affirmé depuis une projection muette)', () => {
+    expect(
+      derive({ invoices: [invoiceFixture({ id: 'inv-1', dueAt: '2026-08-01' })] }),
+    ).toEqual([]);
+    expect(
+      derive({
+        invoices: [invoiceFixture({ id: 'inv-1', dueAt: '2026-08-01', emailDeliveredAt: null })],
+      }),
+    ).toEqual([]);
+    expect(
+      derive({
+        invoices: [invoiceFixture({ id: 'inv-1', dueAt: '2026-08-01', transmission: null })],
+      }),
+    ).toEqual([]);
+  });
+
+  it('hors périmètre : avoir, brouillon, payée, en retard (la relance prend le relais) — et solde nul', () => {
+    const priorities = derive({
+      invoices: [
+        invoiceFixture({ id: 'avoir', kind: 'credit_note', dueAt: null, ...neverSent }),
+        invoiceFixture({ id: 'brouillon', status: 'draft', dueAt: null, ...neverSent }),
+        invoiceFixture({ id: 'payee', status: 'paid', ...neverSent }),
+        invoiceFixture({ id: 'retard', status: 'late', ...neverSent }),
+        invoiceFixture({
+          id: 'soldee',
+          dueAt: '2026-08-01',
+          totals: totalsOf(50000),
+          paid: 50000,
+          ...neverSent,
+        }),
+      ],
+    });
+    // La facture en retard produit sa relance (échue), jamais une carte transmission en doublon.
+    expect(priorities.map((p) => p.kind)).toEqual(['relance']);
+  });
+
+  it('ordre global : relances d’abord, puis factures à transmettre, puis finales/devis — snapshot inchangé sans le fait', () => {
+    const priorities = derive({
+      invoices: [
+        invoiceFixture({ id: 'late-1', status: 'late', totals: totalsOf(80000) }),
+        invoiceFixture({
+          id: 'inv-1',
+          dueAt: '2026-08-01',
+          totals: totalsOf(30000),
+          ...neverSent,
+        }),
+        invoiceFixture({
+          id: 'inv-2',
+          dueAt: '2026-08-01',
+          totals: totalsOf(90000),
+          ...neverSent,
+        }),
+      ],
+    });
+    expect(priorities.map((p) => p.id)).toEqual([
+      'relance-late-1',
+      'facture-a-transmettre-inv-2', // plus gros enjeu d'abord
+      'facture-a-transmettre-inv-1',
+    ]);
+  });
+});

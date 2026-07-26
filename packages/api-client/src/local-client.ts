@@ -1054,6 +1054,12 @@ export class LocalBobClient implements BobClient {
       retenueGarantiePct: i.retenueGarantiePct,
       urgentRepair: i.urgentRepair,
       transmission: i.transmission,
+      // PR-02 (parité serveur) : livraison EMAIL constatée — dérivée du fil local de démo
+      // (sendInvoice y journalise), jamais un envoi inventé.
+      emailDeliveredAt:
+        this.notifications.find(
+          (n) => n.kind === 'invoice-delivery' && n.route === `/facture/${i.id}`,
+        )?.createdAt ?? null,
     };
   }
 

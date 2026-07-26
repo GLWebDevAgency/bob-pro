@@ -154,6 +154,10 @@ export interface InvoiceView {
   /** Guide de transmission dérivé du canal du client — UNIQUEMENT sur GET /invoices/:id d'une
    *  pièce émise (absent des listes) ; absent difforme ⇒ retiré (jamais un guide corrompu). */
   transmissionGuide?: TransmissionGuide;
+  /** PR-02 — livraison EMAIL constatée par l'outbox serveur (premier job `invoice-delivery`
+   *  réussi). Instant ISO = partie ; null = aucune livraison constatée ; ABSENT = information
+   *  non transportée (serveur antérieur) — fail-closed : jamais « pas envoyée » affirmé. */
+  emailDeliveredAt?: string | null;
 }
 
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */

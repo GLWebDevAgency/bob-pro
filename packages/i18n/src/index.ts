@@ -280,6 +280,28 @@ const legacyFr = {
     pro: 'Partager le lien',
     direct: 'Envoyer le lien',
   },
+  // PR-02 « Encaisser » — facture ÉMISE jamais transmise (aucun envoi constaté, aucun dépôt
+  // déclaré) : la douleur n° 1 de Fly Services (2 % encaissé), impossible à rater.
+  'today.prioInvoiceTransmitTitle': {
+    pote: 'Facture jamais envoyée — {name}',
+    pro: 'Facture non transmise — {name}',
+    direct: 'Facture non partie — {name}',
+  },
+  'today.prioInvoiceTransmitHint': {
+    pote: 'Elle est émise, mais rien ne prouve qu’elle est partie. Tant qu’elle n’arrive pas, elle ne sera jamais payée.',
+    pro: 'La pièce est émise, mais aucun envoi n’est constaté. Une facture jamais transmise ne sera jamais réglée.',
+    direct: 'Émise, jamais partie. Pas partie = jamais payée.',
+  },
+  'today.prioInvoiceTransmitBadge': {
+    pote: 'À transmettre',
+    pro: 'À transmettre',
+    direct: 'À transmettre',
+  },
+  'today.ctaInvoiceTransmit': {
+    pote: 'Envoyer la facture',
+    pro: 'Transmettre la facture',
+    direct: 'Envoyer',
+  },
   // Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE, jamais remonté au
   // serveur : composé dans le rendu du Home à partir du brouillon local (voir quote-draft).
   // Sobriété : n'apparaît qu'après ~1 h, ou à la réouverture de l'app — jamais pendant l'édition.
@@ -2807,6 +2829,12 @@ const legacyFr = {
   // E5 — badge de statut d'un AVOIR (masculin, ambre à l'émission) : « Émis », jamais « Émise ».
   'ventes.badgeAvoirEmis': { pote: 'Émis', pro: 'Émis', direct: 'Émis' },
   'ventes.badgeAvoirAnnule': { pote: 'Annulé', pro: 'Annulé', direct: 'Annulé' },
+  // PR-02 — pièce émise JAMAIS transmise : badge AMBRE de liste (le bleu « Émise » rassurait à tort).
+  'ventes.badgeATransmettre': {
+    pote: 'À transmettre',
+    pro: 'À transmettre',
+    direct: 'À transmettre',
+  },
   // E6 — tag ambre sur la ligne d'une facture CRÉDITÉE : visible d'un coup d'œil en liste.
   'ventes.tagAvoirEmis': { pote: 'Avoir émis', pro: 'Avoir émis', direct: 'Avoir émis' },
   'ventes.chipSituation': { pote: 'Situation', pro: 'Situation', direct: 'Situation' },
@@ -3188,6 +3216,43 @@ const legacyFr = {
     pote: 'Cet envoi de la facture {number} à {recipient} est déjà parti — rien à renvoyer.',
     pro: 'Cet envoi de la facture {number} à {recipient} a déjà été effectué.',
     direct: 'Déjà envoyée : {number} → {recipient}.',
+  },
+  // PR-02 — suivi de transmission du canal EMAIL sur la fiche facture : preuve serveur (outbox)
+  // vs déclaration manuelle — les deux formulations restent DISTINCTES (jamais un accusé inventé).
+  'facture.emailDeliveredOn': {
+    pote: 'Envoyée par e-mail le {date} ✓',
+    pro: 'Envoyée par e-mail le {date}',
+    direct: 'Envoyée le {date} ✓',
+  },
+  'facture.declaredSentOn': {
+    pote: 'Marquée envoyée le {date} (déclaré par toi)',
+    pro: 'Déclarée envoyée le {date}',
+    direct: 'Déclarée envoyée le {date}.',
+  },
+  'facture.neverTransmitted': {
+    pote: 'Émise, mais jamais transmise',
+    pro: 'Émise, sans transmission constatée',
+    direct: 'Émise. Jamais transmise.',
+  },
+  'facture.neverTransmittedHint': {
+    pote: 'Rien ne prouve que ton client l’a reçue. Envoie-la par e-mail juste au-dessus — ou si elle est déjà partie autrement, dis-le-moi.',
+    pro: 'Aucun envoi n’est constaté. Envoyez-la par e-mail — ou déclarez sa transmission si elle est déjà partie par un autre canal.',
+    direct: 'Aucun envoi constaté. Envoie-la, ou déclare-la partie.',
+  },
+  'facture.markSentAction': {
+    pote: 'Déjà partie ? Marquer envoyée',
+    pro: 'Déclarer la facture envoyée',
+    direct: 'Marquer envoyée',
+  },
+  'facture.markSentConfirmTitle': {
+    pote: 'Marquer envoyée ?',
+    pro: 'Déclarer la facture envoyée',
+    direct: 'Marquer envoyée ?',
+  },
+  'facture.markSentConfirmBody': {
+    pote: 'Je note qu’elle est partie aujourd’hui, par tes soins. C’est une déclaration — corrigeable dans le suivi de transmission.',
+    pro: 'La facture sera déclarée transmise à la date du jour. Cette déclaration reste corrigeable.',
+    direct: 'Déclarée partie aujourd’hui. Corrigeable.',
   },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },

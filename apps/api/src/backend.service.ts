@@ -33,6 +33,7 @@ import {
   BANK_BALANCE_FRESHNESS_POLICY_V1,
   deriveKnownReceivables,
   SendInvoice,
+  invoiceIdOfInvoiceDeliveryDedupeKey,
   type InvoiceArchivePdfPort,
   type NotificationEmailAttachment,
   SystemClock,
@@ -397,6 +398,12 @@ export interface InvoiceView {
   /** Guide de transmission dérivé du canal du client — UNIQUEMENT sur GET /invoices/:id d'une
    * pièce émise (absent des listes : dérivation par client). */
   transmissionGuide?: TransmissionGuide;
+  /** E3 — date d'émission légale (DateOnly) ; null = brouillon. */
+  issuedAt: string | null;
+  /** PR-02 — livraison EMAIL constatée par l'outbox (premier job `invoice-delivery` réussi).
+   * Instant ISO = partie ; null = aucune livraison constatée ; le champ n'est présent que si
+   * l'outbox a réellement été interrogée (fail-closed). */
+  emailDeliveredAt?: string | null;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -1192,7 +1199,7 @@ export class BackendService {
     };
   }
 
-  private mapInvoice(i: Invoice): InvoiceView {
+  private mapInvoice(i: Invoice, delivery?: { emailDeliveredAt: string | null }): InvoiceView {
     return {
       id: i.id,
       companyId: i.companyId,
@@ -1219,7 +1226,28 @@ export class BackendService {
       retenueGarantiePct: i.retenueGarantiePct,
       urgentRepair: i.urgentRepair,
       transmission: i.transmission,
+      issuedAt: i.issuedAt,
+      // PR-02 : livraison EMAIL constatée (outbox) — le champ n'est TRANSPORTÉ que quand
+      // l'appelant a réellement interrogé l'outbox (fail-closed : absent = inconnu, jamais
+      // « pas envoyée » affirmé depuis une projection muette).
+      ...(delivery !== undefined ? { emailDeliveredAt: delivery.emailDeliveredAt } : {}),
     };
+  }
+
+  /** PR-02 — première livraison réussie par facture (jobs `invoice-delivery` done), dérivée de
+   *  l'outbox : la clé métier porte l'id de pièce (inverse fail-closed, jamais de parsing laxiste). */
+  private async invoiceEmailDeliveries(companyId: string): Promise<Map<string, string>> {
+    const done = await this.p.notificationJobs.listDoneByKind(companyId, 'invoice-delivery');
+    const byInvoice = new Map<string, string>();
+    for (const job of done) {
+      const invoiceId = invoiceIdOfInvoiceDeliveryDedupeKey(job.dedupeKey);
+      if (invoiceId === null) continue;
+      const current = byInvoice.get(invoiceId);
+      if (current === undefined || job.deliveredAt < current) {
+        byInvoice.set(invoiceId, job.deliveredAt);
+      }
+    }
+    return byInvoice;
   }
 
   listCustomers() {
@@ -2307,7 +2335,8 @@ export class BackendService {
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
     const i = await this.ownedInvoice(id);
     if (!i) return { ok: false, error: appNotFound('invoice', id) };
-    const view = this.mapInvoice(i);
+    const deliveries = await this.invoiceEmailDeliveries(i.companyId);
+    const view = this.mapInvoice(i, { emailDeliveredAt: deliveries.get(i.id) ?? null });
     // Guide de TRANSMISSION dérivé du canal de facturation du client (fiche client) — pièce
     // ÉMISE uniquement (un brouillon n'a rien à transmettre) : chorus → checklist Factur-X +
     // SIRET + n° d'engagement (B8) + code service ; portail → mémo nom/URL ; email par défaut.
@@ -2448,8 +2477,16 @@ export class BackendService {
   }
 
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
-    const list = await this.p.invoices.listByCompany(this.companyId());
-    return ok(list.map((i) => this.mapInvoice(i)));
+    const companyId = this.companyId();
+    const [list, deliveries] = await Promise.all([
+      this.p.invoices.listByCompany(companyId),
+      // PR-02 : l'état « émise jamais transmise » se DÉRIVE de l'outbox — une seule requête
+      // pour toute la liste, jamais un statut inventé ni un N+1.
+      this.invoiceEmailDeliveries(companyId),
+    ]);
+    return ok(
+      list.map((i) => this.mapInvoice(i, { emailDeliveredAt: deliveries.get(i.id) ?? null })),
+    );
   }
 
   /** B9 — GET /documents/search : « retrouve les devis de Mairie de Sèvres du mois dernier ».

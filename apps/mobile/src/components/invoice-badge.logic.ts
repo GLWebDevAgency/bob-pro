@@ -1,4 +1,5 @@
 import type { InvoiceView, QuoteView } from '@bob/api-client';
+import { isIssuedNeverTransmitted } from '@bob/core';
 import { t, type Personality } from '@bob/i18n';
 
 /**
@@ -44,4 +45,29 @@ export function invoiceBadgeFor(
   if (inv.status === 'cancelled')
     return { label: t('ventes.badgeAvoirAnnule', { personality }), tone: 'danger' };
   return INVOICE_BADGE[inv.status];
+}
+
+/**
+ * PR-02 « Encaisser » — badge de LISTE : une pièce ÉMISE dont RIEN ne prouve la transmission
+ * (aucun job d'envoi réussi, aucun dépôt déclaré — prédicat isIssuedNeverTransmitted, LA même
+ * vérité que la priorité Aujourd'hui et Pilotage) s'affiche AMBRE « À transmettre » au lieu du
+ * bleu « Émise » rassurant à tort. Fail-closed : projections muettes (serveur antérieur) =
+ * badge historique inchangé — jamais une alerte inventée.
+ */
+export function invoiceListBadgeFor(
+  inv: Pick<InvoiceView, 'kind' | 'status' | 'emailDeliveredAt' | 'transmission'>,
+  personality: Personality,
+): { label: string; tone: BadgeTone } {
+  if (
+    isIssuedNeverTransmitted({
+      kind: inv.kind,
+      status: inv.status,
+      emailDeliveredAt: inv.emailDeliveredAt,
+      // InvoiceView.transmission (DateOnly côté vue) est structurellement compatible.
+      transmission: inv.transmission,
+    })
+  ) {
+    return { label: t('ventes.badgeATransmettre', { personality }), tone: 'warning' };
+  }
+  return invoiceBadgeFor(inv, personality);
 }

@@ -26,6 +26,8 @@ import {
   useInvoicePaymentLink,
   useInvoices,
   useQuotes,
+  useRecordInvoiceTransmission,
+  appErrorMessage,
 } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
@@ -95,6 +97,8 @@ export default function FactureDetail() {
   const confirm = useConfirm();
   const attachPo = useAttachInvoicePurchaseOrder();
   const detachPo = useDetachInvoicePurchaseOrder();
+  // PR-02 — déclaration « envoyée le » du canal email (le déclaratif chorus/portail existait déjà).
+  const recordTransmission = useRecordInvoiceTransmission();
   const [poSheetOpen, setPoSheetOpen] = useState(false);
   const [poError, setPoError] = useState<string | null>(null);
   const poEditable =
@@ -435,6 +439,48 @@ export default function FactureDetail() {
     inv.transmissionGuide !== undefined && inv.transmissionGuide.channel !== 'email'
       ? inv.transmissionGuide
       : null;
+  // PR-02 — suivi de transmission du canal EMAIL (« envoyée le ») : preuve serveur (outbox)
+  // d'abord, déclaration manuelle sinon (facture partagée par WhatsApp/SMS/mail perso). Les
+  // deux faits doivent être TRANSPORTÉS pour affirmer « jamais transmise » (fail-closed).
+  const emailChannel =
+    inv.transmissionGuide !== undefined && inv.transmissionGuide.channel === 'email';
+  const emailSentLine = !emailChannel
+    ? null
+    : inv.emailDeliveredAt != null
+      ? t('facture.emailDeliveredOn', {
+          personality,
+          params: { date: formatDateOnlyFr(inv.emailDeliveredAt.slice(0, 10)) },
+        })
+      : inv.transmission?.depositedAt != null
+        ? t('facture.declaredSentOn', {
+            personality,
+            params: { date: formatDateOnlyFr(inv.transmission.depositedAt) },
+          })
+        : null;
+  const showNeverTransmitted =
+    emailChannel &&
+    emailSentLine === null &&
+    inv.status === 'issued' &&
+    inv.kind !== 'credit_note' &&
+    inv.emailDeliveredAt !== undefined &&
+    inv.transmission !== undefined;
+  const markSentToday = (): void =>
+    void (async () => {
+      const ok = await confirm({
+        title: t('facture.markSentConfirmTitle', { personality }),
+        message: t('facture.markSentConfirmBody', { personality }),
+        challenge: challengeFor(PO_REVERSIBLE, 'confirm_all'),
+      });
+      if (!ok) return;
+      try {
+        await recordTransmission.mutateAsync({
+          invoiceId: id,
+          depositedAt: new Date().toISOString().slice(0, 10),
+        });
+      } catch (error) {
+        Alert.alert('Oups', appErrorMessage(error));
+      }
+    })();
   // B8 : réassurance à l'étape « Facturer le solde » — le devis parent porte un bon de
   // commande, il sera repris sur la facture générée (aucune re-saisie).
   const nextStepPurchaseOrder = view.nextStep
@@ -507,6 +553,34 @@ export default function FactureDetail() {
             <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
               {dueLine}
             </Text>
+          </Card>
+        ) : null}
+        {emailSentLine !== null ? (
+          // PR-02 — transmission PROUVÉE (outbox) ou DÉCLARÉE (« envoyée le ») du canal email.
+          <Card>
+            <Text style={[font('meta', 700), { fontSize: 12.5, color: semantic.success }]}>
+              {emailSentLine}
+            </Text>
+          </Card>
+        ) : showNeverTransmitted ? (
+          // PR-02 — émise, JAMAIS transmise : l'état honnête + la sortie déclarative (la pièce
+          // est peut-être partie par un autre canal — WhatsApp, courrier — que Bob ne voit pas).
+          <Card>
+            <Text style={[font('sub', 700), { color: semantic.warning }]}>
+              {t('facture.neverTransmitted', { personality })}
+            </Text>
+            <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 4 }]}>
+              {t('facture.neverTransmittedHint', { personality })}
+            </Text>
+            <Button
+              title={t('facture.markSentAction', { personality })}
+              variant="secondary"
+              size="compact"
+              radius={11}
+              loading={recordTransmission.isPending}
+              style={{ alignSelf: 'flex-start', marginTop: 10 }}
+              onPress={markSentToday}
+            />
           </Card>
         ) : null}
         {transmissionGuide !== null ? (

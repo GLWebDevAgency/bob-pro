@@ -100,11 +100,12 @@ export function normalizeBillingTerrainCarrier<
     urgentRepair?: unknown;
     transmission?: unknown;
     transmissionGuide?: unknown;
+    emailDeliveredAt?: unknown;
   },
 >(
   view: T,
 ):
-  | (Omit<T, 'transmissionGuide'> & {
+  | (Omit<T, 'transmissionGuide' | 'emailDeliveredAt'> & {
       situationOrder: number | null;
       situationDeductionCents: number;
       globalDiscount: Discount | null;
@@ -112,8 +113,17 @@ export function normalizeBillingTerrainCarrier<
       urgentRepair: { requestedAt: string } | null;
       transmission: InvoiceTransmissionStatus | null;
       transmissionGuide?: TransmissionGuide;
+      emailDeliveredAt?: string | null;
     })
   | null {
+  // PR-02 — livraison EMAIL constatée : fait ADDITIF fail-closed. ABSENT reste absent (un
+  // serveur antérieur ne transporte pas le fait — on n'invente jamais « pas envoyée ») ;
+  // présent mais difforme = rupture de contrat.
+  let emailDeliveredAt: string | null | undefined;
+  if (view.emailDeliveredAt !== undefined) {
+    if (view.emailDeliveredAt !== null && typeof view.emailDeliveredAt !== 'string') return null;
+    emailDeliveredAt = view.emailDeliveredAt;
+  }
   let situationOrder: number | null = null;
   if (view.situationOrder !== undefined && view.situationOrder !== null) {
     if (!Number.isSafeInteger(view.situationOrder) || (view.situationOrder as number) < 1) return null;
@@ -153,7 +163,7 @@ export function normalizeBillingTerrainCarrier<
   if (view.transmissionGuide !== undefined && view.transmissionGuide !== null) {
     transmissionGuide = decodeTransmissionGuide(view.transmissionGuide) ?? undefined;
   }
-  const { transmissionGuide: _dropped, ...rest } = view;
+  const { transmissionGuide: _dropped, emailDeliveredAt: _droppedDelivery, ...rest } = view;
   return {
     ...rest,
     situationOrder,
@@ -163,5 +173,6 @@ export function normalizeBillingTerrainCarrier<
     urgentRepair,
     transmission,
     ...(transmissionGuide !== undefined ? { transmissionGuide } : {}),
+    ...(emailDeliveredAt !== undefined ? { emailDeliveredAt } : {}),
   };
 }

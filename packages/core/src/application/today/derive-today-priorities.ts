@@ -23,6 +23,20 @@ export interface TodayInvoiceData {
   totals: Totals;
   dueAt: DateOnly | null;
   paid: number; // centimes encaissés cumulés
+  /**
+   * PR-02 — livraison EMAIL constatée par l'outbox (premier job `invoice-delivery` réussi).
+   * Trois valeurs, trois sens DISTINCTS (même doctrine fail-closed que TodayCustomerData.email) :
+   * · un instant ISO → la pièce est PARTIE (preuve serveur) ;
+   * · `null` → aucune livraison constatée (l'appelant l'AFFIRME) ;
+   * · `undefined` → information non transportée : on n'affirme JAMAIS qu'une pièce n'est pas
+   *   partie depuis une projection qui ne porte simplement pas le fait.
+   */
+  emailDeliveredAt?: string | null;
+  /**
+   * PR-02 — suivi DÉCLARÉ de transmission (dépôt Chorus/portail, ou « envoyée le » déclaré).
+   * `undefined` = information non transportée (fail-closed) ; `null` = jamais suivi.
+   */
+  transmission?: { depositedAt: DateOnly | null; acceptedAt: DateOnly | null } | null;
 }
 
 export interface TodayQuoteData {
@@ -110,6 +124,27 @@ export interface DevisATransmettrePriority {
   amountCents: number;
 }
 
+/**
+ * PR-02 « Encaisser » — facture ÉMISE que RIEN ne prouve transmise : aucun job `invoice-delivery`
+ * réussi ET aucun dépôt déclaré. Le cas Fly Services (2 % encaissé : des factures jamais
+ * envoyées). État 100 % DÉRIVÉ — aucun statut inventé : la carte s'éteint d'elle-même dès
+ * qu'un envoi réussit (outbox) OU qu'un dépôt est déclaré (« envoyée le » / Chorus / portail),
+ * et disparaît quand la pièce quitte `issued` (payée, en retard → la relance prend le relais).
+ * Fail-closed : les DEUX faits (`emailDeliveredAt`, `transmission`) doivent être TRANSPORTÉS
+ * (≠ undefined) — jamais d'alerte depuis une projection muette.
+ */
+export interface FactureATransmettrePriority {
+  kind: 'facture_a_transmettre';
+  id: string;
+  invoiceId: string;
+  customerId: string;
+  customerName: string;
+  /** Numéro légal de la pièce émise (référence visible côté UI). */
+  docNumber: string | null;
+  /** Reste à encaisser en centimes (netToPay − paid) — ce qui dort tant que rien n'est parti. */
+  amountCents: number;
+}
+
 export interface ConformitePriority {
   kind: 'conformite';
   id: string;
@@ -117,6 +152,7 @@ export interface ConformitePriority {
 
 export type TodayPriority =
   | RelancePriority
+  | FactureATransmettrePriority
   | FactureFinalePriority
   | DevisATransmettrePriority
   | ConformitePriority;
@@ -257,6 +293,48 @@ function deriveDevisATransmettre(
   return aTransmettre.sort((a, b) => b.amountCents - a.amountCents);
 }
 
+/**
+ * Vrai UNIQUEMENT quand la pièce est émise ET que les deux faits de transmission sont TRANSPORTÉS
+ * et négatifs : aucun envoi e-mail constaté, aucun dépôt déclaré. Exporté : la liste ventes
+ * (badge ambre) et Pilotage (« émises sans envoi constaté ») dérivent du MÊME prédicat.
+ */
+export function isIssuedNeverTransmitted(
+  invoice: Pick<TodayInvoiceData, 'kind' | 'status' | 'emailDeliveredAt' | 'transmission'>,
+): boolean {
+  if (invoice.kind === 'credit_note') return false;
+  if (invoice.status !== 'issued') return false;
+  // Fail-closed : un fait absent (undefined) n'autorise aucune affirmation.
+  if (invoice.emailDeliveredAt === undefined || invoice.transmission === undefined) return false;
+  if (invoice.emailDeliveredAt !== null) return false;
+  return invoice.transmission?.depositedAt == null;
+}
+
+function deriveFacturesATransmettre(
+  input: DeriveTodayPrioritiesInput,
+  customers: ReadonlyMap<string, TodayCustomerData>,
+): FactureATransmettrePriority[] {
+  const aTransmettre: FactureATransmettrePriority[] = [];
+  for (const invoice of input.invoices) {
+    if (!isIssuedNeverTransmitted(invoice)) continue;
+    const remaining = invoice.totals.netToPay - invoice.paid;
+    if (remaining <= 0) continue;
+    const customerName = customers.get(invoice.customerId)?.name;
+    // Pièce orpheline : incohérence de référentiel, jamais une priorité actionnable.
+    if (customerName === undefined) continue;
+    aTransmettre.push({
+      kind: 'facture_a_transmettre',
+      id: `facture-a-transmettre-${invoice.id}`,
+      invoiceId: invoice.id,
+      customerId: invoice.customerId,
+      customerName,
+      docNumber: invoice.number,
+      amountCents: remaining,
+    });
+  }
+  // Le plus gros enjeu d'abord — même convention que les factures finales.
+  return aTransmettre.sort((a, b) => b.amountCents - a.amountCents);
+}
+
 function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority[] {
   // Une seule priorité conformité au maximum, et uniquement sur signal réel (jamais par défaut).
   if (input.company === undefined || input.company.einvoiceReceptionConfigured) return [];
@@ -266,16 +344,19 @@ function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority
 /**
  * Dérive les priorités du briefing « Aujourd'hui » :
  * 1. relances — factures échues non payées (retard desc, puis montant desc) ;
- * 2. factures finales — devis signés dont l'acompte est encaissé mais sans facture finale ;
- * 3. devis à transmettre — devis `sent` que le client n'a pas pu recevoir, faute d'e-mail ;
- * 4. conformité — préparation facturation électronique 2026 non configurée (1 max).
- * Tri global : l'argent déjà dû d'abord, l'argent à facturer ensuite, puis les devis restés
- * dans le vide, et enfin l'information de conformité. Le cap d'affichage est géré par l'UI.
+ * 2. factures à transmettre — pièces ÉMISES sans aucun envoi constaté ni dépôt déclaré (PR-02) ;
+ * 3. factures finales — devis signés dont l'acompte est encaissé mais sans facture finale ;
+ * 4. devis à transmettre — devis `sent` que le client n'a pas pu recevoir, faute d'e-mail ;
+ * 5. conformité — préparation facturation électronique 2026 non configurée (1 max).
+ * Tri global : l'argent déjà dû d'abord (et une pièce jamais partie EST de l'argent dû qui ne
+ * rentrera jamais seul), l'argent à facturer ensuite, puis les devis restés dans le vide, et
+ * enfin l'information de conformité. Le cap d'affichage est géré par l'UI.
  */
 export function deriveTodayPriorities(input: DeriveTodayPrioritiesInput): TodayPriority[] {
   const customers = customerIndex(input.customers);
   return [
     ...deriveRelances(input, customers),
+    ...deriveFacturesATransmettre(input, customers),
     ...deriveFacturesFinales(input, customers),
     ...deriveDevisATransmettre(input, customers),
     ...deriveConformite(input),

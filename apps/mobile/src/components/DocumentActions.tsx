@@ -133,7 +133,13 @@ const FISCAL = { mutating: true, outbound: false, riskTier: 'fiscal' } as const;
 
 // Badges de statut (E5 : dérivés par kind — avoir masculin/ambre) : logique PURE extraite dans
 // invoice-badge.logic.ts (testable en node, aucun import RN) — re-export pour les appelants.
-export { QUOTE_BADGE, INVOICE_BADGE, invoiceBadgeFor, type BadgeTone } from './invoice-badge.logic';
+export {
+  QUOTE_BADGE,
+  INVOICE_BADGE,
+  invoiceBadgeFor,
+  invoiceListBadgeFor,
+  type BadgeTone,
+} from './invoice-badge.logic';
 
 // Un document terminal (devis refusé/expiré, facture payée/annulée) n'a plus d'action -> permet au parent
 // de ne pas réserver d'espace inutile. Source unique : ces prédicats et les composants restent alignés.

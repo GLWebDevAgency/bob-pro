@@ -339,6 +339,43 @@ function TodayPriorityCard({
         />
       );
     }
+    case 'facture_a_transmettre': {
+      // PR-02 « Encaisser » (cas Fly Services : 2 % encaissé, des factures jamais envoyées) :
+      // la pièce est ÉMISE mais RIEN ne prouve qu'elle est partie (aucun job d'envoi réussi,
+      // aucun dépôt déclaré). La carte s'éteint d'elle-même dès qu'un envoi réussit ou qu'un
+      // dépôt est déclaré — état dérivé, jamais un statut inventé. CTA : la fiche facture, où
+      // vivent « Envoyer par e-mail » (PR-01) et le guide de dépôt Chorus/portail.
+      const name = priority.customerName || priority.docNumber || '';
+      const reference = priority.docNumber ? `${priority.docNumber} · ` : '';
+      return (
+        <PriorityCard
+          status="retard"
+          title={t('today.prioInvoiceTransmitTitle', { personality, params: { name } })}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioInvoiceTransmitHint',
+            { personality },
+          )}`}
+          leadingIcon={<Feather name="send" size={13} color={semantic.warning} />}
+          badge={
+            <Badge
+              label={t('today.prioInvoiceTransmitBadge', { personality }).toUpperCase()}
+              tone="warning"
+            />
+          }
+          cta={
+            <Button
+              title={t('today.ctaInvoiceTransmit', { personality })}
+              variant="primary"
+              size="compact"
+              radius={11}
+              icon={<Feather name="send" size={15} color={colors.surface} />}
+              style={{ alignSelf: 'flex-start' }}
+              onPress={() => router.push(`/facture/${priority.invoiceId}`)}
+            />
+          }
+        />
+      );
+    }
     case 'devis_a_transmettre': {
       // Cas terrain fondateur (2026-07-20) : le devis est bien passé `sent` — son numéro légal
       // est alloué — mais le client n'a pas d'e-mail, donc le serveur n'a RIEN envoyé

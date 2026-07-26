@@ -19,7 +19,7 @@ import {
   InvoiceActions,
   hasQuoteActions,
   hasInvoiceActions,
-  invoiceBadgeFor,
+  invoiceListBadgeFor,
   QUOTE_BADGE,
   INVOICE_BADGE,
   type QuoteLinkedInvoices,
@@ -849,7 +849,9 @@ export default function Ventes() {
               <FadeIn index={1} style={{ gap: 10 }}>
                   {sortedInvoices.map((inv) => {
                     // E5 : badge dérivé par kind — avoir émis = « Émis » AMBRE (masculin).
-                    const badge = invoiceBadgeFor(inv, personality);
+                    // PR-02 : pièce émise JAMAIS transmise (aucun envoi constaté, aucun dépôt
+                    // déclaré) = AMBRE « À transmettre » — impossible à rater dans la liste.
+                    const badge = invoiceListBadgeFor(inv, personality);
                     // Assiette = netToPay (acompte si depositPct) : montant réellement encaissable sur la facture.
                     const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
                     const showRemaining = remaining > 0 && remaining !== inv.totals.netToPay;

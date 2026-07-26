@@ -1133,6 +1133,18 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       .map((job) => this.clone(job));
   }
 
+  async listDoneByKind(
+    companyId: string,
+    kind: NotificationJob['kind'],
+  ): Promise<Array<{ dedupeKey: string; deliveredAt: string }>> {
+    return [...this.map.values()]
+      .filter((job) => job.companyId === companyId && job.kind === kind && job.status === 'done')
+      .map((job) => ({
+        dedupeKey: job.dedupeKey,
+        deliveredAt: job.providerAttemptedAt ?? job.updatedAt,
+      }));
+  }
+
   async previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview> {
     const unreadCount = [...this.map.values()].filter(
       (job) =>

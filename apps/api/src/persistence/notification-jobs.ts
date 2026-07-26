@@ -173,6 +173,15 @@ export interface NotificationJobRepository {
   // —— Fil de notifications (C25) : le mobile lit ce que les jobs produisent ——
   /** Dernières notifications du tenant (tous statuts), les plus récentes d'abord. */
   listRecent(companyId: string, limit: number): Promise<NotificationJob[]>;
+  /**
+   * PR-02 — livraisons RÉUSSIES d'un kind : matière de l'état dérivé « pièce transmise »
+   * (jamais un statut inventé). Projection minimale : la clé métier + l'instant de la première
+   * tentative provider gagnante (providerAttemptedAt, horloge autoritaire ; repli updatedAt).
+   */
+  listDoneByKind(
+    companyId: string,
+    kind: NotificationJob['kind'],
+  ): Promise<Array<{ dedupeKey: string; deliveredAt: string }>>;
   /** Snapshot temporel non paginé. `observedAt` sert seulement aux adaptateurs sans horloge DB. */
   previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview>;
   /** Marque lue (idempotent). null si le job n'existe pas dans le tenant courant. */
