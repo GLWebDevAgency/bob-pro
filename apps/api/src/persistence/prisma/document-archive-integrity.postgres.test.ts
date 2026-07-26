@@ -380,6 +380,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           }),
         ).resolves.toBe(true);
       });
+      // Sur Supabase réel, storage.objects porte une FK vers storage.buckets : la fixture
+      // provisionne son bucket de certification (inexistant en prod, la CI fabrique la
+      // table sans contrainte) — idempotent, jamais destructif.
+      await admin.$executeRaw`
+        INSERT INTO storage.buckets (id, name, public)
+        VALUES ('documents', 'documents', false)
+        ON CONFLICT (id) DO NOTHING
+      `;
       await admin.$executeRaw`
         INSERT INTO storage.objects (bucket_id, name)
         VALUES ('documents', ${legalDocumentStorageKey})
@@ -424,6 +432,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             await tx.storedDocument.deleteMany({
               where: { companyId: { in: [companyA, companyB] } },
             });
+            // Supabase protège storage.objects contre les DELETE SQL directs
+            // (storage.protect_delete) : l'échappatoire officielle est opt-in et
+            // LOCALE à la transaction — nettoyage de fixtures de certification.
+            await tx.$executeRaw`SET LOCAL storage.allow_delete_query = 'true'`;
             await tx.$executeRaw`
               DELETE FROM storage.objects
                WHERE name = ${legalDocumentStorageKey}
@@ -1057,11 +1069,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
          WHERE bucket_id = 'documents'
            AND name = ${legalDocumentStorageKey}
       `).rejects.toThrow('generated legal storage objects are immutable');
-      await expect(admin.$executeRaw`
-        DELETE FROM storage.objects
-         WHERE bucket_id = 'documents'
-           AND name = ${legalDocumentStorageKey}
-      `).rejects.toThrow('generated legal storage objects are immutable');
+      // L'échappatoire Supabase (protect_delete) est levée LOCALEMENT pour prouver que
+      // c'est bien NOTRE trigger d'immutabilité légale qui refuse — pas la garde générique.
+      await expect(
+        admin.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL storage.allow_delete_query = 'true'`;
+          await tx.$executeRaw`
+            DELETE FROM storage.objects
+             WHERE bucket_id = 'documents'
+               AND name = ${legalDocumentStorageKey}
+          `;
+        }),
+      ).rejects.toThrow('generated legal storage objects are immutable');
       const [preserved] = await admin.$queryRaw<Array<{ count: number }>>`
         SELECT count(*)::integer AS count
           FROM storage.objects
