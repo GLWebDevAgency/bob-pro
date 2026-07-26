@@ -24,7 +24,7 @@ const MATRIX_PATH = resolve(
 const JSON_START_MARKER = '<!-- FLAGS_V1_JSON_START -->';
 const JSON_END_MARKER = '<!-- FLAGS_V1_JSON_END -->';
 
-const FLAG_SCOPES = ['api', 'mobile', 'web', 'ci'] as const;
+const FLAG_SCOPES = ['api', 'mobile', 'mobile-preview', 'mobile-production', 'web', 'ci'] as const;
 const FLAG_ENFORCEMENTS = ['default', 'posed'] as const;
 
 interface FrozenFlag {
@@ -68,6 +68,8 @@ const apiFlags = frozenFlags.filter((flag) => flag.scope === 'api');
 const defaultApiFlags = apiFlags.filter((flag) => flag.enforcement === 'default');
 const posedApiFlags = apiFlags.filter((flag) => flag.enforcement === 'posed');
 const mobileFlags = frozenFlags.filter((flag) => flag.scope === 'mobile');
+const mobilePreviewFlags = frozenFlags.filter((flag) => flag.scope === 'mobile-preview');
+const mobileProductionFlags = frozenFlags.filter((flag) => flag.scope === 'mobile-production');
 
 /**
  * Liste verrouillée EN DUR des flags api attendus dans le bloc machine-readable :
@@ -108,9 +110,9 @@ const EXPECTED_API_FLAG_NAMES = [
   'VOICE_TRACE_ENABLED',
 ] as const;
 
+// LOI environnements (fondateur 25/07) : seuls les builds PRODUCTION pointent la prod ;
+// preview/dev pointent staging. API_URL et SUPABASE_URL sont donc figés PAR PROFIL.
 const EXPECTED_MOBILE_FLAG_NAMES = [
-  'EXPO_PUBLIC_API_URL',
-  'EXPO_PUBLIC_SUPABASE_URL',
   'EXPO_PUBLIC_TERMS_URL',
   'EXPO_PUBLIC_PRIVACY_URL',
   'EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL',
@@ -316,7 +318,8 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope mobile, eas.json)'
     (profile) => {
       const env = eas.build?.[profile]?.env;
       expect(env, `profil ${profile} sans bloc env dans eas.json`).toBeDefined();
-      for (const flag of mobileFlags) {
+      const scoped = profile === 'preview' ? mobilePreviewFlags : mobileProductionFlags;
+      for (const flag of [...mobileFlags, ...scoped]) {
         expect(
           env?.[flag.name],
           `${flag.name} divergent de la matrice V1 dans le profil ${profile} — amender eas.json OU la matrice (accord Claude+GPT requis)`,
@@ -324,6 +327,17 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope mobile, eas.json)'
       }
     },
   );
+
+  it('LOI environnements : le profil preview ne pointe JAMAIS la production', () => {
+    const preview = eas.build?.preview?.env;
+    const production = eas.build?.production?.env;
+    for (const name of ['EXPO_PUBLIC_API_URL', 'EXPO_PUBLIC_SUPABASE_URL'] as const) {
+      expect(
+        preview?.[name],
+        `${name} : preview partage la cible production — violation de la loi des environnements (fondateur 25/07)`,
+      ).not.toBe(production?.[name]);
+    }
+  });
 });
 
 describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope ci)', () => {
