@@ -779,6 +779,18 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
     localCertificate,
     /snapshot-freshness[\s\S]*?wait_for_agent_mission_manager_exclusive_lock[\s\S]*?release_agent_mission_writer_barrier snapshot-freshness[\s\S]*?stage-v2[\s\S]*?release_agent_mission_writer_barrier stage-v2[\s\S]*?retire-v2[\s\S]*?release_agent_mission_writer_barrier retire-v2/u,
   );
+  const prismaGenerate = localCertificate.indexOf('pnpm --filter @bob/api generate');
+  const firstFingerprintManager = localCertificate.indexOf(
+    'node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage',
+  );
+  assert.ok(
+    prismaGenerate >= 0 && firstFingerprintManager > prismaGenerate,
+    'Le client Prisma doit être généré avant le premier manager fingerprint sur checkout propre.',
+  );
+  assert.match(
+    localCertificate,
+    /CONCURRENCY_MANAGER_LOG[\s\S]*?cat "\$CONCURRENCY_MANAGER_LOG" >&2[\s\S]*?fingerprint manager ended before waiting/u,
+  );
   assert.match(
     localCertificate,
     /certify_agent_mission_fingerprint_floor 2 2 false[\s\S]*?realtime-capacity-release\.sh" configure[\s\S]*?certify_agent_mission_fingerprint_floor 2 2 true[\s\S]*?certify_agent_mission_fingerprint_floor 2 2 false/u,

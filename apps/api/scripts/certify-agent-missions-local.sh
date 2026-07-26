@@ -1419,6 +1419,9 @@ SQL
     fi
     if ! kill -0 "$writer_process_id" 2>/dev/null; then
       wait "$writer_process_id" || true
+      if [ -n "$CONCURRENCY_LOG" ] && [ -f "$CONCURRENCY_LOG" ]; then
+        cat "$CONCURRENCY_LOG" >&2
+      fi
       echo "AgentMission concurrent writer ended before holding its shared lock" >&2
       return 1
     fi
@@ -1463,6 +1466,10 @@ SQL
     fi
     if ! kill -0 "$manager_process_id" 2>/dev/null; then
       wait "$manager_process_id" || true
+      if [ -n "$CONCURRENCY_MANAGER_LOG" ] \
+        && [ -f "$CONCURRENCY_MANAGER_LOG" ]; then
+        cat "$CONCURRENCY_MANAGER_LOG" >&2
+      fi
       echo "AgentMission fingerprint manager ended before waiting on the writer lock" >&2
       return 1
     fi
@@ -1771,6 +1778,14 @@ certify_agent_mission_event_writer \
   61000000-0000-4000-8000-000000000004 \
   61000000-0000-8000-8000-000000000005 \
   61000000-0000-4000-8000-000000000006
+
+# Le manager importe @prisma/client avant la suite Vitest. Sur un checkout CI propre, le client
+# généré n'existe pas encore : le produire ici est un prérequis du certificat, pas un effet
+# secondaire attendu d'un build antérieur.
+(
+  cd "$ROOT_DIR"
+  pnpm --filter @bob/api generate
+)
 
 # Barrières locales déterministes : le writer conserve le verrou advisory partagé dans sa
 # transaction, tandis que le manager doit être observé en attente du verrou exclusif exact.
@@ -2326,7 +2341,6 @@ cd "$ROOT_DIR"
 # reproductible depuis un checkout propre et interdit qu'un dist local périmé masque le source
 # certifié (incident UUID système v5/v8 du 26/07/2026).
 pnpm --filter @bob/core build
-pnpm --filter @bob/api generate
 
 DATABASE_URL="$DATABASE_URL" \
 DIRECT_URL="$DIRECT_URL" \
