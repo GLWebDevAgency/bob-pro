@@ -1,16 +1,20 @@
 # SPEC — Agent Missions Jarvis M1-A : autorité serveur `start/get`
 
-**Statut** : `implemented`.
+**Statut** : `certified`.
 
-Ce statut atteste le code et les preuves locales/CI reproductibles des commits `2af9aef2` et
-`09982f89`, ainsi que le hardening Supabase `88f6f590`. Il ne signifie ni `certified` ni
-`released` : la migration et le certificat doivent encore passer sur Supabase staging pour le SHA
-de PR avant toute fusion.
+Ce statut atteste le code, la CI complète et la release réelle Supabase staging du commit runtime
+`6e7dfd4b`, le 26 juillet 2026. Il ne signifie pas `released` : aucune production n'a été touchée,
+les endpoints M1-A restent fermés et la mission Jarvis complète n'est pas activée.
 
 **Instruction de travail** : continuité Jarvis demandée par le fondateur dans le canal Codex,
 26 juillet 2026. Cette trace autorise le lot technique décrit ici mais ne s'auto-transforme pas
-en décision de gouvernance. Cette tranche ne modifie ni la matrice des flags ni leur état ; une
-telle modification exige une décision datée et contre-signée Claude + GPT prévue par `AGENTS.md`.
+en décision de gouvernance. Cette tranche ne modifie ni la matrice des flags ni un flag métier.
+La release staging a seulement rendu explicite le repli existant
+`CABINET_INVITATION_WORKER_ENABLED=false`, sans déploiement, après qu'un premier passage a échoué
+fermé sur son absence.
+
+**[BLOQUÉ FONDATEUR : confirmer le principal worker staging et les valeurs exactes
+`JOB_CABINET_IDS`, couplées au cabinet E2E, avant toute activation du worker d'invitation]**.
 
 **Objectifs servis** : `O4` (mission continue), `O6` (données réelles) et `O7` (release
 reproductible).
@@ -198,7 +202,7 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
 - [x] Les quatre autorités NOLOGIN du train de release n'ont aucun fallback d'adhésion explicite ;
       les tests exigent l'acquisition implicite `SET` sans héritage et le refus fail-closed d'un
       owner préexistant inaccessible.
-- [ ] La migration et le certificat sont rejoués avec succès sur Supabase staging.
+- [x] La migration et le certificat sont rejoués avec succès sur Supabase staging.
 
 ## 7. Definition of Done M1-A
 
@@ -206,14 +210,14 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
 - [x] Typecheck et lint des packages touchés verts.
 - [x] Suite globale verte depuis un checkout détaché propre, y compris les contrats de release
       historiques.
-- [x] Build API + garde d'artefact verts depuis le checkout détaché propre du commit runtime
-      `88f6f590`.
+- [x] Build API + garde d'artefact verts depuis le checkout CI propre du commit runtime
+      `6e7dfd4b`.
 - [x] Review adversariale correctness/sécurité, architecture/parité et release Supabase terminée ;
       tous les P0/P1 sont corrigés.
-- [ ] Une seule PR, CI complète verte, validation staging consignée, fusion dans `main`, branche et
-      worktree supprimés.
-- [x] Le registre O4 indique seulement `implemented partiellement`; aucune case M1 complète ou
-      `certified` n'est cochée.
+- [x] Une seule PR, CI complète verte et validation staging consignée.
+- [ ] Fusion dans `main`, puis branche, claims et worktree supprimés.
+- [x] Le registre O4 reste `implemented partiellement` : seule la tranche serveur M1-A est
+      `certified`, jamais la mission Jarvis M1 complète.
 
 ## 8. Preuves d'implémentation locales
 
@@ -224,9 +228,22 @@ disabled ; aucun header/session libre fourni par le client n'est préfiguré ici
   rollback, couplage mission/event et ACL exactes ;
 - mêmes 34 scénarios verts via le mode TCP externe utilisé par le job CI ;
 - gardes migration + release : 14 tests Node verts ;
-- suite globale monorepo : 15 tâches sur 15 vertes, dont 259 contrats de release API ;
-- checkout détaché propre `88f6f590` : build topologique `core → ai → api`, artefacts core/AI/API
-  certifiés, 15 tâches de test sur 15 et 17 tâches de typecheck sur 17 vertes, lint core/API vert ;
-- garde owners Supabase : 2 contrats statiques verts et preuve PostgreSQL 17 avec déployeur
-  non-superuser, chemin nominal puis owner préexistant inaccessible refusé avant DDL ;
+- suite globale monorepo : 15 tâches sur 15 vertes, dont 270 contrats de scripts API ;
+- checkout CI propre `6e7dfd4b` : build topologique `core → ai → api`, artefacts core/AI/API
+  certifiés, suite globale, typecheck et lint verts ;
+- garde owners Supabase : 270 contrats de scripts verts ; la release ne réaccorde que les objets
+  encore possédés par le déployeur, normalise la capacité globale sous son owner exact et rejoue
+  les fonctions de directory OpenAI sous leur owner ;
+- CI PR `30192221987` au SHA `6e7dfd4b` : `verify`, AgentMission PostgreSQL non-superuser,
+  double release RLS, capacité realtime, rotation de clés Mistral, Factur-X et artefact API verts ;
+  contrats natifs `30192221980` Android + compilation Expo iOS/BobLiveAudio verts ; previews
+  Vercel landing et sign-web vertes ;
+- Supabase staging : identité PostgreSQL primaire vérifiée, passage initial
+  `110 appliquées / 2 en attente`, migrations `20260726010000_agent_missions_expand` et
+  `20260726020000_agent_missions_validate` appliquées, puis postflight `112 / 0` ;
+- le premier passage staging a échoué fermé après migration sur l'absence de
+  `CABINET_INVITATION_WORKER_ENABLED`; aucune certification finale n'a été revendiquée. Après
+  pose explicite de `false` avec `--skip-deploys`, le second passage a certifié `112 / 0`, rejoué
+  ACL/RLS/owners, exécuté les suites PostgreSQL et le cleanup, puis terminé par
+  `Bob Pro API release checks passed` ;
 - typecheck `core`, `api`, `mobile` et lint `core`, `api`, mobile ciblé verts.
