@@ -879,6 +879,16 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
   assert.match(localCertificate, /SET createrole_self_grant = 'set'/u);
   assert.match(ci, /Certify the full RLS replay after an exact schema-owner split/u);
   assert.match(ci, /sh apps\/api\/scripts\/certify-rls-owner-split\.sh/u);
+  const capacityTeardown = ci.indexOf(
+    '- name: Close shared Bob Live capacity after PostgreSQL certificates',
+  );
+  const destructiveOwnerSplit = ci.indexOf(
+    '- name: Certify the full RLS replay after an exact schema-owner split',
+  );
+  assert.ok(
+    capacityTeardown >= 0 && destructiveOwnerSplit > capacityTeardown,
+    'Le owner-split retire les droits du déployeur et doit rester après tous les certificats SQL.',
+  );
   assert.match(
     rlsOwnerSplitCertificate,
     /current_database\(\) <> 'bob_ephemeral_ci'[\s\S]*?NOT deployer\.rolcreaterole/u,

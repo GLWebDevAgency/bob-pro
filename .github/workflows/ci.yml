@@ -200,8 +200,6 @@ jobs:
             sh apps/api/scripts/activate-invoice-settlement-v2.sh
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
-      - name: Certify the full RLS replay after an exact schema-owner split
-        run: sh apps/api/scripts/certify-rls-owner-split.sh
       - name: Certify Bob Live admission and fair reaper on ephemeral PostgreSQL
         env:
           RUN_POSTGRES_REALTIME_ADMISSION_CERT: 'true'
@@ -271,6 +269,11 @@ jobs:
           END;
           $$;
           SQL
+      # Le owner-split retire volontairement au déployeur l'ownership des tables et fonctions.
+      # Il est donc destructif pour les fixtures administratives des certificats suivants et doit
+      # rester le tout dernier geste SQL, après la fermeture exacte de la capacité partagée.
+      - name: Certify the full RLS replay after an exact schema-owner split
+        run: sh apps/api/scripts/certify-rls-owner-split.sh
 
   realtime-global-capacity-certification:
     # Les certificats d'autorité partagés laissent volontairement des sessions observables.
