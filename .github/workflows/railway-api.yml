@@ -80,7 +80,7 @@ jobs:
           esac
           [ -n "$EXPECTED_SERVICE" ] || { echo "GitHub environment variable RAILWAY_API_SERVICE is required" >&2; exit 1; }
           [ "$RELEASE_SERVICE" = "$EXPECTED_SERVICE" ] || { echo "Railway service does not match the selected environment" >&2; exit 1; }
-          ARCHIVE_AUDIT_SERVICE_ID="$ARCHIVE_AUDIT_SERVICE_ID" RAILWAY_ENVIRONMENT_ID="$RAILWAY_ENVIRONMENT_ID" node <<'NODE'
+          ARCHIVE_AUDIT_SERVICE_ID="$ARCHIVE_AUDIT_SERVICE_ID" RAILWAY_ENVIRONMENT_ID="$TARGET_ENVIRONMENT_NAMEIRONMENT_ID" node <<'NODE'
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
           if (!uuid.test(process.env.ARCHIVE_AUDIT_SERVICE_ID ?? '')) {
             throw new Error('RAILWAY_ARCHIVE_AUDIT_SERVICE_ID must be a UUID');
@@ -120,10 +120,10 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
-          RAILWAY_ENV: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
         run: |
-          railway status --environment "$RAILWAY_ENV" --json \
-            | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
+          railway status --environment "$TARGET_ENVIRONMENT_NAME" --json \
+            | node apps/api/scripts/certify-railway-single-replica.mjs "$TARGET_ENVIRONMENT_NAME" "$RAILWAY_SERVICE"
       # Deux trains obligatoires pour l'archive V2 : aucune migration ne peut empêcher une
       # ancienne réplique de RENVOYER en mémoire un XML B2C. Le prédécesseur doit donc déjà
       # publier le fence HTTP old-schema-compatible, puis être l'unique réplique active.
@@ -161,29 +161,29 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
-          RAILWAY_ENV: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/check-release-env.sh
-          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/release.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/check-release-env.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/release.sh
       - name: Deploy API and wait for the new revision
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
-          RAILWAY_ENV: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
         # Attached mode streams build + deployment logs and exits non-zero when
         # the uploaded revision fails. Detached mode could smoke the old revision.
-        run: railway up --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV"
+        run: railway up --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME"
       - name: Re-certify the deployed replica topology
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
-          RAILWAY_ENV: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
         run: |
           certified=false
           for attempt in $(seq 1 12); do
-            if railway status --environment "$RAILWAY_ENV" --json \
-              | node apps/api/scripts/certify-railway-single-replica.mjs "$RAILWAY_ENV" "$RAILWAY_SERVICE"
+            if railway status --environment "$TARGET_ENVIRONMENT_NAME" --json \
+              | node apps/api/scripts/certify-railway-single-replica.mjs "$TARGET_ENVIRONMENT_NAME" "$RAILWAY_SERVICE"
             then
               certified=true
               break
@@ -294,15 +294,15 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
-          RAILWAY_ENV: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
         # Les activations n'interviennent qu'après readiness du SHA et preuve mono-réplique.
         # Avant cette étape, N-1 peut continuer les écritures V1 et les messages restent spoolés.
         # Après activation, tout rollback N-1 est interdit : seule une correction roll-forward est sûre.
         run: |
-          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
           DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
-            railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-document-archive-v2.sh
+            railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-document-archive-v2.sh
           INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
-            railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-invoice-settlement-v2.sh
-          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-notification-outbox-v2.sh
-          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/release.sh
+            railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-invoice-settlement-v2.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-notification-outbox-v2.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/release.sh

@@ -323,6 +323,11 @@ test('le workflow isole les secrets, les branches et les incidents de topologie'
   assert.doesNotMatch(workflow, /github_environment: production$/mu);
   assert.match(workflow, /RAILWAY_TOKEN: \$\{\{ secrets\.RAILWAY_TOKEN \}\}/u);
   assert.doesNotMatch(workflow, /RAILWAY_STAGING_TOKEN/u);
+  // P0 GPT 27/07 : exporter RAILWAY_ENV redirige le CLI Railway v5.26 vers son backend
+  // INTERNE de staging (backboard.railway-staging.com) — jeton valide présenté à la
+  // mauvaise API. Le nom de variable est interdit à jamais dans ce workflow.
+  assert.doesNotMatch(workflow, /RAILWAY_ENV[^I]/u);
+  assert.match(workflow, /TARGET_ENVIRONMENT_NAME/u);
   assert.match(workflow, /cancel-in-progress: false/u);
   assert.match(workflow, /max-parallel: 1/u);
   assert.match(workflow, /failure_kind=drift/u);
@@ -342,7 +347,7 @@ test('le workflow ne fabrique jamais de marqueur orphelin et ne spamme pas les i
   assert.match(workflow, /FAILURE_KIND="\$\{FAILURE_KIND:-unavailable\}"/u);
   // La récupération referme aussi les incidents historiques à marqueur vide.
   assert.match(workflow, /legacy-empty/u);
-  assert.match(workflow, new RegExp('bob-pro:\\$INCIDENT_LABEL:\\$RAILWAY_ENV: -->', 'u'));
+  assert.match(workflow, new RegExp('bob-pro:\\$INCIDENT_LABEL:\\$TARGET_ENVIRONMENT_NAME: -->', 'u'));
   // L'issue ouverte EST l'état : aucun commentaire de relance à chaque tick.
   assert.doesNotMatch(workflow, /échoue encore/u);
 });
