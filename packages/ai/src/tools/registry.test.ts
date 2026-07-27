@@ -799,3 +799,103 @@ describe('facturation terrain B1/B2/B4 — facture_directe, facturer_situation, 
     expect(t.parse({ customerId: 'cus-1', lines: [{ label: 'x', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }], globalDiscount: { type: 'percent', value: 0 } }).ok).toBe(false);
   });
 });
+
+describe('vague Encaisser (PR-01/02/05/06) — capacités optionnelles, profils de risque, DTO stricts', () => {
+  it("aucun outil fantôme sans l'action hôte (fail-closed, rétro-compat)", () => {
+    const names = buildBobTools(baseActions).map((t) => t.name);
+    expect(names).not.toContain('relance_devis');
+    expect(names).not.toContain('marquer_facture_transmise');
+    expect(names).not.toContain('cadence_relances');
+    expect(names).not.toContain('regler_relances_auto');
+  });
+
+  it('relance_devis : lecture PURE (jamais de confirmation), quoteId strict, délègue à l’hôte', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      draftQuoteRelance: async (input) => {
+        calls.push(input);
+        return ok({ relanceable: true, palier: 'j15' as const, subject: 's', body: 'b' });
+      },
+    };
+    const t = tool(actions, 'relance_devis')!;
+    expect(t.mutating).toBe(false);
+    expect(riskTierOf(t)).toBe('read');
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(false);
+    expect(t.parse({}).ok).toBe(false);
+    const parsed = t.parse({ quoteId: 'q-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    await t.run(parsed.value);
+    expect(calls).toEqual([{ quoteId: 'q-1' }]);
+  });
+
+  it('marquer_facture_transmise : PLANCHER (fait déclaré), au moins une date, DateOnly ou null strict', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      recordInvoiceTransmission: async (input) => {
+        calls.push(input);
+        return ok({ transmission: { depositedAt: '2026-07-26', acceptedAt: null } });
+      },
+    };
+    const t = tool(actions, 'marquer_facture_transmise')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false); // suivi déclaré : rien ne part vers le client
+    expect(isSafetyFloor(t)).toBe(true); // confirmation même en 'auto'
+    expect(t.parse({ invoiceId: 'inv-1' }).ok).toBe(false); // aucune date = refus
+    expect(t.parse({ invoiceId: 'inv-1', depositedAt: 'hier' }).ok).toBe(false); // date libre = refus
+    expect(t.parse({ invoiceId: 'inv-1', depositedAt: '2026-07-26', extra: true }).ok).toBe(false);
+    const parsed = t.parse({ invoiceId: 'inv-1', depositedAt: '2026-07-26' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    await t.run(parsed.value);
+    expect(calls).toEqual([{ invoiceId: 'inv-1', depositedAt: '2026-07-26' }]);
+    // null EXPLICITE = effacement légitime (contrat du use case).
+    expect(t.parse({ invoiceId: 'inv-1', acceptedAt: null }).ok).toBe(true);
+  });
+
+  it('cadence_relances (lecture) + regler_relances_auto (plancher, booléen strict)', async () => {
+    const set: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      getRelanceSettings: async () => ok({ relanceAutoEnabled: true, relancePolicy: null }),
+      setRelanceAutoEnabled: async (input) => {
+        set.push(input);
+        return ok({ relanceAutoEnabled: input.enabled, relancePolicy: null });
+      },
+    };
+    const read = tool(actions, 'cadence_relances')!;
+    expect(read.mutating).toBe(false);
+    expect(requiresConfirmation(read, 'confirm_all')).toBe(false);
+    const toggle = tool(actions, 'regler_relances_auto')!;
+    expect(isSafetyFloor(toggle)).toBe(true); // conditionne des emails clients récurrents
+    expect(toggle.parse({}).ok).toBe(false);
+    expect(toggle.parse({ enabled: 'oui' }).ok).toBe(false); // jamais un truthy
+    const parsed = toggle.parse({ enabled: false });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    await toggle.run(parsed.value);
+    expect(set).toEqual([{ enabled: false }]);
+  });
+
+  it('envoyer_facture : sortant (plancher outbound), projection publique bornée au deliveryStatus', async () => {
+    const actions: BobActions = {
+      ...baseActions,
+      sendInvoice: async () =>
+        ok({ number: 'F-1', recipient: 'client@exemple.fr', deliveryStatus: 'queued' as const, jobId: 'j-1' }),
+    };
+    const t = tool(actions, 'envoyer_facture')!;
+    expect(t.outbound).toBe(true);
+    expect(isSafetyFloor(t)).toBe(true); // outbound = toujours confirmé, même en auto
+    expect(t.parse({}).ok).toBe(false);
+    const parsed = t.parse({ invoiceId: 'inv-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await t.run(parsed.value);
+    expect(run.ok).toBe(true);
+    if (!run.ok) return;
+    // Le destinataire (PII) ne traverse jamais la projection publique du runtime.
+    expect(t.projectPublicResult?.(run.value)).toEqual({ deliveryStatus: 'queued' });
+  });
+});

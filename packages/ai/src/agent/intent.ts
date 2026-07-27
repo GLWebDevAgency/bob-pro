@@ -26,6 +26,10 @@ export type BobIntent =
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
   | 'chercher_document' // « retrouve la facture du radiateur de mars » — recherche réelle devis & factures, lecture (LOT 5)
   | 'lier_bon_commande' // « la RATP m'a envoyé un bon de commande n° 4500123 » — numéro d'engagement attaché au devis (B8)
+  | 'envoyer_facture' // « envoie la facture 2026-014 » — envoi EMAIL réel d'une facture ÉMISE (PR-01, SendInvoice)
+  | 'relance_devis' // « relance le devis Durand » — brouillon J+15/J+30 du devis sans réponse, lecture (PR-05)
+  | 'declarer_transmission' // « j'ai déposé la facture sur Chorus hier » — dates de dépôt/acceptation déclarées (PR-02)
+  | 'cadence_relances' // « coupe les relances automatiques » — cadence/interrupteur des relances (PR-06)
   | 'facture_directe' // « facture 380 € à Mme Girard pour le dépannage » — facture SANS devis signé (B1, ComposeStandaloneInvoice)
   | 'facturer_situation' // « facture une situation de 40 % sur le chantier Durand » — situation de travaux d'un devis signé (B2)
   | 'conditions_paiement' // « Durand paie à 45 jours fin de mois » — conditions de paiement propres au client (B4)
@@ -173,6 +177,20 @@ export function detectIntent(message: string): BobIntent {
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pai|pay|regl|sold).*(depense|fournisseur)|(depense|fournisseur).*(pai|pay|regl|sold)/.test(normalizedMessage))
     return 'payer_depense';
+  // PR-06 — CADENCE DE RELANCES & relances automatiques (« coupe les relances automatiques »,
+  // « relance mes clients tous les 10 jours », « ma politique de relance ») : AVANT
+  // conditions_paiement (« passe … à N jours » y collisionne), AVANT balance (« retards »
+  // y collisionne) et AVANT la relance de facture (« relance » y collisionne).
+  if (
+    /\brelances?\b.{0,24}\b(automatiques?|auto)\b|\b(automatiques?|auto)\b.{0,10}\brelances?\b/.test(
+      normalizedMessage,
+    ) ||
+    /\b(cadence|politique|frequence|reglages?|parametres?)\b.{0,30}\brelances?\b|\brelances?\b.{0,12}\b(cadence|politique|frequence)\b/.test(
+      normalizedMessage,
+    ) ||
+    /\brelanc\w*\b.{0,40}\btous les \d{1,3} jours\b/.test(normalizedMessage)
+  )
+    return 'cadence_relances';
   // B4 — CONDITIONS DE PAIEMENT d'un client (« Durand paie à 45 jours fin de mois », « mets
   // Durand à 60 jours », « conditions de paiement de Durand ») : AVANT dso (« délai de
   // paiement » y collisionne) et AVANT encaisser (« paie » y collisionne). « on me paie en
@@ -193,6 +211,14 @@ export function detectIntent(message: string): BobIntent {
     )
   )
     return 'conditions_paiement';
+  // PR-07 — LECTURE de l'encaissement (« où en est mon encaissement ? », « mon taux
+  // d'encaissement ») : c'est du PILOTAGE (carte Encaissement), jamais le flux mutatif
+  // « encaisser une facture » — AVANT dso et encaisser (« encaiss » y collisionne).
+  if (
+    /\b(ou en est|comment va|etat de?|taux)\b.{0,24}\bencaissements?\b/.test(normalizedMessage) ||
+    /\btaux d.encaissement\b|\bmon encaissement\b/.test(normalizedMessage)
+  )
+    return 'pilotage';
   // DSO (BA-3) : AVANT « encaisser » (« me paient », « temps pour encaisser » y collisionnent).
   if (/(me paie(nt)?|me payent|d[ée]lai.*(paiement|encaissement|r[èe]glement)|jours? pour ([êe]tre )?pay|\bdso\b|temps.*(encaiss|pay[ée]))/.test(m))
     return 'dso';
@@ -236,6 +262,10 @@ export function detectIntent(message: string): BobIntent {
   // chercher le bon de commande scanné) reste un geste documentaire. Négation ⇒ rien.
   if (
     /\b(bons? de commande|bc[- ]?\d|numeros? d.{0,3}engagement|purchase order)\b/.test(normalizedMessage) &&
+    // PR-04 — « émets la facture X SANS bon de commande » est un ordre d'ÉMISSION (override
+    // responsabilisé), jamais un attachement de BC : la commande canonique du rattrapage
+    // doit atteindre emettre_facture.
+    !/\bsans (le |son )?(bon de commande|bc)\b/.test(normalizedMessage) &&
     !/\b(range|ranger|ranges|classe|classer|classes|deplace|deplacer|deplaces|renomme|renommer|renommes|rebaptise|rebaptiser|cherche|chercher|retrouve|retrouver|trouve|trouver|recherche|rechercher)\b/.test(
       normalizedMessage,
     ) &&
@@ -292,8 +322,50 @@ export function detectIntent(message: string): BobIntent {
   )
     return 'valider_document';
   if (/(scan|num[ée]ris|ticket|justificatif|note de frais|re[çc]u|photo.*(facture|ticket|d[ée]pense))/.test(m)) return 'scan';
+  // PR-02 — DÉCLARATION de transmission d'une facture ÉMISE (« j'ai déposé la facture sur
+  // Chorus hier », « marque la facture 2026-014 comme envoyée », « la facture RATP a été
+  // acceptée ») : un FAIT déclaré daté — jamais un envoi (envoyer_facture) ni une émission.
+  // AVANT envoyer_devis/envoyer_facture/emettre_facture (« facture », « envoyée » collisionnent).
+  // Négation ⇒ rien.
+  if (
+    /\bfactures?\b/.test(normalizedMessage) &&
+    (/\b(depose|deposes|deposee|deposees)\b/.test(normalizedMessage) ||
+      /\b(chorus|portail)\b/.test(normalizedMessage) ||
+      /\b(marque|marquer|note|noter|declare|declarer|considere|considerer)\b.{0,50}\b(envoyee|transmise|deposee|acceptee)s?\b/.test(
+        normalizedMessage,
+      ) ||
+      /\b(a ete|est)\b.{0,16}\b(envoyee|transmise|acceptee)s?\b/.test(normalizedMessage)) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(marque|marquer|note|noter|declare|declarer|depose)\b|\b(marque|marquer|note|noter|declare|declarer)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'declarer_transmission';
+  // PR-05 — relance d'un DEVIS envoyé resté sans réponse (« relance le devis Durand ») :
+  // AVANT envoyer_devis (« devis … client » y collisionne), nouveau_devis (« un devis ») et
+  // la relance de facture. Négation ⇒ rien.
+  if (
+    /\brelanc\w*\b/.test(normalizedMessage) &&
+    /\bdevis\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\brelanc\w*\b|\brelanc\w*\b.{0,30}\bpas\b/.test(normalizedMessage)
+  )
+    return 'relance_devis';
   if (/(envoi|envoie|envoyer|transmets|exp[ée]die).*(devis)|devis.*(client|signature|envoi|envoyer|transmettre)/.test(m))
     return 'envoyer_devis';
+  // PR-01 — envoi EMAIL réel d'une facture ÉMISE (« envoie la facture 2026-014 à Durand ») :
+  // AVANT emettre_facture (« facture » y collisionne). Les devis et les relances restent
+  // exclus (chacun a son intent) ; négation ⇒ rien.
+  if (
+    (/\b(envoi|envoie|envoies|envoyer|renvoie|renvoyer|transmets|transmettre|expedie|expedier)\b.{0,40}\bfactures?\b/.test(
+      normalizedMessage,
+    ) ||
+      /\bfactures?\b.{0,30}\b(au client|par e?-?mail|par courriel)\b/.test(normalizedMessage)) &&
+    !/\bdevis\b/.test(normalizedMessage) &&
+    !/\brelanc/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(envoi|envoie|envoyer|renvoie|transmets|expedie)\w*\b|\b(envoie|envoyer|renvoie|transmets|expedie)\w*\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'envoyer_facture';
   if (/([ée]met|emet|num[ée]rote|finalise|publie).*(facture)|facture.*([ée]mettre|emettre|d[ée]finitive|num[ée]ro)/.test(m))
     return 'emettre_facture';
   // Générer la facture d'un devis signé (ASK-2) : AVANT nouveau_devis (« fais la facture du

@@ -1072,7 +1072,82 @@ export const FACTURATION_TERRAIN_TOOLS: ReadonlySet<string> = new Set([
   'facture_directe',
   'facturer_situation',
   'definir_conditions_paiement',
+  // PR-01/PR-02 — mêmes refus honnêtes : brouillon non envoyable, client sans e-mail,
+  // acceptation sans dépôt… le MESSAGE du domaine, verbatim, jamais un code brut.
+  'envoyer_facture',
+  'marquer_facture_transmise',
 ]);
+
+/** % par défaut de la « Situation n°1 » (repli acompte pro, décision fondateur 25/07) — même
+ * valeur que ADVANCE_FALLBACK_DEFAULT_PERCENT du Sheet mobile. Une PROPOSITION : le montant
+ * reste le choix de l'artisan (la commande canonique passe par facturer_situation, modifiable). */
+const ADVANCE_FALLBACK_PERCENT = 30;
+
+/** Détails du refus PR-04 « BC obligatoire » (IssueInvoice, garde fail-closed) — null si
+ * l'erreur est d'une autre nature. Le message du domaine est HONNÊTE et actionnable. */
+function purchaseOrderRequiredDetails(
+  error: AppError,
+): { invoiceId: string; customerName: string; message: string } | null {
+  if (error.kind !== 'domain' || error.error.code !== 'PURCHASE_ORDER_REQUIRED') return null;
+  const e = error.error as { invoiceId?: unknown; customerName?: unknown; message?: unknown };
+  if (
+    typeof e.invoiceId !== 'string'
+    || typeof e.customerName !== 'string'
+    || typeof e.message !== 'string'
+  )
+    return null;
+  return { invoiceId: e.invoiceId, customerName: e.customerName, message: e.message };
+}
+
+/**
+ * PR-04 — parcours de RATTRAPAGE du refus « BC obligatoire » : le message du domaine verbatim
+ * (même substance que l'écran), puis les DEUX chemins réels dans l'ordre de la doctrine —
+ * saisir le bon de commande d'abord (lier_bon_commande), l'override responsabilisé en second
+ * (risque énoncé, confirmation dédiée, journalisé serveur). Jamais un refus sec en cul-de-sac.
+ */
+function purchaseOrderRequiredRun(input: {
+  model: string;
+  invoiceRef: string;
+  details: { customerName: string; message: string };
+}): AgentRun {
+  const attachCommand = `Ajoute le bon de commande au devis de ${input.details.customerName}`;
+  const overrideCommand = `Émets la facture ${input.invoiceRef} sans bon de commande`;
+  return {
+    kind: 'answer',
+    intent: 'emettre_facture',
+    model: input.model,
+    plan: ['Restituer le refus « bon de commande obligatoire »', 'Proposer le rattrapage : saisir le BC, ou émettre sans (tracé)'],
+    card: {
+      title: 'Bon de commande obligatoire — rien n’a été émis',
+      body: input.details.message,
+    },
+    choices: [
+      { label: 'Saisir le bon de commande', value: attachCommand },
+      { label: 'Émettre sans BC (risque tracé)', value: overrideCommand },
+    ],
+    ask: [
+      {
+        id: 'emettre_facture.purchaseOrder',
+        question: `Comment veux-tu débloquer la facture de ${input.details.customerName} ?`,
+        header: 'BC requis',
+        options: [
+          {
+            value: 'attach',
+            label: 'Saisir le bon de commande',
+            description: 'Le numéro d’engagement sera repris automatiquement sur la facture.',
+            followUp: attachCommand,
+          },
+          {
+            value: 'override',
+            label: 'Émettre sans BC',
+            description: 'Risque réel : facture rejetée par le client — l’émission sans BC est tracée.',
+            followUp: overrideCommand,
+          },
+        ],
+      },
+    ],
+  };
+}
 
 /** Ciblage d'un client par jetons SIGNIFICATIFS (mêmes règles que les devis/factures) : toute
  * ambiguïté redevient une question, jamais un choix deviné. */
@@ -1154,6 +1229,10 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'enregistrer_reglement_depense') return 'payer_depense';
   if (tool === 'envoyer_relance') return 'relance';
+  if (tool === 'envoyer_facture') return 'envoyer_facture';
+  if (tool === 'relance_devis') return 'relance_devis';
+  if (tool === 'marquer_facture_transmise') return 'declarer_transmission';
+  if (tool === 'cadence_relances' || tool === 'regler_relances_auto') return 'cadence_relances';
   if (tool === 'scan_depense') return 'depense_dictee';
   if (tool === 'lier_depense_chantier') return 'lier_depense_chantier';
   if (tool === 'valider_document') return 'valider_document';
@@ -2914,7 +2993,9 @@ export class BobAgent {
         });
       }
 
-      // pilotage : le mois en cours à isopérimètre + tendance mois clos + ratio headline.
+      // pilotage : le mois en cours à isopérimètre + tendance mois clos + ratio headline,
+      // PUIS la carte Encaissement (PR-07) — le « trou n° 1 » (taux 90 j, encours échu, pièces
+      // émises jamais envoyées) devient AUSSI audible, depuis la MÊME review que l'écran.
       const cur = review.currentMonth;
       const iso = pct(cur.invoicedDeltaBps);
       const trend = review.lastClosedComparison;
@@ -2922,18 +3003,42 @@ export class BobAgent {
         ? `${trend.month} vs ${trend.previousMonth} : ${trend.deltaCents >= 0 ? '+' : '−'}${formatEUR(Math.abs(trend.deltaCents))}${pct(trend.deltaBps) ? ` (${pct(trend.deltaBps)})` : ''}`
         : null;
       const ebe = pct(review.ratios.ebeBps);
+      const collection = review.collection;
+      const collectionRateLine =
+        collection.collectedRateBps90d !== null
+          ? `Encaissement 90 j : ${(collection.collectedRateBps90d / 100).toFixed(0)} % du facturé encaissé (${formatEUR(collection.collectedTtc90dCents)} sur ${formatEUR(collection.invoicedTtc90dCents)}).`
+          : null; // fenêtre trop courte : aucun taux fabriqué — même honnêteté que le DSO
+      const overdueLine =
+        collection.overdueCents > 0
+          ? `Encours échu : ${formatEUR(collection.overdueCents)} en retard chez tes clients.`
+          : null;
+      const firstUntransmitted = collection.untransmitted[0] ?? null;
+      const untransmittedLine =
+        collection.untransmitted.length > 0
+          ? `⚠ ${collection.untransmitted.length} facture${collection.untransmitted.length > 1 ? 's' : ''} émise${collection.untransmitted.length > 1 ? 's' : ''} sans envoi constaté — ${formatEUR(collection.untransmitted.reduce((sum, line) => sum + line.amountCents, 0))} qui dorment${firstUntransmitted?.docNumber ? ` (${firstUntransmitted.docNumber} en tête)` : ''}.`
+          : null;
       const body = [
         `Facturé (hors TVA) au ${cur.atDay} du mois : ${formatEUR(cur.invoicedHtCents)}${iso ? ` (${iso} vs le mois dernier à date égale)` : ''}`,
         `Encaissé (TVA comprise) : ${formatEUR(cur.collectedTtcCents)}`,
         ...(trendLine ? [trendLine] : []),
         ...(ebe ? [`Ton activité dégage ${ebe} du CA (taux d’EBE) — avant ta rémunération.`] : []),
+        ...(collectionRateLine ? [collectionRateLine] : []),
+        ...(overdueLine ? [overdueLine] : []),
+        ...(untransmittedLine ? [untransmittedLine] : []),
       ].join('\n');
+      // Le geste qui répare le trou (l'envoi réel) à portée de voix — seulement si l'hôte
+      // expose l'outil et que la pièce a un numéro (jamais une commande invérifiable).
+      const sendChip =
+        firstUntransmitted?.docNumber && this.tool('envoyer_facture')
+          ? [{ label: `Envoyer la facture ${firstUntransmitted.docNumber}`, value: `Envoie la facture ${firstUntransmitted.docNumber}` }]
+          : [];
       return ok({
         kind: 'answer',
         intent,
         model,
-        plan: ['Dériver la revue de pilotage', 'Facturé (écritures de vente) vs encaissé (paiements)', 'Comparer à isopérimètre de jours'],
+        plan: ['Dériver la revue de pilotage', 'Facturé (écritures de vente) vs encaissé (paiements)', 'Comparer à isopérimètre de jours', 'Lire la carte Encaissement (taux 90 j, échu, sans envoi)'],
         card: { title: 'Ton activité', body },
+        ...(sendChip.length > 0 ? { choices: sendChip } : {}),
       });
     }
 
@@ -3795,25 +3900,511 @@ export class BobAgent {
         });
       }
       const tool = this.tool('emettre_facture')!;
+      // PR-04 — override RESPONSABILISÉ de la garde « BC obligatoire » : uniquement quand
+      // l'artisan le DIT (« émets la facture X sans bon de commande », la commande canonique du
+      // rattrapage) — jamais déduit. Le risque est énoncé dans la proposition (safetyFloor :
+      // confirmation dédiée), l'événement est journalisé côté serveur.
+      const purchaseOrderOverride = /\bsans (le |son )?(bon de commande|bc)\b/.test(normalized(message));
       const args = {
         invoiceId: invoice.id,
         ...(operationCategory === null ? {} : { operationCategory }),
+        ...(purchaseOrderOverride ? { purchaseOrderOverride: true } : {}),
       };
-      const label = `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName} (${formatEUR(invoice.totalTtcCents)})`;
+      const label = `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName} (${formatEUR(invoice.totalTtcCents)})${purchaseOrderOverride ? ' SANS bon de commande' : ''}`;
       if (requiresConfirmation(tool, autonomy)) {
+        const overrideRisk = purchaseOrderOverride
+          ? '\n⚠ Ce client exige un n° de bon de commande : sans lui, la facture risque d’être rejetée — l’émission sans BC est tracée.'
+          : '';
         return ok({
           kind: 'proposed',
           intent,
           model,
           plan: ['Identifier la facture brouillon', 'Préparer l’émission légale', 'Attendre ta confirmation'],
-          card: { title: 'Émission de facture à confirmer', body: `${label}\nJe numérote et j’archive les pièces légales ?` },
+          card: { title: 'Émission de facture à confirmer', body: `${label}${overrideRisk}\nJe numérote et j’archive les pièces légales ?` },
           pending: { tool: tool.name, args, label },
           spokenPrompt: buildSpokenConfirmation(label),
         });
       }
       const run = await tool.run(args);
-      if (!run.ok) return err(run.error);
+      if (!run.ok) {
+        // PR-04 — refus « BC obligatoire » : jamais une erreur brute — le rattrapage réel.
+        const po = purchaseOrderRequiredDetails(run.error);
+        if (po) return ok(purchaseOrderRequiredRun({ model, invoiceRef: displayRef(invoice), details: po }));
+        return err(run.error);
+      }
       return ok({ kind: 'done', intent, model, plan: ['Émettre la facture'], card: { title: 'Facture émise ✓', body: `${label} — c’est émis.` } });
+    }
+
+    if (intent === 'envoyer_facture') {
+      // PR-01 — envoi EMAIL réel d'une facture ÉMISE : MÊME use case SendInvoice que le bouton
+      // mobile et POST /invoices/:id/send (lien de consultation + PDF archivé joint, expéditeur
+      // perçu = la société). Cible résolue parmi les factures émises encore dues — la même
+      // matière que l'encaissement et la relance ; les gardes serveur (brouillon, e-mail client
+      // manquant) sont restituées VERBATIM. Sortant : toujours confirmé (plancher du registre).
+      const tool = this.tool('envoyer_facture');
+      if (!tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Envoyer une facture',
+            body: 'Je ne peux pas encore envoyer de facture depuis cet appareil — passe par la fiche de la facture. Rien n’a été envoyé.',
+          },
+        });
+      }
+      const r = await this.deps.actions.listPayableInvoices();
+      if (!r.ok) return err(r.error);
+      const resolved = resolveInvoiceTarget({
+        message,
+        reference,
+        invoices: r.value,
+        ...(context !== undefined ? { context } : {}),
+        capability: 'invoice.read',
+      });
+      const invoice = resolved.target;
+      if (!invoice) {
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Quelle facture veux-tu envoyer ?',
+          empty: 'Aucune facture émise en attente d’encaissement — rien à envoyer.',
+        });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher la facture émise'],
+          card: { title: 'Quelle facture ?', body },
+          choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: `Envoie la facture ${i.number}` })),
+          ...(options.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'envoyer_facture.cible',
+                    question: 'Quelle facture veux-tu envoyer au client ?',
+                    header: 'Facture',
+                    items: options.map((i) => ({
+                      value: i.number,
+                      label: i.number,
+                      description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                      followUp: `Envoie la facture ${i.number}`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
+        });
+      }
+      const args = { invoiceId: invoice.id };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Envoyer la facture ${invoice.number} à ${invoice.customerName} (reste dû ${formatEUR(invoice.remainingCents)})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier la facture émise', 'Préparer l’e-mail (lien + PDF archivé)', 'Attendre ta confirmation'],
+          card: {
+            title: 'Envoi de facture à confirmer',
+            body: `${label}.\nE-mail au client avec le lien de consultation et le PDF joint — expéditeur : ta société. J’envoie ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Envoyer la facture au client'],
+        card: { title: 'Facture envoyée ✓', body: `${label} — c’est parti.` },
+      });
+    }
+
+    if (intent === 'relance_devis') {
+      // PR-05 — relance d'un DEVIS envoyé resté sans réponse : le MÊME message pré-rédigé
+      // (buildQuoteRelance) au MÊME palier J+15/J+30 que la carte Aujourd'hui, la fiche devis
+      // et le rappel cron — via l'action de l'hôte (une seule dérivation). Lecture pure : rien
+      // ne part ; le renvoi réel du devis (lien de signature frais) reste envoyer_devis, confirmé.
+      const draftQuote = this.deps.actions.draftQuoteRelance?.bind(this.deps.actions);
+      const tool = this.tool('relance_devis');
+      if (!draftQuote || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Relancer un devis',
+            body: 'Je ne peux pas encore préparer de relance de devis sur cet appareil — le message pré-rédigé t’attend sur la fiche du devis.',
+          },
+        });
+      }
+      const r = await this.deps.actions.listSendableQuotes();
+      if (!r.ok) return err(r.error);
+      // Un devis se relance quand il ATTEND une réponse : envoyé ou vu — jamais un brouillon.
+      const awaiting = r.value.filter((q) => q.status === 'sent' || q.status === 'viewed');
+      if (awaiting.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher les devis en attente de réponse'],
+          card: { title: 'Relancer un devis', body: 'Aucun devis envoyé en attente de réponse — rien à relancer.' },
+        });
+      }
+      const resolved = resolveDocumentTarget({
+        message,
+        reference,
+        documents: awaiting,
+        ...(context !== undefined ? { context } : {}),
+        type: 'quote',
+        capability: 'quote.read',
+      });
+      const quote = resolved.target;
+      if (!quote) {
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Quel devis veux-tu relancer ?',
+          empty: 'Aucun devis envoyé en attente de réponse.',
+        });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté du devis'],
+          card: { title: 'Quel devis ?', body },
+          choices: options.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: `Relance le devis ${displayRef(q)}` })),
+          ...(options.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'relance_devis.cible',
+                    question: 'Quel devis veux-tu relancer ?',
+                    header: 'Devis',
+                    items: options.map((q) => ({
+                      value: displayRef(q),
+                      label: displayRef(q),
+                      description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+                      followUp: `Relance le devis ${displayRef(q)}`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
+        });
+      }
+      const draft = await draftQuote({ quoteId: quote.id });
+      if (!draft.ok) {
+        const guard = domainGuardCard(draft.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(draft.error);
+      }
+      if (!draft.value.relanceable) {
+        // Hors palier (trop tôt, statut) : la réponse HONNÊTE du service — jamais une relance
+        // fabriquée hors du rythme J+15/J+30 partagé avec le cron.
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [`Cibler le devis ${displayRef(quote)} (${quote.customerName})`, 'Vérifier le palier de relance'],
+          card: { title: draft.value.subject, body: draft.value.body },
+        });
+      }
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: [
+          `Cibler le devis ${displayRef(quote)} (${quote.customerName})`,
+          'Composer le message au palier atteint (même moteur que la carte Aujourd’hui)',
+        ],
+        card: {
+          title: draft.value.subject,
+          body: `${draft.value.body}\n—\nJe peux aussi renvoyer le devis par e-mail avec un lien de signature frais.`,
+        },
+        choices: [
+          { label: 'Renvoyer le devis par e-mail', value: `Envoie le devis ${displayRef(quote)}` },
+        ],
+      });
+    }
+
+    if (intent === 'declarer_transmission') {
+      // PR-02 — transmission DÉCLARÉE d'une facture ÉMISE (« j'ai déposé la facture sur Chorus
+      // hier ») : MÊME use case RecordInvoiceTransmission que l'écran (dates dites, jamais
+      // devinées ; acceptation ⊇ dépôt jugé par le domaine). Le rappel J+2 devient soldable à
+      // la voix. Fait déclaré : plancher de consentement (registre).
+      const tool = this.tool('marquer_facture_transmise');
+      if (!tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Noter une transmission',
+            body: 'Je ne peux pas encore noter la transmission d’une facture sur cet appareil — passe par la fiche de la facture. Rien n’a été modifié.',
+          },
+        });
+      }
+      const r = await this.deps.actions.listPayableInvoices();
+      if (!r.ok) return err(r.error);
+      const resolved = resolveInvoiceTarget({
+        message,
+        reference,
+        invoices: r.value,
+        ...(context !== undefined ? { context } : {}),
+        capability: 'invoice.read',
+      });
+      const invoice = resolved.target;
+      if (!invoice) {
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Quelle facture as-tu transmise ?',
+          empty: 'Aucune facture émise en attente — rien à noter.',
+        });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher la facture émise'],
+          card: { title: 'Quelle facture ?', body },
+          choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: `J’ai déposé la facture ${i.number} sur le portail` })),
+          ...(options.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'declarer_transmission.cible',
+                    question: 'Quelle facture as-tu transmise à ton client ?',
+                    header: 'Facture',
+                    items: options.map((i) => ({
+                      value: i.number,
+                      label: i.number,
+                      description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                      followUp: `J’ai déposé la facture ${i.number} sur le portail`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
+        });
+      }
+      // Continuité vocale : la date courte (« hier ») répond à la question posée juste avant.
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+      ].join(' ');
+      // Acceptation EXPLICITE seulement — sinon c'est un dépôt/envoi (le geste courant).
+      const isAcceptance = /\baccept/.test(normalized(conversation));
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const saidDate = parseExpensePaymentDetails(conversation, today).paidOn;
+      if (!saidDate) {
+        const verb = isAcceptance ? 'acceptée' : 'transmise';
+        const commandFor = (suffix: string): string =>
+          isAcceptance
+            ? `La facture ${invoice.number} a été acceptée ${suffix}`
+            : `J’ai déposé la facture ${invoice.number} sur le portail ${suffix}`;
+        const options = today
+          ? [
+              { value: today, label: 'Aujourd’hui', description: today, followUp: commandFor('aujourd’hui') },
+              { value: 'yesterday', label: 'Hier', description: 'La veille de la date du jour', followUp: commandFor('hier') },
+            ]
+          : [];
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier la facture', 'Demander la date réelle de transmission'],
+          card: {
+            title: 'Quelle date ?',
+            body: `À quelle date la facture ${invoice.number} (${invoice.customerName}) a-t-elle été ${verb} ? Dis-la au format JJ/MM/AAAA — je ne la devine pas. Rien n’a été modifié.`,
+          },
+          ...(options.length >= 2
+            ? {
+                choices: options.map((option) => ({ label: option.label, value: option.followUp })),
+                ask: [askToPick({
+                  id: 'declarer_transmission.date',
+                  question: `Quand la facture ${invoice.number} a-t-elle été ${verb} ?`,
+                  header: 'Date',
+                  items: options,
+                })],
+              }
+            : {}),
+        });
+      }
+      if (today && saidDate > today) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Contrôler la date déclarée'],
+          card: {
+            title: 'Date future impossible',
+            body: `Le ${frDate(saidDate)} est dans le futur. Donne-moi la date d’une transmission déjà faite ; rien n’a été noté.`,
+          },
+        });
+      }
+      const args = {
+        invoiceId: invoice.id,
+        ...(isAcceptance ? { acceptedAt: saidDate } : { depositedAt: saidDate }),
+      };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = isAcceptance
+        ? `Noter la facture ${invoice.number} acceptée le ${frDate(saidDate)} (${invoice.customerName})`
+        : `Noter la facture ${invoice.number} transmise le ${frDate(saidDate)} (${invoice.customerName})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier la facture émise', 'Préparer le suivi déclaré', 'Attendre ta confirmation'],
+          card: {
+            title: 'Transmission à confirmer',
+            body: `${label}.\nC’est un suivi déclaré — rien n’est envoyé au client. Je le note ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Noter la transmission déclarée'],
+        card: { title: 'Transmission notée ✓', body: `${label} — le suivi est à jour.` },
+      });
+    }
+
+    if (intent === 'cadence_relances') {
+      // PR-06 — la politique de relances À LA VOIX : lecture de la cadence en vigueur (même
+      // source CompanyBillingSettings que l'écran et le cron) et bascule CONFIRMÉE des relances
+      // automatiques. La cadence fine (4 paliers) se règle à l'écran — jamais devinée d'un
+      // « tous les 10 jours » ambigu.
+      const getSettings = this.deps.actions.getRelanceSettings?.bind(this.deps.actions);
+      const readTool = this.tool('cadence_relances');
+      if (!getSettings || !readTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Tes relances',
+            body: 'Je ne peux pas encore lire tes réglages de relance sur cet appareil — passe par Réglages → Facturation.',
+          },
+        });
+      }
+      const s = await getSettings();
+      if (!s.ok) return err(s.error);
+      const policy = s.value.relancePolicy;
+      const cadenceLine = policy
+        ? `Cadence personnalisée : cordial J+${policy.cordialAfterDays} · neutre J+${policy.neutreAfterDays} · ferme J+${policy.fermeAfterDays} · mise en demeure J+${policy.miseEnDemeureAfterDays} après l’échéance.`
+        : 'Cadence par défaut : cordial J+3 · neutre J+10 · ferme J+20 · mise en demeure J+30 après l’échéance.';
+      const autoLine = s.value.relanceAutoEnabled
+        ? 'Relances automatiques : ACTIVES — les relances partent au rythme de la cadence ; la mise en demeure, elle, n’est jamais envoyée sans ta validation.'
+        : 'Relances automatiques : COUPÉES — rien ne part tout seul, la relance manuelle reste possible.';
+      const normalizedCadence = normalized(message);
+      const wantsOff = /\b(coupe|couper|desactive|desactiver|arrete|arreter|stoppe|stopper|suspends?|suspendre|eteins|eteindre)\b/.test(normalizedCadence);
+      const wantsOn = /\b(active|activer|reactive|reactiver|rallume|rallumer|remets|remettre|reprends|reprendre)\b/.test(normalizedCadence);
+      const setTool = this.tool('regler_relances_auto');
+      if ((wantsOff || wantsOn) && !(wantsOff && wantsOn) && setTool) {
+        const enabled = wantsOn;
+        if (enabled === s.value.relanceAutoEnabled) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Relire les réglages de relance'],
+            card: {
+              title: 'Déjà réglé ainsi',
+              body: `${autoLine}\nRien à changer.`,
+            },
+          });
+        }
+        const args = { enabled };
+        const parsed = setTool.parse(args);
+        if (!parsed.ok) return err(parsed.error);
+        const label = enabled ? 'Activer les relances automatiques' : 'Couper les relances automatiques';
+        const consequence = enabled
+          ? 'Les relances repartiront au rythme de ta cadence ; la mise en demeure restera soumise à ta validation.'
+          : 'Plus aucune relance ne partira toute seule — tu pourras toujours relancer à la main.';
+        if (requiresConfirmation(setTool, autonomy)) {
+          return ok({
+            kind: 'proposed',
+            intent,
+            model,
+            plan: ['Relire les réglages de relance', 'Préparer la bascule', 'Attendre ta confirmation'],
+            card: {
+              title: 'Relances automatiques à confirmer',
+              body: `${label}. ${consequence} Je confirme ?`,
+            },
+            pending: { tool: setTool.name, args, label },
+            spokenPrompt: buildSpokenConfirmation(label),
+          });
+        }
+        const run = await setTool.run(parsed.value);
+        if (!run.ok) {
+          const guard = domainGuardCard(run.error);
+          if (guard) {
+            return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+          }
+          return err(run.error);
+        }
+        return ok({
+          kind: 'done',
+          intent,
+          model,
+          plan: ['Basculer les relances automatiques'],
+          card: { title: enabled ? 'Relances automatiques activées ✓' : 'Relances automatiques coupées ✓', body: `${label} — c’est fait. ${consequence}` },
+        });
+      }
+      // Lecture pure — avec le geste de bascule à portée de voix (chip, repli existant).
+      const toggleChip = setTool
+        ? [
+            s.value.relanceAutoEnabled
+              ? { label: 'Couper les relances automatiques', value: 'Coupe les relances automatiques' }
+              : { label: 'Activer les relances automatiques', value: 'Active les relances automatiques' },
+          ]
+        : [];
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Lire la politique de relances (même source que l’écran et le cron)'],
+        card: {
+          title: 'Tes relances',
+          body: `${cadenceLine}\n${autoLine}\nPour ajuster la cadence palier par palier, passe par Réglages → Facturation.`,
+        },
+        ...(toggleChip.length > 0 ? { choices: toggleChip } : {}),
+      });
     }
 
     if (intent === 'lier_bon_commande') {
@@ -4883,6 +5474,20 @@ export class BobAgent {
       const depositUnavailableReason =
         quote.depositUnavailableReason ?? PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE;
 
+      // Repli acompte pro (décision fondateur 25/07) : là où l'acompte fermé aurait été
+      // proposé, l'ÉQUIVALENT conforme — « Situation n°1 (30 %) » (même encaissement, pièces
+      // justes), via la commande canonique facturer_situation (montant toujours modifiable).
+      // FAIL-CLOSED comme le Sheet mobile (deriveProfessionalAdvanceFallback) : devis sans
+      // acompte porté, acompte déjà facturé ou situation déjà vivante (situationInvoiced
+      // absent/true) = pas d'option numérotée.
+      const advanceFallbackOffered =
+        quote.depositPct !== null && !quote.depositInvoiced && quote.situationInvoiced === false;
+      const advanceFallbackChip = {
+        label: `Situation n°1 (${ADVANCE_FALLBACK_PERCENT} %)`,
+        value: situationCommand(displayRef(quote), { percent: ADVANCE_FALLBACK_PERCENT }),
+      };
+      const advanceFallbackNote = ` L’équivalent conforme existe : la première situation de travaux — ${ADVANCE_FALLBACK_PERCENT} % du marché par défaut, même encaissement, pièces justes (le pourcentage reste ton choix).`;
+
       // La liste vient du même use case que l'écran : Bob ne propose jamais un acompte
       // professionnel que le domaine refusera ensuite, ni une finale après un ancien acompte.
       if (!depositAvailable && (mode === 'deposit' || quote.depositInvoiced)) {
@@ -4890,11 +5495,16 @@ export class BobAgent {
           kind: 'answer',
           intent,
           model,
-          plan: ['Vérifier la disponibilité du parcours acompte', 'Expliquer la fermeture sans créer de brouillon'],
+          plan: [
+            'Vérifier la disponibilité du parcours acompte',
+            'Expliquer la fermeture sans créer de brouillon',
+            ...(advanceFallbackOffered ? ['Proposer l’équivalent conforme : la situation n°1'] : []),
+          ],
           card: {
             title: 'Parcours acompte indisponible',
-            body: depositUnavailableReason,
+            body: `${depositUnavailableReason}${advanceFallbackOffered ? advanceFallbackNote : ''}`,
           },
+          ...(advanceFallbackOffered ? { choices: [advanceFallbackChip] } : {}),
         });
       }
 
@@ -4944,14 +5554,47 @@ export class BobAgent {
               kind: 'answer',
               intent,
               model,
-              plan: ['Identifier le devis signé', 'Expliquer la fermeture du parcours acompte', 'Laisser choisir explicitement une finale'],
+              plan: [
+                'Identifier le devis signé',
+                'Expliquer la fermeture du parcours acompte',
+                ...(advanceFallbackOffered ? ['Proposer l’équivalent conforme : la situation n°1'] : []),
+                'Laisser choisir explicitement une finale',
+              ],
               card: {
                 title: 'Acompte indisponible pour ce client',
-                body: `${depositUnavailableReason} Tu peux préparer une facture finale sans reprise d'acompte quand le chantier le permet.`,
+                body: `${depositUnavailableReason}${advanceFallbackOffered ? advanceFallbackNote : ''} Tu peux aussi préparer une facture finale sans reprise d'acompte quand le chantier le permet.`,
               },
+              // Le repli occupe la PLACE de l'acompte fermé (doctrine du Sheet mobile) : la
+              // situation n°1 d'abord, la finale ensuite.
               choices: [
+                ...(advanceFallbackOffered ? [advanceFallbackChip] : []),
                 { label: 'Facture finale', value: `Fais la facture finale du devis ${ref}` },
               ],
+              ...(advanceFallbackOffered
+                ? {
+                    ask: [
+                      {
+                        id: 'generer_facture.acompte_indisponible',
+                        question: `L'acompte est fermé pour ce client — comment facturer le devis ${ref} (${quote.customerName}) ?`,
+                        header: 'Facturation',
+                        options: [
+                          {
+                            value: 'situation1',
+                            label: `Situation n°1 (${ADVANCE_FALLBACK_PERCENT} %)`,
+                            description: 'L’équivalent conforme de l’acompte pro : même encaissement, pièces justes — pourcentage modifiable.',
+                            followUp: advanceFallbackChip.value,
+                          },
+                          {
+                            value: 'final',
+                            label: 'Facture finale',
+                            description: `Tout le chantier en une fois (${formatEUR(quote.totalTtcCents)} TTC).`,
+                            followUp: `Fais la facture finale du devis ${ref}`,
+                          },
+                        ],
+                      },
+                    ],
+                  }
+                : {}),
             });
           }
           // LA question de précision : deux voies légitimes, montants exacts au diff de
@@ -5148,14 +5791,23 @@ export class BobAgent {
       }
     }
     let payables: PayableInvoice[] = [];
-    // Chargées pour l'encaissement, et pour une relance CIBLÉE (C25 ① — « puis relance Martin »).
-    if (steps.some((s) => s.intent === 'encaisser' || (s.intent === 'relance' && s.reference !== null))) {
+    // Chargées pour l'encaissement, l'envoi/la transmission d'une facture émise (PR-01/PR-02)
+    // et pour une relance CIBLÉE (C25 ① — « puis relance Martin »).
+    if (
+      steps.some(
+        (s) =>
+          s.intent === 'encaisser'
+          || s.intent === 'envoyer_facture'
+          || s.intent === 'declarer_transmission'
+          || (s.intent === 'relance' && s.reference !== null),
+      )
+    ) {
       const r = await this.deps.actions.listPayableInvoices();
       if (!r.ok) return err(r.error);
       payables = r.value;
     }
     let sendableQuotes: SendableQuote[] = [];
-    if (steps.some((s) => s.intent === 'envoyer_devis')) {
+    if (steps.some((s) => s.intent === 'envoyer_devis' || s.intent === 'relance_devis')) {
       const r = await this.deps.actions.listSendableQuotes();
       if (!r.ok) return err(r.error);
       sendableQuotes = r.value;
@@ -5182,6 +5834,9 @@ export class BobAgent {
         .map((invoice) => invoice.id),
     );
     const actions: BatchItem[] = [];
+    // AVEU des étapes hors lot : une intention comprise mais impossible à mettre en lot n'est
+    // JAMAIS écartée en silence — le lot l'annonce et invite à la redire séparément.
+    const unbatchable: BobIntent[] = [];
     for (const step of steps) {
       if (step.intent === 'encaisser') {
         const resolved = resolveInvoiceTarget({
@@ -5372,20 +6027,233 @@ export class BobAgent {
           },
           label: `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName}`,
         });
+      } else if (step.intent === 'envoyer_facture') {
+        // PR-01 — l'envoi réel d'une facture émise entre dans le lot : même résolution que
+        // l'encaissement, outil sortant (le plancher force la confirmation globale du lot).
+        const tool = this.tool('envoyer_facture');
+        if (!tool) {
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Vérifier la capacité de l’hôte'],
+            card: {
+              title: 'Lot interrompu',
+              body: 'Je ne peux pas envoyer de facture depuis cet appareil. Rien n’a été exécuté.',
+            },
+          });
+        }
+        const resolved = resolveInvoiceTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          invoices: payables,
+          ...(context !== undefined ? { context } : {}),
+          capability: 'invoice.read',
+        });
+        const inv = resolved.target;
+        if (!inv) {
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+            ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+            hasOptions: options.length > 0,
+            ask: 'Précise la facture à envoyer :',
+            empty: 'Aucune facture émise en attente — rien à envoyer.',
+          });
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quelle facture ?', body },
+            choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: `Envoie la facture ${i.number}` })),
+            ...(options.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.envoyer_facture.cible',
+                      question: 'Quelle facture veux-tu envoyer au client ?',
+                      header: 'Facture',
+                      items: options.map((i) => ({
+                        value: i.number,
+                        label: i.number,
+                        description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                        followUp: `Envoie la facture ${i.number}`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
+          });
+        }
+        actions.push({
+          tool: 'envoyer_facture',
+          args: { invoiceId: inv.id },
+          label: `Envoyer la facture ${inv.number} à ${inv.customerName}`,
+        });
+      } else if (step.intent === 'declarer_transmission') {
+        // PR-02 — la transmission déclarée entre dans le lot : la date vient du MESSAGE
+        // (jamais devinée) ; sans date dite, le lot s'arrête AVANT toute exécution.
+        const tool = this.tool('marquer_facture_transmise');
+        if (!tool) {
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Vérifier la capacité de l’hôte'],
+            card: {
+              title: 'Lot interrompu',
+              body: 'Je ne peux pas noter de transmission sur cet appareil. Rien n’a été exécuté.',
+            },
+          });
+        }
+        const resolved = resolveInvoiceTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          invoices: payables,
+          ...(context !== undefined ? { context } : {}),
+          capability: 'invoice.read',
+        });
+        const inv = resolved.target;
+        if (!inv) {
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+            ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+            hasOptions: options.length > 0,
+            ask: 'Précise la facture transmise :',
+            empty: 'Aucune facture émise en attente — rien à noter.',
+          });
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quelle facture ?', body },
+            choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: `J’ai déposé la facture ${i.number} sur le portail` })),
+            ...(options.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.declarer_transmission.cible',
+                      question: 'Quelle facture as-tu transmise à ton client ?',
+                      header: 'Facture',
+                      items: options.map((i) => ({
+                        value: i.number,
+                        label: i.number,
+                        description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                        followUp: `J’ai déposé la facture ${i.number} sur le portail`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
+          });
+        }
+        const now = this.deps.runtime?.clock.now();
+        const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+        const saidDate = parseExpensePaymentDetails(message, today).paidOn;
+        if (!saidDate || (today !== null && saidDate > today)) {
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Demander la date réelle avant de préparer le lot'],
+            card: {
+              title: 'Lot en attente',
+              body:
+                `Il me faut la date réelle de transmission de la facture ${inv.number} (JJ/MM/AAAA, « hier », « aujourd’hui ») — je ne la devine pas. `
+                + 'Rien n’a été exécuté.',
+            },
+          });
+        }
+        const isAcceptance = /\baccept/.test(normalized(`${message} ${step.reference ?? ''}`));
+        actions.push({
+          tool: 'marquer_facture_transmise',
+          args: {
+            invoiceId: inv.id,
+            ...(isAcceptance ? { acceptedAt: saidDate } : { depositedAt: saidDate }),
+          },
+          label: isAcceptance
+            ? `Noter la facture ${inv.number} acceptée le ${frDate(saidDate)} (${inv.customerName})`
+            : `Noter la facture ${inv.number} transmise le ${frDate(saidDate)} (${inv.customerName})`,
+        });
       } else if (step.intent === 'payout') {
         actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ta trésorerie mobilisable' });
       } else if (step.intent === 'relance') {
         // Cible explicite uniquement (numéro / nom) — sinon l'hôte prend la plus urgente du plan.
         const target = step.reference ? resolveInvoice(step.reference, payables, { fallbackToSingle: false }) : null;
-        actions.push(
-          target
-            ? {
-                tool: 'relance_brouillon',
-                args: { invoiceId: target.id },
-                label: `Préparer la relance de ${target.number} (${target.customerName})`,
-              }
-            : { tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' },
-        );
+        const sendTool = this.tool('envoyer_relance');
+        // Symétrie avec le flux mono-étape : cible EXPLICITE + capacité d'envoi → l'ENVOI réel
+        // entre dans le lot (plancher sortant : la confirmation globale reste obligatoire).
+        // Sans cible, le brouillon par défaut reste le comportement (jamais un envoi deviné).
+        if (target && sendTool) {
+          actions.push({
+            tool: 'envoyer_relance',
+            args: { invoiceId: target.id },
+            label: `Envoyer la relance de ${target.number} à ${target.customerName} (reste dû ${formatEUR(target.remainingCents)})`,
+          });
+        } else {
+          actions.push(
+            target
+              ? {
+                  tool: 'relance_brouillon',
+                  args: { invoiceId: target.id },
+                  label: `Préparer la relance de ${target.number} (${target.customerName})`,
+                }
+              : { tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' },
+          );
+        }
+      } else if (step.intent === 'relance_devis' && this.tool('relance_devis')) {
+        // PR-05 — gated sur la capacité de l'hôte (outil optionnel) ; cible explicite requise
+        // dans un lot (jamais un devis deviné parmi plusieurs).
+        const awaiting = sendableQuotes.filter((q) => q.status === 'sent' || q.status === 'viewed');
+        const resolved = resolveDocumentTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          documents: awaiting,
+          ...(context !== undefined ? { context } : {}),
+          type: 'quote',
+          capability: 'quote.read',
+        });
+        const quote = resolved.target;
+        if (!quote) {
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+            ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+            hasOptions: options.length > 0,
+            ask: 'Précise le devis à relancer :',
+            empty: 'Aucun devis envoyé en attente de réponse.',
+          });
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quel devis ?', body },
+            choices: options.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: `Relance le devis ${displayRef(q)}` })),
+            ...(options.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.relance_devis.cible',
+                      question: 'Quel devis veux-tu relancer ?',
+                      header: 'Devis',
+                      items: options.map((q) => ({
+                        value: displayRef(q),
+                        label: displayRef(q),
+                        description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+                        followUp: `Relance le devis ${displayRef(q)}`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
+          });
+        }
+        actions.push({
+          tool: 'relance_devis',
+          args: { quoteId: quote.id },
+          label: `Préparer la relance du devis ${displayRef(quote)} (${quote.customerName})`,
+        });
       } else if (step.intent === 'factures') {
         actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
       } else if (step.intent === 'documents') {
@@ -5432,12 +6300,19 @@ export class BobAgent {
           label: `Marquer ${count} notification${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}`,
         });
       } else if (step.intent === 'echeances' && this.tool('echeances_fiscales')) {
-        // Gated sur la capacité de l'hôte (outil optionnel C-EXP5b) — sinon l'étape est écartée.
+        // Gated sur la capacité de l'hôte (outil optionnel C-EXP5b).
         actions.push({ tool: 'echeances_fiscales', args: {}, label: 'Lister tes échéances fiscales' });
+      } else {
+        unbatchable.push(step.intent);
       }
     }
     if (actions.length === 0) return ok(this.unknownRun(model));
 
+    // L'aveu honnête : le lot dit ce qu'il N'exécutera PAS, au lieu d'amputer la consigne.
+    const unbatchableNote =
+      unbatchable.length > 0
+        ? `\n⚠ ${unbatchable.length} étape${unbatchable.length > 1 ? 's' : ''} de ta demande ne ${unbatchable.length > 1 ? 'savent' : 'sait'} pas encore entrer dans un lot — redis-l${unbatchable.length > 1 ? 'es' : 'a'} séparément après.`
+        : '';
     const needConfirm = actions.some((a) => {
       const t = this.tool(a.tool);
       return t ? requiresConfirmation(t, autonomy) : false;
@@ -5449,14 +6324,14 @@ export class BobAgent {
         intent: headIntent,
         model,
         plan: actions.map((a) => a.label),
-        card: { title: `${actions.length} actions à confirmer`, body: `Je vais :\n${listing}\nJe valide tout ?` },
+        card: { title: `${actions.length} actions à confirmer`, body: `Je vais :\n${listing}${unbatchableNote}\nJe valide tout ?` },
         pending: { tool: 'batch', args: {}, label: listing, batch: actions },
         spokenPrompt: buildSpokenConfirmation(`${actions.length} actions : ${actions.map((a) => a.label).join(', ')}`),
       });
     }
     const r = await this.runBatch(actions);
     if (!r.ok) return err(r.error);
-    return ok({ kind: 'done', intent: headIntent, model, plan: actions.map((a) => a.label), card: { title: 'Fait ✓', body: r.value } });
+    return ok({ kind: 'done', intent: headIntent, model, plan: actions.map((a) => a.label), card: { title: 'Fait ✓', body: `${r.value}${unbatchableNote}` } });
   }
 
   /** Exécute une suite d'actions en ordre, renvoie un récapitulatif ligne par ligne. */
@@ -5534,6 +6409,22 @@ export class BobAgent {
             plan: ['Détecter un lien métier existant'],
             card: alreadyLinkedCard(existing),
           });
+        }
+      }
+      // PR-04 — refus « BC obligatoire » à la confirmation (l'état a pu changer, ou la garde
+      // vient d'être découverte) : jamais une erreur brute — le parcours de rattrapage réel
+      // (saisir le BC d'abord, l'override responsabilisé en second), comme à l'écran.
+      if (pending.tool === 'emettre_facture') {
+        const po = purchaseOrderRequiredDetails(run.error);
+        if (po) {
+          const rawInvoiceId = pending.args.invoiceId;
+          return ok(
+            purchaseOrderRequiredRun({
+              model,
+              invoiceRef: typeof rawInvoiceId === 'string' ? rawInvoiceId : 'brouillon',
+              details: po,
+            }),
+          );
         }
       }
       // BT-23 — l'état a pu changer entre proposition et confirmation, ou un ancien hôte a pu
@@ -5617,6 +6508,69 @@ export class BobAgent {
         model,
         plan: ['Envoyer la relance confirmée'],
         card: { title: 'Relance envoyée ✓', body: `${pending.label} — c’est parti.` },
+      });
+    }
+    // PR-01 — l'envoi confirmé d'une facture : l'artisan sait que l'e-mail est PARTI.
+    if (pending.tool === 'envoyer_facture') {
+      return ok({
+        kind: 'done',
+        intent: 'envoyer_facture',
+        model,
+        plan: ['Envoyer la facture confirmée'],
+        card: { title: 'Facture envoyée ✓', body: `${pending.label} — c’est parti (lien de consultation + PDF joint).` },
+      });
+    }
+    // PR-02 — la transmission déclarée confirmée : le suivi (rappel J+2, carte Encaissement)
+    // est soldé, rien n'est parti vers le client.
+    if (pending.tool === 'marquer_facture_transmise') {
+      return ok({
+        kind: 'done',
+        intent: 'declarer_transmission',
+        model,
+        plan: ['Noter la transmission confirmée'],
+        card: { title: 'Transmission notée ✓', body: `${pending.label} — le suivi est à jour. Rien n’a été envoyé au client.` },
+      });
+    }
+    // PR-06 — la bascule confirmée des relances automatiques annonce l'état RÉEL retourné.
+    if (pending.tool === 'regler_relances_auto') {
+      const enabled = (run.value as { relanceAutoEnabled?: unknown }).relanceAutoEnabled === true;
+      return ok({
+        kind: 'done',
+        intent: 'cadence_relances',
+        model,
+        plan: ['Basculer les relances automatiques'],
+        card: {
+          title: enabled ? 'Relances automatiques activées ✓' : 'Relances automatiques coupées ✓',
+          body: enabled
+            ? `${pending.label} — c’est fait. Les relances repartiront au rythme de ta cadence ; la mise en demeure reste soumise à ta validation.`
+            : `${pending.label} — c’est fait. Plus aucune relance ne partira toute seule ; la relance manuelle reste possible.`,
+        },
+      });
+    }
+    // PR-01 — ENCHAÎNEMENT naturel après l'émission confirmée : l'écran affiche le bouton
+    // d'envoi au même moment — la voix propose le même geste (commande canonique verbatim,
+    // flux envoyer_facture existant, confirmé). Jamais un envoi silencieux.
+    if (pending.tool === 'emettre_facture') {
+      const number = (run.value as { number?: unknown }).number;
+      const numberRef = typeof number === 'string' && number.length > 0 ? number : null;
+      const sendable = numberRef !== null && this.tool('envoyer_facture') !== undefined;
+      return ok({
+        kind: 'done',
+        intent: 'emettre_facture',
+        model,
+        plan: ['Émettre la facture confirmée'],
+        card: {
+          title: 'Facture émise ✓',
+          body:
+            `${pending.label} — c’est émis${numberRef !== null ? ` sous le numéro ${numberRef}` : ''}.`
+            + (sendable ? '\nJe l’envoie au client par e-mail (lien + PDF) ?' : ''),
+        },
+        ...(sendable
+          ? {
+              choices: [{ label: 'Oui — envoie-la au client', value: `Envoie la facture ${numberRef}` }],
+              spokenPrompt: 'C’est émis. Je l’envoie au client par e-mail ?',
+            }
+          : {}),
       });
     }
     // B8 — après le lien confirmé, l'ENCHAÎNEMENT NATUREL : Bob propose la facture du devis

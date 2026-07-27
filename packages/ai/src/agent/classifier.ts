@@ -33,7 +33,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'relance_brouillon',
     description:
-      'Relancer une facture impayée (« relance Durand », « relance la facture de la RATP ») : présente le texte réel de la relance, puis propose l’ENVOI au client — jamais envoyé sans confirmation explicite. Ciblable : facture ou client précis ; sans référence, la plus urgente.',
+      'Relancer une facture impayée (« relance Durand », « relance la facture de la RATP ») : présente le texte réel de la relance, puis propose l’ENVOI au client — jamais envoyé sans confirmation explicite. Ciblable : facture ou client précis ; sans référence, la plus urgente. PAS pour un devis resté sans réponse (relance_devis).',
     parameters: {
       type: 'object',
       properties: {
@@ -42,6 +42,51 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       required: [],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'relance_devis',
+    description:
+      'Relancer un DEVIS envoyé resté sans réponse (« relance le devis Durand ») : présente le message pré-rédigé au même palier J+15/J+30 que le rappel. Lecture seule — rien n’est envoyé. PAS pour une facture impayée (relance_brouillon).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de devis (ex. D2026-014) ou nom du client' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'envoyer_facture',
+    description:
+      'Envoyer RÉELLEMENT une facture ÉMISE au client par e-mail (« envoie la facture 2026-014 ») : lien de consultation + PDF joint. PAS pour un devis (envoyer_devis), PAS pour une relance d’impayé (relance_brouillon), PAS pour déclarer un envoi déjà fait (marquer_facture_transmise).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de facture (ex. 2026-014) ou nom du client' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'marquer_facture_transmise',
+    description:
+      'Noter la transmission DÉCLARÉE d’une facture émise (« j’ai déposé la facture RATP sur Chorus hier », « marque la 2026-014 comme envoyée », « elle a été acceptée ») : date de dépôt/envoi ou d’acceptation dite par l’artisan. N’envoie rien. PAS pour envoyer la facture (envoyer_facture).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de facture (ex. 2026-014) ou nom du client, et la date dite' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'cadence_relances',
+    description:
+      'Politique de relances de la société : lire la cadence en vigueur (paliers J+n) et l’état des relances automatiques, ou COUPER/ACTIVER les relances automatiques (« coupe les relances automatiques »). PAS pour relancer une facture précise (relance_brouillon).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'factures_impayees',
@@ -330,9 +375,13 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   marquer_notifications_lues: 'marquer_notifications_lues',
   tresorerie_versement: 'payout',
   relance_brouillon: 'relance',
+  relance_devis: 'relance_devis',
   factures_impayees: 'factures',
   documents_liste: 'documents',
   envoyer_devis: 'envoyer_devis',
+  envoyer_facture: 'envoyer_facture',
+  marquer_facture_transmise: 'declarer_transmission',
+  cadence_relances: 'cadence_relances',
   emettre_facture: 'emettre_facture',
   encaisser_facture: 'encaisser',
   ouvrir_scan_recu: 'scan',

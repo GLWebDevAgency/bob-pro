@@ -451,3 +451,102 @@ describe('detectIntent — B1/B2/B4 (facturation terrain vocale)', () => {
     expect(detectIntent('J’ai payé la dépense EDF hier')).toBe('payer_depense');
   });
 });
+
+describe('detectIntent — envoyer_facture (PR-01 : « envoie la facture 2026-014 »)', () => {
+  it('reconnaît l’envoi email d’une facture émise', () => {
+    for (const m of [
+      'Envoie la facture 2026-014',
+      'Envoie la facture 2026-014 à Durand',
+      'Renvoie la facture de la RATP',
+      'Transmets la facture 2026-002 au client',
+      'Expédie la facture Durand par e-mail',
+    ]) {
+      expect(detectIntent(m)).toBe('envoyer_facture');
+    }
+  });
+
+  it('ne détourne ni les devis, ni les relances, ni l’émission, ni la déclaration de transmission', () => {
+    expect(detectIntent('Envoie le devis à Martin pour signature')).toBe('envoyer_devis');
+    expect(detectIntent('Envoie la relance de la facture 2026-014')).toBe('relance');
+    expect(detectIntent('Émets la facture Durand')).toBe('emettre_facture');
+    expect(detectIntent('Marque la facture 2026-014 comme envoyée')).toBe('declarer_transmission');
+    expect(detectIntent('N’envoie pas la facture 2026-014')).not.toBe('envoyer_facture');
+  });
+});
+
+describe('detectIntent — declarer_transmission (PR-02 : « j’ai déposé la facture sur Chorus hier »)', () => {
+  it('reconnaît le fait déclaré (dépôt, envoi constaté, acceptation)', () => {
+    for (const m of [
+      'J’ai déposé la facture 2026-002 sur Chorus hier',
+      'Marque la facture 2026-014 comme envoyée',
+      'La facture RATP a été acceptée sur Chorus',
+      'Note la facture 2026-002 comme transmise',
+      'J’ai déposé la facture sur le portail fournisseur',
+    ]) {
+      expect(detectIntent(m)).toBe('declarer_transmission');
+    }
+  });
+
+  it('ne capture ni l’envoi réel, ni l’encaissement, ni la dépense dictée', () => {
+    expect(detectIntent('Envoie la facture 2026-014')).toBe('envoyer_facture');
+    expect(detectIntent('La facture 2026-014 est payée')).toBe('encaisser');
+    expect(detectIntent('J’ai dépensé 89 € chez Leroy Merlin en carte')).toBe('depense_dictee');
+    expect(detectIntent('Ne marque pas la facture comme envoyée')).not.toBe('declarer_transmission');
+  });
+});
+
+describe('detectIntent — relance_devis (PR-05 : « relance le devis Durand »)', () => {
+  it('reconnaît la relance d’un devis sans réponse', () => {
+    for (const m of [
+      'Relance le devis Durand',
+      'Relance le devis D2026-050',
+      'Tu peux relancer le devis du client Martin ?',
+    ]) {
+      expect(detectIntent(m)).toBe('relance_devis');
+    }
+  });
+
+  it('les relances de factures restent des relances de factures', () => {
+    expect(detectIntent('Relance Durand')).toBe('relance');
+    expect(detectIntent('Relance la facture 2026-014')).toBe('relance');
+    expect(detectIntent('Envoie le devis Durand')).toBe('envoyer_devis');
+    expect(detectIntent('Ne relance pas le devis Durand')).not.toBe('relance_devis');
+  });
+});
+
+describe('detectIntent — cadence_relances (PR-06 : réglage des relances)', () => {
+  it('reconnaît la lecture et la bascule de la politique de relances', () => {
+    for (const m of [
+      'Coupe les relances automatiques',
+      'Active les relances auto',
+      'Quelle est ma politique de relance ?',
+      'Montre-moi la cadence de relances',
+      'Relance mes clients tous les 10 jours',
+    ]) {
+      expect(detectIntent(m)).toBe('cadence_relances');
+    }
+  });
+
+  it('ne détourne ni la relance ciblée ni les conditions de paiement client', () => {
+    expect(detectIntent('Relance Durand')).toBe('relance');
+    expect(detectIntent('Durand paie à 45 jours fin de mois')).toBe('conditions_paiement');
+  });
+});
+
+describe('detectIntent — lecture de l’encaissement (PR-07 : pilotage, jamais le flux mutatif)', () => {
+  it('« où en est mon encaissement ? » est une LECTURE de pilotage', () => {
+    for (const m of [
+      'Où en est mon encaissement ?',
+      'Quel est mon taux d’encaissement ?',
+      'Comment va mon encaissement ce trimestre ?',
+    ]) {
+      expect(detectIntent(m)).toBe('pilotage');
+    }
+  });
+
+  it('encaisser une facture précise reste le flux encaisser ; le délai reste le DSO', () => {
+    expect(detectIntent('Encaisse la facture 2026-014')).toBe('encaisser');
+    expect(detectIntent('J’ai encaissé la facture Durand')).toBe('encaisser');
+    expect(detectIntent('Quel est mon délai d’encaissement ?')).toBe('dso');
+  });
+});

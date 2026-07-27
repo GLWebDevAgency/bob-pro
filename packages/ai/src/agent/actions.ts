@@ -139,6 +139,11 @@ export interface InvoiceableQuote {
    * n° 71-584 du 16/07/1971, 0 < taux ≤ 5) — null/absent = aucune. Le flow facturer_situation
    * l'ANNONCE honnêtement (net à payer amputé de la retenue), même substance que la mention UI. */
   retenueGarantiePct?: number | null;
+  /** Repli acompte pro (OPTIONNEL, rétro-compatible) : une situation VIVANTE existe déjà sur ce
+   * devis (brouillons compris, annulées exclues — même règle que hasLivingSituationSibling
+   * mobile). `false` STRICT requis pour offrir la chip « Situation n°1 (30 %) » — absent chez un
+   * hôte historique = fail-closed, jamais un « n°1 » mensonger. */
+  situationInvoiced?: boolean;
 }
 
 /** Outil lier_bon_commande (B8) : attache le NUMÉRO d'engagement d'un bon de commande à un
@@ -306,6 +311,57 @@ export interface SendRelanceActionOutput {
  * quelles (brouillon refusé, destinataire manquant = refus actionnable — jamais contournées). */
 export interface SendInvoiceActionInput {
   invoiceId: string;
+}
+
+/** Outil relance_devis (PR-05) : brouillon LISIBLE de la relance d'un devis envoyé resté sans
+ * réponse — MÊME palier (quoteRelancePalierOf) et MÊME message (buildQuoteRelance @bob/core)
+ * que la carte Aujourd'hui, la fiche devis et le rappel cron. Lecture pure : rien ne part
+ * d'ici — le partage/l'envoi reste un geste séparé (envoyer_devis renouvelle le lien). */
+export interface DraftQuoteRelanceActionInput {
+  quoteId: string;
+}
+
+export interface DraftQuoteRelanceActionOutput {
+  /** false = hors palier J+15/J+30 (trop tôt, statut, date d'ancrage absente) — subject/body
+   * portent alors le message HONNÊTE du service, jamais une relance fabriquée. */
+  relanceable: boolean;
+  /** Palier atteint (j15 | j30) — null quand relanceable est false. */
+  palier: 'j15' | 'j30' | null;
+  subject: string;
+  body: string;
+}
+
+/** Outil marquer_facture_transmise (PR-02) : dates de dépôt/acceptation DÉCLARÉES d'une pièce
+ * ÉMISE vers le canal de facturation du client — MÊME use case RecordInvoiceTransmission que
+ * PATCH /invoices/:id/transmission et l'écran facture (« envoyée le », dépôt Chorus/portail).
+ * Fait déclaré datant un suivi légal : plancher de consentement (registre), jamais un accusé
+ * de plateforme inventé. Champ absent = inchangé, null = effacé (contrat du use case). */
+export interface RecordInvoiceTransmissionActionInput {
+  invoiceId: string;
+  depositedAt?: string | null;
+  acceptedAt?: string | null;
+}
+
+export interface RecordInvoiceTransmissionActionOutput {
+  transmission: { depositedAt: string | null; acceptedAt: string | null } | null;
+}
+
+/** PR-06 — réglage des relances : cadence personnalisée + interrupteur des relances
+ * AUTOMATIQUES (cron). Lecture via cadence_relances ; la bascule (regler_relances_auto) est
+ * une mutation CONFIRMÉE (elle conditionne des emails clients récurrents). */
+export interface RelanceSettingsView {
+  relanceAutoEnabled: boolean;
+  /** Cadence personnalisée (J+n après échéance) — null = cadence par défaut (J+3/J+10/J+20/J+30). */
+  relancePolicy: {
+    cordialAfterDays: number;
+    neutreAfterDays: number;
+    fermeAfterDays: number;
+    miseEnDemeureAfterDays: number;
+  } | null;
+}
+
+export interface SetRelanceAutoActionInput {
+  enabled: boolean;
 }
 
 export interface SendInvoiceActionOutput {
@@ -613,6 +669,26 @@ export interface BobActions {
    * bouton (SendInvoice @bob/core — pièce émise uniquement, lien public + PDF archivé joint,
    * expéditeur perçu = la société). Sortant vers un tiers : confirmation du registre. */
   sendInvoice?(input: SendInvoiceActionInput): Promise<Result<SendInvoiceActionOutput, AppError>>;
+  /** PR-05 — « relance le devis Durand » : brouillon LISIBLE au MÊME palier (quoteRelancePalierOf)
+   * et avec le MÊME message (buildQuoteRelance @bob/core) que la carte Aujourd'hui/fiche devis.
+   * Lecture pure — rien ne part ; hors palier = réponse honnête (relanceable:false). */
+  draftQuoteRelance?(
+    input: DraftQuoteRelanceActionInput,
+  ): Promise<Result<DraftQuoteRelanceActionOutput, AppError>>;
+  /** PR-02 — « j'ai déposé la facture sur Chorus hier » : MÊME use case RecordInvoiceTransmission
+   * que PATCH /invoices/:id/transmission (pièce émise, acceptation ⊇ dépôt — invariants du
+   * domaine, refus restitués verbatim). Fait déclaré, jamais un accusé de plateforme inventé. */
+  recordInvoiceTransmission?(
+    input: RecordInvoiceTransmissionActionInput,
+  ): Promise<Result<RecordInvoiceTransmissionActionOutput, AppError>>;
+  /** PR-06 — lecture de la cadence de relances et de l'interrupteur automatique : MÊME source
+   * CompanyBillingSettings que l'écran Réglages facturation (une seule vérité écran/voix/cron). */
+  getRelanceSettings?(): Promise<Result<RelanceSettingsView, AppError>>;
+  /** PR-06 — bascule des relances AUTOMATIQUES : MÊME chemin UpdateCompanyBillingSettings que
+   * l'écran (révision courante résolue par l'hôte — le geste vocal n'a pas de vue optimiste). */
+  setRelanceAutoEnabled?(
+    input: SetRelanceAutoActionInput,
+  ): Promise<Result<RelanceSettingsView, AppError>>;
   /** Preuve d'un règlement fournisseur déjà exécuté — écriture comptable : palier accounting. */
   recordExpensePayment?(input: RecordExpensePaymentActionInput): Promise<
     Result<{ status: string; alreadyRecorded: boolean; paymentEntryId: string }, AppError>

@@ -37,6 +37,12 @@ import {
   type SearchDocumentsActionOutput,
   type BobActions,
   type DraftRelanceActionInput,
+  type DraftQuoteRelanceActionInput,
+  type DraftQuoteRelanceActionOutput,
+  type RecordInvoiceTransmissionActionInput,
+  type RecordInvoiceTransmissionActionOutput,
+  type RelanceSettingsView,
+  type SetRelanceAutoActionInput,
   type SendRelanceActionInput,
   type SendRelanceActionOutput,
   type SendInvoiceActionInput,
@@ -279,6 +285,10 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       });
     },
     riskTier: 'fiscal',
+    // PR-01 — le numéro LÉGAL attribué traverse la projection publique : l'enchaînement
+    // « je l'envoie au client ? » (local ET /ai/confirm HTTP) se propose avec la commande
+    // canonique « Envoie la facture {numéro} » — identifiant de pièce, jamais un PII.
+    projectPublicResult: (output): ToolPublicResult => ({ number: output.number }),
     run: (input) => actions.issueInvoice(input),
   };
 
@@ -795,6 +805,134 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => sendRelanceAction(input),
     };
     tools.push(envoyerRelance as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL relance_devis (PR-05) : brouillon LISIBLE de la relance d'un devis
+  // envoyé resté sans réponse — MÊME palier J+15/J+30 et MÊME message buildQuoteRelance que la
+  // carte Aujourd'hui/fiche devis. Lecture PURE : rien ne part (le partage reste un geste).
+  const draftQuoteRelanceAction = actions.draftQuoteRelance?.bind(actions);
+  if (draftQuoteRelanceAction) {
+    const relanceDevis: Tool<DraftQuoteRelanceActionInput, DraftQuoteRelanceActionOutput> = {
+      name: 'relance_devis',
+      description:
+        'Prépare le message de relance d’un DEVIS envoyé resté sans réponse (« relance le devis Durand ») : même palier J+15/J+30 et même message pré-rédigé que la carte Aujourd’hui. N’envoie rien — l’envoi du devis (lien de signature renouvelé) reste un geste séparé.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<DraftQuoteRelanceActionInput, AppError> => {
+        const r = raw as { quoteId?: unknown };
+        if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0)
+          return err(appValidation('quoteId', 'Devis manquant.'));
+        return ok({ quoteId: r.quoteId });
+      },
+      run: (input) => draftQuoteRelanceAction(input),
+    };
+    tools.push(relanceDevis as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL marquer_facture_transmise (PR-02) : dates de dépôt/acceptation DÉCLARÉES
+  // d'une pièce ÉMISE — MÊME use case RecordInvoiceTransmission que PATCH /invoices/:id/
+  // transmission. Fait déclaré datant un suivi légal (rappel J+2 soldable à la voix) : plancher
+  // de consentement, comme lier_bon_commande. Jamais un accusé de plateforme inventé.
+  const recordInvoiceTransmissionAction = actions.recordInvoiceTransmission?.bind(actions);
+  if (recordInvoiceTransmissionAction) {
+    const marquerTransmise: Tool<
+      RecordInvoiceTransmissionActionInput,
+      RecordInvoiceTransmissionActionOutput
+    > = {
+      name: 'marquer_facture_transmise',
+      description:
+        'Note la transmission DÉCLARÉE d’une facture émise vers le canal de facturation du client : date d’envoi/de dépôt (depositedAt — email, Chorus Pro, portail) et/ou date d’acceptation (acceptedAt). Dates réelles dites par l’artisan, jamais devinées ; l’acceptation suppose un dépôt (garde du domaine, refus restitué tel quel). Ne renvoie aucun email.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Fait DÉCLARÉ par l'artisan qui date un suivi légal (rappels J+2, carte Encaissement) :
+      // plancher de consentement — même doctrine que lier_bon_commande.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<RecordInvoiceTransmissionActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('transmission', 'Transmission invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['invoiceId', 'depositedAt', 'acceptedAt']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('transmission', 'Champ de transmission inconnu.'));
+        if (typeof r.invoiceId !== 'string' || r.invoiceId.length === 0 || r.invoiceId.length > 200)
+          return err(appValidation('invoiceId', 'Facture manquante.'));
+        const parseDate = (field: 'depositedAt' | 'acceptedAt'): Result<string | null | undefined, AppError> => {
+          if (!(field in r)) return ok(undefined);
+          const value = r[field];
+          if (value === null) return ok(null);
+          if (typeof value !== 'string' || !isValidDateOnly(value))
+            return err(appValidation(field, 'Date déclarée invalide (AAAA-MM-JJ ou null).'));
+          return ok(value);
+        };
+        const depositedAt = parseDate('depositedAt');
+        if (!depositedAt.ok) return depositedAt;
+        const acceptedAt = parseDate('acceptedAt');
+        if (!acceptedAt.ok) return acceptedAt;
+        if (depositedAt.value === undefined && acceptedAt.value === undefined)
+          return err(appValidation('transmission', 'Au moins une date déclarée est requise (depositedAt | acceptedAt).'));
+        return ok({
+          invoiceId: r.invoiceId,
+          ...(depositedAt.value !== undefined ? { depositedAt: depositedAt.value } : {}),
+          ...(acceptedAt.value !== undefined ? { acceptedAt: acceptedAt.value } : {}),
+        });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        depositedAt: output.transmission?.depositedAt ?? null,
+        acceptedAt: output.transmission?.acceptedAt ?? null,
+      }),
+      run: (input) => recordInvoiceTransmissionAction(input),
+    };
+    tools.push(marquerTransmise as AnyTool);
+  }
+
+  // —— Outils OPTIONNELS cadence de relances (PR-06) : lecture de la politique en vigueur et
+  // bascule CONFIRMÉE des relances automatiques — MÊME source CompanyBillingSettings que
+  // l'écran Réglages facturation. La cadence fine (4 paliers) reste réglée à l'écran.
+  const getRelanceSettingsAction = actions.getRelanceSettings?.bind(actions);
+  if (getRelanceSettingsAction) {
+    const cadenceRelances: Tool<Record<string, never>, RelanceSettingsView> = {
+      name: 'cadence_relances',
+      description:
+        'Lit la politique de relances de la société : cadence (J+n après échéance pour chaque palier cordial/neutre/ferme/mise en demeure) et état des relances automatiques. Lecture seule.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: () => ok({}),
+      run: () => getRelanceSettingsAction(),
+    };
+    tools.push(cadenceRelances as AnyTool);
+  }
+
+  const setRelanceAutoEnabledAction = actions.setRelanceAutoEnabled?.bind(actions);
+  if (setRelanceAutoEnabledAction) {
+    const reglerRelancesAuto: Tool<SetRelanceAutoActionInput, RelanceSettingsView> = {
+      name: 'regler_relances_auto',
+      description:
+        'Active ou coupe les relances AUTOMATIQUES de la société (« coupe les relances automatiques ») — même réglage que l’écran Réglages facturation. La relance manuelle reste toujours possible. Ne déclenche aucun envoi immédiat.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Ce réglage conditionne des EMAILS CLIENTS récurrents (cron) : plancher de consentement —
+      // jamais basculé sans confirmation, même en autonomie 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<SetRelanceAutoActionInput, AppError> => {
+        const r = raw as { enabled?: unknown };
+        if (typeof r?.enabled !== 'boolean')
+          return err(appValidation('enabled', 'Booléen « relances automatiques » requis.'));
+        return ok({ enabled: r.enabled });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        relanceAutoEnabled: output.relanceAutoEnabled,
+      }),
+      run: (input) => setRelanceAutoEnabledAction(input),
+    };
+    tools.push(reglerRelancesAuto as AnyTool);
   }
 
   // —— Enregistrement d'un règlement fournisseur déjà effectué : ce tool ne déclenche JAMAIS
