@@ -8,7 +8,7 @@ const VERSION = /^[1-9][0-9]{0,9}$/u;
 const FINGERPRINT = /^[a-f0-9]{64}$/u;
 const MISSION_EXPAND_MIGRATION = '20260726010000_agent_missions_expand';
 const MISSION_VALIDATE_MIGRATION = '20260726020000_agent_missions_validate';
-const KEY_READINESS_MIGRATION = '20260727110000_agent_mission_fingerprint_key_readiness';
+const KEY_READINESS_MIGRATION = '20260727210000_agent_mission_fingerprint_key_readiness';
 const READINESS_ARTIFACT_KEYS = Object.freeze([
   'floorTablePresent',
   'bindingTablePresent',

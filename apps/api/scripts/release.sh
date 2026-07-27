@@ -2317,7 +2317,7 @@ SELECT CASE WHEN EXISTS (
   SELECT 1
     FROM public._prisma_migrations
    WHERE migration_name =
-         '20260727060000_realtime_admission_cancellation_fence_expand'
+         '20260727160000_realtime_admission_cancellation_fence_expand'
      AND finished_at IS NOT NULL
      AND rolled_back_at IS NULL
 ) THEN 'true' ELSE 'false' END;
@@ -2403,16 +2403,16 @@ SQL
 SELECT pg_catalog.count(*)::TEXT
   FROM public._prisma_migrations
  WHERE migration_name IN (
-         '20260727040000_agent_mission_realtime_lease_expand',
-         '20260727050000_agent_mission_realtime_lease_validate',
-         '20260727060000_realtime_admission_cancellation_fence_expand',
-         '20260727070000_realtime_admission_cancellation_fence_validate',
-         '20260727080000_agent_mission_event_command_namespace_expand',
-         '20260727090000_agent_mission_event_command_namespace_validate',
-         '20260727100000_agent_mission_event_command_namespace_cutover',
-         '20260727110000_agent_mission_fingerprint_key_readiness',
-         '20260727120000_agent_mission_bootstrap_receipt_expand',
-         '20260727130000_agent_mission_bootstrap_receipt_validate'
+         '20260727140000_agent_mission_realtime_lease_expand',
+         '20260727150000_agent_mission_realtime_lease_validate',
+         '20260727160000_realtime_admission_cancellation_fence_expand',
+         '20260727170000_realtime_admission_cancellation_fence_validate',
+         '20260727180000_agent_mission_event_command_namespace_expand',
+         '20260727190000_agent_mission_event_command_namespace_validate',
+         '20260727200000_agent_mission_event_command_namespace_cutover',
+         '20260727210000_agent_mission_fingerprint_key_readiness',
+         '20260727220000_agent_mission_bootstrap_receipt_expand',
+         '20260727230000_agent_mission_bootstrap_receipt_validate'
        )
    AND finished_at IS NOT NULL
    AND rolled_back_at IS NULL;

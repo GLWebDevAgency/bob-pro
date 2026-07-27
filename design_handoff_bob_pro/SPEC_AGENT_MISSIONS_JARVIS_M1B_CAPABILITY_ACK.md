@@ -527,7 +527,9 @@ Règles :
 - aucune valeur réelle n'est committée ;
 - **[BLOQUÉ FONDATEUR : keyring HMAC AgentMission de production et destination de secrets
   approuvée]** ;
-- **[BLOQUÉ FONDATEUR : identité exacte du compte interne autorisé pour le smoke staging]** ;
+- compte technique staging provisionné par le vrai onboarding et épinglé dans le secret store
+  GitHub `staging` ; son identité exacte ne doit jamais être committée. Ce prérequis est soldé
+  pour staging et reste distinct de toute future identité production ;
 - **[BLOQUÉ FONDATEUR : autorisation explicite, datée et rattachée à son canal, de modifier la
   ligne correspondante dans `MATRICE_FLAGS_V1.md`]** ;
 - le blocage n'empêche pas d'implémenter ni de tester le chemin OFF et les tests avec secrets
@@ -569,7 +571,9 @@ Préconditions fail-closed :
   `GET /voice/realtime/config` rende `available=true`, `transport=webrtc` et un mode OpenAI
   supporté. Un refus publie seulement une cause bornée (`disabled`, `not_entitled`,
   `entitlement_unavailable` ou contrat incompatible), jamais email, identifiant, token, modèle ou
-  secret, et termine le run en quelques secondes ;
+  secret. Le job `certify` s'arrête alors avant toute installation, compilation ou mutation ;
+  le job `cleanup`, volontairement `always()` et autonome, continue toutefois ses vérifications
+  et peut prendre plusieurs minutes même quand aucune activation n'a eu lieu ;
 - Bob Live OpenAI, sa capacité et son auditeur Whisper Bob-managed privé déjà complets dans
   staging, ou livrés et certifiés par le même SHA candidat avant l'ouverture de la fenêtre
   positive. La fenêtre M1-B ne bascule pas le provider et ne remplace aucun secret Bob Live ;
@@ -593,6 +597,18 @@ ce lane n'efface jamais l'historique ou l'état d'un autre compte. Le cleanup `a
 même distinction afin qu'un échec antérieur aux migrations puisse être attesté propre sans appeler
 une table ou une fonction encore absente ; dès qu'une migration est terminée, seule la preuve
 stricte de son état OFF est admise.
+
+Le run staging OFF `30306792678` a appliqué la première numérotation M1-B avant que le train
+chantiers/contacts n'ajoute sur `main` des migrations allant jusqu'à `20260727120000`. Le rebase
+final déplace donc les onze migrations M1-B, encore absentes de production, dans la plage
+`20260727130000` → `20260727230000`. Staging est réconcilié une seule fois sans rejouer de SQL :
+transaction verrouillée sur `_prisma_migrations`, identité de base exacte, onze anciennes lignes
+terminées/non rollbackées, onze checksums SHA-256 identiques aux fichiers et onze nouvelles clés
+absentes ; seule `migration_name` change selon la table de correspondance revue. Toute différence
+de cardinalité, checksum, état ou identité annule la transaction. La preuve post-opération exige
+les onze nouveaux noms, les mêmes checksums et l'absence des anciens noms. Production ne reçoit
+aucune réconciliation : elle applique directement la lignée finale dans l'ordre canonique.
+
 La négociation WebRTC OFF finale n'est exigée que si un deployment du binaire M1-B a réellement
 été acquitté `SUCCESS` par Railway — un identifiant créé ne vaut pas cet ACK — ou si le bloc
 runtime a été possédé ; avant cela, absence des variables, migration

@@ -540,7 +540,7 @@ COMMIT;
 SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727030000_release_flag_cabinet_subject_revocation_fence/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727130000_release_flag_cabinet_subject_revocation_fence/migration.sql"
 
 # La révocation d'un cabinet invalide la version parente et journalise chaque override dans la
 # même transaction. Ce chemin ne doit jamais supprimer silencieusement un ciblage encore admis.
@@ -625,7 +625,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727040000_agent_mission_realtime_lease_expand/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727140000_agent_mission_realtime_lease_expand/migration.sql"
 
 # Writer admission N-1 exact après expand : les quatre colonnes ajoutées sont omises et restent
 # NULL. La forme N+1 null/null est identique, tandis qu'un demi-binding doit déjà être rejeté.
@@ -744,7 +744,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727050000_agent_mission_realtime_lease_validate/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727150000_agent_mission_realtime_lease_validate/migration.sql"
 
 # Writer N-1 exact après validate et nouvelle preuve de fermeture des NULL partiels.
 "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -829,7 +829,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727060000_realtime_admission_cancellation_fence_expand/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727160000_realtime_admission_cancellation_fence_expand/migration.sql"
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
@@ -907,7 +907,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727070000_realtime_admission_cancellation_fence_validate/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727170000_realtime_admission_cancellation_fence_validate/migration.sql"
 
 # Même preuve après VALIDATE : la migration intermédiaire et l'état final acceptent N-1 seulement
 # quand le handle n'a jamais été annulé.
@@ -974,7 +974,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727080000_agent_mission_event_command_namespace_expand/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727180000_agent_mission_event_command_namespace_expand/migration.sql"
 
 # Les writers d'événement sont testés sur la vraie table, sous FORCE RLS et avec le rôle runtime
 # non-superuser. La forme N-1 garde un commandId v8 pour screen_acknowledged ; la forme N utilise
@@ -1516,7 +1516,7 @@ certify_agent_mission_event_writer \
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727090000_agent_mission_event_command_namespace_validate/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727190000_agent_mission_event_command_namespace_validate/migration.sql"
 
 # État validé mais non cutover : la compatibilité du writer v8 reste obligatoire.
 certify_agent_mission_event_writer \
@@ -1530,7 +1530,7 @@ certify_agent_mission_event_writer \
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727100000_agent_mission_event_command_namespace_cutover/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727200000_agent_mission_event_command_namespace_cutover/migration.sql"
 
 # État final : N-1 v8 reste accepté pendant le rolling deploy et N peut enfin persister le
 # commandId HTTP v4 sans mensonge de namespace.
@@ -1552,7 +1552,7 @@ certify_agent_mission_event_writer \
   50000000-0000-4000-8000-000000000006
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727110000_agent_mission_fingerprint_key_readiness/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727210000_agent_mission_fingerprint_key_readiness/migration.sql"
 
 # Même une migration fonctionnelle additive est éprouvée avec la forme exacte du writer N-1.
 certify_agent_mission_event_writer \
@@ -1566,7 +1566,7 @@ certify_agent_mission_event_writer \
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727120000_agent_mission_bootstrap_receipt_expand/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727220000_agent_mission_bootstrap_receipt_expand/migration.sql"
 
 # Writer admission N-1 exact sous le trigger receipt final de l'expand : la nouvelle colonne est
 # omise, reste NULL et ne confère donc aucune autorité. Le writer N prouve en plus que le reçu est
@@ -1674,7 +1674,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727130000_agent_mission_bootstrap_receipt_validate/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260727230000_agent_mission_bootstrap_receipt_validate/migration.sql"
 
 # Writer N-1 exact après VALIDATE : même forme historique, même NULL honnête, sous l'état final.
 "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

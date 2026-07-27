@@ -154,7 +154,7 @@ test('bootstrap distingue strictement staging N-1 et migration canonique termin√
   );
   assert.match(
     M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
-    /20260727030000_release_flag_cabinet_subject_revocation_fence/u,
+    /20260727130000_release_flag_cabinet_subject_revocation_fence/u,
   );
   assert.match(
     M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
