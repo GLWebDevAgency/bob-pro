@@ -9,7 +9,6 @@ import {
   quoteRelancePalierOf,
   type Customer,
   type Quote,
-  type QuoteRelancePalier,
 } from '@bob/core';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
