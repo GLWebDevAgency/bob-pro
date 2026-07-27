@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "service": {
+    "id": "bob-live-whisper-audit",
+    "privateHostname": "bob-live-whisper-audit.railway.internal",
+    "healthPath": "/v1/health",
+    "transcriptionPath": "/v1/audio/transcriptions"
+  },
+  "engine": {
+    "id": "whisper.cpp",
+    "version": "v1.9.1",
+    "sourceUrl": "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.1.tar.gz",
+    "sourceSha256": "147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447"
+  },
+  "model": {
+    "id": "whisper-large-v3-turbo",
+    "artifact": "ggml-large-v3-turbo-q5_0.bin",
+    "repositoryRevision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+    "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+    "bytes": 574041195
+  },
+  "limits": {
+    "maxAudioBytes": 4194304,
+    "maxRequestBytes": 4259840,
+    "maxResponseBytes": 65536,
+    "maxTranscriptCharacters": 16384,
+    "minAudioDurationMs": 100,
+    "maxAudioDurationMs": 45000,
+    "maxWaveChunks": 64,
+    "maxQueuedRequests": 2,
+    "maxConcurrentInferences": 1,
+    "inferenceTimeoutMs": 20000
+  }
+}

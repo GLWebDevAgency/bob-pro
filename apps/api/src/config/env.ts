@@ -3,6 +3,10 @@ import {
   AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUIRED_BUDGET_MS,
   sentryDsnRejectionReason,
 } from '@bob/core';
+import {
+  isValidLocalWhisperAuditToken,
+  parseLocalWhisperAuditBaseUrl,
+} from '../ai/local-whisper-audit-contract';
 
 const MISTRAL_V2_VERSIONED_SECRET = /^[A-Za-z0-9_-]{43}$/u;
 const MISTRAL_V2_MAX_VERSIONED_KEYS = 8;
@@ -40,10 +44,7 @@ const optionalStripeLiveMode = z.preprocess(
   emptyStringAsUndefined,
   z.enum(['true', 'false']).optional(),
 );
-const optionalStripeReturnUrl = z.preprocess(
-  emptyStringAsUndefined,
-  z.string().url().optional(),
-);
+const optionalStripeReturnUrl = z.preprocess(emptyStringAsUndefined, z.string().url().optional());
 
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
@@ -157,16 +158,16 @@ const schema = z.object({
   // conservé au parseur pour détecter explicitement les anciennes configs et les refuser.
   BOB_LIVE_AUDIT_PROVIDER: z.enum(['openai', 'local-whisper']).default('local-whisper'),
   BOB_LIVE_LOCAL_AUDIT_BASE_URL: z.string().url().optional(),
-  BOB_LIVE_LOCAL_AUDIT_TOKEN: z.string().trim().min(32).optional(),
+  BOB_LIVE_LOCAL_AUDIT_TOKEN: z
+    .string()
+    .refine(isValidLocalWhisperAuditToken, {
+      message: 'BOB_LIVE_LOCAL_AUDIT_TOKEN doit contenir 32 à 256 caractères ASCII visibles.',
+    })
+    .optional(),
   // Capability métier Mission : dormant sans master. Le keyring est dédié aux fingerprints
   // append-only des missions et ne doit partager aucun matériau avec Bob Live.
   BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: z.enum(['true', 'false']).default('false'),
-  BOB_AGENT_MISSION_HMAC_KEY_VERSION: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(2_147_483_647)
-    .optional(),
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION: z.coerce.number().int().min(1).max(2_147_483_647).optional(),
   BOB_AGENT_MISSION_HMAC_KEYRING: z.string().trim().min(1).max(16_384).optional(),
   OPENAI_REALTIME_ENABLED: z.enum(['true', 'false']).default('false'),
   OPENAI_REALTIME_MODEL: z.string().trim().min(1).max(100).default('gpt-realtime-2.1'),
@@ -398,11 +399,12 @@ function parseBobLiveSubjectHmacSecrets(raw: string): ReadonlyMap<number, string
     throw new Error('BOB_LIVE_SUBJECT_HMAC_KEYRING doit être un objet JSON valide.');
   }
   if (
-    parsed === null
-    || typeof parsed !== 'object'
-    || Array.isArray(parsed)
-    || Object.getPrototypeOf(parsed) !== Object.prototype
-  ) throw new Error('BOB_LIVE_SUBJECT_HMAC_KEYRING doit être un objet JSON.');
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.getPrototypeOf(parsed) !== Object.prototype
+  )
+    throw new Error('BOB_LIVE_SUBJECT_HMAC_KEYRING doit être un objet JSON.');
 
   const entries = Object.entries(parsed as Record<string, unknown>);
   if (entries.length < 1 || entries.length > BOB_LIVE_SUBJECT_MAX_VERSIONED_KEYS) {
@@ -415,20 +417,21 @@ function parseBobLiveSubjectHmacSecrets(raw: string): ReadonlyMap<number, string
   for (const [rawVersion, rawSecret] of entries) {
     const version = Number(rawVersion);
     if (
-      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
-      || !Number.isSafeInteger(version)
-      || version > 2_147_483_647
-      || typeof rawSecret !== 'string'
-      || rawSecret.length < 32
-      || rawSecret.length > 512
-      || rawSecret.includes('[')
-      || rawSecret.includes(']')
-      || [...rawSecret].some((character) => {
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion) ||
+      !Number.isSafeInteger(version) ||
+      version > 2_147_483_647 ||
+      typeof rawSecret !== 'string' ||
+      rawSecret.length < 32 ||
+      rawSecret.length > 512 ||
+      rawSecret.includes('[') ||
+      rawSecret.includes(']') ||
+      [...rawSecret].some((character) => {
         const codePoint = character.codePointAt(0) ?? 0;
         return codePoint < 0x21 || codePoint > 0x7e;
-      })
-      || seenSecrets.has(rawSecret)
-    ) throw new Error('BOB_LIVE_SUBJECT_HMAC_KEYRING contient une version ou une clé invalide.');
+      }) ||
+      seenSecrets.has(rawSecret)
+    )
+      throw new Error('BOB_LIVE_SUBJECT_HMAC_KEYRING contient une version ou une clé invalide.');
     secrets.set(version, rawSecret);
     seenSecrets.add(rawSecret);
   }
@@ -447,7 +450,7 @@ export function resolveBobLiveSubjectHmacKeyRing(
     return Object.freeze({
       currentVersion,
       versions: Object.freeze([currentVersion]),
-      secret: (version: number) => version === currentVersion ? legacyCurrentSecret : null,
+      secret: (version: number) => (version === currentVersion ? legacyCurrentSecret : null),
     });
   }
 
@@ -477,11 +480,12 @@ function parseBobLiveProofSecrets(raw: string): ReadonlyMap<number, string> {
     throw new Error('BOB_LIVE_PROOF_KEYRING doit être un objet JSON valide.');
   }
   if (
-    parsed === null
-    || typeof parsed !== 'object'
-    || Array.isArray(parsed)
-    || Object.getPrototypeOf(parsed) !== Object.prototype
-  ) throw new Error('BOB_LIVE_PROOF_KEYRING doit être un objet JSON.');
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.getPrototypeOf(parsed) !== Object.prototype
+  )
+    throw new Error('BOB_LIVE_PROOF_KEYRING doit être un objet JSON.');
 
   const entries = Object.entries(parsed as Record<string, unknown>);
   if (entries.length < 1 || entries.length > BOB_LIVE_PROOF_MAX_VERSIONED_KEYS) {
@@ -494,20 +498,21 @@ function parseBobLiveProofSecrets(raw: string): ReadonlyMap<number, string> {
   for (const [rawVersion, rawSecret] of entries) {
     const version = Number(rawVersion);
     if (
-      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
-      || !Number.isSafeInteger(version)
-      || version > 2_147_483_647
-      || typeof rawSecret !== 'string'
-      || Buffer.byteLength(rawSecret, 'utf8') < 32
-      || Buffer.byteLength(rawSecret, 'utf8') > 512
-      || rawSecret.includes('[')
-      || rawSecret.includes(']')
-      || [...rawSecret].some((character) => {
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion) ||
+      !Number.isSafeInteger(version) ||
+      version > 2_147_483_647 ||
+      typeof rawSecret !== 'string' ||
+      Buffer.byteLength(rawSecret, 'utf8') < 32 ||
+      Buffer.byteLength(rawSecret, 'utf8') > 512 ||
+      rawSecret.includes('[') ||
+      rawSecret.includes(']') ||
+      [...rawSecret].some((character) => {
         const codePoint = character.codePointAt(0) ?? 0;
         return codePoint < 0x21 || codePoint > 0x7e;
-      })
-      || seenSecrets.has(rawSecret)
-    ) throw new Error('BOB_LIVE_PROOF_KEYRING contient une version ou une clé invalide.');
+      }) ||
+      seenSecrets.has(rawSecret)
+    )
+      throw new Error('BOB_LIVE_PROOF_KEYRING contient une version ou une clé invalide.');
     secrets.set(version, rawSecret);
     seenSecrets.add(rawSecret);
   }
@@ -516,15 +521,14 @@ function parseBobLiveProofSecrets(raw: string): ReadonlyMap<number, string> {
 
 export function resolveBobLiveProofKeyRing(env: Env): ResolvedBobLiveProofKeyRing | null {
   const currentVersion = env.BOB_LIVE_PROOF_KEY_VERSION ?? env.OPENAI_REALTIME_PROOF_KEY_VERSION;
-  const legacyCurrentSecret =
-    env.BOB_LIVE_PROOF_SECRET ?? env.OPENAI_REALTIME_PROOF_SECRET ?? null;
+  const legacyCurrentSecret = env.BOB_LIVE_PROOF_SECRET ?? env.OPENAI_REALTIME_PROOF_SECRET ?? null;
   const raw = env.BOB_LIVE_PROOF_KEYRING;
   if (raw === undefined) {
     if (legacyCurrentSecret === null) return null;
     return Object.freeze({
       currentVersion,
       versions: Object.freeze([currentVersion]),
-      secret: (version: number) => version === currentVersion ? legacyCurrentSecret : null,
+      secret: (version: number) => (version === currentVersion ? legacyCurrentSecret : null),
     });
   }
 
@@ -535,8 +539,8 @@ export function resolveBobLiveProofKeyRing(env: Env): ResolvedBobLiveProofKeyRin
     throw new Error('La version courante preuve Bob Live doit exister dans son keyring HMAC.');
   }
   if (
-    versions.at(-1) !== currentVersion
-    || (versions.length === 2 && versions[1] !== versions[0]! + 1)
+    versions.at(-1) !== currentVersion ||
+    (versions.length === 2 && versions[1] !== versions[0]! + 1)
   ) {
     throw new Error('BOB_LIVE_PROOF_KEYRING doit contenir uniquement N-1/N avec N courant.');
   }
@@ -560,10 +564,10 @@ function parseAgentMissionHmacSecrets(raw: string): ReadonlyMap<number, string> 
     throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING doit être un objet JSON valide.');
   }
   if (
-    parsed === null
-    || typeof parsed !== 'object'
-    || Array.isArray(parsed)
-    || Object.getPrototypeOf(parsed) !== Object.prototype
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.getPrototypeOf(parsed) !== Object.prototype
   ) {
     throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING doit être un objet JSON.');
   }
@@ -578,12 +582,12 @@ function parseAgentMissionHmacSecrets(raw: string): ReadonlyMap<number, string> 
   for (const [rawVersion, rawSecret] of entries) {
     const version = Number(rawVersion);
     if (
-      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
-      || !Number.isSafeInteger(version)
-      || version > 2_147_483_647
-      || typeof rawSecret !== 'string'
-      || !MISTRAL_V2_VERSIONED_SECRET.test(rawSecret)
-      || seenSecrets.has(rawSecret)
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion) ||
+      !Number.isSafeInteger(version) ||
+      version > 2_147_483_647 ||
+      typeof rawSecret !== 'string' ||
+      !MISTRAL_V2_VERSIONED_SECRET.test(rawSecret) ||
+      seenSecrets.has(rawSecret)
     ) {
       throw new Error('BOB_AGENT_MISSION_HMAC_KEYRING contient une version ou une clé invalide.');
     }
@@ -599,9 +603,7 @@ function parseAgentMissionHmacSecrets(raw: string): ReadonlyMap<number, string> 
   return secrets;
 }
 
-export function resolveAgentMissionHmacKeyRing(
-  env: Env,
-): ResolvedAgentMissionHmacKeyRing | null {
+export function resolveAgentMissionHmacKeyRing(env: Env): ResolvedAgentMissionHmacKeyRing | null {
   const currentVersion = env.BOB_AGENT_MISSION_HMAC_KEY_VERSION;
   const raw = env.BOB_AGENT_MISSION_HMAC_KEYRING;
   if (currentVersion === undefined && raw === undefined) return null;
@@ -627,8 +629,7 @@ export function resolveAgentMissionHmacKeyRing(
 function parseMistralV2VersionedSecrets(
   raw: string,
   variableName:
-    | 'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING'
-    | 'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+    'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING' | 'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
 ): ReadonlyMap<number, string> {
   let parsed: unknown;
   try {
@@ -637,10 +638,10 @@ function parseMistralV2VersionedSecrets(
     throw new Error(`${variableName} doit être un objet JSON valide.`);
   }
   if (
-    parsed === null
-    || typeof parsed !== 'object'
-    || Array.isArray(parsed)
-    || Object.getPrototypeOf(parsed) !== Object.prototype
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.getPrototypeOf(parsed) !== Object.prototype
   ) {
     throw new Error(`${variableName} doit être un objet JSON.`);
   }
@@ -655,12 +656,12 @@ function parseMistralV2VersionedSecrets(
   for (const [rawVersion, rawSecret] of entries) {
     const version = Number(rawVersion);
     if (
-      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
-      || !Number.isSafeInteger(version)
-      || version > 2_147_483_647
-      || typeof rawSecret !== 'string'
-      || !MISTRAL_V2_VERSIONED_SECRET.test(rawSecret)
-      || seenSecrets.has(rawSecret)
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion) ||
+      !Number.isSafeInteger(version) ||
+      version > 2_147_483_647 ||
+      typeof rawSecret !== 'string' ||
+      !MISTRAL_V2_VERSIONED_SECRET.test(rawSecret) ||
+      seenSecrets.has(rawSecret)
     ) {
       throw new Error(`${variableName} contient une version ou une clé invalide.`);
     }
@@ -674,9 +675,7 @@ function parseMistralV2VersionedSecrets(
   return secrets;
 }
 
-function parseMistralConversationPersistenceSecrets(
-  raw: string,
-): ReadonlyMap<number, Uint8Array> {
+function parseMistralConversationPersistenceSecrets(raw: string): ReadonlyMap<number, Uint8Array> {
   const secrets = new Map<number, Uint8Array>();
   for (const [version, rawSecret] of parseMistralV2VersionedSecrets(
     raw,
@@ -689,10 +688,7 @@ function parseMistralConversationPersistenceSecrets(
 }
 
 function parseMistralV2IdentityEncryptionSecrets(raw: string): ReadonlyMap<number, string> {
-  return parseMistralV2VersionedSecrets(
-    raw,
-    'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
-  );
+  return parseMistralV2VersionedSecrets(raw, 'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING');
 }
 
 export function resolveMistralConversationPersistenceKeyRing(
@@ -762,24 +758,27 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
       'Configuration capacité Bob Live partielle : plafond global, plafond fournisseur et version sont indissociables.',
     );
   }
-  const globalCapacity = configuredCapacityValues === capacityValues.length
-    ? Object.freeze({
-        providerId: provider,
-        providerModel,
-        globalMaxSessions: env.BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS as number,
-        providerMaxSessions: env.BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS as number,
-        configVersion: env.BOB_LIVE_CAPACITY_CONFIG_VERSION as number,
-      })
-    : null;
+  const globalCapacity =
+    configuredCapacityValues === capacityValues.length
+      ? Object.freeze({
+          providerId: provider,
+          providerModel,
+          globalMaxSessions: env.BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS as number,
+          providerMaxSessions: env.BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS as number,
+          configVersion: env.BOB_LIVE_CAPACITY_CONFIG_VERSION as number,
+        })
+      : null;
   if (globalCapacity && globalCapacity.globalMaxSessions > globalCapacity.providerMaxSessions) {
     throw new Error('Le plafond global Bob Live ne peut pas dépasser le plafond du fournisseur.');
   }
   if (
-    globalCapacity
-    && provider === 'mistral'
-    && globalCapacity.globalMaxSessions > env.BOB_LIVE_GATEWAY_MAX_CONNECTIONS
+    globalCapacity &&
+    provider === 'mistral' &&
+    globalCapacity.globalMaxSessions > env.BOB_LIVE_GATEWAY_MAX_CONNECTIONS
   ) {
-    throw new Error('Le plafond global Bob Live ne peut pas dépasser la capacité du gateway Mistral.');
+    throw new Error(
+      'Le plafond global Bob Live ne peut pas dépasser la capacité du gateway Mistral.',
+    );
   }
   const proofKeyVersion = env.BOB_LIVE_PROOF_KEY_VERSION ?? env.OPENAI_REALTIME_PROOF_KEY_VERSION;
   const subjectHmacKeyRing = resolveBobLiveSubjectHmacKeyRing(env);
@@ -837,16 +836,11 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
     localAuditToken: env.BOB_LIVE_LOCAL_AUDIT_TOKEN ?? null,
     mistralTargetDelayMs: env.MISTRAL_REALTIME_TARGET_DELAY_MS,
     mistralWebsocketUrl: env.BOB_LIVE_MISTRAL_WEBSOCKET_URL,
-    mistralV2TerminalReplayEnabled:
-      env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED === 'true',
-    mistralV2InitialBootstrapEnabled:
-      env.BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED === 'true',
-    mistralV2BootstrapReaperIntervalMs:
-      env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_INTERVAL_MS,
-    mistralV2BootstrapReaperBatchSize:
-      env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_BATCH_SIZE,
-    mistralV2BootstrapReaperMaxBatches:
-      env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_MAX_BATCHES,
+    mistralV2TerminalReplayEnabled: env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED === 'true',
+    mistralV2InitialBootstrapEnabled: env.BOB_LIVE_MISTRAL_V2_INITIAL_BOOTSTRAP_ENABLED === 'true',
+    mistralV2BootstrapReaperIntervalMs: env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_INTERVAL_MS,
+    mistralV2BootstrapReaperBatchSize: env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_BATCH_SIZE,
+    mistralV2BootstrapReaperMaxBatches: env.BOB_LIVE_MISTRAL_V2_BOOTSTRAP_REAPER_MAX_BATCHES,
   };
 }
 
@@ -1002,8 +996,7 @@ export function loadEnv(): Env {
   }
   const bobLive = resolveBobLiveEnv(parsed.data);
   const agentMissionKeyRing = resolveAgentMissionHmacKeyRing(parsed.data);
-  const agentMissionsQuoteV1Enabled =
-    parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
+  const agentMissionsQuoteV1Enabled = parsed.data.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED === 'true';
   if (!agentMissionsQuoteV1Enabled && agentMissionKeyRing !== null) {
     throw new Error(
       'Le keyring AgentMission doit être absent lorsque BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=false.',
@@ -1016,9 +1009,7 @@ export function loadEnv(): Env {
       );
     }
     if (!bobLive.enabled || bobLive.provider !== 'openai') {
-      throw new Error(
-        'AgentMission devis V1 exige Bob Live actif avec BOB_LIVE_PROVIDER=openai.',
-      );
+      throw new Error('AgentMission devis V1 exige Bob Live actif avec BOB_LIVE_PROVIDER=openai.');
     }
   }
   if (bobLive.provider !== 'openai' && bobLive.speechDelivery !== 'audited-signed-url-v1') {
@@ -1026,26 +1017,23 @@ export function loadEnv(): Env {
       'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 exige BOB_LIVE_PROVIDER=openai.',
     );
   }
-  if (
-    bobLive.speechDelivery === 'openai-native-webrtc-v1'
-    && !OPENAI_NATIVE_WEBRTC_RUNTIME_READY
-  ) {
+  if (bobLive.speechDelivery === 'openai-native-webrtc-v1' && !OPENAI_NATIVE_WEBRTC_RUNTIME_READY) {
     throw new Error(
       'BOB_LIVE_SPEECH_DELIVERY=openai-native-webrtc-v1 est bloqué tant que le duplex natif n’est pas certifié.',
     );
   }
   if (
-    bobLive.speechDelivery === 'openai-native-webrtc-v1'
-    && parsed.data.BOB_LIVE_PROOF_KEYRING === undefined
+    bobLive.speechDelivery === 'openai-native-webrtc-v1' &&
+    parsed.data.BOB_LIVE_PROOF_KEYRING === undefined
   ) {
     throw new Error('La restitution OpenAI native exige BOB_LIVE_PROOF_KEYRING.');
   }
   const mistralV2PersistenceConfigured =
-    parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
-    || parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined;
+    parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined ||
+    parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined;
   const mistralV2IdentityEncryptionConfigured =
-    parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION !== undefined
-    || parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING !== undefined;
+    parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION !== undefined ||
+    parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING !== undefined;
   if (!bobLive.mistralV2TerminalReplayEnabled && mistralV2PersistenceConfigured) {
     throw new Error(
       'Le keyring Mistral v2 ne peut pas être configuré lorsque le replay terminal est désactivé.',
@@ -1065,13 +1053,8 @@ export function loadEnv(): Env {
       );
     }
   }
-  if (
-    bobLive.mistralV2InitialBootstrapEnabled
-    && !bobLive.mistralV2TerminalReplayEnabled
-  ) {
-    throw new Error(
-      'Le bootstrap initial Mistral v2 exige le replay terminal Mistral v2 actif.',
-    );
+  if (bobLive.mistralV2InitialBootstrapEnabled && !bobLive.mistralV2TerminalReplayEnabled) {
+    throw new Error('Le bootstrap initial Mistral v2 exige le replay terminal Mistral v2 actif.');
   }
   if (!bobLive.mistralV2TerminalReplayEnabled && mistralV2IdentityEncryptionConfigured) {
     throw new Error(
@@ -1119,22 +1102,29 @@ export function loadEnv(): Env {
         throw new Error(`${name} contient un placeholder.`);
       }
     }
-    const subjectHmacSecrets = bobLive.subjectHmacKeyRing?.versions.map((version) => {
-      const secret = bobLive.subjectHmacKeyRing?.secret(version);
-      if (!secret) throw new Error(`Clé HMAC sujet Bob Live ${version} indisponible.`);
-      return secret;
-    }) ?? [];
-    const proofSecrets = bobLive.proofKeyRing?.versions.map((version) => {
-      const secret = bobLive.proofKeyRing?.secret(version);
-      if (!secret) throw new Error(`Clé HMAC preuve Bob Live ${version} indisponible.`);
-      return secret;
-    }) ?? [];
-    const agentMissionSecrets = agentMissionKeyRing?.versions.map((version) => {
-      const secret = agentMissionKeyRing.secret(version);
-      if (!secret) throw new Error(`Clé HMAC AgentMission ${version} indisponible.`);
-      return secret;
-    }) ?? [];
+    const subjectHmacSecrets =
+      bobLive.subjectHmacKeyRing?.versions.map((version) => {
+        const secret = bobLive.subjectHmacKeyRing?.secret(version);
+        if (!secret) throw new Error(`Clé HMAC sujet Bob Live ${version} indisponible.`);
+        return secret;
+      }) ?? [];
+    const proofSecrets =
+      bobLive.proofKeyRing?.versions.map((version) => {
+        const secret = bobLive.proofKeyRing?.secret(version);
+        if (!secret) throw new Error(`Clé HMAC preuve Bob Live ${version} indisponible.`);
+        return secret;
+      }) ?? [];
+    const agentMissionSecrets =
+      agentMissionKeyRing?.versions.map((version) => {
+        const secret = agentMissionKeyRing.secret(version);
+        if (!secret) throw new Error(`Clé HMAC AgentMission ${version} indisponible.`);
+        return secret;
+      }) ?? [];
+    const providerSecrets = [parsed.data.OPENAI_API_KEY, parsed.data.MISTRAL_API_KEY].filter(
+      (secret): secret is string => typeof secret === 'string' && secret.length > 0,
+    );
     const dedicatedSecrets = [
+      ...providerSecrets,
       ...subjectHmacSecrets,
       ...proofSecrets,
       ...agentMissionSecrets,
@@ -1142,19 +1132,23 @@ export function loadEnv(): Env {
       ...(parsed.data.BOB_LIVE_USAGE_HMAC_SECRET ? [parsed.data.BOB_LIVE_USAGE_HMAC_SECRET] : []),
       ...(bobLive.localAuditToken ? [bobLive.localAuditToken] : []),
       ...(bobLive.mistralV2TerminalReplayEnabled
-        ? [...parseMistralConversationPersistenceSecrets(
-            parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING as string,
-          ).values()].map((secret) => Buffer.from(secret).toString('base64url'))
+        ? [
+            ...parseMistralConversationPersistenceSecrets(
+              parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING as string,
+            ).values(),
+          ].map((secret) => Buffer.from(secret).toString('base64url'))
         : []),
       ...(parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING
-        ? [...parseMistralV2IdentityEncryptionSecrets(
-            parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING,
-          ).values()]
+        ? [
+            ...parseMistralV2IdentityEncryptionSecrets(
+              parsed.data.BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING,
+            ).values(),
+          ]
         : []),
     ];
     if (new Set(dedicatedSecrets).size !== dedicatedSecrets.length) {
       throw new Error(
-        'Chaque clé Bob Live et AgentMission (identité, preuve, contrôle et audit) doit être dédiée.',
+        'Chaque clé fournisseur, Bob Live et AgentMission (identité, preuve, contrôle et audit) doit être dédiée.',
       );
     }
     if (parsed.data.SUPABASE_REALTIME_AUDIO_BUCKET === parsed.data.SUPABASE_STORAGE_BUCKET) {
@@ -1194,14 +1188,21 @@ export function loadEnv(): Env {
       }
     }
     if (bobLive.localAuditBaseUrl) {
-      const auditUrl = new URL(bobLive.localAuditBaseUrl);
-      const loopback =
-        auditUrl.hostname === 'localhost' ||
-        auditUrl.hostname === '127.0.0.1' ||
-        auditUrl.hostname === '[::1]';
-      if (!loopback || (auditUrl.protocol !== 'http:' && auditUrl.protocol !== 'https:')) {
+      let auditTopology: 'loopback' | 'railway-private';
+      try {
+        auditTopology = parseLocalWhisperAuditBaseUrl(bobLive.localAuditBaseUrl).topology;
+      } catch {
         throw new Error(
-          'BOB_LIVE_LOCAL_AUDIT_BASE_URL doit cibler exclusivement le sidecar loopback local.',
+          'BOB_LIVE_LOCAL_AUDIT_BASE_URL doit cibler le service Whisper privé exact ou le loopback local.',
+        );
+      }
+      if (
+        parsed.data.CABINET_RELEASE_ENV !== 'development' &&
+        auditTopology !== 'railway-private'
+      ) {
+        throw new Error(
+          'BOB_LIVE_LOCAL_AUDIT_BASE_URL doit cibler bob-live-whisper-audit.railway.internal ' +
+            'dans staging et production.',
         );
       }
     }
@@ -1212,8 +1213,8 @@ export function loadEnv(): Env {
     }
     const bootstrapBudgetMs = bobLive.providerTimeoutMs + bobLive.controlTimeoutMs;
     if (
-      bobLive.reservationTtlSeconds * 1_000
-      < bootstrapBudgetMs + AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUIRED_BUDGET_MS
+      bobLive.reservationTtlSeconds * 1_000 <
+      bootstrapBudgetMs + AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUIRED_BUDGET_MS
     ) {
       throw new Error(
         'Le bail de réservation Bob Live doit couvrir le bootstrap et les deux tentatives de reçu AgentMission.',

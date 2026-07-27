@@ -10,6 +10,7 @@ import {
   MistralVoxtralTtsAdapter,
   OpenAiCompatibleLlmAdapter,
 } from './providers';
+import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -364,6 +365,7 @@ describe('Mistral Voxtral providers', () => {
     process.env.BOB_LIVE_LOCAL_AUDIT_BASE_URL = 'http://127.0.0.1:8080/v1';
     process.env.BOB_LIVE_LOCAL_AUDIT_TOKEN = 'a'.repeat(32);
     delete process.env.OPENAI_API_KEY;
+    delete process.env.REALTIME_SPEECH_AUDIT_STT_MODEL;
     expect(buildRealtimeSpeechAuditStt()?.id).toBe('local-whisper');
   });
 
@@ -395,13 +397,13 @@ describe('Mistral Voxtral providers', () => {
     const adapter = new LocalWhisperAuditSttAdapter(
       'audit-token-that-is-at-least-32-bytes',
       'http://localhost:8080/v1',
-      'whisper-local-test',
+      LOCAL_WHISPER_AUDIT_CONTRACT.model.id,
     );
     const audio = Buffer.from([0x52, 0x49, 0x46, 0x46]).toString('base64');
 
     await expect(adapter.transcribe(audio, 'audio/wav')).resolves.toEqual({
       text: 'Bonjour Bob.',
-      model: 'whisper-local-test',
+      model: LOCAL_WHISPER_AUDIT_CONTRACT.model.id,
     });
     expect(adapter.auditTrustDomain).toBe('bob.local-whisper');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -409,6 +411,7 @@ describe('Mistral Voxtral providers', () => {
       expect.objectContaining({
         method: 'POST',
         headers: { authorization: 'Bearer audit-token-that-is-at-least-32-bytes' },
+        redirect: 'error',
       }),
     );
   });
@@ -417,20 +420,137 @@ describe('Mistral Voxtral providers', () => {
     expect(() => new LocalWhisperAuditSttAdapter('short', 'https://localhost:8080/v1')).toThrow(
       'local_whisper_invalid_config',
     );
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'é'.repeat(32),
+      'https://localhost:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(257),
+      'https://localhost:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
     expect(() => new LocalWhisperAuditSttAdapter('a'.repeat(32), 'http://audit.example/v1')).toThrow(
       'local_whisper_invalid_config',
     );
     expect(() => new LocalWhisperAuditSttAdapter('a'.repeat(32), 'https://audit.example/v1')).toThrow(
       'local_whisper_invalid_config',
     );
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://another-service.railway.internal:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+      'whisper-latest',
+    )).toThrow('local_whisper_invalid_config');
     const adapter = new LocalWhisperAuditSttAdapter('a'.repeat(32), 'https://localhost:8080/v1');
     await expect(adapter.transcribe('!!!!', 'audio/wav')).rejects.toThrow('voice_provider_invalid_audio');
+    await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/mpeg'))
+      .rejects.toThrow('voice_provider_invalid_audio');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ transcript: 'non' }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })));
     await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/wav'))
       .rejects.toThrow('local_whisper_invalid_response');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ text: '   ' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/wav'))
+      .rejects.toThrow('local_whisper_invalid_response');
+  });
+
+  it('sonde réellement la readiness privée et exige les digests compilés', async () => {
+    const adapter = new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    const readyPayload = {
+      status: 'ready',
+      schemaVersion: LOCAL_WHISPER_AUDIT_CONTRACT.schemaVersion,
+      engine: { ...LOCAL_WHISPER_AUDIT_CONTRACT.engine },
+      model: { ...LOCAL_WHISPER_AUDIT_CONTRACT.model },
+      capacity: { active: 0, queued: 0 },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(readyPayload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.health()).resolves.toEqual({ healthy: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://bob-live-whisper-audit.railway.internal:8080/v1/health',
+      expect.objectContaining({ method: 'GET', redirect: 'error' }),
+    );
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ...readyPayload,
+      model: { ...readyPayload.model, sha256: '0'.repeat(64) },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    await expect(adapter.health()).resolves.toEqual({ healthy: false });
+  });
+
+  it('prouve les refus réseau du gateway sans envoyer de contenu métier', async () => {
+    const token = 'audit-token-that-is-at-least-32-bytes';
+    const adapter = new LocalWhisperAuditSttAdapter(
+      token,
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    const statuses = [401, 401, 404, 413] as const;
+    const fetchMock = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => {
+      const status = statuses[fetchMock.mock.calls.length - 1];
+      if (status === undefined) throw new Error('unexpected_call');
+      return new Response(JSON.stringify({ error: 'refused' }), {
+        status,
+        headers: {
+          'cache-control': 'no-store',
+          'content-type': 'application/json; charset=utf-8',
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.proveDeploymentControls()).resolves.toEqual({ healthy: true });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[0]).toEqual([
+      'http://bob-live-whisper-audit.railway.internal:8080/v1/audio/transcriptions',
+      expect.objectContaining({ method: 'POST', redirect: 'error' }),
+    ]);
+    const wrongAuth = (
+      (fetchMock.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>
+    ).authorization;
+    expect(wrongAuth).not.toBe(`Bearer ${token}`);
+    expect(wrongAuth).toMatch(/^Bearer [\x21-\x7e]{32,256}$/u);
+    expect(fetchMock.mock.calls[2]?.[0])
+      .toBe('http://bob-live-whisper-audit.railway.internal:8080/v1/load');
+    const oversized = (fetchMock.mock.calls[3]?.[1] as RequestInit).body;
+    expect(oversized).toBeInstanceOf(Uint8Array);
+    expect((oversized as Uint8Array).byteLength)
+      .toBe(LOCAL_WHISPER_AUDIT_CONTRACT.maxRequestBytes + 1);
+    expect(JSON.stringify(await adapter.proveDeploymentControls({
+      signal: AbortSignal.abort(),
+    }))).toBe('{"healthy":false}');
+  });
+
+  it('ferme la preuve réseau si un code ou un header de refus dérive', async () => {
+    const adapter = new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"refused"}', {
+      status: 401,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    })));
+
+    await expect(adapter.proveDeploymentControls()).resolves.toEqual({ healthy: false });
   });
 
   it('annule physiquement un audit Whisper local et refuse une réponse au mauvais MIME', async () => {

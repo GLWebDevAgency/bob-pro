@@ -691,3 +691,126 @@ jobs:
             exit 1
           fi
           echo "Boot smoke OK : l'API a démarré et répondu sur /health en moins de 30 s."
+
+  whisper-audit-image:
+    # Ce service forme une frontière de confiance distincte de GPT Realtime. Les tests Node
+    # seuls ne prouvent ni les bibliothèques natives du binaire, ni le modèle réellement copié
+    # dans l'image distroless. On construit donc l'image exacte et on attend sa vraie readiness.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: v0.35.0
+          # BuildKit v0.31.2 : le tag est documenté ici uniquement ; le runtime résolu est
+          # verrouillé par digest pour que le builder ne dérive pas entre deux certifications.
+          driver-opts: >-
+            image=moby/buildkit@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+      - name: Construire l’auditeur Whisper linux/amd64 épinglé
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.whisper-audit
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: bob-whisper-audit-ci:${{ github.sha }}
+          cache-from: type=gha,scope=bob-whisper-audit-linux-amd64
+          cache-to: type=gha,mode=max,scope=bob-whisper-audit-linux-amd64
+      - name: Démarrer l’image distroless et certifier la readiness liée aux digests
+        env:
+          IMAGE_TAG: bob-whisper-audit-ci:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          container=bob-whisper-audit-ci
+          health_file="$(mktemp)"
+          headers_file="$(mktemp)"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container" 2>&1 || true
+            fi
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            rm -f "$health_file" "$headers_file"
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          image_user="$(docker image inspect --format '{{.Config.User}}' "$IMAGE_TAG")"
+          if [ "$image_user" != 65532 ]; then
+            echo "L’image Whisper doit s’exécuter avec l’UID distroless nonroot exact 65532." >&2
+            exit 1
+          fi
+
+          audit_token="$(openssl rand -hex 32)"
+          docker run --detach \
+            --name "$container" \
+            --env BOB_LIVE_LOCAL_AUDIT_TOKEN="$audit_token" \
+            --publish 127.0.0.1:18080:8080 \
+            "$IMAGE_TAG" >/dev/null
+
+          ready=false
+          for _ in $(seq 1 180); do
+            if http_status="$(curl --fail --silent --show-error --max-time 3 \
+              --dump-header "$headers_file" \
+              --output "$health_file" \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:18080/v1/health)" \
+              && [ "$http_status" = 200 ]; then
+              ready=true
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != true ]; then
+              echo "Le conteneur Whisper s’est arrêté avant sa readiness." >&2
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            echo "Le modèle Whisper n’est pas devenu prêt en moins de 180 secondes." >&2
+            exit 1
+          fi
+
+          node --input-type=module - "$health_file" "$headers_file" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const payload = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const headers = readFileSync(process.argv[3], 'utf8')
+            .toLowerCase()
+            .split(/\r?\n/u)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const expected = {
+            status: 'ready',
+            schemaVersion: 1,
+            engine: {
+              id: 'whisper.cpp',
+              version: 'v1.9.1',
+              sourceSha256: '147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447',
+            },
+            model: {
+              id: 'whisper-large-v3-turbo',
+              sha256: '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2',
+              bytes: 574041195,
+            },
+            capacity: { active: 0, queued: 0 },
+          };
+          if (JSON.stringify(payload) !== JSON.stringify(expected)) {
+            throw new Error('whisper_audit_health_contract_drift');
+          }
+          if (!headers.includes('content-type: application/json; charset=utf-8')) {
+            throw new Error('whisper_audit_health_content_type_drift');
+          }
+          if (!headers.includes('cache-control: no-store')) {
+            throw new Error('whisper_audit_health_cache_drift');
+          }
+          NODE
+
+          unauthorized_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://127.0.0.1:18080/v1/audio/transcriptions)"
+          unknown_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:18080/load)"
+          test "$unauthorized_status" = 401
+          test "$unknown_status" = 404

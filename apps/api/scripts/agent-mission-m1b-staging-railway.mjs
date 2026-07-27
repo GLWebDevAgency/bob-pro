@@ -263,12 +263,12 @@ function assertBobLiveOpenAiPrerequisites(state, config) {
   if (
     variables.BOB_LIVE_ENABLED !== 'true'
     || variables.BOB_LIVE_PROVIDER !== 'openai'
-    || (
-      speechDelivery !== 'audited-signed-url-v1'
-      && speechDelivery !== 'openai-native-webrtc-v1'
-    )
+    || speechDelivery !== 'audited-signed-url-v1'
+    || variables.BOB_LIVE_AUDIT_PROVIDER !== 'local-whisper'
+    || variables.BOB_LIVE_LOCAL_AUDIT_BASE_URL
+      !== 'http://bob-live-whisper-audit.railway.internal:8080/v1'
   ) {
-    fail('staging Bob Live must already use an OpenAI WebRTC delivery before M1-B activation');
+    fail('staging Bob Live must use the certified OpenAI audited delivery before M1-B activation');
   }
 
   const requiredNames = [
@@ -295,18 +295,6 @@ function assertBobLiveOpenAiPrerequisites(state, config) {
   ) {
     fail('staging Bob Live subject/proof key material is incomplete');
   }
-  if (
-    speechDelivery === 'openai-native-webrtc-v1'
-    && (
-      typeof variables.BOB_LIVE_PROOF_KEY_VERSION !== 'string'
-      || typeof variables.BOB_LIVE_PROOF_KEYRING !== 'string'
-      || variables.BOB_LIVE_PROOF_KEY_VERSION.length < 1
-      || variables.BOB_LIVE_PROOF_KEYRING.length < 2
-    )
-  ) {
-    fail('staging OpenAI native WebRTC requires its complete proof keyring');
-  }
-
   parseAgentMissionFingerprintKeyOperation('stage', {
     ...variables,
     BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',

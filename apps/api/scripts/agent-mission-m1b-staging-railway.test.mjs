@@ -46,7 +46,9 @@ function bobLiveVariables(overrides = {}) {
     BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '1',
     BOB_LIVE_PROVIDER_MAX_CONCURRENT_SESSIONS: '1',
     BOB_LIVE_CAPACITY_CONFIG_VERSION: '1',
-    BOB_LIVE_LOCAL_AUDIT_BASE_URL: 'http://127.0.0.1:8080/v1',
+    BOB_LIVE_AUDIT_PROVIDER: 'local-whisper',
+    BOB_LIVE_LOCAL_AUDIT_BASE_URL:
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
     BOB_LIVE_LOCAL_AUDIT_TOKEN: 'a'.repeat(32),
     DATABASE_URL: 'postgresql://bob_app:secret@db.internal/bob',
     DIRECT_URL: 'postgresql://postgres:secret@db.internal/bob',
@@ -100,7 +102,7 @@ test('parse la cible staging et refuse toute identité Railway ambiguë', () => 
   );
 });
 
-test('préflight exige Bob Live OpenAI WebRTC, bloc M1-B absent et collection restaurable', () => {
+test('préflight exige Bob Live OpenAI audité, bloc M1-B absent et collection restaurable', () => {
   const config = parseRailwayM1BEnvironment(environment());
   const decoded = decodeRailwayM1BState(railwayState(), config);
   assert.doesNotThrow(() => assertRailwayM1BPreflight(decoded, config));
@@ -121,7 +123,7 @@ test('préflight exige Bob Live OpenAI WebRTC, bloc M1-B absent et collection re
     railwayState(bobLiveVariables({ BOB_LIVE_PROVIDER: 'mistral' })),
     config,
   );
-  assert.throws(() => assertRailwayM1BPreflight(mistral, config), /OpenAI WebRTC/u);
+  assert.throws(() => assertRailwayM1BPreflight(mistral, config), /OpenAI audited delivery/u);
 
   const native = decodeRailwayM1BState(
     railwayState(bobLiveVariables({
@@ -131,17 +133,9 @@ test('préflight exige Bob Live OpenAI WebRTC, bloc M1-B absent et collection re
     })),
     config,
   );
-  assert.doesNotThrow(() => assertRailwayM1BPreflight(native, config));
-
-  const incompleteNative = decodeRailwayM1BState(
-    railwayState(bobLiveVariables({
-      BOB_LIVE_SPEECH_DELIVERY: 'openai-native-webrtc-v1',
-    })),
-    config,
-  );
   assert.throws(
-    () => assertRailwayM1BPreflight(incompleteNative, config),
-    /complete proof keyring/u,
+    () => assertRailwayM1BPreflight(native, config),
+    /certified OpenAI audited delivery/u,
   );
 
   const inheritedOrDrifted = railwayState();

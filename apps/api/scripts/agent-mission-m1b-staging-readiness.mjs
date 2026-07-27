@@ -44,6 +44,7 @@ export function validateM1BReadinessPayload(payload, configuration) {
     || payload.ready !== true
     || payload.release?.sha !== configuration.releaseSha
     || payload.release?.environment !== 'staging'
+    || payload.dependencies?.bobLiveSpeechAudit !== 'ready'
     || payload.capabilities?.realtimeAdmissionCancellationFence !== 'v1'
     || payload.capabilities?.agentMissionBootstrapReceipt !== 'v1'
     || payload.network?.clientIpSource !== 'railway-x-real-ip'
@@ -54,6 +55,7 @@ export function validateM1BReadinessPayload(payload, configuration) {
     ready: true,
     releaseSha: configuration.releaseSha,
     releaseEnvironment: 'staging',
+    bobLiveSpeechAudit: 'ready',
     realtimeAdmissionCancellationFence: 'v1',
     agentMissionBootstrapReceipt: 'v1',
     clientIpSource: 'railway-x-real-ip',

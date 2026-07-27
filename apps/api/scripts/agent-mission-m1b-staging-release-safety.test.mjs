@@ -17,6 +17,10 @@ const reportSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-report.mjs'),
   'utf8',
 );
+const readinessSource = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-readiness.mjs'),
+  'utf8',
+);
 
 function occurrences(value, pattern) {
   return value.match(pattern)?.length ?? 0;
@@ -83,7 +87,7 @@ test('workflow cible le SHA et les UUID sans relier le checkout ni changer de ba
   );
 });
 
-test('les trois déploiements ont un ID exact et le OFF d’urgence ne dépend pas de la DB', () => {
+test('les trois déploiements API et le déploiement Whisper ont un ID exact', () => {
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=predeploy/gu), 3);
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=postdeploy/gu), 3);
   assert.equal(
@@ -91,7 +95,7 @@ test('les trois déploiements ont un ID exact et le OFF d’urgence ne dépend p
       workflow,
       /agent-mission-m1b-staging-railway\.mjs deployment-id/gu,
     ),
-    3,
+    4,
   );
   assert.equal(
     occurrences(
@@ -122,6 +126,43 @@ test('les trois déploiements ont un ID exact et le OFF d’urgence ne dépend p
   assert.match(
     workflow,
     /Complete OFF postdeploy and writer fence\n\s+if: \$\{\{ always\(\) && steps\.off_predeploy\.outcome == 'success' && steps\.deploy_off\.outcome == 'success' \}\}/u,
+  );
+});
+
+test('Whisper est déployé et prouvé privé avant toute readiness M1-B positive', () => {
+  assert.match(
+    workflow,
+    /RAILWAY_WHISPER_AUDIT_SERVICE_ID: \$\{\{ vars\.RAILWAY_WHISPER_AUDIT_SERVICE_ID \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /id: deploy_whisper[\s\S]*?--service "\$RAILWAY_WHISPER_AUDIT_SERVICE_ID"/u,
+  );
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-whisper\.mjs preflight/gu),
+    2,
+  );
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-whisper\.mjs \\\n\s+wait-deployment/gu),
+    1,
+  );
+  assert.match(
+    workflow,
+    /whisper_deployment_id: \$\{\{ steps\.deploy_whisper\.outputs\.deployment_id \}\}/u,
+  );
+  assert.match(
+    readinessSource,
+    /payload\.dependencies\?\.bobLiveSpeechAudit !== 'ready'/u,
+  );
+  assert.match(workflow, /id: active_readiness/u);
+  assert.match(workflow, /acoustic_readiness_ms=/u);
+  assert.match(
+    workflow,
+    /BOB_M1B_WHISPER_DEPLOYMENT_ID: \$\{\{ needs\.certify\.outputs\.whisper_deployment_id/u,
+  );
+  assert.match(
+    workflow,
+    /BOB_M1B_ACOUSTIC_READINESS_MS: \$\{\{ needs\.certify\.outputs\.acoustic_readiness_ms/u,
   );
 });
 
@@ -199,4 +240,6 @@ test('le lane M1-B ne mute aucun protocole étranger et ne masque aucun échec',
   assert.doesNotMatch(workflow, /DEMO_MODE=true/u);
   assert.match(workflow, /agent-mission-m1b-staging-report\.mjs/u);
   assert.match(reportSource, /containsTokenSecretOrSdp: false/u);
+  assert.match(reportSource, /containsAudioOrTranscript: false/u);
+  assert.match(reportSource, /containsSignedUrl: false/u);
 });

@@ -9,6 +9,7 @@ const SHA = 'a'.repeat(40);
 const BASELINE = '11111111-1111-4111-8111-111111111111';
 const ACTIVE = '22222222-2222-4222-8222-222222222222';
 const OFF = '33333333-3333-4333-8333-333333333333';
+const WHISPER = '44444444-4444-4444-8444-444444444444';
 
 function environment(overrides = {}) {
   return {
@@ -19,6 +20,8 @@ function environment(overrides = {}) {
     BOB_M1B_FINISHED_AT: '2026-07-27T12:30:00.000Z',
     BOB_M1B_BASELINE_DEPLOYMENT_ID: BASELINE,
     BOB_M1B_ACTIVE_DEPLOYMENT_ID: ACTIVE,
+    BOB_M1B_WHISPER_DEPLOYMENT_ID: WHISPER,
+    BOB_M1B_ACOUSTIC_READINESS_MS: '8421',
     BOB_M1B_OFF_DEPLOYMENT_ID: OFF,
     BOB_M1B_CERTIFY_RESULT: 'success',
     BOB_M1B_CLEANUP_RESULT: 'success',
@@ -34,6 +37,22 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
   const report = buildM1BStagingReport(environment());
   assert.equal(report.releaseSha, SHA);
   assert.equal(report.deployments.active, ACTIVE);
+  assert.equal(report.deployments.whisper, WHISPER);
+  assert.deepEqual(report.speechAudit, {
+    verdict: 'ready',
+    activeReadinessMilliseconds: 8421,
+    engine: {
+      id: 'whisper.cpp',
+      version: 'v1.9.1',
+      sourceSha256:
+        '147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447',
+    },
+    model: {
+      id: 'whisper-large-v3-turbo',
+      sha256:
+        '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2',
+    },
+  });
   assert.equal(report.workflowRun.actorReference, 'github-actions-run:123456789');
   assert.deepEqual(report.cleanupMutations, {
     variablesRemoved: true,
@@ -44,6 +63,8 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
     containsRawCompanyId: false,
     containsEmail: false,
     containsTokenSecretOrSdp: false,
+    containsAudioOrTranscript: false,
+    containsSignedUrl: false,
   });
   const serialized = JSON.stringify(report);
   assert.equal(serialized.includes('m1b-staging@bob.test'), false);
@@ -53,6 +74,8 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
 test('accepte un deployment OFF non créé lorsque le circuit a échoué avant mutation', () => {
   const report = buildM1BStagingReport(environment({
     BOB_M1B_OFF_DEPLOYMENT_ID: 'not-created',
+    BOB_M1B_WHISPER_DEPLOYMENT_ID: 'not-created',
+    BOB_M1B_ACOUSTIC_READINESS_MS: 'not-measured',
     BOB_M1B_CERTIFY_RESULT: 'failure',
     BOB_M1B_VARIABLES_OWNED: 'false',
     BOB_M1B_OVERRIDE_OWNED: 'false',
@@ -82,6 +105,18 @@ test('refuse les temps, résultats et identifiants de déploiement non canonique
     })),
     /deployment UUID/u,
   );
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_WHISPER_DEPLOYMENT_ID: 'not-created',
+    })),
+    /requires Whisper deployment/u,
+  );
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_ACOUSTIC_READINESS_MS: '600001',
+    })),
+    /bounded window/u,
+  );
 });
 
 test('écrit uniquement dans le répertoire d’évidence dédié avec permissions bornées', () => {
@@ -95,7 +130,7 @@ test('écrit uniquement dans le répertoire d’évidence dédié avec permissio
       writeFileSync: (...args) => calls.push(['write', ...args]),
     },
   );
-  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.schemaVersion, 2);
   assert.equal(calls[0][0], 'mkdir');
   assert.equal(calls[1][0], 'write');
   assert.equal(calls[1][3].mode, 0o600);

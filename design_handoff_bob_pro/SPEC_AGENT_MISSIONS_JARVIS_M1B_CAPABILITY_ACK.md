@@ -544,8 +544,9 @@ Préconditions fail-closed :
   pointant vers un autre projet est refusée ;
 - compte interne dédié, sans mission active ni brouillon de devis préexistant ; le harness refuse
   de supprimer, préempter ou « nettoyer » une donnée qu'il n'a pas créée lui-même ;
-- Bob Live OpenAI, sa capacité et son auditeur local déjà complets dans le runtime staging. La
-  fenêtre M1-B ne bascule pas le provider et ne remplace aucun secret Bob Live ;
+- Bob Live OpenAI, sa capacité et son auditeur Whisper Bob-managed privé déjà complets dans
+  staging, ou livrés et certifiés par le même SHA candidat avant l'ouverture de la fenêtre
+  positive. La fenêtre M1-B ne bascule pas le provider et ne remplace aucun secret Bob Live ;
 - autorisation fondateur datée+canal, identité exacte du compte et contre-signature Claude+GPT de
   la ligne de matrice fournies comme entrées distinctes, non inférées par le workflow ;
 - keyring AgentMission **stable pour staging** conservé dans le secret store GitHub staging. Le
@@ -642,7 +643,94 @@ perte de sortie GitHub après mutation n'abandonne plus l'état activé.
 La matrice n'est modifiée ni interprétée comme une décision fondateur par l'auteur seul. Toute
 contre-signature manquante bloque seulement la fenêtre positive, jamais l'implémentation.
 
-### 8.2 Métrologie bornée
+### 8.2 Auditeur Whisper privé, indépendant et réellement exercé
+
+L'audit acoustique n'est pas une variable décorative. Pour la cible à plusieurs milliers de
+tenants, le modèle Whisper n'est pas embarqué dans chaque réplique API : il est déployé comme un
+service Railway dédié, dans le même projet et le même environnement que l'API, et dimensionnable
+indépendamment. Cette séparation conserve le domaine de confiance `bob.local-whisper`, évite
+d'alourdir ou de bloquer chaque réplique métier et permet d'ajouter des répliques d'inférence sans
+redéployer l'API.
+
+Frontière réseau :
+
+- aucun domaine public Railway n'est attaché au service ; l'API l'appelle uniquement par le nom
+  privé exact `bob-live-whisper-audit.railway.internal`, sur le réseau privé de
+  l'environnement ;
+- le client API refuse toute destination publique, adresse link-local, IP privée arbitraire,
+  redirection, userinfo, query ou fragment. Le loopback reste admis uniquement pour le
+  développement et la certification locale ;
+- l'endpoint d'inférence exige un bearer token dédié d'au moins 32 caractères, comparé en temps
+  constant. Ce secret n'est égal à aucune clé fournisseur ni à aucun keyring
+  Bob Live/AgentMission et n'est jamais transmis au mobile, à OpenAI, aux logs ou aux artefacts ;
+- le service ne reçoit ni `OPENAI_API_KEY`, ni clé Mistral, ni URL/clé Supabase, ni accès base ou
+  Storage. Une compromission de l'auditeur ne doit donner aucune autorité métier ou tenant.
+
+Supply chain et runtime :
+
+- `whisper.cpp`, son archive source et le modèle quantifié sont épinglés par version, révision et
+  SHA-256 exacts ; le build échoue avant compilation au moindre octet divergent ;
+- le modèle est inclus dans l'image immuable. Aucun téléchargement, changement de modèle ou route
+  `/load` n'existe au runtime ;
+- l'image tourne sous un utilisateur non-root, sans `ffmpeg`, sans shell d'administration exposé,
+  sans volume persistant et sans écriture de l'audio sur disque ;
+- la surface HTTP est fermée à `GET /v1/health` et
+  `POST /v1/audio/transcriptions`. Toute autre méthode ou route, y compris l'UI upstream,
+  `/load` et CORS, est refusée ;
+- l'inférence accepte uniquement un multipart borné contenant un WAV, le modèle canonique et
+  `language=fr`. Taille, nombre de champs, MIME, signature RIFF/WAVE, durée, timeout et nombre de
+  requêtes simultanées sont bornés avant l'appel au moteur ;
+- l'audio et le transcript restent en mémoire le temps de la requête puis sont libérés. Ni le
+  gateway ni `whisper.cpp` ne journalisent filename fourni par l'appelant, audio, transcript,
+  prompt ou contenu métier ;
+- la readiness appelle réellement le moteur chargé et retourne uniquement un statut, la version
+  épinglée du moteur et les digests attendus. Une simple présence d'URL/token ne vaut jamais
+  `healthy`.
+- la readiness API qui garde les nouvelles admissions combine cette santé courte avec une preuve
+  acoustique complète : contrôles négatifs du gateway, TTS du fournisseur actif, WAV réel,
+  transcription Whisper et passage dans **le même** `RealtimeSpeechRenderer`. Une réussite
+  acoustique — contrôles compris — est réutilisable au plus quinze minutes par réplique ; un échec
+  est rejoué après un court backoff borné et ferme immédiatement les nouvelles admissions.
+  `fresh=true` force la santé réseau mais ne contourne pas cette fenêtre : un nouveau déploiement
+  part toujours sans preuve et doit donc effectuer le round-trip avant de devenir ready ;
+- le round-trip n'expose et ne persiste ni phrase, ni audio, ni transcript. Le buffer audio rendu
+  est explicitement effacé en mémoire après le verdict ; seules readiness, versions/digests et
+  durées bornées peuvent sortir de cette frontière.
+
+Scalabilité :
+
+- une réplique accepte au plus une inférence active, avec file d'attente strictement bornée ; une
+  surcharge répond `503`/`429` avant de conserver l'audio ;
+- Railway peut répartir les appels sur plusieurs répliques du service privé sans multiplier la
+  mémoire du modèle dans les pods API ;
+- staging commence avec une réplique et prouve son budget réel. Toute ouverture production exige
+  un test de charge qui mesure débit, p50/p95, saturation, redémarrage et répartition
+  multi-réplique ; augmenter le nombre de répliques sans cette preuve ne vaut pas certification.
+
+Preuve staging obligatoire avant la fenêtre positive M1-B :
+
+1. déployer l'image auditeur liée au SHA candidat et attendre le deployment ID exact jusqu'à
+   `SUCCESS` ;
+2. prouver via l'API Railway que le service appartient au projet/environnement staging attendus,
+   qu'il n'a aucun domaine public, proxy TCP ou volume persistant, que l'auto-déploiement est
+   désactivé, que son unique variable est le jeton dédié et que sa configuration référence les
+   digests épinglés ;
+3. depuis le réseau privé du runtime API, vérifier la readiness réelle, le refus sans/mauvais
+   bearer, le refus d'une route `/load` et d'un payload trop grand ;
+4. produire avec **la même clé OpenAI du profil actif** un WAV d'une phrase française fixe sans
+   donnée métier, l'envoyer à l'auditeur privé, puis appliquer le même canoniseur et la même
+   comparaison texte/faits que `RealtimeSpeechRenderer` ;
+5. l'échec de TTS, DNS privé, auth, modèle, ASR, canonisation ou budget rend le workflow rouge et
+   interdit toute négociation Mission positive ;
+6. l'artefact GitHub conserve seulement SHA, deployment IDs, versions/digests, codes de contrôle,
+   durées et verdicts. Il ne contient ni audio, ni transcript, ni token, ni URL signée.
+
+Le smoke M1-B n'est donc pas autorisé à conclure sur la présence des variables
+`BOB_LIVE_LOCAL_AUDIT_*`. Il doit appeler cette preuve fonctionnelle sur le binaire et le service
+réellement déployés. Le service privé peut rester prêt dans staging après le rollback M1-B ; le
+flag Mission, son override et son keyring Railway restent soumis au retour OFF/absent de §8.1.
+
+### 8.3 Métrologie bornée
 
 Les noms et labels autorisés sont fermés :
 
@@ -815,8 +903,13 @@ pour d'autres domaines.
 - [ ] Typecheck, lint, suites globales et builds API/mobile verts depuis checkout propre.
 - [ ] Review adversariale correctness/sécurité, architecture/parité et UX/accessibilité ;
       tous P0/P1 corrigés.
-- [ ] Les quatre familles de métriques de §8.2 utilisent exactement leurs labels bornés, avec défaut
+- [ ] Les quatre familles de métriques de §8.3 utilisent exactement leurs labels bornés, avec défaut
       explicite et sans contenu ; elles n'affirment pas que O5/SLO appareil est certifié.
+- [ ] L'image auditeur épingle et vérifie source+modèle, tourne non-root, n'expose aucun domaine
+      public ni route de mutation, ne possède aucune clé provider/tenant et ne persiste ni audio ni
+      transcript.
+- [ ] Le health réel, les refus auth/route/taille et le round-trip OpenAI TTS → Whisper privé →
+      canoniseur sont prouvés depuis staging sur les deployment IDs exacts avant le smoke M1-B.
 - [ ] Une seule PR, CI complète verte, puis fenêtre staging de §8.1 contre-signée : smoke positif
       bootstrap→reçu durable→start→screen-ACK, preuve DB, drain zéro, override/master/keyring remis
       à OFF/absents, puis fusion.
@@ -837,8 +930,9 @@ mobile devis jusqu'à `awaiting_lines`. O5 reste partiel tant que la preuve devi
 
 - Core : 197 fichiers / 2 298 tests, typecheck, lint et artefact de production certifié ;
 - API Client : 23 fichiers / 447 tests, typecheck, lint et artefact de production certifié ;
-- API : 206 fichiers / 2 392 tests, 304 tests de contrats release, typecheck, lint et artefact de
-  production certifié ;
+- API : 252 fichiers Vitest / 2 444 tests réussis (325 scénarios opt-in ignorés hors de leur
+  environnement), 403 tests de contrats release, typecheck, lint et artefact de production
+  certifié ;
 - Mobile : 123 fichiers / 1 285 tests et typecheck ;
 - PostgreSQL 17 réel : 43 scénarios AgentMission, dont writer N-1, runtime non-superuser,
   RLS/ACL exactes et course reçu/reaper ;

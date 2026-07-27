@@ -10,13 +10,13 @@ La maturité Mistral est évaluée à **45–50 % de la cible classe mondiale**,
 valeur est une appréciation d'ingénierie conservatrice, pas un SLO : seuls les percentiles mesurés
 sur appareils réels autoriseront une communication commerciale.
 
-| Sous-ensemble | État estimé | Preuve actuelle |
-| --- | ---: | --- |
-| Session mono-provider sécurisée, un échange | 75–80 % | PCM/WSS, ticket opaque, tenant fence, cerveau Bob, parole auditée et contrôle one-shot testés |
-| Capture native semi-duplex | 65–70 % | iOS/Android, ACK/backpressure, watchdog, lifecycle et génération testés ; build/appareils incomplets |
-| Conversation persistante multi-tour | 20–25 % | le protocole `bob.mistral-pcm.v1` reste volontairement terminal après un seul tour |
-| Plein duplex, VAD et barge-in naturel | 25–30 % | VAD natif iOS/Android et contrat temporel v1 testés ; transport conversationnel v2, AEC appareil et duplex restent non certifiés |
-| Certification production acoustique | non certifiée | `fullDuplexCertified=false`, aucune matrice physique ni p50/p95 signée |
+| Sous-ensemble                               |   État estimé | Preuve actuelle                                                                                                                  |
+| ------------------------------------------- | ------------: | -------------------------------------------------------------------------------------------------------------------------------- |
+| Session mono-provider sécurisée, un échange |       75–80 % | PCM/WSS, ticket opaque, tenant fence, cerveau Bob, parole auditée et contrôle one-shot testés                                    |
+| Capture native semi-duplex                  |       65–70 % | iOS/Android, ACK/backpressure, watchdog, lifecycle et génération testés ; build/appareils incomplets                             |
+| Conversation persistante multi-tour         |       20–25 % | le protocole `bob.mistral-pcm.v1` reste volontairement terminal après un seul tour                                               |
+| Plein duplex, VAD et barge-in naturel       |       25–30 % | VAD natif iOS/Android et contrat temporel v1 testés ; transport conversationnel v2, AEC appareil et duplex restent non certifiés |
+| Certification production acoustique         | non certifiée | `fullDuplexCertified=false`, aucune matrice physique ni p50/p95 signée                                                           |
 
 Le profil activable reste donc un **semi-duplex one-shot sûr** : l'utilisateur parle, finalise son
 énoncé, puis reçoit une réponse Bob auditée. Le passage à `bob.mistral-pcm.v2` devra conserver la
@@ -41,12 +41,12 @@ d'une mutation.
 
 Objectifs certifiables sur appareils réels :
 
-| Mesure | p50 | p95 | Plancher |
-| --- | ---: | ---: | --- |
-| Fin de parole → premier audio Bob | ≤ 900 ms | ≤ 1 800 ms | aucune réponse fantôme |
-| Début de barge-in → silence acoustique | ≤ 250 ms | ≤ 500 ms | audio annulé non repris |
-| Publication d'un nouvel écran → contexte actif | ≤ 300 ms | ≤ 800 ms | ancien contexte inutilisable |
-| Contrôle audité → effet UI | ≤ 150 ms | ≤ 400 ms | zéro effet avant ACK serveur |
+| Mesure                                         |      p50 |        p95 | Plancher                     |
+| ---------------------------------------------- | -------: | ---------: | ---------------------------- |
+| Fin de parole → premier audio Bob              | ≤ 900 ms | ≤ 1 800 ms | aucune réponse fantôme       |
+| Début de barge-in → silence acoustique         | ≤ 250 ms |   ≤ 500 ms | audio annulé non repris      |
+| Publication d'un nouvel écran → contexte actif | ≤ 300 ms |   ≤ 800 ms | ancien contexte inutilisable |
+| Contrôle audité → effet UI                     | ≤ 150 ms |   ≤ 400 ms | zéro effet avant ACK serveur |
 
 Les percentiles sont calculés par version d'app, OS, classe réseau, provider, modèle et plan. Une
 moyenne seule n'est jamais une preuve de disponibilité.
@@ -85,21 +85,39 @@ par un curseur de séquence durable, jamais par une métadonnée provider.
 
 ### Profils de fournisseur
 
-| Profil | Entrée temps réel | Cerveau | Sortie Bob | Audit indépendant | Clé OpenAI |
-| --- | --- | --- | --- | --- | --- |
-| OpenAI-only | WebRTC + sideband | routeur Bob | OpenAI TTS | Whisper local auto-hébergé | **OpenAI uniquement** |
-| Mistral-only | PCM S16LE 16 kHz via relais Bob → Voxtral Realtime | routeur Bob | Voxtral TTS | Whisper local auto-hébergé | **non** |
+| Profil       | Entrée temps réel                                  | Cerveau     | Sortie Bob  | Audit indépendant          | Clé OpenAI            |
+| ------------ | -------------------------------------------------- | ----------- | ----------- | -------------------------- | --------------------- |
+| OpenAI-only  | WebRTC + sideband                                  | routeur Bob | OpenAI TTS  | Whisper local auto-hébergé | **OpenAI uniquement** |
+| Mistral-only | PCM S16LE 16 kHz via relais Bob → Voxtral Realtime | routeur Bob | Voxtral TTS | Whisper local auto-hébergé | **non**               |
 
 Changer `OPENAI_API_KEY` en `MISTRAL_API_KEY` ne transforme pas le protocole : le bootstrap choisit
 un adapter et un transport distincts. L'identité `{providerId, providerCallId}` est persistée avec
 le bail afin que le reaper ne transmette jamais un identifiant distant au mauvais fournisseur.
 Un adapter absent échoue fermé ; le switch n'est autorisé qu'après drainage complet.
 
-Dans les deux profils, `BOB_LIVE_AUDIT_PROVIDER=local-whisper` est obligatoire. Ce sidecar reçoit
-un jeton interne dédié, reste côté serveur et expose un endpoint multipart compatible OpenAI ; son
-domaine de confiance est figé à `bob.local-whisper` et sa destination est limitée au loopback
-(`localhost`, `127.0.0.1` ou `::1`). Un fournisseur ne peut jamais auditer sa
-propre sortie TTS.
+Dans les deux profils, `BOB_LIVE_AUDIT_PROVIDER=local-whisper` est obligatoire. En production,
+l'auditeur est un service Bob-managed dédié sur le réseau privé Railway de l'environnement,
+dimensionnable indépendamment des répliques API. Il reçoit un jeton interne dédié et expose une
+surface multipart compatible OpenAI ; son domaine de confiance reste figé à
+`bob.local-whisper`. L'API accepte uniquement le nom privé exact
+`bob-live-whisper-audit.railway.internal`, sans domaine public, redirection ni credentials dans
+l'URL. Le loopback (`localhost`, `127.0.0.1` ou `::1`) reste réservé au développement local. Un
+fournisseur ne peut jamais auditer sa propre sortie TTS. Le jeton d'audit doit aussi être
+octet-pour-octet distinct de la clé du fournisseur et de chaque secret Bob Live/AgentMission.
+
+Le service d'audit n'embarque aucune clé OpenAI/Mistral, aucune autorité Supabase et aucun accès
+tenant. Son image épingle par digest `whisper.cpp` et le modèle ; elle ne télécharge ni ne recharge
+un modèle au runtime, refuse `/load`, n'utilise pas `ffmpeg`, ne possède aucun volume Railway et ne
+persiste ni audio ni transcript. Le préflight relit cette topologie via l'API Railway et échoue
+fermé sur un inventaire de volumes incomplet. Une readiness réelle prouve moteur, version et digest
+du modèle. La présence d'une URL et d'un token ne constitue jamais une preuve de disponibilité.
+
+Pour le profil audité, cette santé est complétée par un round-trip périodique exécuté par la même
+réplique API et le même `RealtimeSpeechRenderer` que la publication : contrôles de fermeture du
+gateway, TTS du fournisseur actif, WAV réel, Whisper privé puis comparaison du texte et des faits.
+La preuve complète réussie vit au plus quinze minutes, reste single-flight par réplique et efface
+le buffer audio après verdict. Toute nouvelle réplique démarre sans preuve ; une panne ferme les
+nouvelles admissions mais laisse les sessions existantes se drainer.
 
 ### Runbook de changement de fournisseur
 
@@ -107,9 +125,9 @@ La sélection est exclusivement serveur : `BOB_LIVE_PROVIDER=openai|mistral`. El
 redémarrage de l'API ; le mobile relit `/voice/realtime/config`, reçoit le transport discriminé et
 ne doit contenir aucune clé provider.
 
-| Profil | Variables provider minimales | Audit acoustique |
-| --- | --- | --- |
-| `openai` | `OPENAI_API_KEY` pour Realtime **et** TTS OpenAI | `local-whisper` obligatoire |
+| Profil    | Variables provider minimales                       | Audit acoustique            |
+| --------- | -------------------------------------------------- | --------------------------- |
+| `openai`  | `OPENAI_API_KEY` pour Realtime **et** TTS OpenAI   | `local-whisper` obligatoire |
 | `mistral` | `MISTRAL_API_KEY` pour Realtime **et** TTS Voxtral | `local-whisper` obligatoire |
 
 Les secrets d'identité, preuve, usage et contrôle `BOB_LIVE_*_SECRET` restent dédiés et inchangés
@@ -209,21 +227,24 @@ Une map mémoire ne suffit pas en production horizontale. Les propriétés suiva
   ouverte pendant l'attente ;
 - le reaper clôt les baux orphelins avec une pagination équitable et un fencing token ;
 - un test à deux managers partageant la même persistance prouve que B invalide le rendu actif sur A.
+- l'auditeur Whisper possède son propre budget de capacité : une inférence active par réplique,
+  attente bornée et scale horizontal indépendant. Le modèle n'est jamais dupliqué implicitement
+  dans chaque pod API.
 
 Le sticky routing peut réduire les courses, mais ne remplace pas cette preuve.
 
 ## 6. Résilience et politique de repli
 
-| Cause | Retry Live | Repli | Règle de sécurité |
-| --- | --- | --- | --- |
-| Plan non éligible | non | assistant historique | aucun bootstrap provider |
-| Entitlement indisponible | une fois, bornée | historique | Live échoue fermé |
-| Permission micro refusée | non | texte seul | aucun second prompt micro |
-| Autorité audio occupée | non | texte seul | aucun chevauchement audio |
-| Bootstrap/data channel/ICE/provider | une fois avec jitter | historique | fermer le peer avant repli |
-| Contexte non publié ou ACK incohérent | non | historique/texte | micro reste désactivé |
-| Audit audio ou contrôle invalide | non | texte sûr | purge, kill-switch, aucun effet UI |
-| Stop/background/navigation expirée | non | aucun | intention de fermeture, pas un échec |
+| Cause                                 | Retry Live           | Repli                | Règle de sécurité                    |
+| ------------------------------------- | -------------------- | -------------------- | ------------------------------------ |
+| Plan non éligible                     | non                  | assistant historique | aucun bootstrap provider             |
+| Entitlement indisponible              | une fois, bornée     | historique           | Live échoue fermé                    |
+| Permission micro refusée              | non                  | texte seul           | aucun second prompt micro            |
+| Autorité audio occupée                | non                  | texte seul           | aucun chevauchement audio            |
+| Bootstrap/data channel/ICE/provider   | une fois avec jitter | historique           | fermer le peer avant repli           |
+| Contexte non publié ou ACK incohérent | non                  | historique/texte     | micro reste désactivé                |
+| Audit audio ou contrôle invalide      | non                  | texte sûr            | purge, kill-switch, aucun effet UI   |
+| Stop/background/navigation expirée    | non                  | aucun                | intention de fermeture, pas un échec |
 
 Chaque attente a un timeout et un `AbortSignal`. Trois erreurs provider arbitraires peuvent fermer
 la session ; les erreurs bénignes attendues d'une course d'annulation sont reconnues par
@@ -272,5 +293,5 @@ données d'audit ou d'usage déjà écrites.
 - [ ] entitlement, consentement/opt-out, quotas et kill-switch prouvés côté serveur ;
 - [ ] tests, typecheck, lint, build, migrations, RLS et scripts release verts ;
 - [ ] matrice iOS/Android, casque/haut-parleur/Bluetooth, 4G/Wi-Fi/perte réseau et background
-  certifiée sur appareils physiques ;
+      certifiée sur appareils physiques ;
 - [ ] rollback staging exécuté et rapport de pilote signé avant ouverture production.

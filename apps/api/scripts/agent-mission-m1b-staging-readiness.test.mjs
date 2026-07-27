@@ -23,6 +23,9 @@ function payload(overrides = {}) {
       sha: RELEASE_SHA,
       environment: 'staging',
     },
+    dependencies: {
+      bobLiveSpeechAudit: 'ready',
+    },
     capabilities: {
       realtimeAdmissionCancellationFence: 'v1',
       agentMissionBootstrapReceipt: 'v1',
@@ -72,10 +75,17 @@ test('valide simultanément readiness, SHA, staging et capacités réseau', () =
     ready: true,
     releaseSha: RELEASE_SHA,
     releaseEnvironment: 'staging',
+    bobLiveSpeechAudit: 'ready',
     realtimeAdmissionCancellationFence: 'v1',
     agentMissionBootstrapReceipt: 'v1',
     clientIpSource: 'railway-x-real-ip',
   });
+  assert.throws(
+    () => validateM1BReadinessPayload(payload({
+      dependencies: { bobLiveSpeechAudit: 'not_applicable' },
+    }), config),
+    /not ready/u,
+  );
   assert.throws(
     () => validateM1BReadinessPayload(payload({
       release: { sha: 'b'.repeat(40), environment: 'staging' },

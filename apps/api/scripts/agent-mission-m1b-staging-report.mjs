@@ -56,6 +56,13 @@ function boolean(value, name) {
   return value === 'true';
 }
 
+function optionalDuration(value, name) {
+  if (value === 'not-measured') return null;
+  const milliseconds = positiveInteger(value, name);
+  if (milliseconds > 600_000) fail(`${name} exceeds the bounded window`);
+  return milliseconds;
+}
+
 export function buildM1BStagingReport(environment = process.env) {
   const releaseSha = required(environment, 'BOB_M1B_RELEASE_SHA', 40);
   if (!SHA.test(releaseSha)) fail('BOB_M1B_RELEASE_SHA must be lowercase 40-hex');
@@ -67,8 +74,26 @@ export function buildM1BStagingReport(environment = process.env) {
   if (Date.parse(finishedAt) < Date.parse(startedAt)) {
     fail('finishedAt cannot precede startedAt');
   }
+  const certifyResult = result(
+    required(environment, 'BOB_M1B_CERTIFY_RESULT'),
+    'certifyResult',
+  );
+  const whisperDeploymentId = deployment(
+    required(environment, 'BOB_M1B_WHISPER_DEPLOYMENT_ID'),
+    'whisperDeploymentId',
+  );
+  const acousticReadinessMs = optionalDuration(
+    required(environment, 'BOB_M1B_ACOUSTIC_READINESS_MS'),
+    'acousticReadinessMs',
+  );
+  if (
+    certifyResult === 'success'
+    && (whisperDeploymentId === null || acousticReadinessMs === null)
+  ) {
+    fail('successful certification requires Whisper deployment and acoustic readiness evidence');
+  }
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     objective: 'O4.M1-B',
     environment: 'staging',
     releaseSha,
@@ -94,14 +119,30 @@ export function buildM1BStagingReport(environment = process.env) {
         required(environment, 'BOB_M1B_ACTIVE_DEPLOYMENT_ID'),
         'activeDeploymentId',
       ),
+      whisper: whisperDeploymentId,
       off: deployment(
         required(environment, 'BOB_M1B_OFF_DEPLOYMENT_ID'),
         'offDeploymentId',
       ),
     },
     jobs: {
-      certify: result(required(environment, 'BOB_M1B_CERTIFY_RESULT'), 'certifyResult'),
+      certify: certifyResult,
       cleanup: result(required(environment, 'BOB_M1B_CLEANUP_RESULT'), 'cleanupResult'),
+    },
+    speechAudit: {
+      verdict: certifyResult === 'success' ? 'ready' : 'not_proven',
+      activeReadinessMilliseconds: acousticReadinessMs,
+      engine: {
+        id: 'whisper.cpp',
+        version: 'v1.9.1',
+        sourceSha256:
+          '147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447',
+      },
+      model: {
+        id: 'whisper-large-v3-turbo',
+        sha256:
+          '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2',
+      },
     },
     ownership: {
       variables: boolean(
@@ -128,6 +169,8 @@ export function buildM1BStagingReport(environment = process.env) {
       containsRawCompanyId: false,
       containsEmail: false,
       containsTokenSecretOrSdp: false,
+      containsAudioOrTranscript: false,
+      containsSignedUrl: false,
     },
   });
 }

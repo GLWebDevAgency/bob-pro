@@ -63,6 +63,8 @@ jobs:
       started_at: ${{ steps.initialize.outputs.started_at }}
       baseline_deployment_id: ${{ steps.deploy_baseline.outputs.deployment_id }}
       active_deployment_id: ${{ steps.deploy_active.outputs.deployment_id }}
+      whisper_deployment_id: ${{ steps.deploy_whisper.outputs.deployment_id }}
+      acoustic_readiness_ms: ${{ steps.active_readiness.outputs.acoustic_readiness_ms }}
       variables_owned: ${{ steps.activate_variables.outputs.owned }}
       override_owned: ${{ steps.enable_override.outputs.owned }}
     env:
@@ -70,6 +72,7 @@ jobs:
       RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
       RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
       RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      RAILWAY_WHISPER_AUDIT_SERVICE_ID: ${{ vars.RAILWAY_WHISPER_AUDIT_SERVICE_ID }}
       BOB_M1B_RELEASE_SHA: ${{ github.sha }}
       BOB_M1B_STAGING_USER_ID: ${{ vars.BOB_M1B_STAGING_USER_ID }}
       BOB_M1B_STAGING_COMPANY_ID: ${{ vars.BOB_M1B_STAGING_COMPANY_ID }}
@@ -110,6 +113,7 @@ jobs:
             'RAILWAY_PROJECT_ID',
             'RAILWAY_ENVIRONMENT_ID',
             'RAILWAY_API_SERVICE_ID',
+            'RAILWAY_WHISPER_AUDIT_SERVICE_ID',
             'BOB_M1B_STAGING_USER_ID',
             'BOB_M1B_STAGING_COMPANY_ID',
             'BOB_M1B_STAGING_HMAC_KEY_VERSION',
@@ -139,6 +143,7 @@ jobs:
             'RAILWAY_PROJECT_ID',
             'RAILWAY_ENVIRONMENT_ID',
             'RAILWAY_API_SERVICE_ID',
+            'RAILWAY_WHISPER_AUDIT_SERVICE_ID',
             'BOB_M1B_STAGING_USER_ID',
           ]) {
             if (!uuid.test(process.env[name] ?? '')) throw new Error(`${name} must be a UUID`);
@@ -187,6 +192,23 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
+      - name: Preflight and deploy the private Whisper auditor at the exact SHA
+        id: deploy_whisper
+        timeout-minutes: 60
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs preflight
+          deployment_id="$(
+            railway up --project "$RAILWAY_PROJECT_ID" \
+              --service "$RAILWAY_WHISPER_AUDIT_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
+              | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
+          )"
+          node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs \
+            wait-deployment "$deployment_id"
+          node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs preflight
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Baseline OFF predeploy
         timeout-minutes: 120
         env:
@@ -300,6 +322,7 @@ jobs:
             wait-deployment "$deployment_id"
           echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Prove active topology, readiness, postdeploy and writer floor
+        id: active_readiness
         timeout-minutes: 120
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -317,7 +340,13 @@ jobs:
             sleep 5
           done
           test "$topology" = true
+          readiness_started_ms="$(date +%s%3N)"
           node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+          readiness_finished_ms="$(date +%s%3N)"
+          acoustic_readiness_ms="$((readiness_finished_ms - readiness_started_ms))"
+          test "$acoustic_readiness_ms" -ge 1
+          test "$acoustic_readiness_ms" -le 600000
+          echo "acoustic_readiness_ms=$acoustic_readiness_ms" >> "$GITHUB_OUTPUT"
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
@@ -573,6 +602,8 @@ jobs:
           BOB_M1B_STARTED_AT: ${{ needs.certify.outputs.started_at }}
           BOB_M1B_BASELINE_DEPLOYMENT_ID: ${{ needs.certify.outputs.baseline_deployment_id || 'not-created' }}
           BOB_M1B_ACTIVE_DEPLOYMENT_ID: ${{ needs.certify.outputs.active_deployment_id || 'not-created' }}
+          BOB_M1B_WHISPER_DEPLOYMENT_ID: ${{ needs.certify.outputs.whisper_deployment_id || 'not-created' }}
+          BOB_M1B_ACOUSTIC_READINESS_MS: ${{ needs.certify.outputs.acoustic_readiness_ms || 'not-measured' }}
           BOB_M1B_OFF_DEPLOYMENT_ID: ${{ needs.cleanup.outputs.off_deployment_id || 'not-created' }}
           BOB_M1B_CERTIFY_RESULT: ${{ needs.certify.result }}
           BOB_M1B_CLEANUP_RESULT: ${{ needs.cleanup.result }}
