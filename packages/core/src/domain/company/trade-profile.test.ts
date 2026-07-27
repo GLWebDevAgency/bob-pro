@@ -164,9 +164,10 @@ describe('tradeToWorksiteTerminology — vocabulaire adaptatif chantier/projet',
     expect(term.article).toEqual({ indefinite: 'un', definite: 'le' });
   });
 
-  it('couvre les 10 métiers sans lever — jamais de terminologie undefined', () => {
+  it('couvre les 12 métiers sans lever — jamais de terminologie undefined', () => {
     const trades: readonly Trade[] = [
       'plombier', 'electricien', 'macon', 'peintre', 'paysagiste',
+      'frigoriste', 'mainteneur',
       'consultant', 'freelance_it', 'photographe', 'coach', 'autre',
     ];
     for (const trade of trades) {

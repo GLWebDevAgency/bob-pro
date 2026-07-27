@@ -876,8 +876,9 @@ model Invoice {
   purchaseOrderDocument       StoredDocument?      @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // PR-08 — site/chantier de rattachement (patron Expense.chantierId) : posé à la composition
   // directe ou REPRIS du devis parent à la dérivation. NULL = pièce hors site, aucun backfill.
-  // Le figeage post-émission (liste du trigger invoices_legal_traceability) arrive avec PR-12b
-  // (redéfinition complète du trigger, writer N-1 sous chaque état — annexe errata n° 1).
+  // FIGÉ post-émission depuis 20260727120000_invoices_chantier_freeze (trigger redéfini depuis
+  // sa dernière version 20260720010000, annexe errata n° 1) — PR-12b n'ajoutera que
+  // maintenanceContractId à la liste.
   chantierId                  String?
   chantier                    Chantier?            @relation("ChantierInvoices", fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
