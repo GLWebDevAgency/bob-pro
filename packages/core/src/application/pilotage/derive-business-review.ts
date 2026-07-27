@@ -32,6 +32,7 @@ import {
   type AgedBalanceCustomerData,
   type AgedBalanceInvoiceData,
 } from '../clients/derive-aged-balance';
+import { isIssuedNeverTransmitted } from '../today/derive-today-priorities';
 import { revenueLast12MonthsCents } from '../clients/derive-customer-standings';
 import { deriveSig, type SigStatement } from '../accounting/derive-sig';
 import { deriveIncomeStatement } from '../accounting/derive-income-statement';
@@ -57,10 +58,24 @@ export interface BusinessReviewExpenseData {
   status: 'to_pay' | 'paid';
 }
 
+/**
+ * PR-07 — facture de la revue : la projection balance âgée ÉTENDUE de façon OPTIONNELLE par les
+ * faits de transmission (PR-02). Fail-closed : champs absents = la carte Encaissement n'affirme
+ * JAMAIS qu'une pièce n'est pas partie ; les appelants existants restent compatibles.
+ */
+export interface BusinessReviewInvoiceData extends AgedBalanceInvoiceData {
+  id?: string;
+  number?: string | null;
+  /** Livraison EMAIL constatée (outbox) — undefined = information non transportée. */
+  emailDeliveredAt?: string | null;
+  /** Suivi déclaré de transmission — undefined = information non transportée. */
+  transmission?: { depositedAt: DateOnly | null; acceptedAt: DateOnly | null } | null;
+}
+
 export interface BusinessReviewInput {
   entries: readonly BusinessReviewEntryData[];
   payments: readonly BusinessReviewPaymentData[];
-  invoices: readonly AgedBalanceInvoiceData[];
+  invoices: readonly BusinessReviewInvoiceData[];
   customers: readonly AgedBalanceCustomerData[];
   expenses: readonly BusinessReviewExpenseData[];
   /** Régime TVA qualifié du tenant — requis : aucun traitement « réel » implicite. */
@@ -172,6 +187,35 @@ export interface BusinessRatios {
   margeMateriauxBps: number | null;
 }
 
+/** PR-07 — pièce émise SANS envoi constaté ni dépôt déclaré (prédicat PR-02, la MÊME vérité
+ *  que la carte Aujourd'hui et le badge de liste). */
+export interface CollectionUntransmittedLine {
+  invoiceId: string;
+  docNumber: string | null;
+  customerId: string;
+  customerName: string;
+  /** Reste à encaisser (netToPay − paid) — ce qui dort tant que rien n'est parti. */
+  amountCents: number;
+}
+
+/**
+ * PR-07 — carte « Encaissement » : le trou n° 1 de Fly Services (2 % encaissé) rendu VISIBLE.
+ * Même honnêteté temporelle que le DSO : null assumé si l'historique est insuffisant, jamais un
+ * taux fabriqué sur une fenêtre vide.
+ */
+export interface CollectionView {
+  /** % encaissé sur facturé 90 j, en bps — encaissé TTC 90 j / facturé TTC 90 j (411 des
+   *  écritures de facture, avoirs en NÉGATIF). null si la fenêtre ne permet aucun taux honnête. */
+  collectedRateBps90d: number | null;
+  reason: 'ok' | 'no_recent_invoicing' | 'insufficient_history';
+  collectedTtc90dCents: number;
+  invoicedTtc90dCents: number;
+  /** Encours ÉCHU (balance âgée hors « pas encore dû ») — l'argent en retard chez les clients. */
+  overdueCents: number;
+  /** Pièces « émises sans envoi constaté » (tri : plus gros enjeu d'abord). */
+  untransmitted: CollectionUntransmittedLine[];
+}
+
 export interface BusinessReviewCoverage {
   /** Premier mois mouvementé (facturé ou encaissé) — null si aucun mouvement. */
   firstMonth: string | null;
@@ -196,6 +240,8 @@ export interface BusinessReview {
   vat: VatPosition;
   ratios: BusinessRatios;
   quality: { invoicesWithoutDueDate: number };
+  /** PR-07 — carte « Encaissement » (taux 90 j, encours échu, émises sans envoi constaté). */
+  collection: CollectionView;
 }
 
 const DEFAULT_PERCENT_FLOOR_CENTS = 300_000;
@@ -478,6 +524,63 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
     ).length,
   };
 
+  // ── PR-07 — carte « Encaissement » : % encaissé 90 j + encours échu + émises sans envoi ────
+  // Encaissé TTC sur la MÊME fenêtre 90 j que le facturé du DSO (dsoFloor exclusif → today).
+  let collectedTtc90d = 0;
+  for (const payment of input.payments) {
+    const day = payment.receivedAt.slice(0, 10);
+    if (day > dsoFloor && day <= today) collectedTtc90d += payment.amountCents;
+  }
+  // Mêmes gates d'honnêteté temporelle que le DSO : moins de 90 j d'historique de facturation →
+  // null assumé ; fenêtre sans facturation (ou avoirs > factures) → null, jamais un % fabriqué.
+  let collectionRate: { collectedRateBps90d: number | null; reason: CollectionView['reason'] };
+  if (firstInvoiceEntryDate === null || firstInvoiceEntryDate > dsoFloor) {
+    collectionRate = { collectedRateBps90d: null, reason: 'insufficient_history' };
+  } else if (invoicedTtc90d <= 0) {
+    collectionRate = { collectedRateBps90d: null, reason: 'no_recent_invoicing' };
+  } else {
+    collectionRate = { collectedRateBps90d: bps(collectedTtc90d, invoicedTtc90d), reason: 'ok' };
+  }
+  // Encours ÉCHU — DÉJÀ calculé par la balance âgée (une seule vérité : deriveAgedBalance).
+  const overdueCents = agedBalance.overdueCents;
+  // « Émises sans envoi constaté » — prédicat PR-02 (fail-closed : projections muettes = rien),
+  // identité requise (une ligne actionnable sans id ne mène nulle part).
+  const untransmitted: CollectionUntransmittedLine[] = [];
+  for (const invoice of input.invoices) {
+    if (invoice.id === undefined) continue;
+    if (
+      !isIssuedNeverTransmitted({
+        kind: invoice.kind,
+        status: invoice.status,
+        ...(invoice.emailDeliveredAt !== undefined
+          ? { emailDeliveredAt: invoice.emailDeliveredAt }
+          : {}),
+        ...(invoice.transmission !== undefined ? { transmission: invoice.transmission } : {}),
+      })
+    )
+      continue;
+    const remaining = invoice.totals.netToPay - invoice.paid;
+    if (remaining <= 0) continue;
+    const customerName = names.get(invoice.customerId);
+    if (customerName === undefined) continue;
+    untransmitted.push({
+      invoiceId: invoice.id,
+      docNumber: invoice.number ?? null,
+      customerId: invoice.customerId,
+      customerName,
+      amountCents: remaining,
+    });
+  }
+  untransmitted.sort((a, b) => b.amountCents - a.amountCents);
+  const collection: CollectionView = {
+    collectedRateBps90d: collectionRate.collectedRateBps90d,
+    reason: collectionRate.reason,
+    collectedTtc90dCents: collectedTtc90d,
+    invoicedTtc90dCents: invoicedTtc90d,
+    overdueCents,
+    untransmitted,
+  };
+
   return {
     coverage,
     series,
@@ -491,6 +594,7 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
     vat,
     ratios,
     quality,
+    collection,
   };
 }
 

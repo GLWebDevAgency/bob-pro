@@ -42,7 +42,7 @@ import {
 import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
-import { ChevronLeftIcon } from '../src/components/icons';
+import { ChevronLeftIcon, ChevronRightIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const MONTHS = [
@@ -139,6 +139,13 @@ export default function Pilotage() {
         paid: i.paid,
         dueAt: i.dueAt,
         customerId: i.customerId,
+        // PR-07 : identité + faits de transmission (PR-02) — la carte Encaissement dérive
+        // « émises sans envoi constaté » de la MÊME vérité que le badge de liste (fail-closed
+        // si un serveur antérieur ne transporte pas les faits).
+        id: i.id,
+        number: i.number,
+        ...(i.emailDeliveredAt !== undefined ? { emailDeliveredAt: i.emailDeliveredAt } : {}),
+        ...(i.transmission !== undefined ? { transmission: i.transmission } : {}),
       })),
       customers: customers.data.map((c) => ({ id: c.id, name: c.name })),
       expenses: expenses.data.map((e) => ({
@@ -528,6 +535,88 @@ export default function Pilotage() {
               </>
             )}
           </Card>,
+        )}
+
+        {/* PR-07 — Encaissement : % encaissé 90 j (honnêteté DSO), encours échu, émises sans
+            envoi constaté avec CTA vers la fiche (où vivent envoi email + guide de dépôt). */}
+        {section(
+          'pilotage.sectionCollection',
+          <Card>
+            {r.collection.collectedRateBps90d === null ? (
+              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                {t(
+                  r.collection.reason === 'insufficient_history'
+                    ? 'pilotage.collectionNoHistory'
+                    : 'pilotage.collectionNoInvoicing',
+                  { personality },
+                )}
+              </Text>
+            ) : (
+              <>
+                <Text style={{ ...font('bigNum'), fontSize: 26, color: r.collection.collectedRateBps90d >= 8_000 ? semantic.success : r.collection.collectedRateBps90d >= 5_000 ? semantic.warning : semantic.danger, fontVariant: ['tabular-nums'] }}>
+                  {t('pilotage.collectionRate', {
+                    personality,
+                    params: { pct: String(Math.round(r.collection.collectedRateBps90d / 100)) },
+                  })}
+                </Text>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 3, lineHeight: 17 }]}>
+                  {t('pilotage.collectionRateHint', {
+                    personality,
+                    params: {
+                      collected: formatEUR(r.collection.collectedTtc90dCents),
+                      invoiced: formatEUR(r.collection.invoicedTtc90dCents),
+                    },
+                  })}
+                </Text>
+              </>
+            )}
+            {r.collection.overdueCents > 0 ? (
+              <Text style={[font('sub'), { color: colors.ink800, marginTop: 8 }]}>
+                {t('pilotage.collectionOverdue', {
+                  personality,
+                  params: { amount: formatEUR(r.collection.overdueCents) },
+                })}
+              </Text>
+            ) : null}
+            {r.collection.untransmitted.length > 0 ? (
+              <View style={{ marginTop: 12, gap: 4 }}>
+                <Text style={[font('label', 700), { fontSize: 12, color: semantic.warning }]}>
+                  {t('pilotage.collectionUntransmittedTitle', {
+                    personality,
+                    params: { count: r.collection.untransmitted.length },
+                  }).toUpperCase()}
+                </Text>
+                {r.collection.untransmitted.slice(0, 5).map((line, index) => (
+                  <Pressable
+                    key={line.invoiceId}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${line.docNumber ?? line.invoiceId} — ${line.customerName}`}
+                    onPress={() => router.push(`/facture/${line.invoiceId}`)}
+                    style={({ pressed }) => ({
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                      minHeight: 40,
+                      opacity: pressed ? 0.65 : 1,
+                      borderTopWidth: index === 0 ? 0 : 1,
+                      borderTopColor: colors.lineSoft,
+                    })}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[font('sub', 600), { fontSize: 13.5, color: colors.ink800 }]} numberOfLines={1}>
+                        {line.docNumber ?? line.invoiceId} · {line.customerName}
+                      </Text>
+                    </View>
+                    <Text style={[font('sub', 700), { color: semantic.warning, fontVariant: ['tabular-nums'] }]}>
+                      {formatEUR(line.amountCents)}
+                    </Text>
+                    <ChevronRightIcon color={colors.slate300} size={14} />
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </Card>,
+          'pilotage.collectionNote',
         )}
 
         {/* Top clients */}

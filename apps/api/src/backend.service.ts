@@ -4044,14 +4044,17 @@ export class BackendService {
       // Avant ce correctif, l'action était absente ici : bob-agent.ts:1330 retombait toujours sur
       // le fail-safe honnête (« je n'ai pas accès à la revue de pilotage sur cet appareil »).
       getBusinessReview: async () => {
-        const [entries, payments, invoices, cust, expenses, company] = await Promise.all([
-          this.p.accountingEntries.listByCompany(this.companyId()),
-          this.p.payments.listByCompany(this.companyId()),
-          this.p.invoices.listByCompany(this.companyId()),
-          this.listCustomers(),
-          this.p.expenses.listByCompany(this.companyId()),
-          this.p.companies.findById(this.companyId()),
-        ]);
+        const [entries, payments, invoices, cust, expenses, company, deliveries] =
+          await Promise.all([
+            this.p.accountingEntries.listByCompany(this.companyId()),
+            this.p.payments.listByCompany(this.companyId()),
+            this.p.invoices.listByCompany(this.companyId()),
+            this.listCustomers(),
+            this.p.expenses.listByCompany(this.companyId()),
+            this.p.companies.findById(this.companyId()),
+            // PR-07 : la carte Encaissement dérive « émises sans envoi constaté » de l'outbox.
+            this.invoiceEmailDeliveries(this.companyId()),
+          ]);
         if (!cust.ok) return cust;
         if (company === null) return err(appUnavailable('company'));
         return ok(
@@ -4069,6 +4072,11 @@ export class BackendService {
               paid: i.paid,
               dueAt: i.dueAt,
               customerId: i.customerId,
+              // PR-07 : identité + faits de transmission (mêmes que l'écran — parité Bob).
+              id: i.id,
+              number: i.number,
+              emailDeliveredAt: deliveries.get(i.id) ?? null,
+              transmission: i.transmission,
             })),
             customers: cust.value,
             expenses: expenses.map((e) => {

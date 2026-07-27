@@ -4,6 +4,7 @@ import {
   type BusinessReviewEntryData,
   type BusinessReviewExpenseData,
   type BusinessReviewInput,
+  type BusinessReviewInvoiceData,
 } from './derive-business-review';
 import { type AgedBalanceInvoiceData } from '../clients/derive-aged-balance';
 import { type Totals } from '../../domain/billing/shared/totals';
@@ -66,7 +67,7 @@ function totals(ttc: number, opts?: { netToPay?: number; vat?: number }): Totals
   return { ht: ttc - vat, vatByRate: { '10': vat }, vat, ttc, netToPay: opts?.netToPay ?? ttc };
 }
 
-function invoice(customerId: string, ttc: number, opts?: Partial<AgedBalanceInvoiceData> & { netToPay?: number }): AgedBalanceInvoiceData {
+function invoice(customerId: string, ttc: number, opts?: Partial<BusinessReviewInvoiceData> & { netToPay?: number }): BusinessReviewInvoiceData {
   return {
     kind: 'final',
     status: 'issued',
@@ -312,5 +313,110 @@ describe('deriveBusinessReview — SIG, ratios et TVA', () => {
     expect(review.vat.collectedCents).toBe(10_000);
     expect(review.vat.deductibleCents).toBe(4_000);
     expect(review.vat.netDueCents).toBe(6_000);
+  });
+});
+
+// ── PR-07 — carte « Encaissement » (taux 90 j, encours échu, émises sans envoi constaté) ──
+
+describe('deriveBusinessReview — collection (PR-07)', () => {
+  it('taux encaissé 90 j = encaissé TTC / facturé TTC (411 des factures), avoirs en NÉGATIF', () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        entries: [
+          // Ancre d'historique : première facture il y a plus de 90 j (fenêtre complète).
+          invoiceEntry('2026-01-10', 100_000, 10_000),
+          // Dans la fenêtre 90 j : 110 000 c TTC facturés, puis un avoir de 11 000 c TTC.
+          invoiceEntry('2026-05-10', 100_000, 10_000),
+          creditNoteEntry('2026-05-28', 10_000, 1_000),
+        ],
+        payments: [
+          { amountCents: 49_500, receivedAt: '2026-05-20T10:00:00.000Z' },
+          // Hors fenêtre (il y a plus de 90 jours) : exclu du numérateur.
+          { amountCents: 500_000, receivedAt: '2026-01-15T10:00:00.000Z' },
+        ],
+      }),
+    );
+    // Facturé TTC 90 j = 110 000 − 11 000 = 99 000 ; encaissé 90 j = 49 500 → 50 %.
+    expect(review.collection.invoicedTtc90dCents).toBe(99_000);
+    expect(review.collection.collectedTtc90dCents).toBe(49_500);
+    expect(review.collection.collectedRateBps90d).toBe(5_000);
+    expect(review.collection.reason).toBe('ok');
+  });
+
+  it('honnêteté temporelle : moins de 90 j d’historique → null assumé ; fenêtre sans facturation → null', () => {
+    const young = deriveBusinessReview(
+      baseInput({ entries: [invoiceEntry('2026-05-10', 100_000, 10_000)] }),
+    );
+    expect(young.collection.collectedRateBps90d).toBeNull();
+    expect(young.collection.reason).toBe('insufficient_history');
+
+    const idle = deriveBusinessReview(
+      baseInput({ entries: [invoiceEntry('2026-01-10', 100_000, 10_000)] }),
+    );
+    expect(idle.collection.collectedRateBps90d).toBeNull();
+    expect(idle.collection.reason).toBe('no_recent_invoicing');
+    // Avoirs > factures dans la fenêtre : base ≤ 0 → jamais un % contre une base négative.
+    const negative = deriveBusinessReview(
+      baseInput({
+        entries: [
+          invoiceEntry('2026-01-10', 100_000, 10_000),
+          creditNoteEntry('2026-05-05', 200_000, 20_000),
+        ],
+      }),
+    );
+    expect(negative.collection.collectedRateBps90d).toBeNull();
+  });
+
+  it('encours échu = balance âgée (une seule vérité) ; émises sans envoi constaté triées par enjeu', () => {
+    const review = deriveBusinessReview(
+      baseInput({
+        invoices: [
+          invoice('cust-1', 120_000, {
+            id: 'inv-1',
+            number: 'F-2026-0001',
+            emailDeliveredAt: null,
+            transmission: null,
+            dueAt: '2026-09-01', // pas échue : hors encours échu, mais jamais transmise
+          }),
+          invoice('cust-1', 60_000, {
+            id: 'inv-2',
+            number: 'F-2026-0002',
+            emailDeliveredAt: '2026-06-01T08:00:00.000Z', // partie : éteinte
+            transmission: null,
+          }),
+          invoice('cust-2', 240_000, {
+            id: 'inv-3',
+            number: 'F-2026-0003',
+            emailDeliveredAt: null,
+            transmission: null,
+            dueAt: '2026-09-01',
+          }),
+          // Projection MUETTE (faits non transportés) : fail-closed, jamais listée.
+          invoice('cust-2', 999_999, { id: 'inv-4', number: 'F-2026-0004', dueAt: '2026-09-01' }),
+        ],
+        customers: [
+          { id: 'cust-1', name: 'RATP CAP' },
+          { id: 'cust-2', name: 'RATP EPIC' },
+        ],
+      }),
+    );
+    // inv-2 est échue depuis le 2026-06-01 → encours échu = son reste dû.
+    expect(review.collection.overdueCents).toBe(60_000);
+    expect(review.collection.untransmitted).toEqual([
+      {
+        invoiceId: 'inv-3',
+        docNumber: 'F-2026-0003',
+        customerId: 'cust-2',
+        customerName: 'RATP EPIC',
+        amountCents: 240_000,
+      },
+      {
+        invoiceId: 'inv-1',
+        docNumber: 'F-2026-0001',
+        customerId: 'cust-1',
+        customerName: 'RATP CAP',
+        amountCents: 120_000,
+      },
+    ]);
   });
 });

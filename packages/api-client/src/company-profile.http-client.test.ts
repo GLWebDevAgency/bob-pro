@@ -271,6 +271,9 @@ describe('HttpBobClient — réglages facturation BDD', () => {
       defaultQuoteValidityDays: 45,
       defaultDepositPercent: 20,
       defaultInvoicePaymentTermsDays: null,
+      // PR-06 : le serveur porte TOUJOURS la cadence (null = défaut) et l'interrupteur auto.
+      relancePolicy: null,
+      relanceAutoEnabled: true,
       createdAt: '2026-07-17T06:00:00.000Z',
       updatedAt: '2026-07-17T06:05:00.000Z',
     };

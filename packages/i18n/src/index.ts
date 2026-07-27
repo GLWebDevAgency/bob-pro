@@ -6798,6 +6798,47 @@ const legacyFr = {
     pro: 'Délai d’encaissement',
     direct: 'Délai de paiement',
   },
+  // PR-07 — carte « Encaissement » : le trou n° 1 (factures jamais transmises) rendu visible.
+  'pilotage.sectionCollection': {
+    pote: 'Encaissement',
+    pro: 'Encaissement',
+    direct: 'Encaissement',
+  },
+  'pilotage.collectionRate': {
+    pote: '{pct} % encaissé',
+    pro: '{pct} % encaissé',
+    direct: '{pct} % encaissé',
+  },
+  'pilotage.collectionRateHint': {
+    pote: '{collected} encaissés sur {invoiced} facturés ces 90 derniers jours.',
+    pro: '{collected} encaissés pour {invoiced} facturés sur 90 jours.',
+    direct: '{collected} / {invoiced} (90 j).',
+  },
+  'pilotage.collectionNoHistory': {
+    pote: 'Il me faut 3 mois de facturation pour un taux honnête — encore un peu de patience.',
+    pro: 'Trois mois d’historique de facturation sont nécessaires pour établir un taux fiable.',
+    direct: '3 mois d’historique requis.',
+  },
+  'pilotage.collectionNoInvoicing': {
+    pote: 'Rien de facturé ces 90 derniers jours — pas de taux à inventer.',
+    pro: 'Aucune facturation sur les 90 derniers jours : aucun taux calculable.',
+    direct: 'Rien de facturé sur 90 j.',
+  },
+  'pilotage.collectionOverdue': {
+    pote: '{amount} en retard chez tes clients.',
+    pro: 'Encours échu : {amount}.',
+    direct: 'Échu : {amount}.',
+  },
+  'pilotage.collectionUntransmittedTitle': {
+    pote: '{count} émise(s), jamais envoyée(s)',
+    pro: '{count} émise(s) sans envoi constaté',
+    direct: '{count} jamais envoyée(s)',
+  },
+  'pilotage.collectionNote': {
+    pote: 'Une facture jamais transmise ne sera jamais payée — touche une ligne pour l’envoyer ou la déposer.',
+    pro: 'Une facture non transmise ne peut pas être réglée. Touchez une ligne pour l’envoyer ou déclarer son dépôt.',
+    direct: 'Pas transmise = pas payée. Touche pour envoyer.',
+  },
   'pilotage.dsoDays': { pote: '{days} jours', pro: '{days} jours', direct: '{days} j' },
   'pilotage.dsoHint': {
     pote: 'Le temps moyen entre ta facture et l’argent sur ton compte (90 derniers jours).',
