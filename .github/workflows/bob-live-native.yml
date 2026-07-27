@@ -17,6 +17,8 @@ on:
       - packages/ai/src/realtime/**
       - pnpm-lock.yaml
   push:
+    branches:
+      - main
     paths:
       - .github/workflows/bob-live-native.yml
       - apps/mobile/app.json
@@ -86,16 +88,21 @@ jobs:
 
   swift-contract:
     name: Swift bridge + Expo iOS build + VAD contract
-    # ExpoModulesJSI déclare Swift tools 6.2 : Xcode 16.4 (Swift 6.1) ne peut pas résoudre
-    # ses dépendances. L'image macOS 15 fournit Xcode 26.2, figé pour un build reproductible.
-    runs-on: macos-15
+    # ExpoModulesJSI 57.0.4 ne compile pas avec le type-checker de Xcode 26.2
+    # (`abs(Double)` ambigu). Xcode 26.6 est la version stable qui compile réellement
+    # Expo 57 et elle est épinglée par son chemin exact sur l'image macOS 26.
+    runs-on: macos-26
     timeout-minutes: 35
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - name: Verify the pinned stable Xcode toolchain
+        run: |
+          test -d "$DEVELOPER_DIR"
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.6"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.12.0
