@@ -1323,6 +1323,8 @@ export function useComposeStandaloneInvoice() {
       context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
       /** A3bis — `true` STRICT uniquement (client B2C, dépannage urgent sollicité). */
       urgentOnSiteRepair?: boolean;
+      /** PR-08 — site de rattachement (picker) ; absent = pièce hors site. */
+      chantierId?: string | null;
     }) => {
       if (client.composeStandaloneInvoice === undefined) {
         throw { kind: 'unavailable', service: 'compose-standalone-invoice' };

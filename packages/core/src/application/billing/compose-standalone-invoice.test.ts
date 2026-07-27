@@ -45,7 +45,14 @@ function mergeCustomerProps(over: CustomerOver): CustomerProps {
   return merged as unknown as CustomerProps;
 }
 
-function makeEnv(input: { companyOver?: Partial<CompanyProps>; customerOver?: CustomerOver } = {}) {
+function makeEnv(
+  input: {
+    companyOver?: Partial<CompanyProps>;
+    customerOver?: CustomerOver;
+    /** PR-08 — chantiers PROUVÉS du tenant (port chantierTargets) ; absent = port non câblé. */
+    tenantChantiers?: readonly string[];
+  } = {},
+) {
   const companyR = Company.of({ ...companyProps, ...input.companyOver });
   if (!companyR.ok) throw new Error('company');
   const company = companyR.value;
@@ -78,12 +85,21 @@ function makeEnv(input: { companyOver?: Partial<CompanyProps>; customerOver?: Cu
     save: async () => {},
   };
   let seq = 0;
+  const tenantChantiers = input.tenantChantiers;
   const usecase = new ComposeStandaloneInvoice({
     invoices,
     companies,
     customers,
     ids: { newId: () => `id-${(seq += 1)}` },
     clock: { now: () => NOW, today: () => '2026-06-01' },
+    ...(tenantChantiers !== undefined
+      ? {
+          chantierTargets: {
+            exists: async (target: { companyId: string; linkedEntityId: string }) =>
+              target.companyId === company.id && tenantChantiers.includes(target.linkedEntityId),
+          },
+        }
+      : {}),
   });
   return { usecase, saved };
 }
@@ -210,5 +226,53 @@ describe('ComposeStandaloneInvoice (B1)', () => {
     });
     expect(r.ok).toBe(false);
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe('ComposeStandaloneInvoice — site/chantier de rattachement (PR-08)', () => {
+  it('rattache la facture directe au chantier PROUVÉ du tenant', async () => {
+    const { usecase, saved } = makeEnv({ tenantChantiers: ['chantier-pins'] });
+    const r = await usecase.execute({
+      companyId: 'co-1',
+      customerId: 'cus-1',
+      lines: regie,
+      chantierId: 'chantier-pins',
+    });
+    expect(r.ok).toBe(true);
+    expect(saved[0]!.chantierId).toBe('chantier-pins');
+  });
+
+  it('anti-IDOR : chantier d’un autre tenant → not_found, rien de sauvé', async () => {
+    const { usecase, saved } = makeEnv({ tenantChantiers: [] });
+    const r = await usecase.execute({
+      companyId: 'co-1',
+      customerId: 'cus-1',
+      lines: regie,
+      chantierId: 'chantier-autre-tenant',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('not_found');
+    expect(saved).toHaveLength(0);
+  });
+
+  it('fail-closed : chantierId fourni SANS port câblé = refus dependency, rien de sauvé', async () => {
+    const { usecase, saved } = makeEnv();
+    const r = await usecase.execute({
+      companyId: 'co-1',
+      customerId: 'cus-1',
+      lines: regie,
+      chantierId: 'chantier-pins',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('dependency');
+    expect(saved).toHaveLength(0);
+  });
+
+  it('non-régression : sans chantierId la pièce naît hors site (null)', async () => {
+    const { usecase, saved } = makeEnv();
+    const r = await usecase.execute({ companyId: 'co-1', customerId: 'cus-1', lines: regie });
+    expect(r.ok).toBe(true);
+    expect(saved[0]!.chantierId).toBeNull();
+    expect(saved[0]!.toSnapshot().chantierId).toBeNull();
   });
 });

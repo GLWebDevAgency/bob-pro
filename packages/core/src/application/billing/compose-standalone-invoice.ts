@@ -11,6 +11,7 @@ import {
   type CompanyRepository,
   type CustomerRepository,
 } from '../ports/repositories';
+import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { validateLineInputs } from './line-input-validation';
 
@@ -43,6 +44,12 @@ export interface ComposeStandaloneInvoiceInput {
    * Refusé pour un client professionnel (l'exception ne protège que le consommateur).
    */
   urgentOnSiteRepair?: boolean;
+  /**
+   * PR-08 — site/chantier de rattachement de la facture directe (picker de l'écran), OPTIONNEL
+   * et nullable : null/absent = pièce hors site. Appartenance au tenant PROUVÉE avant toute
+   * persistance (anti-IDOR fail-closed, patron RecordExpense.chantierId).
+   */
+  chantierId?: string | null;
 }
 
 export interface ComposeStandaloneInvoiceOutput {
@@ -56,6 +63,12 @@ export interface ComposeStandaloneInvoiceDeps {
   customers: CustomerRepository;
   ids: IdGeneratorPort;
   clock: ClockPort;
+  /**
+   * PR-08 — preuve d'existence tenant-scoped du chantier visé (anti-IDOR, même port que
+   * CreateQuote/RecordExpense). OPTIONNELLE (compat), REQUISE dès qu'un `chantierId` est
+   * fourni — fail-closed sinon.
+   */
+  chantierTargets?: DocumentLinkTargetPort;
 }
 
 /**
@@ -131,9 +144,29 @@ export class ComposeStandaloneInvoice {
       customerId: input.customerId,
       // Horodaté SERVEUR à la composition — la trace qui fonde l'exception L221-10, al. 2.
       urgentRepair: input.urgentOnSiteRepair === true ? { requestedAt: at } : null,
+      chantierId: input.chantierId ?? null,
     });
     if (!composed.ok) return err(appDomain(composed.error));
     const invoice = composed.value;
+
+    // PR-08 — anti-IDOR : le chantier visé est PROUVÉ dans le tenant avant toute persistance.
+    // Fail-closed : chantierId fourni sans port câblé = refus (jamais de lien non vérifié).
+    const chantierId = invoice.chantierId;
+    if (chantierId !== null) {
+      if (!this.deps.chantierTargets) {
+        return err({
+          kind: 'dependency',
+          port: 'DocumentLinkTargetPort',
+          cause: 'chantierId fourni sans port de vérification tenant (chantierTargets) : rattachement refusé.',
+        });
+      }
+      const exists = await this.deps.chantierTargets.exists({
+        companyId: input.companyId,
+        linkedEntityType: 'chantier',
+        linkedEntityId: chantierId,
+      });
+      if (!exists) return err(appNotFound('chantier', chantierId));
+    }
 
     for (const line of input.lines) {
       const rate = suggestVatRate({

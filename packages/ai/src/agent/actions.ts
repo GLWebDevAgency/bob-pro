@@ -380,6 +380,10 @@ export interface CreateQuoteActionInput {
   /** B3 (additif) — remise globale dictée (« mets 10 % de remise ») : % du HT net de lignes ou
    * montant HT en centimes — MÊME champ que CreateQuote (@bob/core), plafond validé au domaine. */
   globalDiscount?: Discount | null;
+  /** PR-08 (additif) — site de rattachement dicté (« chez Carrefour Vitry ») : id RÉSOLU contre
+   * la liste réelle du tenant par l'agent (jamais récité) ; l'existence tenant est PROUVÉE par
+   * l'hôte (CreateQuote.chantierTargets, anti-IDOR fail-closed du core). */
+  chantierId?: string | null;
 }
 
 /** Règlement DÉJÀ effectué déclaré à la création (M4 — dépense dictée « j'ai dépensé 89 € chez
@@ -453,6 +457,9 @@ export interface ComposeStandaloneInvoiceActionInput {
    * demandée par le client (art. L221-10, al. 2 c. conso). `true` strict = fait déclaré par
    * l'artisan (confirmé), horodaté serveur par le use case. Absent + b2c → refus fail-closed. */
   urgentOnSiteRepair?: boolean;
+  /** PR-08 (additif) — site de rattachement dicté : id RÉSOLU contre la liste réelle du tenant
+   * par l'agent (jamais récité) ; existence tenant PROUVÉE par l'hôte (anti-IDOR fail-closed). */
+  chantierId?: string | null;
 }
 
 export interface ComposeStandaloneInvoiceActionOutput {

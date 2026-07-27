@@ -130,6 +130,9 @@ const CREATE_QUOTE_FIELDS = new Set([
   // B3/B5 — remise globale négociée et retenue de garantie stipulée au devis-chantier.
   'globalDiscount',
   'retenueGarantiePct',
+  // PR-08 — site de rattachement (picker du wizard) — optionnel, additif ; le chantier est
+  // PROUVÉ dans le tenant côté core (CreateQuote, anti-IDOR fail-closed).
+  'chantierId',
 ]);
 const CREATE_QUOTE_LINE_FIELDS = new Set([
   'label',
@@ -156,6 +159,8 @@ const COMPOSE_INVOICE_FIELDS = new Set([
   'context',
   // A3bis — qualification d'urgence OBLIGATOIRE pour un client B2C (booléen strict).
   'urgentOnSiteRepair',
+  // PR-08 — site de rattachement (picker de l'écran facture directe) — optionnel, additif.
+  'chantierId',
 ]);
 const DISCOUNT_FIELDS = new Set(['type', 'value', 'cents']);
 /** Suivi MANUEL de transmission (PATCH /invoices/:id/transmission) : dates déclarées. */
@@ -873,6 +878,32 @@ function parseInvoiceGenerationBody(body: Record<string, unknown>): {
 }
 
 /**
+ * PR-08 — champ `chantierId` optionnel des créations de pièces (devis + facture directe) :
+ * même hygiène de forme que l'imputation chantier des dépenses (id canonique 1..200, trimmé,
+ * sans caractère de contrôle) ; `null` explicite = hors site (idempotent avec le champ absent).
+ * La SUBSTANCE (chantier prouvé dans le tenant) reste l'autorité du use case (anti-IDOR).
+ */
+function parseChantierIdField(
+  body: Record<string, unknown>,
+  issues: ValidationIssue[],
+): string | undefined {
+  if (!('chantierId' in body)) return undefined;
+  const value = body['chantierId'];
+  if (value === null) return undefined;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 200 ||
+    value !== value.trim() ||
+    hasControlCharacter(value)
+  ) {
+    issues.push({ field: 'chantierId', message: 'Identifiant de chantier invalide.' });
+    return undefined;
+  }
+  return value;
+}
+
+/**
  * B1 — POST /invoices (facture DIRECTE sans devis signé) : mêmes contraintes de forme que les
  * lignes de devis (500 caractères, TVA du référentiel, 100 lignes max, plafond HT), remise de
  * ligne et remise globale B3 comprises. La substance (client du tenant, urgence B2C A3bis,
@@ -884,6 +915,7 @@ function parseComposeInvoiceBody(body: Record<string, unknown>): {
   globalDiscount?: Discount | null;
   context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
   urgentOnSiteRepair?: boolean;
+  chantierId?: string;
 } {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
@@ -1037,6 +1069,8 @@ function parseComposeInvoiceBody(body: Record<string, unknown>): {
   if (urgentOnSiteRepair !== undefined && typeof urgentOnSiteRepair !== 'boolean') {
     issues.push({ field: 'urgentOnSiteRepair', message: 'Booléen attendu.' });
   }
+  // PR-08 — site de rattachement (forme seulement ; substance anti-IDOR au use case).
+  const chantierId = parseChantierIdField(body, issues);
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     customerId: customerId as string,
@@ -1044,6 +1078,7 @@ function parseComposeInvoiceBody(body: Record<string, unknown>): {
     ...(globalDiscount !== undefined ? { globalDiscount } : {}),
     ...(context !== undefined ? { context } : {}),
     ...(urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+    ...(chantierId !== undefined ? { chantierId } : {}),
   };
 }
 
@@ -1631,6 +1666,9 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     issues.push({ field: 'retenueGarantiePct', message: 'Taux de retenue de garantie invalide.' });
   }
 
+  // PR-08 — site de rattachement (forme seulement ; substance anti-IDOR au use case).
+  const chantierId = parseChantierIdField(body, issues);
+
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     customerId: customerId as string,
@@ -1644,6 +1682,7 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     ...(retenueGarantiePct !== undefined
       ? { retenueGarantiePct: retenueGarantiePct as number | null }
       : {}),
+    ...(chantierId !== undefined ? { chantierId } : {}),
   };
 }
 

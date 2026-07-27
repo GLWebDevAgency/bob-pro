@@ -3182,6 +3182,11 @@ export class HttpBobClient implements BobClient {
       // ET la mention datée du PDF — il DOIT atteindre le serveur (`true` strict uniquement,
       // même contrat que le contrôleur ; parité LocalClient).
       ...(input.urgentRepairRequested === true ? { urgentRepairRequested: true } : {}),
+      // PR-08 — site de rattachement (picker du wizard) : sans lui, le rattachement dicté ou
+      // choisi n'atteindrait jamais le serveur (perte silencieuse d'un fait de la pièce).
+      ...(input.chantierId !== undefined && input.chantierId !== null
+        ? { chantierId: input.chantierId }
+        : {}),
       ...(input.context !== undefined
         ? {
             context: {
@@ -3298,6 +3303,7 @@ export class HttpBobClient implements BobClient {
     globalDiscount?: Discount | null;
     context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
     urgentOnSiteRepair?: boolean;
+    chantierId?: string | null;
   }) {
     return this.req<{ invoiceId: string; totals: Totals }>('POST', '/invoices', {
       customerId: input.customerId,
@@ -3306,6 +3312,10 @@ export class HttpBobClient implements BobClient {
       ...(input.context !== undefined ? { context: input.context } : {}),
       // A3bis — booléen STRICT : seul `true` voyage (jamais un flag implicite).
       ...(input.urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+      // PR-08 — site de rattachement du picker (parité LocalClient).
+      ...(input.chantierId !== undefined && input.chantierId !== null
+        ? { chantierId: input.chantierId }
+        : {}),
     });
   }
   /** Suivi MANUEL de transmission (PATCH /invoices/:id/transmission) — réponse décodée fail-closed. */

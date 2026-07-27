@@ -45,6 +45,12 @@ export interface ComposeQuoteInput {
    * devis ou n'existe pas).
    */
   urgentRepair?: UrgentRepairRequest | null;
+  /**
+   * PR-08 — site/chantier de rattachement de la pièce (même sémantique nullable
+   * qu'`Expense.chantierId`) : null = pièce hors site. L'appartenance du chantier au tenant
+   * est PROUVÉE par le use case (anti-IDOR fail-closed), jamais ici.
+   */
+  chantierId?: string | null;
 }
 
 /**
@@ -81,6 +87,8 @@ export class Quote extends AggregateRoot<string> {
    * horodaté serveur, IMMUABLE ensuite (aucun mutateur) : null = jamais sollicité.
    */
   private _urgentRepair: UrgentRepairRequest | null = null;
+  /** PR-08 — site/chantier de rattachement (null = hors site), posé à la composition. */
+  private _chantierId: string | null = null;
   /** Révision optimiste — incrémentée par les mutations post-signature (bon de commande). */
   private _revision = 1;
 
@@ -94,7 +102,16 @@ export class Quote extends AggregateRoot<string> {
   }
 
   static compose(input: ComposeQuoteInput): DomainResult<Quote> {
+    // PR-08 — identifiant canonique du site quand présent (même hygiène qu'Expense.chantierId).
+    const rawChantierId = input.chantierId ?? null;
+    let chantierId: string | null = null;
+    if (rawChantierId !== null) {
+      chantierId = rawChantierId.trim();
+      if (!chantierId)
+        return err({ code: 'VALIDATION', field: 'chantierId', message: 'Chantier de rattachement invalide.' });
+    }
     const q = new Quote(input.id, input.companyId, input.customerId, input.validUntil ?? null);
+    q._chantierId = chantierId;
     // Trace de l'urgence : événement DÉDIÉ (en plus du champ horodaté) — le fait légal qui
     // lève l'embargo L221-10 est journalisé à sa naissance, jamais ajouté après coup.
     q._urgentRepair = input.urgentRepair ? { requestedAt: input.urgentRepair.requestedAt } : null;
@@ -139,6 +156,10 @@ export class Quote extends AggregateRoot<string> {
   /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — null = jamais sollicitée. */
   get urgentRepair(): UrgentRepairRequest | null {
     return this._urgentRepair;
+  }
+  /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
+  get chantierId(): string | null {
+    return this._chantierId;
   }
   get purchaseOrder(): PurchaseOrderRef | null {
     return this._purchaseOrder;
@@ -500,6 +521,7 @@ export class Quote extends AggregateRoot<string> {
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
       globalDiscount: this._globalDiscount ? cloneDiscount(this._globalDiscount) : null,
       retenueGarantiePct: this._retenueGarantiePct,
+      chantierId: this._chantierId,
       revision: this._revision,
     };
   }
@@ -531,6 +553,8 @@ export class Quote extends AggregateRoot<string> {
     // Compat ascendante : snapshots antérieurs sans exception dépannage urgent (null honnête —
     // fail-closed : l'embargo L221-10 reste plein, jamais une urgence inventée).
     q._urgentRepair = s.urgentRepair ? { requestedAt: s.urgentRepair.requestedAt } : null;
+    // Compat ascendante PR-08 : snapshots antérieurs sans site (null honnête, jamais inventé).
+    q._chantierId = s.chantierId ?? null;
     return q;
   }
 }
@@ -558,4 +582,6 @@ export interface QuoteSnapshot {
   retractedAt?: Instant | null;
   /** Optionnel : exception dépannage urgent absente des snapshots antérieurs (jamais inventée). */
   urgentRepair?: UrgentRepairRequest | null;
+  /** PR-08 — optionnel : site absent des snapshots antérieurs (null honnête, jamais inventé). */
+  chantierId?: string | null;
 }

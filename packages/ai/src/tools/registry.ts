@@ -333,7 +333,13 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       // Brouillon interne réversible : pas de plancher — la sortie vers le client reste envoyer_devis.
       riskTier: 'draft',
       parse: (raw): Result<CreateQuoteActionInput, AppError> => {
-        const r = raw as { customerId?: unknown; lines?: unknown; depositPct?: unknown; globalDiscount?: unknown };
+        const r = raw as {
+          customerId?: unknown;
+          lines?: unknown;
+          depositPct?: unknown;
+          globalDiscount?: unknown;
+          chantierId?: unknown;
+        };
         if (typeof r?.customerId !== 'string' || r.customerId.length === 0)
           return err(appValidation('customerId', 'Client manquant.'));
         if (!Array.isArray(r.lines) || r.lines.length === 0)
@@ -353,11 +359,24 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           if (!parsed.ok) return parsed;
           globalDiscount = parsed.value;
         }
+        // PR-08 (additif) — site de rattachement : id canonique résolu contre la liste réelle
+        // (l'existence tenant est prouvée par l'hôte via le core, anti-IDOR — jamais ici).
+        if (r.chantierId !== undefined && r.chantierId !== null) {
+          if (
+            typeof r.chantierId !== 'string' ||
+            r.chantierId.length === 0 ||
+            r.chantierId.length > 200 ||
+            r.chantierId !== r.chantierId.trim() ||
+            hasAsciiControlCharacter(r.chantierId)
+          )
+            return err(appValidation('chantierId', 'Site de rattachement invalide.'));
+        }
         return ok({
           customerId: r.customerId,
           lines,
           ...(typeof r.depositPct === 'number' ? { depositPct: r.depositPct } : {}),
           ...(globalDiscount !== undefined ? { globalDiscount } : {}),
+          ...(typeof r.chantierId === 'string' ? { chantierId: r.chantierId } : {}),
         });
       },
       run: (input) => createQuoteAction(input),
@@ -568,7 +587,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
           return err(appValidation('invoice', 'Facture directe invalide.'));
         const r = raw as Record<string, unknown>;
-        const allowed = new Set(['customerId', 'lines', 'globalDiscount', 'context', 'urgentOnSiteRepair']);
+        const allowed = new Set(['customerId', 'lines', 'globalDiscount', 'context', 'urgentOnSiteRepair', 'chantierId']);
         if (Object.keys(r).some((key) => !allowed.has(key)))
           return err(appValidation('invoice', 'Champ de facture directe inconnu.'));
         if (typeof r.customerId !== 'string' || r.customerId.length === 0 || r.customerId.length > 200)
@@ -605,12 +624,25 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         // A3bis : booléen strict — seul `true` (fait confirmé par l'artisan) traverse.
         if (r.urgentOnSiteRepair !== undefined && typeof r.urgentOnSiteRepair !== 'boolean')
           return err(appValidation('urgentOnSiteRepair', 'Booléen attendu.'));
+        // PR-08 (additif) — site de rattachement : id canonique résolu contre la liste réelle
+        // (l'existence tenant est prouvée par l'hôte via le core, anti-IDOR — jamais ici).
+        if (r.chantierId !== undefined && r.chantierId !== null) {
+          if (
+            typeof r.chantierId !== 'string' ||
+            r.chantierId.length === 0 ||
+            r.chantierId.length > 200 ||
+            r.chantierId !== r.chantierId.trim() ||
+            hasAsciiControlCharacter(r.chantierId)
+          )
+            return err(appValidation('chantierId', 'Site de rattachement invalide.'));
+        }
         return ok({
           customerId: r.customerId,
           lines,
           ...(globalDiscount !== undefined ? { globalDiscount } : {}),
           ...(context !== undefined ? { context } : {}),
           ...(r.urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+          ...(typeof r.chantierId === 'string' ? { chantierId: r.chantierId } : {}),
         });
       },
       projectPublicResult: (output): ToolPublicResult => ({

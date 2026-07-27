@@ -110,6 +110,9 @@ export interface QuoteView {
    *  Nullable ET optionnelle (fail-closed) : absente (serveur antérieur) ou null (devis legacy
    *  sans date) ⇒ jamais relancé. */
   issuedAt?: string | null;
+  /** PR-08 — site/chantier de rattachement de la pièce. Nullable ET optionnel (fail-closed) :
+   *  absent (serveur antérieur) ⇒ jamais compté sur un site ; null = pièce hors site. */
+  chantierId?: string | null;
 }
 
 export interface InvoiceView {
@@ -162,6 +165,9 @@ export interface InvoiceView {
    *  réussi). Instant ISO = partie ; null = aucune livraison constatée ; ABSENT = information
    *  non transportée (serveur antérieur) — fail-closed : jamais « pas envoyée » affirmé. */
   emailDeliveredAt?: string | null;
+  /** PR-08 — site/chantier de rattachement de la pièce. Nullable ET optionnel (fail-closed) :
+   *  absent (serveur antérieur) ⇒ jamais compté sur un site ; null = pièce hors site. */
+  chantierId?: string | null;
 }
 
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
@@ -1453,6 +1459,8 @@ export interface BobClient {
     context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
     /** A3bis — booléen STRICT : seul `true` porte la qualification d'urgence (client B2C). */
     urgentOnSiteRepair?: boolean;
+    /** PR-08 — site de rattachement (picker) ; absent/null = pièce hors site (anti-IDOR serveur). */
+    chantierId?: string | null;
   }): Promise<Result<{ invoiceId: string; totals: Totals }, AppError>>;
   /** Suivi MANUEL de transmission d'une pièce ÉMISE (PATCH /invoices/:id/transmission) : dates
    * de dépôt/acceptation DÉCLARÉES (champ absent = inchangé, null = effacé). OPTIONNELLE (compat

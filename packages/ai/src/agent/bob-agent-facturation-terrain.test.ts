@@ -107,6 +107,66 @@ describe('facture_directe — B1 : facture SANS devis signé, dictée à la voix
     );
   });
 
+  it('PR-08 — site dicté (« chez Carrefour Vitry ») : résolu contre la LISTE RÉELLE, chantierId dans la proposition', async () => {
+    const compose = vi.fn(async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }));
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: compose,
+      listFilingDestinations: async () =>
+        ok({
+          chantiers: [
+            { id: 'site-carrefour-vitry', nom: 'Carrefour Vitry' },
+            { id: 'site-docks-rouen', nom: 'Docks Rouen' },
+          ],
+          dossiers: [],
+        }),
+    });
+    const r = await agent.ask(
+      'Facture 500 € HT à Durand pour la maintenance des fontaines chez Carrefour Vitry (TVA 20 %)',
+      { autonomy: 'auto' },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    // Le site RÉSOLU (jamais un id récité) accompagne l'intention ; le récap le DIT.
+    expect(r.value.pending?.args).toMatchObject({
+      customerId: 'cus-durand',
+      chantierId: 'site-carrefour-vitry',
+    });
+    expect(r.value.pending?.label).toContain('Carrefour Vitry');
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it('PR-08 — site NOMMÉ mais introuvable dans la liste réelle : refus honnête, rien n’est créé', async () => {
+    const compose = vi.fn(async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }));
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: compose,
+      listFilingDestinations: async () => ok({ chantiers: [{ id: 'site-a', nom: 'Docks Rouen' }], dossiers: [] }),
+    });
+    const r = await agent.ask(
+      'Facture 500 € HT à Durand pour la maintenance sur le site Bastille (TVA 20 %)',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Site introuvable');
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it('PR-08 — sans capacité hôte listFilingDestinations : comportement antérieur inchangé (pièce hors site)', async () => {
+    const compose = vi.fn(async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }));
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: compose,
+    });
+    const r = await agent.ask('Facture 500 € HT à Durand pour la maintenance de la chaufferie (TVA 20 %)');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).not.toHaveProperty('chantierId');
+  });
+
   it('client b2c SANS urgence dite : question structurée A3bis (jamais un fait fabriqué)', async () => {
     const compose = vi.fn(async () => ok({ invoiceId: 'x', totalTtcCents: 1, netToPayCents: 1 }));
     const agent = agentWith({

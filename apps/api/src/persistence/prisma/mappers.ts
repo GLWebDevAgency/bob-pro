@@ -510,6 +510,8 @@ interface QuoteRow {
   globalDiscountAmountCents: number | null;
   /** B5 — retenue de garantie stipulée (loi 71-584). NULL = aucune. */
   retenueGarantiePct: { toString(): string } | null;
+  /** PR-08 — site/chantier de rattachement. NULL = pièce hors site (jamais rétro-rempli). */
+  chantierId: string | null;
   revision: number;
   lines: LineRow[];
 }
@@ -647,6 +649,8 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
       ) ?? null,
     retenueGarantiePct:
       row.retenueGarantiePct === null ? null : Number(row.retenueGarantiePct.toString()),
+    // PR-08 : site de rattachement — NULL honnête (jamais inventé à la relecture).
+    chantierId: row.chantierId,
     revision: row.revision,
   };
 }
@@ -725,6 +729,8 @@ interface InvoiceRow {
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
+  /** PR-08 — site/chantier de rattachement. NULL = pièce hors site (jamais rétro-rempli). */
+  chantierId: string | null;
   revision: number;
   lines: LineRow[];
   precedingInvoices: InvoicePredecessorRow[];
@@ -836,6 +842,8 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     sourceInvoiceNumber: row.sourceInvoiceNumber,
     sourceInvoiceIssuedAt: toDateOnly(row.sourceInvoiceIssuedAt),
     purchaseOrder: purchaseOrderFromRow(row),
+    // PR-08 : site de rattachement — NULL honnête (jamais inventé à la relecture).
+    chantierId: row.chantierId,
     revision: row.revision,
   };
 }

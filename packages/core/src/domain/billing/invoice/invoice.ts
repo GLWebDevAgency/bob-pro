@@ -165,6 +165,10 @@ export class Invoice extends AggregateRoot<string> {
   private _cancelReason: string | null = null;
   /** Bon de commande client (B8) — repris du devis à la dérivation, figé à l'émission. */
   private _purchaseOrder: PurchaseOrderRef | null = null;
+  /** PR-08 — site/chantier de rattachement : posé à la composition directe ou REPRIS du devis
+   * parent à la dérivation (la pièce d'un devis de site reste une pièce du site). Null = hors
+   * site — jamais rétro-rempli. */
+  private _chantierId: string | null = null;
   /** Révision optimiste — incrémentée par les mutations de bon de commande. */
   private _revision = 1;
 
@@ -333,6 +337,9 @@ export class Invoice extends AggregateRoot<string> {
     // suit la facture dérivée — le numéro d'engagement figurera sur la facture émise.
     const po = quote.purchaseOrder;
     inv._purchaseOrder = po ? clonePurchaseOrderRef(po) : null;
+    // PR-08 — le site du devis suit la pièce dérivée : la facture d'un devis de site reste une
+    // pièce du site (dérivation, jamais une saisie séparée qui pourrait diverger).
+    inv._chantierId = quote.chantierId;
     // B3 — la remise globale NÉGOCIÉE au devis suit la pièce dérivée (source unique du marché).
     const discount = quote.globalDiscount;
     // L'acompte V2 porte déjà les bases nettes proratisées : recopier la remise la déduirait
@@ -460,6 +467,8 @@ export class Invoice extends AggregateRoot<string> {
     const po = quote.purchaseOrder;
     inv._purchaseOrder = po ? clonePurchaseOrderRef(po) : null;
     inv._retenueGarantiePct = quote.retenueGarantiePct;
+    // PR-08 — la situation d'un devis de site reste une pièce du site (même reprise que le BC).
+    inv._chantierId = quote.chantierId;
     return ok(inv);
   }
 
@@ -474,8 +483,19 @@ export class Invoice extends AggregateRoot<string> {
     companyId: string;
     customerId: string;
     urgentRepair?: UrgentRepairRequest | null;
+    /** PR-08 — site de rattachement de la facture directe ; null = hors site. */
+    chantierId?: string | null;
   }): DomainResult<Invoice> {
+    // PR-08 — identifiant canonique du site quand présent (même hygiène que Quote.compose).
+    const rawChantierId = input.chantierId ?? null;
+    let chantierId: string | null = null;
+    if (rawChantierId !== null) {
+      chantierId = rawChantierId.trim();
+      if (!chantierId)
+        return err({ code: 'VALIDATION', field: 'chantierId', message: 'Chantier de rattachement invalide.' });
+    }
     const inv = new Invoice(input.id, input.companyId, input.customerId, 'final', null, null, null);
+    inv._chantierId = chantierId;
     if (input.urgentRepair) {
       inv._urgentRepair = { requestedAt: input.urgentRepair.requestedAt };
       // Même doctrine que Quote.compose : le fait légal qui fonde l'exception est journalisé
@@ -564,6 +584,8 @@ export class Invoice extends AggregateRoot<string> {
     creditNote._purchaseOrder = source._purchaseOrder
       ? clonePurchaseOrderRef(source._purchaseOrder)
       : null;
+    // PR-08 : l'avoir rectifie la même opération sur le MÊME site que la pièce annulée.
+    creditNote._chantierId = source._chantierId;
     return ok(creditNote);
   }
 
@@ -592,6 +614,10 @@ export class Invoice extends AggregateRoot<string> {
   /** A7 — adresse de chantier/livraison figée à l'émission ; null = adresse de facturation. */
   get deliveryAddress(): string | null {
     return this._deliveryAddress;
+  }
+  /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
+  get chantierId(): string | null {
+    return this._chantierId;
   }
   /** A4 — régime de TVA figé à l'émission ; null = pièce émise avant le figeage (legacy). */
   get vatTreatmentAtIssuance(): VatTreatment | null {
@@ -1038,6 +1064,7 @@ export class Invoice extends AggregateRoot<string> {
       sourceInvoiceNumber: this._creditNoteSource?.number ?? null,
       sourceInvoiceIssuedAt: this._creditNoteSource?.issuedAt ?? null,
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
+      chantierId: this._chantierId,
       revision: this._revision,
     };
   }
@@ -1094,6 +1121,8 @@ export class Invoice extends AggregateRoot<string> {
     inv._transmission = s.transmission ? { ...s.transmission } : null;
     // Compat ascendante B8 : snapshots antérieurs sans bon de commande ni révision.
     inv._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
+    // Compat ascendante PR-08 : snapshots antérieurs sans site (null honnête, jamais inventé).
+    inv._chantierId = s.chantierId ?? null;
     inv._revision = s.revision ?? 1;
     return inv;
   }
@@ -1146,6 +1175,8 @@ export interface InvoiceSnapshot {
   sourceInvoiceIssuedAt?: DateOnly | null;
   /** B8 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
   purchaseOrder?: PurchaseOrderRef | null;
+  /** PR-08 — optionnel : site absent des snapshots antérieurs (null honnête, jamais inventé). */
+  chantierId?: string | null;
   revision?: number;
 }
 

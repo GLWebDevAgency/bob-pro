@@ -30,6 +30,7 @@ export type QuoteCreationCoordinatorPersistence = Pick<
   | 'quoteCreationRequests'
   | 'companies'
   | 'customers'
+  | 'chantiers'
   | 'runInTransaction'
   | 'runWithTenant'
 >;
@@ -138,6 +139,15 @@ export class QuoteCreationCoordinator {
       customers: this.deps.persistence.customers,
       ids: this.deps.ids,
       clock: this.deps.clock,
+      // PR-08 — preuve tenant-scoped du chantier visé (anti-IDOR fail-closed du use case).
+      // On est DÉJÀ sous runWithTenant + transaction : la lecture est RLS-scopée ; le port ne
+      // distingue jamais « absent » d'« autre tenant » (false dans les deux cas).
+      chantierTargets: {
+        exists: async ({ companyId, linkedEntityId }) => {
+          const chantier = await this.deps.persistence.chantiers.findById(linkedEntityId);
+          return chantier !== null && chantier.companyId === companyId;
+        },
+      },
     }).execute({
       ...input.quote,
       // L'identité serveur gagne sur tout objet runtime élargi.

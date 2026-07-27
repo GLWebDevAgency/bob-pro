@@ -309,6 +309,8 @@ export class PrismaQuoteRepository implements QuoteRepository {
       globalDiscountPercent: discountToColumns(s.globalDiscount).percent,
       globalDiscountAmountCents: discountToColumns(s.globalDiscount).amountCents,
       retenueGarantiePct: s.retenueGarantiePct ?? null,
+      // PR-08 : site de rattachement (null = hors site — l'anti-IDOR vit dans le use case).
+      chantierId: s.chantierId ?? null,
       revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, i) => quoteLineToCreate(l, { quoteId: s.id }, i));
@@ -443,6 +445,8 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       frenchBillingModeAtIssuance: s.frenchBillingModeAtIssuance ?? null,
       // B8 : bon de commande (repris du devis ou attaché en brouillon) + révision optimiste.
       ...purchaseOrderToPersistence(s.purchaseOrder),
+      // PR-08 : site de rattachement (posé à la composition ou repris du devis parent).
+      chantierId: s.chantierId ?? null,
       revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));

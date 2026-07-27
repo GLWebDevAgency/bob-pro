@@ -363,6 +363,8 @@ export interface QuoteView {
   urgentRepair: { requestedAt: string } | null;
   /** PR-05 — date d'établissement (DateOnly) ; null = devis legacy sans date (jamais relancé). */
   issuedAt: string | null;
+  /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
+  chantierId: string | null;
 }
 
 export interface InvoiceView {
@@ -409,6 +411,8 @@ export interface InvoiceView {
    * Instant ISO = partie ; null = aucune livraison constatée ; le champ n'est présent que si
    * l'outbox a réellement été interrogée (fail-closed). */
   emailDeliveredAt?: string | null;
+  /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
+  chantierId: string | null;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -1209,6 +1213,8 @@ export class BackendService {
       // PR-05 : date d'établissement RÉELLE — ancre des relances devis J+15/J+30 (null = legacy
       // sans date, exclu fail-closed de toute relance).
       issuedAt: q.issuedAt,
+      // PR-08 : site de rattachement — null honnête (jamais inventé).
+      chantierId: q.chantierId,
     };
   }
 
@@ -1240,6 +1246,8 @@ export class BackendService {
       urgentRepair: i.urgentRepair,
       transmission: i.transmission,
       issuedAt: i.issuedAt,
+      // PR-08 : site de rattachement — null honnête (jamais inventé).
+      chantierId: i.chantierId,
       // PR-02 : livraison EMAIL constatée (outbox) — le champ n'est TRANSPORTÉ que quand
       // l'appelant a réellement interrogé l'outbox (fail-closed : absent = inconnu, jamais
       // « pas envoyée » affirmé depuis une projection muette).
@@ -2428,6 +2436,8 @@ export class BackendService {
     globalDiscount?: Discount | null;
     context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
     urgentOnSiteRepair?: boolean;
+    /** PR-08 — site de rattachement de la facture directe (picker) ; absent/null = hors site. */
+    chantierId?: string | null;
   }): Promise<Result<ComposeStandaloneInvoiceOutput, AppError>> {
     const r = await new ComposeStandaloneInvoice({
       invoices: this.p.invoices,
@@ -2435,6 +2445,8 @@ export class BackendService {
       customers: this.p.customers,
       ids: this.ids,
       clock: this.clock,
+      // PR-08 — preuve tenant-scoped du chantier visé (anti-IDOR fail-closed du use case).
+      chantierTargets: this.documentLinkTargets(),
     }).execute({ companyId: this.companyId(), ...input });
     if (r.ok)
       this.logger.audit('invoice.standalone_composed', {

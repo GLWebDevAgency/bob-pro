@@ -61,6 +61,7 @@ import {
   addDays,
   parisDateOnly,
   computeTotals,
+  tradeToWorksiteTerminology,
   formatEUR,
   searchCatalogue,
   RETENUE_GARANTIE_MAX_PCT,
@@ -109,13 +110,16 @@ import {
 } from '@bob/ui';
 import {
   appErrorMessage,
+  useChantiers,
   useCompanyMe,
   useCreateQuote,
   useCreateQuoteSignatureLink,
   useCustomers,
+  useProfile,
   useSendQuote,
   useSignQuote,
 } from '../../src/data/hooks';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 import { useCatalogue } from '../../src/data/catalogue';
 import { useBillingPrefs } from '../../src/data/billing-prefs';
 import {
@@ -337,6 +341,11 @@ export default function DevisNew() {
   const [wizardDiscError, setWizardDiscError] = useState(false);
   const [wizardGlobalDiscount, setWizardGlobalDiscount] = useState<Discount | null>(null);
   const [retenueGarantie, setRetenueGarantie] = useState(false);
+  // PR-08 — site/chantier de rattachement (picker de l'étape client, OPTIONNEL) : état d'ÉCRAN
+  // passé tel quel à CreateQuote — l'anti-IDOR (chantier prouvé dans le tenant) reste au core.
+  // NB : non porté par le slot de brouillon serveur (QuoteDraftPayloadV1 ne le connaît pas
+  // encore) — une reprise de brouillon repart hors site, jamais avec un site inventé.
+  const [wizardChantier, setWizardChantier] = useState<{ id: string; name: string } | null>(null);
 
   // Saisie non validée : hors contenu financier, mais conservée par le provider pour la reprise.
   const lineLabel = quoteDraft.state.lineForm.label;
@@ -380,6 +389,21 @@ export default function DevisNew() {
   const customer = (customers.data ?? []).find((c) => c.id === draft.customerId) ?? null;
   const customerName = customer?.name ?? quoteDraft.state.customer?.name ?? 'le client';
   const contextCustomer = customer ?? quoteDraft.state.customer;
+  // PR-08 — sites proposables : chantiers OUVERTS du tenant, filtrés sur le client choisi
+  // (un chantier d'un autre client ne se propose jamais) ; sans chantier ouvert, le picker
+  // n'apparaît pas (gating implicite par la donnée réelle — jamais un choix vide).
+  const profile = useProfile();
+  const chantiers = useChantiers();
+  const worksiteParams = worksiteParamsFor(
+    profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM,
+  );
+  const pickableChantiers = (chantiers.data ?? []).filter(
+    (chantier) =>
+      chantier.status === 'open'
+      && (draft.customerId === null
+        || chantier.customerId === null
+        || chantier.customerId === draft.customerId),
+  );
   const stepIndex = DEVIS_STEPS.indexOf(flow.step);
   const stepLabels = DEVIS_STEPS.map((s) => t(STEP_KEYS[s], { personality }));
   const isVatFranchise = company.data?.vatRegime === 'franchise';
@@ -1229,6 +1253,9 @@ export default function DevisNew() {
           ...(d.urgentRepairRequested === true && customer?.type === 'b2c'
             ? { urgentRepairRequested: true }
             : {}),
+          // PR-08 — site choisi au picker : l'appartenance tenant est PROUVÉE par le serveur
+          // (CreateQuote.chantierTargets, anti-IDOR fail-closed) — jamais un lien non vérifié.
+          ...(wizardChantier !== null ? { chantierId: wizardChantier.id } : {}),
         });
         quoteId = created.quoteId;
         chain.current.quoteId = quoteId;
@@ -1769,6 +1796,9 @@ export default function DevisNew() {
                     <Pressable
                       key={c.id}
                       onPress={() => {
+                        // PR-08 — changer de client invalide un site choisi pour un autre
+                        // client (jamais un rattachement orphelin d'un ancien choix).
+                        if (draft.customerId !== c.id) setWizardChantier(null);
                         quoteDraft.applyAtRevision(
                           { type: 'select_customer', customer: { id: c.id, name: c.name } },
                           quoteDraft.state.revision,
@@ -1807,6 +1837,31 @@ export default function DevisNew() {
                   );
                 })
               )}
+              {/* PR-08 — rattachement au site/chantier (OPTIONNEL) : chips des chantiers
+                  OUVERTS du client choisi — terminologie adaptative (« chantier » pour un
+                  maçon, « site » pour un mainteneur). Aucun chantier ouvert → rien à montrer. */}
+              {draft.customerId !== null && pickableChantiers.length > 0 ? (
+                <Card radius={18} padding={16}>
+                  <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900, marginBottom: 10 }]}>
+                    {t('pieceSite.title', { personality, params: worksiteParams })}
+                  </Text>
+                  <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    <Chip
+                      label={t('pieceSite.none', { personality, params: worksiteParams })}
+                      active={wizardChantier === null}
+                      onPress={() => setWizardChantier(null)}
+                    />
+                    {pickableChantiers.map((chantier) => (
+                      <Chip
+                        key={chantier.id}
+                        label={chantier.name}
+                        active={wizardChantier?.id === chantier.id}
+                        onPress={() => setWizardChantier({ id: chantier.id, name: chantier.name })}
+                      />
+                    ))}
+                  </View>
+                </Card>
+              ) : null}
               {/* Exception dépannage urgent (art. L221-10, al. 2 / L221-28, 8° c. conso) :
                   question posée À LA CRÉATION, client PARTICULIER uniquement — jamais
                   rétroactive. Formulation BÉNÉFICE + LegalHint (divulgation progressive). */}

@@ -777,6 +777,43 @@ function destinationNameTokens(nom: string): string[] {
     .filter((word) => word.length >= 3 && !NAME_STOPWORDS.has(word));
 }
 
+/** PR-08 — un site est-il EXPLICITEMENT désigné dans la phrase (« sur le site… », « au
+ * chantier… ») ? Le « chez X » reste implicite : il ne compte que s'il matche un chantier réel. */
+function saysExplicitSite(normalizedConversation: string): boolean {
+  return /\b(?:site|chantier)s?\b/.test(normalizedConversation);
+}
+
+/**
+ * PR-08 — résolution du SITE dicté (« chez Carrefour Vitry », « sur le site Bastille ») contre
+ * la liste RÉELLE des chantiers ouverts du tenant — jamais un id inventé, jamais un site déduit
+ * du seul nom du client (un chantier homonyme du client exige le marqueur explicite).
+ * Retour : `matched` (0, 1 ou plusieurs candidats) + `explicit` (site nommé en toutes lettres).
+ */
+function resolveSpokenChantier(input: {
+  conversation: string;
+  chantiers: readonly { id: string; nom: string }[];
+  customerName: string | null;
+}): { matched: { id: string; nom: string }[]; explicit: boolean } {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  const customerTokens = new Set(
+    input.customerName === null ? [] : significantNameWords(normalized(input.customerName)),
+  );
+  const explicit = saysExplicitSite(normalizedConversation);
+  const matched = input.chantiers.filter((chantier) => {
+    const tokens = destinationNameTokens(chantier.nom);
+    if (tokens.length === 0) return false;
+    if (!tokens.every((word) => conversationTokens.has(word))) return false;
+    // Nom de chantier entièrement CONTENU dans le nom du client (« Girard ») : ambigu par
+    // nature — ne compte que si le site est désigné explicitement (« sur le chantier Girard »).
+    if (!explicit && tokens.every((word) => customerTokens.has(word))) return false;
+    return true;
+  });
+  return { matched, explicit };
+}
+
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
  * m'a envoyé un bon de commande » ne doit cibler que par « ratp », jamais par « commande ». */
 const PURCHASE_ORDER_GESTURE_WORDS: ReadonlySet<string> = new Set([
@@ -5186,6 +5223,68 @@ export class BobAgent {
         }
       }
 
+      // PR-08 — SITE dicté (« chez Carrefour Vitry », « sur le site Bastille ») : résolution
+      // contre la liste RÉELLE des chantiers ouverts (mêmes cibles que classer_document —
+      // jamais un id inventé). Capacité optionnelle : sans elle, la pièce naît hors site.
+      let chantierRef: { id: string; nom: string } | null = null;
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      if (listDestinations) {
+        const destinations = await listDestinations();
+        if (destinations.ok) {
+          const resolution = resolveSpokenChantier({
+            conversation,
+            chantiers: destinations.value.chantiers,
+            customerName: customer.name,
+          });
+          if (resolution.matched.length === 1) {
+            chantierRef = resolution.matched[0]!;
+          } else if (resolution.matched.length > 1) {
+            // Plusieurs sites correspondent : question ciblée — le followUp REDIT la commande
+            // complète avec le site choisi (le prochain tour matche un seul chantier).
+            const options = resolution.matched.slice(0, 4);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Lever l’ambiguïté du site'],
+              card: {
+                title: 'Quel site ?',
+                body: `Plusieurs sites correspondent pour cette facture directe — lequel ?`,
+              },
+              choices: options.map((chantier) => ({
+                label: chantier.nom,
+                value: `${command({})} sur le site ${chantier.nom}`,
+              })),
+              ask: [
+                askToPick({
+                  id: 'facture_directe.site',
+                  question: 'Sur quel site est cette facture directe ?',
+                  header: 'Site',
+                  items: options.map((chantier) => ({
+                    value: chantier.id,
+                    label: chantier.nom,
+                    followUp: `${command({})} sur le site ${chantier.nom}`,
+                  })),
+                }),
+              ],
+            });
+          } else if (resolution.explicit) {
+            // Site NOMMÉ mais introuvable dans la liste réelle : refus honnête —
+            // Bob n'invente jamais un site (anti-hallucination), rien n'est créé.
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier le site contre la liste réelle'],
+              card: {
+                title: 'Site introuvable',
+                body: 'Je ne trouve aucun site ouvert correspondant à ce que tu m’as dit. Rien n’a été créé — redis le nom exact du site, ou continue sans site.',
+              },
+            });
+          }
+        }
+      }
+
       // Base HT de la ligne : dictée HT telle quelle ; dictée TTC convertie au taux confirmé —
       // les totaux exacts (TTC, net à payer) restent calculés par le DOMAINE à la création.
       const unitPriceHT = basis === 'ht' ? amountCents : Math.round(amountCents / (1 + vatRate / 100));
@@ -5203,6 +5302,7 @@ export class BobAgent {
             }
           : {}),
         ...(customer.type === 'b2c' && urgency === 'declared' ? { urgentOnSiteRepair: true } : {}),
+        ...(chantierRef !== null ? { chantierId: chantierRef.id } : {}),
       };
       const parsed = tool.parse(args);
       if (!parsed.ok) return err(parsed.error);
@@ -5214,7 +5314,8 @@ export class BobAgent {
           : '';
       const urgentNote = customer.type === 'b2c' && urgency === 'declared' ? ' · intervention urgente demandée par le client' : '';
       const basisNote = basis === 'ttc' ? ` (${spokenAmountLabel(amountCents)} TTC dit)` : '';
-      const label = `Facture directe ${customer.name} — ${lineLabel} · ${formatEUR(unitPriceHT)} HT, TVA ${spokenRateLabel(vatRate)}${discountNote}${basisNote}${urgentNote}`;
+      const siteNote = chantierRef !== null ? ` · site ${chantierRef.nom}` : '';
+      const label = `Facture directe ${customer.name} — ${lineLabel} · ${formatEUR(unitPriceHT)} HT, TVA ${spokenRateLabel(vatRate)}${discountNote}${basisNote}${urgentNote}${siteNote}`;
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
           kind: 'proposed',

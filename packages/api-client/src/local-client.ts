@@ -1043,6 +1043,8 @@ export class LocalBobClient implements BobClient {
       urgentRepair: q.urgentRepair ? { ...q.urgentRepair } : null,
       // PR-05 : parité serveur — ancre réelle des relances devis (null = legacy, jamais relancé).
       issuedAt: q.issuedAt,
+      // PR-08 : parité serveur — site de rattachement (null = pièce hors site).
+      chantierId: q.chantierId,
     };
   }
 
@@ -1082,6 +1084,8 @@ export class LocalBobClient implements BobClient {
         this.notifications.find(
           (n) => n.kind === 'invoice-delivery' && n.route === `/facture/${i.id}`,
         )?.createdAt ?? null,
+      // PR-08 : parité serveur — site de rattachement (null = pièce hors site).
+      chantierId: i.chantierId,
     };
   }
 
@@ -3255,6 +3259,13 @@ export class LocalBobClient implements BobClient {
       customers: this.customers,
       ids: this.ids,
       clock,
+      // PR-08 — parité serveur : chantier PROUVÉ dans le tenant local (anti-IDOR fail-closed).
+      chantierTargets: {
+        exists: async ({ companyId, linkedEntityId }) => {
+          const chantier = await this.chantiers.findById(linkedEntityId);
+          return chantier !== null && chantier.companyId === companyId;
+        },
+      },
     }).execute({ ...input, companyId: this.companyId });
   }
 
@@ -3479,6 +3490,7 @@ export class LocalBobClient implements BobClient {
     globalDiscount?: Discount | null;
     context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
     urgentOnSiteRepair?: boolean;
+    chantierId?: string | null;
   }): Promise<Result<{ invoiceId: string; totals: Totals }, AppError>> {
     await this.ready;
     return new ComposeStandaloneInvoice({
@@ -3487,6 +3499,13 @@ export class LocalBobClient implements BobClient {
       customers: this.customers,
       ids: this.ids,
       clock: this.clock,
+      // PR-08 — parité serveur : chantier PROUVÉ dans le tenant local (anti-IDOR fail-closed).
+      chantierTargets: {
+        exists: async ({ companyId, linkedEntityId }) => {
+          const chantier = await this.chantiers.findById(linkedEntityId);
+          return chantier !== null && chantier.companyId === companyId;
+        },
+      },
     }).execute({ companyId: this.companyId, ...input });
   }
 

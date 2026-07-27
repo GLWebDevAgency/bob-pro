@@ -181,6 +181,7 @@ export * from './application/expenses/summarize-expenses';
 export * from './application/chantier/chantier-list-item';
 export * from './application/chantier/create-chantier';
 export * from './application/chantier/add-chantier-note';
+export * from './application/chantier/derive-chantier-pieces';
 export * from './application/chantier/upload-worksite-photo';
 export * from './application/chantier/delete-worksite-photo';
 export * from './application/ports/worksite-media';

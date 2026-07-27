@@ -1317,6 +1317,52 @@ const legacyFr = {
     direct: 'Total',
   },
 
+  // ── PR-08 — section « Pièces » de la fiche chantier/site : devis + factures rattachés,
+  // dérivés des listes existantes (deriveChantierPieces @bob/core, aucun endpoint dédié). ──
+  'chantierFiche.piecesTitle': {
+    pote: 'Devis & factures',
+    pro: 'Devis et factures',
+    direct: 'Devis & factures',
+  },
+  'chantierFiche.piecesEmpty': {
+    pote: 'Aucune pièce liée pour l’instant. Choisis {demonstrative} {term} en créant un devis ou une facture : elle apparaîtra ici.',
+    pro: 'Aucun devis ni facture rattaché à ce {term} pour le moment.',
+    direct: 'Aucune pièce liée.',
+  },
+  'chantierFiche.pieceQuote': {
+    pote: 'Devis',
+    pro: 'Devis',
+    direct: 'Devis',
+  },
+  'chantierFiche.pieceInvoice': {
+    pote: 'Facture',
+    pro: 'Facture',
+    direct: 'Facture',
+  },
+  'chantierFiche.pieceDraft': {
+    pote: 'Brouillon',
+    pro: 'Brouillon',
+    direct: 'Brouillon',
+  },
+
+  // ── PR-08 — picker « site/chantier » des créations de pièces (wizard devis + facture
+  // directe) : rattachement OPTIONNEL, terminologie adaptative ({termCap} = Chantier/Site…). ──
+  'pieceSite.title': {
+    pote: '{termCap} concerné (optionnel)',
+    pro: '{termCap} concerné (facultatif)',
+    direct: '{termCap} (optionnel)',
+  },
+  'pieceSite.none': {
+    pote: 'Sans {term}',
+    pro: 'Aucun {term}',
+    direct: 'Sans {term}',
+  },
+  'pieceSite.pickedA11y': {
+    pote: '{termCap} sélectionné : {name}',
+    pro: '{termCap} sélectionné : {name}',
+    direct: '{termCap} : {name}',
+  },
+
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
   'fiche.back': {

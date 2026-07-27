@@ -31,6 +31,7 @@ import { challengeFor } from '@bob/ai';
 import {
   formatEUR,
   searchCatalogue,
+  tradeToWorksiteTerminology,
   type CataloguePrestation,
   type Discount,
   type LineCategory,
@@ -59,10 +60,13 @@ import {
 } from '@bob/ui';
 import {
   appErrorMessage,
+  useChantiers,
   useCompanyMe,
   useComposeStandaloneInvoice,
   useCustomers,
+  useProfile,
 } from '../../src/data/hooks';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 import { useCatalogue } from '../../src/data/catalogue';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
@@ -166,6 +170,9 @@ export default function FactureDirecteNew() {
   const [globalDiscKind, setGlobalDiscKind] = useState<'percent' | 'amount'>('percent');
   const [globalDiscRaw, setGlobalDiscRaw] = useState('');
   const [globalDiscError, setGlobalDiscError] = useState(false);
+  // PR-08 — site/chantier de rattachement (OPTIONNEL) : état d'écran passé tel quel à
+  // composeStandaloneInvoice — l'anti-IDOR (chantier prouvé dans le tenant) reste au core.
+  const [selectedChantier, setSelectedChantier] = useState<{ id: string; name: string } | null>(null);
   const submitInFlight = useRef(false);
 
   const stepIndex = FACTURE_DIRECTE_STEPS.indexOf(state.step);
@@ -173,6 +180,20 @@ export default function FactureDirecteNew() {
   const vatChoices = company.data === undefined ? [] : isVatFranchise ? FRANCHISE_CHOICES : VAT_CHOICES;
   const totals = totalsOf(state);
   const customerBlocked = isInternationalProBlocked(state.customer);
+  // PR-08 — sites proposables : chantiers OUVERTS du client choisi (jamais celui d'un autre
+  // client) ; aucun chantier ouvert → le picker n'apparaît pas (gating par la donnée réelle).
+  const profile = useProfile();
+  const chantiers = useChantiers();
+  const worksiteParams = worksiteParamsFor(
+    profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM,
+  );
+  const pickableChantiers = (chantiers.data ?? []).filter(
+    (chantier) =>
+      chantier.status === 'open'
+      && (state.customer === null
+        || chantier.customerId === null
+        || chantier.customerId === state.customer.id),
+  );
 
   const say = (error: FactureDirecteGuardError): void =>
     setGuardMsg(t(GUARD_KEY[error.code], { personality }));
@@ -273,7 +294,11 @@ export default function FactureDirecteNew() {
       });
       if (!ok) return;
       setServerError(null);
-      const out = await compose.mutateAsync(payload);
+      const out = await compose.mutateAsync({
+        ...payload,
+        // PR-08 — site choisi au picker : appartenance tenant PROUVÉE serveur (anti-IDOR).
+        ...(selectedChantier !== null ? { chantierId: selectedChantier.id } : {}),
+      });
       router.replace(`/facture/${out.invoiceId}`);
     } catch (error) {
       // 422 serveur (urgence A3bis, garde B7, TVA revalidée…) affiché TEL QUEL — état honnête.
@@ -405,6 +430,9 @@ export default function FactureDirecteNew() {
                       <PressableScale
                         onPress={() => {
                           setGuardMsg(null);
+                          // PR-08 — changer de client invalide un site choisi pour un autre
+                          // client (jamais un rattachement orphelin d'un ancien choix).
+                          if (state.customer?.id !== c.id) setSelectedChantier(null);
                           setState((current) =>
                             selectCustomer(current, {
                               id: c.id,
@@ -519,6 +547,33 @@ export default function FactureDirecteNew() {
                     </View>
                   ) : null}
                 </Card>
+                </FadeIn>
+              ) : null}
+
+              {/* PR-08 — rattachement au site/chantier (OPTIONNEL) : chips des chantiers
+                  OUVERTS du client choisi — terminologie adaptative (« chantier »/« site »). */}
+              {state.customer !== null && !customerBlocked && pickableChantiers.length > 0 ? (
+                <FadeIn index={0}>
+                  <Card radius={18} padding={16}>
+                    <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900, marginBottom: 10 }]}>
+                      {t('pieceSite.title', { personality, params: worksiteParams })}
+                    </Text>
+                    <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      <Chip
+                        label={t('pieceSite.none', { personality, params: worksiteParams })}
+                        active={selectedChantier === null}
+                        onPress={() => setSelectedChantier(null)}
+                      />
+                      {pickableChantiers.map((chantier) => (
+                        <Chip
+                          key={chantier.id}
+                          label={chantier.name}
+                          active={selectedChantier?.id === chantier.id}
+                          onPress={() => setSelectedChantier({ id: chantier.id, name: chantier.name })}
+                        />
+                      ))}
+                    </View>
+                  </Card>
                 </FadeIn>
               ) : null}
             </>

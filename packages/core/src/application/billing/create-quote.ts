@@ -10,6 +10,7 @@ import {
   type CompanyRepository,
   type CustomerRepository,
 } from '../ports/repositories';
+import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { isValidDateOnly } from '../../shared-kernel/time';
 import { validateLineInputs } from './line-input-validation';
@@ -39,6 +40,12 @@ export interface CreateQuoteInput {
    * professionnel/public : l'exception ne protège que le régime du consommateur à domicile.
    */
   urgentRepairRequested?: boolean;
+  /**
+   * PR-08 — site/chantier de rattachement du devis (picker du wizard), OPTIONNEL et nullable :
+   * null/absent = devis hors site. L'appartenance du chantier au tenant est PROUVÉE avant
+   * toute persistance (anti-IDOR fail-closed, patron RecordExpense.chantierId).
+   */
+  chantierId?: string | null;
 }
 
 export interface CreateQuoteOutput {
@@ -52,6 +59,13 @@ export interface CreateQuoteDeps {
   customers: CustomerRepository;
   ids: IdGeneratorPort;
   clock: ClockPort;
+  /**
+   * PR-08 — preuve d'existence tenant-scoped du chantier visé (anti-IDOR, même port que
+   * RecordExpense). OPTIONNELLE pour la compat des câblages existants, mais REQUISE dès qu'un
+   * `chantierId` est fourni : sans port, la création avec site échoue (fail-closed, jamais un
+   * lien non vérifié en base).
+   */
+  chantierTargets?: DocumentLinkTargetPort;
 }
 
 /**
@@ -82,6 +96,8 @@ export function canonicalCreateQuotePayload(input: Omit<CreateQuoteInput, 'compa
       energyRenovation: input.context?.energyRenovation ?? false,
     },
     urgentRepairRequested: input.urgentRepairRequested ?? false,
+    // PR-08 — le site fait partie de l'intention : un rejeu vers un autre site est un conflit.
+    chantierId: input.chantierId ?? null,
   } as const;
 }
 
@@ -131,9 +147,30 @@ export class CreateQuote {
       ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
       // Horodaté SERVEUR à la création — la trace qui fonde l'exception L221-10, al. 2.
       urgentRepair: input.urgentRepairRequested === true ? { requestedAt: at } : null,
+      chantierId: input.chantierId ?? null,
     });
     if (!composed.ok) return err(appDomain(composed.error));
     const quote = composed.value;
+
+    // PR-08 — anti-IDOR : un chantier visé doit être PROUVÉ dans le tenant AVANT toute
+    // persistance. Fail-closed : chantierId fourni sans port câblé = refus (jamais de lien
+    // non vérifié) ; le port répond false pour « absent » COMME pour « autre tenant ».
+    const chantierId = quote.chantierId;
+    if (chantierId !== null) {
+      if (!this.deps.chantierTargets) {
+        return err({
+          kind: 'dependency',
+          port: 'DocumentLinkTargetPort',
+          cause: 'chantierId fourni sans port de vérification tenant (chantierTargets) : rattachement refusé.',
+        });
+      }
+      const exists = await this.deps.chantierTargets.exists({
+        companyId: input.companyId,
+        linkedEntityType: 'chantier',
+        linkedEntityId: chantierId,
+      });
+      if (!exists) return err(appNotFound('chantier', chantierId));
+    }
 
     for (const line of input.lines) {
       const rate = suggestVatRate({

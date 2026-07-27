@@ -54,6 +54,8 @@ const baseRow = {
   globalDiscountPercent: null,
   globalDiscountAmountCents: null,
   retenueGarantiePct: null,
+  // PR-08 — ligne historique SANS site (null honnête, jamais rétro-rempli).
+  chantierId: null,
   revision: 1,
 };
 
@@ -651,6 +653,8 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     purchaseOrderNumber: null,
     purchaseOrderReceivedAt: null,
     purchaseOrderDocumentId: null,
+    // PR-08 — pièce historique SANS site (null honnête, jamais rétro-rempli).
+    chantierId: null as string | null,
     revision: 1,
     lines: [],
     precedingInvoices: [],

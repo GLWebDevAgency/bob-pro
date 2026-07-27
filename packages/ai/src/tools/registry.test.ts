@@ -798,6 +798,36 @@ describe('facturation terrain B1/B2/B4 — facture_directe, facturer_situation, 
     // Structure de remise invalide : refusée par l'autorité du domaine (validateDiscount).
     expect(t.parse({ customerId: 'cus-1', lines: [{ label: 'x', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }], globalDiscount: { type: 'percent', value: 0 } }).ok).toBe(false);
   });
+
+  it('PR-08 — le site dicté (chantierId résolu) traverse creer_devis ET facture_directe, forme canonique exigée', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const line = { label: 'Entretien', category: 'labor', qty: 1, unitPriceHT: 40000, vatRate: 20 };
+
+    const quoteActions: BobActions = {
+      ...baseActions,
+      createQuote: async (input) => (calls.createQuote = [...(calls.createQuote ?? []), input], ok({ quoteId: 'q-1' })),
+    };
+    const creerDevis = tool(quoteActions, 'creer_devis')!;
+    // Forme canonique : id trimmé sans caractère de contrôle — jamais un id fantaisiste.
+    expect(creerDevis.parse({ customerId: 'cus-1', lines: [line], chantierId: ' site-1 ' }).ok).toBe(false);
+    expect(creerDevis.parse({ customerId: 'cus-1', lines: [line], chantierId: '' }).ok).toBe(false);
+    const parsedQuote = creerDevis.parse({ customerId: 'cus-1', lines: [line], chantierId: 'site-bastille' });
+    expect(parsedQuote.ok).toBe(true);
+    if (!parsedQuote.ok) return;
+    await creerDevis.run(parsedQuote.value);
+    expect(calls.createQuote?.[0]).toMatchObject({ chantierId: 'site-bastille' });
+    // Sans site : le champ ne voyage pas (jamais un null parasite dans l'intention).
+    const noSite = creerDevis.parse({ customerId: 'cus-1', lines: [line] });
+    expect(noSite.ok && 'chantierId' in (noSite.value as Record<string, unknown>)).toBe(false);
+
+    const directe = tool(terrainActions(calls), 'facture_directe')!;
+    expect(directe.parse({ customerId: 'cus-1', lines: [line], chantierId: '' }).ok).toBe(false);
+    const parsedDirecte = directe.parse({ customerId: 'cus-1', lines: [line], chantierId: 'site-bastille' });
+    expect(parsedDirecte.ok).toBe(true);
+    if (!parsedDirecte.ok) return;
+    await directe.run(parsedDirecte.value);
+    expect(calls.composeStandaloneInvoice?.[0]).toMatchObject({ chantierId: 'site-bastille' });
+  });
 });
 
 describe('vague Encaisser (PR-01/02/05/06) — capacités optionnelles, profils de risque, DTO stricts', () => {

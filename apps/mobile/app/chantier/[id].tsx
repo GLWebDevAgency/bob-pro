@@ -30,7 +30,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { formatEUR, tradeToWorksiteTerminology } from '@bob/core';
+import { deriveChantierPieces, formatEUR, tradeToWorksiteTerminology } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -51,11 +51,14 @@ import {
   useChantiers,
   useDeleteWorksitePhoto,
   useExpenses,
+  useInvoices,
   useProfile,
+  useQuotes,
   useUploadWorksitePhoto,
   useWorksitePhotos,
   useWorksitePhotoUrl,
 } from '../../src/data/hooks';
+import { INVOICE_BADGE, QUOTE_BADGE } from '../../src/components/invoice-badge.logic';
 import { chantierExpensesTotalCents, expensesForChantier } from '../../src/expenses/chantier-expenses';
 import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { useConfirm } from '../../src/components/ConfirmSheet';
@@ -153,6 +156,35 @@ export default function ChantierDetail() {
   const linkedExpenses = useMemo(
     () => expensesForChantier(expenses.data ?? [], id),
     [expenses.data, id],
+  );
+  // PR-08 — pièces du site : dérivation PURE (deriveChantierPieces @bob/core) sur les listes
+  // déjà servies par useQuotes/useInvoices (aucun endpoint dédié) — fail-closed : une
+  // projection sans chantierId transporté n'est jamais comptée ici.
+  const quotes = useQuotes();
+  const invoices = useInvoices();
+  const pieces = useMemo(
+    () =>
+      deriveChantierPieces({
+        chantierId: id,
+        quotes: (quotes.data ?? []).map((quote) => ({
+          id: quote.id,
+          chantierId: quote.chantierId,
+          number: quote.number,
+          status: quote.status,
+          totalTtcCents: quote.totals.ttc,
+          issuedAt: quote.issuedAt ?? null,
+        })),
+        invoices: (invoices.data ?? []).map((invoice) => ({
+          id: invoice.id,
+          chantierId: invoice.chantierId,
+          number: invoice.number,
+          status: invoice.status,
+          kind: invoice.kind,
+          totalTtcCents: invoice.totals.ttc,
+          issuedAt: invoice.issuedAt ?? null,
+        })),
+      }),
+    [quotes.data, invoices.data, id],
   );
   const photos = useWorksitePhotos(id);
   const uploadPhoto = useUploadWorksitePhoto(id);
@@ -506,6 +538,83 @@ export default function ChantierDetail() {
               <RetenueSuiviCard customerId={chantier.customerId} />
             </View>
           ) : null}
+
+          {/* ── PR-08 — Pièces du site : devis + factures rattachés (dérivation pure sur les
+               listes existantes ; chaque row navigue vers sa fiche). ── */}
+          <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500, marginTop: 28, marginBottom: 10 }]}>
+            {t('chantierFiche.piecesTitle', { personality })}
+          </Text>
+          {quotes.isLoading || invoices.isLoading ? (
+            <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
+          ) : quotes.isError || invoices.isError ? (
+            <ErrorRetry
+              message={t('chantierFiche.dataError', { personality })}
+              onRetry={() => {
+                if (quotes.isError) void quotes.refetch();
+                if (invoices.isError) void invoices.refetch();
+              }}
+              retrying={quotes.isRefetching || invoices.isRefetching}
+            />
+          ) : pieces.quotes.length === 0 && pieces.invoices.length === 0 ? (
+            <Card>
+              <EmptyState body={t('chantierFiche.piecesEmpty', { personality, params: worksiteParams })} />
+            </Card>
+          ) : (
+            <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
+              {[
+                ...pieces.quotes.map((piece) => ({
+                  key: `quote-${piece.id}`,
+                  kindLabel: t('chantierFiche.pieceQuote', { personality }),
+                  number: piece.number,
+                  badge: QUOTE_BADGE[piece.status],
+                  totalTtcCents: piece.totalTtcCents,
+                  route: `/devis/${piece.id}` as const,
+                })),
+                ...pieces.invoices.map((piece) => ({
+                  key: `invoice-${piece.id}`,
+                  kindLabel: t('chantierFiche.pieceInvoice', { personality }),
+                  number: piece.number,
+                  badge: INVOICE_BADGE[piece.status],
+                  totalTtcCents: piece.totalTtcCents,
+                  route: `/facture/${piece.id}` as const,
+                })),
+              ].map((row, index, rows) => (
+                <Pressable
+                  key={row.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${row.kindLabel} ${row.number ?? t('chantierFiche.pieceDraft', { personality })} · ${row.badge.label} · ${formatEUR(row.totalTtcCents)}`}
+                  onPress={() => router.push(row.route)}
+                  style={({ pressed }) => [
+                    {
+                      minHeight: 48,
+                      paddingVertical: 11,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 12,
+                      borderBottomWidth: index === rows.length - 1 ? 0 : 1,
+                      borderBottomColor: colors.lineSoft,
+                    },
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text accessible={false} style={[font('sub', 600), { color: colors.ink800 }]} numberOfLines={1}>
+                      {row.kindLabel} {row.number ?? t('chantierFiche.pieceDraft', { personality })}
+                    </Text>
+                    <Text accessible={false} style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                      {row.badge.label}
+                    </Text>
+                  </View>
+                  <Text
+                    accessible={false}
+                    style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}
+                  >
+                    {formatEUR(row.totalTtcCents)}
+                  </Text>
+                </Pressable>
+              ))}
+            </Card>
+          )}
 
           {/* ── Dépenses imputées (rentabilité par chantier) — filtre CLIENT sur la liste
                existante (useExpenses), les plus récentes en tête, total TTC en pied. ── */}

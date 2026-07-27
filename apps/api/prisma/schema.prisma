@@ -626,6 +626,9 @@ model Chantier {
   chantierNotes ChantierNote[]
   photos        ChantierPhoto[]
   expenses      Expense[]
+  // PR-08 — pièces du site (chantierId nullable sur quotes/invoices, patron Expense).
+  quotes        Quote[]         @relation("ChantierQuotes")
+  invoices      Invoice[]       @relation("ChantierInvoices")
 
   @@unique([id, companyId], name: "uniq_chantier_id_company", map: "uniq_chantier_id_company")
   @@index([companyId, status, openedAt(sort: Desc)], map: "chantiers_company_status_opened_idx")
@@ -727,6 +730,11 @@ model Quote {
   // B5 — retenue de garantie stipulée au devis (loi n° 71-584, ≤ 5 %) : s'applique aux
   // situations et à la finale dérivées. NULL = aucune retenue.
   retenueGarantiePct        Decimal?               @db.Decimal(5, 2)
+  // PR-08 — site/chantier de rattachement de la pièce (patron Expense.chantierId) : NULL =
+  // devis hors site, aucun backfill (les pièces historiques restent honnêtement hors site).
+  // FK composite (chantierId, companyId) anti-IDOR — jamais un chantier d'un autre tenant.
+  chantierId                String?
+  chantier                  Chantier?              @relation("ChantierQuotes", fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) : incrémentée par les mutations de bon de commande — le CAS final
   // en base est porté par le verrou de ligne (lockById) dans la transaction tenant.
   revision                  Int                    @default(1)
@@ -748,6 +756,8 @@ model Quote {
   // B-Tree unique (companyId, number) ne sert que l'égalité/préfixe. index GIN trigram
   // quotes_number_trgm_idx (migration b9_documents_search_indexes) — même remarque "absent du
   // DSL" que customers_name_trgm_idx ci-dessus (index d'expression).
+  // PR-08 — lecture « pièces d'un site » servie par index (patron expenses_company_chantier_idx).
+  @@index([companyId, chantierId], map: "quotes_company_chantier_idx")
   @@map("quotes")
 }
 
@@ -838,6 +848,12 @@ model Invoice {
   purchaseOrderReceivedAt     DateTime?            @db.Timestamptz(6)
   purchaseOrderDocumentId     String?
   purchaseOrderDocument       StoredDocument?      @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  // PR-08 — site/chantier de rattachement (patron Expense.chantierId) : posé à la composition
+  // directe ou REPRIS du devis parent à la dérivation. NULL = pièce hors site, aucun backfill.
+  // Le figeage post-émission (liste du trigger invoices_legal_traceability) arrive avec PR-12b
+  // (redéfinition complète du trigger, writer N-1 sous chaque état — annexe errata n° 1).
+  chantierId                  String?
+  chantier                    Chantier?            @relation("ChantierInvoices", fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
   revision                    Int                  @default(1)
   lines                       LineItem[]           @relation("InvoiceLines")
@@ -861,6 +877,8 @@ model Invoice {
   @@index([companyId, issuedAt(sort: Desc)], map: "invoices_company_issued_idx")
   // B9 — recherche "contient" sur le numéro, même besoin que quotes_number_trgm_idx : index GIN
   // trigram invoices_number_trgm_idx (migration b9_documents_search_indexes, absent du DSL).
+  // PR-08 — lecture « pièces d'un site » servie par index (patron expenses_company_chantier_idx).
+  @@index([companyId, chantierId], map: "invoices_company_chantier_idx")
   @@map("invoices")
 }
 
