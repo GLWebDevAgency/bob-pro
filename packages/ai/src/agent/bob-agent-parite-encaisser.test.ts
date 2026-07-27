@@ -390,4 +390,42 @@ describe('envoyer_facture — destinataire dicté (PR-09, contacts multiples)', 
     expect(proposed.value.kind).toBe('proposed');
     expect(proposed.value.pending?.args).not.toHaveProperty('recipientEmail');
   });
+
+  it('deux contacts au MÊME rôle (« Compta ») : question posée PUIS résolue par le followUp rôle+nom — jamais une boucle', async () => {
+    const twoComptas = [
+      { id: 'ct-compta-1', label: 'Compta', name: 'Marie Dupont', email: 'marie@durand.fr' },
+      { id: 'ct-compta-2', label: 'Compta', name: 'Jean Ruiz', email: 'jean@durand.fr' },
+    ];
+    const agent = makeAgent({
+      sendInvoice: async () =>
+        ok({ number: '2026-014', recipient: 'marie@durand.fr', deliveryStatus: 'queued' as const, jobId: 'j' }),
+      listInvoiceRecipientContacts: async () => ok(twoComptas),
+    });
+    // Tour 1 : « à la compta » couvre les deux contacts → question structurée, jamais un
+    // choix silencieux (doctrine du repo : chaque ask est testé).
+    const turn1Message = 'Envoie la facture 2026-014 à la compta';
+    const turn1 = await agent.ask(turn1Message);
+    expect(turn1.ok).toBe(true);
+    if (!turn1.ok) return;
+    expect(turn1.value.kind).toBe('answer');
+    const question = turn1.value.ask?.[0];
+    expect(question?.id).toBe('envoyer_facture.destinataire');
+    expect(question?.options).toHaveLength(2);
+    const marie = question?.options.find((o) => o.label.includes('Marie Dupont'));
+    expect(marie?.value).toBe('ct-compta-1');
+
+    // Tour 2 : le followUp VERBATIM (« à Compta Marie Dupont ») redit le rôle ET le nom — la
+    // spécificité départage les deux « Compta » : résolution, jamais la même question en boucle.
+    const turn2 = await agent.ask(marie!.followUp, {
+      history: [
+        { role: 'user', text: turn1Message },
+        { role: 'bob', text: turn1.value.card.body },
+      ],
+    });
+    expect(turn2.ok).toBe(true);
+    if (!turn2.ok) return;
+    expect(turn2.value.kind).toBe('proposed');
+    expect(turn2.value.pending?.args).toMatchObject({ invoiceId: 'inv-1', recipientEmail: 'marie@durand.fr' });
+    expect(turn2.value.pending?.label).toContain('Marie Dupont');
+  });
 });

@@ -777,41 +777,163 @@ function destinationNameTokens(nom: string): string[] {
     .filter((word) => word.length >= 3 && !NAME_STOPWORDS.has(word));
 }
 
-/** PR-08 — un site est-il EXPLICITEMENT désigné dans la phrase (« sur le site… », « au
- * chantier… ») ? Le « chez X » reste implicite : il ne compte que s'il matche un chantier réel. */
-function saysExplicitSite(normalizedConversation: string): boolean {
-  return /\b(?:site|chantier)s?\b/.test(normalizedConversation);
+/** PR-08 — refus PARLÉ du rattachement (« continue sans site », « — sans chantier ») : lu sur
+ * le TOUR COURANT uniquement — l'historique ne ré-impose jamais un site déjà refusé, et un
+ * refus d'un tour passé n'éteint pas un site nommé aujourd'hui. */
+const SITE_DECLINED = /\bsans (?:sites?|chantiers?)\b/;
+
+/** Vocabulaire de COMMANDE toléré dans la queue d'un marqueur site/chantier (« …fin de
+ * chantier TVA 20 » dicté sans ponctuation) : jamais promu nom de site — sans cette liste, un
+ * mot d'extra (« TVA », « logement de plus de 2 ans ») déclencherait un faux « Site
+ * introuvable » alors qu'aucun site n'est nommé. */
+const SITE_TAIL_COMMAND_WORDS: ReadonlySet<string> = new Set([
+  'tva', 'ttc', 'euros', 'euro', 'pour', 'cent', 'pourcent', 'avec', 'remise', 'chez',
+  'logement', 'plus', 'ans', 'ancien', 'renovation', 'energetique', 'intervention',
+  'urgente', 'urgent', 'demandee', 'demande', 'client', 'cette', 'facture', 'directe',
+]);
+
+/** PR-08 — queue du DERNIER marqueur site/chantier de la conversation : le matching explicite
+ * est SCOPÉ aux 60 caractères qui SUIVENT le marqueur (patron dépenses, bornés à la
+ * ponctuation et aux parenthèses des précisions canoniques) — jamais la conversation entière :
+ * « le nettoyage de fin de chantier (TVA 20 %) » a une queue vide et ne désigne donc rien.
+ * Null = aucun marqueur. Les followUps redisent la commande complète avec « sur le site X »
+ * EN FIN de tour : la dernière queue est toujours le choix le plus récent. */
+function lastSiteMarkerTail(normalizedConversation: string): string | null {
+  // « sans site » est un refus, pas une désignation — neutralisé avant le balayage.
+  const scrubbed = normalizedConversation.replace(new RegExp(SITE_DECLINED.source, 'g'), ' ');
+  const scan = /\b(?:sites?|chantiers?)\b([^,;.!?()«»]{0,60})/g;
+  let tail: string | null = null;
+  let mention: RegExpExecArray | null;
+  while ((mention = scan.exec(scrubbed)) !== null) tail = mention[1] ?? '';
+  return tail;
+}
+
+/** PR-08 — départage des sites en INCLUSION de nom (« Carrefour » / « Carrefour Vitry »,
+ * nommage réel type « RATP » / « RATP Bastille ») : quand ce qui est dit couvre plusieurs
+ * sites, le nom le plus SPÉCIFIQUE entièrement dit l'emporte — jamais une question Carrefour
+ * vs Carrefour Vitry qui rebouclerait à chaque followUp (les deux noms rematchent toujours).
+ * À jetons égaux, la phrase exacte contiguë tranche (« Vitry Carrefour » ≠ « Carrefour
+ * Vitry »). Des noms disjoints restent une vraie ambiguïté — question posée, jamais un choix
+ * silencieux. */
+function preferMostSpecificChantiers(
+  candidates: readonly { id: string; nom: string }[],
+  spokenText: string,
+): { id: string; nom: string }[] {
+  if (candidates.length <= 1) return [...candidates];
+  const tokenSets = candidates.map((chantier) => new Set(destinationNameTokens(chantier.nom)));
+  const dominant = candidates.filter(
+    (_, index) =>
+      !tokenSets.some(
+        (other, otherIndex) =>
+          otherIndex !== index
+          && tokenSets[index]!.size < other.size
+          && [...tokenSets[index]!].every((word) => other.has(word)),
+      ),
+  );
+  if (dominant.length === 1) return dominant;
+  const exact = dominant.filter((chantier) => {
+    const nom = normalized(chantier.nom);
+    return nom.trim().length > 0 && containsExactTokens(spokenText, nom);
+  });
+  if (exact.length === 0) return dominant;
+  const most = Math.max(...exact.map((chantier) => destinationNameTokens(chantier.nom).length));
+  return exact.filter((chantier) => destinationNameTokens(chantier.nom).length === most);
+}
+
+/** PR-09 — départage des destinataires par SPÉCIFICITÉ de ce qui est dit : rôle + nom dits
+ * ensemble (« à Compta Marie Dupont », la forme exacte des followUps de la question) priment
+ * sur le simple homonyme de rôle — sans lui, deux contacts « Compta » referaient la même
+ * question à l'infini. À égalité, l'ambiguïté reste posée — jamais un choix silencieux. */
+function preferMostSpecificContacts<T extends { label: string; name: string }>(
+  candidates: readonly T[],
+  conversationTokens: ReadonlySet<string>,
+): T[] {
+  if (candidates.length <= 1) return [...candidates];
+  const said = (tokens: readonly string[]): boolean =>
+    tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  const scored = candidates.map((contact) => ({
+    contact,
+    score:
+      (said(destinationNameTokens(contact.label)) ? 1 : 0)
+      + (said(destinationNameTokens(contact.name)) ? 1 : 0),
+  }));
+  const top = Math.max(...scored.map((entry) => entry.score));
+  return scored.filter((entry) => entry.score === top).map((entry) => entry.contact);
 }
 
 /**
  * PR-08 — résolution du SITE dicté (« chez Carrefour Vitry », « sur le site Bastille ») contre
  * la liste RÉELLE des chantiers ouverts du tenant — jamais un id inventé, jamais un site déduit
  * du seul nom du client (un chantier homonyme du client exige le marqueur explicite).
- * Retour : `matched` (0, 1 ou plusieurs candidats) + `explicit` (site nommé en toutes lettres).
+ * `explicit` n'est vrai que si un NOM significatif suit le dernier marqueur site/chantier
+ * (queue scopée) : le mot « chantier » d'un libellé facturé ne rend jamais un refus.
+ * `declined` : « sans site » dit au TOUR COURANT — la pièce naît hors site, quoi que dise
+ * l'historique. `saidName` : ce qui a été nommé, pour un refus honnête et citable.
  */
 function resolveSpokenChantier(input: {
   conversation: string;
+  currentTurn: string;
   chantiers: readonly { id: string; nom: string }[];
   customerName: string | null;
-}): { matched: { id: string; nom: string }[]; explicit: boolean } {
+}): {
+  matched: { id: string; nom: string }[];
+  explicit: boolean;
+  declined: boolean;
+  saidName: string | null;
+} {
+  if (SITE_DECLINED.test(normalized(input.currentTurn))) {
+    return { matched: [], explicit: false, declined: true, saidName: null };
+  }
   const normalizedConversation = normalized(input.conversation);
-  const conversationTokens = new Set(
-    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
-  );
   const customerTokens = new Set(
     input.customerName === null ? [] : significantNameWords(normalized(input.customerName)),
   );
-  const explicit = saysExplicitSite(normalizedConversation);
+  const tail = lastSiteMarkerTail(normalizedConversation);
+  if (tail !== null) {
+    const tailTokens = tail.split(/[^a-z0-9]+/).filter((word) => word.length >= 3);
+    const scopeTokens = new Set(tailTokens);
+    // Un nom est-il réellement dit après le marqueur ? Les mots de commande (« TVA »…), les
+    // nombres et le seul nom du CLIENT n'en sont jamais un.
+    const namedTokens = tailTokens.filter(
+      (word) => !SITE_TAIL_COMMAND_WORDS.has(word) && !/^\d+$/.test(word),
+    );
+    const explicit = namedTokens.some((word) => !customerTokens.has(word));
+    const strong = input.chantiers.filter((chantier) => {
+      const tokens = destinationNameTokens(chantier.nom);
+      return tokens.length > 0 && tokens.every((word) => scopeTokens.has(word));
+    });
+    const loose =
+      strong.length > 0 || !explicit
+        ? []
+        : input.chantiers.filter((chantier) =>
+            destinationNameTokens(chantier.nom).some((word) => scopeTokens.has(word)),
+          );
+    const pool = strong.length > 0 ? strong : loose;
+    return {
+      matched: preferMostSpecificChantiers(pool, tail),
+      explicit,
+      declined: false,
+      saidName: namedTokens.length > 0 ? namedTokens.join(' ') : null,
+    };
+  }
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
   const matched = input.chantiers.filter((chantier) => {
     const tokens = destinationNameTokens(chantier.nom);
     if (tokens.length === 0) return false;
     if (!tokens.every((word) => conversationTokens.has(word))) return false;
     // Nom de chantier entièrement CONTENU dans le nom du client (« Girard ») : ambigu par
-    // nature — ne compte que si le site est désigné explicitement (« sur le chantier Girard »).
-    if (!explicit && tokens.every((word) => customerTokens.has(word))) return false;
+    // nature — sans marqueur explicite, il ne compte jamais.
+    if (tokens.every((word) => customerTokens.has(word))) return false;
     return true;
   });
-  return { matched, explicit };
+  return {
+    matched: preferMostSpecificChantiers(matched, normalizedConversation),
+    explicit: false,
+    declined: false,
+    saidName: null,
+  };
 }
 
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
@@ -4049,7 +4171,7 @@ export class BobAgent {
               .filter((word) => word.length >= 3),
           );
           const customerTokens = new Set(significantNameWords(normalized(invoice.customerName)));
-          const matched = contactsResult.value.filter((contact) => {
+          const candidates = contactsResult.value.filter((contact) => {
             if (contact.email === null) return false;
             const labelTokens = destinationNameTokens(contact.label);
             const nameTokens = destinationNameTokens(contact.name);
@@ -4062,6 +4184,10 @@ export class BobAgent {
               && !nameTokens.every((word) => customerTokens.has(word));
             return byLabel || byName;
           });
+          // Départage par SPÉCIFICITÉ : le followUp de la question redit « à {rôle} {nom} » —
+          // rôle + nom dits ensemble priment sur le simple homonyme de rôle, la question ne
+          // reboucle donc jamais entre deux contacts « Compta ».
+          const matched = preferMostSpecificContacts(candidates, conversationTokens);
           if (matched.length === 1) {
             const chosen = matched[0]!;
             recipient = { label: chosen.label, name: chosen.name, email: chosen.email! };
@@ -5293,7 +5419,8 @@ export class BobAgent {
 
       // PR-08 — SITE dicté (« chez Carrefour Vitry », « sur le site Bastille ») : résolution
       // contre la liste RÉELLE des chantiers ouverts (mêmes cibles que classer_document —
-      // jamais un id inventé). Capacité optionnelle : sans elle, la pièce naît hors site.
+      // jamais un id inventé), SCOPÉE à la queue du dernier marqueur (patron dépenses).
+      // Capacité optionnelle : sans elle, la pièce naît hors site.
       let chantierRef: { id: string; nom: string } | null = null;
       const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
       if (listDestinations) {
@@ -5301,14 +5428,19 @@ export class BobAgent {
         if (destinations.ok) {
           const resolution = resolveSpokenChantier({
             conversation,
+            currentTurn: `${message} ${reference ?? ''}`,
             chantiers: destinations.value.chantiers,
             customerName: customer.name,
           });
-          if (resolution.matched.length === 1) {
+          if (resolution.declined) {
+            // « Sans site » dit CE tour-ci : la pièce naît hors site — même si l'historique
+            // nomme encore un site, le refus du pro est toujours respecté (jamais d'impasse).
+          } else if (resolution.matched.length === 1) {
             chantierRef = resolution.matched[0]!;
           } else if (resolution.matched.length > 1) {
-            // Plusieurs sites correspondent : question ciblée — le followUp REDIT la commande
-            // complète avec le site choisi (le prochain tour matche un seul chantier).
+            // Plusieurs sites correspondent VRAIMENT (noms disjoints — l'inclusion de nom est
+            // déjà départagée) : question ciblée — le followUp REDIT la commande complète avec
+            // le site choisi ; la queue SCOPÉE du tour suivant ne rematche que lui.
             const options = resolution.matched.slice(0, 4);
             return ok({
               kind: 'answer',
@@ -5337,8 +5469,12 @@ export class BobAgent {
               ],
             });
           } else if (resolution.explicit) {
-            // Site NOMMÉ mais introuvable dans la liste réelle : refus honnête —
-            // Bob n'invente jamais un site (anti-hallucination), rien n'est créé.
+            // Site NOMMÉ mais introuvable dans la liste réelle : refus honnête (Bob n'invente
+            // jamais un site — anti-hallucination) et ACTIONNABLE à la voix : les sites
+            // ouverts en options ET un vrai « Continuer sans site » dont le followUp porte le
+            // marqueur parsé « — sans site » — jamais une impasse, rien n'est créé ici.
+            const withoutSite = `${command({})} — sans site`;
+            const siteOptions = destinations.value.chantiers.slice(0, 3);
             return ok({
               kind: 'answer',
               intent,
@@ -5346,8 +5482,30 @@ export class BobAgent {
               plan: ['Vérifier le site contre la liste réelle'],
               card: {
                 title: 'Site introuvable',
-                body: 'Je ne trouve aucun site ouvert correspondant à ce que tu m’as dit. Rien n’a été créé — redis le nom exact du site, ou continue sans site.',
+                body: `Je ne trouve aucun site ouvert correspondant à « ${resolution.saidName ?? 'ce site'} ». Rien n’a été créé — choisis un site ouvert, ou continue sans site.`,
               },
+              choices: [
+                ...siteOptions.map((chantier) => ({
+                  label: `Site ${chantier.nom}`,
+                  value: `${command({})} sur le site ${chantier.nom}`,
+                })),
+                { label: 'Continuer sans site', value: withoutSite },
+              ],
+              ask: [
+                askToPick({
+                  id: 'facture_directe.site_introuvable',
+                  question: 'Sur quel site poser cette facture directe ?',
+                  header: 'Site',
+                  items: [
+                    ...siteOptions.map((chantier) => ({
+                      value: chantier.id,
+                      label: chantier.nom,
+                      followUp: `${command({})} sur le site ${chantier.nom}`,
+                    })),
+                    { value: 'sans_site', label: 'Sans site', followUp: withoutSite },
+                  ],
+                }),
+              ],
             });
           }
         }

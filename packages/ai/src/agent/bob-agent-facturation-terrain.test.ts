@@ -167,6 +167,138 @@ describe('facture_directe — B1 : facture SANS devis signé, dictée à la voix
     expect(r.value.pending?.args).not.toHaveProperty('chantierId');
   });
 
+  it('PR-08 — le mot « chantier » du LIBELLÉ facturé ne désigne jamais un site : proposition, pas de refus', async () => {
+    // Régression revue adversariale P1 : « nettoyage de fin de chantier » + ≥1 chantier ouvert
+    // dont le nom ne matche pas → main proposait la facture, jamais « Site introuvable ».
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }),
+      listFilingDestinations: async () => ok({ chantiers: [{ id: 'site-a', nom: 'Docks Rouen' }], dossiers: [] }),
+    });
+    const r = await agent.ask('Facture 500 € HT à Durand pour le nettoyage de fin de chantier (TVA 20 %)');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).not.toHaveProperty('chantierId');
+  });
+
+  it('PR-08 — « intervention sur site » (vocabulaire maintenance) sans nom : pièce hors site, jamais un refus', async () => {
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }),
+      listFilingDestinations: async () => ok({ chantiers: [{ id: 'site-a', nom: 'Docks Rouen' }], dossiers: [] }),
+    });
+    const r = await agent.ask('Facture 500 € HT à Durand pour l’intervention sur site (TVA 20 %)');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).not.toHaveProperty('chantierId');
+  });
+
+  it('PR-08 — « Site introuvable » est ACTIONNABLE : sites ouverts en options + « Continuer sans site » parsé', async () => {
+    const compose = vi.fn(async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }));
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: compose,
+      listFilingDestinations: async () => ok({ chantiers: [{ id: 'site-a', nom: 'Docks Rouen' }], dossiers: [] }),
+    });
+    const turn1Message = 'Facture 500 € HT à Durand pour la maintenance sur le site Bastille (TVA 20 %)';
+    const turn1 = await agent.ask(turn1Message);
+    expect(turn1.ok).toBe(true);
+    if (!turn1.ok) return;
+    expect(turn1.value.card.title).toBe('Site introuvable');
+    expect(turn1.value.card.body).toContain('bastille');
+    // Chemins de sortie RÉELS : un site ouvert, ou continuer sans site (marqueur parsé).
+    const siteChip = turn1.value.choices?.find((c) => c.label === 'Site Docks Rouen');
+    const bypass = turn1.value.choices?.find((c) => c.label === 'Continuer sans site');
+    expect(siteChip).toBeDefined();
+    expect(bypass).toBeDefined();
+    expect(bypass?.value).toContain('— sans site');
+    expect(turn1.value.ask?.[0]?.id).toBe('facture_directe.site_introuvable');
+
+    // Enchaînement followUp→résolution : le bypass ABOUTIT malgré l'historique qui nomme
+    // encore « site Bastille » (l'impasse de la revue) — pièce proposée HORS site.
+    const turn2 = await agent.ask(bypass!.value, {
+      history: [
+        { role: 'user', text: turn1Message },
+        { role: 'bob', text: turn1.value.card.body },
+      ],
+    });
+    expect(turn2.ok).toBe(true);
+    if (!turn2.ok) return;
+    expect(turn2.value.kind).toBe('proposed');
+    expect(turn2.value.pending?.args).not.toHaveProperty('chantierId');
+    expect(compose).not.toHaveBeenCalled();
+  });
+
+  it('PR-08 — ambiguïté RÉELLE (« sur le site RATP », deux sites RATP) : question posée PUIS résolue par le followUp (jamais une boucle)', async () => {
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }),
+      listFilingDestinations: async () =>
+        ok({
+          chantiers: [
+            { id: 'site-ratp-bastille', nom: 'RATP Bastille' },
+            { id: 'site-ratp-vitry', nom: 'RATP Vitry' },
+          ],
+          dossiers: [],
+        }),
+    });
+    const turn1Message = 'Facture 500 € HT à Durand pour la maintenance des escaliers sur le site RATP (TVA 20 %)';
+    const turn1 = await agent.ask(turn1Message);
+    expect(turn1.ok).toBe(true);
+    if (!turn1.ok) return;
+    expect(turn1.value.kind).toBe('answer');
+    const question = turn1.value.ask?.[0];
+    expect(question?.id).toBe('facture_directe.site');
+    expect(question?.options).toHaveLength(2);
+    const bastille = question?.options.find((o) => o.label === 'RATP Bastille');
+    expect(bastille?.value).toBe('site-ratp-bastille');
+
+    // Tour 2 : le followUp VERBATIM, avec l'historique complet (qui contient encore « site
+    // RATP ») — la queue scopée ne rematche QUE le site choisi : résolution, pas de re-question.
+    const turn2 = await agent.ask(bastille!.followUp, {
+      history: [
+        { role: 'user', text: turn1Message },
+        { role: 'bob', text: turn1.value.card.body },
+      ],
+    });
+    expect(turn2.ok).toBe(true);
+    if (!turn2.ok) return;
+    expect(turn2.value.kind).toBe('proposed');
+    expect(turn2.value.pending?.args).toMatchObject({ customerId: 'cus-durand', chantierId: 'site-ratp-bastille' });
+    expect(turn2.value.pending?.label).toContain('RATP Bastille');
+  });
+
+  it('PR-08 — sites en INCLUSION de nom (« Carrefour » / « Carrefour Vitry ») : le nom exact dit l’emporte, aucune question', async () => {
+    const destinations = {
+      chantiers: [
+        { id: 'site-carrefour', nom: 'Carrefour' },
+        { id: 'site-carrefour-vitry', nom: 'Carrefour Vitry' },
+      ],
+      dossiers: [],
+    };
+    const agent = agentWith({
+      listBillableCustomers: async () => ok(CUSTOMERS),
+      composeStandaloneInvoice: async () => ok({ invoiceId: 'inv-1', totalTtcCents: 60000, netToPayCents: 60000 }),
+      listFilingDestinations: async () => ok(destinations),
+    });
+    // Le nom LONG dit en entier ⇒ le plus spécifique, sans re-demander (la question
+    // rebouclerait : les deux noms rematcheraient à chaque tour).
+    const long = await agent.ask('Facture 500 € HT à Durand pour le nettoyage des vitrines sur le site Carrefour Vitry (TVA 20 %)');
+    expect(long.ok).toBe(true);
+    if (!long.ok) return;
+    expect(long.value.kind).toBe('proposed');
+    expect(long.value.pending?.args).toMatchObject({ chantierId: 'site-carrefour-vitry' });
+
+    // Le nom COURT seul ⇒ le site court, jamais le long par contagion.
+    const short = await agent.ask('Facture 500 € HT à Durand pour le nettoyage des vitrines sur le site Carrefour (TVA 20 %)');
+    expect(short.ok).toBe(true);
+    if (!short.ok) return;
+    expect(short.value.kind).toBe('proposed');
+    expect(short.value.pending?.args).toMatchObject({ chantierId: 'site-carrefour' });
+  });
+
   it('client b2c SANS urgence dite : question structurée A3bis (jamais un fait fabriqué)', async () => {
     const compose = vi.fn(async () => ok({ invoiceId: 'x', totalTtcCents: 1, netToPayCents: 1 }));
     const agent = agentWith({
