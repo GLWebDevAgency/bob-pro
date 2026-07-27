@@ -79,8 +79,13 @@ Seuls les builds **production** pointent la prod. Preview, dev local et simulate
    révocations PostgREST et certifications PostgreSQL. Exit 0 exigé ; la capacité reste fermée.
 2. Déployer la révision (`railway up` depuis un clone propre au commit, ou pipeline GitHub).
 3. Prouver une seule réplique, puis `/health/ready` avec `ready:true`, le SHA complet et
-   l'environnement attendus, ainsi que `realtimeAdmissionCancellationFence:v1`. `/health` seul ne
-   prouve RIEN : il répond même sur un binaire incompatible.
+   l'environnement attendus, ainsi que `realtimeAdmissionCancellationFence:v1`. Le nouveau
+   processus doit alors avoir attesté un snapshot durable `closed` valide. Lors d'une release
+   suivante, ce snapshot peut encore porter les bindings N-1 et des sessions en drainage ; cela
+   prouve l'aptitude du binaire au rollout, jamais l'ouverture des admissions. Le préflight SQL
+   continue de refuser toute réservation tant que `postdeploy` n'a pas appliqué les bindings N et
+   passé cette autorité à `active`. `/health` seul ne prouve RIEN : il répond même sur un binaire
+   incompatible.
 4. Exécuter immédiatement
    `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh` après ces preuves. Ce chemin
    referme d'abord l'admission, recertifie le schéma et les ACL sous le nouveau binaire, puis

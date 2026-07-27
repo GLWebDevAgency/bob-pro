@@ -171,6 +171,17 @@ Le déploiement qui introduit ce protocole suit un cutover en deux phases :
    n'appelle jamais `prisma migrate deploy`, recertifie le schéma sous le nouveau binaire et ne
    rouvre qu'en dernier geste.
 
+Entre les étapes 1 et 3, `closed` est un état de rollout attendu, pas une absence d'autorité. Le
+nouveau processus N peut terminer son boot si l'inspector runtime relit un snapshot durable
+`closed` valide. Ce snapshot peut encore porter les bindings N-1 et des sessions en drainage lors
+d'une release suivante ; au premier cutover, le protocole ci-dessus exige séparément `closed|0`.
+Cette attestation structurelle ne vaut jamais ouverture : le préflight SQL exige toujours
+`active` et les bindings N exacts dans la transaction de réservation, et reste l'unique autorité
+d'admission. Un état `tracking`, une inspection indisponible ou un état `active` divergent font
+échouer le boot. Dans cette fenêtre, `/health/ready` prouve le binaire, ses dépendances et ses
+capabilities sous admissions fermées ; seul `postdeploy` applique les bindings N et fait passer
+l'autorité à `active`.
+
 Sur les releases suivantes, un prédécesseur qui publie déjà la capability ferme toujours les
 nouvelles admissions, mais ses sessions vivantes peuvent terminer pendant le rollout sans imposer
 un drain zéro préalable. Le trigger protège un INSERT N-1 après qu'un pod N a posé le fence ; aucun
@@ -934,6 +945,9 @@ pour d'autres domaines.
 - [ ] Le premier cutover ferme et draine `closed|0` avant migrate ; une reprise partielle ne saute
       jamais ce drain ; `postdeploy` refuse toute migration locale en attente et n'appelle jamais
       `prisma migrate deploy`.
+- [ ] Le binaire N boote sous tout snapshot durable `closed` valide afin de laisser drainer N-1 et
+      permettre un changement de bindings ; `tracking`, panne et `active` divergent refusent le
+      boot, tandis qu'une réservation reste refusée jusqu'au passage `active` exact.
 - [ ] La phase est toujours explicite ; la réouverture n'arrive que par `postdeploy`, après preuve
       d'une réplique, readiness du SHA/environnement exacts et
       `realtimeAdmissionCancellationFence=v1` avec `agentMissionBootstrapReceipt=v1` sur le binaire
