@@ -869,29 +869,54 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
   }
 });
 
-test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', () => {
-  assert.match(ci, /agent-missions-postgres-certification:/u);
-  assert.match(ci, /image: postgres:17/u);
-  assert.match(ci, /AGENT_MISSION_CERT_SUPER_URL:/u);
-  assert.match(ci, /AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:/u);
-  assert.match(ci, /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u);
+test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase-like 16', () => {
+  const agentMissionJobStart = ci.indexOf('  agent-missions-postgres-certification:\n');
+  const agentMissionJobEnd = ci.indexOf('  rls-certification:\n', agentMissionJobStart);
+  const rlsJobStart = agentMissionJobEnd;
+  const rlsJobEnd = ci.indexOf(
+    '  realtime-global-capacity-certification:\n',
+    rlsJobStart,
+  );
+  assert.ok(agentMissionJobStart >= 0 && agentMissionJobEnd > agentMissionJobStart);
+  assert.ok(rlsJobStart >= 0 && rlsJobEnd > rlsJobStart);
+  const agentMissionJob = ci.slice(agentMissionJobStart, agentMissionJobEnd);
+  const rlsJob = ci.slice(rlsJobStart, rlsJobEnd);
+
+  assert.match(agentMissionJob, /image: postgres:17/u);
+  assert.match(agentMissionJob, /AGENT_MISSION_CERT_SUPER_URL:/u);
+  assert.match(agentMissionJob, /AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:/u);
+  assert.match(
+    agentMissionJob,
+    /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u,
+  );
   assert.match(localCertificate, /CREATE ROLE bob_deployer[\s\S]*?NOSUPERUSER/u);
   assert.match(localCertificate, /SET createrole_self_grant = 'set'/u);
-  assert.match(ci, /Certify the full RLS replay after an exact schema-owner split/u);
-  assert.match(ci, /sh apps\/api\/scripts\/certify-rls-owner-split\.sh/u);
-  const capacityTeardown = ci.indexOf(
+  assert.match(rlsJob, /image: postgres:16/u);
+  assert.match(rlsJob, /Certify the full RLS replay after an exact schema-owner split/u);
+  assert.match(rlsJob, /sh apps\/api\/scripts\/certify-rls-owner-split\.sh/u);
+  const capacityTeardown = rlsJob.indexOf(
     '- name: Close shared Bob Live capacity after PostgreSQL certificates',
   );
-  const destructiveOwnerSplit = ci.indexOf(
+  const destructiveOwnerSplit = rlsJob.indexOf(
     '- name: Certify the full RLS replay after an exact schema-owner split',
   );
   assert.ok(
     capacityTeardown >= 0 && destructiveOwnerSplit > capacityTeardown,
     'Le owner-split retire les droits du déployeur et doit rester après tous les certificats SQL.',
   );
+  assert.ok(
+    rlsJob.trimEnd().endsWith(
+      'run: sh apps/api/scripts/certify-rls-owner-split.sh',
+    ),
+    'Le owner-split destructif doit rester le dernier step du job PostgreSQL partagé.',
+  );
   assert.match(
     rlsOwnerSplitCertificate,
-    /current_database\(\) <> 'bob_ephemeral_ci'[\s\S]*?NOT deployer\.rolcreaterole/u,
+    /assert-database-pair\.mjs --ephemeral-supabase-ci owner-split[\s\S]*?unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGSERVICE PGSERVICEFILE PGOPTIONS[\s\S]*?assert-database-pair\.mjs/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /inet_server_addr\(\)[\s\S]*?inet_client_addr\(\)[\s\S]*?owner_split_network_mode = 'loopback'[\s\S]*?owner_split_network_mode = 'github-actions-service'[\s\S]*?current_database\(\) <> 'bob_ephemeral_ci'[\s\S]*?NOT deployer\.rolcreaterole/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,
@@ -933,11 +958,19 @@ test('la CI exécute la preuve PostgreSQL 17 avec un déployeur non-superuser', 
   );
   assert.match(
     rlsOwnerSplitCertificate,
-    /node apps\/api\/scripts\/assert-database-pair\.mjs[\s\S]*?psql "\$DATABASE_URL"[\s\S]*?RLS_OWNER_SPLIT_CERT_RUNTIME_ROLE_IS_PRIVILEGED[\s\S]*?INSERT INTO public\.cabinets[\s\S]*?INSERT INTO public\.cabinet_members[\s\S]*?app_is_active_cabinet_member[\s\S]*?app_has_cabinet_role[\s\S]*?ROLLBACK;/u,
+    /protected_owner <> current_user::pg_catalog\.regrole[\s\S]*?RLS_OWNER_SPLIT_CERT_INITIAL_OWNER_IS_NOT_DEPLOYER/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,
-    /psql "\$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'[\s\S]*?\\i apps\/api\/prisma\/rls\.sql[\s\S]*?RLS_OWNER_SPLIT_CERT_SCHEMA_ACL_DRIFT[\s\S]*?^SQL$/mu,
+    /relation\.relowner <> owner_oid[\s\S]*?app_is_active_cabinet_member\(text\)[\s\S]*?app_has_cabinet_role\(text,public\."CabinetRole"\[\]\)[\s\S]*?function\.proowner = owner_oid[\s\S]*?function\.prosecdef[\s\S]*?helper_count <> 2[\s\S]*?RLS_OWNER_SPLIT_CERT_CABINET_HELPER_OWNER_DRIFT/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /node apps\/api\/scripts\/assert-database-pair\.mjs --ephemeral-supabase-ci owner-split[\s\S]*?node apps\/api\/scripts\/assert-database-pair\.mjs[\s\S]*?psql "\$DATABASE_URL"[\s\S]*?RLS_OWNER_SPLIT_CERT_RUNTIME_ROLE_IS_PRIVILEGED[\s\S]*?INSERT INTO public\.cabinets[\s\S]*?INSERT INTO public\.cabinet_members[\s\S]*?app_is_active_cabinet_member[\s\S]*?app_has_cabinet_role[\s\S]*?ROLLBACK;/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /psql "\$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1[\s\S]*?owner_split_network_mode="\$owner_split_network_mode" <<'SQL'[\s\S]*?\\i apps\/api\/prisma\/rls\.sql[\s\S]*?RLS_OWNER_SPLIT_CERT_SCHEMA_ACL_DRIFT[\s\S]*?^SQL$/mu,
   );
   assert.match(
     rls,

@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
+cd "$ROOT_DIR"
+
 : "${DIRECT_URL:?DIRECT_URL non-superuser deployer URL is required}"
 : "${DATABASE_URL:?DATABASE_URL non-superuser runtime URL is required}"
 
@@ -10,21 +13,79 @@ if [ "${GITHUB_ACTIONS:-false}" != "true" ] \
   exit 1
 fi
 
+# Le transfert ci-dessous est volontairement destructif. La confirmation d'exécution ne suffit
+# donc jamais : les deux URI doivent viser le même endpoint loopback explicite, sans paramètre
+# libpq, sous les identités et le nom de base jetables exacts.
+node apps/api/scripts/assert-database-pair.mjs --ephemeral-supabase-ci owner-split
+
+# Aucun PG* ambiant ne peut substituer un service, un socket, une base ou des options aux URI
+# strictement validées. La preuve d'identité inter-rôles est exécutée seulement après ce nettoyage.
+unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGSERVICE PGSERVICEFILE PGOPTIONS
 node apps/api/scripts/assert-database-pair.mjs
 
-psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+owner_split_network_mode=loopback
+if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+  # Le runner joint le service PostgreSQL via localhost ; Docker DNAT présente néanmoins au
+  # serveur des adresses privées. Les URI restent loopback et ce mode ne relâche que la preuve
+  # serveur/client effectuée ci-dessous.
+  owner_split_network_mode=github-actions-service
+fi
+
+psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v owner_split_network_mode="$owner_split_network_mode" <<'SQL'
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '60s';
+
+SELECT pg_catalog.set_config(
+  'bob.rls_owner_split_network_mode',
+  :'owner_split_network_mode',
+  TRUE
+);
 
 DO $rls_owner_split_target$
 DECLARE
   deployer pg_catalog.pg_roles%ROWTYPE;
+  owner_split_network_mode TEXT :=
+    current_setting('bob.rls_owner_split_network_mode');
+  server_address INET := pg_catalog.inet_server_addr();
+  client_address INET := pg_catalog.inet_client_addr();
 BEGIN
   SELECT *
     INTO STRICT deployer
     FROM pg_catalog.pg_roles
    WHERE rolname = current_user;
-  IF current_database() <> 'bob_ephemeral_ci'
+  IF owner_split_network_mode NOT IN ('loopback', 'github-actions-service')
+     OR server_address IS NULL
+     OR client_address IS NULL
+     OR (
+       owner_split_network_mode = 'loopback'
+       AND NOT (
+         server_address <<= pg_catalog.inet '127.0.0.0/8'
+         OR server_address = pg_catalog.inet '::1'
+       )
+     )
+     OR (
+       owner_split_network_mode = 'github-actions-service'
+       AND NOT (
+         server_address <<= pg_catalog.inet '127.0.0.0/8'
+         OR server_address = pg_catalog.inet '::1'
+         OR (
+           (
+             server_address <<= pg_catalog.inet '10.0.0.0/8'
+             OR server_address <<= pg_catalog.inet '172.16.0.0/12'
+             OR server_address <<= pg_catalog.inet '192.168.0.0/16'
+             OR server_address <<= pg_catalog.inet 'fc00::/7'
+           )
+           AND (
+             client_address <<= pg_catalog.inet '10.0.0.0/8'
+             OR client_address <<= pg_catalog.inet '172.16.0.0/12'
+             OR client_address <<= pg_catalog.inet '192.168.0.0/16'
+             OR client_address <<= pg_catalog.inet 'fc00::/7'
+           )
+         )
+       )
+     )
+     OR current_database() <> 'bob_ephemeral_ci'
      OR current_user <> 'postgres'
      OR deployer.rolsuper
      OR NOT deployer.rolcreaterole THEN
@@ -82,6 +143,20 @@ BEGIN
 END;
 $rls_owner_split_membership$;
 
+DO $rls_owner_split_initial_authority$
+DECLARE
+  protected_owner OID;
+BEGIN
+  SELECT relation.relowner
+    INTO STRICT protected_owner
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid = 'public.agent_missions'::pg_catalog.regclass;
+  IF protected_owner <> current_user::pg_catalog.regrole THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_INITIAL_OWNER_IS_NOT_DEPLOYER';
+  END IF;
+END;
+$rls_owner_split_initial_authority$;
+
 -- La base est jetable et le postdeploy est déjà achevé. Seuls les objets encore possédés par le
 -- déployeur sont déplacés ; les autorités NOLOGIN spécialisées conservent leurs objets.
 -- PostgreSQL exige que le nouvel owner ait CREATE sur le schéma au moment du transfert. Ce droit
@@ -124,6 +199,40 @@ SELECT pg_catalog.format(
 -- l'owner exact ; RESET ROLE rend ensuite la main au déployeur qui a accordé le privilège.
 \i apps/api/prisma/rls.sql
 RESET ROLE;
+
+DO $rls_owner_split_exact_authority$
+DECLARE
+  owner_oid OID := 'bob_rls_schema_owner_cert'::pg_catalog.regrole;
+  helper_count INTEGER;
+BEGIN
+  IF (
+    SELECT relation.relowner <> owner_oid
+      FROM pg_catalog.pg_class AS relation
+     WHERE relation.oid = 'public.agent_missions'::pg_catalog.regclass
+  ) THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_PROTECTED_OWNER_DRIFT';
+  END IF;
+
+  SELECT pg_catalog.count(*)
+    INTO STRICT helper_count
+    FROM pg_catalog.pg_proc AS function
+   WHERE function.oid = ANY (
+     ARRAY[
+       pg_catalog.to_regprocedure(
+         'public.app_is_active_cabinet_member(text)'
+       ),
+       pg_catalog.to_regprocedure(
+         'public.app_has_cabinet_role(text,public."CabinetRole"[])'
+       )
+     ]::OID[]
+   )
+     AND function.proowner = owner_oid
+     AND function.prosecdef;
+  IF helper_count <> 2 THEN
+    RAISE EXCEPTION 'RLS_OWNER_SPLIT_CERT_CABINET_HELPER_OWNER_DRIFT';
+  END IF;
+END;
+$rls_owner_split_exact_authority$;
 
 REVOKE CREATE ON SCHEMA public FROM bob_rls_schema_owner_cert;
 GRANT USAGE ON SCHEMA public TO bob_rls_schema_owner_cert;
@@ -236,9 +345,11 @@ SQL
 
 psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 DO $rls_owner_split_certificate$
+DECLARE
+  owner_oid OID := 'bob_rls_schema_owner_cert'::pg_catalog.regrole;
 BEGIN
   IF (
-    SELECT relation.relowner = current_user::pg_catalog.regrole
+    SELECT relation.relowner <> owner_oid
       FROM pg_catalog.pg_class AS relation
      WHERE relation.oid = 'public.agent_missions'::pg_catalog.regclass
   ) OR NOT EXISTS (

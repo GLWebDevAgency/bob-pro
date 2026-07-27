@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
+cd "$ROOT_DIR"
+
 : "${CI_POSTGRES_SUPER_URL:?CI_POSTGRES_SUPER_URL ephemeral bootstrap URL is required}"
 : "${CI_POSTGRES_ADMIN_URL:?CI_POSTGRES_ADMIN_URL ephemeral internal admin URL is required}"
 : "${DIRECT_URL:?DIRECT_URL release URL is required}"
@@ -14,69 +17,9 @@ fi
 # Ce harnais ne doit jamais devenir un outil d'exploitation. Il reproduit uniquement, sur le
 # PostgreSQL loopback jetable de GitHub Actions, le profil Supabase où `postgres` est le déployeur
 # LOGIN non-superuser (CREATEROLE + BYPASSRLS) et où un superuser interne distinct reste caché.
-node - "$CI_POSTGRES_SUPER_URL" "$CI_POSTGRES_ADMIN_URL" "$DIRECT_URL" <<'NODE'
-const [bootstrapRaw, adminRaw, directRaw] = process.argv.slice(2);
-const allowedHosts = new Set(['localhost', '127.0.0.1', '::1']);
-const allowedDatabases = new Set([
-  '/bob_ephemeral_ci',
-  '/bob_ephemeral_global_capacity',
-  '/bob_ephemeral_key_rotation',
-]);
-
-const parse = (raw, name, expectedUser, expectedPassword) => {
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`${name} must be a PostgreSQL URL`);
-  }
-  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) {
-    throw new Error(`${name} must be a PostgreSQL URL`);
-  }
-  if (!allowedHosts.has(parsed.hostname.toLowerCase())) {
-    throw new Error(`${name} must target loopback; remote databases are forbidden`);
-  }
-  if (parsed.search !== '' || parsed.hash !== '') {
-    throw new Error(`${name} must not contain connection parameters or fragments`);
-  }
-  if (parsed.port === '') {
-    throw new Error(`${name} must use an explicit ephemeral port`);
-  }
-  if (!allowedDatabases.has(parsed.pathname)) {
-    throw new Error(`${name} must target an allowlisted ephemeral CI database`);
-  }
-  if (decodeURIComponent(parsed.username) !== expectedUser) {
-    throw new Error(`${name} must use the expected ephemeral identity`);
-  }
-  if (decodeURIComponent(parsed.password) !== expectedPassword) {
-    throw new Error(`${name} must use the expected ephemeral credential`);
-  }
-  return parsed;
-};
-
-const bootstrap = parse(
-  bootstrapRaw,
-  'CI_POSTGRES_SUPER_URL',
-  'postgres',
-  'postgres',
-);
-const admin = parse(
-  adminRaw,
-  'CI_POSTGRES_ADMIN_URL',
-  'bob_ci_supabase_admin',
-  'bob_ci_supabase_admin',
-);
-const direct = parse(directRaw, 'DIRECT_URL', 'postgres', 'postgres');
-for (const candidate of [admin, direct]) {
-  if (
-    bootstrap.hostname.toLowerCase() !== candidate.hostname.toLowerCase()
-    || bootstrap.port !== candidate.port
-    || bootstrap.pathname !== candidate.pathname
-  ) {
-    throw new Error('all Supabase CI URLs must target the same ephemeral database');
-  }
-}
-NODE
+# Le validateur partagé est aussi rejoué par le certificat owner-split destructif : les deux
+# chemins refusent donc la même URI distante, implicite, paramétrée ou hors allowlist.
+node apps/api/scripts/assert-database-pair.mjs --ephemeral-supabase-ci bootstrap
 
 # Aucun PG* ambiant ne peut substituer un service, un socket ou un autre endpoint aux URI validées.
 unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGSERVICE PGSERVICEFILE PGOPTIONS

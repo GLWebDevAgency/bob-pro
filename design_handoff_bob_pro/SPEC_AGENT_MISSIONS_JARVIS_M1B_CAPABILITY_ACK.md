@@ -735,11 +735,16 @@ mobile devis jusqu'à `awaiting_lines`. O5 reste partiel tant que la preuve devi
 
 - Core : 197 fichiers / 2 298 tests, typecheck, lint et artefact de production certifié ;
 - API Client : 23 fichiers / 447 tests, typecheck, lint et artefact de production certifié ;
-- API : 206 fichiers / 2 392 tests, 298 tests de contrats release, typecheck, lint et artefact de
+- API : 206 fichiers / 2 392 tests, 304 tests de contrats release, typecheck, lint et artefact de
   production certifié ;
 - Mobile : 123 fichiers / 1 285 tests et typecheck ;
 - PostgreSQL 17 réel : 43 scénarios AgentMission, dont writer N-1, runtime non-superuser,
-  owner-split de type Supabase, RLS/ACL exactes et course reçu/reaper ;
+  RLS/ACL exactes et course reçu/reaper ;
+- PostgreSQL 17 réel, train complet de 123 migrations : owner-split de type Supabase certifié avec
+  déployeur non-superuser, propriétaire exact `bob_rls_schema_owner_cert` et helpers Cabinet
+  `SECURITY DEFINER` effectivement sondés sous ce même propriétaire ;
+- la CI du SHA candidat sépare volontairement la preuve AgentMission sur PostgreSQL 17 et la preuve
+  owner-split de type Supabase sur PostgreSQL 16 ;
 - review adversariale : retry après réponse ACK perdue, budget TTL des deux tentatives et course
   PostgreSQL réelle corrigés puis rejoués ;
 - `git diff --check` et syntaxe de chaque script shell modifié : verts.
