@@ -4,10 +4,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
-const workflowPath = resolve(
-  repositoryRoot,
-  '.github/workflows/agent-mission-m1b-staging.yml',
-);
+const workflowPath = resolve(repositoryRoot, '.github/workflows/agent-mission-m1b-staging.yml');
 const workflow = readFileSync(workflowPath, 'utf8');
 const railwayReleaseWorkflow = readFileSync(
   resolve(repositoryRoot, '.github/workflows/railway-api.yml'),
@@ -37,22 +34,13 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
 });
 
 test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
-  assert.match(
-    railwayReleaseWorkflow,
-    /- m1b-staging-certification/u,
-  );
+  assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(
     railwayReleaseWorkflow,
     /uses: \.\/\.github\/workflows\/agent-mission-m1b-staging\.yml/u,
   );
-  assert.match(
-    railwayReleaseWorkflow,
-    /test "\$RELEASE_ENVIRONMENT" = staging/u,
-  );
-  assert.match(
-    railwayReleaseWorkflow,
-    /test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"/u,
-  );
+  assert.match(railwayReleaseWorkflow, /test "\$RELEASE_ENVIRONMENT" = staging/u);
+  assert.match(railwayReleaseWorkflow, /test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"/u);
   assert.match(
     railwayReleaseWorkflow,
     /release-api:[\s\S]*?if: \$\{\{ always\(\) && inputs\.purpose != 'm1b-staging-certification' \}\}/u,
@@ -74,10 +62,7 @@ test('workflow cible le SHA et les UUID sans relier le checkout ni changer de ba
   assert.doesNotMatch(workflow, /railway\s+(?:environment|service)\s+link/u);
   assert.equal(
     occurrences(workflow, /railway (?:run|up|status)/gu),
-    occurrences(
-      workflow,
-      /railway (?:run|up|status) --project "\$RAILWAY_PROJECT_ID"/gu,
-    ),
+    occurrences(workflow, /railway (?:run|up|status) --project "\$RAILWAY_PROJECT_ID"/gu),
     'every Railway CLI command must pin the immutable project explicitly',
   );
   assert.doesNotMatch(
@@ -90,28 +75,27 @@ test('workflow cible le SHA et les UUID sans relier le checkout ni changer de ba
 test('les trois déploiements API et le déploiement Whisper ont un ID exact', () => {
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=predeploy/gu), 3);
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=postdeploy/gu), 3);
-  assert.equal(
-    occurrences(
-      workflow,
-      /agent-mission-m1b-staging-railway\.mjs deployment-id/gu,
-    ),
-    4,
+  const explicitStagingReleaseGates = occurrences(
+    workflow,
+    /env RELEASE_ENVIRONMENT=staging \\\n\s+sh apps\/api\/scripts\/check-release-env\.sh/gu,
   );
   assert.equal(
-    occurrences(
-      workflow,
-      /agent-mission-m1b-staging-railway\.mjs \\\n\s+wait-deployment/gu,
-    ),
+    explicitStagingReleaseGates,
+    3,
+    'every predeploy release gate must receive the immutable staging environment explicitly',
+  );
+  assert.equal(
+    explicitStagingReleaseGates,
+    occurrences(workflow, /check-release-env\.sh/gu),
+    'a future release gate must not rely on process-environment inheritance through Railway CLI',
+  );
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-railway\.mjs deployment-id/gu), 4);
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-railway\.mjs \\\n\s+wait-deployment/gu),
     3,
   );
-  assert.equal(
-    occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu),
-    3,
-  );
-  assert.equal(
-    occurrences(workflow, /certify-railway-single-replica\.mjs/gu),
-    3,
-  );
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu), 3);
+  assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
   for (const phase of [
     'Baseline OFF predeploy',
     'Active M1-B predeploy',
@@ -138,10 +122,7 @@ test('Whisper est déployé et prouvé privé avant toute readiness M1-B positiv
     workflow,
     /id: deploy_whisper[\s\S]*?--service "\$RAILWAY_WHISPER_AUDIT_SERVICE_ID"/u,
   );
-  assert.equal(
-    occurrences(workflow, /agent-mission-m1b-staging-whisper\.mjs preflight/gu),
-    2,
-  );
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-whisper\.mjs preflight/gu), 2);
   assert.equal(
     occurrences(workflow, /agent-mission-m1b-staging-whisper\.mjs \\\n\s+wait-deployment/gu),
     1,
@@ -150,10 +131,7 @@ test('Whisper est déployé et prouvé privé avant toute readiness M1-B positiv
     workflow,
     /whisper_deployment_id: \$\{\{ steps\.deploy_whisper\.outputs\.deployment_id \}\}/u,
   );
-  assert.match(
-    readinessSource,
-    /payload\.dependencies\?\.bobLiveSpeechAudit !== 'ready'/u,
-  );
+  assert.match(readinessSource, /payload\.dependencies\?\.bobLiveSpeechAudit !== 'ready'/u);
   assert.match(workflow, /id: active_readiness/u);
   assert.match(workflow, /acoustic_readiness_ms=/u);
   assert.match(
@@ -181,10 +159,7 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
     workflow,
     /BOB_M1B_VARIABLES_WERE_OWNED: \$\{\{ needs\.certify\.outputs\.variables_owned \|\| 'false' \}\}/u,
   );
-  assert.match(
-    workflow,
-    /true\) echo "removed=true" >> "\$GITHUB_OUTPUT"/u,
-  );
+  assert.match(workflow, /true\) echo "removed=true" >> "\$GITHUB_OUTPUT"/u);
   assert.doesNotMatch(workflow, /BOB_M1B_STAGING_VARIABLES_OWNED/u);
   assert.doesNotMatch(workflow, /BOB_M1B_STAGING_OVERRIDE_OWNED/u);
   assert.match(workflow, /cleanup:\n    needs: certify\n    if: \$\{\{ always\(\) \}\}/u);
@@ -206,25 +181,13 @@ test('chaque mutation DB est précédée de la preuve du Supabase staging éping
     occurrences(workflow, /agent-mission-m1b-staging-database\.mjs/gu) >= 5,
     'database identity must be re-certified before every release phase and cleanup mutation',
   );
-  assert.match(
-    workflow,
-    /id: pin_database[\s\S]*?steps\.pin_database\.outcome == 'success'/u,
-  );
-  assert.match(
-    workflow,
-    /id: off_predeploy[\s\S]*?steps\.remove_override\.outcome == 'success'/u,
-  );
+  assert.match(workflow, /id: pin_database[\s\S]*?steps\.pin_database\.outcome == 'success'/u);
+  assert.match(workflow, /id: off_predeploy[\s\S]*?steps\.remove_override\.outcome == 'success'/u);
 });
 
 test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict binaire', () => {
-  assert.equal(
-    occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu),
-    2,
-  );
-  assert.equal(
-    occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu),
-    1,
-  );
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu), 2);
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu), 1);
   assert.match(workflow, /Execute real positive WebRTC mission and runtime RLS proof/u);
   assert.match(workflow, /Final independent OFF negotiation and data cleanliness proof/u);
   assert.match(workflow, /needs:\n      - certify\n      - cleanup\n      - evidence/u);

@@ -219,7 +219,8 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            sh apps/api/scripts/check-release-env.sh
+            env RELEASE_ENVIRONMENT=staging \
+              sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             env BOB_RELEASE_PHASE=predeploy \
@@ -300,7 +301,8 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            sh apps/api/scripts/check-release-env.sh
+            env RELEASE_ENVIRONMENT=staging \
+              sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             env BOB_RELEASE_PHASE=predeploy \
@@ -494,7 +496,8 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            sh apps/api/scripts/check-release-env.sh
+            env RELEASE_ENVIRONMENT=staging \
+              sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             env BOB_RELEASE_PHASE=predeploy \
