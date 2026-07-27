@@ -20,6 +20,11 @@ const OPENAI_WEBRTC_DELIVERIES = new Set([
   'openai-native-webrtc-v1',
   'audited-signed-url-v1',
 ]);
+const BOB_LIVE_AVAILABILITY_REASONS = new Set([
+  'disabled',
+  'not_entitled',
+  'entitlement_unavailable',
+]);
 const SCREEN_NAME = '/devis/new';
 const SCREEN_INSTANCE_ID = 'devis-new:m1b-staging';
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -235,12 +240,21 @@ function expectPositiveInteger(value, operation, allowZero = false) {
 }
 
 function expectConfig(config) {
+  if (record(config) === null) fail('Bob Live staging configuration response is invalid');
+  if (config.available !== true) {
+    const reason = BOB_LIVE_AVAILABILITY_REASONS.has(config.availabilityReason)
+      ? config.availabilityReason
+      : 'unknown';
+    fail(`Bob Live staging account is unavailable (reason=${reason})`);
+  }
+  if (config.transport !== 'webrtc') {
+    fail('Bob Live staging configuration uses an unsupported transport');
+  }
+  if (!OPENAI_WEBRTC_DELIVERIES.has(config.speechDelivery)) {
+    fail('Bob Live staging configuration uses an unsupported speech delivery');
+  }
   if (
-    record(config) === null
-    || config.available !== true
-    || config.transport !== 'webrtc'
-    || !OPENAI_WEBRTC_DELIVERIES.has(config.speechDelivery)
-    || typeof config.configVersion !== 'string'
+    typeof config.configVersion !== 'string'
     || config.configVersion.length < 1
     || typeof config.model !== 'string'
     || config.model.length < 1
@@ -248,9 +262,76 @@ function expectConfig(config) {
     || !Number.isSafeInteger(config.maxSessionSeconds)
     || config.maxSessionSeconds < 1
   ) {
-    fail('Bob Live staging is not an available OpenAI WebRTC configuration');
+    fail('Bob Live staging configuration contract is invalid');
   }
   return config;
+}
+
+async function readAuthenticatedApiJson(
+  config,
+  accessToken,
+  path,
+  dependencies,
+  operation,
+) {
+  const response = await fetchWithTimeout(
+    `${config.apiBaseUrl}${path}`,
+    {
+      method: 'GET',
+      headers: { authorization: `Bearer ${accessToken}` },
+    },
+    dependencies,
+    operation,
+  );
+  if (!response.ok) fail(`${operation} was refused`);
+  return readBoundedJson(response, operation);
+}
+
+/**
+ * Précondition réseau volontairement autonome : aucun package buildé ni installation pnpm.
+ * Le workflow l'exécute avant toute étape coûteuse afin qu'un compte mal provisionné ne soit
+ * découvert ni après un build, ni après un déploiement. Le résultat n'expose aucun identifiant.
+ */
+export async function preflightM1BStagingAccount(
+  environment = process.env,
+  dependencies = {},
+) {
+  const config = parseM1BStagingSmokeEnvironment(environment);
+  const authentication = typeof dependencies.authenticate === 'function'
+    ? await dependencies.authenticate(config)
+    : await authenticateM1BStagingAccount(config, dependencies);
+  if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
+    fail('staging authentication adapter returned no access token');
+  }
+  const accessToken = validateM1BStagingAccessToken(
+    authentication.accessToken,
+    config,
+    dependencies.now?.() ?? Date.now(),
+  );
+  const company = await readAuthenticatedApiJson(
+    config,
+    accessToken,
+    '/company/me',
+    dependencies,
+    'staging company preflight',
+  );
+  if (company.id !== config.companyId) {
+    fail('the authenticated API company does not match the dedicated account');
+  }
+  const realtime = expectConfig(await readAuthenticatedApiJson(
+    config,
+    accessToken,
+    '/voice/realtime/config',
+    dependencies,
+    'Bob Live staging preflight',
+  ));
+  return Object.freeze({
+    mode: 'preflight',
+    passed: true,
+    account: 'eligible',
+    transport: realtime.transport,
+    speechDelivery: realtime.speechDelivery,
+  });
 }
 
 function expectCall(call, config, sessionHandle) {
@@ -1068,13 +1149,16 @@ export async function runM1BStagingSmoke(
   environment = process.env,
   dependencies = {},
 ) {
+  if (command === 'preflight') {
+    return preflightM1BStagingAccount(environment, dependencies);
+  }
   if (command === 'negative') {
     return runM1BNegativeStagingSmoke(environment, dependencies);
   }
   if (command === 'positive') {
     return runM1BPositiveStagingSmoke(environment, dependencies);
   }
-  fail('expected command negative or positive');
+  fail('expected command preflight, negative or positive');
 }
 
 async function main() {

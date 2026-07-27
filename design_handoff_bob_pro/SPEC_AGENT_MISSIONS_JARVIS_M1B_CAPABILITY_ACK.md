@@ -558,8 +558,18 @@ Préconditions fail-closed :
   inscriptible, les quatre identités exactes, le rôle runtime non-superuser/sans `BYPASSRLS` et
   l'origine `SUPABASE_URL=https://<project-ref>.supabase.co` ; une simple paire cohérente mais
   pointant vers un autre projet est refusée ;
-- compte interne dédié, sans mission active ni brouillon de devis préexistant ; le harness refuse
-  de supprimer, préempter ou « nettoyer » une donnée qu'il n'a pas créée lui-même ;
+- compte interne dédié, provisionné par le vrai use case d'onboarding : `company_id` du JWT égal
+  à la société attendue, société ouverte, abonnement persistant actif autorisant `voice_live`,
+  réglages de facturation et dossiers initiaux présents, sans mission active ni brouillon de devis
+  préexistant. Le harness refuse de fabriquer cet entitlement, de supprimer, préempter ou
+  « nettoyer » une donnée qu'il n'a pas créée lui-même ;
+- immédiatement après la validation du SHA/inputs et l'installation du runtime Node — **avant**
+  installation des dépendances, build, déploiement Whisper ou mutation Railway — le workflow
+  s'authentifie réellement comme ce compte, revalide le JWT et la société puis exige que
+  `GET /voice/realtime/config` rende `available=true`, `transport=webrtc` et un mode OpenAI
+  supporté. Un refus publie seulement une cause bornée (`disabled`, `not_entitled`,
+  `entitlement_unavailable` ou contrat incompatible), jamais email, identifiant, token, modèle ou
+  secret, et termine le run en quelques secondes ;
 - Bob Live OpenAI, sa capacité et son auditeur Whisper Bob-managed privé déjà complets dans
   staging, ou livrés et certifiés par le même SHA candidat avant l'ouverture de la fenêtre
   positive. La fenêtre M1-B ne bascule pas le provider et ne remplace aucun secret Bob Live ;
@@ -668,8 +678,9 @@ Mutation Railway :
 Séquence :
 
 1. consigner SHA, environnement, acteur et heure de début ; vérifier que le checkout correspond
-   exactement au SHA demandé, puis prouver l'identité Supabase staging épinglée sous les deux
-   connexions et le déployeur runtime non-superuser ;
+   exactement au SHA demandé, puis exécuter le préflight réseau du compte dédié avant tout travail
+   coûteux ; prouver ensuite l'identité Supabase staging épinglée sous les deux connexions et le
+   déployeur runtime non-superuser ;
 2. déployer d'abord le SHA exact avec M1-B OFF, exécuter `predeploy`, attendre le deployment ID
    exact jusqu'à `SUCCESS`, puis prouver mono-réplique, readiness, SHA/environnement/capabilities
    et exécuter `postdeploy` ;
@@ -1014,6 +1025,10 @@ pour d'autres domaines.
       transcript.
 - [ ] Le health réel, les refus auth/route/taille et le round-trip OpenAI TTS → Whisper privé →
       canoniseur sont prouvés depuis staging sur les deployment IDs exacts avant le smoke M1-B.
+- [ ] Le compte technique staging est issu du provisioning normal, possède une société ouverte et
+      un abonnement DB actif autorisant `voice_live`; son préflight authentifié OpenAI WebRTC
+      s'exécute avant toute installation, build ou mutation/déploiement et rend une erreur bornée
+      sans PII lorsque cette précondition dérive.
 - [ ] Une fixture fidèle au WAV OpenAI réel (`RIFF=0xffffffff`, `data=0xffffffff`) est
       matérialisée avec les deux tailles finies exactes avant audit ; les échantillons sont
       byte-identiques et toutes les formes ambiguës, troncatures détectables au transport ou

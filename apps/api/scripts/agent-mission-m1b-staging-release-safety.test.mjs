@@ -79,6 +79,27 @@ test('workflow cible le SHA et les UUID sans relier le checkout ni changer de ba
   );
 });
 
+test('le compte Bob Live échoue avant toute installation, build ou mutation staging coûteuse', () => {
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs preflight/gu),
+    1,
+  );
+  const preflight = workflow.indexOf(
+    'node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight',
+  );
+  const install = workflow.indexOf('- name: Install deterministic release dependencies');
+  const build = workflow.indexOf('- name: Build the exact runtime and certify dedicated operators');
+  const whisper = workflow.indexOf('- name: Preflight and deploy the private Whisper auditor');
+  assert.ok(preflight > workflow.indexOf('node-version: 22.18.0'));
+  assert.ok(preflight < install);
+  assert.ok(preflight < build);
+  assert.ok(preflight < whisper);
+  assert.match(
+    workflow,
+    /SUPABASE_URL: "https:\/\/\$\{\{ vars\.BOB_M1B_STAGING_SUPABASE_PROJECT_REF \}\}\.supabase\.co"/u,
+  );
+});
+
 test('les trois déploiements API et le déploiement Whisper ont un ID exact', () => {
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=predeploy/gu), 3);
   assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=postdeploy/gu), 3);

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   authenticateM1BStagingAccount,
   parseM1BStagingSmokeEnvironment,
+  preflightM1BStagingAccount,
   runM1BNegativeStagingSmoke,
   runM1BPositiveStagingSmoke,
   validateM1BStagingAccessToken,
@@ -395,6 +396,83 @@ test('password grant Supabase utilise seulement la clé anon et vérifie le comp
   assert.equal(calls[0].init.redirect, 'error');
 });
 
+test('préflight réseau prouve le vrai tenant et Bob Live OpenAI avant le build sans exposer l’identité', async () => {
+  const calls = [];
+  const result = await preflightM1BStagingAccount(environment(), {
+    async fetch(url, init) {
+      calls.push({ url, init });
+      if (url.includes('/auth/v1/token')) {
+        return new Response(JSON.stringify({
+          access_token: token(),
+          user: {
+            id: USER_ID,
+            app_metadata: { company_id: COMPANY_ID },
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/company/me')) {
+        return new Response(JSON.stringify({ id: COMPANY_ID }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        available: true,
+        transport: 'webrtc',
+        speechDelivery: 'openai-native-webrtc-v1',
+        configVersion: 'bob-live-provider-neutral-v4',
+        model: 'gpt-realtime',
+        voice: 'marin',
+        maxSessionSeconds: 600,
+      }), { status: 200 });
+    },
+  });
+  assert.deepEqual(result, {
+    mode: 'preflight',
+    passed: true,
+    account: 'eligible',
+    transport: 'webrtc',
+    speechDelivery: 'openai-native-webrtc-v1',
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1].init.headers.authorization, `Bearer ${token()}`);
+  assert.equal(calls[2].init.headers.authorization, `Bearer ${token()}`);
+  assert.equal(JSON.stringify(result).includes(USER_ID), false);
+  assert.equal(JSON.stringify(result).includes(COMPANY_ID), false);
+});
+
+test('préflight réseau publie seulement la cause bornée d’un entitlement absent', async () => {
+  const responses = [
+    {
+      access_token: token(),
+      user: { id: USER_ID, app_metadata: { company_id: COMPANY_ID } },
+    },
+    { id: COMPANY_ID },
+    {
+      available: false,
+      availabilityReason: 'entitlement_unavailable',
+      transport: 'webrtc',
+      speechDelivery: 'openai-native-webrtc-v1',
+      configVersion: 'bob-live-provider-neutral-v4',
+      model: 'gpt-realtime',
+      voice: 'marin',
+      maxSessionSeconds: 600,
+    },
+  ];
+  let index = 0;
+  await assert.rejects(
+    preflightM1BStagingAccount(environment(), {
+      async fetch() {
+        return new Response(JSON.stringify(responses[index++]), { status: 200 });
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /reason=entitlement_unavailable/u);
+      assert.equal(error.message.includes(USER_ID), false);
+      assert.equal(error.message.includes(COMPANY_ID), false);
+      assert.equal(error.message.includes('m1b-staging@bob.test'), false);
+      return true;
+    },
+  );
+});
+
 test('preuve OFF établit une vraie session WebRTC avec capability Mission nulle', async () => {
   const fake = fakeDependencies({ agentMissionOff: true });
   const result = await runM1BNegativeStagingSmoke(environment(), fake.dependencies);
@@ -573,7 +651,7 @@ test('refuse Mistral et repolle uniquement la disparition transitoire de la leas
   });
   await assert.rejects(
     runM1BPositiveStagingSmoke(environment(), mistral.dependencies),
-    /not an available OpenAI WebRTC configuration/u,
+    /unsupported transport/u,
   );
 
   const pending = fakeDependencies({ finalEvidencePending: 2 });

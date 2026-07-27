@@ -168,6 +168,13 @@ jobs:
         with:
           node-version: 22.18.0
           cache: pnpm
+      - name: Fail fast on an ineligible staging account
+        env:
+          SUPABASE_URL: "https://${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}.supabase.co"
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight
       - name: Install deterministic release dependencies
         run: |
           sudo apt-get update
