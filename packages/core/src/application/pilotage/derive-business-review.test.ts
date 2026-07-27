@@ -6,7 +6,6 @@ import {
   type BusinessReviewInput,
   type BusinessReviewInvoiceData,
 } from './derive-business-review';
-import { type AgedBalanceInvoiceData } from '../clients/derive-aged-balance';
 import { type Totals } from '../../domain/billing/shared/totals';
 
 const TODAY = '2026-06-15';
