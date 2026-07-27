@@ -29,6 +29,7 @@ import { RelanceService } from './jobs/relance.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import type { Metrics } from './observability/metrics';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { renderPdfFixture } from './documents/pdf-fixtures.testing';
 
 // jose mocké (même politique que fiscal-calendar.test) : on teste le CONTRAT du guard sur les
 // nouveaux endpoints (JWT + tenant requis), pas la crypto — jwtVerify est piloté par chaque test.
@@ -47,7 +48,12 @@ beforeEach(() => {
   vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
 });
 
-function makeService(options?: { documentIntelligence?: DocumentIntelligencePort }) {
+function makeService(options?: {
+  documentIntelligence?: DocumentIntelligencePort;
+  /** PR-01 : un renderer RÉEL (fixture pdf-lib) quand le test a besoin d'archives complètes —
+   * l'envoi de facture joint le PDF ARCHIVÉ vérifié octet à octet (fail-closed sinon). */
+  pdfRenderer?: PdfRendererPort;
+}) {
   const p = new InMemoryPersistence();
   // Ce harness exerce des capacités Business : chaque tenant utilisé possède une ligne
   // d'abonnement explicite, comme après le provisioning réel. Aucun fallback du service.
@@ -104,7 +110,7 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
   const service = new BackendService(
     p,
     {} as PaymentGatewayPort,
-    {} as PdfRendererPort,
+    options?.pdfRenderer ?? ({} as PdfRendererPort),
     {} as OcrPort,
     admin,
     notificationDelivery,
@@ -1457,6 +1463,57 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       };
       expect(enqueued.kind).toBe('invoice-relance');
       expect(enqueued.dedupeKey).toBe(`invoice:${invoiceId}:relance:manual:${todayUtc()}`);
+      // Outbox stricte : l'e-mail n'est jamais livré dans la transaction de confirmation.
+      expect(notificationDelivery.tryDeliver).not.toHaveBeenCalled();
+    });
+  });
+
+  it("PR-01 — envoyer_facture traverse /ai/ask → /ai/confirm : l'e-mail confirmé part par l'outbox", async () => {
+    // Renderer RÉEL (fixture pdf-lib) : SendInvoice joint le PDF ARCHIVÉ vérifié octet à octet —
+    // sans archive complète, le use case refuse (fail-closed), ce test exige donc le vrai flux.
+    const { service, notificationDelivery, p } = makeService({
+      pdfRenderer: {
+        renderInvoice: vi.fn(async (data, facturX) =>
+          renderPdfFixture(`archive:${data.number}`, facturX?.xml),
+        ),
+        renderQuote: vi.fn(async (data) => renderPdfFixture(`quote:${data.number}`)),
+      },
+    });
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const { number } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100_000,
+        vatRate: 20,
+      });
+      // La fixture d'émission a déjà enfilé l'e-mail du devis : on repart d'une outbox vierge
+      // pour n'observer QUE le sortant de l'envoi de facture.
+      vi.mocked(notificationDelivery.enqueue).mockClear();
+
+      const proposed = await service.askBob({
+        message: `Envoie la facture ${number}`,
+        autonomy: 'confirm_all',
+      });
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      // Plancher sortant : TOUJOURS une proposition — rien ne part pendant le dry-run.
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({ tool: 'envoyer_facture' });
+      expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
+
+      const confirmed = await service.confirmBob({
+        proposalId: proposed.value.pending!.proposalId,
+      });
+
+      // C'était le QUADRUPLE blocage PR-01 : même proposé, /ai/confirm refusait envoyer_facture
+      // (absent de AGENT_OUTBOX_SAFE_TOOLS) alors que SendInvoice est outbox-committée.
+      expect(confirmed.ok).toBe(true);
+      expect(confirmed.ok && confirmed.value.card.title).toBe('Facture envoyée ✓');
+      expect(notificationDelivery.enqueue).toHaveBeenCalledOnce();
+      const enqueued = vi.mocked(notificationDelivery.enqueue).mock.calls[0]![0] as {
+        kind: string;
+      };
+      expect(enqueued.kind).toBe('invoice-delivery');
       // Outbox stricte : l'e-mail n'est jamais livré dans la transaction de confirmation.
       expect(notificationDelivery.tryDeliver).not.toHaveBeenCalled();
     });

@@ -39,6 +39,8 @@ import {
   SystemClock,
   parisDateOnly,
   deriveRelancePlan,
+  buildQuoteRelance,
+  quoteRelancePalierOf,
   ok,
   err,
   appConflict,
@@ -936,7 +938,11 @@ interface OwnedAgentProposal {
 //   RelanceService.sendRelanceForInvoice que POST /invoices/:id/relance : enqueue transactionnel
 //   (dedupeKey quotidienne) puis livraison par le worker — aucun réseau tiers dans la transaction.
 //   Couvert par le test /ai/ask → /ai/confirm de pont-serveur.test.ts.
-const AGENT_OUTBOX_SAFE_TOOLS = new Set(['envoyer_devis', 'envoyer_relance']);
+// · envoyer_facture (PR-01) — l'adapter agent (buildBobActions.sendInvoice) délègue au MÊME
+//   SendInvoice que POST /invoices/:id/send : outbox NotificationDelivery commitée dans la
+//   transaction (dedupeKey d'envoi, PDF archivé vérifié octet à octet), livraison par le worker
+//   idempotent — même patron audité que envoyer_devis. Aucun réseau tiers dans la transaction.
+const AGENT_OUTBOX_SAFE_TOOLS = new Set(['envoyer_devis', 'envoyer_relance', 'envoyer_facture']);
 const VOICE_AUDIO_MAX_BYTES = 8 * 1024 * 1024;
 const VOICE_AUDIO_MAX_BASE64_CHARS = Math.ceil(VOICE_AUDIO_MAX_BYTES / 3) * 4;
 const VOICE_AUDIO_MIME_TYPES = new Set([
@@ -3656,6 +3662,44 @@ export class BackendService {
         }
         return ok({ subject: entry.message.subject, body: entry.message.body });
       },
+      // PR-05 — relance_devis : brouillon LISIBLE au MÊME palier (quoteRelancePalierOf) et avec
+      // le MÊME message (buildQuoteRelance) que la carte Aujourd'hui, la fiche devis et le
+      // rappel cron — une seule dérivation. Lecture pure : l'aperçu SANS lien (le lien de
+      // signature frais n'existe qu'au partage/envoi réel, jamais fabriqué ici).
+      draftQuoteRelance: async (input) => {
+        const quote = await this.p.quotes.findById(input.quoteId);
+        if (!quote || quote.companyId !== this.companyId())
+          return err(appNotFound('quote', input.quoteId));
+        const customer = await this.p.customers.findById(quote.customerId);
+        if (!customer || customer.companyId !== this.companyId())
+          return err(appUnavailable('customer-reference'));
+        const reached = quoteRelancePalierOf(
+          { status: quote.status, issuedAt: quote.issuedAt },
+          this.businessToday(),
+        );
+        if (reached === null) {
+          return ok({
+            relanceable: false,
+            palier: null,
+            subject: 'Rien à relancer sur ce devis',
+            body: 'Ce devis n’est pas encore au palier de relance (J+15/J+30 après son envoi) — je ne relance pas pour rien.',
+          });
+        }
+        const message = buildQuoteRelance({
+          customerName: customer.name,
+          docNumber: quote.number ?? '',
+          amountCents: quote.totals().ttc,
+          daysSinceIssued: reached.daysSinceIssued,
+          // Même défaut que le plan de relances factures côté serveur (deriveRelancePlan).
+          personality: 'Pote',
+        });
+        return ok({
+          relanceable: true,
+          palier: reached.palier,
+          subject: message.subject,
+          body: message.body,
+        });
+      },
       listPayableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!inv.ok) return inv;
@@ -4212,6 +4256,47 @@ export class BackendService {
       // PR-01 (parité papa vocal) — envoyer_facture : MÊME use case SendInvoice que le bouton
       // mobile et POST /invoices/:id/send (gardes fail-closed restituées, refus actionnables).
       sendInvoice: async (input: { invoiceId: string }) => this.sendInvoice(input.invoiceId),
+      // PR-02 — marquer_facture_transmise : MÊME use case RecordInvoiceTransmission que
+      // PATCH /invoices/:id/transmission (pièce émise, acceptation ⊇ dépôt — invariants du
+      // domaine, relecture sous verrou, audit invoice.transmission_recorded).
+      recordInvoiceTransmission: async (input) => {
+        const r = await this.recordInvoiceTransmission(input);
+        if (!r.ok) return r;
+        return ok({
+          transmission: r.value.transmission
+            ? {
+                depositedAt: r.value.transmission.depositedAt,
+                acceptedAt: r.value.transmission.acceptedAt,
+              }
+            : null,
+        });
+      },
+      // PR-06 — réglages de relances : MÊME source CompanyBillingSettings que l'écran
+      // Réglages facturation et le cron (une seule vérité écran/voix/cron).
+      getRelanceSettings: async () => {
+        const settings = await this.getCompanyBillingSettings();
+        if (!settings.ok) return settings;
+        return ok({
+          relanceAutoEnabled: settings.value.relanceAutoEnabled,
+          relancePolicy: settings.value.relancePolicy,
+        });
+      },
+      // PR-06 — bascule des relances automatiques : MÊME chemin UpdateCompanyBillingSettings
+      // que l'écran (CAS sur la révision COURANTE relue ici — le geste vocal n'a pas de vue
+      // optimiste ; un conflit de révision est restitué, jamais forcé).
+      setRelanceAutoEnabled: async (input) => {
+        const settings = await this.getCompanyBillingSettings();
+        if (!settings.ok) return settings;
+        const updated = await this.updateCompanyBillingSettings({
+          expectedRevision: settings.value.revision,
+          patch: { relanceAutoEnabled: input.enabled },
+        });
+        if (!updated.ok) return updated;
+        return ok({
+          relanceAutoEnabled: updated.value.relanceAutoEnabled,
+          relancePolicy: updated.value.relancePolicy,
+        });
+      },
       issueInvoice: async (input) =>
         this.issueInvoice({
           invoiceId: input.invoiceId,
@@ -4920,6 +5005,41 @@ export class BackendService {
             ok: false,
             error: appForbidden(blocked.reason ?? 'Action refusée par la policy.'),
           };
+        // PR-04 — refus « BC obligatoire » à la confirmation HTTP : MÊME parcours de rattrapage
+        // que BobAgent.confirm local (message du domaine verbatim + les deux chemins réels,
+        // saisir le BC d'abord, l'override responsabilisé en second) — jamais une erreur brute.
+        if (
+          planned.length === 1
+          && planned[0]!.tool === 'emettre_facture'
+          && typeof blocked.reason === 'string'
+        ) {
+          const poMessage =
+            /^domain:PURCHASE_ORDER_REQUIRED\s+([\s\S]+)$/.exec(blocked.reason)?.[1] ?? null;
+          if (poMessage !== null) {
+            const rawInvoiceId = planned[0]!.args.invoiceId;
+            const invoiceRef = typeof rawInvoiceId === 'string' ? rawInvoiceId : 'brouillon';
+            return ok({
+              kind: 'answer',
+              intent: 'emettre_facture',
+              model: 'agent-runtime',
+              plan: [
+                'Restituer le refus « bon de commande obligatoire »',
+                'Proposer le rattrapage : saisir le BC, ou émettre sans (tracé)',
+              ],
+              card: {
+                title: 'Bon de commande obligatoire — rien n’a été émis',
+                body: poMessage.trim(),
+              },
+              choices: [
+                { label: 'Saisir le bon de commande', value: 'Ajoute un bon de commande au devis' },
+                {
+                  label: 'Émettre sans BC (risque tracé)',
+                  value: `Émets la facture ${invoiceRef} sans bon de commande`,
+                },
+              ],
+            });
+          }
+        }
         // B1/B2/B4 — refus du DOMAINE sur un outil de facturation terrain (garde-fou pro
         // étranger B6, urgence b2c A3bis, cumul de situations, plafond L441-10) : restitution
         // HONNÊTE du message — MÊME carte que BobAgent.confirm local et mêmes messages que
@@ -4971,7 +5091,89 @@ export class BackendService {
       const paymentTermsOutcome = record.outcomes.find(
         (outcome) => outcome.tool === 'definir_conditions_paiement' && outcome.status === 'executed',
       );
+      // PR-01/02/06 — nouveaux maillons de la vague Encaisser : mêmes cartes que le local.
+      const invoiceSendOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'envoyer_facture' && outcome.status === 'executed',
+      );
+      const invoiceIssueOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'emettre_facture' && outcome.status === 'executed',
+      );
+      const transmissionOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'marquer_facture_transmise' && outcome.status === 'executed',
+      );
+      const relanceAutoOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'regler_relances_auto' && outcome.status === 'executed',
+      );
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
+      if (!isBatch && invoiceSendOutcome) {
+        // PR-01 — MÊME carte que BobAgent.confirm local : l'e-mail part par l'outbox.
+        return ok({
+          kind: 'done',
+          intent: 'envoyer_facture',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Facture envoyée ✓',
+            body: `${planned[0]!.label} — c’est parti (lien de consultation + PDF joint).`,
+          },
+        });
+      }
+      if (!isBatch && transmissionOutcome) {
+        // PR-02 — le suivi déclaré est soldé ; rien n'est parti vers le client.
+        return ok({
+          kind: 'done',
+          intent: 'declarer_transmission',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Transmission notée ✓',
+            body: `${planned[0]!.label} — le suivi est à jour. Rien n’a été envoyé au client.`,
+          },
+        });
+      }
+      if (!isBatch && relanceAutoOutcome) {
+        // PR-06 — l'état RÉEL retourné par le réglage, même carte que le local.
+        const enabled = relanceAutoOutcome.result?.relanceAutoEnabled === true;
+        return ok({
+          kind: 'done',
+          intent: 'cadence_relances',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: enabled ? 'Relances automatiques activées ✓' : 'Relances automatiques coupées ✓',
+            body: enabled
+              ? `${planned[0]!.label} — c’est fait. Les relances repartiront au rythme de ta cadence ; la mise en demeure reste soumise à ta validation.`
+              : `${planned[0]!.label} — c’est fait. Plus aucune relance ne partira toute seule ; la relance manuelle reste possible.`,
+          },
+        });
+      }
+      if (!isBatch && invoiceIssueOutcome) {
+        // PR-01 — ENCHAÎNEMENT émission → envoi, comme BobAgent.confirm local : l'écran affiche
+        // le bouton d'envoi au même moment, la voix propose le même geste (commande canonique,
+        // flux envoyer_facture confirmé — jamais un envoi silencieux).
+        const numberRaw = invoiceIssueOutcome.result?.number;
+        const numberRef = typeof numberRaw === 'string' && numberRaw.length > 0 ? numberRaw : null;
+        return ok({
+          kind: 'done',
+          intent: 'emettre_facture',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Facture émise ✓',
+            body:
+              `${planned[0]!.label} — c’est émis${numberRef !== null ? ` sous le numéro ${numberRef}` : ''}.`
+              + (numberRef !== null ? '\nJe l’envoie au client par e-mail (lien + PDF) ?' : ''),
+          },
+          ...(numberRef !== null
+            ? {
+                choices: [
+                  { label: 'Oui — envoie-la au client', value: `Envoie la facture ${numberRef}` },
+                ],
+                spokenPrompt: 'C’est émis. Je l’envoie au client par e-mail ?',
+              }
+            : {}),
+        });
+      }
       if (!isBatch && purchaseOrderOutcome) {
         // B8 — MÊME enchaînement que BobAgent.confirm : après le lien confirmé, la carte
         // propose la facture du devis (choices + spokenPrompt) depuis la projection publique
