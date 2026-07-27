@@ -5,6 +5,7 @@ import type { JournalEntry } from '@bob/ai';
 import {
   Company,
   Customer,
+  CustomerContact,
   Quote,
   Invoice,
   Document,
@@ -14,6 +15,7 @@ import {
   ChartOfAccounts,
   AccountingEntry,
   DocNumber,
+  type CustomerContactRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
@@ -125,7 +127,7 @@ function supplierMemoryId(companyId: string, key: string): string {
 type PersistedAggregateResult<T> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
-type PersistedAggregateKind = 'company' | 'customer' | 'payment' | 'fiscal-profile';
+type PersistedAggregateKind = 'company' | 'customer' | 'customer_contact' | 'payment' | 'fiscal-profile';
 
 /**
  * A row that exists in PostgreSQL but cannot satisfy the current domain invariants is corruption,
@@ -232,6 +234,72 @@ export class PrismaCustomerRepository implements CustomerRepository {
     await this.prisma
       .client()
       .customer.upsert({ where: { id: data.id }, create: data, update: data });
+  }
+}
+
+/** PR-09 — contacts multiples d'un client : lignes réhydratées par CustomerContact.of
+ *  (une ligne corrompue lève, jamais un contact difforme présenté à l'artisan). */
+export class PrismaCustomerContactRepository implements CustomerContactRepository {
+  constructor(private readonly prisma: PrismaService) {}
+  async findById(id: string): Promise<CustomerContact | null> {
+    const row = await this.prisma.client().customerContact.findUnique({ where: { id } });
+    if (!row) return null;
+    return requirePersistedAggregate(
+      'customer_contact',
+      row.id,
+      CustomerContact.of({
+        id: row.id,
+        companyId: row.companyId,
+        customerId: row.customerId,
+        label: row.label,
+        name: row.name,
+        email: row.email,
+        phone: row.phone,
+        revision: row.revision,
+      }),
+    );
+  }
+  async listByCustomer(companyId: string, customerId: string): Promise<CustomerContact[]> {
+    const rows = await this.prisma.client().customerContact.findMany({
+      where: { companyId, customerId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.map((row) =>
+      requirePersistedAggregate(
+        'customer_contact',
+        row.id,
+        CustomerContact.of({
+          id: row.id,
+          companyId: row.companyId,
+          customerId: row.customerId,
+          label: row.label,
+          name: row.name,
+          email: row.email,
+          phone: row.phone,
+          revision: row.revision,
+        }),
+      ),
+    );
+  }
+  async save(contact: CustomerContact): Promise<void> {
+    const props = contact.toProps();
+    const data = {
+      companyId: props.companyId,
+      customerId: props.customerId,
+      label: props.label,
+      name: props.name,
+      email: props.email ?? null,
+      phone: props.phone ?? null,
+      revision: props.revision ?? 1,
+    };
+    await this.prisma.client().customerContact.upsert({
+      where: { id: props.id },
+      create: { id: props.id, ...data },
+      update: data,
+    });
+  }
+  async deleteById(id: string): Promise<void> {
+    await this.prisma.client().customerContact.deleteMany({ where: { id } });
   }
 }
 

@@ -149,6 +149,8 @@ import type {
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
   PurchaseOrderMutationView,
+  CustomerContactView,
+  CustomerContactWriteInput,
 } from './client';
 import {
   decodeDocumentAnalysisForDocument,
@@ -621,6 +623,16 @@ function customerClientBody(
     ...(input.isSubcontractingBtp !== undefined
       ? { isSubcontractingBtp: input.isSubcontractingBtp }
       : {}),
+  };
+}
+
+/** PR-09 — allowlist réseau du contact client (création ET édition — même forme). */
+function customerContactBody(input: CustomerContactWriteInput): CustomerContactWriteInput {
+  return {
+    label: input.label,
+    name: input.name,
+    ...(input.email !== undefined ? { email: input.email } : {}),
+    ...(input.phone !== undefined ? { phone: input.phone } : {}),
   };
 }
 
@@ -3105,6 +3117,33 @@ export class HttpBobClient implements BobClient {
       'PATCH',
       `/customers/${encodeURIComponent(id)}`,
       customerClientBody(input),
+    );
+  }
+  // ── PR-09 — contacts multiples du client (mêmes use cases que la fiche, parité Local) ──
+  listCustomerContacts(customerId: string) {
+    return this.req<CustomerContactView[]>(
+      'GET',
+      `/customers/${encodeURIComponent(customerId)}/contacts`,
+    );
+  }
+  createCustomerContact(customerId: string, input: CustomerContactWriteInput) {
+    return this.req<CustomerContactView>(
+      'POST',
+      `/customers/${encodeURIComponent(customerId)}/contacts`,
+      customerContactBody(input),
+    );
+  }
+  updateCustomerContact(customerId: string, contactId: string, input: CustomerContactWriteInput) {
+    return this.req<CustomerContactView>(
+      'PATCH',
+      `/customers/${encodeURIComponent(customerId)}/contacts/${encodeURIComponent(contactId)}`,
+      customerContactBody(input),
+    );
+  }
+  deleteCustomerContact(customerId: string, contactId: string) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      `/customers/${encodeURIComponent(customerId)}/contacts/${encodeURIComponent(contactId)}`,
     );
   }
   // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——

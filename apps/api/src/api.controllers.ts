@@ -903,6 +903,53 @@ function parseChantierIdField(
   return value;
 }
 
+/** PR-09 — corps des créations/éditions de contact client : formes seulement (les invariants —
+ * longueurs, e-mail, normalisation — restent l'autorité de CustomerContact.of). */
+const CUSTOMER_CONTACT_FIELDS = new Set(['label', 'name', 'email', 'phone']);
+
+function parseCustomerContactBody(body: Record<string, unknown>): {
+  label: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!CUSTOMER_CONTACT_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const requiredText = (field: 'label' | 'name', max: number): string | null => {
+    const value = body[field];
+    if (typeof value !== 'string' || value.trim().length === 0 || value.length > max || hasControlCharacter(value)) {
+      issues.push({ field, message: `Texte requis (${max} caractères maximum).` });
+      return null;
+    }
+    return value;
+  };
+  const optionalText = (field: 'email' | 'phone', max: number): string | null | undefined => {
+    if (!(field in body)) return undefined;
+    const value = body[field];
+    if (value === null) return null;
+    if (typeof value !== 'string' || value.length > max || hasControlCharacter(value)) {
+      issues.push({ field, message: `Valeur invalide (${max} caractères maximum).` });
+      return undefined;
+    }
+    return value;
+  };
+  const label = requiredText('label', 80);
+  const name = requiredText('name', 160);
+  const email = optionalText('email', 320);
+  const phone = optionalText('phone', 40);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    label: label as string,
+    name: name as string,
+    ...(email !== undefined ? { email } : {}),
+    ...(phone !== undefined ? { phone } : {}),
+  };
+}
+
 /**
  * B1 — POST /invoices (facture DIRECTE sans devis signé) : mêmes contraintes de forme que les
  * lignes de devis (500 caractères, TVA du référentiel, 100 lignes max, plafond HT), remise de
@@ -2096,6 +2143,31 @@ export class CustomersController {
   async update(@Param('id') id: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
     return unwrap(await this.backend.updateCustomer(id, parseCustomerBody(body)));
+  }
+  // ── PR-09 — contacts multiples du client (label libre : demandeur, valideur, compta…) ──
+  @Get(':id/contacts')
+  async listContacts(@Param('id') id: string) {
+    return unwrap(await this.backend.listCustomerContacts(id));
+  }
+  @Post(':id/contacts')
+  async createContact(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createCustomerContact(id, parseCustomerContactBody(body)));
+  }
+  @Patch(':id/contacts/:contactId')
+  async updateContact(
+    @Param('id') id: string,
+    @Param('contactId') contactId: string,
+    @Body() body: unknown,
+  ) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.updateCustomerContact(id, contactId, parseCustomerContactBody(body)),
+    );
+  }
+  @Delete(':id/contacts/:contactId')
+  async deleteContact(@Param('id') id: string, @Param('contactId') contactId: string) {
+    return unwrap(await this.backend.deleteCustomerContact(id, contactId));
   }
 }
 

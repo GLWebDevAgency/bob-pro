@@ -160,6 +160,8 @@ export * from './application/clients/derive-customer-standings';
 export * from './application/clients/derive-aged-balance';
 export * from './application/clients/derive-customer-financial-metrics';
 export * from './application/clients/update-customer';
+export * from './application/clients/customer-contacts';
+export * from './domain/customer/customer-contact';
 export * from './application/quote-drafts/quote-draft-slot';
 export * from './application/ports/agent-mission-fingerprint';
 export * from './application/ports/agent-mission-repository';

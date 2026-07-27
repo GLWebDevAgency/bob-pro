@@ -170,6 +170,27 @@ export interface InvoiceView {
   chantierId?: string | null;
 }
 
+/** PR-09 — contact multiple d'un client (miroir de CustomerContactProps @bob/core). */
+export interface CustomerContactView {
+  id: string;
+  companyId: string;
+  customerId: string;
+  /** Rôle LIBRE (« Compta », « Valideur BC »…) — jamais une taxonomie codée. */
+  label: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  revision?: number;
+}
+
+/** PR-09 — corps d'écriture d'un contact (création ET édition : remplacement complet). */
+export interface CustomerContactWriteInput {
+  label: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+}
+
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
 export interface PaymentView {
   id: string;
@@ -1364,6 +1385,23 @@ export interface BobClient {
   /** Édition post-création (C13/C40 TODO partagé) — remplacement complet revalidé, mêmes champs
    * que la création (SIREN, adresse, contact… complétés depuis la fiche). */
   updateCustomer(id: string, input: UpdateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
+  // ── PR-09 — contacts multiples du client (label libre) : MÊMES use cases que la fiche.
+  // OPTIONNELLES (compat transports existants) — HttpBobClient et LocalBobClient les
+  // implémentent tous les deux (parité stricte). ──
+  listCustomerContacts?(customerId: string): Promise<Result<CustomerContactView[], AppError>>;
+  createCustomerContact?(
+    customerId: string,
+    input: CustomerContactWriteInput,
+  ): Promise<Result<CustomerContactView, AppError>>;
+  updateCustomerContact?(
+    customerId: string,
+    contactId: string,
+    input: CustomerContactWriteInput,
+  ): Promise<Result<CustomerContactView, AppError>>;
+  deleteCustomerContact?(
+    customerId: string,
+    contactId: string,
+  ): Promise<Result<{ deleted: true }, AppError>>;
   // —— Assistant Bob : autorité serveur unique, journal tenant-scoped ——
   /** POST /ai/ask : l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
    * append-only company-scoped). Le binaire mobile ne possède aucun cerveau de repli local. */

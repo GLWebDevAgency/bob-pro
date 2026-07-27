@@ -1363,6 +1363,113 @@ const legacyFr = {
     direct: '{termCap} : {name}',
   },
 
+  // ── PR-09 — carte « Contacts » de la fiche client (contacts multiples, label libre) ──
+  'contacts.title': {
+    pote: 'Contacts',
+    pro: 'Contacts',
+    direct: 'Contacts',
+  },
+  'contacts.hint': {
+    pote: 'Les personnes à joindre chez ce client : demandeur, valideur, compta… Choisis le destinataire au moment d’envoyer une pièce.',
+    pro: 'Les interlocuteurs de ce client (demandeur, valideur, comptabilité…). Le destinataire se choisit à l’envoi de chaque pièce.',
+    direct: 'Interlocuteurs du client. Destinataire choisi à l’envoi.',
+  },
+  'contacts.addCta': {
+    pote: '+ Ajouter',
+    pro: '+ Ajouter',
+    direct: '+ Ajouter',
+  },
+  'contacts.empty': {
+    pote: 'Aucun contact pour l’instant. Ajoute la compta ou le valideur : tu choisiras à qui envoyer chaque facture.',
+    pro: 'Aucun contact enregistré pour ce client.',
+    direct: 'Aucun contact.',
+  },
+  'contacts.dataError': {
+    pote: 'Impossible de charger les contacts — réessaie.',
+    pro: 'Les contacts n’ont pas pu être chargés. Réessayez.',
+    direct: 'Contacts indisponibles. Réessaie.',
+  },
+  'contacts.rowHint': {
+    pote: 'Toucher pour modifier, appui long pour supprimer',
+    pro: 'Toucher pour modifier, appui long pour supprimer',
+    direct: 'Toucher : modifier. Appui long : supprimer.',
+  },
+  'contacts.createTitle': {
+    pote: 'Nouveau contact',
+    pro: 'Nouveau contact',
+    direct: 'Nouveau contact',
+  },
+  'contacts.editTitle': {
+    pote: 'Modifier le contact',
+    pro: 'Modifier le contact',
+    direct: 'Modifier le contact',
+  },
+  'contacts.fieldLabel': {
+    pote: 'Rôle',
+    pro: 'Rôle',
+    direct: 'Rôle',
+  },
+  'contacts.fieldLabelPlaceholder': {
+    pote: 'Compta, valideur, gardien…',
+    pro: 'Comptabilité, valideur…',
+    direct: 'Compta, valideur…',
+  },
+  'contacts.fieldName': {
+    pote: 'Nom',
+    pro: 'Nom',
+    direct: 'Nom',
+  },
+  'contacts.fieldNamePlaceholder': {
+    pote: 'Mme Lefèvre',
+    pro: 'Nom du contact',
+    direct: 'Nom',
+  },
+  'contacts.fieldEmail': {
+    pote: 'E-mail (optionnel)',
+    pro: 'E-mail (facultatif)',
+    direct: 'E-mail (optionnel)',
+  },
+  'contacts.fieldEmailPlaceholder': {
+    pote: 'compta@client.fr',
+    pro: 'adresse@exemple.fr',
+    direct: 'compta@client.fr',
+  },
+  'contacts.fieldPhone': {
+    pote: 'Téléphone (optionnel)',
+    pro: 'Téléphone (facultatif)',
+    direct: 'Téléphone (optionnel)',
+  },
+  'contacts.fieldPhonePlaceholder': {
+    pote: '06 12 34 56 78',
+    pro: '06 12 34 56 78',
+    direct: '06 12 34 56 78',
+  },
+  'contacts.createCta': {
+    pote: 'Ajouter le contact',
+    pro: 'Ajouter le contact',
+    direct: 'Ajouter',
+  },
+  'contacts.saveCta': {
+    pote: 'Enregistrer',
+    pro: 'Enregistrer',
+    direct: 'Enregistrer',
+  },
+  'contacts.deleteCta': {
+    pote: 'Supprimer ce contact',
+    pro: 'Supprimer le contact',
+    direct: 'Supprimer',
+  },
+  'contacts.deleteConfirmTitle': {
+    pote: 'Supprimer le contact ?',
+    pro: 'Supprimer le contact',
+    direct: 'Supprimer ?',
+  },
+  'contacts.deleteConfirmBody': {
+    pote: '{name} disparaîtra des destinataires possibles. Les pièces déjà envoyées ne bougent pas.',
+    pro: '{name} ne sera plus proposé comme destinataire. Les envois passés restent inchangés.',
+    direct: '{name} retiré des destinataires. Envois passés inchangés.',
+  },
+
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
   'fiche.back': {
@@ -3307,6 +3414,33 @@ const legacyFr = {
     pote: 'Ton client reçoit un e-mail au nom de ta société, avec le lien de consultation et le PDF joint. Rien d’autre ne part.',
     pro: 'Votre client recevra un e-mail au nom de votre société, avec le lien de consultation et le PDF joint.',
     direct: 'E-mail au client : lien + PDF. Au nom de ta société.',
+  },
+  // PR-09 — choix du destinataire (contacts multiples du client) : le récap confirmé DIT
+  // l'adresse choisie ; « e-mail de la fiche client » reste le défaut honnête.
+  'facture.sendConfirmBodyTo': {
+    pote: 'J’envoie à {recipient} — e-mail au nom de ta société, lien de consultation + PDF joint. Rien d’autre ne part.',
+    pro: 'La facture sera envoyée à {recipient} au nom de votre société (lien de consultation + PDF joint).',
+    direct: 'Envoi à {recipient} : lien + PDF. Au nom de ta société.',
+  },
+  'facture.sendRecipientTitle': {
+    pote: 'À qui je l’envoie ?',
+    pro: 'Choisir le destinataire',
+    direct: 'Destinataire ?',
+  },
+  'facture.sendRecipientHint': {
+    pote: 'Choisis le contact — ou laisse l’e-mail de la fiche client. Rien ne part avant ta confirmation.',
+    pro: 'Sélectionnez un contact, ou conservez l’adresse de la fiche client. Aucun envoi avant confirmation.',
+    direct: 'Contact ou e-mail de la fiche. Confirmation ensuite.',
+  },
+  'facture.sendRecipientDefault': {
+    pote: 'E-mail de la fiche client',
+    pro: 'Adresse de la fiche client',
+    direct: 'E-mail de la fiche',
+  },
+  'facture.sendRecipientCta': {
+    pote: 'Continuer',
+    pro: 'Continuer',
+    direct: 'Continuer',
   },
   'facture.sendQueuedTitle': {
     pote: 'C’est parti !',

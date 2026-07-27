@@ -4035,10 +4035,78 @@ export class BobAgent {
             : {}),
         });
       }
-      const args = { invoiceId: invoice.id };
+      // PR-09 — destinataire dicté (« envoie la facture … à la compta ») : résolution contre le
+      // CARNET RÉEL du client de la pièce (jamais une adresse inventée). Capacité optionnelle :
+      // sans elle, le repli reste l'e-mail de la fiche client (comportement PR-01 inchangé).
+      let recipient: { label: string; name: string; email: string } | null = null;
+      const listRecipients = this.deps.actions.listInvoiceRecipientContacts?.bind(this.deps.actions);
+      if (listRecipients) {
+        const contactsResult = await listRecipients({ invoiceId: invoice.id });
+        if (contactsResult.ok && contactsResult.value.length > 0) {
+          const conversationTokens = new Set(
+            normalized(`${message} ${reference ?? ''}`)
+              .split(/[^a-z0-9]+/)
+              .filter((word) => word.length >= 3),
+          );
+          const customerTokens = new Set(significantNameWords(normalized(invoice.customerName)));
+          const matched = contactsResult.value.filter((contact) => {
+            if (contact.email === null) return false;
+            const labelTokens = destinationNameTokens(contact.label);
+            const nameTokens = destinationNameTokens(contact.name);
+            const byLabel =
+              labelTokens.length > 0 && labelTokens.every((word) => conversationTokens.has(word));
+            const byName =
+              nameTokens.length > 0
+              && nameTokens.every((word) => conversationTokens.has(word))
+              // Un contact homonyme du CLIENT ne se déduit jamais du seul nom du client.
+              && !nameTokens.every((word) => customerTokens.has(word));
+            return byLabel || byName;
+          });
+          if (matched.length === 1) {
+            const chosen = matched[0]!;
+            recipient = { label: chosen.label, name: chosen.name, email: chosen.email! };
+          } else if (matched.length > 1) {
+            const options = matched.slice(0, 4);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Lever l’ambiguïté du destinataire'],
+              card: {
+                title: 'Quel destinataire ?',
+                body: `Plusieurs contacts de ${invoice.customerName} correspondent — à qui envoyer la facture ${invoice.number} ?`,
+              },
+              choices: options.map((contact) => ({
+                label: `${contact.label} — ${contact.name}`,
+                value: `Envoie la facture ${invoice.number} à ${contact.label} ${contact.name}`,
+              })),
+              ask: [
+                askToPick({
+                  id: 'envoyer_facture.destinataire',
+                  question: `À qui envoyer la facture ${invoice.number} ?`,
+                  header: 'Destinataire',
+                  items: options.map((contact) => ({
+                    value: contact.id,
+                    label: `${contact.label} — ${contact.name}`,
+                    ...(contact.email !== null ? { description: contact.email } : {}),
+                    followUp: `Envoie la facture ${invoice.number} à ${contact.label} ${contact.name}`,
+                  })),
+                }),
+              ],
+            });
+          }
+        }
+      }
+
+      const args = {
+        invoiceId: invoice.id,
+        ...(recipient !== null ? { recipientEmail: recipient.email } : {}),
+      };
       const parsed = tool.parse(args);
       if (!parsed.ok) return err(parsed.error);
-      const label = `Envoyer la facture ${invoice.number} à ${invoice.customerName} (reste dû ${formatEUR(invoice.remainingCents)})`;
+      const recipientNote =
+        recipient !== null ? ` — destinataire : ${recipient.label} ${recipient.name} (${recipient.email})` : '';
+      const label = `Envoyer la facture ${invoice.number} à ${invoice.customerName} (reste dû ${formatEUR(invoice.remainingCents)})${recipientNote}`;
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
           kind: 'proposed',
@@ -4047,7 +4115,7 @@ export class BobAgent {
           plan: ['Identifier la facture émise', 'Préparer l’e-mail (lien + PDF archivé)', 'Attendre ta confirmation'],
           card: {
             title: 'Envoi de facture à confirmer',
-            body: `${label}.\nE-mail au client avec le lien de consultation et le PDF joint — expéditeur : ta société. J’envoie ?`,
+            body: `${label}.\nE-mail ${recipient !== null ? `à ${recipient.email}` : 'au client'} avec le lien de consultation et le PDF joint — expéditeur : ta société. J’envoie ?`,
           },
           pending: { tool: tool.name, args, label },
           spokenPrompt: buildSpokenConfirmation(label),

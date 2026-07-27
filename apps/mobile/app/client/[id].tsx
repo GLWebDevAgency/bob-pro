@@ -99,6 +99,7 @@ import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-
 import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
 import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
+import { CustomerContactsCard } from '../../src/components/CustomerContactsCard';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -1491,6 +1492,11 @@ export default function ClientDetail() {
                       ))}
                     </Card>
                   )}
+                  {/* PR-09 — contacts multiples (demandeur, valideur, compta…) : le choix du
+                      destinataire à l'envoi d'une pièce vit dans la feuille d'envoi. */}
+                  {customer !== null && customerFresh ? (
+                    <CustomerContactsCard customerId={customer.id} />
+                  ) : null}
                   {/* B4 + canal : conditions de paiement (LegalHint L441-10) et « comment ce
                       client reçoit ses factures » — visibles uniquement sur données fraîches
                       (une édition sur snapshot périmé perdrait des faits). */}

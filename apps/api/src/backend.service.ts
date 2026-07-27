@@ -51,6 +51,11 @@ import {
   Company,
   Customer,
   UpdateCustomer,
+  ListCustomerContacts,
+  CreateCustomerContact,
+  UpdateCustomerContact,
+  DeleteCustomerContact,
+  type CustomerContactProps,
   Subscription,
   PLAN_CATALOG,
   ADDON_CATALOG,
@@ -4267,7 +4272,29 @@ export class BackendService {
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       // PR-01 (parité papa vocal) — envoyer_facture : MÊME use case SendInvoice que le bouton
       // mobile et POST /invoices/:id/send (gardes fail-closed restituées, refus actionnables).
-      sendInvoice: async (input: { invoiceId: string }) => this.sendInvoice(input.invoiceId),
+      // PR-09 — destinataire choisi (contact résolu par l'agent) : même champ recipientEmail
+      // que le corps HTTP, même resolveExplicitRecipientEmail au use case.
+      sendInvoice: async (input: { invoiceId: string; recipientEmail?: string }) =>
+        this.sendInvoice(
+          input.invoiceId,
+          input.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {},
+        ),
+      // PR-09 — matière de résolution du destinataire dicté : les contacts joignables du CLIENT
+      // de la pièce (MÊME lecture ListCustomerContacts que la fiche client — lecture pure).
+      listInvoiceRecipientContacts: async (input: { invoiceId: string }) => {
+        const invoice = await this.ownedInvoice(input.invoiceId);
+        if (!invoice) return err(appNotFound('invoice', input.invoiceId));
+        const contacts = await this.listCustomerContacts(invoice.customerId);
+        if (!contacts.ok) return contacts;
+        return ok(
+          contacts.value.map((contact) => ({
+            id: contact.id,
+            label: contact.label,
+            name: contact.name,
+            email: contact.email ?? null,
+          })),
+        );
+      },
       // PR-02 — marquer_facture_transmise : MÊME use case RecordInvoiceTransmission que
       // PATCH /invoices/:id/transmission (pièce émise, acceptation ⊇ dépôt — invariants du
       // domaine, relecture sous verrou, audit invoice.transmission_recorded).
@@ -9132,6 +9159,66 @@ export class BackendService {
       });
     });
     if (r.ok) this.logger.audit('customer.updated', { id, companyId });
+    return r;
+  }
+
+  // ── PR-09 — contacts multiples du client : MÊMES use cases purs pour l'UI et Bob
+  // (anti-IDOR fail-closed au core : client/contact prouvés dans le tenant). ──
+
+  listCustomerContacts(customerId: string): Promise<Result<CustomerContactProps[], AppError>> {
+    return new ListCustomerContacts({
+      contacts: this.p.customerContacts,
+      customers: this.p.customers,
+    }).execute({ companyId: this.companyId(), customerId });
+  }
+
+  async createCustomerContact(
+    customerId: string,
+    input: { label: string; name: string; email?: string | null; phone?: string | null },
+  ): Promise<Result<CustomerContactProps, AppError>> {
+    const r = await new CreateCustomerContact({
+      contacts: this.p.customerContacts,
+      customers: this.p.customers,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId(), customerId, ...input });
+    if (r.ok)
+      this.logger.audit('customer.contact_created', {
+        customerId,
+        contactId: r.value.id,
+      });
+    return r;
+  }
+
+  async updateCustomerContact(
+    customerId: string,
+    contactId: string,
+    input: { label: string; name: string; email?: string | null; phone?: string | null },
+  ): Promise<Result<CustomerContactProps, AppError>> {
+    // Cohérence de route : le contact édité doit appartenir AU client de l'URL (déjà scopé
+    // tenant par le use case) — une URL croisée client A / contact B est un not_found honnête.
+    const existing = await this.p.customerContacts.findById(contactId);
+    if (!existing || existing.companyId !== this.companyId() || existing.customerId !== customerId)
+      return err(appNotFound('customer_contact', contactId));
+    const r = await new UpdateCustomerContact({
+      contacts: this.p.customerContacts,
+      customers: this.p.customers,
+    }).execute({ companyId: this.companyId(), contactId, ...input });
+    if (r.ok) this.logger.audit('customer.contact_updated', { customerId, contactId });
+    return r;
+  }
+
+  async deleteCustomerContact(
+    customerId: string,
+    contactId: string,
+  ): Promise<Result<{ deleted: true }, AppError>> {
+    const existing = await this.p.customerContacts.findById(contactId);
+    if (!existing || existing.companyId !== this.companyId() || existing.customerId !== customerId)
+      return err(appNotFound('customer_contact', contactId));
+    const r = await new DeleteCustomerContact({
+      contacts: this.p.customerContacts,
+      customers: this.p.customers,
+    }).execute({ companyId: this.companyId(), contactId });
+    if (r.ok) this.logger.audit('customer.contact_deleted', { customerId, contactId });
     return r;
   }
 }

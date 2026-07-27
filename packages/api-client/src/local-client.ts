@@ -113,6 +113,10 @@ import {
   Company,
   Customer,
   UpdateCustomer,
+  ListCustomerContacts,
+  CreateCustomerContact,
+  UpdateCustomerContact,
+  DeleteCustomerContact,
   deriveRelancePlan,
   formatEUR,
   // PR-01 — destinataire explicite : la MÊME garde que SendInvoice serveur (parité d'adaptateurs).
@@ -205,6 +209,7 @@ import {
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
+  InMemoryCustomerContactRepository,
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
@@ -294,6 +299,8 @@ import type {
   AskBobClientInput,
   CreateCustomerClientInput,
   UpdateCustomerClientInput,
+  CustomerContactView,
+  CustomerContactWriteInput,
   SearchSalesDocumentsClientInput,
   ValueDigestView,
   TrialReportView,
@@ -513,6 +520,8 @@ export class LocalBobClient implements BobClient {
 
   private readonly companies = new InMemoryCompanyRepository();
   private readonly customers = new InMemoryCustomerRepository();
+  // PR-09 — carnet de contacts client local (mêmes use cases core que le serveur).
+  private readonly customerContacts = new InMemoryCustomerContactRepository();
   private readonly quotes = new InMemoryQuoteRepository();
   private readonly invoices = new InMemoryInvoiceRepository();
   private readonly payments = new InMemoryPaymentRepository();
@@ -2551,6 +2560,57 @@ export class LocalBobClient implements BobClient {
       companyId: this.companyId,
       ...input,
     });
+  }
+
+  // ── PR-09 — contacts multiples du client : MÊMES use cases core que l'API (parité). ──
+  async listCustomerContacts(customerId: string): Promise<Result<CustomerContactView[], AppError>> {
+    await this.ready;
+    return new ListCustomerContacts({
+      contacts: this.customerContacts,
+      customers: this.customers,
+    }).execute({ companyId: this.companyId, customerId });
+  }
+
+  async createCustomerContact(
+    customerId: string,
+    input: CustomerContactWriteInput,
+  ): Promise<Result<CustomerContactView, AppError>> {
+    await this.ready;
+    return new CreateCustomerContact({
+      contacts: this.customerContacts,
+      customers: this.customers,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId, customerId, ...input });
+  }
+
+  async updateCustomerContact(
+    customerId: string,
+    contactId: string,
+    input: CustomerContactWriteInput,
+  ): Promise<Result<CustomerContactView, AppError>> {
+    await this.ready;
+    // Cohérence de route : le contact édité doit appartenir AU client de l'URL (parité serveur).
+    const existing = await this.customerContacts.findById(contactId);
+    if (!existing || existing.companyId !== this.companyId || existing.customerId !== customerId)
+      return err(appNotFound('customer_contact', contactId));
+    return new UpdateCustomerContact({
+      contacts: this.customerContacts,
+      customers: this.customers,
+    }).execute({ companyId: this.companyId, contactId, ...input });
+  }
+
+  async deleteCustomerContact(
+    customerId: string,
+    contactId: string,
+  ): Promise<Result<{ deleted: true }, AppError>> {
+    await this.ready;
+    const existing = await this.customerContacts.findById(contactId);
+    if (!existing || existing.companyId !== this.companyId || existing.customerId !== customerId)
+      return err(appNotFound('customer_contact', contactId));
+    return new DeleteCustomerContact({
+      contacts: this.customerContacts,
+      customers: this.customers,
+    }).execute({ companyId: this.companyId, contactId });
   }
 
   async getCashflow(input: {

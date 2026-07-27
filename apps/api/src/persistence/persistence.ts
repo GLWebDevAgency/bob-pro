@@ -7,6 +7,7 @@ import type {
   CatalogueRepository,
   ChantierRepository,
   ChantierNoteRepository,
+  CustomerContactRepository,
   ChartOfAccountsRepository,
   CompanyRepository,
   Company,
@@ -111,6 +112,8 @@ export interface Persistence {
   billingSettings: CompanyBillingSettingsRepository;
   diagnosticAssessments: DiagnosticAssessmentRepository;
   customers: CustomerRepository;
+  /** PR-09 — carnet de contacts multiples des clients (label libre, e-mail/téléphone). */
+  customerContacts: CustomerContactRepository;
   quotes: ServerQuoteRepository;
   invoices: ServerInvoiceRepository;
   documents: DocumentRepository;

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Share, Text } from 'react-native';
+import { View, Share, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
@@ -23,6 +23,7 @@ import {
   useDeleteDraftInvoice,
   useScheduleEmbargoPayment,
   useSendInvoice,
+  useCustomerContacts,
   appErrorMessage,
 } from '../data/hooks';
 import {
@@ -1060,7 +1061,7 @@ export function InvoiceActions({
   const { busy, lock, run } = useActionLock(showError);
   const confirm = useConfirm();
   const client = useBobClient();
-  const { semantic, personality } = useTheme();
+  const { semantic, personality, colors: themeColors, theme } = useTheme();
   // Gates de l'émission (entreprise incomplète, conditions de paiement) — feuille locale unique.
   const [gate, setGate] = useState<GateSpec | null>(null);
   // Embargo L221-10 à l'ÉMISSION (l'acte qui rend la pièce opposable et permet le lien de
@@ -1076,6 +1077,12 @@ export function InvoiceActions({
   // PR-04 — refus « BC obligatoire » : message actionnable du domaine, feuille dédiée (CTA
   // « saisir le BC » d'abord, override confirmé et tracé ensuite).
   const [poGuardMessage, setPoGuardMessage] = useState<string | null>(null);
+  // PR-09 — choix du destinataire à l'ENVOI : contacts du client (e-mail présent) + repli
+  // « e-mail de la fiche client » (défaut). Sans aucun contact, le flux confirm existant
+  // reste inchangé au bit près (non-régression).
+  const contacts = useCustomerContacts(invoice.customerId);
+  const [recipientSheetOpen, setRecipientSheetOpen] = useState(false);
+  const [recipientEmail, setRecipientEmail] = useState<string | null>(null);
 
   const clearIssueDecision = (): void => {
     setIssueDecision(EMPTY_INVOICE_ISSUE_DECISION);
@@ -1403,17 +1410,28 @@ export function InvoiceActions({
     // PR-01 « Encaisser » — envoi EMAIL réel de la pièce émise (le trou n° 1 : émise jamais
     // transmise). Geste CONFIRMÉ (sortant vers un tiers) ; le résultat dit le VRAI destinataire
     // et le VRAI statut (« en file » ≠ « reçue » — deliveryStatus honnête, jamais fabriqué).
-    const sendByEmail = (): void =>
+    const emailedContacts = (contacts.data ?? []).filter(
+      (contact) => typeof contact.email === 'string' && contact.email.length > 0,
+    );
+    const confirmAndSend = (chosen: string | null): void =>
       void (async () => {
         const ok = await confirm({
           title: t('facture.sendConfirmTitle', { personality }),
-          message: t('facture.sendConfirmBody', { personality }),
+          message:
+            chosen !== null
+              ? t('facture.sendConfirmBodyTo', { personality, params: { recipient: chosen } })
+              : t('facture.sendConfirmBody', { personality }),
           challenge: challengeFor(OUTBOUND, 'confirm_all'),
         });
         if (!ok) return;
         await run('send', async () => {
           try {
-            const out = await sendInvoice.mutateAsync({ invoiceId: invoice.id });
+            const out = await sendInvoice.mutateAsync({
+              invoiceId: invoice.id,
+              // PR-09 — contact choisi : prioritaire ; null = repli e-mail de la fiche client
+              // (résolution SendInvoice, refus actionnable si aucune adresse).
+              ...(chosen !== null ? { recipientEmail: chosen } : {}),
+            });
             showError(
               t('facture.sendQueuedTitle', { personality }),
               t(
@@ -1428,6 +1446,16 @@ export function InvoiceActions({
           }
         });
       })();
+    const sendByEmail = (): void => {
+      // PR-09 — des contacts joignables existent : le destinataire se CHOISIT (feuille dédiée) ;
+      // sans contact, comportement antérieur inchangé (confirm → e-mail de la fiche).
+      if (emailedContacts.length > 0) {
+        setRecipientEmail(null);
+        setRecipientSheetOpen(true);
+        return;
+      }
+      confirmAndSend(null);
+    };
     return (
       <>
       <View style={{ marginBottom: 8 }}>
@@ -1504,6 +1532,73 @@ export function InvoiceActions({
         </View>
         {creditNoteButton ? <View style={{ flex: 1 }}>{creditNoteButton}</View> : null}
       </View>
+      {/* ── PR-09 — choix du destinataire (contacts du client + e-mail de la fiche) : le
+           récap confirmé reste le SEUL point d'envoi — annuler = rien n'est parti. ── */}
+      <Sheet visible={recipientSheetOpen} onClose={() => setRecipientSheetOpen(false)}>
+        <Text style={[font('pageTitle'), { fontSize: 20, color: themeColors.ink900 }]}>
+          {t('facture.sendRecipientTitle', { personality })}
+        </Text>
+        <Text style={[font('sub'), { color: themeColors.slate500, lineHeight: 19, marginTop: 4, marginBottom: 12 }]}>
+          {t('facture.sendRecipientHint', { personality })}
+        </Text>
+        <View accessibilityRole="radiogroup" style={{ gap: 8 }}>
+          <Pressable
+            accessibilityRole="radio"
+            accessibilityLabel={t('facture.sendRecipientDefault', { personality })}
+            accessibilityState={{ selected: recipientEmail === null }}
+            onPress={() => setRecipientEmail(null)}
+            style={{
+              minHeight: 48,
+              borderRadius: 12,
+              borderWidth: recipientEmail === null ? 2 : 1,
+              borderColor: recipientEmail === null ? theme.ink : themeColors.lineSoft,
+              paddingHorizontal: 13,
+              justifyContent: 'center',
+            }}
+          >
+            <Text style={[font('sub', 600), { color: themeColors.ink800 }]}>
+              {t('facture.sendRecipientDefault', { personality })}
+            </Text>
+          </Pressable>
+          {emailedContacts.map((contact) => {
+            const selected = recipientEmail === contact.email;
+            return (
+              <Pressable
+                key={contact.id}
+                accessibilityRole="radio"
+                accessibilityLabel={`${contact.label} · ${contact.name} · ${contact.email ?? ''}`}
+                accessibilityState={{ selected }}
+                onPress={() => setRecipientEmail(contact.email ?? null)}
+                style={{
+                  minHeight: 48,
+                  borderRadius: 12,
+                  borderWidth: selected ? 2 : 1,
+                  borderColor: selected ? theme.ink : themeColors.lineSoft,
+                  paddingHorizontal: 13,
+                  paddingVertical: 9,
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={[font('sub', 600), { color: themeColors.ink800 }]} numberOfLines={1}>
+                  {contact.label} — {contact.name}
+                </Text>
+                <Text style={[font('meta'), { color: themeColors.slate400, marginTop: 2 }]} numberOfLines={1}>
+                  {contact.email}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <View style={{ marginTop: 16 }}>
+          <Button
+            title={t('facture.sendRecipientCta', { personality })}
+            onPress={() => {
+              setRecipientSheetOpen(false);
+              confirmAndSend(recipientEmail);
+            }}
+          />
+        </View>
+      </Sheet>
       {errorSheet}
       </>
     );

@@ -2,6 +2,7 @@ import type { Persistence } from '../persistence';
 import { PrismaService } from './prisma.service';
 import {
   PrismaCompanyRepository,
+  PrismaCustomerContactRepository,
   PrismaCustomerRepository,
   PrismaQuoteRepository,
   PrismaInvoiceRepository,
@@ -108,6 +109,7 @@ export class PrismaPersistence implements Persistence {
   readonly billingSettings: PrismaCompanyBillingSettingsRepository;
   readonly diagnosticAssessments: PrismaDiagnosticAssessmentRepository;
   readonly customers: PrismaCustomerRepository;
+  readonly customerContacts: PrismaCustomerContactRepository;
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
   readonly documents: PrismaDocumentRepository;
@@ -273,6 +275,7 @@ export class PrismaPersistence implements Persistence {
     this.billingSettings = new PrismaCompanyBillingSettingsRepository(prisma);
     this.diagnosticAssessments = new PrismaDiagnosticAssessmentRepository(prisma);
     this.customers = new PrismaCustomerRepository(prisma);
+    this.customerContacts = new PrismaCustomerContactRepository(prisma);
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
     this.documents = new PrismaDocumentRepository(prisma);

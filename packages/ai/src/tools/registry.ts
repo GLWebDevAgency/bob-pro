@@ -791,16 +791,31 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     const envoyerFacture: Tool<SendInvoiceActionInput, SendInvoiceActionOutput> = {
       name: 'envoyer_facture',
       description:
-        'Envoie RÉELLEMENT la facture ÉMISE au client par e-mail (lien de consultation + PDF joint, expéditeur = la société). Refus honnête si la pièce est un brouillon ou si le client n’a pas d’e-mail.',
+        'Envoie RÉELLEMENT la facture ÉMISE au client par e-mail (lien de consultation + PDF joint, expéditeur = la société). Destinataire optionnel : un contact du client résolu contre son carnet réel — sinon l’e-mail de la fiche client. Refus honnête si la pièce est un brouillon ou si aucune adresse n’existe.',
       mutating: true,
       outbound: true,
       compliance: 'medium',
       riskTier: 'outbound',
       parse: (raw): Result<SendInvoiceActionInput, AppError> => {
-        const r = raw as { invoiceId?: unknown };
+        const r = raw as { invoiceId?: unknown; recipientEmail?: unknown };
         if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
           return err(appValidation('invoiceId', 'Facture manquante.'));
-        return ok({ invoiceId: r.invoiceId });
+        // PR-09 — destinataire choisi : forme d'adresse minimale ici, la normalisation et le
+        // refus font autorité au use case (resolveExplicitRecipientEmail @bob/core).
+        if (r.recipientEmail !== undefined) {
+          if (
+            typeof r.recipientEmail !== 'string' ||
+            r.recipientEmail.trim().length === 0 ||
+            r.recipientEmail.length > 320 ||
+            !r.recipientEmail.includes('@') ||
+            hasAsciiControlCharacter(r.recipientEmail)
+          )
+            return err(appValidation('recipientEmail', 'Adresse du destinataire invalide.'));
+        }
+        return ok({
+          invoiceId: r.invoiceId,
+          ...(typeof r.recipientEmail === 'string' ? { recipientEmail: r.recipientEmail } : {}),
+        });
       },
       projectPublicResult: (output): ToolPublicResult => {
         if (output.deliveryStatus === 'queued' || output.deliveryStatus === 'sent') {

@@ -94,6 +94,7 @@ import {
   InMemoryDocumentArchiveJobRepository,
   InMemoryNotificationJobRepository,
   InMemoryDeviceRepository,
+  InMemoryCustomerContactRepository,
 } from './in-memory';
 
 /** Harness transactionnel explicite. Ce module est exclu du build API de production. */
@@ -104,6 +105,7 @@ export class InMemoryPersistence implements Persistence {
   readonly billingSettings = new InMemoryCompanyBillingSettingsRepository();
   readonly diagnosticAssessments = new InMemoryDiagnosticAssessmentRepository();
   readonly customers = new InMemoryCustomerRepository();
+  readonly customerContacts = new InMemoryCustomerContactRepository();
   readonly quotes = new InMemoryQuoteRepository();
   readonly invoices = new InMemoryInvoiceRepository();
   readonly documents = new InMemoryDocumentRepository();

@@ -327,6 +327,7 @@ model Company {
   closedAt                                    DateTime?
   closureReason                               String?
   customers                                   Customer[]
+  customerContacts                            CustomerContact[]
   quotes                                      Quote[]
   invoices                                    Invoice[]
   invoicePredecessors                         InvoicePredecessor[]
@@ -573,6 +574,7 @@ model Customer {
   chantiers                Chantier[]
   quotes                   Quote[]
   invoices                 Invoice[]
+  contacts                 CustomerContact[]
 
   @@unique([id, companyId], name: "uniq_customer_id_company", map: "uniq_customer_id_company")
   @@index([companyId])
@@ -586,6 +588,30 @@ model Customer {
   // en pensant combler un drift : `prisma migrate diff` l'ignore silencieusement (type non
   // modélisable), il n'est ni recréé ni supprimé par erreur.
   @@map("customers")
+}
+
+/// PR-09 — contacts multiples d'un client (exigence 1) : plusieurs personnes jointes par fiche
+/// (demandeur, valideur, compta…), rôle porté par un `label` LIBRE — aucune taxonomie codée.
+/// FK composite (customerId, companyId) anti-IDOR : jamais un contact pointant le client d'un
+/// autre tenant, même en cas de défaut applicatif. Les coordonnées historiques de la fiche
+/// (Customer.contactName/email) restent le défaut d'envoi ; les contacts s'y AJOUTENT.
+model CustomerContact {
+  id         String   @id
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  customerId String
+  customer   Customer @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  label      String
+  name       String
+  email      String?
+  phone      String?
+  revision   Int      @default(1)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([id, companyId], name: "uniq_customer_contact_id_company", map: "uniq_customer_contact_id_company")
+  @@index([companyId, customerId], map: "customer_contacts_company_customer_idx")
+  @@map("customer_contacts")
 }
 
 /// Catalogue tarifaire personnel du tenant. Aucun enregistrement n'est seedé en production :

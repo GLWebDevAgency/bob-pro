@@ -311,6 +311,22 @@ export interface SendRelanceActionOutput {
  * quelles (brouillon refusé, destinataire manquant = refus actionnable — jamais contournées). */
 export interface SendInvoiceActionInput {
   invoiceId: string;
+  /** PR-09 (additif) — destinataire choisi (contact du client) : adresse RÉSOLUE par l'agent
+   * contre le carnet réel (« à la compta ») — jamais dictée en aveugle ; absent = repli e-mail
+   * de la fiche client (résolution SendInvoice, refus actionnable si aucune adresse). */
+  recipientEmail?: string;
+}
+
+/** PR-09 — contact joignable d'un client, matière de résolution du destinataire dicté
+ * (« envoie la facture à la compta ») : la SEULE liste contre laquelle un rôle/nom dit se
+ * résout — jamais une adresse inventée par le LLM. */
+export interface InvoiceRecipientContact {
+  id: string;
+  /** Rôle LIBRE (« Compta », « Valideur BC »…). */
+  label: string;
+  name: string;
+  /** Null = contact sans e-mail (jamais proposé comme destinataire). */
+  email: string | null;
 }
 
 /** Outil relance_devis (PR-05) : brouillon LISIBLE de la relance d'un devis envoyé resté sans
@@ -676,6 +692,11 @@ export interface BobActions {
    * bouton (SendInvoice @bob/core — pièce émise uniquement, lien public + PDF archivé joint,
    * expéditeur perçu = la société). Sortant vers un tiers : confirmation du registre. */
   sendInvoice?(input: SendInvoiceActionInput): Promise<Result<SendInvoiceActionOutput, AppError>>;
+  /** PR-09 — contacts joignables du CLIENT d'une facture (résolution du destinataire dicté) :
+   * MÊME lecture ListCustomerContacts que la fiche client — lecture pure, capacité optionnelle. */
+  listInvoiceRecipientContacts?(input: {
+    invoiceId: string;
+  }): Promise<Result<InvoiceRecipientContact[], AppError>>;
   /** PR-05 — « relance le devis Durand » : brouillon LISIBLE au MÊME palier (quoteRelancePalierOf)
    * et avec le MÊME message (buildQuoteRelance @bob/core) que la carte Aujourd'hui/fiche devis.
    * Lecture pure — rien ne part ; hors palier = réponse honnête (relanceable:false). */

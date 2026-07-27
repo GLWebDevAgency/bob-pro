@@ -12,6 +12,7 @@ BEGIN
     'company_billing_settings',
     'company_diagnostic_assessments',
     'customers',
+    'customer_contacts',
     'quotes',
     'invoices',
     'invoice_predecessors',
@@ -129,6 +130,11 @@ CREATE POLICY company_diagnostic_assessment_update ON company_diagnostic_assessm
 
 DROP POLICY IF EXISTS tenant_isolation ON customers;
 CREATE POLICY tenant_isolation ON customers
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON customer_contacts;
+CREATE POLICY tenant_isolation ON customer_contacts
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

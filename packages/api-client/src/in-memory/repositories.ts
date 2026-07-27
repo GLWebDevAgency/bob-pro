@@ -10,6 +10,8 @@ import {
 import type {
   Company,
   Customer,
+  CustomerContact,
+  CustomerContactRepository,
   Payment,
   Chantier,
   CompanyRepository,
@@ -75,6 +77,25 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   }
   async save(c: Customer): Promise<void> {
     this.map.set(c.id, c);
+  }
+}
+
+/** PR-09 — carnet de contacts client local (mêmes contrats que l'adapter serveur). */
+export class InMemoryCustomerContactRepository implements CustomerContactRepository {
+  private readonly map = new Map<string, CustomerContact>();
+  async findById(id: string): Promise<CustomerContact | null> {
+    return this.map.get(id) ?? null;
+  }
+  async listByCustomer(companyId: string, customerId: string): Promise<CustomerContact[]> {
+    return [...this.map.values()].filter(
+      (contact) => contact.companyId === companyId && contact.customerId === customerId,
+    );
+  }
+  async save(contact: CustomerContact): Promise<void> {
+    this.map.set(contact.id, contact);
+  }
+  async deleteById(id: string): Promise<void> {
+    this.map.delete(id);
   }
 }
 

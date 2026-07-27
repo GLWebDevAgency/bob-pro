@@ -319,3 +319,75 @@ describe('envoyer_facture (PR-01) — refus du domaine restitués, cible honnêt
     expect(r.value.card.body).toContain('rien à envoyer');
   });
 });
+
+describe('envoyer_facture — destinataire dicté (PR-09, contacts multiples)', () => {
+  const contacts = [
+    { id: 'ct-compta', label: 'Compta', name: 'Mme Lefèvre', email: 'compta@durand.fr' },
+    { id: 'ct-valideur', label: 'Valideur', name: 'M. Riva', email: 'valideur@durand.fr' },
+    { id: 'ct-gardien', label: 'Gardien', name: 'M. Sans-Mail', email: null },
+  ];
+
+  it('« envoie la facture 2026-014 à la compta » : contact RÉSOLU contre le carnet réel, adresse dans la proposition', async () => {
+    const sends: unknown[] = [];
+    const agent = makeAgent({
+      sendInvoice: async (input) => {
+        sends.push(input);
+        return ok({ number: '2026-014', recipient: 'compta@durand.fr', deliveryStatus: 'queued' as const, jobId: 'j' });
+      },
+      listInvoiceRecipientContacts: async () => ok(contacts),
+    });
+    const proposed = await agent.ask('Envoie la facture 2026-014 à la compta');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    expect(proposed.value.pending?.args).toMatchObject({
+      invoiceId: 'inv-1',
+      recipientEmail: 'compta@durand.fr',
+    });
+    // Le récap DIT le destinataire choisi (jamais un envoi aveugle).
+    expect(proposed.value.pending?.label).toContain('compta@durand.fr');
+    expect(sends).toHaveLength(0);
+    const done = await agent.confirm(proposed.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(sends[0]).toMatchObject({ invoiceId: 'inv-1', recipientEmail: 'compta@durand.fr' });
+  });
+
+  it('repli honnête : aucun destinataire dit → e-mail de la fiche client (aucun recipientEmail forcé)', async () => {
+    const agent = makeAgent({
+      sendInvoice: async () =>
+        ok({ number: '2026-014', recipient: 'facturation@durand.fr', deliveryStatus: 'queued' as const, jobId: 'j' }),
+      listInvoiceRecipientContacts: async () => ok(contacts),
+    });
+    const proposed = await agent.ask('Envoie la facture 2026-014');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    expect(proposed.value.pending?.args).not.toHaveProperty('recipientEmail');
+  });
+
+  it('sans capacité hôte (carnet indisponible) : comportement PR-01 inchangé', async () => {
+    const agent = makeAgent({
+      sendInvoice: async () =>
+        ok({ number: '2026-014', recipient: 'facturation@durand.fr', deliveryStatus: 'queued' as const, jobId: 'j' }),
+    });
+    const proposed = await agent.ask('Envoie la facture 2026-014 à la compta');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    expect(proposed.value.pending?.args).not.toHaveProperty('recipientEmail');
+  });
+
+  it('un contact SANS e-mail n’est jamais résolu comme destinataire', async () => {
+    const agent = makeAgent({
+      sendInvoice: async () =>
+        ok({ number: '2026-014', recipient: 'facturation@durand.fr', deliveryStatus: 'queued' as const, jobId: 'j' }),
+      listInvoiceRecipientContacts: async () => ok(contacts),
+    });
+    const proposed = await agent.ask('Envoie la facture 2026-014 au gardien');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    // « gardien » ne matche aucun contact JOIGNABLE → repli fiche client, jamais une adresse nulle.
+    expect(proposed.value.kind).toBe('proposed');
+    expect(proposed.value.pending?.args).not.toHaveProperty('recipientEmail');
+  });
+});

@@ -13,6 +13,8 @@ import {
   type WorksiteMediaStorage,
   Company,
   type Customer,
+  type CustomerContact,
+  type CustomerContactRepository,
   Document,
   DocumentFolder,
   type DocumentFolderProps,
@@ -147,6 +149,25 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   }
   async save(c: Customer): Promise<void> {
     this.map.set(c.id, c);
+  }
+}
+
+/** PR-09 — double in-memory du carnet de contacts client (mêmes contrats que Prisma). */
+export class InMemoryCustomerContactRepository implements CustomerContactRepository {
+  private readonly map = new Map<string, CustomerContact>();
+  async findById(id: string): Promise<CustomerContact | null> {
+    return this.map.get(id) ?? null;
+  }
+  async listByCustomer(companyId: string, customerId: string): Promise<CustomerContact[]> {
+    return [...this.map.values()].filter(
+      (contact) => contact.companyId === companyId && contact.customerId === customerId,
+    );
+  }
+  async save(contact: CustomerContact): Promise<void> {
+    this.map.set(contact.id, contact);
+  }
+  async deleteById(id: string): Promise<void> {
+    this.map.delete(id);
   }
 }
 

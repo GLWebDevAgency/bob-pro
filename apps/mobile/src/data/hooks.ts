@@ -32,6 +32,7 @@ import type {
   AssignExpenseChantierClientInput,
   CreateCustomerClientInput,
   UpdateCustomerClientInput,
+  CustomerContactWriteInput,
   NotificationView,
   RegisterPaymentClientInput,
   RecordExpensePaymentClientInput,
@@ -759,6 +760,70 @@ export function useUpdateCustomer() {
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.customers }),
     onError: alertError,
+  });
+}
+
+// ── PR-09 — contacts multiples du client (fiche client + feuille d'envoi) ──
+
+export function useCustomerContacts(customerId: string | null) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['customer-contacts', customerId ?? ''],
+    enabled: customerId !== null && client.listCustomerContacts !== undefined,
+    queryFn: async () => {
+      if (customerId === null || client.listCustomerContacts === undefined) return [];
+      const r = await client.listCustomerContacts(customerId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useCreateCustomerContact(customerId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CustomerContactWriteInput) => {
+      if (client.createCustomerContact === undefined) {
+        throw { kind: 'unavailable', service: 'customer-contacts' };
+      }
+      const r = await client.createCustomerContact(customerId, input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['customer-contacts', customerId] }),
+  });
+}
+
+export function useUpdateCustomerContact(customerId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { contactId: string; patch: CustomerContactWriteInput }) => {
+      if (client.updateCustomerContact === undefined) {
+        throw { kind: 'unavailable', service: 'customer-contacts' };
+      }
+      const r = await client.updateCustomerContact(customerId, input.contactId, input.patch);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['customer-contacts', customerId] }),
+  });
+}
+
+export function useDeleteCustomerContact(customerId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contactId: string) => {
+      if (client.deleteCustomerContact === undefined) {
+        throw { kind: 'unavailable', service: 'customer-contacts' };
+      }
+      const r = await client.deleteCustomerContact(customerId, contactId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['customer-contacts', customerId] }),
   });
 }
 
