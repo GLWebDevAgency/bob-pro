@@ -8,9 +8,12 @@
 -- 20260727100100_pieces_chantier_scope_validate.
 --
 -- Le FIGEAGE post-émission d'invoices.chantierId (liste du trigger
--- invoices_legal_traceability) arrive avec PR-12b : redéfinition COMPLÈTE du trigger depuis sa
--- DERNIÈRE version en date (annexe errata n° 1 de la conception P1), writer N-1 rejoué sous
--- chaque état — jamais un corps périmé recopié ici.
+-- invoices_legal_traceability) est livré DANS CE TRAIN par
+-- 20260727120000_invoices_chantier_freeze (vigilance §7.7.2 : colonne invoices.* ⇒ trigger
+-- redéfini dans le même train, décision revue adversariale P1) : redéfinition COMPLÈTE depuis
+-- sa DERNIÈRE version en date (20260720010000) — jamais un corps périmé recopié. PR-12b
+-- (annexe errata n° 1) partira de cette nouvelle version et n'ajoutera plus que
+-- maintenanceContractId.
 --
 -- Index non-CONCURRENTLY ASSUMÉ et documenté (amélioration 8 de la conception) : volumétrie
 -- bêta faible + lock_timeout 5s posé. Règle de bascule : si au moment du déploiement une des
