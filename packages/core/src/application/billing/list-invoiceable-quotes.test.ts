@@ -91,6 +91,7 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
         totalTtcCents: 120000,
         depositPct: 30,
         depositInvoiced: false,
+        situationInvoiced: false,
         depositAvailable: false,
         depositUnavailableReason: expect.stringContaining('Factur-X EXTENDED'),
         purchaseOrder: PO,
@@ -133,6 +134,22 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
     const r = await usecase.execute({ companyId: 'co-1' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value[0]?.depositInvoiced).toBe(true);
+  });
+
+  it('signale une situation vivante (situationInvoiced) — brouillon compris, annulée jamais', async () => {
+    const living = makeEnv({
+      invoices: [invoice({ id: 'inv-sit', kind: 'situation', status: 'draft' })],
+    });
+    const r = await living.execute({ companyId: 'co-1' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value[0]?.situationInvoiced).toBe(true);
+
+    const cancelled = makeEnv({
+      invoices: [invoice({ id: 'inv-sit', kind: 'situation', status: 'cancelled' })],
+    });
+    const r2 = await cancelled.execute({ companyId: 'co-1' });
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.value[0]?.situationInvoiced).toBe(false);
   });
 
   it('tenant-scoped : les devis d’une autre société sont invisibles', async () => {

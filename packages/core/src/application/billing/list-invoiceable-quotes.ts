@@ -31,6 +31,10 @@ export interface InvoiceableQuoteView {
   totalTtcCents: number;
   depositPct: number | null;
   depositInvoiced: boolean;
+  /** Une SITUATION vivante existe déjà sur ce devis (brouillons compris — ils comptent au cumul
+   * serveur dès leur création ; annulées exclues). Nourrit le repli « Situation n°1 » de
+   * l'acompte pro : un « n°1 » ne se propose jamais quand une situation existe déjà. */
+  situationInvoiced: boolean;
   /** Faux pour B2B/B2G tant que la chaîne acompte → finale EXTENDED/PA n'est pas certifiée. */
   depositAvailable: boolean;
   /** Motif domaine affichable tel quel ; null quand l'acompte est disponible. */
@@ -107,6 +111,10 @@ export class ListInvoiceableQuotes {
             depositPct: q.depositPct,
             depositInvoiced: invoices.some(
               (i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled',
+            ),
+            // Même règle que hasLivingSituationSibling (mobile) : brouillons compris, annulées jamais.
+            situationInvoiced: invoices.some(
+              (i) => i.parentQuoteId === q.id && i.kind === 'situation' && i.status !== 'cancelled',
             ),
             depositAvailable: advancePath.ok,
             depositUnavailableReason: advancePath.ok
