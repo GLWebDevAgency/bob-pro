@@ -1,4 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { invoiceTransmissionReminderDedupeKey } from './reminder-dedupe-keys';
+export { invoiceTransmissionReminderDedupeKey, invoiceIdOfTransmissionReminderDedupeKey } from './reminder-dedupe-keys';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SystemClock, type Customer, type Invoice } from '@bob/core';
 import type { Persistence } from '../persistence/persistence';
@@ -24,17 +26,6 @@ import { ScheduledTenantDirectory } from './tenant-directory';
 
 const REMINDER_AFTER_DAYS = 2;
 const COMPANY_ID_PREFIX = 'company-';
-
-/** Clé de déduplication — SOURCE UNIQUE (même doctrine que embargoScheduledPaymentDedupeKey). */
-export function invoiceTransmissionReminderDedupeKey(invoiceId: string): string {
-  return `invoice:${invoiceId}:transmission-reminder`;
-}
-
-/** Inverse exacte — null pour toute autre clé (fail-closed). */
-export function invoiceIdOfTransmissionReminderDedupeKey(dedupeKey: string): string | null {
-  const match = /^invoice:(.+):transmission-reminder$/.exec(dedupeKey);
-  return match?.[1] ?? null;
-}
 
 const MS_PER_DAY = 86_400_000;
 

@@ -9,8 +9,10 @@ import {
   type DeliverableNotificationJob,
   type NotificationJob,
 } from '../persistence/notification-jobs';
-import { invoiceIdOfTransmissionReminderDedupeKey } from './transmission-reminder.service';
-import { quoteIdOfQuoteRelanceReminderDedupeKey } from './quote-followup.service';
+import {
+  invoiceIdOfTransmissionReminderDedupeKey,
+  quoteIdOfQuoteRelanceReminderDedupeKey,
+} from './reminder-dedupe-keys';
 import { NOTIFIER } from '../notifications/notifier';
 import { EXPO_PUSH, type ExpoPushService } from '../notifications/expo-push';
 import { AppLogger } from '../observability/logger';

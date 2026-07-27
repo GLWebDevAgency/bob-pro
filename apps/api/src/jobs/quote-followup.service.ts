@@ -1,4 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { quoteRelanceReminderDedupeKey } from './reminder-dedupe-keys';
+export { quoteRelanceReminderDedupeKey, quoteIdOfQuoteRelanceReminderDedupeKey } from './reminder-dedupe-keys';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   ExpireQuote,
@@ -29,17 +31,6 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  *     Extinction par l'état réel : signé/refusé/expiré n'est plus candidat, et une transition
  *     survenue entre l'enqueue et la livraison ANNULE le job (revalidation du worker).
  */
-
-/** Clé de déduplication PAR PALIER — SOURCE UNIQUE (doctrine embargoScheduledPaymentDedupeKey). */
-export function quoteRelanceReminderDedupeKey(quoteId: string, palier: QuoteRelancePalier): string {
-  return `quote:${quoteId}:relance-reminder:${palier}`;
-}
-
-/** Inverse exacte — null pour toute autre clé (fail-closed). */
-export function quoteIdOfQuoteRelanceReminderDedupeKey(dedupeKey: string): string | null {
-  const match = /^quote:(.+):relance-reminder:(j15|j30)$/.exec(dedupeKey);
-  return match?.[1] ?? null;
-}
 
 const COMPANY_ID_PREFIX = 'company-';
 
