@@ -36,7 +36,13 @@ import {
   font,
   useTheme,
 } from '@bob/ui';
-import { Company, formatSiret, tradeProfile, type InvoicePdfAccentColor } from '@bob/core';
+import {
+  Company,
+  formatSiret,
+  tradeProfile,
+  type CompanyRelancePolicy,
+  type InvoicePdfAccentColor,
+} from '@bob/core';
 import type { InvoiceView } from '@bob/api-client';
 import { useCompanyMe, useInvoices, useUpdateCompanyProfile } from '../src/data/hooks';
 import { useBillingPrefs } from '../src/data/billing-prefs';
@@ -80,6 +86,26 @@ const VALIDITY_PRESETS: readonly number[] = [15, 30, 45, 60];
 const DEPOSIT_PRESETS: readonly number[] = [0, 10, 20, 30, 40, 50];
 const PAYMENT_TERMS_PRESETS: readonly number[] = [15, 30, 45, 60];
 const ACCENT_ORDER: readonly InvoicePdfAccentColor[] = ['navy', 'green', 'purple', 'orange'];
+/** PR-06 — cadences PROPOSÉES (choix produit : presets cohérents plutôt que 4 champs libres —
+ * l'ordre strict est garanti par construction ; l'API accepte toute cadence valide).
+ * « Patiente » = le rythme Fly Services (J+15/J+30/J+45, MED proposée à J+60). */
+const RELANCE_CADENCE_PRESETS: readonly {
+  key: string;
+  labelKey: 'reglages.relanceCadenceDefault' | 'reglages.relanceCadenceSouple' | 'reglages.relanceCadencePatiente';
+  policy: CompanyRelancePolicy | null;
+}[] = [
+  { key: 'default', labelKey: 'reglages.relanceCadenceDefault', policy: null },
+  {
+    key: 'souple',
+    labelKey: 'reglages.relanceCadenceSouple',
+    policy: { cordialAfterDays: 7, neutreAfterDays: 15, fermeAfterDays: 25, miseEnDemeureAfterDays: 40 },
+  },
+  {
+    key: 'patiente',
+    labelKey: 'reglages.relanceCadencePatiente',
+    policy: { cordialAfterDays: 15, neutreAfterDays: 30, fermeAfterDays: 45, miseEnDemeureAfterDays: 60 },
+  },
+];
 
 export default function ReglagesFacturation() {
   const { colors, semantic, personality } = useTheme();
@@ -796,6 +822,63 @@ export default function ReglagesFacturation() {
               style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}
             >
               {t('reglages.defaultsNote', { personality })}
+            </Text>
+
+            {/* ── PR-06 — Relances : cadence paramétrable + interrupteur automatique.
+                La MED reste JAMAIS envoyée seule quel que soit le réglage (relance.medWarning). ── */}
+            <SectionHeader title={t('reglages.sectionRelances', { personality })} />
+            <Card style={{ marginBottom: 8 }}>
+              <SettingsToggle
+                title={t('reglages.relanceAutoTitle', { personality })}
+                subtitle={t('reglages.relanceAutoSubtitle', { personality })}
+                value={prefs.relanceAutoEnabled}
+                disabled={billingPrefs.isPending}
+                onChange={(next) => billingPrefs.update({ relanceAutoEnabled: next })}
+              />
+              <Text style={[font('sub'), { color: colors.slate500, marginTop: 14, marginBottom: 9 }]}>
+                {t('reglages.relanceCadenceLabel', { personality })}
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                {RELANCE_CADENCE_PRESETS.map((preset) => {
+                  const active =
+                    preset.policy === null
+                      ? prefs.relancePolicy === null
+                      : prefs.relancePolicy !== null &&
+                        prefs.relancePolicy.cordialAfterDays === preset.policy.cordialAfterDays &&
+                        prefs.relancePolicy.neutreAfterDays === preset.policy.neutreAfterDays &&
+                        prefs.relancePolicy.fermeAfterDays === preset.policy.fermeAfterDays &&
+                        prefs.relancePolicy.miseEnDemeureAfterDays ===
+                          preset.policy.miseEnDemeureAfterDays;
+                  return (
+                    <Chip
+                      key={preset.key}
+                      label={t(preset.labelKey, { personality })}
+                      active={active}
+                      onPress={
+                        billingPrefs.isPending
+                          ? undefined
+                          : () => billingPrefs.update({ relancePolicy: preset.policy })
+                      }
+                    />
+                  );
+                })}
+              </View>
+              <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17 }]}>
+                {t('reglages.relanceCadenceCurrent', {
+                  personality,
+                  params: {
+                    cordial: prefs.relancePolicy?.cordialAfterDays ?? 3,
+                    neutre: prefs.relancePolicy?.neutreAfterDays ?? 10,
+                    ferme: prefs.relancePolicy?.fermeAfterDays ?? 20,
+                    med: prefs.relancePolicy?.miseEnDemeureAfterDays ?? 30,
+                  },
+                })}
+              </Text>
+            </Card>
+            <Text
+              style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}
+            >
+              {t('reglages.relanceNote', { personality })}
             </Text>
 
             {/* ── Mon catalogue — les prestations et les prix, EN DESSOUS de tout ── */}

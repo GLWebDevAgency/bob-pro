@@ -214,6 +214,15 @@ const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
   'defaultQuoteValidityDays',
   'defaultDepositPercent',
   'defaultInvoicePaymentTermsDays',
+  // PR-06 — cadence de relance paramétrable + interrupteur des relances automatiques.
+  'relancePolicy',
+  'relanceAutoEnabled',
+]);
+const RELANCE_POLICY_FIELDS = new Set([
+  'cordialAfterDays',
+  'neutreAfterDays',
+  'fermeAfterDays',
+  'miseEnDemeureAfterDays',
 ]);
 const INVOICE_PDF_ACCENTS = new Set(['navy', 'green', 'purple', 'orange']);
 const BIC_PATTERN = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/;
@@ -2436,6 +2445,49 @@ export class CompanyLookupController {
         message: 'Entier entre 1 et 60, ou null, requis.',
       });
     }
+    // PR-06 — cadence : objet EXACT {4 seuils entiers} ou null (retour au défaut) ; la
+    // cohérence fine (bornes, ordre strict) reste l'autorité du core (validate...Patch).
+    let relancePolicy:
+      | {
+          cordialAfterDays: number;
+          neutreAfterDays: number;
+          fermeAfterDays: number;
+          miseEnDemeureAfterDays: number;
+        }
+      | null
+      | undefined;
+    if ('relancePolicy' in body) {
+      if (body.relancePolicy === null) {
+        relancePolicy = null;
+      } else if (!isJsonRecord(body.relancePolicy)) {
+        issues.push({ field: 'relancePolicy', message: 'Objet { 4 paliers } ou null requis.' });
+      } else {
+        const policy = body.relancePolicy;
+        const unknownPolicyField = Object.keys(policy).find((f) => !RELANCE_POLICY_FIELDS.has(f));
+        const missingPolicyField = [...RELANCE_POLICY_FIELDS].find((f) => !(f in policy));
+        if (
+          unknownPolicyField !== undefined ||
+          missingPolicyField !== undefined ||
+          [...RELANCE_POLICY_FIELDS].some((f) => !Number.isSafeInteger(policy[f]))
+        ) {
+          issues.push({
+            field: 'relancePolicy',
+            message:
+              'Cadence invalide ({ cordialAfterDays, neutreAfterDays, fermeAfterDays, miseEnDemeureAfterDays } entiers).',
+          });
+        } else {
+          relancePolicy = {
+            cordialAfterDays: policy.cordialAfterDays as number,
+            neutreAfterDays: policy.neutreAfterDays as number,
+            fermeAfterDays: policy.fermeAfterDays as number,
+            miseEnDemeureAfterDays: policy.miseEnDemeureAfterDays as number,
+          };
+        }
+      }
+    }
+    if ('relanceAutoEnabled' in body && typeof body.relanceAutoEnabled !== 'boolean') {
+      issues.push({ field: 'relanceAutoEnabled', message: 'Booléen requis.' });
+    }
     const patch = {
       ...('showRibOnInvoices' in body
         ? { showRibOnInvoices: body.showRibOnInvoices as boolean }
@@ -2456,6 +2508,10 @@ export class CompanyLookupController {
         ? {
             defaultInvoicePaymentTermsDays: body.defaultInvoicePaymentTermsDays as number | null,
           }
+        : {}),
+      ...(relancePolicy !== undefined ? { relancePolicy } : {}),
+      ...('relanceAutoEnabled' in body
+        ? { relanceAutoEnabled: body.relanceAutoEnabled as boolean }
         : {}),
     };
     if (Object.keys(patch).length === 0) {

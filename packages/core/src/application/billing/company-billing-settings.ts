@@ -4,6 +4,19 @@ import { err, ok, type DomainResult } from '../../shared-kernel/result';
 export type InvoicePdfAccentColor = 'navy' | 'green' | 'purple' | 'orange';
 
 /**
+ * PR-06 — cadence de relance PERSONNALISÉE de la société (mêmes champs que RelancePolicy du
+ * moteur @bob/core : J+n après l'échéance). Les QUATRE seuils vont ensemble (une politique
+ * partielle mélangée au défaut casserait l'escalade) et sont STRICTEMENT croissants — la mise
+ * en demeure reste JAMAIS envoyée seule, son seuil pilote uniquement le ton proposé.
+ */
+export interface CompanyRelancePolicy {
+  readonly cordialAfterDays: number;
+  readonly neutreAfterDays: number;
+  readonly fermeAfterDays: number;
+  readonly miseEnDemeureAfterDays: number;
+}
+
+/**
  * Réglages canoniques d'une société. Une instance provient toujours de PostgreSQL en production :
  * le mobile ne construit jamais de valeur de repli quand la lecture serveur échoue.
  */
@@ -17,6 +30,10 @@ export interface CompanyBillingSettings {
   readonly defaultDepositPercent: number;
   /** Null tant que le propriétaire n'a pas choisi ses conditions : aucune échéance implicite. */
   readonly defaultInvoicePaymentTermsDays: number | null;
+  /** PR-06 — cadence personnalisée ; null = DEFAULT_RELANCE_POLICY (J+3/J+10/J+20/J+30). */
+  readonly relancePolicy: CompanyRelancePolicy | null;
+  /** PR-06 — relances AUTOMATIQUES (cron) actives ; la relance manuelle reste toujours possible. */
+  readonly relanceAutoEnabled: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -29,6 +46,9 @@ export interface CompanyBillingSettingsPatch {
   readonly defaultDepositPercent?: number;
   /** `null` efface le choix ; l'émission redevient alors volontairement impossible. */
   readonly defaultInvoicePaymentTermsDays?: number | null;
+  /** PR-06 — `null` = retour à la cadence par défaut (les 4 seuils vont ensemble). */
+  readonly relancePolicy?: CompanyRelancePolicy | null;
+  readonly relanceAutoEnabled?: boolean;
 }
 
 export type CompanyBillingSettingsWriteResult =
@@ -102,6 +122,39 @@ export function validateCompanyBillingSettingsPatch(
       message: 'Le délai de paiement doit être compris entre 1 et 60 jours.',
     });
   }
+  // PR-06 — cadence personnalisée : 4 seuils ENSEMBLE, entiers 1..365, STRICTEMENT croissants
+  // (une escalade désordonnée enverrait la mise en demeure avant la relance ferme).
+  if (patch.relancePolicy !== undefined && patch.relancePolicy !== null) {
+    const policy = patch.relancePolicy;
+    const steps = [
+      policy.cordialAfterDays,
+      policy.neutreAfterDays,
+      policy.fermeAfterDays,
+      policy.miseEnDemeureAfterDays,
+    ];
+    if (steps.some((days) => !Number.isSafeInteger(days) || days < 1 || days > 365)) {
+      return err({
+        code: 'VALIDATION',
+        field: 'relancePolicy',
+        message: 'Chaque palier de relance doit être un entier entre 1 et 365 jours.',
+      });
+    }
+    if (!steps.every((days, index) => index === 0 || days > steps[index - 1]!)) {
+      return err({
+        code: 'VALIDATION',
+        field: 'relancePolicy',
+        message:
+          'Les paliers doivent être strictement croissants (cordial < neutre < ferme < mise en demeure).',
+      });
+    }
+  }
+  if (patch.relanceAutoEnabled !== undefined && typeof patch.relanceAutoEnabled !== 'boolean') {
+    return err({
+      code: 'VALIDATION',
+      field: 'relanceAutoEnabled',
+      message: 'Interrupteur de relance automatique invalide.',
+    });
+  }
   return ok({ ...patch });
 }
 
@@ -116,6 +169,8 @@ export function assertCompanyBillingSettings(settings: CompanyBillingSettings): 
     defaultQuoteValidityDays: settings.defaultQuoteValidityDays,
     defaultDepositPercent: settings.defaultDepositPercent,
     defaultInvoicePaymentTermsDays: settings.defaultInvoicePaymentTermsDays,
+    relancePolicy: settings.relancePolicy,
+    relanceAutoEnabled: settings.relanceAutoEnabled,
   });
   if (!validated.ok) {
     const field = 'field' in validated.error ? validated.error.field : 'unknown';

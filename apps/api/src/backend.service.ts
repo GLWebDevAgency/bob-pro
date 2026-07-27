@@ -1015,8 +1015,9 @@ function publicSignatureUrl(token: string): string {
 }
 
 /** Même origine durcie que `publicSignatureUrl` (sign-web) — route de VISUALISATION distincte
- *  (`/view/:token`, sans capacité de signature). */
-function publicDocumentViewUrl(token: string): string {
+ *  (`/view/:token`, sans capacité de signature). Exportée : le cron de relances (PR-06) insère
+ *  LE MÊME lien public dans ses e-mails — une seule recette d'URL, jamais deux. */
+export function publicDocumentViewUrl(token: string): string {
   return signWebPublicUrl('view', token);
 }
 

@@ -389,6 +389,15 @@ model CompanyBillingSettings {
   defaultDepositPercent          Int                   @default(30)
   /// Null jusqu'au choix explicite du propriétaire : l'émission ne suppose jamais 30 jours.
   defaultInvoicePaymentTermsDays Int?
+  /// PR-06 — cadence de relance PERSONNALISÉE : les QUATRE seuils vont ensemble (CHECK SQL
+  /// company_billing_settings_relance_policy_shape : tous NULL = DEFAULT_RELANCE_POLICY, ou
+  /// tous non NULL strictement croissants, 1..365). La MED reste jamais envoyée seule.
+  relanceCordialAfterDays        Int?
+  relanceNeutreAfterDays         Int?
+  relanceFermeAfterDays          Int?
+  relanceMiseEnDemeureAfterDays  Int?
+  /// PR-06 — relances AUTOMATIQUES (cron) actives ; le manuel reste toujours possible.
+  relanceAutoEnabled             Boolean               @default(true)
   revision                       Int                   @default(1)
   createdAt                      DateTime              @default(now()) @db.Timestamptz(6)
   updatedAt                      DateTime              @updatedAt @db.Timestamptz(6)

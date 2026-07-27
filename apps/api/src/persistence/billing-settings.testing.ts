@@ -13,6 +13,9 @@ const INITIAL_POLICY = {
   // Test harness uniquement : les scénarios historiques d'émission choisissent explicitement J+30.
   // La migration PostgreSQL de production laisse cette colonne à NULL.
   defaultInvoicePaymentTermsDays: 30,
+  // PR-06 : défauts de production — cadence DEFAULT_RELANCE_POLICY, relances auto actives.
+  relancePolicy: null,
+  relanceAutoEnabled: true,
 };
 
 function clone(value: CompanyBillingSettings): CompanyBillingSettings {

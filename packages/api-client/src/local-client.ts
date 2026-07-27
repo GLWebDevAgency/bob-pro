@@ -754,6 +754,9 @@ export class LocalBobClient implements BobClient {
       defaultQuoteValidityDays: 30,
       defaultDepositPercent: 30,
       defaultInvoicePaymentTermsDays: 30,
+      // PR-06 : parité serveur — cadence par défaut, relances auto actives.
+      relancePolicy: null,
+      relanceAutoEnabled: true,
       createdAt: settingsCreatedAt,
       updatedAt: settingsCreatedAt,
     };

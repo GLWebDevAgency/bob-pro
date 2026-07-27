@@ -188,6 +188,16 @@ export interface NotificationJobRepository {
     companyId: string,
     kind: NotificationJob['kind'],
   ): Promise<Array<{ dedupeKey: string; deliveredAt: string }>>;
+  /**
+   * PR-06 — lecture EXACTE par clé métier (dédup AVANT effet de bord) : le cron vérifie si un
+   * palier est déjà enfilé AVANT de préparer un lien public (sinon la rotation quotidienne
+   * invaliderait le lien déjà livré ET violerait l'immutabilité du payload sous la clé).
+   */
+  findByDedupeKey(
+    companyId: string,
+    kind: NotificationJob['kind'],
+    dedupeKey: string,
+  ): Promise<NotificationJob | null>;
   /** Snapshot temporel non paginé. `observedAt` sert seulement aux adaptateurs sans horloge DB. */
   previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview>;
   /** Marque lue (idempotent). null si le job n'existe pas dans le tenant courant. */

@@ -46,4 +46,34 @@ describe('company billing settings', () => {
       value: { defaultInvoicePaymentTermsDays: null },
     });
   });
+
+  // ── PR-06 — cadence de relance paramétrable ──
+
+  it('accepte une cadence valide (4 seuils strictement croissants) et son retrait (null = défaut)', () => {
+    const policy = {
+      cordialAfterDays: 15,
+      neutreAfterDays: 30,
+      fermeAfterDays: 45,
+      miseEnDemeureAfterDays: 60,
+    };
+    expect(validateCompanyBillingSettingsPatch({ relancePolicy: policy }).ok).toBe(true);
+    expect(validateCompanyBillingSettingsPatch({ relancePolicy: null }).ok).toBe(true);
+    expect(validateCompanyBillingSettingsPatch({ relanceAutoEnabled: false }).ok).toBe(true);
+  });
+
+  it.each([
+    // Ordre non strictement croissant : la MED partirait avant la relance ferme.
+    [{ cordialAfterDays: 15, neutreAfterDays: 30, fermeAfterDays: 45, miseEnDemeureAfterDays: 30 }],
+    [{ cordialAfterDays: 10, neutreAfterDays: 10, fermeAfterDays: 20, miseEnDemeureAfterDays: 30 }],
+    // Bornes : 0 et > 365 ne sont pas des cadences réelles.
+    [{ cordialAfterDays: 0, neutreAfterDays: 10, fermeAfterDays: 20, miseEnDemeureAfterDays: 30 }],
+    [{ cordialAfterDays: 3, neutreAfterDays: 10, fermeAfterDays: 20, miseEnDemeureAfterDays: 366 }],
+    [{ cordialAfterDays: 1.5, neutreAfterDays: 10, fermeAfterDays: 20, miseEnDemeureAfterDays: 30 }],
+  ])('refuse une cadence incohérente %#', (policy) => {
+    const result = validateCompanyBillingSettingsPatch({ relancePolicy: policy });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect('field' in result.error ? result.error.field : undefined).toBe('relancePolicy');
+    }
+  });
 });

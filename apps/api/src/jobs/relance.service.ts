@@ -1,6 +1,7 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
+  CreateDocumentViewLink,
   SystemClock,
   deriveRelancePlan,
   ok,
@@ -9,12 +10,14 @@ import {
   type Customer,
   type Invoice,
   type RelancePlanEntry,
+  type RelancePolicy,
   type Result,
 } from '@bob/core';
+import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import { AppLogger, requireTenant } from '../observability/logger';
-import { BackendService } from '../backend.service';
+import { BackendService, publicDocumentViewUrl } from '../backend.service';
 
 /** Port ÉTROIT de l'autorité d'abonnement vue par le cron — satisfait structurellement par
  *  BackendService (token DI), stubable en une ligne dans les tests (jamais tout le backend). */
@@ -65,14 +68,19 @@ export class RelanceService {
     void this.runRelances();
   }
 
-  /** Projections agrégats → moteur core (mêmes champs que les vues api-client du mobile). */
+  /** Projections agrégats → moteur core (mêmes champs que les vues api-client du mobile).
+   *  PR-06 : la cadence PERSONNALISÉE de la société (CompanyBillingSettings.relancePolicy) est
+   *  injectée dans le MÊME moteur deriveRelancePlan — le plan de l'écran, le cron et l'agent
+   *  escaladent à l'identique ; null = DEFAULT_RELANCE_POLICY inchangée. */
   private async planForCompany(
     companyId: string,
   ): Promise<{ plan: RelancePlanEntry[]; emails: Map<string, string | null> }> {
-    const [invoices, customers] = await Promise.all([
+    const [invoices, customers, settings] = await Promise.all([
       this.p.invoices.listByCompany(companyId),
       this.p.customers.listByCompany(companyId),
+      this.p.billingSettings.findByCompanyId(companyId),
     ]);
+    const policy: RelancePolicy | null = settings?.relancePolicy ?? null;
     const plan = deriveRelancePlan({
       invoices: invoices.map((i: Invoice) => ({
         id: i.id,
@@ -89,6 +97,7 @@ export class RelanceService {
       // qui l'écrasait envoyait L441-10 + 40 € à des particuliers — non-conformité corrigée.
       customers: customers.map((c: Customer) => ({ id: c.id, name: c.name, type: c.type })),
       today: this.clock.today(),
+      ...(policy !== null ? { policy } : {}),
     });
     const emails = new Map(customers.map((c) => [c.id, c.toProps().email ?? null]));
     return { plan, emails };
@@ -110,18 +119,79 @@ export class RelanceService {
       source === 'automatic'
         ? `invoice:${entry.invoiceId}:relance:auto:${RELANCE_POLICY_VERSION}:${entry.tone}`
         : `invoice:${entry.invoiceId}:relance:manual:${today}`;
-    const message = source === 'automatic' ? entry.automaticMessage : entry.message;
-    const job = await this.notificationDelivery.enqueue({
+    // PR-06 — dédup AVANT tout effet de bord : si la clé existe déjà, on ne prépare AUCUN
+    // nouveau lien (la rotation invaliderait le lien déjà livré au client) et on ne tente
+    // aucun ré-enqueue (le payload sous une clé est immuable).
+    const existing = await this.p.notificationJobs.findByDedupeKey(
       companyId,
-      kind: 'invoice-relance',
+      'invoice-relance',
       dedupeKey,
-      notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
-    });
-    if (job.status === 'done') return { jobId: job.id, status: 'done' }; // déjà relancée aujourd'hui (dédup)
-    if (job.notification === null)
-      return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
-    return { jobId: job.id, status: 'pending' };
+    );
+    if (existing !== null) {
+      return {
+        jobId: existing.id,
+        status: existing.status === 'done' ? 'done' : existing.status === 'failed' ? 'failed' : 'pending',
+      };
+    }
+    const message = source === 'automatic' ? entry.automaticMessage : entry.message;
+    // PR-06 — la facture VOYAGE avec chaque relance : lien public de consultation (le même
+    // createInvoiceViewLink que le bouton — préparé UNE fois par palier, juste avant l'enqueue).
+    // Échec de préparation du lien → la relance part SANS lien (mieux relancer sans lien que
+    // pas relancer), jamais un lien fabriqué.
+    let viewUrlLine = '';
+    try {
+      const link = await new CreateDocumentViewLink({
+        companies: this.p.companies,
+        quotes: this.p.quotes,
+        invoices: this.p.invoices,
+        publicAccessTokens: this.p.publicAccessTokens,
+        uow: this.p,
+        clock: this.clock,
+      }).execute({ kind: 'invoice', id: entry.invoiceId });
+      if (link.ok) {
+        viewUrlLine = `\n\nConsulter la facture : ${publicDocumentViewUrl(link.value.token)}`;
+      } else {
+        this.logger.audit('relance.view_link_skipped', { invoiceId: entry.invoiceId });
+      }
+    } catch {
+      // SIGN_WEB_BASE_URL absent (environnement de test) ou origine invalide : la relance part
+      // SANS lien — dégradation honnête, jamais une URL fabriquée.
+      this.logger.audit('relance.view_link_skipped', { invoiceId: entry.invoiceId });
+    }
+    try {
+      const job = await this.notificationDelivery.enqueue({
+        companyId,
+        kind: 'invoice-relance',
+        dedupeKey,
+        notification: {
+          channel: 'email',
+          to: email,
+          subject: message.subject,
+          body: `${message.body}${viewUrlLine}`,
+        },
+      });
+      if (job.status === 'done') return { jobId: job.id, status: 'done' }; // déjà relancée (dédup)
+      if (job.notification === null)
+        return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
+      return { jobId: job.id, status: 'pending' };
+    } catch (error) {
+      // Course (double cron/geste simultané) OU changement de cadence : la clé existe déjà avec
+      // un AUTRE payload. Une facture ne reçoit qu'UN message par palier — dédupliqué, honnête.
+      if (error instanceof NotificationDedupeConflictError) {
+        const winner = await this.p.notificationJobs.findByDedupeKey(
+          companyId,
+          'invoice-relance',
+          dedupeKey,
+        );
+        return {
+          jobId: winner?.id ?? 'deduplicated',
+          status: winner?.status === 'done' ? 'done' : 'pending',
+        };
+      }
+      throw error;
+    }
   }
+
 
   async runRelancesForCompany(
     companyId: string,
@@ -137,6 +207,16 @@ export class RelanceService {
         plan: entitlement.plan,
         feature: 'auto_dunning',
       });
+      return { scanned: 0, queued: 0, sent: 0, deduplicated: 0 };
+    }
+    // PR-06 — interrupteur SOCIÉTÉ des relances automatiques : OFF = le batch saute le tenant
+    // (audité, sans erreur) ; la relance MANUELLE (sendRelanceForInvoice) reste toujours
+    // possible — même doctrine que le gating de plan ci-dessus.
+    const settings = await this.p.runWithTenant(companyId, () =>
+      this.p.billingSettings.findByCompanyId(companyId),
+    );
+    if (settings !== null && !settings.relanceAutoEnabled) {
+      this.logger.audit('relances.skipped_disabled', { companyId });
       return { scanned: 0, queued: 0, sent: 0, deduplicated: 0 };
     }
     return this.p.runWithTenant(companyId, async () => {

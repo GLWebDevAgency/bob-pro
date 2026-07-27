@@ -18,6 +18,21 @@ function fromRow(row: CompanyBillingSettingsRow): CompanyBillingSettings {
     defaultQuoteValidityDays: row.defaultQuoteValidityDays,
     defaultDepositPercent: row.defaultDepositPercent,
     defaultInvoicePaymentTermsDays: row.defaultInvoicePaymentTermsDays,
+    // PR-06 : les QUATRE seuils vont ensemble (CHECK SQL) — une moitié seule serait une
+    // corruption, réhydratée « défaut » plutôt qu'une cadence incomplète inventée.
+    relancePolicy:
+      row.relanceCordialAfterDays !== null &&
+      row.relanceNeutreAfterDays !== null &&
+      row.relanceFermeAfterDays !== null &&
+      row.relanceMiseEnDemeureAfterDays !== null
+        ? {
+            cordialAfterDays: row.relanceCordialAfterDays,
+            neutreAfterDays: row.relanceNeutreAfterDays,
+            fermeAfterDays: row.relanceFermeAfterDays,
+            miseEnDemeureAfterDays: row.relanceMiseEnDemeureAfterDays,
+          }
+        : null,
+    relanceAutoEnabled: row.relanceAutoEnabled,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -53,6 +68,9 @@ export class PrismaCompanyBillingSettingsRepository implements CompanyBillingSet
     readonly expectedRevision: number;
     readonly patch: CompanyBillingSettingsPatch;
   }): Promise<CompanyBillingSettingsWriteResult> {
+    // PR-06 : `relancePolicy` est un OBJET du contrat core — il se projette sur les 4 colonnes
+    // (null = retour au défaut : les quatre repassent à NULL, atomiquement).
+    const { relancePolicy, ...flatPatch } = input.patch;
     const data: {
       showRibOnInvoices?: boolean;
       showInsuranceOnInvoices?: boolean;
@@ -60,10 +78,23 @@ export class PrismaCompanyBillingSettingsRepository implements CompanyBillingSet
       defaultQuoteValidityDays?: number;
       defaultDepositPercent?: number;
       defaultInvoicePaymentTermsDays?: number | null;
+      relanceAutoEnabled?: boolean;
+      relanceCordialAfterDays?: number | null;
+      relanceNeutreAfterDays?: number | null;
+      relanceFermeAfterDays?: number | null;
+      relanceMiseEnDemeureAfterDays?: number | null;
       revision: { increment: number };
       updatedAt: Date;
     } = {
-      ...input.patch,
+      ...flatPatch,
+      ...(relancePolicy !== undefined
+        ? {
+            relanceCordialAfterDays: relancePolicy?.cordialAfterDays ?? null,
+            relanceNeutreAfterDays: relancePolicy?.neutreAfterDays ?? null,
+            relanceFermeAfterDays: relancePolicy?.fermeAfterDays ?? null,
+            relanceMiseEnDemeureAfterDays: relancePolicy?.miseEnDemeureAfterDays ?? null,
+          }
+        : {}),
       revision: { increment: 1 },
       updatedAt: new Date(),
     };

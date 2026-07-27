@@ -157,7 +157,12 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   }
   async lockById(id: string): Promise<Quote | null> {
     const stored = this.map.get(id);
-    return stored ? Quote.rehydrate(stored.toSnapshot()) : null;
+    if (!stored) return null;
+    // Les FAKES de test (jobs) n'exposent pas toujours toSnapshot : ils passent par référence
+    // (double de test uniquement — les écritures métier réelles utilisent de vrais agrégats).
+    return typeof (stored as { toSnapshot?: unknown }).toSnapshot === 'function'
+      ? Quote.rehydrate(stored.toSnapshot())
+      : stored;
   }
   async lockForShareById(id: string): Promise<Quote | null> {
     return this.findById(id);
@@ -170,12 +175,25 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   }
 
   snapshot(): Map<string, Quote> {
-    return new Map([...this.map].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]));
+    // Même tolérance de FAKES (voir lockById) — un fake muté n'est pas restauré, documenté.
+    return new Map(
+      [...this.map].map(([id, quote]) => [
+        id,
+        typeof (quote as { toSnapshot?: unknown }).toSnapshot === 'function'
+          ? Quote.rehydrate(quote.toSnapshot())
+          : quote,
+      ]),
+    );
   }
 
   restore(snapshot: Map<string, Quote>): void {
     this.map = new Map(
-      [...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]),
+      [...snapshot].map(([id, quote]) => [
+        id,
+        typeof (quote as { toSnapshot?: unknown }).toSnapshot === 'function'
+          ? Quote.rehydrate(quote.toSnapshot())
+          : quote,
+      ]),
     );
   }
 }
@@ -184,15 +202,26 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   private readonly map = new Map<string, Invoice>();
 
   snapshot(): Map<string, Invoice> {
+    // Même tolérance de FAKES que les devis (double de test uniquement).
     return new Map(
-      [...this.map].map(([id, invoice]) => [id, Invoice.rehydrate(invoice.toSnapshot())]),
+      [...this.map].map(([id, invoice]) => [
+        id,
+        typeof (invoice as { toSnapshot?: unknown }).toSnapshot === 'function'
+          ? Invoice.rehydrate(invoice.toSnapshot())
+          : invoice,
+      ]),
     );
   }
 
   restore(snapshot: Map<string, Invoice>): void {
     this.map.clear();
     for (const [id, invoice] of snapshot) {
-      this.map.set(id, Invoice.rehydrate(invoice.toSnapshot()));
+      this.map.set(
+        id,
+        typeof (invoice as { toSnapshot?: unknown }).toSnapshot === 'function'
+          ? Invoice.rehydrate(invoice.toSnapshot())
+          : invoice,
+      );
     }
   }
 
@@ -202,8 +231,12 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   async lockById(id: string): Promise<Invoice | null> {
     // Mono-thread JS : pas de verrou réel ; on renvoie une COPIE (comme Prisma) pour isoler les
     // mutations jusqu'au save (pas de mutation en place de l'agrégat stocké en cas d'erreur).
+    // Même tolérance de FAKES que snapshot() (double de test uniquement).
     const stored = this.map.get(id);
-    return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
+    if (!stored) return null;
+    return typeof (stored as { toSnapshot?: unknown }).toSnapshot === 'function'
+      ? Invoice.rehydrate(stored.toSnapshot())
+      : stored;
   }
   async lockForShareById(id: string): Promise<Invoice | null> {
     return this.findById(id);
@@ -1143,6 +1176,20 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
         dedupeKey: job.dedupeKey,
         deliveredAt: job.providerAttemptedAt ?? job.updatedAt,
       }));
+  }
+
+  async findByDedupeKey(
+    companyId: string,
+    kind: NotificationJob['kind'],
+    dedupeKey: string,
+  ): Promise<NotificationJob | null> {
+    const job = [...this.map.values()].find(
+      (candidate) =>
+        candidate.companyId === companyId &&
+        candidate.kind === kind &&
+        candidate.dedupeKey === dedupeKey,
+    );
+    return job === undefined ? null : this.clone(job);
   }
 
   async previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview> {

@@ -3302,6 +3302,73 @@ const legacyFr = {
     pro: 'La facture sera déclarée transmise à la date du jour. Cette déclaration reste corrigeable.',
     direct: 'Déclarée partie aujourd’hui. Corrigeable.',
   },
+  // PR-06 — historique des relances de la pièce (filtre du fil serveur, statut honnête).
+  'facture.relanceHistoryTitle': {
+    pote: 'Relances',
+    pro: 'Relances',
+    direct: 'Relances',
+  },
+  'facture.relanceSent': {
+    pote: 'Envoyée',
+    pro: 'Envoyée',
+    direct: 'Envoyée',
+  },
+  'facture.relancePending': {
+    pote: 'En cours',
+    pro: 'En cours d’envoi',
+    direct: 'En cours',
+  },
+  'facture.relanceFailed': {
+    pote: 'Échec',
+    pro: 'Échec d’envoi',
+    direct: 'Échec',
+  },
+  // PR-06 — réglages : cadence de relance paramétrable + interrupteur automatique.
+  'reglages.sectionRelances': {
+    pote: 'Relances',
+    pro: 'Relances',
+    direct: 'Relances',
+  },
+  'reglages.relanceAutoTitle': {
+    pote: 'Relances automatiques',
+    pro: 'Relances automatiques',
+    direct: 'Relances auto',
+  },
+  'reglages.relanceAutoSubtitle': {
+    pote: 'Bob relance tes factures en retard tout seul (jamais la mise en demeure — elle attend toujours ton feu vert).',
+    pro: 'Les factures en retard sont relancées automatiquement. La mise en demeure reste soumise à votre validation.',
+    direct: 'Relances auto. MED toujours validée par toi.',
+  },
+  'reglages.relanceCadenceLabel': {
+    pote: 'Cadence des relances',
+    pro: 'Cadence des relances',
+    direct: 'Cadence',
+  },
+  'reglages.relanceCadenceDefault': {
+    pote: 'Réactive (défaut)',
+    pro: 'Réactive (par défaut)',
+    direct: 'Réactive',
+  },
+  'reglages.relanceCadenceSouple': {
+    pote: 'Souple',
+    pro: 'Souple',
+    direct: 'Souple',
+  },
+  'reglages.relanceCadencePatiente': {
+    pote: 'Patiente',
+    pro: 'Patiente',
+    direct: 'Patiente',
+  },
+  'reglages.relanceCadenceCurrent': {
+    pote: 'Rappels à J+{cordial}, J+{neutre} et J+{ferme} après l’échéance — mise en demeure proposée à J+{med}, jamais envoyée sans toi.',
+    pro: 'Rappels à J+{cordial}, J+{neutre} et J+{ferme} après l’échéance. Mise en demeure proposée à J+{med}, envoyée uniquement après validation.',
+    direct: 'J+{cordial} / J+{neutre} / J+{ferme}. MED proposée à J+{med}.',
+  },
+  'reglages.relanceNote': {
+    pote: 'Chaque relance embarque le lien de consultation de la facture — ton client règle en deux taps.',
+    pro: 'Chaque relance contient le lien de consultation de la facture concernée.',
+    direct: 'Le lien de la facture part avec chaque relance.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },

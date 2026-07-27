@@ -311,9 +311,31 @@ const COMPANY_BILLING_SETTINGS_FIELDS = [
   'defaultQuoteValidityDays',
   'defaultDepositPercent',
   'defaultInvoicePaymentTermsDays',
+  // PR-06 — cadence de relance paramétrable + interrupteur des relances automatiques.
+  'relancePolicy',
+  'relanceAutoEnabled',
   'createdAt',
   'updatedAt',
 ] as const;
+
+function isRelancePolicy(value: unknown): boolean {
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  const fields = [
+    'cordialAfterDays',
+    'neutreAfterDays',
+    'fermeAfterDays',
+    'miseEnDemeureAfterDays',
+  ] as const;
+  if (Object.keys(value).length !== fields.length) return false;
+  let previous = 0;
+  for (const field of fields) {
+    const days = value[field];
+    if (!isBoundedInteger(days, 1, 365) || days <= previous) return false;
+    previous = days;
+  }
+  return true;
+}
 
 function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | null {
   if (!isRecord(value) || !hasExactKeys(value, COMPANY_BILLING_SETTINGS_FIELDS)) return null;
@@ -328,6 +350,8 @@ function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | 
     !isBoundedInteger(value.defaultDepositPercent, 0, 100) ||
     (value.defaultInvoicePaymentTermsDays !== null &&
       !isBoundedInteger(value.defaultInvoicePaymentTermsDays, 1, 60)) ||
+    !isRelancePolicy(value.relancePolicy) ||
+    typeof value.relanceAutoEnabled !== 'boolean' ||
     !isCanonicalIsoTimestamp(value.createdAt) ||
     !isCanonicalIsoTimestamp(value.updatedAt) ||
     value.updatedAt < value.createdAt

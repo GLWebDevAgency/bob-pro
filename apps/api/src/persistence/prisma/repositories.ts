@@ -1875,6 +1875,17 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     }));
   }
 
+  async findByDedupeKey(
+    companyId: string,
+    kind: NotificationJob['kind'],
+    dedupeKey: string,
+  ): Promise<NotificationJob | null> {
+    const row = await this.prisma.client().notificationJob.findUnique({
+      where: { uniq_notification_job: { companyId, kind, dedupeKey } },
+    });
+    return row === null ? null : notificationJobRowToView(row);
+  }
+
   async previewUnread(companyId: string, _observedAt: string): Promise<NotificationUnreadPreview> {
     // Même statement, même horloge et même précision que notification_jobs.createdAt
     // (TIMESTAMP(3)). La borne est EXCLUSIVE : une insertion concurrente au même milliseconde

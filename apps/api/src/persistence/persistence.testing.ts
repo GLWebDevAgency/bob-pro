@@ -213,6 +213,16 @@ export class InMemoryPersistence implements Persistence {
     });
     await predecessor;
 
+    try {
+      return await this.runInTransactionUnderBarrier(fn);
+    } finally {
+      // Le verrou est TOUJOURS relâché — y compris quand une prise de snapshot lève (un fake de
+      // test incomplet ne doit jamais empoisonner la file des transactions suivantes).
+      release();
+    }
+  }
+
+  private async runInTransactionUnderBarrier<T>(fn: () => Promise<T>): Promise<T> {
     const snap = this.counters.snapshot();
     const companySnapshot = this.companies.snapshot();
     const subscriptionSnapshot = this.subscriptions.snapshot();
@@ -262,8 +272,6 @@ export class InMemoryPersistence implements Persistence {
       this.billingSettings.restore(billingSettingsSnapshot);
       this.diagnosticAssessments.restore(diagnosticAssessmentSnapshot);
       throw error;
-    } finally {
-      release();
     }
   }
 

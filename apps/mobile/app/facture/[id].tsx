@@ -25,10 +25,15 @@ import {
   useInvoiceAccountingPreview,
   useInvoicePaymentLink,
   useInvoices,
+  useNotificationsFeed,
   useQuotes,
   useRecordInvoiceTransmission,
   appErrorMessage,
 } from '../../src/data/hooks';
+import {
+  relanceHistoryForInvoice,
+  relanceHistoryStatusKey,
+} from '../../src/components/invoice-relance-history.logic';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
@@ -99,6 +104,12 @@ export default function FactureDetail() {
   const detachPo = useDetachInvoicePurchaseOrder();
   // PR-02 — déclaration « envoyée le » du canal email (le déclaratif chorus/portail existait déjà).
   const recordTransmission = useRecordInvoiceTransmission();
+  // PR-06 — historique des relances de CETTE facture = filtre du fil serveur (aucun état parallèle).
+  const notificationsFeed = useNotificationsFeed();
+  const relanceHistory = useMemo(
+    () => relanceHistoryForInvoice(notificationsFeed.items, id),
+    [notificationsFeed.items, id],
+  );
   const [poSheetOpen, setPoSheetOpen] = useState(false);
   const [poError, setPoError] = useState<string | null>(null);
   const poEditable =
@@ -639,6 +650,36 @@ export default function FactureDetail() {
                 variant="b2g"
               />
             </Pressable>
+          </Card>
+        ) : null}
+        {relanceHistory.length > 0 ? (
+          // PR-06 — « Relances » : ce que le fil serveur SAIT de cette pièce (jobs
+          // invoice-relance), statut honnête par ligne — jamais un envoi affirmé sans preuve.
+          <Card>
+            <SectionHeader title={t('facture.relanceHistoryTitle', { personality })} />
+            <View style={{ gap: 8 }}>
+              {relanceHistory.map((entry) => (
+                <View
+                  key={entry.id}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('sub', 600), { fontSize: 13.5, color: colors.ink800 }]} numberOfLines={1}>
+                      {entry.title}
+                    </Text>
+                    <Text style={[font('meta', 500), { fontSize: 12, color: colors.slate400, marginTop: 1 }]}>
+                      {formatDateOnlyFr(entry.createdAt.slice(0, 10))}
+                    </Text>
+                  </View>
+                  <StatusBadge
+                    label={t(relanceHistoryStatusKey(entry.status), { personality })}
+                    variant={
+                      entry.status === 'done' ? 'success' : entry.status === 'failed' ? 'danger' : 'b2b'
+                    }
+                  />
+                </View>
+              ))}
+            </View>
           </Card>
         ) : null}
         {/* B8 : section « Bon de commande » — éditable sur BROUILLON (hors avoir), lecture
