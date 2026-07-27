@@ -56,6 +56,8 @@ const TRADE_EMOJI: Record<Trade, string> = {
   macon: '🧱',
   peintre: '🎨',
   paysagiste: '🌿',
+  frigoriste: '❄️',
+  mainteneur: '🛠️',
   consultant: '💼',
   freelance_it: '💻',
   photographe: '📷',

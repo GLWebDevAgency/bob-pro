@@ -15,6 +15,8 @@ const TRADE_COVERAGE = {
   macon: true,
   peintre: true,
   paysagiste: true,
+  frigoriste: true,
+  mainteneur: true,
   consultant: true,
   freelance_it: true,
   photographe: true,

@@ -44,6 +44,26 @@ describe('worksiteParamsFor — accord grammatical du regroupement chantier/proj
     expect(params).toMatchObject({ term: 'projet', article: 'un', de: 'du' });
   });
 
+  it('PR-10 — maintenance (frigoriste/mainteneur) : « site », masculin — le même écran parle site, jamais chantier', () => {
+    for (const trade of ['frigoriste', 'mainteneur'] as const) {
+      const params = worksiteParamsFor(tradeToWorksiteTerminology(trade));
+      expect(params).toMatchObject({
+        term: 'site',
+        termCap: 'Site',
+        plural: 'sites',
+        pluralCap: 'Sites',
+        article: 'un',
+        de: 'du',
+        newAdj: 'Nouveau',
+        demonstrative: 'ce',
+        articleDefCap: 'Le',
+        premierAdj: 'premier',
+        createdAdj: 'créé',
+        aucunAdj: 'Aucun',
+      });
+    }
+  });
+
   it('repli neutre (profil non chargé) : identique au vocabulaire BTP par défaut', () => {
     expect(worksiteParamsFor(DEFAULT_WORKSITE_TERM)).toMatchObject({ term: 'chantier', article: 'un' });
   });

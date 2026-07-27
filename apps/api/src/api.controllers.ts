@@ -294,6 +294,9 @@ const TRADES = new Set<Trade>([
   'macon',
   'peintre',
   'paysagiste',
+  // PR-10 — métiers de la maintenance (vocabulaire « site », module chantiers pertinent).
+  'frigoriste',
+  'mainteneur',
   'consultant',
   'freelance_it',
   'photographe',

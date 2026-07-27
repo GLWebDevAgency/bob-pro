@@ -1,4 +1,4 @@
-import { type Trade, type VatRegime } from '../company/company';
+import { type Trade, type VatRegime, isBtpTrade } from '../company/company';
 import { assessVatFranchise } from './vat-thresholds';
 
 /** Pays couverts. France encodée ; structure prête pour l'expansion européenne/internationale. */
@@ -43,7 +43,6 @@ export interface DiagnosticResult {
   calendar: CalendarEntry[];
 }
 
-const BTP_TRADES: ReadonlySet<Trade> = new Set(['plombier', 'electricien', 'macon', 'peintre', 'paysagiste']);
 const WEIGHT: Record<ItemSeverity, number> = { critical: 15, important: 8, info: 3 };
 
 function scoreFrom(items: ComplianceItem[]): number {
@@ -70,7 +69,9 @@ const FR_CALENDAR: CalendarEntry[] = [
 ];
 
 function diagnoseFrance(input: DiagnosticInput): DiagnosticResult {
-  const isBtp = BTP_TRADES.has(input.trade);
+  // PR-10 — SOURCE UNIQUE du domaine (isBtpTrade) : la liste dupliquée locale divergeait dès
+  // l'arrivée du frigoriste (décennale/autoliquidation absentes du diagnostic à tort).
+  const isBtp = isBtpTrade(input.trade);
   const hasB2g = input.customerTypes.includes('b2g');
   const hasB2c = input.customerTypes.includes('b2c');
   const hasB2b = input.customerTypes.includes('b2b');

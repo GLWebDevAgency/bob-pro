@@ -1,4 +1,4 @@
-import { type Trade } from '../../domain/company/company';
+import { isBtpTrade, type Trade } from '../../domain/company/company';
 import { TRADE_PROFILES } from '../../domain/company/trade-profile';
 
 /**
@@ -15,8 +15,9 @@ import { TRADE_PROFILES } from '../../domain/company/trade-profile';
  *   sinon libellé en minuscules).
  *
  * Zéro duplication de source : tout est dérivé de TRADE_PROFILES (modules, vocabulaire).
- * L'appartenance bâtiment = présence du module `chantiers`,
- * strictement équivalente au set BTP du domaine company (les 5 mêmes métiers) — testé.
+ * PR-10 (gating révisé) : l'appartenance bâtiment vient du DOMAINE (isBtpTrade) — le module
+ * `chantiers` n'est PLUS un marqueur BTP depuis les métiers de maintenance (un mainteneur a
+ * des sites sans être un métier du bâtiment) — testé.
  */
 
 /** Repères adaptatifs par métier — la copy (×3 humeurs) est portée par @bob/i18n. */
@@ -49,12 +50,24 @@ const BTP_PREVIEW = [
   'Retenue de garantie',
 ] as const;
 
+/** PR-10 — métiers de maintenance : ce que l'espace inclut DÈS AUJOURD'HUI (sites + pièces par
+ * site + relances) — les briques parc/contrats/passages arrivent avec leurs PR (jamais promises
+ * en preview avant d'exister). */
+const MAINTENANCE_PREVIEW = [
+  'Sites clients',
+  'Devis & factures par site',
+  'Acomptes',
+  'Relances',
+] as const;
+
 const PREVIEW: Record<Trade, readonly string[]> = {
   plombier: BTP_PREVIEW,
   electricien: BTP_PREVIEW,
   macon: BTP_PREVIEW,
   peintre: BTP_PREVIEW,
   paysagiste: BTP_PREVIEW,
+  frigoriste: MAINTENANCE_PREVIEW,
+  mainteneur: MAINTENANCE_PREVIEW,
   consultant: ['Missions', 'TJM', 'CRA', 'Frais refacturés', 'Acompte'],
   freelance_it: ['Régie & TJM', 'CRA', 'Forfait projet', 'Maintenance (TMA)', 'Frais refacturés'],
   photographe: ['Prestations', 'Acompte', 'Cession de droits', 'Galeries'],
@@ -64,8 +77,9 @@ const PREVIEW: Record<Trade, readonly string[]> = {
 
 export function deriveTradeProfile(trade: Trade): TradeSpacePreview {
   const p = TRADE_PROFILES[trade];
-  // Bâtiment = module `chantiers` pertinent — mêmes 5 métiers que le set BTP du domaine.
-  const isBtp = p.modules.includes('chantiers');
+  // PR-10 — appartenance bâtiment : SOURCE UNIQUE du domaine (isBtpTrade). Le module
+  // `chantiers` ne suffit plus (les métiers de maintenance l'ont avec le vocabulaire « site »).
+  const isBtp = isBtpTrade(trade);
 
   const highlights: TradeHighlightId[] = [];
   if (isBtp) highlights.push('decennale');

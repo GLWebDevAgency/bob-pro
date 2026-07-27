@@ -14,6 +14,11 @@ export type Trade =
   | 'macon'
   | 'peintre'
   | 'paysagiste'
+  // PR-10 « Le métier » — métiers de la MAINTENANCE (bêta Fly Services) : le module chantiers
+  // leur est pertinent avec le vocabulaire « site » (un frigoriste parle de sites, pas de
+  // chantiers) — le même écran sert les deux mondes via tradeToWorksiteTerminology.
+  | 'frigoriste'
+  | 'mainteneur'
   | 'consultant'
   | 'freelance_it'
   | 'photographe'
@@ -55,7 +60,22 @@ const BTP_TRADES: ReadonlySet<Trade> = new Set([
   'macon',
   'peintre',
   'paysagiste',
+  // PR-10 — le frigoriste INSTALLE des équipements du bâtiment (froid/climatisation) : travaux
+  // d'équipement au sens de l'autoliquidation sous-traitance BTP (art. 283, 2 nonies CGI) et
+  // décennale pertinente sur les installations indissociables. Le MAINTENEUR (entretien
+  // multitechnique) reste HORS du set — fail-closed : on n'applique jamais un régime de TVA
+  // bâtiment à une activité principalement de service sans certitude.
+  'frigoriste',
 ]);
+
+/**
+ * PR-10 — appartenance bâtiment d'un métier, SOURCE UNIQUE partagée avec l'onboarding
+ * (deriveTradeProfile) : depuis les métiers de maintenance, le module `chantiers` n'est PLUS
+ * un marqueur BTP (un mainteneur a des sites sans être un métier du bâtiment).
+ */
+export function isBtpTrade(trade: Trade): boolean {
+  return BTP_TRADES.has(trade);
+}
 
 /**
  * Contrat positif d'inscription d'une entreprise.
@@ -298,7 +318,7 @@ export class Company {
   }
 
   isBtp(): boolean {
-    return BTP_TRADES.has(this.p.trade);
+    return isBtpTrade(this.p.trade);
   }
   isVatFranchise(): boolean {
     return this.p.vatRegime === 'franchise';

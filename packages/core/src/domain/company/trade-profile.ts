@@ -95,6 +95,24 @@ export const TRADE_PROFILES: Record<Trade, TradeProfile> = {
     modules: ['devis_factures', 'chantiers', 'abonnements'],
     vocabulary: { customer: 'Client', project: 'Chantier' },
   },
+  frigoriste: {
+    trade: 'frigoriste',
+    // PR-10 — froid commercial / climatisation (bêta Fly Services) : le revenu = contrats
+    // d'entretien sur un parc d'équipements PAR SITE — le module chantiers devient le module
+    // « sites », les abonnements portent les contrats récurrents, l'acompte reste utile en pose.
+    label: 'Frigoriste',
+    modules: ['devis_factures', 'chantiers', 'acomptes', 'abonnements'],
+    vocabulary: { customer: 'Client', project: 'Site' },
+  },
+  mainteneur: {
+    trade: 'mainteneur',
+    // PR-10 — maintenance multitechnique (fontaines, CVC, équipements) : mêmes briques que le
+    // frigoriste — sites + contrats récurrents — SANS être un métier du bâtiment (isBtpTrade
+    // false : jamais d'autoliquidation BTP présumée).
+    label: 'Mainteneur',
+    modules: ['devis_factures', 'chantiers', 'acomptes', 'abonnements'],
+    vocabulary: { customer: 'Client', project: 'Site' },
+  },
   consultant: {
     trade: 'consultant',
     label: 'Consultant',
@@ -182,6 +200,14 @@ const WORKSITE_TERMINOLOGY_BY_NOUN: Record<string, WorksiteTerminology> = {
   Projet: {
     singular: 'projet',
     plural: 'projets',
+    gender: 'm',
+    article: { indefinite: 'un', definite: 'le' },
+  },
+  // PR-10 — métiers de la maintenance : le même écran parle « chantier » à un maçon et
+  // « site » à un frigoriste (aucun second mapping : dérivé de vocabulary.project).
+  Site: {
+    singular: 'site',
+    plural: 'sites',
     gender: 'm',
     article: { indefinite: 'un', definite: 'le' },
   },

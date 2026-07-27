@@ -60,6 +60,22 @@ describe('deriveTradeProfile — onboarding adaptatif (C22)', () => {
     expect(r.highlights).toEqual([]);
   });
 
+  it('PR-10 — frigoriste : vocabulaire « Site », repères bâtiment (décennale, TVA travaux), preview maintenance honnête', () => {
+    const r = deriveTradeProfile('frigoriste');
+    expect(r.vocabulary.project).toBe('Site');
+    expect(r.spaceLabel).toBe('frigoriste');
+    expect(r.preview).toEqual(['Sites clients', 'Devis & factures par site', 'Acomptes', 'Relances']);
+    // Installation d'équipements du bâtiment : décennale + TVA travaux pertinentes.
+    expect(r.highlights).toEqual(['decennale', 'tva_travaux']);
+  });
+
+  it('PR-10 — mainteneur : vocabulaire « Site » SANS repères bâtiment (le module chantiers n’est plus un marqueur BTP)', () => {
+    const r = deriveTradeProfile('mainteneur');
+    expect(r.vocabulary.project).toBe('Site');
+    expect(r.preview).toEqual(['Sites clients', 'Devis & factures par site', 'Acomptes', 'Relances']);
+    expect(r.highlights).toEqual([]);
+  });
+
   it('tous les métiers : preview non vide, spaceLabel en minuscules, décennale ⇔ BTP du domaine', () => {
     for (const trade of ALL_TRADES) {
       const r = deriveTradeProfile(trade);

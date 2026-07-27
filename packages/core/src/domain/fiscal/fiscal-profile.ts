@@ -396,6 +396,9 @@ const TRADE_TO_ACTIVITY_NATURE_HORS_MICRO: Record<Trade, FiscalActivityNature | 
   macon: 'mixte',
   peintre: 'mixte',
   paysagiste: 'mixte',
+  // PR-10 — maintenance : fournitures (pièces, équipements) + prestations de pose/entretien.
+  frigoriste: 'mixte',
+  mainteneur: 'mixte',
   consultant: 'bnc',
   freelance_it: 'bnc',
   photographe: 'bnc',

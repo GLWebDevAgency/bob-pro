@@ -121,6 +121,11 @@ const TRADE_TO_MICRO_CATEGORY: Record<Trade, MicroCategoryGuess> = {
   macon: { category: 'bic_prestations', confidence: 'certain' },
   peintre: { category: 'bic_prestations', confidence: 'certain' },
   paysagiste: { category: 'bic_prestations', confidence: 'certain' },
+  // PR-10 — maintenance : prestations de services techniques artisanales/commerciales (BIC).
+  // Le frigoriste (installation/réparation) est 'certain' ; le mainteneur multitechnique reste
+  // 'assumed' (champ large — l'utilisateur confirme, jamais un régime imposé).
+  frigoriste: { category: 'bic_prestations', confidence: 'certain' },
+  mainteneur: { category: 'bic_prestations', confidence: 'assumed' },
   consultant: { category: 'bnc', confidence: 'assumed' },
   freelance_it: { category: 'bnc', confidence: 'assumed' }, // prestations informatiques = BNC (hors Cipav)
   photographe: { category: 'bnc', confidence: 'assumed' },

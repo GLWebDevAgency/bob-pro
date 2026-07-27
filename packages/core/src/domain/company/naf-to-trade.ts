@@ -30,6 +30,13 @@ const NAF_TO_TRADE: Record<string, Trade> = {
   '62.02B': 'freelance_it', // tierce maintenance de systèmes et d'applications (TMA)
   '62.03Z': 'freelance_it', // gestion d'installations informatiques (infogérance)
   '62.09Z': 'freelance_it', // autres activités informatiques
+  // PR-10 — maintenance d'équipements (réparation/installation de machines) : suggestion
+  // « mainteneur » — un frigoriste (souvent en 43.22B, partagé avec les chauffagistes) choisit
+  // son métier à la main, la suggestion ne tranche jamais l'ambigu.
+  '33.12Z': 'mainteneur', // réparation de machines et équipements mécaniques
+  '33.14Z': 'mainteneur', // réparation d'équipements électriques
+  '33.20B': 'mainteneur', // installation de machines et équipements mécaniques
+  '33.20D': 'mainteneur', // installation d'équipements électriques et électroniques
   // Photographie
   '74.20Z': 'photographe',
   // Coaching / sport / bien-être
