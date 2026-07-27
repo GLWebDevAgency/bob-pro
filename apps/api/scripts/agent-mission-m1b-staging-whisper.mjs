@@ -102,6 +102,12 @@ query BobLiveWhisperAuditPreflight(
     projectId: $projectId
     environmentId: $environmentId
     serviceId: $serviceId
+    unrendered: true
+  )
+  auditorRenderedVariables: variables(
+    projectId: $projectId
+    environmentId: $environmentId
+    serviceId: $serviceId
   )
   apiVariables: variables(
     projectId: $projectId
@@ -291,17 +297,19 @@ export function certifyWhisperStagingPreflight(payload, config) {
     fail('Whisper must have no public HTTP domain or TCP proxy');
   }
 
-  const auditor = variables(data.auditorVariables, 'Whisper');
+  const auditorInventory = variables(data.auditorVariables, 'Whisper unrendered');
+  const auditorRendered = variables(data.auditorRenderedVariables, 'Whisper rendered');
   const api = variables(data.apiVariables, 'API');
-  const auditorNames = Object.keys(auditor);
+  const auditorNames = Object.keys(auditorInventory);
   if (
     auditorNames.length !== 1 ||
-    auditorNames[0] !== 'BOB_LIVE_LOCAL_AUDIT_TOKEN' ||
-    !TOKEN.test(auditor.BOB_LIVE_LOCAL_AUDIT_TOKEN ?? '')
+    auditorNames[0] !== 'BOB_LIVE_LOCAL_AUDIT_TOKEN'
   ) {
     fail('Whisper must receive exactly one dedicated audit token');
   }
+  const auditToken = auditorRendered.BOB_LIVE_LOCAL_AUDIT_TOKEN;
   if (
+    !TOKEN.test(auditToken ?? '') ||
     api.BOB_LIVE_ENABLED !== 'true' ||
     api.BOB_LIVE_PROVIDER !== 'openai' ||
     api.BOB_LIVE_SPEECH_DELIVERY !== 'audited-signed-url-v1' ||
@@ -309,11 +317,10 @@ export function certifyWhisperStagingPreflight(payload, config) {
     api.BOB_LIVE_LOCAL_AUDIT_BASE_URL !== EXPECTED_PRIVATE_URL ||
     typeof api.OPENAI_API_KEY !== 'string' ||
     api.OPENAI_API_KEY.length < 1 ||
-    !exactSecretEqual(auditor.BOB_LIVE_LOCAL_AUDIT_TOKEN, api.BOB_LIVE_LOCAL_AUDIT_TOKEN)
+    !exactSecretEqual(auditToken, api.BOB_LIVE_LOCAL_AUDIT_TOKEN)
   ) {
     fail('API and Whisper audit configuration is incomplete or divergent');
   }
-  const auditToken = auditor.BOB_LIVE_LOCAL_AUDIT_TOKEN;
   const reusedByApi = Object.entries(api).some(
     ([name, value]) => name !== 'BOB_LIVE_LOCAL_AUDIT_TOKEN' && exactSecretEqual(auditToken, value),
   );

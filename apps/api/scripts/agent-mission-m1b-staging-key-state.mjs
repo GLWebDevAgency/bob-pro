@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseAgentMissionFingerprintKeyOperation } from './manage-agent-mission-fingerprint-key-versions.mjs';
+import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
 
 const VERSION = /^[1-9][0-9]{0,9}$/u;
 const FINGERPRINT = /^[a-f0-9]{64}$/u;
@@ -370,23 +371,27 @@ export function assertM1BStagingKeyState(mode, rows, config) {
 
 function readKeyRows(config, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = spawn(
-    'psql',
-    [
-      '--no-psqlrc',
-      '-X',
-      '-qAt',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-v',
-      `versions_csv=${config.bindings.map(({ version }) => version).join(',')}`,
-      config.directUrl,
-    ],
-    {
-      input: KEY_STATE_SQL,
-      encoding: 'utf8',
-      env: process.env,
-    },
+  const result = withPsqlChildEnvironment(
+    config.directUrl,
+    process.env,
+    (childEnvironment) =>
+      spawn(
+        'psql',
+        [
+          '--no-psqlrc',
+          '-X',
+          '-qAt',
+          '-v',
+          'ON_ERROR_STOP=1',
+          '-v',
+          `versions_csv=${config.bindings.map(({ version }) => version).join(',')}`,
+        ],
+        {
+          input: KEY_STATE_SQL,
+          encoding: 'utf8',
+          env: childEnvironment,
+        },
+      ),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
@@ -472,14 +477,19 @@ export function decodeM1BStagingKeyBootstrapSnapshot(value) {
 
 function readKeyBootstrapSnapshot(config, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = spawn(
-    'psql',
-    ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', config.directUrl],
-    {
-      input: M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL,
-      encoding: 'utf8',
-      env: process.env,
-    },
+  const result = withPsqlChildEnvironment(
+    config.directUrl,
+    process.env,
+    (childEnvironment) =>
+      spawn(
+        'psql',
+        ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'],
+        {
+          input: M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL,
+          encoding: 'utf8',
+          env: childEnvironment,
+        },
+      ),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')

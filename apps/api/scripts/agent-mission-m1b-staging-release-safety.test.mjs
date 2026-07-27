@@ -23,6 +23,13 @@ function occurrences(value, pattern) {
   return value.match(pattern)?.length ?? 0;
 }
 
+function workflowStep(id) {
+  const start = workflow.indexOf(`        id: ${id}\n`);
+  assert.notEqual(start, -1, `missing workflow step ${id}`);
+  const end = workflow.indexOf('\n      - name:', start + 1);
+  return workflow.slice(start, end === -1 ? workflow.length : end);
+}
+
 test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialisé', () => {
   assert.match(workflow, /^on:\n  workflow_dispatch:/mu);
   assert.match(workflow, /^  workflow_call:/mu);
@@ -96,6 +103,23 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
   );
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu), 3);
   assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
+  for (const stepId of ['deploy_whisper', 'deploy_baseline', 'deploy_active', 'deploy_off']) {
+    const step = workflowStep(stepId);
+    const outputIndex = step.indexOf('echo "deployment_id=$deployment_id"');
+    const waitIndex = step.indexOf('wait-deployment');
+    assert.ok(outputIndex > step.indexOf('railway up'), `${stepId} must capture Railway first`);
+    assert.ok(waitIndex > outputIndex, `${stepId} must publish its deployment ID before waiting`);
+  }
+  const baselineStep = workflowStep('deploy_baseline');
+  assert.ok(
+    baselineStep.indexOf('echo "deployment_acknowledged=true"') >
+      baselineStep.indexOf('wait-deployment'),
+    'baseline acknowledgement must exist only after Railway SUCCESS',
+  );
+  assert.match(
+    workflow,
+    /baseline_deployment_acknowledged: \$\{\{ steps\.deploy_baseline\.outputs\.deployment_acknowledged \}\}/u,
+  );
   for (const phase of [
     'Baseline OFF predeploy',
     'Active M1-B predeploy',
@@ -197,7 +221,12 @@ test('premier run N-1 est migration-aware puis exige le flag canonique juste apr
   );
   assert.match(
     workflow,
-    /Final independent OFF negotiation proof when M1-B binary was deployed\n\s+if: \$\{\{ always\(\) && steps\.final_off_data\.outcome == 'success' && \(needs\.certify\.outputs\.baseline_deployment_id != '' \|\| needs\.certify\.outputs\.variables_owned == 'true'\) \}\}/u,
+    /Final independent OFF negotiation proof when M1-B binary was deployed\n\s+if: \$\{\{ always\(\) && steps\.final_off_data\.outcome == 'success' && \(needs\.certify\.outputs\.baseline_deployment_acknowledged == 'true' \|\| needs\.certify\.outputs\.variables_owned == 'true'\) \}\}/u,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /baseline_deployment_id != ''/,
+    'a created deployment ID is evidence, not proof that Railway served the candidate',
   );
 });
 

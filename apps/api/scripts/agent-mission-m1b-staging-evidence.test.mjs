@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import {
   M1B_ACTIVE_EVIDENCE_SQL,
@@ -273,6 +274,7 @@ test('preuve OFF finale exige la disparition de la lease exacte après hangup', 
 test('certification passe les identités en variables psql et ne les imprime pas dans le SQL', () => {
   const calls = [];
   const spawnSync = (command, args, options) => {
+    assert.equal(existsSync(options.env.PGPASSFILE), true);
     calls.push({ command, args, options });
     return {
       status: 0,
@@ -289,6 +291,15 @@ test('certification passe les identités en variables psql et ne les imprime pas
   assert.equal(calls[0].options.input.includes(MISSION_ID), false);
   assert.equal(calls[0].options.input.includes('secret'), false);
   assert.equal(calls[0].args.includes(`mission_id=${MISSION_ID}`), true);
+  assert.equal(calls[0].args.includes(environment().DATABASE_URL), false);
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'bob_app');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });
 
 test('certification de propreté utilise le rôle runtime et un SQL sans identifiant brut', () => {

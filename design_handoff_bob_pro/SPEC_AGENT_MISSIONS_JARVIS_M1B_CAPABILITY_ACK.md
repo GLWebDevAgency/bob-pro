@@ -573,10 +573,17 @@ même distinction afin qu'un échec antérieur aux migrations puisse être attes
 une table ou une fonction encore absente ; dès qu'une migration est terminée, seule la preuve
 stricte de son état OFF est admise.
 La négociation WebRTC OFF finale n'est exigée que si un deployment du binaire M1-B a réellement
-été acquitté ou si le bloc runtime a été possédé ; avant cela, absence des variables, migration
+été acquitté `SUCCESS` par Railway — un identifiant créé ne vaut pas cet ACK — ou si le bloc
+runtime a été possédé ; avant cela, absence des variables, migration
 encore absente et zéro override constituent la preuve exacte, sans demander au binaire N-1 un
 champ de protocole qu'il ne connaît pas. Ici aussi, « zéro override » signifie zéro override actif
 et aucune ligne du compte cible ; les lignes désactivées étrangères sont hors propriété du run.
+
+Chaque opérateur `psql` de ce lane garde l'URI et le mot de passe hors de `argv`. L'URI est
+décomposée en paramètres libpq explicitement allowlistés ; le mot de passe vit uniquement dans un
+`PGPASSFILE` temporaire `0600`, supprimé en `finally` après le processus synchrone. Une option URI
+non supportée, un fichier impossible à créer ou un cleanup de secret impossible échoue fermé avant
+de qualifier la preuve.
 
 Le bootstrap du keyspace HMAC distingue deux lignées N-1 valides et seulement elles :
 
@@ -594,6 +601,14 @@ présente, un objet readiness isolé ou une mission/un événement conservé éc
 ne lie jamais rétroactivement un événement historique à un secret HMAC non prouvé. Une migration
 readiness terminée exige inversement la lignée M1-A complète et chaque objet readiness avant
 d'appeler sa fonction de preuve.
+
+Quand la migration readiness est déjà terminée, l'inventaire bootstrap et l'appel de readiness
+utilisent deux sessions bornées distinctes. Cette tolérance staging n'est valide que sous la
+concurrence GitHub exclusive **et** en l'absence de migration, rotation/stage/retrait de clé ou
+mutation SQL manuelle concurrente entre le préflight et le cleanup. Toute intervention externe
+invalide le run, même si ses assertions finales passent ; elle doit être tracée puis la fenêtre
+rejouée depuis un état OFF. L'unicité transactionnelle reste la cible du durcissement ultérieur,
+pas une propriété prétendue du présent lot.
 
 Mutation Railway :
 
@@ -753,8 +768,12 @@ Preuve staging obligatoire avant la fenêtre positive M1-B :
    `SUCCESS` ;
 2. prouver via l'API Railway que le service appartient au projet/environnement staging attendus,
    qu'il n'a aucun domaine public, proxy TCP ou volume persistant, que l'auto-déploiement est
-   désactivé, que son unique variable est le jeton dédié et que sa configuration référence les
-   digests épinglés ;
+   désactivé, que sa collection **non rendue** contient exactement une variable utilisateur — le
+   jeton dédié — puis comparer sa valeur **rendue** avec celle reçue par l'API, et que sa
+   configuration référence les digests épinglés. Les variables système
+   `RAILWAY_*` et références réseau injectées par la plateforme apparaissent seulement dans la
+   collection rendue : elles ne sont ni comptées comme secrets utilisateur ni acceptées à la place
+   de cet inventaire non rendu. Toute autre variable non rendue échoue fermée ;
 3. depuis le réseau privé du runtime API, vérifier la readiness réelle, le refus sans/mauvais
    bearer, le refus d'une route `/load` et d'un payload trop grand ;
 4. produire avec **la même clé OpenAI du profil actif** un WAV d'une phrase française fixe sans

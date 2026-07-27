@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import {
   M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
@@ -151,6 +152,23 @@ test('bootstrap distingue strictement staging N-1 et migration canonique termin�
     M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
     /20260726030000_release_flag_cabinet_subject_revocation_fence/u,
   );
+  assert.match(
+    M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
+    /BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ/u,
+  );
+  assert.match(M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL, /SET LOCAL lock_timeout = '3s'/u);
+  assert.match(M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL, /SET LOCAL statement_timeout = '15s'/u);
+  assert.match(M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL, /SET LOCAL row_security = off/u);
+  assert.match(
+    M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
+    /to_regclass\('public\."_prisma_migrations"'\)/u,
+  );
+  assert.match(
+    M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
+    /to_regtype\('public\."ReleaseFlagSubjectType"'\)/u,
+  );
+  assert.match(M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL, /EXECUTE[\s\S]*USING/u);
+  assert.match(M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL, /ROLLBACK;/u);
 });
 
 test('commande bootstrap ne lit le flag qu’après sa migration et reste sans mutation', () => {
@@ -199,6 +217,7 @@ test('bootstrap réel interroge seulement la migration sans exposer identité ni
   const calls = [];
   const result = runM1BStagingFlagCommand('bootstrap-preflight', environment(), {
     spawnSync: (command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ command, args, options });
       return {
         status: 0,
@@ -216,6 +235,15 @@ test('bootstrap réel interroge seulement la migration sans exposer identité ni
   assert.equal(calls[0].options.input, M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL);
   assert.equal(calls[0].options.input.includes(USER_ID), false);
   assert.equal(calls[0].options.input.includes('secret'), false);
+  assert.equal(calls[0].args.includes(environment().DIRECT_URL), false);
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'postgres.staging');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });
 
 test('cleanup durable reste sûr avant migration et ne dépend d’aucun output GitHub', () => {

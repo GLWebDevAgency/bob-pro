@@ -19,6 +19,7 @@ function environment(overrides = {}) {
     BOB_M1B_STARTED_AT: '2026-07-27T12:00:00.000Z',
     BOB_M1B_FINISHED_AT: '2026-07-27T12:30:00.000Z',
     BOB_M1B_BASELINE_DEPLOYMENT_ID: BASELINE,
+    BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED: 'true',
     BOB_M1B_ACTIVE_DEPLOYMENT_ID: ACTIVE,
     BOB_M1B_WHISPER_DEPLOYMENT_ID: WHISPER,
     BOB_M1B_ACOUSTIC_READINESS_MS: '8421',
@@ -36,6 +37,7 @@ function environment(overrides = {}) {
 test('rapport borné contient les preuves opérationnelles sans identité utilisateur', () => {
   const report = buildM1BStagingReport(environment());
   assert.equal(report.releaseSha, SHA);
+  assert.equal(report.deployments.baselineAcknowledged, true);
   assert.equal(report.deployments.active, ACTIVE);
   assert.equal(report.deployments.whisper, WHISPER);
   assert.deepEqual(report.speechAudit, {
@@ -77,6 +79,7 @@ test('accepte un deployment OFF non créé lorsque le circuit a échoué avant m
     BOB_M1B_WHISPER_DEPLOYMENT_ID: 'not-created',
     BOB_M1B_ACOUSTIC_READINESS_MS: 'not-measured',
     BOB_M1B_CERTIFY_RESULT: 'failure',
+    BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED: 'false',
     BOB_M1B_VARIABLES_OWNED: 'false',
     BOB_M1B_OVERRIDE_OWNED: 'false',
     BOB_M1B_VARIABLES_REMOVED: 'false',
@@ -109,13 +112,25 @@ test('refuse les temps, résultats et identifiants de déploiement non canonique
     () => buildM1BStagingReport(environment({
       BOB_M1B_WHISPER_DEPLOYMENT_ID: 'not-created',
     })),
-    /requires Whisper deployment/u,
+    /requires baseline ACK, Whisper deployment/u,
   );
   assert.throws(
     () => buildM1BStagingReport(environment({
       BOB_M1B_ACOUSTIC_READINESS_MS: '600001',
     })),
     /bounded window/u,
+  );
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_BASELINE_DEPLOYMENT_ID: 'not-created',
+    })),
+    /ACK requires its exact deployment ID/u,
+  );
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED: 'false',
+    })),
+    /requires baseline ACK/u,
   );
 });
 
@@ -130,7 +145,7 @@ test('écrit uniquement dans le répertoire d’évidence dédié avec permissio
       writeFileSync: (...args) => calls.push(['write', ...args]),
     },
   );
-  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.schemaVersion, 3);
   assert.equal(calls[0][0], 'mkdir');
   assert.equal(calls[1][0], 'write');
   assert.equal(calls[1][3].mode, 0o600);

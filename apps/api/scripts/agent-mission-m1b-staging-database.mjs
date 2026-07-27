@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
 
 const SYSTEM_IDENTIFIER = /^[1-9][0-9]{0,29}$/u;
 const POSITIVE_INTEGER = /^[1-9][0-9]{0,9}$/u;
@@ -217,11 +218,13 @@ export function assertM1BStagingDatabaseIdentity(config, direct, runtime) {
 
 function queryIdentity(url, source, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = spawn('psql', ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', url], {
-    input: IDENTITY_SQL,
-    encoding: 'utf8',
-    env: process.env,
-  });
+  const result = withPsqlChildEnvironment(url, process.env, (childEnvironment) =>
+    spawn('psql', ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'], {
+      input: IDENTITY_SQL,
+      encoding: 'utf8',
+      env: childEnvironment,
+    }),
+  );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
       .replaceAll(url, '[redacted]')

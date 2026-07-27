@@ -76,6 +76,10 @@ function payload(overrides = {}) {
     auditorVariables: {
       BOB_LIVE_LOCAL_AUDIT_TOKEN: TOKEN,
     },
+    auditorRenderedVariables: {
+      BOB_LIVE_LOCAL_AUDIT_TOKEN: TOKEN,
+      RAILWAY_ENVIRONMENT_NAME: 'staging',
+    },
     apiVariables: {
       BOB_LIVE_ENABLED: 'true',
       BOB_LIVE_PROVIDER: 'openai',
@@ -113,14 +117,26 @@ test('parse une cible privée distincte et le SHA exact', () => {
 
 test('certifie identité, config-as-code, réseau privé et isolation des variables', () => {
   const config = parseWhisperStagingEnvironment(environment());
-  assert.deepEqual(certifyWhisperStagingPreflight(payload(), config), {
+  const expected = {
     serviceId: WHISPER_SERVICE_ID,
     environmentId: ENVIRONMENT_ID,
     releaseSha: RELEASE_SHA,
     privateOnly: true,
     variablesIsolated: true,
     speechDelivery: 'audited-signed-url-v1',
-  });
+  };
+  assert.deepEqual(certifyWhisperStagingPreflight(payload(), config), expected);
+  assert.deepEqual(
+    certifyWhisperStagingPreflight(
+      payload({
+        auditorVariables: {
+          BOB_LIVE_LOCAL_AUDIT_TOKEN: '${{shared.BOB_LIVE_LOCAL_AUDIT_TOKEN}}',
+        },
+      }),
+      config,
+    ),
+    expected,
+  );
 });
 
 for (const [label, override, pattern] of [
@@ -157,7 +173,7 @@ for (const [label, override, pattern] of [
   ],
   [
     'token discordant',
-    { auditorVariables: { BOB_LIVE_LOCAL_AUDIT_TOKEN: 'z'.repeat(48) } },
+    { auditorRenderedVariables: { BOB_LIVE_LOCAL_AUDIT_TOKEN: 'z'.repeat(48) } },
     /incomplete or divergent/u,
   ],
   [
@@ -237,6 +253,21 @@ test('commande preflight adresse les deux services sans exposer leurs secrets', 
     serviceId: WHISPER_SERVICE_ID,
     apiServiceId: API_SERVICE_ID,
   });
+  const unrenderedStart = calls[0].query.indexOf('auditorVariables: variables(');
+  const renderedStart = calls[0].query.indexOf('auditorRenderedVariables: variables(');
+  const apiStart = calls[0].query.indexOf('apiVariables: variables(');
+  assert.ok(
+    unrenderedStart >= 0 && renderedStart > unrenderedStart && apiStart > renderedStart,
+  );
+  assert.match(
+    calls[0].query.slice(unrenderedStart, renderedStart),
+    /unrendered:\s*true/u,
+  );
+  assert.doesNotMatch(
+    calls[0].query.slice(renderedStart, apiStart),
+    /unrendered:\s*true/u,
+  );
+  assert.equal((calls[0].query.match(/unrendered:\s*true/gu) ?? []).length, 1);
   assert.match(calls[0].query, /volumeInstances\(first: 500\)/u);
   assert.equal(JSON.stringify(result).includes(TOKEN), false);
 });

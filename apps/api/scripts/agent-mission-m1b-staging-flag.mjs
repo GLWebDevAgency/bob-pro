@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
 import { runReleaseFlagOperation } from './release-flag-ops.mjs';
 
 const FLAG_KEY = 'bob.agent_missions.quote.v1';
@@ -43,23 +44,59 @@ SELECT jsonb_build_object(
 `;
 
 export const M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL = `
-SELECT pg_catalog.json_build_object(
-  'migrationApplied',
-  EXISTS (
-    SELECT 1
-      FROM public."_prisma_migrations" AS migration
-     WHERE migration.migration_name = '${FLAG_MIGRATION}'
-       AND migration.finished_at IS NOT NULL
-       AND migration.rolled_back_at IS NULL
-  ),
-  'flagCount',
-  (
-    SELECT count(*)::integer
-      FROM public.release_flags AS flag
-     WHERE flag.key = '${FLAG_KEY}'
-       AND flag.environment = '${FLAG_ENVIRONMENT}'::public."ReleaseEnvironment"
-  )
-)::text;
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '15s';
+SET LOCAL row_security = off;
+CREATE TEMP TABLE agent_mission_m1b_flag_bootstrap_snapshot (
+  payload JSONB NOT NULL
+) ON COMMIT DROP;
+DO $agent_mission_m1b_flag_bootstrap_snapshot$
+DECLARE
+  migration_applied BOOLEAN;
+  flag_count INTEGER;
+BEGIN
+  IF pg_catalog.to_regclass('public."_prisma_migrations"') IS NULL
+     OR pg_catalog.to_regclass('public.release_flags') IS NULL
+     OR pg_catalog.to_regclass('public.release_flag_subjects') IS NULL
+     OR pg_catalog.to_regtype('public."ReleaseEnvironment"') IS NULL
+     OR pg_catalog.to_regtype('public."ReleaseFlagSubjectType"') IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '55000',
+      MESSAGE = 'AgentMission release-flag bootstrap prerequisites are absent';
+  END IF;
+
+  EXECUTE
+    'SELECT EXISTS (
+       SELECT 1
+         FROM public."_prisma_migrations" AS migration
+        WHERE migration.migration_name = $1
+          AND migration.finished_at IS NOT NULL
+          AND migration.rolled_back_at IS NULL
+     )'
+    INTO migration_applied
+    USING '${FLAG_MIGRATION}';
+
+  EXECUTE
+    'SELECT count(*)::integer
+       FROM public.release_flags AS flag
+      WHERE flag.key = $1
+        AND flag.environment = $2::public."ReleaseEnvironment"'
+    INTO flag_count
+    USING '${FLAG_KEY}', '${FLAG_ENVIRONMENT}';
+
+  INSERT INTO pg_temp.agent_mission_m1b_flag_bootstrap_snapshot (payload)
+  VALUES (
+    pg_catalog.jsonb_build_object(
+      'migrationApplied', migration_applied,
+      'flagCount', flag_count
+    )
+  );
+END;
+$agent_mission_m1b_flag_bootstrap_snapshot$;
+SELECT payload::text
+  FROM pg_temp.agent_mission_m1b_flag_bootstrap_snapshot;
+ROLLBACK;
 `;
 
 function fail(message) {
@@ -224,23 +261,27 @@ export function decodeM1BStagingFlagBootstrapState(value) {
 
 function readFlagState(config, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = spawn(
-    'psql',
-    [
-      '--no-psqlrc',
-      '-X',
-      '-qAt',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-v',
-      `subject_id=${config.userId}`,
-      config.directUrl,
-    ],
-    {
-      input: FLAG_STATE_SQL,
-      encoding: 'utf8',
-      env: process.env,
-    },
+  const result = withPsqlChildEnvironment(
+    config.directUrl,
+    process.env,
+    (childEnvironment) =>
+      spawn(
+        'psql',
+        [
+          '--no-psqlrc',
+          '-X',
+          '-qAt',
+          '-v',
+          'ON_ERROR_STOP=1',
+          '-v',
+          `subject_id=${config.userId}`,
+        ],
+        {
+          input: FLAG_STATE_SQL,
+          encoding: 'utf8',
+          env: childEnvironment,
+        },
+      ),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
@@ -255,14 +296,19 @@ function readFlagState(config, dependencies = {}) {
 
 function readBootstrapState(config, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = spawn(
-    'psql',
-    ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', config.directUrl],
-    {
-      input: M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
-      encoding: 'utf8',
-      env: process.env,
-    },
+  const result = withPsqlChildEnvironment(
+    config.directUrl,
+    process.env,
+    (childEnvironment) =>
+      spawn(
+        'psql',
+        ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'],
+        {
+          input: M1B_STAGING_FLAG_BOOTSTRAP_STATE_SQL,
+          encoding: 'utf8',
+          env: childEnvironment,
+        },
+      ),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')

@@ -78,6 +78,14 @@ export function buildM1BStagingReport(environment = process.env) {
     required(environment, 'BOB_M1B_CERTIFY_RESULT'),
     'certifyResult',
   );
+  const baselineDeploymentId = deployment(
+    required(environment, 'BOB_M1B_BASELINE_DEPLOYMENT_ID'),
+    'baselineDeploymentId',
+  );
+  const baselineDeploymentAcknowledged = boolean(
+    required(environment, 'BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED'),
+    'baselineDeploymentAcknowledged',
+  );
   const whisperDeploymentId = deployment(
     required(environment, 'BOB_M1B_WHISPER_DEPLOYMENT_ID'),
     'whisperDeploymentId',
@@ -88,12 +96,21 @@ export function buildM1BStagingReport(environment = process.env) {
   );
   if (
     certifyResult === 'success'
-    && (whisperDeploymentId === null || acousticReadinessMs === null)
+    && (
+      !baselineDeploymentAcknowledged ||
+      whisperDeploymentId === null ||
+      acousticReadinessMs === null
+    )
   ) {
-    fail('successful certification requires Whisper deployment and acoustic readiness evidence');
+    fail(
+      'successful certification requires baseline ACK, Whisper deployment and acoustic readiness evidence',
+    );
+  }
+  if (baselineDeploymentAcknowledged && baselineDeploymentId === null) {
+    fail('baseline deployment ACK requires its exact deployment ID');
   }
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     objective: 'O4.M1-B',
     environment: 'staging',
     releaseSha,
@@ -111,10 +128,8 @@ export function buildM1BStagingReport(environment = process.env) {
     startedAt,
     finishedAt,
     deployments: {
-      baseline: deployment(
-        required(environment, 'BOB_M1B_BASELINE_DEPLOYMENT_ID'),
-        'baselineDeploymentId',
-      ),
+      baseline: baselineDeploymentId,
+      baselineAcknowledged: baselineDeploymentAcknowledged,
       active: deployment(
         required(environment, 'BOB_M1B_ACTIVE_DEPLOYMENT_ID'),
         'activeDeploymentId',

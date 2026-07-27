@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import {
   assertM1BStagingDatabaseIdentity,
@@ -127,9 +128,9 @@ test('certification interroge DIRECT puis runtime sans imprimer les URLs', () =>
   const calls = [];
   const result = certifyM1BStagingDatabase(environment(), {
     spawnSync: (_command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ args, options });
-      const url = args.at(-1);
-      const direct = url === environment().DIRECT_URL;
+      const direct = options.env.PGUSER === `postgres.${PROJECT_REF}`;
       return {
         status: 0,
         stdout: `${JSON.stringify(
@@ -156,4 +157,17 @@ test('certification interroge DIRECT puis runtime sans imprimer les URLs', () =>
   assert.doesNotMatch(calls[0].options.input, /pg_catalog\.(?:session_user|current_user)/u);
   assert.equal(calls[0].options.input.includes(PROJECT_REF), false);
   assert.equal(calls[0].options.input.includes('secret'), false);
+  assert.equal(calls[0].options.env.PGHOST, 'pooler.supabase.com');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, `postgres.${PROJECT_REF}`);
+  assert.equal(calls[1].options.env.PGUSER, `${APP_ROLE}.${PROJECT_REF}`);
+  for (const call of calls) {
+    assert.equal(call.args.includes(environment().DIRECT_URL), false);
+    assert.equal(call.args.includes(environment().DATABASE_URL), false);
+    assert.equal(call.args.some((value) => String(value).includes('secret')), false);
+    assert.equal(Object.hasOwn(call.options.env, 'DIRECT_URL'), false);
+    assert.equal(Object.hasOwn(call.options.env, 'DATABASE_URL'), false);
+    assert.equal(Object.hasOwn(call.options.env, 'PGPASSWORD'), false);
+    assert.equal(existsSync(call.options.env.PGPASSFILE), false);
+  }
 });

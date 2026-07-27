@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import {
   M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL,
@@ -323,6 +324,7 @@ test('bootstrap réel ne consulte que la migration tant que le keyspace est abse
   const calls = [];
   const result = certifyM1BStagingKeyState('bootstrap', environment(), {
     spawnSync: (command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ command, args, options });
       return {
         status: 0,
@@ -342,12 +344,22 @@ test('bootstrap réel ne consulte que la migration tant que le keyspace est abse
   assert.equal(calls[0].command, 'psql');
   assert.equal(calls[0].options.input, M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL);
   assert.equal(calls[0].options.input.includes(FIRST), false);
+  assert.equal(calls[0].args.includes(environment().DIRECT_URL), false);
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'postgres.staging');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });
 
 test('bootstrap réel prouve topologie et tables vides dans un snapshot unique', () => {
   const calls = [];
   const result = certifyM1BStagingKeyState('bootstrap', environment(), {
     spawnSync: (command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ command, args, options });
       return {
         status: 0,
@@ -372,6 +384,14 @@ test('bootstrap réel prouve topologie et tables vides dans un snapshot unique',
   assert.match(calls[0].options.input, /ISOLATION LEVEL REPEATABLE READ/u);
   assert.match(calls[0].options.input, /SET LOCAL row_security = off/u);
   assert.equal(calls[0].options.input.includes(FIRST), false);
+  assert.equal(calls[0].args.includes(environment().DIRECT_URL), false);
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'postgres.staging');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });
 
 test('préflight autorise seulement un keyspace vierge version 1 ou un floor désarmé exact', () => {
@@ -504,6 +524,7 @@ test('certification utilise la fonction readiness sous rôle dédié sans expose
   const calls = [];
   const result = certifyM1BStagingKeyState('off', environment(), {
     spawnSync(command, args, options) {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ command, args, options });
       return {
         status: 0,
@@ -517,4 +538,13 @@ test('certification utilise la fonction readiness sous rôle dédié sans expose
   assert.equal(calls[0].options.input, M1B_STAGING_KEY_STATE_SQL);
   assert.equal(calls[0].options.input.includes(FIRST), false);
   assert.equal(calls[0].args.includes('versions_csv=1'), true);
+  assert.equal(calls[0].args.includes(environment().DIRECT_URL), false);
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'postgres.staging');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });

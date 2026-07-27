@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -518,12 +519,16 @@ function psql(config, sql, variables, dependencies = {}) {
   for (const [name, value] of Object.entries(variables)) {
     args.push('-v', `${name}=${value}`);
   }
-  args.push(config.databaseUrl);
-  const result = spawn('psql', args, {
-    input: sql,
-    encoding: 'utf8',
-    env: process.env,
-  });
+  const result = withPsqlChildEnvironment(
+    config.databaseUrl,
+    process.env,
+    (childEnvironment) =>
+      spawn('psql', args, {
+        input: sql,
+        encoding: 'utf8',
+        env: childEnvironment,
+      }),
+  );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
       .replaceAll(config.databaseUrl, '[redacted]')

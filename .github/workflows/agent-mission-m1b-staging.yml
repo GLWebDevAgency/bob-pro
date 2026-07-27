@@ -62,6 +62,7 @@ jobs:
       release_sha: ${{ steps.initialize.outputs.release_sha }}
       started_at: ${{ steps.initialize.outputs.started_at }}
       baseline_deployment_id: ${{ steps.deploy_baseline.outputs.deployment_id }}
+      baseline_deployment_acknowledged: ${{ steps.deploy_baseline.outputs.deployment_acknowledged }}
       active_deployment_id: ${{ steps.deploy_active.outputs.deployment_id }}
       whisper_deployment_id: ${{ steps.deploy_whisper.outputs.deployment_id }}
       acoustic_readiness_ms: ${{ steps.active_readiness.outputs.acoustic_readiness_ms }}
@@ -178,7 +179,9 @@ jobs:
         run: |
           pnpm --filter "@bob/api..." build
           pnpm --filter "@bob/api-client..." build
-          node --test apps/api/scripts/agent-mission-m1b-staging-*.test.mjs
+          node --test \
+            apps/api/scripts/psql-child-environment.test.mjs \
+            apps/api/scripts/agent-mission-m1b-staging-*.test.mjs
           node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
       - name: Preflight Railway variables and migration-aware flag baseline
         env:
@@ -205,10 +208,10 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
               | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
           )"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs \
             wait-deployment "$deployment_id"
           node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs preflight
-          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Baseline OFF predeploy
         timeout-minutes: 120
         env:
@@ -241,9 +244,10 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
               | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
           )"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
             wait-deployment "$deployment_id"
-          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
+          echo "deployment_acknowledged=true" >> "$GITHUB_OUTPUT"
       - name: Prove baseline topology, readiness and postdeploy
         timeout-minutes: 120
         env:
@@ -323,9 +327,9 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
               | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
           )"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
             wait-deployment "$deployment_id"
-          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Prove active topology, readiness, postdeploy and writer floor
         id: active_readiness
         timeout-minutes: 120
@@ -519,9 +523,9 @@ jobs:
               --environment "$RAILWAY_ENVIRONMENT_ID" --detach --json \
               | node apps/api/scripts/agent-mission-m1b-staging-railway.mjs deployment-id
           )"
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs \
             wait-deployment "$deployment_id"
-          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Prove emergency OFF topology and readiness
         if: ${{ always() && steps.deploy_off.outcome == 'success' }}
         timeout-minutes: 120
@@ -583,7 +587,7 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
       - name: Final independent OFF negotiation proof when M1-B binary was deployed
-        if: ${{ always() && steps.final_off_data.outcome == 'success' && (needs.certify.outputs.baseline_deployment_id != '' || needs.certify.outputs.variables_owned == 'true') }}
+        if: ${{ always() && steps.final_off_data.outcome == 'success' && (needs.certify.outputs.baseline_deployment_acknowledged == 'true' || needs.certify.outputs.variables_owned == 'true') }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
@@ -613,6 +617,7 @@ jobs:
           BOB_M1B_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
           BOB_M1B_STARTED_AT: ${{ needs.certify.outputs.started_at }}
           BOB_M1B_BASELINE_DEPLOYMENT_ID: ${{ needs.certify.outputs.baseline_deployment_id || 'not-created' }}
+          BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED: ${{ needs.certify.outputs.baseline_deployment_acknowledged || 'false' }}
           BOB_M1B_ACTIVE_DEPLOYMENT_ID: ${{ needs.certify.outputs.active_deployment_id || 'not-created' }}
           BOB_M1B_WHISPER_DEPLOYMENT_ID: ${{ needs.certify.outputs.whisper_deployment_id || 'not-created' }}
           BOB_M1B_ACOUSTIC_READINESS_MS: ${{ needs.certify.outputs.acoustic_readiness_ms || 'not-measured' }}
