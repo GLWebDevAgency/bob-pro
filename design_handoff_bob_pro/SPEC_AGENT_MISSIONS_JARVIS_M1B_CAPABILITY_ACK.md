@@ -4,7 +4,7 @@
 >
 > Objectif parent : O4 — mission continue
 >
-> Base : `origin/main@89170c1f`
+> Base : `origin/main@4fb5e688`
 >
 > Dépend de : `SPEC_AGENT_MISSIONS_JARVIS.md`,
 > `SPEC_AGENT_MISSIONS_JARVIS_M1A_SERVER.md`, ADR-0006
@@ -760,6 +760,14 @@ Supply chain et runtime :
 - l'inférence accepte uniquement un multipart borné contenant un WAV, le modèle canonique et
   `language=fr`. Taille, nombre de champs, MIME, signature RIFF/WAVE, durée, timeout et nombre de
   requêtes simultanées sont bornés avant l'appel au moteur ;
+- l'API Speech OpenAI peut livrer un WAV pourtant complet avec les longueurs RIFF et `data`
+  laissées à la sentinelle de streaming `0xffffffff`. Après téléchargement intégral déjà borné,
+  l'adaptateur OpenAI matérialise ces deux longueurs à partir des octets réellement possédés,
+  sans modifier les échantillons audio. Cette normalisation n'est admise que pour un conteneur
+  RIFF/WAVE structurellement exact, au plus 64 chunks, un unique chunk `data` terminal et des
+  tailles représentables ; toute troncature détectable au transport ou structurellement, taille
+  contradictoire, second chunk `data` ou octet résiduel échoue fermé.
+  L'auditeur privé continue d'exiger un WAV canonique à longueurs finies ;
 - l'audio et le transcript restent en mémoire le temps de la requête puis sont libérés. Ni le
   gateway ni `whisper.cpp` ne journalisent filename fourni par l'appelant, audio, transcript,
   prompt ou contenu métier ;
@@ -802,7 +810,8 @@ Preuve staging obligatoire avant la fenêtre positive M1-B :
 3. depuis le réseau privé du runtime API, vérifier la readiness réelle, le refus sans/mauvais
    bearer, le refus d'une route `/load` et d'un payload trop grand ;
 4. produire avec **la même clé OpenAI du profil actif** un WAV d'une phrase française fixe sans
-   donnée métier, l'envoyer à l'auditeur privé, puis appliquer le même canoniseur et la même
+   donnée métier, matérialiser ses éventuelles sentinelles RIFF/`data` par le même adaptateur que
+   le runtime, l'envoyer à l'auditeur privé, puis appliquer le même canoniseur et la même
    comparaison texte/faits que `RealtimeSpeechRenderer` ;
 5. l'échec de TTS, DNS privé, auth, modèle, ASR, canonisation ou budget rend le workflow rouge et
    interdit toute négociation Mission positive ;
@@ -1005,6 +1014,10 @@ pour d'autres domaines.
       transcript.
 - [ ] Le health réel, les refus auth/route/taille et le round-trip OpenAI TTS → Whisper privé →
       canoniseur sont prouvés depuis staging sur les deployment IDs exacts avant le smoke M1-B.
+- [ ] Une fixture fidèle au WAV OpenAI réel (`RIFF=0xffffffff`, `data=0xffffffff`) est
+      matérialisée avec les deux tailles finies exactes avant audit ; les échantillons sont
+      byte-identiques et toutes les formes ambiguës, troncatures détectables au transport ou
+      structurellement, ou multi-`data` sont refusées.
 - [ ] Une seule PR, CI complète verte, puis fenêtre staging de §8.1 contre-signée : smoke positif
       bootstrap→reçu durable→start→screen-ACK, preuve DB, drain zéro, override/master/keyring remis
       à OFF/absents, puis fusion.

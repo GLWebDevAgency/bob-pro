@@ -1,9 +1,14 @@
 import type { SttPort, TtsPort } from '@bob/ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OpenAiRealtimeSpeechTtsAdapter } from '../../ai/providers';
 import {
   BobAiRealtimeSpeechAuditAdapter,
   BobAiRealtimeSpeechSynthesisAdapter,
 } from './realtime-speech-provider-adapters';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function mp3(byteLength = 16_000): Uint8Array {
   const bytes = new Uint8Array(byteLength);
@@ -113,6 +118,35 @@ describe('adaptateurs provider du rendu Bob Live', () => {
     expect(output.audioBytes).toHaveLength(32_044);
     expect(synthesize).toHaveBeenCalledWith('Bonjour.', { signal });
     expect(adapter.trustDomain).toBe('openai.com');
+  });
+
+  it('traverse l’adaptateur OpenAI réel avec les longueurs WAV de streaming', async () => {
+    const bytes = wav();
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    view.setUint32(4, 0xffff_ffff, true);
+    view.setUint32(40, 0xffff_ffff, true);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+    const adapter = new BobAiRealtimeSpeechSynthesisAdapter(
+      new OpenAiRealtimeSpeechTtsAdapter('openai-key'),
+    );
+
+    const output = await adapter.synthesize({
+      text: 'Bob vérifie le montant de 42 euros.',
+      signal: new AbortController().signal,
+    });
+
+    expect(output).toMatchObject({
+      mimeType: 'audio/wav',
+      estimatedDurationMs: 1_000,
+    });
+    expect(new DataView(
+      output.audioBytes.buffer,
+      output.audioBytes.byteOffset,
+      output.audioBytes.byteLength,
+    ).getUint32(4, true)).toBe(output.audioBytes.byteLength - 8);
   });
 
   it.each([

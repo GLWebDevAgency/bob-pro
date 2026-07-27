@@ -14,6 +14,26 @@ import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
 
 const ORIGINAL_ENV = { ...process.env };
 
+function openAiWave(dataByteLength = 468, streamingLengths = false): Buffer {
+  const bytes = Buffer.alloc(44 + dataByteLength);
+  bytes.write('RIFF', 0, 'ascii');
+  bytes.writeUInt32LE(streamingLengths ? 0xffff_ffff : bytes.byteLength - 8, 4);
+  bytes.write('WAVEfmt ', 8, 'ascii');
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(24_000, 24);
+  bytes.writeUInt32LE(48_000, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write('data', 36, 'ascii');
+  bytes.writeUInt32LE(streamingLengths ? 0xffff_ffff : dataByteLength, 40);
+  for (let index = 44; index < bytes.byteLength; index += 1) {
+    bytes[index] = (index - 44) % 251;
+  }
+  return bytes;
+}
+
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
   vi.restoreAllMocks();
@@ -70,9 +90,7 @@ describe('Mistral Voxtral providers', () => {
     process.env.MISTRAL_API_KEY = 'mistral-key';
     process.env.OPENAI_API_KEY = 'openai-key-that-must-not-be-used';
     process.env.MISTRAL_URL = 'https://proxy-non-qualifie.example/v1';
-    const wav = Buffer.alloc(512);
-    wav.write('RIFF', 0, 'ascii');
-    wav.write('WAVE', 8, 'ascii');
+    const wav = openAiWave();
     const first = wav.subarray(0, 256).toString('base64');
     const second = wav.subarray(256).toString('base64');
     const encoder = new TextEncoder();
@@ -128,10 +146,8 @@ describe('Mistral Voxtral providers', () => {
     process.env.OPENAI_URL = 'https://proxy-non-qualifie.example/v1';
     process.env.OPENAI_REALTIME_VOICE = 'cedar';
     delete process.env.OPENAI_TTS_MODEL;
-    const wav = Buffer.alloc(512);
-    wav.write('RIFF', 0, 'ascii');
-    wav.write('WAVE', 8, 'ascii');
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(wav, {
+    const wav = openAiWave();
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(new Uint8Array(wav), {
       status: 200,
       headers: { 'content-type': 'audio/wav' },
     }));
@@ -160,6 +176,103 @@ describe('Mistral Voxtral providers', () => {
         'Lis exactement le texte fourni sans rien ajouter ni omettre.',
       ].join(' '),
     });
+  });
+
+  it('matérialise les longueurs sentinelles du WAV OpenAI sans modifier le PCM', async () => {
+    const streamed = openAiWave(32_000, true);
+    const pcm = Buffer.from(streamed.subarray(44));
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(streamed), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    const output = await adapter.synthesize('Bob vérifie le montant de 42 euros.');
+    const canonical = Buffer.from(output.audioBase64 ?? '', 'base64');
+
+    expect(typeof output.audioBase64).toBe('string');
+    expect(canonical.readUInt32LE(4)).toBe(canonical.byteLength - 8);
+    expect(canonical.readUInt32LE(40)).toBe(canonical.byteLength - 44);
+    expect(canonical.subarray(44)).toEqual(pcm);
+    expect(output).toMatchObject({
+      mimeType: 'audio/wav',
+      model: 'gpt-4o-mini-tts-2025-12-15',
+    });
+  });
+
+  it.each([
+    ['RIFF sentinelle avec data finie', true, false],
+    ['RIFF fini avec data sentinelle', false, true],
+  ] as const)('matérialise la forme mixte %s', async (_label, streamingRiff, streamingData) => {
+    const bytes = openAiWave(4_800);
+    if (streamingRiff) bytes.writeUInt32LE(0xffff_ffff, 4);
+    if (streamingData) bytes.writeUInt32LE(0xffff_ffff, 40);
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    const output = Buffer.from(
+      (await adapter.synthesize('Bonjour.')).audioBase64 ?? '',
+      'base64',
+    );
+
+    expect(output.readUInt32LE(4)).toBe(output.byteLength - 8);
+    expect(output.readUInt32LE(40)).toBe(output.byteLength - 44);
+  });
+
+  it.each([
+    ['taille RIFF contradictoire', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(12, 4);
+      return bytes;
+    }],
+    ['chunk data tronqué', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(bytes.byteLength, 40);
+      return bytes;
+    }],
+    ['sentinelle sur un chunk non-data', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(0xffff_ffff, 16);
+      return bytes;
+    }],
+    ['chunk fmt manquant', () => {
+      const bytes = openAiWave();
+      bytes.write('JUNK', 12, 'ascii');
+      return bytes;
+    }],
+    ['taille sentinelle impaire sans padding prouvable', () => openAiWave(469, true)],
+    ['second chunk data', () => {
+      const duplicate = Buffer.alloc(12);
+      duplicate.write('data', 0, 'ascii');
+      duplicate.writeUInt32LE(4, 4);
+      const bytes = Buffer.concat([openAiWave(468), duplicate]);
+      bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+      return bytes;
+    }],
+    ['plus de 64 chunks', () => {
+      const junkChunks = Buffer.alloc(65 * 8);
+      for (let offset = 0; offset < junkChunks.byteLength; offset += 8) {
+        junkChunks.write('JUNK', offset, 'ascii');
+      }
+      const bytes = Buffer.concat([
+        openAiWave(468).subarray(0, 12),
+        junkChunks,
+        openAiWave(468).subarray(12),
+      ]);
+      bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+      return bytes;
+    }],
+  ] as const)('refuse un WAV OpenAI ambigu : %s', async (_label, fixture) => {
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(fixture()), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    await expect(adapter.synthesize('Bonjour.')).rejects.toThrow('voice_provider_invalid_audio');
   });
 
   it('honore le modèle OpenAI configuré et borne/refuse toute réponse non-WAV', async () => {
