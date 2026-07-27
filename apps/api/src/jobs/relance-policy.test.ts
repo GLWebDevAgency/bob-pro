@@ -158,3 +158,49 @@ describe('RelanceService — facture liée dans l’e-mail (PR-06)', () => {
     expect(sent.body).not.toContain('http');
   });
 });
+
+describe('RelanceService — course sous double exécution (revue adversariale PR-06)', () => {
+  it('le perdant du pré-check REVOIT la clé sous le verrou facture : job du gagnant rendu, AUCUN nouveau lien préparé', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://sign.bobpro.fr');
+    const { service, persistence } = await makeService({ invoices: [invoice('inv-16', 16)] });
+    const first = await service.runRelancesForCompany('co-1');
+    expect(first.queued).toBe(1);
+
+    const createLink = vi.spyOn(persistence.publicAccessTokens, 'create');
+    // Fenêtre de course simulée : le PRÉ-CHECK du concurrent croit la clé absente (comme un
+    // second cron parti avant le commit du premier) — la relecture SOUS VERROU, elle, voit
+    // l'insert dédupliqué du gagnant et fait foi.
+    vi.spyOn(persistence.notificationJobs, 'findByDedupeKey').mockResolvedValueOnce(null);
+
+    const second = await service.runRelancesForCompany('co-1');
+    // Le job du gagnant (toujours en route) est rendu tel quel — pas un doublon, pas une erreur.
+    expect(second.queued).toBe(1);
+    expect(second.deduplicated).toBe(0);
+    expect(createLink).not.toHaveBeenCalled();
+    expect(await persistence.notificationJobs.listRecent('co-1', 10)).toHaveLength(1);
+  });
+
+  it("filet d'unicité (adaptateur sans verrou bloquant) : le conflit de payload est rattrapé — verdict du gagnant, jamais d'erreur non gérée", async () => {
+    const { service, delivery, persistence, notifier } = await makeService({
+      invoices: [invoice('inv-16', 16)],
+    });
+    await service.runRelancesForCompany('co-1'); // enfilé SANS lien (pas de SIGN_WEB)
+    await delivery.runForCompany('co-1'); // livré → done
+    expect(notifier.send).toHaveBeenCalledTimes(1);
+
+    // Le corps du concurrent DIFFÈRE (lien désormais préparable) → l'insert sous la même clé
+    // lève NotificationDedupeConflictError. Pré-check ET relecture croient la clé absente.
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://sign.bobpro.fr');
+    vi.spyOn(persistence.notificationJobs, 'findByDedupeKey')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    const rerun = await service.runRelancesForCompany('co-1');
+    // L'insert dédupliqué fait foi : le perdant repart avec le job livré du gagnant (done),
+    // sans doublon sous la clé et sans second envoi.
+    expect(rerun.deduplicated).toBe(1);
+    expect(rerun.queued).toBe(0);
+    expect(await persistence.notificationJobs.listRecent('co-1', 10)).toHaveLength(1);
+    expect(notifier.send).toHaveBeenCalledTimes(1);
+  });
+});

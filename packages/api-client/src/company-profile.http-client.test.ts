@@ -320,6 +320,85 @@ describe('HttpBobClient — réglages facturation BDD', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('tolère un serveur N-1 sans relancePolicy/relanceAutoEnabled : défauts FAIL-CLOSED (cadence défaut, auto OFF)', async () => {
+    // Fenêtre de mixité preview/staging : l'app N interroge un serveur d'avant PR-06. Les deux
+    // champs additifs absents ⇒ normalisés (null = DEFAULT_RELANCE_POLICY, auto false — jamais
+    // une automatisation promise qu'un serveur N-1 n'exécute pas) ; le reste reste STRICT.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              companyId: 'company-owner',
+              revision: 4,
+              showRibOnInvoices: true,
+              showInsuranceOnInvoices: false,
+              pdfAccentColor: 'green',
+              defaultQuoteValidityDays: 45,
+              defaultDepositPercent: 20,
+              defaultInvoicePaymentTermsDays: 30,
+              createdAt: '2026-07-17T06:00:00.000Z',
+              updatedAt: '2026-07-17T06:05:00.000Z',
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    await expect(client.getCompanyBillingSettings()).resolves.toMatchObject({
+      ok: true,
+      value: { revision: 4, relancePolicy: null, relanceAutoEnabled: false },
+    });
+  });
+
+  it('présents mais difformes, les champs PR-06 restent refusés (la tolérance ne couvre que l’absence)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              companyId: 'company-owner',
+              revision: 4,
+              showRibOnInvoices: true,
+              showInsuranceOnInvoices: false,
+              pdfAccentColor: 'green',
+              defaultQuoteValidityDays: 45,
+              defaultDepositPercent: 20,
+              defaultInvoicePaymentTermsDays: 30,
+              // Escalade désordonnée : neutre avant cordial — contrat refusé, jamais casté.
+              relancePolicy: {
+                cordialAfterDays: 20,
+                neutreAfterDays: 10,
+                fermeAfterDays: 30,
+                miseEnDemeureAfterDays: 40,
+              },
+              relanceAutoEnabled: true,
+              createdAt: '2026-07-17T06:00:00.000Z',
+              updatedAt: '2026-07-17T06:05:00.000Z',
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    await expect(client.getCompanyBillingSettings()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
   it('refuse un réglage serveur incomplet au lieu de fabriquer les conditions manquantes', async () => {
     vi.stubGlobal(
       'fetch',

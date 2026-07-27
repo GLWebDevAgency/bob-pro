@@ -3607,9 +3607,17 @@ export class BackendService {
       // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
       // (@bob/core deriveRelancePlan) — même moteur que le cron et les surfaces mobiles.
       draftRelance: async (input) => {
-        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        const [inv, cust, settings] = await Promise.all([
+          this.listInvoices(),
+          this.listCustomers(),
+          // PR-06 — la cadence PERSONNALISÉE de la société pilote aussi le ton proposé à la
+          // voix : une seule vérité écran/voix/cron (null = DEFAULT_RELANCE_POLICY, comme le
+          // cron planForCompany).
+          this.p.billingSettings.findByCompanyId(this.companyId()),
+        ]);
         if (!inv.ok) return inv;
         if (!cust.ok) return cust;
+        const relancePolicy = settings?.relancePolicy ?? null;
         // La vue serveur type kind/status en string large : projection stricte vers le moteur core.
         const plan = deriveRelancePlan({
           invoices: inv.value.map((i) => ({
@@ -3626,6 +3634,7 @@ export class BackendService {
           customers: cust.value,
           // Retards en jours = calendrier MÉTIER Paris (même moteur que le cron/les écrans).
           today: this.businessToday(),
+          ...(relancePolicy !== null ? { policy: relancePolicy } : {}),
         });
         const entry = input?.invoiceId
           ? plan.find((e) => e.invoiceId === input.invoiceId)

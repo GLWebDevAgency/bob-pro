@@ -13,7 +13,10 @@ import {
   type RelancePolicy,
   type Result,
 } from '@bob/core';
-import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
+import {
+  NotificationDedupeConflictError,
+  type NotificationJob,
+} from '../persistence/notification-jobs';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import { AppLogger, requireTenant } from '../observability/logger';
@@ -103,6 +106,17 @@ export class RelanceService {
     return { plan, emails };
   }
 
+  /** Projection {jobId, status} d'un job existant — les trois chemins de dédup (pré-check,
+   *  relecture sous verrou, filet de conflit) rendent le MÊME verdict, jamais trois recettes. */
+  private static jobOutcome(
+    job: NotificationJob,
+  ): { jobId: string; status: 'done' | 'pending' | 'failed' } {
+    return {
+      jobId: job.id,
+      status: job.status === 'done' ? 'done' : job.status === 'failed' ? 'failed' : 'pending',
+    };
+  }
+
   /**
    * Enfile la relance dans l'outbox transactionnelle. Aucun réseau tiers n'a lieu ici :
    * le worker NotificationDelivery ne verra le job qu'après commit et le livrera avec
@@ -127,12 +141,19 @@ export class RelanceService {
       'invoice-relance',
       dedupeKey,
     );
-    if (existing !== null) {
-      return {
-        jobId: existing.id,
-        status: existing.status === 'done' ? 'done' : existing.status === 'failed' ? 'failed' : 'pending',
-      };
-    }
+    if (existing !== null) return RelanceService.jobOutcome(existing);
+    // Course sous double exécution (deux cron/gestes passent le pré-check à null) : le verrou de
+    // ligne de la facture — pris DANS la transaction tenant ambiante (les deux appelants tournent
+    // sous runWithTenant) — sérialise les prétendants ; la RELECTURE de la clé sous le verrou
+    // rend l'insert dédupliqué autoritaire : le perdant repart avec le job du gagnant SANS
+    // préparer de lien (aucune rotation qui invaliderait le lien déjà enfilé), sans erreur.
+    await this.p.invoices.lockById(entry.invoiceId);
+    const winner = await this.p.notificationJobs.findByDedupeKey(
+      companyId,
+      'invoice-relance',
+      dedupeKey,
+    );
+    if (winner !== null) return RelanceService.jobOutcome(winner);
     const message = source === 'automatic' ? entry.automaticMessage : entry.message;
     // PR-06 — la facture VOYAGE avec chaque relance : lien public de consultation (le même
     // createInvoiceViewLink que le bouton — préparé UNE fois par palier, juste avant l'enqueue).
@@ -175,18 +196,19 @@ export class RelanceService {
         return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
       return { jobId: job.id, status: 'pending' };
     } catch (error) {
-      // Course (double cron/geste simultané) OU changement de cadence : la clé existe déjà avec
-      // un AUTRE payload. Une facture ne reçoit qu'UN message par palier — dédupliqué, honnête.
+      // Filet de DERNIER RESSORT (adaptateurs sans verrou bloquant, ex. harness mémoire) : la clé
+      // existe déjà avec un AUTRE payload — l'insert dédupliqué fait foi, le perdant repart avec
+      // le job du gagnant, jamais une erreur non gérée. Une facture ne reçoit qu'UN message par
+      // palier — dédupliqué, honnête.
       if (error instanceof NotificationDedupeConflictError) {
-        const winner = await this.p.notificationJobs.findByDedupeKey(
+        const conflictWinner = await this.p.notificationJobs.findByDedupeKey(
           companyId,
           'invoice-relance',
           dedupeKey,
         );
-        return {
-          jobId: winner?.id ?? 'deduplicated',
-          status: winner?.status === 'done' ? 'done' : 'pending',
-        };
+        return conflictWinner !== null
+          ? RelanceService.jobOutcome(conflictWinner)
+          : { jobId: 'deduplicated', status: 'pending' };
       }
       throw error;
     }

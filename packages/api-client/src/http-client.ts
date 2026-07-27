@@ -311,12 +311,16 @@ const COMPANY_BILLING_SETTINGS_FIELDS = [
   'defaultQuoteValidityDays',
   'defaultDepositPercent',
   'defaultInvoicePaymentTermsDays',
-  // PR-06 — cadence de relance paramétrable + interrupteur des relances automatiques.
-  'relancePolicy',
-  'relanceAutoEnabled',
   'createdAt',
   'updatedAt',
 ] as const;
+
+/** PR-06 — champs ADDITIFS (cadence de relance + interrupteur auto) : un serveur N-1 de la
+ *  fenêtre de mixité preview/staging ne les émet pas encore. Absents ⇒ défauts FAIL-CLOSED :
+ *  relancePolicy null (= DEFAULT_RELANCE_POLICY, identique au serveur sans cadence) et
+ *  relanceAutoEnabled false (jamais une automatisation promise qu'un serveur N-1 n'exécute pas).
+ *  Présents ⇒ validés aussi strictement qu'avant (difformes = réponse refusée). */
+const COMPANY_BILLING_SETTINGS_OPTIONAL_FIELDS = ['relancePolicy', 'relanceAutoEnabled'] as const;
 
 function isRelancePolicy(value: unknown): boolean {
   if (value === null) return true;
@@ -338,7 +342,15 @@ function isRelancePolicy(value: unknown): boolean {
 }
 
 function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | null {
-  if (!isRecord(value) || !hasExactKeys(value, COMPANY_BILLING_SETTINGS_FIELDS)) return null;
+  if (
+    !isRecord(value) ||
+    !hasBaseKeysWithOptional(
+      value,
+      COMPANY_BILLING_SETTINGS_FIELDS,
+      COMPANY_BILLING_SETTINGS_OPTIONAL_FIELDS,
+    )
+  )
+    return null;
   if (
     typeof value.companyId !== 'string' ||
     value.companyId.length === 0 ||
@@ -350,15 +362,21 @@ function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | 
     !isBoundedInteger(value.defaultDepositPercent, 0, 100) ||
     (value.defaultInvoicePaymentTermsDays !== null &&
       !isBoundedInteger(value.defaultInvoicePaymentTermsDays, 1, 60)) ||
-    !isRelancePolicy(value.relancePolicy) ||
-    typeof value.relanceAutoEnabled !== 'boolean' ||
+    (value.relancePolicy !== undefined && !isRelancePolicy(value.relancePolicy)) ||
+    (value.relanceAutoEnabled !== undefined && typeof value.relanceAutoEnabled !== 'boolean') ||
     !isCanonicalIsoTimestamp(value.createdAt) ||
     !isCanonicalIsoTimestamp(value.updatedAt) ||
     value.updatedAt < value.createdAt
   ) {
     return null;
   }
-  return value as unknown as CompanyBillingSettings;
+  return {
+    ...(value as unknown as CompanyBillingSettings),
+    // Normalisation N-1 (fenêtre de mixité) : absents ⇒ défauts fail-closed, jamais un
+    // contrat élargi pour les valeurs présentes (validées strictement ci-dessus).
+    relancePolicy: (value.relancePolicy ?? null) as CompanyBillingSettings['relancePolicy'],
+    relanceAutoEnabled: (value.relanceAutoEnabled as boolean | undefined) ?? false,
+  };
 }
 
 function isBoundedInteger(value: unknown, min: number, max: number): value is number {

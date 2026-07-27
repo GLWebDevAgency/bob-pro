@@ -87,12 +87,19 @@ const keys = {
   salesDocumentSuggest: (query: string) => ['sales-document-suggest', query] as const,
 };
 
+/** Politique staleTime par domaine (S8) : les réglages ne changent que par un acte explicite —
+ * la mutation ci-dessous pose la réponse serveur dans le cache (setQueryData) et invalide sur
+ * erreur/409. Entre deux, aucun re-GET au retour d'écran (le fil de notifications les consomme
+ * désormais sur le chemin chaud du dashboard) : 15 min de fraîcheur assumée, invalidation-driven. */
+const BILLING_SETTINGS_STALE_TIME_MS = 15 * 60 * 1000;
+
 export function useCompanyBillingSettings() {
   const { session } = useAuth();
   const client = useBobClient();
   return useQuery({
     queryKey: keys.companyBillingSettings(client.companyId),
     enabled: supabaseEnabled && !!session,
+    staleTime: BILLING_SETTINGS_STALE_TIME_MS,
     queryFn: async () => {
       const result = await client.getCompanyBillingSettings();
       if (!result.ok) throw result.error;
@@ -948,6 +955,7 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
   const invoices = useInvoices();
   const customers = useCustomers();
   const diagnostic = useDiagnostic();
+  const billingSettings = useCompanyBillingSettings();
   const today = localToday();
 
   // Fil serveur (source de vérité lu/non-lu) — même query key pour la cloche et l'écran.
@@ -960,15 +968,20 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
     },
   });
 
+  // PR-06 — la cadence PERSONNALISÉE de la société pilote aussi le plan de l'écran Relances :
+  // une seule vérité écran/voix/cron. FAIL-CLOSED : réglages non chargés, en erreur ou sans
+  // cadence (null) ⇒ policy omise ⇒ DEFAULT_RELANCE_POLICY du moteur — identique au serveur.
+  const relancePolicy = billingSettings.data?.relancePolicy ?? null;
   const plan = useMemo<RelancePlanEntry[]>(() => {
     if (!invoices.data || !customers.data) return [];
     return deriveRelancePlan({
       invoices: invoices.data,
       customers: customers.data,
       today,
+      ...(relancePolicy !== null ? { policy: relancePolicy } : {}),
       ...(personality !== undefined ? { personality } : {}),
     });
-  }, [invoices.data, customers.data, today, personality]);
+  }, [invoices.data, customers.data, today, relancePolicy, personality]);
 
   const upcoming = useMemo<UpcomingDueEntry[]>(() => {
     if (!invoices.data || !customers.data) return [];

@@ -328,6 +328,18 @@ const legacyFr = {
     pro: 'Relancer le client',
     direct: 'Relancer',
   },
+  // PR-05 — fiche devis : le rappel « un message pré-rédigé vous attend » (deep link /devis/[id])
+  // est TENU ici — même palier que le cron, même copy que la carte Aujourd'hui.
+  'devis.relanceCardTitle': {
+    pote: 'Relance prête',
+    pro: 'Relance prête à partir',
+    direct: 'Relance prête',
+  },
+  'devis.relanceCardHint': {
+    pote: 'Sans réponse depuis {days} jours. Le message ci-dessous est prêt — rien ne part sans toi.',
+    pro: 'Sans réponse depuis {days} jours. Le message ci-dessous est pré-rédigé — rien ne part sans votre geste.',
+    direct: '{days} j sans réponse. Message prêt — rien ne part sans toi.',
+  },
   // PR-05 — devis signé SANS n° de bon de commande alors que le contexte l'exige (b2g ou
   // canal chorus/portail) : sans BC, la facture dérivée sera rejetée par l'acheteur.
   'today.prioBcManquantTitle': {

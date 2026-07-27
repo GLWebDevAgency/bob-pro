@@ -125,6 +125,23 @@ function validationError(field: string, message: string): AppError {
   return { kind: 'validation', issues: [{ field, message }] };
 }
 
+/**
+ * Destinataire EXPLICITE normalisé — SOURCE UNIQUE de tous les adaptateurs (parité) :
+ * une adresse fournie mais vide ou mal formée est refusée du MÊME motif partout, jamais
+ * silencieusement remplacée par l'e-mail de la fiche client. `ok(null)` = rien d'explicite
+ * (l'appelant applique alors son repli fiche client).
+ */
+export function resolveExplicitRecipientEmail(
+  recipientEmail: string | undefined,
+): Result<string | null, AppError> {
+  if (recipientEmail === undefined) return ok(null);
+  const explicit = recipientEmail.trim().toLowerCase();
+  if (explicit.length === 0 || !EMAIL_PATTERN.test(explicit)) {
+    return err(validationError('recipientEmail', 'Adresse e-mail du destinataire invalide.'));
+  }
+  return ok(explicit);
+}
+
 export class SendInvoice {
   constructor(private readonly deps: SendInvoiceDeps) {}
 
@@ -160,11 +177,9 @@ export class SendInvoice {
 
     // Destinataire résolu : contact choisi (prioritaire) sinon e-mail de la fiche client.
     // Aucune adresse → refus ACTIONNABLE (compléter la fiche), jamais un envoi dans le vide.
-    const explicit = input.recipientEmail?.trim().toLowerCase();
-    if (explicit !== undefined && (explicit.length === 0 || !EMAIL_PATTERN.test(explicit))) {
-      return err(validationError('recipientEmail', 'Adresse e-mail du destinataire invalide.'));
-    }
-    const recipient = explicit ?? customer.email ?? null;
+    const explicit = resolveExplicitRecipientEmail(input.recipientEmail);
+    if (!explicit.ok) return explicit;
+    const recipient = explicit.value ?? customer.email ?? null;
     if (recipient === null) {
       return err(
         validationError(

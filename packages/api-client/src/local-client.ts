@@ -115,6 +115,8 @@ import {
   UpdateCustomer,
   deriveRelancePlan,
   formatEUR,
+  // PR-01 — destinataire explicite : la MÊME garde que SendInvoice serveur (parité d'adaptateurs).
+  resolveExplicitRecipientEmail,
   ok,
   err,
   appUnavailable,
@@ -3778,7 +3780,11 @@ export class LocalBobClient implements BobClient {
       });
     }
     const customer = await this.customers.findById(invoice.customerId);
-    const recipient = input.recipientEmail?.trim().toLowerCase() || customer?.email || null;
+    // Parité serveur (SendInvoice) : une adresse explicite vide/mal formée est REFUSÉE du même
+    // motif — jamais silencieusement remplacée par l'e-mail de la fiche client.
+    const explicit = resolveExplicitRecipientEmail(input.recipientEmail);
+    if (!explicit.ok) return explicit;
+    const recipient = explicit.value ?? customer?.email ?? null;
     if (recipient === null || customer === null) {
       return err({
         kind: 'validation',

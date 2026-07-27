@@ -9,7 +9,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Pressable, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, formatDateOnlyFr, normalizeVoiceText, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
+import { buildPieceView, formatDateOnlyFr, normalizeVoiceText, parisDateOnly, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, StatusBadge, font, useTheme } from '@bob/ui';
@@ -486,7 +486,9 @@ export default function FactureDetail() {
       try {
         await recordTransmission.mutateAsync({
           invoiceId: id,
-          depositedAt: new Date().toISOString().slice(0, 10),
+          // Date DÉCLARÉE = calendrier MÉTIER Paris (convention du repo — même helper que
+          // l'écran transmission), jamais un slice UTC qui décale la veille après 22 h/23 h.
+          depositedAt: parisDateOnly(),
         });
       } catch (error) {
         Alert.alert('Oups', appErrorMessage(error));

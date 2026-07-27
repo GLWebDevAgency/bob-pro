@@ -5,12 +5,13 @@
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Share, View } from 'react-native';
+import { Alert, Linking, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
+import { Feather } from '@expo/vector-icons';
+import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, parisDateOnly, type PieceLineView, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
-import { t } from '@bob/i18n';
-import { ErrorRetry, SkeletonCard, SkeletonHeader, useTheme } from '@bob/ui';
+import { PERSONALITY_LABELS, t } from '@bob/i18n';
+import { Card, ErrorRetry, FadeIn, SectionHeader, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import {
   appErrorMessage,
   useAttachQuotePurchaseOrder,
@@ -32,6 +33,9 @@ import {
   type QuoteActionsHandle,
   type QuoteLinkedInvoices,
 } from '../../src/components/DocumentActions';
+import { Badge } from '../../src/components/ui';
+import { ShareQuoteLinkButton } from '../../src/components/ShareQuoteLinkButton';
+import { quoteRelancePromptOf } from '../../src/components/quote-relance-prompt.logic';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
 import { QuoteLineEditSheet, type QuoteLineEditPatch, type QuoteLineEditSeed } from '../../src/components/QuoteLineEditSheet';
 import { PurchaseOrderCard, PurchaseOrderSheet } from '../../src/components/PurchaseOrderSection';
@@ -81,7 +85,7 @@ function extractLinePricePatch(digits: string): number | null {
 
 export default function DevisDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors } = useTheme();
+  const { personality, colors, controls } = useTheme();
   const router = useRouter();
   const client = useBobClient();
   const quote = useQuote(id);
@@ -120,6 +124,23 @@ export default function DevisDetail() {
       ...(linked.length > 0 ? { linkedInvoices: linked } : {}),
     });
   }, [quote.data, customers.data, invoices.data]);
+  // PR-05 — la promesse du rappel « un message pré-rédigé vous attend » (deep link /devis/[id])
+  // est tenue ICI : au palier atteint (MÊME dérivation quoteRelancePalierOf que le cron), la
+  // fiche expose le message buildQuoteRelance prêt à partager (même copy que la carte
+  // Aujourd'hui). Calendrier MÉTIER Paris — le même ancrage que le rappel reçu.
+  const relancePrompt = useMemo(() => {
+    const q = quote.data;
+    if (!q || !view) return null;
+    return quoteRelancePromptOf({
+      status: q.status,
+      issuedAt: q.issuedAt ?? null,
+      number: q.number,
+      ttcCents: q.totals.ttc,
+      customerName: view.customerName,
+      today: parisDateOnly(),
+      personality: PERSONALITY_LABELS[personality],
+    });
+  }, [quote.data, view, personality]);
   // R3/R5 : les 3 états RÉELS du CTA post-signature (QuoteActions) dérivés des MÊMES factures liées
   // que la vue ci-dessus (view.linkedInvoices) — une seule source, pas de recalcul divergent.
   const quoteLinkedInvoices = useMemo<QuoteLinkedInvoices>(
@@ -616,21 +637,73 @@ export default function DevisDetail() {
         onEditLine={(lineId) => handleEditLine(lineId)}
         onDeleteLine={(lineId) => void handleDeleteLine(lineId)}
         extra={
-          // B8 : section « Bon de commande » — visible dès que le devis est envoyé/vu/signé,
-          // ou dès qu'une référence existe (lecture honnête même sur refusé/expiré).
-          poStatusEligible || q.purchaseOrder != null ? (
-            <PurchaseOrderCard
-              purchaseOrder={q.purchaseOrder ?? null}
-              editable={poEditable}
-              invoicedNote={poStatusEligible && poAlreadyInvoiced}
-              emptyBody={t('po.emptyQuoteBody', { personality })}
-              documents={documents.data ?? []}
-              onAdd={openPoSheet}
-              onEdit={openPoSheet}
-              onRemove={() => void removePurchaseOrder()}
-              onOpenDocument={(documentId) => router.push(`/documents/${documentId}`)}
-            />
-          ) : null
+          <>
+            {relancePrompt ? (
+              // PR-05 — « un message pré-rédigé vous attend » : aperçu du VRAI message
+              // (buildQuoteRelance, palier du cron) + partage avec lien de signature frais.
+              // Rien ne part tant que le Share natif n'est pas complété par l'artisan.
+              <FadeIn>
+                <Card style={{ marginBottom: 12 }}>
+                  <SectionHeader title={t('devis.relanceCardTitle', { personality })} />
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+                    <Badge
+                      label={t(
+                        relancePrompt.palier === 'j30'
+                          ? 'today.prioQuoteRelanceBadgeJ30'
+                          : 'today.prioQuoteRelanceBadgeJ15',
+                        { personality },
+                      ).toUpperCase()}
+                      tone="warning"
+                    />
+                    <Text style={[font('meta', 500), { flex: 1, color: colors.slate500 }]}>
+                      {t('devis.relanceCardHint', {
+                        personality,
+                        params: { days: relancePrompt.daysSinceIssued },
+                      })}
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      marginTop: 10,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: controls.cardBorder,
+                      padding: 12,
+                    }}
+                  >
+                    <Text style={[font('body', 500), { fontSize: 13.5, lineHeight: 20, color: colors.ink800 }]}>
+                      {relancePrompt.previewBody}
+                    </Text>
+                  </View>
+                  <View style={{ marginTop: 12, alignSelf: 'flex-start' }}>
+                    <ShareQuoteLinkButton
+                      quoteId={id}
+                      quoteNumber={q.number}
+                      title={t('today.ctaQuoteRelance', { personality })}
+                      variant="primary"
+                      icon={<Feather name="send" size={15} color={colors.surface} />}
+                      buildMessage={relancePrompt.buildShareMessage}
+                    />
+                  </View>
+                </Card>
+              </FadeIn>
+            ) : null}
+            {/* B8 : section « Bon de commande » — visible dès que le devis est envoyé/vu/signé,
+                ou dès qu'une référence existe (lecture honnête même sur refusé/expiré). */}
+            {poStatusEligible || q.purchaseOrder != null ? (
+              <PurchaseOrderCard
+                purchaseOrder={q.purchaseOrder ?? null}
+                editable={poEditable}
+                invoicedNote={poStatusEligible && poAlreadyInvoiced}
+                emptyBody={t('po.emptyQuoteBody', { personality })}
+                documents={documents.data ?? []}
+                onAdd={openPoSheet}
+                onEdit={openPoSheet}
+                onRemove={() => void removePurchaseOrder()}
+                onOpenDocument={(documentId) => router.push(`/documents/${documentId}`)}
+              />
+            ) : null}
+          </>
         }
         actions={
           hasQuoteActions(q) ? (

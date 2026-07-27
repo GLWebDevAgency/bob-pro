@@ -1970,6 +1970,59 @@ describe('LocalBobClient — C25 relances réelles + fil de notifications (adapt
   });
 });
 
+describe('PR-01 — sendInvoice (adaptateur démo) : destinataire explicite, parité serveur', () => {
+  async function issuedInvoice(client: LocalBobClient): Promise<string> {
+    const quote = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Intervention', category: 'labor', qty: 1, unitPriceHT: 50000, vatRate: 20 }],
+    });
+    if (!quote.ok) throw new Error('fixture: devis');
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'SARL Martin Rénovation' });
+    const finale = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+    if (!finale.ok) throw new Error('fixture: finale');
+    await client.issueInvoice({ invoiceId: finale.value.invoiceId });
+    return finale.value.invoiceId;
+  }
+
+  it('recipientEmail invalide ou vide : REFUSÉ du même motif que le serveur — jamais un repli silencieux fiche client', async () => {
+    const client = makeClient();
+    const invoiceId = await issuedInvoice(client);
+
+    for (const recipientEmail of ['pas-un-email', '   ', 'a@b']) {
+      const refused = await client.sendInvoice({ invoiceId, recipientEmail });
+      expect(refused.ok).toBe(false);
+      if (refused.ok) continue;
+      expect(refused.error).toEqual({
+        kind: 'validation',
+        issues: [
+          { field: 'recipientEmail', message: 'Adresse e-mail du destinataire invalide.' },
+        ],
+      });
+    }
+    // Rien n'a été « envoyé » : le fil local reste vierge de toute livraison.
+    const feed = await client.listNotifications();
+    expect(feed.ok && feed.value).toHaveLength(0);
+  });
+
+  it('sans recipientEmail : repli fiche client (normalisé), l’envoi démo est journalisé', async () => {
+    const client = makeClient();
+    const invoiceId = await issuedInvoice(client);
+
+    const sent = await client.sendInvoice({ invoiceId });
+    expect(sent.ok).toBe(true);
+    if (!sent.ok) return;
+    expect(sent.value.recipient).toBe('contact@martin-renov.fr');
+
+    const explicit = await client.sendInvoice({
+      invoiceId,
+      recipientEmail: '  Compta@Martin-Renov.fr ',
+    });
+    // Adresse explicite valide : normalisée (trim + minuscules) — même règle que le serveur.
+    expect(explicit.ok && explicit.value.recipient).toBe('compta@martin-renov.fr');
+  });
+});
+
 describe('C-EXP6b — réception e-facture (adaptateur démo, parité serveur)', () => {
   const MY_SIREN = '732829320'; // Mercier (seed)
   const SUPPLIER_SIREN = '552100554';
