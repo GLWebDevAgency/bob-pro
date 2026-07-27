@@ -519,23 +519,125 @@ Règles :
 
 ### 8.1 Fenêtre de certification staging et rollback exact
 
-La certification positive est une opération bornée sur le SHA candidat :
+La certification positive est une opération bornée, `workflow_dispatch` uniquement, sur le SHA
+candidat. Elle possède son propre workflow staging et ne réutilise pas le pipeline Railway
+générique : elle ne lance ni audit archive, ni cutover settlement/outbox, ni mutation d'un autre
+protocole. Comme GitHub ne distribue un nouveau `workflow_dispatch` qu'après présence du fichier
+sur la branche par défaut, le workflow Railway déjà publié expose uniquement un choix de routage
+`m1b-staging-certification` : sur la branche candidate, ce choix appelle le workflow M1-B local
+réutilisable et désactive entièrement le job de release générique. Ce trampoline permet la preuve
+staging **avant** merge sans faire exécuter le pipeline Railway général.
 
-1. consigner SHA, environnement, acteur, heure de début et identité DB du déployeur
-   non-superuser ;
-2. générer hors logs un secret staging éphémère, le poser réellement dans le secret store staging,
-   vérifier sa présence sans l'afficher, activer le master staging et déployer le SHA exact ;
-3. garder le flag global OFF ; créer/activer uniquement l'override du compte interne après
-   autorisation fondateur datée+canal et contre-signature Claude+GPT de la ligne exacte dans
-   `MATRICE_FLAGS_V1.md`, puis enregistrer sa version ;
-4. exécuter bootstrap V1 → reçu durable → start → contexte sideband appliqué → `screen-ACK`, puis
-   vérifier les lignes DB et événements attendus sous RLS avec le rôle runtime ;
-5. désactiver/retirer l'override, incrémenter la version parente, terminer la lease de test et
-   prouver zéro lease V1 active ;
-6. remettre le master à OFF, retirer les deux variables de keyring, redéployer le même SHA et
-   vérifier que la négociation V1 ne peut plus être admise ;
-7. consigner heure de fin, acteur, résultats et incident éventuel. Un échec déclenche immédiatement
-   les étapes 5–6 ; il ne laisse jamais un override ou secret staging actif.
+Préconditions fail-closed :
+
+- environnement GitHub exact `staging`, concurrence repository-global
+  `railway-api-staging`, identique au pipeline Railway staging générique,
+  `cancel-in-progress=false` et aucun changement Railway déjà stageé ;
+- projet, environnement et service Railway ciblés par leurs UUID sur **chaque** commande CLI
+  (`--project`, `--environment`, `--service`) ; aucune commande `railway link`, aucun export
+  `RAILWAY_ENV` — ce nom sélectionne le backend de la CLI et ne désigne pas l'environnement Bob ;
+- cluster Supabase staging épinglé par son project ref, son `system_identifier`, son OID de base et
+  son nom de base attendus dans les variables GitHub staging. Avant **chaque** migration ou
+  mutation de flag, un opérateur interroge `DIRECT_URL` et `DATABASE_URL`, exige la même primaire
+  inscriptible, les quatre identités exactes, le rôle runtime non-superuser/sans `BYPASSRLS` et
+  l'origine `SUPABASE_URL=https://<project-ref>.supabase.co` ; une simple paire cohérente mais
+  pointant vers un autre projet est refusée ;
+- compte interne dédié, sans mission active ni brouillon de devis préexistant ; le harness refuse
+  de supprimer, préempter ou « nettoyer » une donnée qu'il n'a pas créée lui-même ;
+- Bob Live OpenAI, sa capacité et son auditeur local déjà complets dans le runtime staging. La
+  fenêtre M1-B ne bascule pas le provider et ne remplace aucun secret Bob Live ;
+- autorisation fondateur datée+canal, identité exacte du compte et contre-signature Claude+GPT de
+  la ligne de matrice fournies comme entrées distinctes, non inférées par le workflow ;
+- keyring AgentMission **stable pour staging** conservé dans le secret store GitHub staging. Le
+  secret n'est pas régénéré à chaque run : le registre d'empreintes et les events sont append-only,
+  donc une version déjà liée doit toujours retrouver exactement le même matériau. Après le test,
+  le bloc est retiré de Railway mais reste dans ce coffre approuvé pour un prochain run. Cette clé
+  staging n'est jamais une clé production.
+
+Mutation Railway :
+
+- avant toute activation, le workflow inventorie les noms de variables du service et refuse la
+  présence d'une variable scellée que l'API ne pourrait pas restaurer. La collection de valeurs
+  non rendues doit correspondre exactement aux métadonnées de propriété du service : une variable
+  héritée, partagée ou devenue ambiguë n'est jamais matérialisée silencieusement au niveau service
+  pendant le rollback ;
+- les trois variables runtime M1-B et un marqueur non secret
+  `BOB_M1B_STAGING_CERTIFICATION_OWNER=<github.run_id>:<github.run_attempt>` sont ajoutés dans la
+  **même** mutation `variableCollectionUpsert` avec `skipDeploys=true`, sans remplacer les autres
+  variables. Le produit n'interprète jamais ce marqueur : il existe uniquement pour rendre
+  l'ownership du rollback durable même si GitHub perd la sortie de l'étape après le commit
+  Railway ;
+- le rollback relit la collection **non rendue**, retire uniquement les trois noms M1-B et la
+  marque d'ownership lorsque celle-ci correspond exactement au run courant, puis restaure la
+  collection atomiquement avec `replace=true` et `skipDeploys=true`. Une marque absente ou
+  appartenant à un autre run interdit toute suppression. Toute variable scellée, valeur illisible
+  ou dérive concurrente fait échouer la précondition avant activation ; le workflow ne
+  reconstruit jamais une collection partielle et ne journalise aucune valeur ;
+- si Railway committe cette restauration mais perd toutes les réponses HTTP, l'opérateur relit
+  l'état durable : seule l'égalité exacte avec la collection non-M1-B attendue transforme la
+  réponse perdue en ACK récupéré et déclenche le redéploiement OFF. Une collection encore active,
+  différente ou illisible reste un échec fermé. Si le run avait déjà publié
+  `variables_owned=true`, une collection désormais absente impose quand même ce redéploiement
+  OFF, car le processus encore vivant peut conserver l'ancien environnement ;
+- l'API Railway ne fournit pas de CAS de collection. L'opérateur effectue donc une double lecture
+  identique avant mutation, refuse tout patch en attente, puis compare exactement toute la
+  collection non-M1-B après rollback. Cette fenêtre résiduelle est couverte par la concurrence
+  GitHub exclusive et l'interdiction opérationnelle de modifier le service pendant la
+  certification ; une mutation Railway externe concurrente reste un incident, jamais un état
+  automatiquement « réparé » ;
+- chaque état de configuration est relu et comparé sans afficher de secret, puis un seul
+  déploiement explicite du SHA exact l'applique.
+
+Séquence :
+
+1. consigner SHA, environnement, acteur et heure de début ; vérifier que le checkout correspond
+   exactement au SHA demandé, puis prouver l'identité Supabase staging épinglée sous les deux
+   connexions et le déployeur runtime non-superuser ;
+2. déployer d'abord le SHA exact avec M1-B OFF, exécuter `predeploy`, attendre le deployment ID
+   exact jusqu'à `SUCCESS`, puis prouver mono-réplique, readiness, SHA/environnement/capabilities
+   et exécuter `postdeploy` ;
+3. exécuter une négociation réelle avec un offer SDP WebRTC généré par navigateur et prouver
+   `agentMissionSession=null` ;
+4. certifier le keyspace HMAC durable avant mutation : keyspace vierge uniquement avec version
+   initiale `1`, ou floor exact `[N,N]` désarmé avec binding/empreinte identiques au secret stable.
+   Toute rotation, floor adjacent ou matériau divergent est refusé ; ajouter ensuite atomiquement
+   le bloc M1-B staging **et le marqueur du run**, publier `variables_owned=true` comme information
+   secondaire, exécuter `predeploy`, déployer le même SHA exact et rejouer deployment-ID,
+   topologie, readiness et `postdeploy`, puis prouver le floor exact `[N,N]` armé ;
+5. garder le flag global OFF ; créer/activer uniquement l'override `user` du compte interne,
+   avec compare-and-swap sur la version parente et un acteur d'audit contenant le run ID exact,
+   puis publier `override_owned=true` comme information secondaire. Le `updatedByUserId` durable
+   de la ligne override est la preuve d'ownership utilisée par le cleanup ;
+6. s'authentifier comme cet utilisateur via Supabase, valider les identités utilisateur+société,
+   puis exécuter une vraie session WebRTC :
+   bootstrap V1 → reçu durable → `startQuoteCreation` → contexte sideband `/devis/new` appliqué →
+   `screen-ACK` ;
+7. sous `DATABASE_URL` et le rôle runtime non-superuser, prouver la mission, ses événements, la
+   lease et le brouillon exacts, puis changer le GUC tenant et prouver zéro ligne inter-tenant ;
+8. annuler la mission, supprimer uniquement son propre brouillon encore vide par CAS, terminer la
+   session et prouver zéro mission/lease/brouillon actif appartenant au run ;
+9. dans un job de cleanup indépendant avec `if: always()`, retirer l'override **uniquement** si son
+   acteur durable correspond au run courant, prouver global OFF, retirer le bloc Railway
+   **uniquement** si son marqueur durable correspond au même run, exécuter impérativement
+   `predeploy` OFF afin de fermer/drainer et désarmer durablement le writer, puis redéployer le
+   même SHA et attendre son deployment ID exact. Si la base, l'override ou le `predeploy` deviennent
+   indisponibles après activation, le redéploiement d'urgence avec le bloc Railway déjà retiré a
+   quand même lieu afin de couper immédiatement toute nouvelle admission ; le run reste rouge et
+   le writer durable doit être réconcilié avant tout nouveau run. Après le chemin nominal, prouver
+   topologie/readiness, exécuter `postdeploy`, puis prouver une nouvelle négociation `null`, floor
+   `[N,N]` avec binding inchangé et `writerEnabled=false`, et zéro lease ;
+10. consigner heure de fin, acteur, deployment IDs et résultats dans un artefact borné sans PII,
+    token, SDP, identifiant brut ou secret. Un échec déclenche le cleanup ; il ne transforme jamais
+    une preuve partielle en succès.
+
+Le pipeline est autorisé à monter au statut `certified` uniquement si le job positif **et** le job
+de cleanup sont verts. Une annulation forcée de runner reste un incident de release : avant tout
+nouveau run, le préflight prouve à nouveau global/override/master/keyring OFF et zéro lease V1.
+Un cleanup ne déduit jamais sa propriété de la seule présence d'un bloc ou d'un override : il exige
+la marque durable exacte du run. Si le preflight découvre un état préexistant, une marque absente
+ou une marque appartenant à un autre run, il échoue sans rien supprimer. Une annulation forcée du
+workflow qui empêche le job de cleanup reste une intervention tracée au prochain run ; une simple
+perte de sortie GitHub après mutation n'abandonne plus l'état activé.
 
 La matrice n'est modifiée ni interprétée comme une décision fondateur par l'auteur seul. Toute
 contre-signature manquante bloque seulement la fenêtre positive, jamais l'implémentation.

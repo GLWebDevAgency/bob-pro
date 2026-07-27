@@ -1582,7 +1582,7 @@ test('le contrat image/config impose Node épinglé, rôle non-root et smoke bub
   );
   assert.match(
     workflow,
-    /release-api:\n\s+# [^\n]+\n(?:\s+# [^\n]+\n){2}\s+if: \$\{\{ always\(\) \}\}/u,
+    /release-api:\n\s+# [^\n]+\n(?:\s+# [^\n]+\n){2}\s+if: \$\{\{ always\(\) && inputs\.purpose != 'm1b-staging-certification' \}\}/u,
   );
   assert.match(workflow, /release-api:[\s\S]*?timeout-minutes: 360/u);
   assert.match(

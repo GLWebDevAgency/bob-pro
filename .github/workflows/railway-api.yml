@@ -6,6 +6,14 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      purpose:
+        description: Release path to execute
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - m1b-staging-certification
       environment:
         description: Railway environment
         required: true
@@ -18,8 +26,33 @@ on:
         description: Railway API service name or id
         required: true
         default: bob-pro-api
+      founder_authorization_date:
+        description: M1-B founder authorization date (YYYY-MM-DD)
+        required: false
+        default: ''
+      founder_authorization_channel:
+        description: M1-B founder authorization channel
+        required: false
+        default: ''
+      founder_authorization_ref:
+        description: M1-B immutable founder authorization reference
+        required: false
+        default: ''
+      claude_countersign_ref:
+        description: M1-B immutable Claude countersignature reference
+        required: false
+        default: ''
+      gpt_countersign_ref:
+        description: M1-B immutable GPT countersignature reference
+        required: false
+        default: ''
   workflow_call:
     inputs:
+      purpose:
+        description: Release path to execute
+        required: false
+        default: release
+        type: string
       environment:
         description: Railway environment
         required: true
@@ -27,6 +60,31 @@ on:
       service:
         description: Railway API service name or id
         required: true
+        type: string
+      founder_authorization_date:
+        description: M1-B founder authorization date (YYYY-MM-DD)
+        required: false
+        default: ''
+        type: string
+      founder_authorization_channel:
+        description: M1-B founder authorization channel
+        required: false
+        default: ''
+        type: string
+      founder_authorization_ref:
+        description: M1-B immutable founder authorization reference
+        required: false
+        default: ''
+        type: string
+      claude_countersign_ref:
+        description: M1-B immutable Claude countersignature reference
+        required: false
+        default: ''
+        type: string
+      gpt_countersign_ref:
+        description: M1-B immutable GPT countersignature reference
+        required: false
+        default: ''
         type: string
     outputs:
       api_base_url:
@@ -39,11 +97,39 @@ on:
         description: Railway environment certified by the readiness smoke
         value: ${{ jobs.release-api.outputs.release_environment }}
 jobs:
+  route-m1b-staging-certification:
+    if: ${{ inputs.purpose == 'm1b-staging-certification' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: staging
+    steps:
+      - name: Require the dedicated staging target
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+        run: |
+          test "$RELEASE_ENVIRONMENT" = staging
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+
+  certify-agent-mission-m1b-staging:
+    needs: route-m1b-staging-certification
+    if: ${{ inputs.purpose == 'm1b-staging-certification' && needs.route-m1b-staging-certification.result == 'success' }}
+    uses: ./.github/workflows/agent-mission-m1b-staging.yml
+    with:
+      founder_authorization_date: ${{ inputs.founder_authorization_date }}
+      founder_authorization_channel: ${{ inputs.founder_authorization_channel }}
+      founder_authorization_ref: ${{ inputs.founder_authorization_ref }}
+      claude_countersign_ref: ${{ inputs.claude_countersign_ref }}
+      gpt_countersign_ref: ${{ inputs.gpt_countersign_ref }}
+    secrets: inherit
+
   release-api:
     # GitHub cancels a normal run step after roughly ten seconds. Keep the job alive so the
     # cancellation-specific cleanup step below can reconcile an archive deployment whose creation
     # response was lost; all ordinary unfinished steps still retain their implicit success() guard.
-    if: ${{ always() }}
+    if: ${{ always() && inputs.purpose != 'm1b-staging-certification' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     # Map the free-form workflow_call input before GitHub resolves environment
