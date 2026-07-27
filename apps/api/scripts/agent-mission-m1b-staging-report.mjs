@@ -32,6 +32,11 @@ function positiveInteger(value, name) {
   return parsed;
 }
 
+function positiveDecimalIdentifier(value, name) {
+  if (!/^[1-9][0-9]{0,19}$/u.test(value)) fail(`${name} is invalid`);
+  return value;
+}
+
 function instant(value, name) {
   const epoch = Date.parse(value);
   if (!Number.isFinite(epoch) || new Date(epoch).toISOString() !== value) {
@@ -66,6 +71,10 @@ function optionalDuration(value, name) {
 export function buildM1BStagingReport(environment = process.env) {
   const releaseSha = required(environment, 'BOB_M1B_RELEASE_SHA', 40);
   if (!SHA.test(releaseSha)) fail('BOB_M1B_RELEASE_SHA must be lowercase 40-hex');
+  const workflowRunId = positiveDecimalIdentifier(
+    required(environment, 'BOB_M1B_WORKFLOW_RUN_ID', 20),
+    'workflowRun.id',
+  );
   const startedAt = instant(required(environment, 'BOB_M1B_STARTED_AT', 40), 'startedAt');
   const finishedAt = instant(
     required(environment, 'BOB_M1B_FINISHED_AT', 40),
@@ -110,20 +119,17 @@ export function buildM1BStagingReport(environment = process.env) {
     fail('baseline deployment ACK requires its exact deployment ID');
   }
   return Object.freeze({
-    schemaVersion: 3,
+    schemaVersion: 4,
     objective: 'O4.M1-B',
     environment: 'staging',
     releaseSha,
     workflowRun: {
-      id: positiveInteger(required(environment, 'BOB_M1B_WORKFLOW_RUN_ID'), 'workflowRun.id'),
+      id: workflowRunId,
       attempt: positiveInteger(
         required(environment, 'BOB_M1B_WORKFLOW_RUN_ATTEMPT'),
         'workflowRun.attempt',
       ),
-      actorReference: `github-actions-run:${required(
-        environment,
-        'BOB_M1B_WORKFLOW_RUN_ID',
-      )}`,
+      actorReference: `github-actions-run:${workflowRunId}`,
     },
     startedAt,
     finishedAt,

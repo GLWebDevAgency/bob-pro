@@ -173,9 +173,16 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
   assert.match(workflow, /id: enable_override/u);
   assert.match(workflow, /variables_owned: \$\{\{ steps\.activate_variables\.outputs\.owned \}\}/u);
   assert.match(workflow, /override_owned: \$\{\{ steps\.enable_override\.outputs\.owned \}\}/u);
-  assert.match(
+  assert.equal(
+    occurrences(
+      workflow,
+      /BOB_M1B_STAGING_RUN_ID: \$\{\{ github\.run_id \}\}$/gmu,
+    ),
+    2,
+  );
+  assert.doesNotMatch(
     workflow,
-    /BOB_M1B_STAGING_RUN_ID: \$\{\{ github\.run_id \}\}:\$\{\{ github\.run_attempt \}\}/u,
+    /BOB_M1B_STAGING_RUN_ID:[^\n]*github\.run_attempt/u,
   );
   assert.match(workflow, /steps\.remove_variables\.outputs\.removed == 'true'/u);
   assert.match(workflow, /steps\.remove_override\.outputs\.removed/u);

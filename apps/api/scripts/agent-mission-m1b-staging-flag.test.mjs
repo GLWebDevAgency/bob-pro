@@ -14,7 +14,7 @@ import {
 } from './agent-mission-m1b-staging-flag.mjs';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
-const RUN_ID = '123456789:1';
+const RUN_ID = '123456789';
 const ACTOR = `system:github:agent-mission-m1b-staging:${RUN_ID}`;
 
 function environment(overrides = {}) {
@@ -52,6 +52,10 @@ test('exige une identité interne et des traces de gouvernance explicites', () =
   assert.match(parsed.reason, /Claude=claude-review-ref/u);
   assert.match(parsed.reason, /GPT=gpt-review-ref/u);
   assert.equal(parsed.actor, ACTOR);
+  assert.equal(
+    parseM1BStagingFlagEnvironment(environment({ GITHUB_RUN_ATTEMPT: '2' })).actor,
+    ACTOR,
+  );
 
   assert.throws(
     () =>
@@ -84,7 +88,7 @@ test('exige une identité interne et des traces de gouvernance explicites', () =
     () =>
       parseM1BStagingFlagEnvironment(
         environment({
-          BOB_M1B_STAGING_RUN_ID: 'local-run',
+          BOB_M1B_STAGING_RUN_ID: '123456789:2',
         }),
       ),
     /github\.run_id/u,
@@ -270,7 +274,7 @@ test('cleanup durable reste sûr avant migration et ne dépend d’aucun output 
   assert.equal(stateReads, 0);
 });
 
-test('cleanup durable relit l’acteur en base et retire son override après perte d’output', () => {
+test('cleanup durable au rerun relit l’acteur stable et retire son override après perte d’output', () => {
   const before = state({
     version: 11,
     subjectCount: 1,
@@ -282,14 +286,18 @@ test('cleanup durable relit l’acteur en base et retire son override après per
   const after = state({ version: 12 });
   const mutations = [];
   let reads = 0;
-  const result = runM1BStagingFlagCommand('cleanup', environment(), {
-    readBootstrapState: () => ({
-      migrationApplied: true,
-      flagCount: 1,
-    }),
-    readState: () => (++reads === 1 ? before : after),
-    runOperation: (input) => mutations.push(input),
-  });
+  const result = runM1BStagingFlagCommand(
+    'cleanup',
+    environment({ GITHUB_RUN_ATTEMPT: '2' }),
+    {
+      readBootstrapState: () => ({
+        migrationApplied: true,
+        flagCount: 1,
+      }),
+      readState: () => (++reads === 1 ? before : after),
+      runOperation: (input) => mutations.push(input),
+    },
+  );
   assert.deepEqual(result, {
     command: 'cleanup',
     state: 'off',
@@ -335,7 +343,7 @@ test('cleanup durable est idempotent mais refuse un override appartenant à un a
             enabledSubjectCount: 1,
             targetExists: true,
             targetEnabled: true,
-            targetActor: 'system:github:agent-mission-m1b-staging:987654321:2',
+            targetActor: 'system:github:agent-mission-m1b-staging:987654321',
           }),
         runOperation: () => {
           throw new Error('foreign override must not be mutated');
@@ -487,7 +495,7 @@ test('cleanup est idempotent mais refuse de masquer un autre override actif', ()
             enabledSubjectCount: 1,
             targetExists: true,
             targetEnabled: true,
-            targetActor: 'system:github:agent-mission-m1b-staging:987654321:2',
+            targetActor: 'system:github:agent-mission-m1b-staging:987654321',
           }),
       }),
     /owned by another run/u,

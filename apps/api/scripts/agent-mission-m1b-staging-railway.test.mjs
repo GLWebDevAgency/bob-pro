@@ -15,7 +15,7 @@ const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const ENVIRONMENT_ID = '22222222-2222-4222-8222-222222222222';
 const SERVICE_ID = '33333333-3333-4333-8333-333333333333';
 const DEPLOYMENT_ID = '44444444-4444-4444-8444-444444444444';
-const RUN_ID = '123456789:1';
+const RUN_ID = '123456789';
 const MISSION_SECRET = Buffer.alloc(32, 7).toString('base64url');
 const SUBJECT_SECRET = Buffer.alloc(32, 8).toString('base64url');
 const PROOF_SECRET = Buffer.alloc(32, 9).toString('base64url');
@@ -84,6 +84,10 @@ function railwayState(variables = bobLiveVariables(), options = {}) {
 
 test('parse la cible staging et refuse toute identité Railway ambiguë', () => {
   assert.equal(parseRailwayM1BEnvironment(environment()).serviceId, SERVICE_ID);
+  assert.equal(
+    parseRailwayM1BEnvironment(environment({ GITHUB_RUN_ATTEMPT: '2' })).runId,
+    RUN_ID,
+  );
   assert.throws(
     () => parseRailwayM1BEnvironment(environment({ RAILWAY_API_SERVICE_ID: 'bob-pro-api' })),
     /must be a UUID/u,
@@ -96,7 +100,7 @@ test('parse la cible staging et refuse toute identité Railway ambiguë', () => 
   );
   assert.throws(
     () => parseRailwayM1BEnvironment(environment({
-      BOB_M1B_STAGING_RUN_ID: 'not-a-run',
+      BOB_M1B_STAGING_RUN_ID: '123456789:2',
     })),
     /github\.run_id/u,
   );
@@ -197,7 +201,7 @@ test('activation ajoute seulement le bloc M1-B et le relit exactement', async ()
   });
 });
 
-test('cleanup reconstruit atomiquement la collection courante sans le bloc run-owned M1-B', async () => {
+test('cleanup au rerun reconstruit la collection sans le bloc possédé par le run stable', async () => {
   const activeVariables = {
     ...bobLiveVariables(),
     BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
@@ -218,7 +222,11 @@ test('cleanup reconstruit atomiquement la collection courante sans le bloc run-o
     return { variableCollectionUpsert: true };
   };
   await assert.doesNotReject(
-    runRailwayM1BCommand('deactivate', environment(), { graphql }),
+    runRailwayM1BCommand(
+      'deactivate',
+      environment({ GITHUB_RUN_ATTEMPT: '2' }),
+      { graphql },
+    ),
   );
   const mutation = calls.find((call) => call.query.includes('mutation AgentMissionM1BVariables'));
   assert.equal(mutation.variables.input.replace, true);
@@ -273,7 +281,7 @@ test('cleanup refuse de supprimer un bloc non possédé ou une dérive concurren
     BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
     BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
     BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 1: MISSION_SECRET }),
-    BOB_M1B_STAGING_CERTIFICATION_OWNER: '987654321:2',
+    BOB_M1B_STAGING_CERTIFICATION_OWNER: '987654321',
   });
   await assert.rejects(
     runRailwayM1BCommand('deactivate', environment(), {

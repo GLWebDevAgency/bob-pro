@@ -618,11 +618,21 @@ Mutation Railway :
   héritée, partagée ou devenue ambiguë n'est jamais matérialisée silencieusement au niveau service
   pendant le rollback ;
 - les trois variables runtime M1-B et un marqueur non secret
-  `BOB_M1B_STAGING_CERTIFICATION_OWNER=<github.run_id>:<github.run_attempt>` sont ajoutés dans la
+  `BOB_M1B_STAGING_CERTIFICATION_OWNER=<github.run_id>` sont ajoutés dans la
   **même** mutation `variableCollectionUpsert` avec `skipDeploys=true`, sans remplacer les autres
   variables. Le produit n'interprète jamais ce marqueur : il existe uniquement pour rendre
   l'ownership du rollback durable même si GitHub perd la sortie de l'étape après le commit
   Railway ;
+- l'ownership est stable au niveau du `github.run_id`, jamais du `github.run_attempt` : un rerun
+  des jobs échoués conserve donc l'autorité de retirer l'override et les variables laissés par la
+  tentative précédente. `github.run_attempt` reste consigné séparément dans la preuve, sans entrer
+  dans l'autorité de cleanup. Un nouveau dispatch reçoit un autre `run_id` et ne peut jamais
+  supprimer l'état possédé par un autre run. La récupération opératoire rejoue donc le **même**
+  workflow via `gh run rerun <github.run_id> --failed` ; lancer un nouveau dispatch n'est jamais
+  une procédure de cleanup. Si la première relance retrouve l'état ON, son préflight positif
+  échoue fermé mais son job `cleanup` retire l'état avec l'owner stable ; cette relance reste
+  rouge. Une seconde relance du même workflow repart alors de l'état OFF et rejoue la
+  certification complète. Aucun succès de cleanup n'est maquillé en succès de certification ;
 - le rollback relit la collection **non rendue**, retire uniquement les trois noms M1-B et la
   marque d'ownership lorsque celle-ci correspond exactement au run courant, puis restaure la
   collection atomiquement avec `replace=true` et `skipDeploys=true`. Une marque absente ou
@@ -684,7 +694,11 @@ Séquence :
    `[N,N]` avec binding inchangé et `writerEnabled=false`, et zéro lease ;
 10. consigner heure de fin, acteur, deployment IDs et résultats dans un artefact borné sans PII,
     token, SDP, identifiant brut ou secret. Un échec déclenche le cleanup ; il ne transforme jamais
-    une preuve partielle en succès.
+    une preuve partielle en succès. L'artefact `schemaVersion: 4` conserve
+    `workflowRun.id` comme chaîne décimale canonique de 1 à 20 chiffres, car l'identifiant GitHub
+    est opaque et peut dépasser la précision sûre de JavaScript ; `workflowRun.attempt` reste un
+    entier borné. La V4 est volontairement distincte de la V3, qui encodait le run ID en nombre :
+    aucun consommateur ne doit confondre silencieusement les deux contrats.
 
 Le pipeline est autorisé à monter au statut `certified` uniquement si le job positif **et** le job
 de cleanup sont verts. Une annulation forcée de runner reste un incident de release : avant tout

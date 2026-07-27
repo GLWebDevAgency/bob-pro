@@ -8,7 +8,7 @@ const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const VARIABLE_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u;
 const VERSION = /^[1-9][0-9]{0,9}$/u;
-const RUN_ID = /^[1-9][0-9]{0,19}:[1-9][0-9]{0,9}$/u;
+const RUN_ID = /^[1-9][0-9]{0,19}$/u;
 const MAX_RESPONSE_BYTES = 1_048_576;
 const TERMINAL_DEPLOYMENT_FAILURES = new Set([
   'CRASHED',
@@ -149,7 +149,7 @@ export function parseRailwayM1BEnvironment(environment = process.env) {
       maximum: 16_384,
     }),
     runId: required(environment, 'BOB_M1B_STAGING_RUN_ID', {
-      maximum: 31,
+      maximum: 20,
     }),
   };
   if (
@@ -160,7 +160,7 @@ export function parseRailwayM1BEnvironment(environment = process.env) {
     fail('BOB_M1B_STAGING_HMAC_KEY_VERSION must be a PostgreSQL positive integer');
   }
   if (!RUN_ID.test(config.runId)) {
-    fail('BOB_M1B_STAGING_RUN_ID must be github.run_id:github.run_attempt');
+    fail('BOB_M1B_STAGING_RUN_ID must be the stable github.run_id');
   }
   return Object.freeze(config);
 }

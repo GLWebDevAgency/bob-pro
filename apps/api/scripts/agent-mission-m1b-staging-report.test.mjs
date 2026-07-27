@@ -37,6 +37,7 @@ function environment(overrides = {}) {
 test('rapport borné contient les preuves opérationnelles sans identité utilisateur', () => {
   const report = buildM1BStagingReport(environment());
   assert.equal(report.releaseSha, SHA);
+  assert.equal(report.workflowRun.id, '123456789');
   assert.equal(report.deployments.baselineAcknowledged, true);
   assert.equal(report.deployments.active, ACTIVE);
   assert.equal(report.deployments.whisper, WHISPER);
@@ -71,6 +72,27 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
   const serialized = JSON.stringify(report);
   assert.equal(serialized.includes('m1b-staging@bob.test'), false);
   assert.equal(serialized.includes('BOB_M1B_STAGING_USER_ID'), false);
+});
+
+test('conserve le run ID GitHub opaque sur vingt chiffres sans perte de précision', () => {
+  const runId = '18446744073709551615';
+  const report = buildM1BStagingReport(environment({
+    BOB_M1B_WORKFLOW_RUN_ID: runId,
+  }));
+  assert.equal(report.workflowRun.id, runId);
+  assert.equal(report.workflowRun.actorReference, `github-actions-run:${runId}`);
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_WORKFLOW_RUN_ID: '184467440737095516150',
+    })),
+    /WORKFLOW_RUN_ID|workflowRun\.id/u,
+  );
+  assert.throws(
+    () => buildM1BStagingReport(environment({
+      BOB_M1B_WORKFLOW_RUN_ID: '123456789:2',
+    })),
+    /workflowRun\.id/u,
+  );
 });
 
 test('accepte un deployment OFF non créé lorsque le circuit a échoué avant mutation', () => {
@@ -145,7 +167,7 @@ test('écrit uniquement dans le répertoire d’évidence dédié avec permissio
       writeFileSync: (...args) => calls.push(['write', ...args]),
     },
   );
-  assert.equal(report.schemaVersion, 3);
+  assert.equal(report.schemaVersion, 4);
   assert.equal(calls[0][0], 'mkdir');
   assert.equal(calls[1][0], 'write');
   assert.equal(calls[1][3].mode, 0o600);
