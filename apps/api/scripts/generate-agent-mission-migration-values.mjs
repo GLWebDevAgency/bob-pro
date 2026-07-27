@@ -25,11 +25,11 @@ const migrationPath = path.join(
 );
 const capabilityMigrationPath = path.join(
   apiDir,
-  'prisma/migrations/20260726040000_agent_mission_realtime_lease_expand/migration.sql',
+  'prisma/migrations/20260727040000_agent_mission_realtime_lease_expand/migration.sql',
 );
 const commandNamespaceMigrationPath = path.join(
   apiDir,
-  'prisma/migrations/20260726080000_agent_mission_event_command_namespace_expand/migration.sql',
+  'prisma/migrations/20260727080000_agent_mission_event_command_namespace_expand/migration.sql',
 );
 const frozenCapabilityExpandProtocolVersions = ['1'];
 

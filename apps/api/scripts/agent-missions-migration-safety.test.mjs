@@ -18,47 +18,47 @@ const validatePath = path.join(
 );
 const capabilityFlagFencePath = path.join(
   apiDir,
-  'prisma/migrations/20260726030000_release_flag_cabinet_subject_revocation_fence/migration.sql',
+  'prisma/migrations/20260727030000_release_flag_cabinet_subject_revocation_fence/migration.sql',
 );
 const capabilityExpandPath = path.join(
   apiDir,
-  'prisma/migrations/20260726040000_agent_mission_realtime_lease_expand/migration.sql',
+  'prisma/migrations/20260727040000_agent_mission_realtime_lease_expand/migration.sql',
 );
 const capabilityValidatePath = path.join(
   apiDir,
-  'prisma/migrations/20260726050000_agent_mission_realtime_lease_validate/migration.sql',
+  'prisma/migrations/20260727050000_agent_mission_realtime_lease_validate/migration.sql',
 );
 const cancellationExpandPath = path.join(
   apiDir,
-  'prisma/migrations/20260726060000_realtime_admission_cancellation_fence_expand/migration.sql',
+  'prisma/migrations/20260727060000_realtime_admission_cancellation_fence_expand/migration.sql',
 );
 const cancellationValidatePath = path.join(
   apiDir,
-  'prisma/migrations/20260726070000_realtime_admission_cancellation_fence_validate/migration.sql',
+  'prisma/migrations/20260727070000_realtime_admission_cancellation_fence_validate/migration.sql',
 );
 const commandNamespaceExpandPath = path.join(
   apiDir,
-  'prisma/migrations/20260726080000_agent_mission_event_command_namespace_expand/migration.sql',
+  'prisma/migrations/20260727080000_agent_mission_event_command_namespace_expand/migration.sql',
 );
 const commandNamespaceValidatePath = path.join(
   apiDir,
-  'prisma/migrations/20260726090000_agent_mission_event_command_namespace_validate/migration.sql',
+  'prisma/migrations/20260727090000_agent_mission_event_command_namespace_validate/migration.sql',
 );
 const commandNamespaceCutoverPath = path.join(
   apiDir,
-  'prisma/migrations/20260726100000_agent_mission_event_command_namespace_cutover/migration.sql',
+  'prisma/migrations/20260727100000_agent_mission_event_command_namespace_cutover/migration.sql',
 );
 const fingerprintKeyReadinessPath = path.join(
   apiDir,
-  'prisma/migrations/20260726110000_agent_mission_fingerprint_key_readiness/migration.sql',
+  'prisma/migrations/20260727110000_agent_mission_fingerprint_key_readiness/migration.sql',
 );
 const bootstrapReceiptExpandPath = path.join(
   apiDir,
-  'prisma/migrations/20260726120000_agent_mission_bootstrap_receipt_expand/migration.sql',
+  'prisma/migrations/20260727120000_agent_mission_bootstrap_receipt_expand/migration.sql',
 );
 const bootstrapReceiptValidatePath = path.join(
   apiDir,
-  'prisma/migrations/20260726130000_agent_mission_bootstrap_receipt_validate/migration.sql',
+  'prisma/migrations/20260727130000_agent_mission_bootstrap_receipt_validate/migration.sql',
 );
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');

@@ -125,7 +125,7 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
   );
   assert.match(
     release,
-    /close_and_drain_realtime_before_cancellation_fence_expand\(\)[\s\S]*?20260726060000_realtime_admission_cancellation_fence_expand[\s\S]*?BOB_LIVE_ENABLED=false[\s\S]*?SET LOCAL ROLE bob_realtime_capacity[\s\S]*?closed\|0/u,
+    /close_and_drain_realtime_before_cancellation_fence_expand\(\)[\s\S]*?20260727060000_realtime_admission_cancellation_fence_expand[\s\S]*?BOB_LIVE_ENABLED=false[\s\S]*?SET LOCAL ROLE bob_realtime_capacity[\s\S]*?closed\|0/u,
   );
   const cancellationDrain = release.slice(
     release.indexOf('close_and_drain_realtime_before_cancellation_fence_expand()'),
@@ -148,7 +148,7 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
   );
   assert.match(
     release,
-    /assert_agent_mission_m1b_ready_for_postdeploy\(\)[\s\S]*?20260726040000_agent_mission_realtime_lease_expand[\s\S]*?20260726050000_agent_mission_realtime_lease_validate[\s\S]*?20260726060000_realtime_admission_cancellation_fence_expand[\s\S]*?20260726070000_realtime_admission_cancellation_fence_validate[\s\S]*?20260726080000_agent_mission_event_command_namespace_expand[\s\S]*?20260726090000_agent_mission_event_command_namespace_validate[\s\S]*?20260726100000_agent_mission_event_command_namespace_cutover[\s\S]*?20260726110000_agent_mission_fingerprint_key_readiness[\s\S]*?20260726120000_agent_mission_bootstrap_receipt_expand[\s\S]*?20260726130000_agent_mission_bootstrap_receipt_validate[\s\S]*?\$\{agent_mission_m1b_migrations:-missing\}" != 10/u,
+    /assert_agent_mission_m1b_ready_for_postdeploy\(\)[\s\S]*?20260727040000_agent_mission_realtime_lease_expand[\s\S]*?20260727050000_agent_mission_realtime_lease_validate[\s\S]*?20260727060000_realtime_admission_cancellation_fence_expand[\s\S]*?20260727070000_realtime_admission_cancellation_fence_validate[\s\S]*?20260727080000_agent_mission_event_command_namespace_expand[\s\S]*?20260727090000_agent_mission_event_command_namespace_validate[\s\S]*?20260727100000_agent_mission_event_command_namespace_cutover[\s\S]*?20260727110000_agent_mission_fingerprint_key_readiness[\s\S]*?20260727120000_agent_mission_bootstrap_receipt_expand[\s\S]*?20260727130000_agent_mission_bootstrap_receipt_validate[\s\S]*?\$\{agent_mission_m1b_migrations:-missing\}" != 10/u,
   );
   const postdeployGuard = release.indexOf('if [ "$BOB_RELEASE_PHASE" = postdeploy ]');
   const build = release.indexOf("pnpm --filter '@bob/api...' run build", postdeployGuard);
@@ -1006,14 +1006,14 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   );
 
   const capabilityExpand = localCertificate.indexOf(
-    '20260726040000_agent_mission_realtime_lease_expand',
+    '20260727040000_agent_mission_realtime_lease_expand',
   );
   const capabilityIntermediateWriter = localCertificate.indexOf(
     'AGENT_MISSION_WRITER_N1_EXPAND_NULL_SHAPE_DRIFT',
     capabilityExpand,
   );
   const capabilityValidate = localCertificate.indexOf(
-    '20260726050000_agent_mission_realtime_lease_validate',
+    '20260727050000_agent_mission_realtime_lease_validate',
     capabilityIntermediateWriter,
   );
   const capabilityFinalWriter = localCertificate.indexOf(
@@ -1028,7 +1028,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     'Le writer admission N-1 doit être tenté après capability expand puis après validate.',
   );
   const cancellationExpand = localCertificate.indexOf(
-    '20260726060000_realtime_admission_cancellation_fence_expand',
+    '20260727060000_realtime_admission_cancellation_fence_expand',
     capabilityFinalWriter,
   );
   const cancellationIntermediateWriter = localCertificate.indexOf(
@@ -1036,7 +1036,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     cancellationExpand,
   );
   const cancellationValidate = localCertificate.indexOf(
-    '20260726070000_realtime_admission_cancellation_fence_validate',
+    '20260727070000_realtime_admission_cancellation_fence_validate',
     cancellationIntermediateWriter,
   );
   const cancellationFinalWriter = localCertificate.indexOf(
@@ -1051,7 +1051,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     'Le writer N-1 doit être tenté après cancellation expand puis après validate.',
   );
   const eventNamespaceExpand = localCertificate.indexOf(
-    '20260726080000_agent_mission_event_command_namespace_expand',
+    '20260727080000_agent_mission_event_command_namespace_expand',
     cancellationFinalWriter,
   );
   const eventNamespaceExpandN1 = localCertificate.indexOf(
@@ -1059,7 +1059,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     eventNamespaceExpand,
   );
   const eventNamespaceValidate = localCertificate.indexOf(
-    '20260726090000_agent_mission_event_command_namespace_validate',
+    '20260727090000_agent_mission_event_command_namespace_validate',
     eventNamespaceExpandN1,
   );
   const eventNamespaceValidateN1 = localCertificate.indexOf(
@@ -1067,7 +1067,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     eventNamespaceValidate,
   );
   const eventNamespaceCutover = localCertificate.indexOf(
-    '20260726100000_agent_mission_event_command_namespace_cutover',
+    '20260727100000_agent_mission_event_command_namespace_cutover',
     eventNamespaceValidateN1,
   );
   const eventNamespaceCutoverN1 = localCertificate.indexOf(
@@ -1079,7 +1079,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     eventNamespaceCutoverN1,
   );
   const fingerprintKeyReadiness = localCertificate.indexOf(
-    '20260726110000_agent_mission_fingerprint_key_readiness',
+    '20260727110000_agent_mission_fingerprint_key_readiness',
     eventNamespaceCutoverN,
   );
   const fingerprintKeyReadinessN1 = localCertificate.indexOf(
@@ -1087,7 +1087,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     fingerprintKeyReadiness,
   );
   const bootstrapReceiptExpand = localCertificate.indexOf(
-    '20260726120000_agent_mission_bootstrap_receipt_expand',
+    '20260727120000_agent_mission_bootstrap_receipt_expand',
     fingerprintKeyReadinessN1,
   );
   const bootstrapReceiptExpandN1 = localCertificate.indexOf(
@@ -1095,7 +1095,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     bootstrapReceiptExpand,
   );
   const bootstrapReceiptValidate = localCertificate.indexOf(
-    '20260726130000_agent_mission_bootstrap_receipt_validate',
+    '20260727130000_agent_mission_bootstrap_receipt_validate',
     bootstrapReceiptExpandN1,
   );
   const bootstrapReceiptValidateN1 = localCertificate.indexOf(

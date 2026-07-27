@@ -10,7 +10,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const ISO_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const RUN_ID = /^[1-9][0-9]{0,19}:[1-9][0-9]{0,9}$/u;
 const ACTOR_PREFIX = 'system:github:agent-mission-m1b-staging:';
-const FLAG_MIGRATION = '20260726030000_release_flag_cabinet_subject_revocation_fence';
+const FLAG_MIGRATION = '20260727030000_release_flag_cabinet_subject_revocation_fence';
 
 const FLAG_STATE_SQL = `
 SELECT jsonb_build_object(

@@ -255,7 +255,7 @@ test('bootstrap accepte uniquement un schéma absent avec keyring initial ou un 
   );
   assert.match(
     M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL,
-    /20260726110000_agent_mission_fingerprint_key_readiness/u,
+    /20260727110000_agent_mission_fingerprint_key_readiness/u,
   );
   assert.match(M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL, /20260726010000_agent_missions_expand/u);
   assert.match(M1B_STAGING_KEY_BOOTSTRAP_STATE_SQL, /20260726020000_agent_missions_validate/u);
