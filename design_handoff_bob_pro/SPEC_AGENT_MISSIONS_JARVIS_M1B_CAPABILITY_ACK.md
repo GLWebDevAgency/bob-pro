@@ -478,21 +478,26 @@ Règles :
   décodés dans un registre global append-only ; une même version ne peut jamais désigner un autre
   matériau et un même matériau ne peut pas être réutilisé sous une autre version ;
 - le rituel `stage` privilégié prend le verrou advisory exclusif
-  `bob-agent-mission-fingerprint-hmac-v1`, insère sans écrasement les bindings configurés, puis
-  relit et compare exactement chaque empreinte et version retenue avant d'armer un floor writer
-  monotone `[N,N]` ou `[N,N+1]`. Au premier stage d'une version `N+1`, la présence de la clé
-  adjacente `N` arme directement `[N,N+1]` afin de ne jamais couper le writer précédent ; si cette
-  clé n'est pas configurée, `closed|0` est exigé avant d'armer `[N+1,N+1]` ;
+  `bob-agent-mission-fingerprint-hmac-v1`, relit d'abord toutes les versions retenues et refuse
+  toute version sans binding **avant le premier INSERT**. Il insère ensuite sans écrasement les
+  bindings configurés, puis relit et compare exactement chaque empreinte et version retenue avant
+  d'armer un floor writer monotone `[N,N]` ou `[N,N+1]`. Au premier stage d'une version `N+1`, la
+  présence de la clé adjacente `N` arme directement `[N,N+1]` afin de ne jamais couper le writer
+  précédent ; si cette clé n'est pas configurée, `closed|0` est exigé avant d'armer
+  `[N+1,N+1]` ;
 - chaque writer d'event prend le verrou advisory partagé du même keyspace ; avant le tout premier
   floor, la forme N-1 reste compatible, mais le stage exclusif attend ces writers puis inclut tous
-  leurs events dans son snapshot. La transaction manager est `READ COMMITTED` : le SELECT de
-  readiness prend son snapshot **après** l'attente du verrou exclusif, afin de voir le commit du
-  dernier writer partagé. Le trigger writer est explicitement `VOLATILE`, réarmé et certifié à
-  chaque provisionnement : ses sous-requêtes prennent donc un snapshot frais après l'attente du
-  verrou partagé, même si une dérive DDL avait tenté de le rendre `STABLE`. Après stage, toute
-  version hors floor ou sans binding est
-  refusée. Une écriture tardive et une rotation concurrente ne peuvent donc pas contourner le
-  snapshot ;
+  leurs events dans son snapshot. La transaction manager est `READ COMMITTED` : la lecture
+  pré-binding prend son snapshot **après** l'attente du verrou exclusif, afin de voir le commit du
+  dernier writer partagé. Si cet event historique n'avait pas déjà un binding durable, le stage
+  échoue sans aucune mutation : le secret fourni au déploiement ne peut pas devenir
+  rétroactivement la preuve d'un ancien HMAC. Une fois cette lecture passée, le verrou exclusif
+  reste possédé jusqu'au commit ; le trigger partagé empêche donc tout nouvel event de s'intercaler
+  entre la preuve et les INSERT de binding/floor. Le trigger writer est explicitement `VOLATILE`,
+  réarmé et certifié à chaque provisionnement : ses sous-requêtes prennent un snapshot frais après
+  l'attente du verrou partagé, même si une dérive DDL avait tenté de le rendre `STABLE`. Après
+  stage, toute version hors floor ou sans binding est refusée. Une écriture tardive et une rotation
+  concurrente ne peuvent donc pas contourner le snapshot ;
 - `stage(N+1)` est la seule transition qui étend `[N,N]` vers `[N,N+1]`. `retire(N)` exige la
   capacité Bob Live `closed|0` verrouillée dans la même transaction, puis ferme durablement le
   floor en `[N+1,N+1]` avant que le secret N puisse être retiré de la configuration. Pendant la
@@ -554,6 +559,41 @@ Préconditions fail-closed :
   donc une version déjà liée doit toujours retrouver exactement le même matériau. Après le test,
   le bloc est retiré de Railway mais reste dans ce coffre approuvé pour un prochain run. Cette clé
   staging n'est jamais une clé production.
+
+Le préflight est aussi valide sur un staging encore en N-1 : l'absence du flag canonique n'est
+acceptée que si la migration additive qui le crée n'est pas marquée terminée dans
+`_prisma_migrations` et si le bloc Railway M1-B est absent. L'état impossible « migration terminée
+mais flag absent » comme l'état « flag présent avant sa migration » échouent fermés. Ce mode
+bootstrap ne vaut jamais preuve de flag OFF : immédiatement après `predeploy`, le workflow exige
+la migration terminée, une ligne canonique unique, global OFF, kill-switch libre et zéro override
+**actif**, ainsi que l'absence de toute ligne attachée au compte cible, avant de déployer le
+candidat. Les lignes désactivées d'autres sujets ne confèrent aucune autorité et restent intactes :
+ce lane n'efface jamais l'historique ou l'état d'un autre compte. Le cleanup `always()` applique la
+même distinction afin qu'un échec antérieur aux migrations puisse être attesté propre sans appeler
+une table ou une fonction encore absente ; dès qu'une migration est terminée, seule la preuve
+stricte de son état OFF est admise.
+La négociation WebRTC OFF finale n'est exigée que si un deployment du binaire M1-B a réellement
+été acquitté ou si le bloc runtime a été possédé ; avant cela, absence des variables, migration
+encore absente et zéro override constituent la preuve exacte, sans demander au binaire N-1 un
+champ de protocole qu'il ne connaît pas. Ici aussi, « zéro override » signifie zéro override actif
+et aucune ligne du compte cible ; les lignes désactivées étrangères sont hors propriété du run.
+
+Le bootstrap du keyspace HMAC distingue deux lignées N-1 valides et seulement elles :
+
+- avant M1-A, les migrations `agent_missions_expand` et `agent_missions_validate` sont toutes deux
+  absentes et les tables mission/event sont toutes deux absentes ;
+- après M1-A, ces deux migrations sont toutes deux terminées, les deux tables existent et une
+  lecture exacte prouve zéro mission et zéro événement conservé. Inventaire des migrations/objets
+  et présence des lignes proviennent du même snapshot PostgreSQL `REPEATABLE READ`, avec
+  `row_security=off` sous un `DIRECT_URL` préalablement certifié `SUPERUSER|BYPASSRLS` : aucun
+  double snapshot ni policy tenantée ne peut fabriquer un faux état vierge.
+
+Dans les deux cas, la migration de readiness M1-B n'est pas terminée et ses deux tables ainsi que
+ses quatre fonctions sont toutes absentes. Une seule migration M1-A terminée, une seule table
+présente, un objet readiness isolé ou une mission/un événement conservé échoue fermé : le bootstrap
+ne lie jamais rétroactivement un événement historique à un secret HMAC non prouvé. Une migration
+readiness terminée exige inversement la lignée M1-A complète et chaque objet readiness avant
+d'appeler sa fonction de preuve.
 
 Mutation Railway :
 
@@ -870,10 +910,11 @@ pour d'autres domaines.
 - [ ] RLS/ACL/inter-tenant/deux owners passent sur PostgreSQL 17 avec rôle runtime
       non-superuser, non-owner, sans `BYPASSRLS`.
 - [ ] Le registre fingerprint est append-only, sans secret ni accès table runtime ; le stage
-      privilégié lie exactement version et matériau sous verrou exclusif, tandis que readiness et
-      writers prennent le verrou partagé. Le floor monotone accepte au plus N/N+1 et son retire
-      exige `closed|0` sous verrou. Même version + autre secret, rollback de version, version non
-      liée, matériau réutilisé, ancien writer après retire et retrait d'une version encore retenue
+      privilégié refuse sous verrou exclusif tout event retenu sans binding avant son premier
+      INSERT, puis lie exactement version et matériau, tandis que readiness et writers prennent le
+      verrou partagé. Le floor monotone accepte au plus N/N+1 et son retire exige `closed|0` sous
+      verrou. Même version + autre secret, rollback de version, version retenue sans binding,
+      matériau réutilisé, ancien writer après retire et retrait d'une version encore retenue
       échouent fermés.
 - [ ] Le cycle réel PostgreSQL prouve `[N,N] → [N,N+1] → [N+1,N+1]`, un writer partagé concurrent
       commité avant le snapshot du stage au moyen de barrières observables et du verrou advisory
@@ -896,6 +937,13 @@ pour d'autres domaines.
       l'absence d'ownership du déployeur sont certifiées.
 - [ ] Le train SQL et les certifications sont rejoués sur Supabase staging avec déployeur
       non-superuser avant fusion.
+- [ ] Le premier run depuis un staging N-1 accepte seulement le couple
+      `migration flag non terminée + flag absent`, exige le flag canonique OFF juste après
+      `predeploy`, et son cleanup reste vert si l'échec survient avant toute migration sans
+      masquer un schéma partiellement appliqué.
+- [ ] Le bootstrap keyspace accepte seulement M1-A entièrement absent ou M1-A `expand+validate`
+      entièrement appliqué avec tables mission/event vides ; tout objet readiness partiel, toute
+      lignée contradictoire et toute donnée mission/event préexistante échouent fermés.
 
 ### Livraison
 

@@ -1768,6 +1768,90 @@ fi
 "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 \
   -c 'DROP ROLE bob_agent_mission_writer_guard_rogue'
 
+# Le manager importe @prisma/client. Sur un checkout CI propre, le client généré n'existe pas
+# encore : le produire ici précède nécessairement la première preuve négative du manager.
+(
+  cd "$ROOT_DIR"
+  pnpm --filter @bob/api generate
+)
+
+# Les writers N-1 certifiés plus haut ont volontairement produit de vrais events v1 avant que le
+# registre de binding n'existe. Le chemin de release doit refuser cet état au lieu d'associer
+# rétroactivement le secret fourni aujourd'hui. Le tripwire rend la preuve discriminante : si le
+# manager tente le moindre INSERT avant sa lecture des versions retenues, il échoue avec une autre
+# cause et le certificat casse.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+CREATE FUNCTION public.agent_mission_cert_binding_insert_tripwire_v1()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $agent_mission_cert_binding_insert_tripwire$
+BEGIN
+  RAISE EXCEPTION 'AGENT_MISSION_CERT_BINDING_INSERT_REACHED'
+    USING ERRCODE = '55000',
+          CONSTRAINT = 'agent_mission_cert_binding_insert_reached';
+END;
+$agent_mission_cert_binding_insert_tripwire$;
+
+CREATE TRIGGER agent_mission_cert_binding_insert_tripwire_v1
+BEFORE INSERT ON public.agent_mission_fingerprint_key_bindings
+FOR EACH ROW
+EXECUTE FUNCTION public.agent_mission_cert_binding_insert_tripwire_v1();
+SQL
+
+CONCURRENCY_MANAGER_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-prebinding-guard.XXXXXX"
+)"
+if BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
+  BOB_AGENT_MISSION_HMAC_KEY_VERSION=1 \
+  BOB_AGENT_MISSION_HMAC_KEYRING='{"1":"KSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSk"}' \
+  BOB_LIVE_ENABLED=true \
+  BOB_LIVE_PROVIDER=openai \
+  DIRECT_URL="$DIRECT_URL" \
+  node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage \
+  >"$CONCURRENCY_MANAGER_LOG" 2>&1
+then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  echo "AgentMission stage retroactively bound an event predating its registry" >&2
+  exit 1
+fi
+if ! grep -Fq \
+  'agent-mission-fingerprint-key:error:retained-key-unbound' \
+  "$CONCURRENCY_MANAGER_LOG"
+then
+  cat "$CONCURRENCY_MANAGER_LOG" >&2
+  echo "AgentMission prebinding guard failed for an unrelated reason" >&2
+  exit 1
+fi
+rm -f "$CONCURRENCY_MANAGER_LOG"
+CONCURRENCY_MANAGER_LOG=""
+
+unbound_guard_binding_count="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*) FROM public.agent_mission_fingerprint_key_bindings;
+SQL
+)"
+if [ "$unbound_guard_binding_count" != "0" ]; then
+  echo "AgentMission prebinding rejection still persisted a binding" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DROP TRIGGER agent_mission_cert_binding_insert_tripwire_v1
+  ON public.agent_mission_fingerprint_key_bindings;
+DROP FUNCTION public.agent_mission_cert_binding_insert_tripwire_v1();
+
+-- Fixture exclusive à cette base jetable : elle représente un binding v1 qui aurait existé avant
+-- les writers historiques. Le chemin de release ne possède et ne doit jamais posséder ce bypass.
+INSERT INTO public.agent_mission_fingerprint_key_bindings (
+  "keyVersion",
+  "keyFingerprint"
+) VALUES (
+  1,
+  '3dabdc61748c357c67c0c81f568f6e2fa942decaf2b15c6009ab93140d3887c4'
+);
+SQL
+
 # Le trigger final est déjà présent mais aucun floor n'est encore armé : le writer N-1 exact doit
 # rester compatible jusqu'au premier stage, sans bypasser ensuite les versions durablement liées.
 certify_agent_mission_event_writer \
@@ -1778,14 +1862,6 @@ certify_agent_mission_event_writer \
   61000000-0000-4000-8000-000000000004 \
   61000000-0000-8000-8000-000000000005 \
   61000000-0000-4000-8000-000000000006
-
-# Le manager importe @prisma/client avant la suite Vitest. Sur un checkout CI propre, le client
-# généré n'existe pas encore : le produire ici est un prérequis du certificat, pas un effet
-# secondaire attendu d'un build antérieur.
-(
-  cd "$ROOT_DIR"
-  pnpm --filter @bob/api generate
-)
 
 # Barrières locales déterministes : le writer conserve le verrou advisory partagé dans sa
 # transaction, tandis que le manager doit être observé en attente du verrou exclusif exact.
@@ -1807,8 +1883,8 @@ SQL
 
 # Preuve discriminante du snapshot post-verrou : le writer v3 committe pendant que le premier
 # stage, configuré volontairement avec la seule clé v1, attend son verrou exclusif. En
-# READ COMMITTED le manager relit ensuite l'event v3 et doit refuser le keyring incomplet. Un
-# snapshot pris avant l'attente accepterait à tort le stage et ferait échouer ce certificat.
+# READ COMMITTED le manager relit ensuite l'event v3 et doit le refuser comme retenu sans binding,
+# avant sa boucle d'INSERT. Un snapshot pris avant l'attente accepterait à tort le stage.
 CONCURRENCY_LOG="$(
   mktemp "${TMPDIR:-/tmp}/bob-agent-mission-snapshot-writer.XXXXXX"
 )"
@@ -1853,7 +1929,7 @@ if wait "$concurrent_manager_pid"; then
   exit 1
 fi
 if ! grep -Fq \
-  'agent-mission-fingerprint-key:error:retained-key-missing' \
+  'agent-mission-fingerprint-key:error:retained-key-unbound' \
   "$CONCURRENCY_MANAGER_LOG"
 then
   cat "$CONCURRENCY_MANAGER_LOG" >&2
@@ -1869,6 +1945,30 @@ CONCURRENCY_LOG=""
 CONCURRENCY_MANAGER_LOG=""
 concurrent_writer_pid=""
 concurrent_manager_pid=""
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $agent_mission_cert_unbound_v3_certificate$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_fingerprint_key_bindings
+     WHERE "keyVersion" = 3
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_CONCURRENT_STAGE_BOUND_V3_RETROACTIVELY';
+  END IF;
+END;
+$agent_mission_cert_unbound_v3_certificate$;
+
+-- Fixture exclusive à la poursuite du certificat jetable : elle simule un binding v3 antérieur
+-- au writer concurrent désormais prouvé. Aucun script de release ne possède ce bypass.
+INSERT INTO public.agent_mission_fingerprint_key_bindings (
+  "keyVersion",
+  "keyFingerprint"
+) VALUES (
+  3,
+  'a0cfd501bcbf5ece1d0ec6cc0402fa11d37e34a25ccccaafbdb5183ca41c0f3f'
+);
+SQL
 
 BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true \
 BOB_AGENT_MISSION_HMAC_KEY_VERSION=1 \

@@ -11,6 +11,7 @@ const [
   release,
   realtimeCapacityRelease,
   localCertificate,
+  fingerprintManager,
   runtimeGrants,
   releaseCertificate,
   realtimeReleaseCertificate,
@@ -34,6 +35,7 @@ const [
   readFile(path.join(scriptDir, 'release.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'realtime-capacity-release.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'certify-agent-missions-local.sh'), 'utf8'),
+  readFile(path.join(scriptDir, 'manage-agent-mission-fingerprint-key-versions.mjs'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-missions-runtime-grants.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-missions-release-cert.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-mission-realtime-release-cert.sql'), 'utf8'),
@@ -81,10 +83,7 @@ test('le chemin de release resserre les ACL après le grant des objets du déplo
     'manage-agent-mission-fingerprint-key-versions.mjs stage',
     fingerprintProvision,
   );
-  const exactCertificate = release.indexOf(
-    'certify_agent_mission_release_acl',
-    fingerprintStage,
-  );
+  const exactCertificate = release.indexOf('certify_agent_mission_release_acl', fingerprintStage);
   assert.ok(genericGrant >= 0, 'Le grant runtime des tables du déployeur attendu a disparu.');
   assert.ok(
     exactGrant > genericGrant,
@@ -99,9 +98,9 @@ test('le chemin de release resserre les ACL après le grant des objets du déplo
   );
   assert.ok(rlsReplay > exactGrant, 'Le replay RLS doit suivre les ACL runtime exactes.');
   assert.ok(
-    fingerprintProvision > rlsReplay
-      && fingerprintStage > fingerprintProvision
-      && exactCertificate > fingerprintStage,
+    fingerprintProvision > rlsReplay &&
+      fingerprintStage > fingerprintProvision &&
+      exactCertificate > fingerprintStage,
     'Le binding/floor doit être stageé après RLS+provision et avant certification.',
   );
   assert.ok(
@@ -304,10 +303,7 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
     realtimeRlsReplay,
     /SET LOCAL lock_timeout = '5s';[\s\S]*?SET LOCAL statement_timeout = '60s';/u,
   );
-  assert.match(
-    rls,
-    /SET LOCAL lock_timeout = '5s';[\s\S]*?SET LOCAL statement_timeout = '60s';/u,
-  );
+  assert.match(rls, /SET LOCAL lock_timeout = '5s';[\s\S]*?SET LOCAL statement_timeout = '60s';/u);
   assert.doesNotMatch(runtimeGrants, /\b(?:BEGIN|COMMIT);/u);
   assert.match(runtimeGrants, /pg_has_role\(current_user, owner_oid, 'SET'\)/u);
   assert.match(
@@ -436,9 +432,7 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
 });
 
 test('la readiness fingerprint utilise un owner NOLOGIN, une colonne et une policy dédiés', () => {
-  const ensure = release.indexOf(
-    'ensure_agent_mission_fingerprint_readiness_authority_role',
-  );
+  const ensure = release.indexOf('ensure_agent_mission_fingerprint_readiness_authority_role');
   const migrate = release.indexOf('prisma migrate deploy', ensure);
   const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql', migrate);
   const provision = release.indexOf(
@@ -451,11 +445,11 @@ test('la readiness fingerprint utilise un owner NOLOGIN, une colonne et une poli
   );
   const certificate = release.indexOf('certify_agent_mission_release_acl', stage);
   assert.ok(
-    ensure >= 0
-      && ensure < migrate
-      && provision > rlsReplay
-      && stage > provision
-      && certificate > stage,
+    ensure >= 0 &&
+      ensure < migrate &&
+      provision > rlsReplay &&
+      stage > provision &&
+      certificate > stage,
   );
   assert.match(fingerprintReadinessAuthorityRole, /SET createrole_self_grant = 'set'/u);
   assert.match(
@@ -782,10 +776,7 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
   assert.match(localCertificate, /agent-missions-release-cert\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-role\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-provision\.sql/u);
-  assert.match(
-    localCertificate,
-    /manage-agent-mission-fingerprint-key-versions\.mjs" stage/u,
-  );
+  assert.match(localCertificate, /manage-agent-mission-fingerprint-key-versions\.mjs" stage/u);
   assert.match(
     localCertificate,
     /GRANT UPDATE \("minimumWriterVersion"\)[\s\S]*?GRANT INSERT \("keyFingerprint"\)[\s\S]*?agent-mission-fingerprint-readiness-authority-provision\.sql/u,
@@ -810,6 +801,33 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
     localCertificate,
     /snapshot-freshness[\s\S]*?wait_for_agent_mission_manager_exclusive_lock[\s\S]*?release_agent_mission_writer_barrier snapshot-freshness[\s\S]*?stage-v2[\s\S]*?release_agent_mission_writer_barrier stage-v2[\s\S]*?retire-v2[\s\S]*?release_agent_mission_writer_barrier retire-v2/u,
   );
+  assert.match(
+    localCertificate,
+    /agent_mission_cert_binding_insert_tripwire_v1[\s\S]*?retained-key-unbound[\s\S]*?unbound_guard_binding_count[\s\S]*?"keyVersion"[\s\S]*?3dabdc61748c357c67c0c81f568f6e2fa942decaf2b15c6009ab93140d3887c4/u,
+  );
+  assert.match(
+    localCertificate,
+    /release_agent_mission_writer_barrier snapshot-freshness[\s\S]*?retained-key-unbound[\s\S]*?AGENT_MISSION_CONCURRENT_STAGE_BOUND_V3_RETROACTIVELY[\s\S]*?a0cfd501bcbf5ece1d0ec6cc0402fa11d37e34a25ccccaafbdb5183ca41c0f3f/u,
+  );
+  const managerFunction = fingerprintManager.indexOf(
+    'export async function manageAgentMissionFingerprintKeyVersions',
+  );
+  const managerExclusiveLock = fingerprintManager.indexOf('pg_advisory_xact_lock', managerFunction);
+  const retainedPreflight = fingerprintManager.indexOf(
+    'await assertNoRetainedUnboundFingerprintVersionsUnderAuthority',
+    managerExclusiveLock,
+  );
+  const firstBindingInsert = fingerprintManager.indexOf(
+    'INSERT INTO public.agent_mission_fingerprint_key_bindings',
+    retainedPreflight,
+  );
+  assert.ok(
+    managerFunction >= 0 &&
+      managerExclusiveLock > managerFunction &&
+      retainedPreflight > managerExclusiveLock &&
+      firstBindingInsert > retainedPreflight,
+    'Le manager doit refuser tout event retenu sans binding sous verrou avant son premier INSERT.',
+  );
   const prismaGenerate = localCertificate.indexOf('pnpm --filter @bob/api generate');
   const firstFingerprintManager = localCertificate.indexOf(
     'node "$ROOT_DIR/apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs" stage',
@@ -821,9 +839,7 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
   const workspaceDependencyBuild = localCertificate.indexOf(
     'pnpm --filter "@bob/api^..." run build',
   );
-  const postgresVitest = localCertificate.indexOf(
-    'pnpm --filter @bob/api exec vitest run',
-  );
+  const postgresVitest = localCertificate.indexOf('pnpm --filter @bob/api exec vitest run');
   assert.ok(
     workspaceDependencyBuild >= 0 && postgresVitest > workspaceDependencyBuild,
     'Toutes les dépendances workspace de l’API doivent être construites avant Vitest.',
@@ -873,10 +889,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   const agentMissionJobStart = ci.indexOf('  agent-missions-postgres-certification:\n');
   const agentMissionJobEnd = ci.indexOf('  rls-certification:\n', agentMissionJobStart);
   const rlsJobStart = agentMissionJobEnd;
-  const rlsJobEnd = ci.indexOf(
-    '  realtime-global-capacity-certification:\n',
-    rlsJobStart,
-  );
+  const rlsJobEnd = ci.indexOf('  realtime-global-capacity-certification:\n', rlsJobStart);
   assert.ok(agentMissionJobStart >= 0 && agentMissionJobEnd > agentMissionJobStart);
   assert.ok(rlsJobStart >= 0 && rlsJobEnd > rlsJobStart);
   const agentMissionJob = ci.slice(agentMissionJobStart, agentMissionJobEnd);
@@ -885,10 +898,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   assert.match(agentMissionJob, /image: postgres:17/u);
   assert.match(agentMissionJob, /AGENT_MISSION_CERT_SUPER_URL:/u);
   assert.match(agentMissionJob, /AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:/u);
-  assert.match(
-    agentMissionJob,
-    /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u,
-  );
+  assert.match(agentMissionJob, /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u);
   assert.match(localCertificate, /CREATE ROLE bob_deployer[\s\S]*?NOSUPERUSER/u);
   assert.match(localCertificate, /SET createrole_self_grant = 'set'/u);
   assert.match(rlsJob, /image: postgres:16/u);
@@ -905,9 +915,7 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
     'Le owner-split retire les droits du déployeur et doit rester après tous les certificats SQL.',
   );
   assert.ok(
-    rlsJob.trimEnd().endsWith(
-      'run: sh apps/api/scripts/certify-rls-owner-split.sh',
-    ),
+    rlsJob.trimEnd().endsWith('run: sh apps/api/scripts/certify-rls-owner-split.sh'),
     'Le owner-split destructif doit rester le dernier step du job PostgreSQL partagé.',
   );
   assert.match(

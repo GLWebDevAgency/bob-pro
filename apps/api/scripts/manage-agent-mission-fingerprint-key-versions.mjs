@@ -59,10 +59,11 @@ function assertDedicatedMissionSecrets(environment, missionSecrets) {
     const raw = environment[name];
     if (raw === undefined) continue;
     if (
-      typeof raw !== 'string'
-      || Buffer.byteLength(raw, 'utf8') < 2
-      || Buffer.byteLength(raw, 'utf8') > 16_384
-    ) fail('Bob Live dedicated secret registry is invalid');
+      typeof raw !== 'string' ||
+      Buffer.byteLength(raw, 'utf8') < 2 ||
+      Buffer.byteLength(raw, 'utf8') > 16_384
+    )
+      fail('Bob Live dedicated secret registry is invalid');
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -70,17 +71,19 @@ function assertDedicatedMissionSecrets(environment, missionSecrets) {
       fail('Bob Live dedicated secret registry is invalid');
     }
     if (
-      parsed === null
-      || typeof parsed !== 'object'
-      || Array.isArray(parsed)
-      || Object.getPrototypeOf(parsed) !== Object.prototype
-    ) fail('Bob Live dedicated secret registry is invalid');
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      Object.getPrototypeOf(parsed) !== Object.prototype
+    )
+      fail('Bob Live dedicated secret registry is invalid');
     const values = Object.values(parsed);
     if (
-      values.length < 1
-      || values.length > 32
-      || values.some((value) => typeof value !== 'string')
-    ) fail('Bob Live dedicated secret registry is invalid');
+      values.length < 1 ||
+      values.length > 32 ||
+      values.some((value) => typeof value !== 'string')
+    )
+      fail('Bob Live dedicated secret registry is invalid');
     for (const value of values) otherSecrets.add(value);
   }
   if (missionSecrets.some((secret) => otherSecrets.has(secret))) {
@@ -88,10 +91,7 @@ function assertDedicatedMissionSecrets(environment, missionSecrets) {
   }
 }
 
-export function parseAgentMissionFingerprintKeyOperation(
-  mode,
-  environment = process.env,
-) {
+export function parseAgentMissionFingerprintKeyOperation(mode, environment = process.env) {
   if (mode !== 'stage' && mode !== 'retire') {
     fail('operation must be stage or retire');
   }
@@ -111,8 +111,7 @@ export function parseAgentMissionFingerprintKeyOperation(
     }
     return Object.freeze({ enabled: false, mode });
   }
-  const bobLiveEnabled =
-    environment.BOB_LIVE_ENABLED ?? environment.OPENAI_REALTIME_ENABLED;
+  const bobLiveEnabled = environment.BOB_LIVE_ENABLED ?? environment.OPENAI_REALTIME_ENABLED;
   const bobLiveProvider = environment.BOB_LIVE_PROVIDER ?? 'openai';
   if (bobLiveEnabled !== 'true' || bobLiveProvider !== 'openai') {
     fail('enabled AgentMission requires Bob Live with the OpenAI provider');
@@ -136,30 +135,34 @@ export function parseAgentMissionFingerprintKeyOperation(
     fail('keyring must be valid JSON');
   }
   if (
-    parsed === null
-    || typeof parsed !== 'object'
-    || Array.isArray(parsed)
-    || Object.getPrototypeOf(parsed) !== Object.prototype
-  ) fail('keyring must be an object');
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    Object.getPrototypeOf(parsed) !== Object.prototype
+  )
+    fail('keyring must be an object');
   const entries = Object.entries(parsed);
   if (entries.length < 1 || entries.length > 32) {
     fail('keyring must contain between 1 and 32 keys');
   }
   const seenSecrets = new Set();
-  const bindings = entries.map(([rawKeyVersion, secret]) => {
-    if (
-      !VERSION.test(rawKeyVersion)
-      || !Number.isSafeInteger(Number(rawKeyVersion))
-      || Number(rawKeyVersion) > 2_147_483_647
-      || typeof secret !== 'string'
-      || seenSecrets.has(secret)
-    ) fail('keyring contains an invalid or reused version/material');
-    seenSecrets.add(secret);
-    return Object.freeze({
-      version: Number(rawKeyVersion),
-      fingerprint: fingerprint(secret),
-    });
-  }).sort((left, right) => left.version - right.version);
+  const bindings = entries
+    .map(([rawKeyVersion, secret]) => {
+      if (
+        !VERSION.test(rawKeyVersion) ||
+        !Number.isSafeInteger(Number(rawKeyVersion)) ||
+        Number(rawKeyVersion) > 2_147_483_647 ||
+        typeof secret !== 'string' ||
+        seenSecrets.has(secret)
+      )
+        fail('keyring contains an invalid or reused version/material');
+      seenSecrets.add(secret);
+      return Object.freeze({
+        version: Number(rawKeyVersion),
+        fingerprint: fingerprint(secret),
+      });
+    })
+    .sort((left, right) => left.version - right.version);
   assertDedicatedMissionSecrets(
     environment,
     entries.map(([, secret]) => secret),
@@ -175,80 +178,88 @@ export function parseAgentMissionFingerprintKeyOperation(
   });
 }
 
-function assertReadinessRows(rows, config) {
+function assertCanonicalReadinessRows(rows, configuredVersionCount) {
   if (
-    !Array.isArray(rows)
-    || rows.length < config.bindings.length
-    || rows.length > 65
-    || new Set(rows.map(({ keyVersion }) => keyVersion)).size !== rows.length
-  ) fail('readiness returned an invalid row set');
-  const configured = new Map(
-    config.bindings.map(({ version, fingerprint: keyFingerprint }) => [
-      version,
-      keyFingerprint,
-    ]),
-  );
+    !Array.isArray(rows) ||
+    rows.length < configuredVersionCount ||
+    rows.length > 65 ||
+    rows.some((row) => row === null || typeof row !== 'object' || Array.isArray(row)) ||
+    new Set(rows.map(({ keyVersion }) => keyVersion)).size !== rows.length
+  )
+    fail('readiness returned an invalid row set');
   let floor = null;
   let floorObserved = false;
   let retainedCount = 0;
   for (const row of rows) {
     if (
-      !Number.isInteger(row.keyVersion)
-      || row.keyVersion < 1
-      || row.keyVersion > 2_147_483_647
-      || (row.keyFingerprint !== null
-        && !/^[a-f0-9]{64}$/u.test(row.keyFingerprint))
-      || typeof row.retained !== 'boolean'
-      || !(
-        (
-          row.minimumWriterVersion === null
-          && row.highestWriterVersion === null
-          && row.writerEnabled === null
-        )
-        || (
-          Number.isInteger(row.minimumWriterVersion)
-          && Number.isInteger(row.highestWriterVersion)
-          && typeof row.writerEnabled === 'boolean'
-          && row.minimumWriterVersion >= 1
-          && row.highestWriterVersion >= row.minimumWriterVersion
-          && row.highestWriterVersion <= row.minimumWriterVersion + 1
-        )
+      !Number.isInteger(row.keyVersion) ||
+      row.keyVersion < 1 ||
+      row.keyVersion > 2_147_483_647 ||
+      (row.keyFingerprint !== null && !/^[a-f0-9]{64}$/u.test(row.keyFingerprint)) ||
+      typeof row.retained !== 'boolean' ||
+      !(
+        (row.minimumWriterVersion === null &&
+          row.highestWriterVersion === null &&
+          row.writerEnabled === null) ||
+        (Number.isInteger(row.minimumWriterVersion) &&
+          Number.isInteger(row.highestWriterVersion) &&
+          typeof row.writerEnabled === 'boolean' &&
+          row.minimumWriterVersion >= 1 &&
+          row.highestWriterVersion >= row.minimumWriterVersion &&
+          row.highestWriterVersion <= row.minimumWriterVersion + 1)
       )
-    ) fail('readiness returned a non-canonical binding or floor');
+    )
+      fail('readiness returned a non-canonical binding or floor');
     if (row.retained) retainedCount += 1;
     if (retainedCount > 32) fail('more than 32 fingerprint versions remain retained');
-    if (!configured.has(row.keyVersion) && row.retained) {
-      fail(
-        `keyring does not cover retained version ${row.keyVersion}`,
-        'retained-key-missing',
-      );
-    }
-    if (
-      configured.has(row.keyVersion)
-      && configured.get(row.keyVersion) !== row.keyFingerprint
-    ) fail(`version ${row.keyVersion} material mismatch`);
-    const rowFloor = row.minimumWriterVersion === null
-      ? null
-      : {
-        minimumWriterVersion: row.minimumWriterVersion,
-        highestWriterVersion: row.highestWriterVersion,
-        writerEnabled: row.writerEnabled,
-      };
+    const rowFloor =
+      row.minimumWriterVersion === null
+        ? null
+        : {
+            minimumWriterVersion: row.minimumWriterVersion,
+            highestWriterVersion: row.highestWriterVersion,
+            writerEnabled: row.writerEnabled,
+          };
     if (!floorObserved) {
       floor = rowFloor;
       floorObserved = true;
     } else if (
-      (floor === null) !== (rowFloor === null)
-      || (
-        floor !== null
-        && rowFloor !== null
-        && (
-          floor.minimumWriterVersion !== rowFloor.minimumWriterVersion
-          || floor.highestWriterVersion !== rowFloor.highestWriterVersion
-          || floor.writerEnabled !== rowFloor.writerEnabled
-        )
-      )
-    ) fail('readiness returned inconsistent writer floors');
+      (floor === null) !== (rowFloor === null) ||
+      (floor !== null &&
+        rowFloor !== null &&
+        (floor.minimumWriterVersion !== rowFloor.minimumWriterVersion ||
+          floor.highestWriterVersion !== rowFloor.highestWriterVersion ||
+          floor.writerEnabled !== rowFloor.writerEnabled))
+    )
+      fail('readiness returned inconsistent writer floors');
+  }
+  return floor;
+}
+
+function assertNoRetainedUnboundFingerprintVersions(rows, config) {
+  assertCanonicalReadinessRows(rows, config.bindings.length);
+  const unboundRetained = rows.find(
+    ({ retained, keyFingerprint }) => retained && keyFingerprint === null,
+  );
+  if (unboundRetained !== undefined) {
+    fail(
+      `retained version ${unboundRetained.keyVersion} predates its fingerprint binding`,
+      'retained-key-unbound',
+    );
+  }
+}
+
+function assertReadinessRows(rows, config) {
+  const floor = assertCanonicalReadinessRows(rows, config.bindings.length);
+  const configured = new Map(
+    config.bindings.map(({ version, fingerprint: keyFingerprint }) => [version, keyFingerprint]),
+  );
+  for (const row of rows) {
+    if (!configured.has(row.keyVersion) && row.retained) {
+      fail(`keyring does not cover retained version ${row.keyVersion}`, 'retained-key-missing');
+    }
+    if (configured.has(row.keyVersion) && configured.get(row.keyVersion) !== row.keyFingerprint)
+      fail(`version ${row.keyVersion} material mismatch`);
   }
   for (const binding of config.bindings) {
     const row = rows.find(({ keyVersion }) => keyVersion === binding.version);
@@ -259,10 +270,8 @@ function assertReadinessRows(rows, config) {
   return floor;
 }
 
-async function readReadinessUnderAuthority(transaction, config) {
-  await transaction.$executeRawUnsafe(
-    'SET LOCAL ROLE bob_agent_mission_fingerprint_readiness',
-  );
+async function queryReadinessUnderAuthority(transaction, config) {
+  await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_agent_mission_fingerprint_readiness');
   const rows = await transaction.$queryRawUnsafe(
     `SELECT "keyVersion",
             "keyFingerprint",
@@ -275,7 +284,16 @@ async function readReadinessUnderAuthority(transaction, config) {
     config.bindings.map(({ version }) => version),
   );
   await transaction.$executeRawUnsafe('RESET ROLE');
-  return assertReadinessRows(rows, config);
+  return rows;
+}
+
+async function assertNoRetainedUnboundFingerprintVersionsUnderAuthority(transaction, config) {
+  const rows = await queryReadinessUnderAuthority(transaction, config);
+  assertNoRetainedUnboundFingerprintVersions(rows, config);
+}
+
+async function readReadinessUnderAuthority(transaction, config) {
+  return assertReadinessRows(await queryReadinessUnderAuthority(transaction, config), config);
 }
 
 async function assertClosedAndDrained(transaction) {
@@ -287,52 +305,41 @@ async function assertClosedAndDrained(transaction) {
       FOR SHARE`,
   );
   await transaction.$executeRawUnsafe('RESET ROLE');
-  if (
-    rows.length !== 1
-    || rows[0]?.mode !== 'closed'
-    || rows[0]?.usedSessions !== 0
-  ) fail(
-    'retire requires Bob Live capacity closed with zero sessions',
-    'capacity-not-closed-and-drained',
-  );
+  if (rows.length !== 1 || rows[0]?.mode !== 'closed' || rows[0]?.usedSessions !== 0)
+    fail(
+      'retire requires Bob Live capacity closed with zero sessions',
+      'capacity-not-closed-and-drained',
+    );
 }
 
 export async function manageAgentMissionFingerprintKeyVersions(config, prisma) {
-  return prisma.$transaction(async (transaction) => {
-    await transaction.$executeRawUnsafe(
-      'SET LOCAL search_path = pg_catalog',
-    );
-    await transaction.$executeRawUnsafe(
-      "SET LOCAL lock_timeout = '10s'",
-    );
-    await transaction.$executeRawUnsafe(
-      "SET LOCAL statement_timeout = '40s'",
-    );
-    await transaction.$executeRaw`
+  return prisma.$transaction(
+    async (transaction) => {
+      await transaction.$executeRawUnsafe('SET LOCAL search_path = pg_catalog');
+      await transaction.$executeRawUnsafe("SET LOCAL lock_timeout = '10s'");
+      await transaction.$executeRawUnsafe("SET LOCAL statement_timeout = '40s'");
+      await transaction.$executeRaw`
       SELECT pg_catalog.pg_advisory_xact_lock(
         pg_catalog.hashtextextended(${KEY_SPACE}, 0)
       )
     `;
-    if (!config.enabled) {
-      const floors = await transaction.$queryRaw`
+      if (!config.enabled) {
+        const floors = await transaction.$queryRaw`
         SELECT "minimumWriterVersion", "highestWriterVersion", "writerEnabled"
           FROM public.agent_mission_fingerprint_key_version_floors
          WHERE "keySpace" = ${KEY_SPACE}
       `;
-      if (
-        floors.length > 1
-        || (
-          floors.length === 1
-          && (
-            !Number.isInteger(floors[0]?.minimumWriterVersion)
-            || !Number.isInteger(floors[0]?.highestWriterVersion)
-            || typeof floors[0]?.writerEnabled !== 'boolean'
-          )
+        if (
+          floors.length > 1 ||
+          (floors.length === 1 &&
+            (!Number.isInteger(floors[0]?.minimumWriterVersion) ||
+              !Number.isInteger(floors[0]?.highestWriterVersion) ||
+              typeof floors[0]?.writerEnabled !== 'boolean'))
         )
-      ) fail('disabled master observed an invalid writer floor');
-      if (floors[0]?.writerEnabled === true) {
-        await assertClosedAndDrained(transaction);
-        await transaction.$executeRaw`
+          fail('disabled master observed an invalid writer floor');
+        if (floors[0]?.writerEnabled === true) {
+          await assertClosedAndDrained(transaction);
+          await transaction.$executeRaw`
           UPDATE public.agent_mission_fingerprint_key_version_floors
              SET "writerEnabled" = FALSE
            WHERE "keySpace" = ${KEY_SPACE}
@@ -340,43 +347,45 @@ export async function manageAgentMissionFingerprintKeyVersions(config, prisma) {
              AND "highestWriterVersion" = ${floors[0].highestWriterVersion}
              AND "writerEnabled" = TRUE
         `;
-        const disabledFloors = await transaction.$queryRaw`
+          const disabledFloors = await transaction.$queryRaw`
           SELECT "writerEnabled"
             FROM public.agent_mission_fingerprint_key_version_floors
            WHERE "keySpace" = ${KEY_SPACE}
         `;
-        if (
-          disabledFloors.length !== 1
-          || disabledFloors[0]?.writerEnabled !== false
-        ) fail('disabled master did not commit the writer fence');
+          if (disabledFloors.length !== 1 || disabledFloors[0]?.writerEnabled !== false)
+            fail('disabled master did not commit the writer fence');
+        }
+        return Object.freeze({ status: 'disabled' });
       }
-      return Object.freeze({ status: 'disabled' });
-    }
-    for (const binding of config.bindings) {
-      await transaction.$executeRaw`
+      // Le trigger writer, provisionné avant ce manager, prend le même verrou en partagé.
+      // Sous notre verrou exclusif, cette lecture voit donc tous les events déjà commités et
+      // aucun nouvel event ne peut arriver avant le commit du registre + floor. Une version
+      // historique sans binding durable est refusée avant le premier INSERT : le déploiement
+      // ne peut jamais inventer rétroactivement le matériau qui aurait signé ces events.
+      await assertNoRetainedUnboundFingerprintVersionsUnderAuthority(transaction, config);
+      for (const binding of config.bindings) {
+        await transaction.$executeRaw`
         INSERT INTO public.agent_mission_fingerprint_key_bindings (
           "keyVersion",
           "keyFingerprint"
         ) VALUES (${binding.version}, ${binding.fingerprint})
         ON CONFLICT ("keyVersion") DO NOTHING
       `;
-      const rows = await transaction.$queryRaw`
+        const rows = await transaction.$queryRaw`
         SELECT "keyFingerprint"::text AS "keyFingerprint"
           FROM public.agent_mission_fingerprint_key_bindings
          WHERE "keyVersion" = ${binding.version}
       `;
-      if (rows.length !== 1 || rows[0]?.keyFingerprint !== binding.fingerprint) {
-        fail(`version ${binding.version} material mismatch`, 'binding-material-mismatch');
+        if (rows.length !== 1 || rows[0]?.keyFingerprint !== binding.fingerprint) {
+          fail(`version ${binding.version} material mismatch`, 'binding-material-mismatch');
+        }
       }
-    }
-    let floor = await readReadinessUnderAuthority(transaction, config);
-    const configuredVersions = new Set(
-      config.bindings.map(({ version }) => version),
-    );
-    let expectedFloor;
-    if (config.mode === 'stage') {
-      if (floor !== null && !floor.writerEnabled) {
-        await transaction.$executeRaw`
+      let floor = await readReadinessUnderAuthority(transaction, config);
+      const configuredVersions = new Set(config.bindings.map(({ version }) => version));
+      let expectedFloor;
+      if (config.mode === 'stage') {
+        if (floor !== null && !floor.writerEnabled) {
+          await transaction.$executeRaw`
           UPDATE public.agent_mission_fingerprint_key_version_floors
              SET "writerEnabled" = TRUE
            WHERE "keySpace" = ${KEY_SPACE}
@@ -384,20 +393,17 @@ export async function manageAgentMissionFingerprintKeyVersions(config, prisma) {
              AND "highestWriterVersion" = ${floor.highestWriterVersion}
              AND "writerEnabled" = FALSE
         `;
-        floor = { ...floor, writerEnabled: true };
-      }
-      if (floor === null) {
-        const predecessor = config.currentVersion - 1;
-        const minimumWriterVersion = configuredVersions.has(predecessor)
-          ? predecessor
-          : config.currentVersion;
-        if (
-          minimumWriterVersion === config.currentVersion
-          && config.currentVersion > 1
-        ) {
-          await assertClosedAndDrained(transaction);
+          floor = { ...floor, writerEnabled: true };
         }
-        await transaction.$executeRaw`
+        if (floor === null) {
+          const predecessor = config.currentVersion - 1;
+          const minimumWriterVersion = configuredVersions.has(predecessor)
+            ? predecessor
+            : config.currentVersion;
+          if (minimumWriterVersion === config.currentVersion && config.currentVersion > 1) {
+            await assertClosedAndDrained(transaction);
+          }
+          await transaction.$executeRaw`
           INSERT INTO public.agent_mission_fingerprint_key_version_floors (
             "keySpace",
             "minimumWriterVersion",
@@ -410,107 +416,110 @@ export async function manageAgentMissionFingerprintKeyVersions(config, prisma) {
             TRUE
           )
         `;
-        expectedFloor = {
-          minimumWriterVersion,
-          highestWriterVersion: config.currentVersion,
-          writerEnabled: true,
-        };
-      } else if (
-        config.currentVersion >= floor.minimumWriterVersion
-        && config.currentVersion <= floor.highestWriterVersion
-      ) {
-        expectedFloor = floor;
-      } else if (
-        floor.minimumWriterVersion === floor.highestWriterVersion
-        && config.currentVersion === floor.highestWriterVersion + 1
-      ) {
-        await transaction.$executeRaw`
+          expectedFloor = {
+            minimumWriterVersion,
+            highestWriterVersion: config.currentVersion,
+            writerEnabled: true,
+          };
+        } else if (
+          config.currentVersion >= floor.minimumWriterVersion &&
+          config.currentVersion <= floor.highestWriterVersion
+        ) {
+          expectedFloor = floor;
+        } else if (
+          floor.minimumWriterVersion === floor.highestWriterVersion &&
+          config.currentVersion === floor.highestWriterVersion + 1
+        ) {
+          await transaction.$executeRaw`
           UPDATE public.agent_mission_fingerprint_key_version_floors
              SET "highestWriterVersion" = ${config.currentVersion}
            WHERE "keySpace" = ${KEY_SPACE}
              AND "minimumWriterVersion" = ${floor.minimumWriterVersion}
              AND "highestWriterVersion" = ${floor.highestWriterVersion}
         `;
-        expectedFloor = {
-          minimumWriterVersion: floor.minimumWriterVersion,
-          highestWriterVersion: config.currentVersion,
-          writerEnabled: true,
-        };
-      } else {
-        fail('stage refuses a rollback, gap or third concurrent writer version');
-      }
-    } else {
-      if (
-        floor !== null
-        && floor.minimumWriterVersion === config.currentVersion
-        && floor.highestWriterVersion === config.currentVersion
-        && floor.writerEnabled
-      ) {
-        expectedFloor = floor;
+          expectedFloor = {
+            minimumWriterVersion: floor.minimumWriterVersion,
+            highestWriterVersion: config.currentVersion,
+            writerEnabled: true,
+          };
+        } else {
+          fail('stage refuses a rollback, gap or third concurrent writer version');
+        }
       } else {
         if (
-          floor === null
-          || !floor.writerEnabled
-          || floor.highestWriterVersion !== floor.minimumWriterVersion + 1
-          || config.currentVersion !== floor.highestWriterVersion
-        ) fail(
-          'retire requires the adjacent N/N+1 writer floor',
-          'retire-floor-not-adjacent',
-        );
-        if (
-          !configuredVersions.has(floor.minimumWriterVersion)
-          || !configuredVersions.has(floor.highestWriterVersion)
-        ) fail(
-          'retire requires the keyring to cover both admitted writer versions',
-          'retire-keyring-incomplete',
-        );
-        await assertClosedAndDrained(transaction);
-        await transaction.$executeRaw`
+          floor !== null &&
+          floor.minimumWriterVersion === config.currentVersion &&
+          floor.highestWriterVersion === config.currentVersion &&
+          floor.writerEnabled
+        ) {
+          expectedFloor = floor;
+        } else {
+          if (
+            floor === null ||
+            !floor.writerEnabled ||
+            floor.highestWriterVersion !== floor.minimumWriterVersion + 1 ||
+            config.currentVersion !== floor.highestWriterVersion
+          )
+            fail('retire requires the adjacent N/N+1 writer floor', 'retire-floor-not-adjacent');
+          if (
+            !configuredVersions.has(floor.minimumWriterVersion) ||
+            !configuredVersions.has(floor.highestWriterVersion)
+          )
+            fail(
+              'retire requires the keyring to cover both admitted writer versions',
+              'retire-keyring-incomplete',
+            );
+          await assertClosedAndDrained(transaction);
+          await transaction.$executeRaw`
           UPDATE public.agent_mission_fingerprint_key_version_floors
              SET "minimumWriterVersion" = ${config.currentVersion}
            WHERE "keySpace" = ${KEY_SPACE}
              AND "minimumWriterVersion" = ${floor.minimumWriterVersion}
              AND "highestWriterVersion" = ${floor.highestWriterVersion}
         `;
-        expectedFloor = {
-          minimumWriterVersion: config.currentVersion,
-          highestWriterVersion: config.currentVersion,
-          writerEnabled: true,
-        };
+          expectedFloor = {
+            minimumWriterVersion: config.currentVersion,
+            highestWriterVersion: config.currentVersion,
+            writerEnabled: true,
+          };
+        }
       }
-    }
-    if (
-      !configuredVersions.has(expectedFloor.minimumWriterVersion)
-      || !configuredVersions.has(expectedFloor.highestWriterVersion)
-    ) fail('keyring does not cover the admitted writer floor', 'writer-floor-key-missing');
-    const floors = await transaction.$queryRaw`
+      if (
+        !configuredVersions.has(expectedFloor.minimumWriterVersion) ||
+        !configuredVersions.has(expectedFloor.highestWriterVersion)
+      )
+        fail('keyring does not cover the admitted writer floor', 'writer-floor-key-missing');
+      const floors = await transaction.$queryRaw`
       SELECT "minimumWriterVersion", "highestWriterVersion", "writerEnabled"
         FROM public.agent_mission_fingerprint_key_version_floors
        WHERE "keySpace" = ${KEY_SPACE}
     `;
-    if (
-      floors.length !== 1
-      || floors[0]?.minimumWriterVersion !== expectedFloor.minimumWriterVersion
-      || floors[0]?.highestWriterVersion !== expectedFloor.highestWriterVersion
-      || floors[0]?.writerEnabled !== true
-    ) fail('writer floor transition did not commit the expected state', 'writer-floor-mismatch');
-    return Object.freeze({
-      status: config.mode === 'stage' ? 'staged' : 'retired',
-      currentVersion: config.currentVersion,
-      bindingCount: config.bindings.length,
-      writerFloor: Object.freeze({
-        minimumWriterVersion: expectedFloor.minimumWriterVersion,
-        highestWriterVersion: expectedFloor.highestWriterVersion,
-      }),
-    });
-  }, {
-    // READ COMMITTED est intentionnel : le premier SELECT peut attendre le verrou exclusif.
-    // Un snapshot SERIALIZABLE pris avant cette attente masquerait l'event d'un writer partagé
-    // qui commit pendant l'attente. Le verrou advisory sérialise déjà tous les managers.
-    isolationLevel: 'ReadCommitted',
-    maxWait: 10_000,
-    timeout: 50_000,
-  });
+      if (
+        floors.length !== 1 ||
+        floors[0]?.minimumWriterVersion !== expectedFloor.minimumWriterVersion ||
+        floors[0]?.highestWriterVersion !== expectedFloor.highestWriterVersion ||
+        floors[0]?.writerEnabled !== true
+      )
+        fail('writer floor transition did not commit the expected state', 'writer-floor-mismatch');
+      return Object.freeze({
+        status: config.mode === 'stage' ? 'staged' : 'retired',
+        currentVersion: config.currentVersion,
+        bindingCount: config.bindings.length,
+        writerFloor: Object.freeze({
+          minimumWriterVersion: expectedFloor.minimumWriterVersion,
+          highestWriterVersion: expectedFloor.highestWriterVersion,
+        }),
+      });
+    },
+    {
+      // READ COMMITTED est intentionnel : le premier SELECT peut attendre le verrou exclusif.
+      // Un snapshot SERIALIZABLE pris avant cette attente masquerait l'event d'un writer partagé
+      // qui commit pendant l'attente. Le verrou advisory sérialise déjà tous les managers.
+      isolationLevel: 'ReadCommitted',
+      maxWait: 10_000,
+      timeout: 50_000,
+    },
+  );
 }
 
 async function main() {
@@ -522,9 +531,8 @@ async function main() {
     const result = await manageAgentMissionFingerprintKeyVersions(config, prisma);
     console.log(`agent-mission-fingerprint-key:${result.status}`);
   } catch (error) {
-    const safeCode = error instanceof AgentMissionFingerprintKeyOperationError
-      ? error.code
-      : 'unexpected';
+    const safeCode =
+      error instanceof AgentMissionFingerprintKeyOperationError ? error.code : 'unexpected';
     console.error(`agent-mission-fingerprint-key:error:${safeCode}`);
     process.exitCode = 1;
   } finally {

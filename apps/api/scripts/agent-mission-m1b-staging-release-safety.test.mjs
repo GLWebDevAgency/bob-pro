@@ -159,16 +159,45 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
     workflow,
     /BOB_M1B_VARIABLES_WERE_OWNED: \$\{\{ needs\.certify\.outputs\.variables_owned \|\| 'false' \}\}/u,
   );
+  assert.doesNotMatch(workflow, /BOB_M1B_OVERRIDE_WAS_OWNED/u);
+  assert.doesNotMatch(workflow, /flag_command=/u);
+  assert.match(workflow, /agent-mission-m1b-staging-flag\.mjs cleanup/u);
   assert.match(workflow, /true\) echo "removed=true" >> "\$GITHUB_OUTPUT"/u);
   assert.doesNotMatch(workflow, /BOB_M1B_STAGING_VARIABLES_OWNED/u);
   assert.doesNotMatch(workflow, /BOB_M1B_STAGING_OVERRIDE_OWNED/u);
   assert.match(workflow, /cleanup:\n    needs: certify\n    if: \$\{\{ always\(\) \}\}/u);
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs preflight/u);
+  assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs bootstrap/u);
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs active/u);
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs off/u);
   assert.doesNotMatch(
     workflow,
     /manage-agent-mission-fingerprint-key-versions\.mjs\s+(?:stage|retire)/u,
+  );
+});
+
+test('premier run N-1 est migration-aware puis exige le flag canonique juste après predeploy', () => {
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/gu),
+    2,
+    'initial preflight and final cleanup must both distinguish an unmigrated staging',
+  );
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-flag\.mjs preflight/gu),
+    1,
+    'the canonical flag must be checked strictly once migrations have completed',
+  );
+  assert.match(
+    workflow,
+    /- name: Baseline OFF predeploy[\s\S]*?BOB_RELEASE_PHASE=predeploy[\s\S]*?sh apps\/api\/scripts\/release\.sh[\s\S]*?agent-mission-m1b-staging-flag\.mjs preflight[\s\S]*?- name: Deploy exact SHA with M1-B OFF/u,
+  );
+  assert.match(
+    workflow,
+    /Final independent OFF data cleanliness proof[\s\S]*?agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/u,
+  );
+  assert.match(
+    workflow,
+    /Final independent OFF negotiation proof when M1-B binary was deployed\n\s+if: \$\{\{ always\(\) && steps\.final_off_data\.outcome == 'success' && \(needs\.certify\.outputs\.baseline_deployment_id != '' \|\| needs\.certify\.outputs\.variables_owned == 'true'\) \}\}/u,
   );
 });
 
@@ -189,7 +218,8 @@ test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict bi
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu), 2);
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu), 1);
   assert.match(workflow, /Execute real positive WebRTC mission and runtime RLS proof/u);
-  assert.match(workflow, /Final independent OFF negotiation and data cleanliness proof/u);
+  assert.match(workflow, /Final independent OFF data cleanliness proof/u);
+  assert.match(workflow, /Final independent OFF negotiation proof when M1-B binary was deployed/u);
   assert.match(workflow, /needs:\n      - certify\n      - cleanup\n      - evidence/u);
   assert.match(workflow, /test "\$CERTIFY_RESULT" = success/u);
   assert.match(workflow, /test "\$CLEANUP_RESULT" = success/u);

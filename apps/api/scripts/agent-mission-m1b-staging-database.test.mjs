@@ -19,10 +19,8 @@ function environment(overrides = {}) {
     BOB_M1B_STAGING_DATABASE_OID: String(DATABASE_OID),
     BOB_M1B_STAGING_DATABASE_NAME: 'postgres',
     SUPABASE_URL: `https://${PROJECT_REF}.supabase.co`,
-    DIRECT_URL:
-      `postgresql://postgres.${PROJECT_REF}:secret@pooler.supabase.com:5432/postgres`,
-    DATABASE_URL:
-      `postgresql://${APP_ROLE}.${PROJECT_REF}:secret@pooler.supabase.com:5432/postgres`,
+    DIRECT_URL: `postgresql://postgres.${PROJECT_REF}:secret@pooler.supabase.com:5432/postgres`,
+    DATABASE_URL: `postgresql://${APP_ROLE}.${PROJECT_REF}:secret@pooler.supabase.com:5432/postgres`,
     APP_DATABASE_ROLE: APP_ROLE,
     ...overrides,
   };
@@ -49,16 +47,22 @@ test('parse épingle le project ref et les deux rôles Supabase exacts', () => {
   assert.equal(parsed.projectRef, PROJECT_REF);
   assert.equal(parsed.expectedDatabaseOid, DATABASE_OID);
   assert.throws(
-    () => parseM1BStagingDatabaseEnvironment(environment({
-      SUPABASE_URL: 'https://foreignprojectrefxx.supabase.co',
-    })),
+    () =>
+      parseM1BStagingDatabaseEnvironment(
+        environment({
+          SUPABASE_URL: 'https://foreignprojectrefxx.supabase.co',
+        }),
+      ),
     /pinned staging project/u,
   );
   assert.throws(
-    () => parseM1BStagingDatabaseEnvironment(environment({
-      DATABASE_URL:
-        'postgresql://bob_app.foreignprojectrefxx:secret@pooler.supabase.com/postgres',
-    })),
+    () =>
+      parseM1BStagingDatabaseEnvironment(
+        environment({
+          DATABASE_URL:
+            'postgresql://bob_app.foreignprojectrefxx:secret@pooler.supabase.com/postgres',
+        }),
+      ),
     /pinned Supabase project/u,
   );
 });
@@ -69,17 +73,19 @@ test('décode uniquement une primaire PostgreSQL UTF8 inscriptible', () => {
     identity(),
   );
   assert.throws(
-    () => decodeM1BStagingDatabaseIdentity(
-      JSON.stringify(identity({ transactionReadOnly: true })),
-      'DATABASE_URL',
-    ),
+    () =>
+      decodeM1BStagingDatabaseIdentity(
+        JSON.stringify(identity({ transactionReadOnly: true })),
+        'DATABASE_URL',
+      ),
     /writable primary/u,
   );
   assert.throws(
-    () => decodeM1BStagingDatabaseIdentity(
-      JSON.stringify(identity({ serverEncoding: 'LATIN1' })),
-      'DATABASE_URL',
-    ),
+    () =>
+      decodeM1BStagingDatabaseIdentity(
+        JSON.stringify(identity({ serverEncoding: 'LATIN1' })),
+        'DATABASE_URL',
+      ),
     /malformed/u,
   );
 });
@@ -92,29 +98,28 @@ test('preuve croise cluster, base, migration role et runtime RLS exacts', () => 
     roleBypassRls: true,
   });
   const runtime = identity();
-  assert.deepEqual(
-    assertM1BStagingDatabaseIdentity(config, direct, runtime),
-    {
-      systemIdentifier: SYSTEM_IDENTIFIER,
-      databaseOid: DATABASE_OID,
-      databaseName: 'postgres',
-    },
-  );
+  assert.deepEqual(assertM1BStagingDatabaseIdentity(config, direct, runtime), {
+    systemIdentifier: SYSTEM_IDENTIFIER,
+    databaseOid: DATABASE_OID,
+    databaseName: 'postgres',
+  });
   assert.throws(
-    () => assertM1BStagingDatabaseIdentity(
-      config,
-      direct,
-      identity({ databaseOid: DATABASE_OID + 1 }),
-    ),
+    () =>
+      assertM1BStagingDatabaseIdentity(config, direct, identity({ databaseOid: DATABASE_OID + 1 })),
     /databaseOid/u,
   );
   assert.throws(
-    () => assertM1BStagingDatabaseIdentity(
-      config,
-      direct,
-      identity({ roleBypassRls: true }),
-    ),
+    () => assertM1BStagingDatabaseIdentity(config, direct, identity({ roleBypassRls: true })),
     /restricted runtime role/u,
+  );
+  assert.throws(
+    () =>
+      assertM1BStagingDatabaseIdentity(
+        config,
+        { ...direct, roleBypassRls: false, roleSuperuser: false },
+        runtime,
+      ),
+    /cannot prove global state through forced RLS/u,
   );
 });
 
@@ -127,11 +132,17 @@ test('certification interroge DIRECT puis runtime sans imprimer les URLs', () =>
       const direct = url === environment().DIRECT_URL;
       return {
         status: 0,
-        stdout: `${JSON.stringify(identity(direct ? {
-          sessionUser: 'postgres',
-          currentUser: 'postgres',
-          roleBypassRls: true,
-        } : {}))}\n`,
+        stdout: `${JSON.stringify(
+          identity(
+            direct
+              ? {
+                  sessionUser: 'postgres',
+                  currentUser: 'postgres',
+                  roleBypassRls: true,
+                }
+              : {},
+          ),
+        )}\n`,
         stderr: '',
       };
     },
@@ -139,6 +150,10 @@ test('certification interroge DIRECT puis runtime sans imprimer les URLs', () =>
   assert.equal(result.databaseName, 'postgres');
   assert.equal(calls.length, 2);
   assert.match(calls[0].options.input, /pg_control_system/u);
+  assert.match(calls[0].options.input, /'sessionUser', SESSION_USER/u);
+  assert.match(calls[0].options.input, /'currentUser', CURRENT_USER/u);
+  assert.match(calls[0].options.input, /role\.rolname = CURRENT_USER/u);
+  assert.doesNotMatch(calls[0].options.input, /pg_catalog\.(?:session_user|current_user)/u);
   assert.equal(calls[0].options.input.includes(PROJECT_REF), false);
   assert.equal(calls[0].options.input.includes('secret'), false);
 });

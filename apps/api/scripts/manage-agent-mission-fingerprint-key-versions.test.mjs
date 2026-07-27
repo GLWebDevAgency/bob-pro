@@ -28,10 +28,7 @@ function environment(overrides = {}) {
 }
 
 function expected(secret) {
-  return createHash('sha256')
-    .update(DOMAIN)
-    .update(Buffer.from(secret, 'base64url'))
-    .digest('hex');
+  return createHash('sha256').update(DOMAIN).update(Buffer.from(secret, 'base64url')).digest('hex');
 }
 
 function sqlText(strings) {
@@ -47,9 +44,8 @@ function harness({
   failAfterFloorMutation = false,
 } = {}) {
   const durable = new Map(bindings);
-  let writerFloor = floor === null
-    ? null
-    : { ...floor, writerEnabled: floor.writerEnabled ?? true };
+  let writerFloor =
+    floor === null ? null : { ...floor, writerEnabled: floor.writerEnabled ?? true };
   const operations = [];
   const prisma = {
     async $transaction(work, options) {
@@ -74,17 +70,14 @@ function harness({
                   ([otherVersion, otherFingerprint]) =>
                     otherVersion !== version && otherFingerprint === keyFingerprint,
                 )
-              ) throw new Error('duplicate key fingerprint');
+              )
+                throw new Error('duplicate key fingerprint');
               workingBindings.set(version, keyFingerprint);
             }
           } else if (
             sql.includes('INSERT INTO public.agent_mission_fingerprint_key_version_floors')
           ) {
-            const [
-              keySpace,
-              minimumWriterVersion,
-              highestWriterVersion,
-            ] = values;
+            const [keySpace, minimumWriterVersion, highestWriterVersion] = values;
             assert.equal(keySpace, KEY_SPACE);
             if (workingState.floor !== null) {
               throw new Error('duplicate writer floor');
@@ -95,34 +88,34 @@ function harness({
               writerEnabled: true,
             });
           } else if (
-            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors')
-            && sql.includes('SET "writerEnabled" = FALSE')
+            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors') &&
+            sql.includes('SET "writerEnabled" = FALSE')
           ) {
             const [keySpace, minimumWriterVersion, highestWriterVersion] = values;
             assert.equal(keySpace, KEY_SPACE);
             if (
-              workingState.floor?.minimumWriterVersion === minimumWriterVersion
-              && workingState.floor.highestWriterVersion === highestWriterVersion
-              && workingState.floor.writerEnabled
+              workingState.floor?.minimumWriterVersion === minimumWriterVersion &&
+              workingState.floor.highestWriterVersion === highestWriterVersion &&
+              workingState.floor.writerEnabled
             ) {
               mutateFloor({ ...workingState.floor, writerEnabled: false });
             }
           } else if (
-            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors')
-            && sql.includes('SET "writerEnabled" = TRUE')
+            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors') &&
+            sql.includes('SET "writerEnabled" = TRUE')
           ) {
             const [keySpace, minimumWriterVersion, highestWriterVersion] = values;
             assert.equal(keySpace, KEY_SPACE);
             if (
-              workingState.floor?.minimumWriterVersion === minimumWriterVersion
-              && workingState.floor.highestWriterVersion === highestWriterVersion
-              && !workingState.floor.writerEnabled
+              workingState.floor?.minimumWriterVersion === minimumWriterVersion &&
+              workingState.floor.highestWriterVersion === highestWriterVersion &&
+              !workingState.floor.writerEnabled
             ) {
               mutateFloor({ ...workingState.floor, writerEnabled: true });
             }
           } else if (
-            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors')
-            && sql.includes('SET "highestWriterVersion"')
+            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors') &&
+            sql.includes('SET "highestWriterVersion"')
           ) {
             const [
               highestWriterVersion,
@@ -132,8 +125,8 @@ function harness({
             ] = values;
             assert.equal(keySpace, KEY_SPACE);
             if (
-              workingState.floor?.minimumWriterVersion === minimumWriterVersion
-              && workingState.floor.highestWriterVersion === previousHighestWriterVersion
+              workingState.floor?.minimumWriterVersion === minimumWriterVersion &&
+              workingState.floor.highestWriterVersion === previousHighestWriterVersion
             ) {
               mutateFloor({
                 ...workingState.floor,
@@ -142,8 +135,8 @@ function harness({
               });
             }
           } else if (
-            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors')
-            && sql.includes('SET "minimumWriterVersion"')
+            sql.includes('UPDATE public.agent_mission_fingerprint_key_version_floors') &&
+            sql.includes('SET "minimumWriterVersion"')
           ) {
             const [
               minimumWriterVersion,
@@ -153,8 +146,8 @@ function harness({
             ] = values;
             assert.equal(keySpace, KEY_SPACE);
             if (
-              workingState.floor?.minimumWriterVersion === previousMinimumWriterVersion
-              && workingState.floor.highestWriterVersion === highestWriterVersion
+              workingState.floor?.minimumWriterVersion === previousMinimumWriterVersion &&
+              workingState.floor.highestWriterVersion === highestWriterVersion
             ) {
               mutateFloor({
                 ...workingState.floor,
@@ -226,10 +219,12 @@ function harness({
     durable,
     operations,
     get floor() {
-      return writerFloor === null ? null : {
-        minimumWriterVersion: writerFloor.minimumWriterVersion,
-        highestWriterVersion: writerFloor.highestWriterVersion,
-      };
+      return writerFloor === null
+        ? null
+        : {
+            minimumWriterVersion: writerFloor.minimumWriterVersion,
+            highestWriterVersion: writerFloor.highestWriterVersion,
+          };
     },
     get writerEnabled() {
       return writerFloor?.writerEnabled ?? null;
@@ -238,22 +233,27 @@ function harness({
 }
 
 test('master OFF reste dormant uniquement avec le bloc keyring absent', () => {
-  assert.deepEqual(parseAgentMissionFingerprintKeyOperation('stage', {
-    BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
-    DIRECT_URL: directUrl,
-  }), { enabled: false, mode: 'stage' });
-  assert.throws(
-    () => parseAgentMissionFingerprintKeyOperation('retire', {
+  assert.deepEqual(
+    parseAgentMissionFingerprintKeyOperation('stage', {
       BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
-      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
       DIRECT_URL: directUrl,
     }),
+    { enabled: false, mode: 'stage' },
+  );
+  assert.throws(
+    () =>
+      parseAgentMissionFingerprintKeyOperation('retire', {
+        BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
+        BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
+        DIRECT_URL: directUrl,
+      }),
     /keyring block to be absent/u,
   );
   assert.throws(
-    () => parseAgentMissionFingerprintKeyOperation('stage', {
-      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
-    }),
+    () =>
+      parseAgentMissionFingerprintKeyOperation('stage', {
+        BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
+      }),
     /DIRECT_URL is required/u,
   );
 });
@@ -305,19 +305,16 @@ test('master OFF vérifie le floor durable et exige le drain seulement après ac
   });
   await expectDisabled(config, alreadyDisabled);
   assert.equal(
-    alreadyDisabled.operations.some(
-      ({ sql }) => sql?.includes('realtime_global_capacity'),
-    ),
+    alreadyDisabled.operations.some(({ sql }) => sql?.includes('realtime_global_capacity')),
     false,
   );
 });
 
 async function expectDisabled(config, state) {
   await assert.doesNotReject(async () => {
-    assert.deepEqual(
-      await manageAgentMissionFingerprintKeyVersions(config, state.prisma),
-      { status: 'disabled' },
-    );
+    assert.deepEqual(await manageAgentMissionFingerprintKeyVersions(config, state.prisma), {
+      status: 'disabled',
+    });
   });
 }
 
@@ -333,7 +330,9 @@ test('le CLI ne journalise ni matériau HMAC ni mot de passe PostgreSQL', () => 
   const result = spawnSync(
     process.execPath,
     [
-      fileURLToPath(new URL('./manage-agent-mission-fingerprint-key-versions.mjs', import.meta.url)),
+      fileURLToPath(
+        new URL('./manage-agent-mission-fingerprint-key-versions.mjs', import.meta.url),
+      ),
       'stage',
     ],
     {
@@ -345,8 +344,7 @@ test('le CLI ne journalise ni matériau HMAC ni mot de passe PostgreSQL', () => 
         BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 1: FIRST }),
         BOB_LIVE_ENABLED: 'true',
         BOB_LIVE_PROVIDER: 'openai',
-        DIRECT_URL:
-          `postgresql://deployer:${password}@127.0.0.1:1/bob?connect_timeout=1`,
+        DIRECT_URL: `postgresql://deployer:${password}@127.0.0.1:1/bob?connect_timeout=1`,
       },
     },
   );
@@ -371,10 +369,13 @@ test('le manager refuse AgentMission hors du chemin Bob Live OpenAI', () => {
     );
   }
   assert.equal(
-    parseAgentMissionFingerprintKeyOperation('stage', environment({
-      BOB_LIVE_ENABLED: undefined,
-      OPENAI_REALTIME_ENABLED: 'true',
-    })).enabled,
+    parseAgentMissionFingerprintKeyOperation(
+      'stage',
+      environment({
+        BOB_LIVE_ENABLED: undefined,
+        OPENAI_REALTIME_ENABLED: 'true',
+      }),
+    ).enabled,
     true,
   );
 });
@@ -411,20 +412,15 @@ test('le parseur refuse les blocs partiels, versions invalides et matériaux ré
     }),
     environment({ DIRECT_URL: undefined }),
   ]) {
-    assert.throws(
-      () => parseAgentMissionFingerprintKeyOperation('stage', candidate),
-    );
+    assert.throws(() => parseAgentMissionFingerprintKeyOperation('stage', candidate));
   }
 });
 
-test('un premier stage lie le matériau, couvre les événements retenus et arme le floor', async () => {
+test('un premier stage sur keyspace neuf lie le matériau et arme le floor', async () => {
   const config = parseAgentMissionFingerprintKeyOperation('stage', environment());
-  const state = harness({ retainedVersions: new Set([1]) });
+  const state = harness();
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
 
   assert.deepEqual(result, {
     status: 'staged',
@@ -432,9 +428,7 @@ test('un premier stage lie le matériau, couvre les événements retenus et arme
     bindingCount: 2,
     writerFloor: { minimumWriterVersion: 1, highestWriterVersion: 2 },
   });
-  assert.ok(
-    state.operations.some(({ sql }) => /pg_advisory_xact_lock/u.test(sql ?? '')),
-  );
+  assert.ok(state.operations.some(({ sql }) => /pg_advisory_xact_lock/u.test(sql ?? '')));
   assert.deepEqual(state.operations[0].options, {
     isolationLevel: 'ReadCommitted',
     maxWait: 10_000,
@@ -446,12 +440,65 @@ test('un premier stage lie le matériau, couvre les événements retenus et arme
     minimumWriterVersion: 1,
     highestWriterVersion: 2,
   });
+  const prebindingReadinessIndex = state.operations.findIndex(
+    ({ kind, sql }) =>
+      kind === 'queryUnsafe' && sql?.includes('agent_mission_fingerprint_key_readiness'),
+  );
+  const firstBindingInsertIndex = state.operations.findIndex(
+    ({ kind, sql }) =>
+      kind === 'execute' &&
+      sql?.includes('INSERT INTO public.agent_mission_fingerprint_key_bindings'),
+  );
+  assert.ok(prebindingReadinessIndex >= 0);
+  assert.ok(firstBindingInsertIndex > prebindingReadinessIndex);
+});
+
+test('le stage refuse un événement retenu sans binding avant tout INSERT', async () => {
+  const config = parseAgentMissionFingerprintKeyOperation('stage', environment());
+  const state = harness({ retainedVersions: new Set([1]) });
+
+  await assert.rejects(
+    manageAgentMissionFingerprintKeyVersions(config, state.prisma),
+    /retained version 1 predates its fingerprint binding/u,
+  );
+
+  assert.deepEqual([...state.durable], []);
+  assert.equal(state.floor, null);
+  assert.equal(
+    state.operations.some(
+      ({ kind, sql }) =>
+        kind === 'execute' &&
+        sql?.includes('INSERT INTO public.agent_mission_fingerprint_key_bindings'),
+    ),
+    false,
+  );
+});
+
+test('le stage conserve un événement retenu seulement avec son binding durable antérieur', async () => {
+  const config = parseAgentMissionFingerprintKeyOperation('stage', environment());
+  const state = harness({
+    bindings: new Map([[1, expected(FIRST)]]),
+    retainedVersions: new Set([1]),
+  });
+
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
+
+  assert.equal(result.status, 'staged');
+  assert.equal(state.durable.get(1), expected(FIRST));
+  assert.equal(state.durable.get(2), expected(SECOND));
+  assert.deepEqual(state.floor, {
+    minimumWriterVersion: 1,
+    highestWriterVersion: 2,
+  });
 });
 
 test('un premier stage sans clé N-1 exige une capacité fermée et drainée', async () => {
-  const config = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: SECOND }),
-  }));
+  const config = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: SECOND }),
+    }),
+  );
   const state = harness({
     capacity: { mode: 'active', usedSessions: 0 },
   });
@@ -474,10 +521,7 @@ test('un stage adjacent étend N vers N/N+1 sans rollback', async () => {
     floor: { minimumWriterVersion: 1, highestWriterVersion: 1 },
   });
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
 
   assert.deepEqual(result.writerFloor, {
     minimumWriterVersion: 1,
@@ -490,9 +534,12 @@ test('un stage adjacent étend N vers N/N+1 sans rollback', async () => {
 });
 
 test('stage réactive atomiquement un floor déjà désactivé', async () => {
-  const config = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
-  }));
+  const config = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
+    }),
+  );
   const state = harness({
     bindings: new Map([
       [1, expected(FIRST)],
@@ -506,10 +553,7 @@ test('stage réactive atomiquement un floor déjà désactivé', async () => {
     capacity: { mode: 'active', usedSessions: 5 },
   });
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
   assert.equal(result.status, 'staged');
   assert.equal(state.writerEnabled, true);
   assert.equal(
@@ -519,9 +563,12 @@ test('stage réactive atomiquement un floor déjà désactivé', async () => {
 });
 
 test('le writer N reste idempotent pendant la fenêtre N/N+1 sans réduire le floor', async () => {
-  const config = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
-  }));
+  const config = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
+    }),
+  );
   const state = harness({
     bindings: new Map([
       [1, expected(FIRST)],
@@ -530,10 +577,7 @@ test('le writer N reste idempotent pendant la fenêtre N/N+1 sans réduire le fl
     floor: { minimumWriterVersion: 1, highestWriterVersion: 2 },
   });
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
 
   assert.deepEqual(result.writerFloor, {
     minimumWriterVersion: 1,
@@ -559,10 +603,13 @@ test('un même numéro déjà lié à un autre matériau échoue sans réécritu
 });
 
 test('un matériau déjà lié à une autre version échoue et la transaction ne fuit rien', async () => {
-  const config = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEY_VERSION: '2',
-    BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: FIRST }),
-  }));
+  const config = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '2',
+      BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: FIRST }),
+    }),
+  );
   const state = harness({
     bindings: new Map([[1, expected(FIRST)]]),
     floor: { minimumWriterVersion: 1, highestWriterVersion: 1 },
@@ -599,29 +646,41 @@ test('un échec après mutation du floor rollbacke bindings et floor', async () 
 });
 
 test('le stage refuse rollback et saut de version', async () => {
-  const rollback = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
-  }));
+  const rollback = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '1',
+    }),
+  );
   await assert.rejects(
-    manageAgentMissionFingerprintKeyVersions(rollback, harness({
-      bindings: new Map([
-        [1, expected(FIRST)],
-        [2, expected(SECOND)],
-      ]),
-      floor: { minimumWriterVersion: 2, highestWriterVersion: 2 },
-    }).prisma),
+    manageAgentMissionFingerprintKeyVersions(
+      rollback,
+      harness({
+        bindings: new Map([
+          [1, expected(FIRST)],
+          [2, expected(SECOND)],
+        ]),
+        floor: { minimumWriterVersion: 2, highestWriterVersion: 2 },
+      }).prisma,
+    ),
     /rollback, gap or third concurrent writer/u,
   );
 
-  const gap = parseAgentMissionFingerprintKeyOperation('stage', environment({
-    BOB_AGENT_MISSION_HMAC_KEY_VERSION: '3',
-    BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 1: FIRST, 3: THIRD }),
-  }));
+  const gap = parseAgentMissionFingerprintKeyOperation(
+    'stage',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEY_VERSION: '3',
+      BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 1: FIRST, 3: THIRD }),
+    }),
+  );
   await assert.rejects(
-    manageAgentMissionFingerprintKeyVersions(gap, harness({
-      bindings: new Map([[1, expected(FIRST)]]),
-      floor: { minimumWriterVersion: 1, highestWriterVersion: 1 },
-    }).prisma),
+    manageAgentMissionFingerprintKeyVersions(
+      gap,
+      harness({
+        bindings: new Map([[1, expected(FIRST)]]),
+        floor: { minimumWriterVersion: 1, highestWriterVersion: 1 },
+      }).prisma,
+    ),
     /rollback, gap or third concurrent writer/u,
   );
 });
@@ -637,10 +696,7 @@ test('retire exige capacité fermée et drainée puis avance N/N+1 vers N+1', as
     retainedVersions: new Set([1]),
   });
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
 
   assert.deepEqual(result, {
     status: 'retired',
@@ -665,10 +721,7 @@ test('retire est idempotent après commit sans redemander un drain', async () =>
     capacity: { mode: 'active', usedSessions: 9 },
   });
 
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    state.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, state.prisma);
 
   assert.equal(result.status, 'retired');
   assert.deepEqual(result.writerFloor, {
@@ -682,9 +735,12 @@ test('retire est idempotent après commit sans redemander un drain', async () =>
 });
 
 test('retire exige encore les deux clés avant le commit mais accepte le retry sans N', async () => {
-  const config = parseAgentMissionFingerprintKeyOperation('retire', environment({
-    BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: SECOND }),
-  }));
+  const config = parseAgentMissionFingerprintKeyOperation(
+    'retire',
+    environment({
+      BOB_AGENT_MISSION_HMAC_KEYRING: JSON.stringify({ 2: SECOND }),
+    }),
+  );
   const pending = harness({
     bindings: new Map([
       [1, expected(FIRST)],
@@ -710,10 +766,7 @@ test('retire exige encore les deux clés avant le commit mais accepte le retry s
     floor: { minimumWriterVersion: 2, highestWriterVersion: 2 },
     capacity: { mode: 'active', usedSessions: 4 },
   });
-  const result = await manageAgentMissionFingerprintKeyVersions(
-    config,
-    committed.prisma,
-  );
+  const result = await manageAgentMissionFingerprintKeyVersions(config, committed.prisma);
   assert.deepEqual(result.writerFloor, {
     minimumWriterVersion: 2,
     highestWriterVersion: 2,
@@ -752,7 +805,7 @@ test('la readiness refuse un mélange de floors absent et présent', async () =>
     readinessOverride: ({ durable }) => [
       {
         keyVersion: 1,
-        keyFingerprint: durable.get(1),
+        keyFingerprint: durable.get(1) ?? null,
         retained: false,
         minimumWriterVersion: null,
         highestWriterVersion: null,
@@ -760,7 +813,7 @@ test('la readiness refuse un mélange de floors absent et présent', async () =>
       },
       {
         keyVersion: 2,
-        keyFingerprint: durable.get(2),
+        keyFingerprint: durable.get(2) ?? null,
         retained: false,
         minimumWriterVersion: 1,
         highestWriterVersion: 2,

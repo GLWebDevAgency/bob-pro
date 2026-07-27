@@ -180,7 +180,7 @@ jobs:
           pnpm --filter "@bob/api-client..." build
           node --test apps/api/scripts/agent-mission-m1b-staging-*.test.mjs
           node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
-      - name: Preflight Railway variables and canonical release flag
+      - name: Preflight Railway variables and migration-aware flag baseline
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
@@ -191,7 +191,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
+            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
       - name: Preflight and deploy the private Whisper auditor at the exact SHA
         id: deploy_whisper
         timeout-minutes: 60
@@ -226,6 +226,9 @@ jobs:
             env BOB_RELEASE_PHASE=predeploy \
               REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
               sh apps/api/scripts/release.sh
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
       - name: Deploy exact SHA with M1-B OFF
         id: deploy_baseline
         timeout-minutes: 60
@@ -453,7 +456,7 @@ jobs:
           result="$(
             railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
               --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-              node apps/api/scripts/agent-mission-m1b-staging-flag.mjs disable
+              node apps/api/scripts/agent-mission-m1b-staging-flag.mjs cleanup
           )"
           printf '%s\n' "$result"
           case "$(printf '%s\n' "$result" | tail -n 1)" in
@@ -564,15 +567,13 @@ jobs:
         run: |
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs preflight
-      - name: Final independent OFF negotiation and data cleanliness proof
+            node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs bootstrap
+      - name: Final independent OFF data cleanliness proof
+        id: final_off_data
         if: ${{ always() && steps.pin_database.outcome == 'success' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
-          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
-          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
-          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
         run: |
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -580,7 +581,15 @@ jobs:
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-off
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs assert-off
+            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
+      - name: Final independent OFF negotiation proof when M1-B binary was deployed
+        if: ${{ always() && steps.final_off_data.outcome == 'success' && (needs.certify.outputs.baseline_deployment_id != '' || needs.certify.outputs.variables_owned == 'true') }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs negative
