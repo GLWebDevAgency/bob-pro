@@ -100,9 +100,13 @@ test('le build vérifie chaque artefact avant compilation ou copie dans le runti
   );
   assert.match(
     dockerfile,
-    /snapshot\.debian\.org\/archive\/debian\/20250915T000000Z/u,
+    /deb \[check-valid-until=no\] http:\/\/snapshot\.debian\.org\/archive\/debian\/20250915T000000Z bookworm main/u,
   );
   assert.doesNotMatch(dockerfile, /deb\.debian\.org|security\.debian\.org/u);
+  assert.doesNotMatch(
+    dockerfile,
+    /trusted\s*=\s*yes|allow-unauthenticated|AllowInsecureRepositories/u,
+  );
   for (const pinnedPackage of [
     'build-essential=12.9',
     'ca-certificates=20230311+deb12u1',
