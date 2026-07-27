@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildRelance, type BuildRelanceInput } from './build-relance';
+import { buildQuoteRelance, buildRelance, type BuildRelanceInput } from './build-relance';
 
 const base: Omit<BuildRelanceInput, 'tone' | 'customerType'> = {
   customerName: 'M. Bernard',
@@ -115,5 +115,43 @@ describe('buildRelance', () => {
       customerType: 'b2c',
     });
     expect(m.body.toLowerCase()).toMatch(/\btu\b|\bton\b|\bta\b|\bte\b/);
+  });
+});
+
+describe('buildQuoteRelance (PR-05 — relance devis pré-rédigée, jamais envoyée seule)', () => {
+  it('ton cordial UNIQUEMENT : cite le numéro, le montant et les jours — AUCUNE référence légale', () => {
+    const m = buildQuoteRelance({
+      customerName: 'RATP CAP',
+      docNumber: 'D-2026-0007',
+      amountCents: 240_000,
+      daysSinceIssued: 15,
+      personality: 'Pro',
+    });
+    expect(m.subject).toContain('D-2026-0007');
+    expect(m.body).toContain('RATP CAP');
+    expect(m.body).toContain('15 jours');
+    expect(m.body).not.toMatch(/L441|mise en demeure|penalite|pénalité/i);
+    // Le CLIENT est toujours vouvoyé (un prospect n'est pas un copain, quelle que soit l'humeur).
+    expect(m.body).toContain('vous');
+  });
+
+  it('lien de signature inséré UNIQUEMENT quand fourni — jamais fabriqué', () => {
+    const sans = buildQuoteRelance({
+      customerName: 'X',
+      docNumber: 'D-1',
+      amountCents: 1000,
+      daysSinceIssued: 16,
+      personality: 'Pote',
+    });
+    expect(sans.body).not.toContain('http');
+    const avec = buildQuoteRelance({
+      customerName: 'X',
+      docNumber: 'D-1',
+      amountCents: 1000,
+      daysSinceIssued: 16,
+      personality: 'Pote',
+      signatureUrl: 'https://sign.test/s/tok',
+    });
+    expect(avec.body).toContain('https://sign.test/s/tok');
   });
 });

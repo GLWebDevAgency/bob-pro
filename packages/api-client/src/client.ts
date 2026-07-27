@@ -106,6 +106,10 @@ export interface QuoteView {
    *  par le client B2C, posée à la CRÉATION du devis. Optionnel (compat serveurs antérieurs) :
    *  absent ⇒ traité comme null par les écrans — jamais une urgence inventée. */
   urgentRepair?: { requestedAt: string } | null;
+  /** PR-05 — date d'établissement RÉELLE (DateOnly), ancre des relances devis J+15/J+30.
+   *  Nullable ET optionnelle (fail-closed) : absente (serveur antérieur) ou null (devis legacy
+   *  sans date) ⇒ jamais relancé. */
+  issuedAt?: string | null;
 }
 
 export interface InvoiceView {

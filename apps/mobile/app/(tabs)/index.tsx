@@ -41,11 +41,11 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { challengeFor } from '@bob/ai';
-import { formatEURWhole, normalizeVoiceText, type TodayPriority } from '@bob/core';
+import { buildQuoteRelance, formatEURWhole, normalizeVoiceText, type TodayPriority } from '@bob/core';
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
-import { t } from '@bob/i18n';
+import { PERSONALITY_LABELS, t } from '@bob/i18n';
 import {
   AppHeaderNavy,
   Button,
@@ -427,6 +427,89 @@ function TodayPriorityCard({
                 icon={<Feather name="share-2" size={15} color={colors.ink800} />}
               />
             </View>
+          }
+        />
+      );
+    }
+    case 'devis_a_relancer': {
+      // PR-05 — devis sans réponse depuis J+15/J+30 (ancré sur la date d'établissement RÉELLE) :
+      // relance MANUELLE pré-rédigée en un tap (buildQuoteRelance, ton cordial) + lien de
+      // signature frais — rien ne part tant que le Share n'est pas complété par l'artisan.
+      const name = priority.customerName || priority.docNumber || '';
+      const reference = priority.docNumber ? `${priority.docNumber} · ` : '';
+      return (
+        <PriorityCard
+          status="marine"
+          title={t('today.prioQuoteRelanceTitle', { personality, params: { name } })}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioQuoteRelanceHint',
+            { personality, params: { days: priority.daysSinceIssued } },
+          )}`}
+          leadingIcon={<ClockIcon color={semantic.warning} size={13} />}
+          badge={
+            <Badge
+              label={t(
+                priority.palier === 'j30'
+                  ? 'today.prioQuoteRelanceBadgeJ30'
+                  : 'today.prioQuoteRelanceBadgeJ15',
+                { personality },
+              ).toUpperCase()}
+              tone="warning"
+            />
+          }
+          cta={
+            <ShareQuoteLinkButton
+              quoteId={priority.quoteId}
+              quoteNumber={priority.docNumber}
+              title={t('today.ctaQuoteRelance', { personality })}
+              variant="primary"
+              icon={<Feather name="send" size={15} color={colors.surface} />}
+              buildMessage={(signatureUrl) =>
+                buildQuoteRelance({
+                  customerName: priority.customerName,
+                  docNumber: priority.docNumber ?? '',
+                  amountCents: priority.amountCents,
+                  daysSinceIssued: priority.daysSinceIssued,
+                  personality: PERSONALITY_LABELS[personality],
+                  signatureUrl,
+                }).body
+              }
+            />
+          }
+        />
+      );
+    }
+    case 'bc_manquant': {
+      // PR-05 — devis SIGNÉ sans n° de bon de commande alors que le contexte l'exige (client
+      // public ou canal chorus/portail) : sans BC, la facture dérivée sera rejetée (RATP CAP).
+      // CTA : la fiche devis, où la section « Bon de commande » se remplit (aussi à la voix).
+      const name = priority.customerName || priority.docNumber || '';
+      const reference = priority.docNumber ? `${priority.docNumber} · ` : '';
+      return (
+        <PriorityCard
+          status="retard"
+          title={t('today.prioBcManquantTitle', { personality, params: { name } })}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioBcManquantHint',
+            { personality },
+          )}`}
+          leadingIcon={<Feather name="file-text" size={13} color={semantic.warning} />}
+          badge={
+            <Badge
+              label={t('today.prioBcManquantBadge', { personality }).toUpperCase()}
+              tone="warning"
+            />
+          }
+          cta={
+            <Button
+              title={t('today.ctaBcManquant', { personality })}
+              variant="primary"
+              size="compact"
+              radius={11}
+              icon={<Feather name="edit-3" size={15} color={colors.surface} />}
+              style={{ alignSelf: 'flex-start' }}
+              onPress={() => router.push(`/devis/${priority.quoteId}`)}
+            />
           }
         />
       );

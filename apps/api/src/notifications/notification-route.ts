@@ -15,6 +15,8 @@ export function notificationRoute(job: Pick<NotificationJob, 'kind' | 'dedupeKey
   if (job.kind === 'invoice-delivery' && head === 'invoice') return `/facture/${id}`;
   if (job.kind === 'invoice-transmission-reminder' && head === 'invoice') return `/facture/${id}`;
   if (job.kind === 'quote-signature' && head === 'quote') return `/devis/${id}`;
+  // PR-05 : le rappel de relance devis ramène sur la fiche devis (message pré-rédigé).
+  if (job.kind === 'quote-relance-reminder' && head === 'quote') return `/devis/${id}`;
   // Le digest hebdo n'a pas d'écran dédié : il ramène sur Aujourd'hui (la carte digest y vit — SPEC pilier 2).
   if (job.kind === 'weekly-digest' && head === 'digest') return '/(tabs)';
   return null;

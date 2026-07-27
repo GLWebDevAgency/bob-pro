@@ -16,12 +16,18 @@ export function ShareQuoteLinkButton({
   quoteNumber,
   title,
   icon,
+  variant = 'secondary',
+  buildMessage,
 }: {
   quoteId: string;
   /** Numéro déjà alloué au devis — cité dans le message partagé quand il existe. */
   quoteNumber: string | null;
   title: string;
   icon?: React.ReactNode;
+  variant?: 'primary' | 'secondary';
+  /** PR-05 — message PRÉ-RÉDIGÉ (ex. relance devis buildQuoteRelance) composé avec l'URL de
+   * signature fraîche ; absent = message de partage historique. Rien ne part sans le Share. */
+  buildMessage?: (signatureUrl: string) => string;
 }) {
   const signatureLink = useCreateQuoteSignatureLink();
   // Feuille d'erreur premium locale — aucune modale système dans ce flow.
@@ -33,7 +39,7 @@ export function ShareQuoteLinkButton({
     <>
       <Button
         title={title}
-        variant="secondary"
+        variant={variant}
         size="compact"
         radius={11}
         loading={busy}
@@ -47,7 +53,9 @@ export function ShareQuoteLinkButton({
             try {
               const result = await signatureLink.mutateAsync(quoteId);
               await Share.share({
-                message: `Bonjour, voici le lien pour signer le devis${quoteNumber ? ` ${quoteNumber}` : ''} : ${result.signatureUrl}`,
+                message:
+                  buildMessage?.(result.signatureUrl) ??
+                  `Bonjour, voici le lien pour signer le devis${quoteNumber ? ` ${quoteNumber}` : ''} : ${result.signatureUrl}`,
               });
             } catch (e) {
               showError('Oups', appErrorMessage(e));

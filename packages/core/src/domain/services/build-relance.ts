@@ -67,6 +67,37 @@ function miseEnDemeureBody(input: BuildRelanceInput, amount: string): string {
   }
 }
 
+/**
+ * PR-05 — relance DEVIS pré-rédigée (ton cordial UNIQUEMENT : un prospect n'est pas un débiteur,
+ * aucune référence légale, aucun palier menaçant). Jamais envoyée seule : le texte alimente le
+ * partage/l'e-mail que l'artisan déclenche explicitement. `signatureUrl` optionnel — inséré
+ * quand l'appelant a préparé le lien (rotation côté serveur), jamais fabriqué ici.
+ */
+export interface BuildQuoteRelanceInput {
+  customerName: string;
+  docNumber: string;
+  amountCents: number;
+  /** Jours depuis l'établissement (issuedAt réel) — cité sobrement, jamais culpabilisant. */
+  daysSinceIssued: number;
+  personality: 'Pote' | 'Pro' | 'Direct';
+  signatureUrl?: string;
+}
+
+export function buildQuoteRelance(input: BuildQuoteRelanceInput): RelanceMessage {
+  const amount = formatEUR(input.amountCents);
+  const tu = input.personality === 'Pote';
+  const linkLine = input.signatureUrl
+    ? `\n\nVous pouvez le consulter et le signer ici : ${input.signatureUrl}`
+    : '';
+  const body = tu
+    ? `Bonjour ${input.customerName}, je reviens vers vous au sujet du devis ${input.docNumber} (${amount}) envoyé il y a ${input.daysSinceIssued} jours. Avez-vous des questions ? Je reste disponible pour en parler ou l'ajuster.${linkLine}`
+    : `Bonjour ${input.customerName}, je me permets de revenir vers vous concernant le devis ${input.docNumber} (${amount}), transmis il y a ${input.daysSinceIssued} jours. Je reste à votre disposition pour toute question ou ajustement.${linkLine}`;
+  return {
+    subject: `Devis ${input.docNumber} — où en êtes-vous ?`,
+    body,
+  };
+}
+
 export function buildRelance(input: BuildRelanceInput): RelanceMessage {
   const amount = formatEUR(input.amountCents);
   const tu = input.personality === 'Pote';

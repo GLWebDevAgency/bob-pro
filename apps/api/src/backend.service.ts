@@ -359,6 +359,8 @@ export interface QuoteView {
   revision: number;
   /** Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — null si jamais sollicitée. */
   urgentRepair: { requestedAt: string } | null;
+  /** PR-05 — date d'établissement (DateOnly) ; null = devis legacy sans date (jamais relancé). */
+  issuedAt: string | null;
 }
 
 export interface InvoiceView {
@@ -1197,6 +1199,9 @@ export class BackendService {
       revision: q.revision,
       // Exception dépannage urgent : les clients affichent le LegalHint adapté (pas d'embargo).
       urgentRepair: q.urgentRepair ? { ...q.urgentRepair } : null,
+      // PR-05 : date d'établissement RÉELLE — ancre des relances devis J+15/J+30 (null = legacy
+      // sans date, exclu fail-closed de toute relance).
+      issuedAt: q.issuedAt,
     };
   }
 

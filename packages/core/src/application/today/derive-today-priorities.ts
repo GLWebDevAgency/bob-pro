@@ -45,6 +45,17 @@ export interface TodayQuoteData {
   status: QuoteStatus;
   number: string | null;
   totals: Totals;
+  /**
+   * PR-05 — date d'établissement RÉELLE (ancre des paliers de relance J+15/J+30).
+   * `undefined` = information non transportée, `null` = devis legacy sans date : dans les DEUX
+   * cas le devis est EXCLU des relances (fail-closed — on n'invente jamais une date d'ancrage).
+   */
+  issuedAt?: DateOnly | null;
+  /**
+   * PR-05 — bon de commande du devis (alerte « signé sans BC »). `undefined` = information non
+   * transportée (fail-closed : jamais d'alerte), `null` = aucun BC saisi.
+   */
+  purchaseOrder?: { number: string } | null;
 }
 
 export interface TodayCustomerData {
@@ -59,6 +70,12 @@ export interface TodayCustomerData {
    * qu'une adresse manque à partir d'une projection qui ne la transporte simplement pas.
    */
   email?: string | null;
+  /** PR-05 — type du client (b2c/b2b/b2g) : signal de l'alerte « signé sans BC » (b2g).
+   *  Optionnel additif : absent = inconnu, jamais un type inventé. */
+  type?: 'b2c' | 'b2b' | 'b2g';
+  /** PR-05 — canal de facturation déclaré : chorus/portail = BC attendu (grands comptes).
+   *  Optionnel additif ; absent ou null = email (aucun signal). */
+  billingChannel?: { type: 'email' | 'chorus' | 'portail' } | null;
 }
 
 /**
@@ -145,6 +162,45 @@ export interface FactureATransmettrePriority {
   amountCents: number;
 }
 
+/** PR-05 — paliers de relance devis (ancrés sur `issuedAt` réel, jamais une date inventée). */
+export const QUOTE_RELANCE_STEPS = { j15: 15, j30: 30 } as const;
+export type QuoteRelancePalier = keyof typeof QUOTE_RELANCE_STEPS;
+
+/**
+ * PR-05 — devis envoyé/vu SANS réponse depuis J+15 (puis J+30) : relance MANUELLE pré-rédigée
+ * en un tap (jamais envoyée seule). Extinction par l'état réel : signé/refusé/expiré sort du
+ * périmètre tout seul (aucun statut inventé). Devis legacy sans `issuedAt` EXCLUS (fail-closed).
+ */
+export interface DevisARelancerPriority {
+  kind: 'devis_a_relancer';
+  id: string;
+  quoteId: string;
+  customerId: string;
+  customerName: string;
+  docNumber: string | null;
+  /** Montant TTC du devis — l'enjeu qui dort sans réponse. */
+  amountCents: number;
+  /** Jours calendaires depuis l'établissement (issuedAt réel). */
+  daysSinceIssued: number;
+  /** Palier atteint (le plus avancé) — pilote la dédup des notifications par palier. */
+  palier: QuoteRelancePalier;
+}
+
+/**
+ * PR-05 — devis SIGNÉ sans n° de bon de commande alors que le contexte l'exige (client public
+ * b2g, ou canal de facturation chorus/portail) : sans BC, la facture dérivée sera rejetée
+ * (cas RATP CAP). Signal RÉEL uniquement — jamais une règle spécifique client.
+ */
+export interface BcManquantPriority {
+  kind: 'bc_manquant';
+  id: string;
+  quoteId: string;
+  customerId: string;
+  customerName: string;
+  docNumber: string | null;
+  amountCents: number;
+}
+
 export interface ConformitePriority {
   kind: 'conformite';
   id: string;
@@ -154,7 +210,9 @@ export type TodayPriority =
   | RelancePriority
   | FactureATransmettrePriority
   | FactureFinalePriority
+  | BcManquantPriority
   | DevisATransmettrePriority
+  | DevisARelancerPriority
   | ConformitePriority;
 
 // ── Règles métier ──
@@ -335,6 +393,86 @@ function deriveFacturesATransmettre(
   return aTransmettre.sort((a, b) => b.amountCents - a.amountCents);
 }
 
+/**
+ * PR-05 — palier de relance atteint par un devis, depuis sa date d'établissement RÉELLE.
+ * Fonction PURE exportée : le cron (notifications dédupliquées par palier) et la carte
+ * Aujourd'hui dérivent du MÊME calcul. null = aucun palier atteint OU date d'ancrage absente
+ * (fail-closed) OU statut hors périmètre (extinction par l'état réel).
+ */
+export function quoteRelancePalierOf(
+  quote: Pick<TodayQuoteData, 'status' | 'issuedAt'>,
+  today: DateOnly,
+): { palier: QuoteRelancePalier; daysSinceIssued: number } | null {
+  if (quote.status !== 'sent' && quote.status !== 'viewed') return null;
+  // Fail-closed : jamais de date d'ancrage inventée (devis legacy sans issuedAt exclus).
+  if (quote.issuedAt === undefined || quote.issuedAt === null) return null;
+  const daysSinceIssued = daysBetween(quote.issuedAt, today);
+  if (daysSinceIssued >= QUOTE_RELANCE_STEPS.j30) return { palier: 'j30', daysSinceIssued };
+  if (daysSinceIssued >= QUOTE_RELANCE_STEPS.j15) return { palier: 'j15', daysSinceIssued };
+  return null;
+}
+
+function deriveDevisARelancer(
+  input: DeriveTodayPrioritiesInput,
+  customers: ReadonlyMap<string, TodayCustomerData>,
+): DevisARelancerPriority[] {
+  const aRelancer: DevisARelancerPriority[] = [];
+  for (const quote of input.quotes) {
+    const reached = quoteRelancePalierOf(quote, input.today);
+    if (reached === null) continue;
+    const customer = customers.get(quote.customerId);
+    if (customer === undefined) continue;
+    aRelancer.push({
+      kind: 'devis_a_relancer',
+      id: `devis-a-relancer-${quote.id}`,
+      quoteId: quote.id,
+      customerId: quote.customerId,
+      customerName: customer.name,
+      docNumber: quote.number,
+      amountCents: quote.totals.ttc,
+      daysSinceIssued: reached.daysSinceIssued,
+      palier: reached.palier,
+    });
+  }
+  // L'attente la plus longue d'abord, puis le plus gros enjeu.
+  return aRelancer.sort((a, b) => b.daysSinceIssued - a.daysSinceIssued || b.amountCents - a.amountCents);
+}
+
+/**
+ * PR-05 — signal RÉEL de l'exigence de BC : client public (b2g) ou canal de dépôt
+ * (chorus/portail). Fail-closed : type et canal absents = aucun signal, jamais d'alerte.
+ */
+function purchaseOrderExpected(customer: TodayCustomerData): boolean {
+  if (customer.type === 'b2g') return true;
+  const channel = customer.billingChannel?.type;
+  return channel === 'chorus' || channel === 'portail';
+}
+
+function deriveBcManquants(
+  input: DeriveTodayPrioritiesInput,
+  customers: ReadonlyMap<string, TodayCustomerData>,
+): BcManquantPriority[] {
+  const manquants: BcManquantPriority[] = [];
+  for (const quote of input.quotes) {
+    if (quote.status !== 'signed') continue;
+    // Fail-closed : BC non transporté (undefined) = on n'affirme JAMAIS qu'il manque.
+    if (quote.purchaseOrder === undefined || quote.purchaseOrder !== null) continue;
+    const customer = customers.get(quote.customerId);
+    if (customer === undefined) continue;
+    if (!purchaseOrderExpected(customer)) continue;
+    manquants.push({
+      kind: 'bc_manquant',
+      id: `bc-manquant-${quote.id}`,
+      quoteId: quote.id,
+      customerId: quote.customerId,
+      customerName: customer.name,
+      docNumber: quote.number,
+      amountCents: quote.totals.ttc,
+    });
+  }
+  return manquants.sort((a, b) => b.amountCents - a.amountCents);
+}
+
 function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority[] {
   // Une seule priorité conformité au maximum, et uniquement sur signal réel (jamais par défaut).
   if (input.company === undefined || input.company.einvoiceReceptionConfigured) return [];
@@ -346,8 +484,10 @@ function deriveConformite(input: DeriveTodayPrioritiesInput): ConformitePriority
  * 1. relances — factures échues non payées (retard desc, puis montant desc) ;
  * 2. factures à transmettre — pièces ÉMISES sans aucun envoi constaté ni dépôt déclaré (PR-02) ;
  * 3. factures finales — devis signés dont l'acompte est encaissé mais sans facture finale ;
- * 4. devis à transmettre — devis `sent` que le client n'a pas pu recevoir, faute d'e-mail ;
- * 5. conformité — préparation facturation électronique 2026 non configurée (1 max).
+ * 4. BC manquants — devis SIGNÉS sans n° de commande alors que le contexte l'exige (PR-05) ;
+ * 5. devis à transmettre — devis `sent` que le client n'a pas pu recevoir, faute d'e-mail ;
+ * 6. devis à relancer — sans réponse depuis J+15/J+30 sur date d'établissement réelle (PR-05) ;
+ * 7. conformité — préparation facturation électronique 2026 non configurée (1 max).
  * Tri global : l'argent déjà dû d'abord (et une pièce jamais partie EST de l'argent dû qui ne
  * rentrera jamais seul), l'argent à facturer ensuite, puis les devis restés dans le vide, et
  * enfin l'information de conformité. Le cap d'affichage est géré par l'UI.
@@ -358,7 +498,11 @@ export function deriveTodayPriorities(input: DeriveTodayPrioritiesInput): TodayP
     ...deriveRelances(input, customers),
     ...deriveFacturesATransmettre(input, customers),
     ...deriveFacturesFinales(input, customers),
+    // PR-05 : un devis signé SANS BC exigé bloque la facturation — juste après « à facturer ».
+    ...deriveBcManquants(input, customers),
     ...deriveDevisATransmettre(input, customers),
+    // PR-05 : devis sans réponse J+15/J+30 — relance manuelle pré-rédigée.
+    ...deriveDevisARelancer(input, customers),
     ...deriveConformite(input),
   ];
 }

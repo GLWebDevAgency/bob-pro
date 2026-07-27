@@ -302,6 +302,54 @@ const legacyFr = {
     pro: 'Transmettre la facture',
     direct: 'Envoyer',
   },
+  // PR-05 — devis sans réponse J+15/J+30 (relance manuelle pré-rédigée, jamais envoyée seule).
+  'today.prioQuoteRelanceTitle': {
+    pote: 'Devis sans réponse — {name}',
+    pro: 'Devis sans réponse — {name}',
+    direct: 'Sans réponse — {name}',
+  },
+  'today.prioQuoteRelanceHint': {
+    pote: 'envoyé il y a {days} jours. Une relance courtoise et ça repart — le message est déjà écrit.',
+    pro: 'transmis il y a {days} jours. Une relance courtoise augmente les chances de signature — le message est prêt.',
+    direct: '{days} j sans réponse. Message prêt.',
+  },
+  'today.prioQuoteRelanceBadgeJ15': {
+    pote: 'J+15',
+    pro: 'J+15',
+    direct: 'J+15',
+  },
+  'today.prioQuoteRelanceBadgeJ30': {
+    pote: 'J+30',
+    pro: 'J+30',
+    direct: 'J+30',
+  },
+  'today.ctaQuoteRelance': {
+    pote: 'Relancer',
+    pro: 'Relancer le client',
+    direct: 'Relancer',
+  },
+  // PR-05 — devis signé SANS n° de bon de commande alors que le contexte l'exige (b2g ou
+  // canal chorus/portail) : sans BC, la facture dérivée sera rejetée par l'acheteur.
+  'today.prioBcManquantTitle': {
+    pote: 'BC manquant — {name}',
+    pro: 'Bon de commande manquant — {name}',
+    direct: 'BC manquant — {name}',
+  },
+  'today.prioBcManquantHint': {
+    pote: 'devis signé, mais pas de n° de commande. Sans lui, la facture sera rejetée — récupère-le maintenant.',
+    pro: 'devis signé sans n° de commande : la facture serait rejetée par l’acheteur. Saisissez-le dès réception.',
+    direct: 'Signé sans BC. Facture rejetée sans lui.',
+  },
+  'today.prioBcManquantBadge': {
+    pote: 'BC manquant',
+    pro: 'BC manquant',
+    direct: 'BC manquant',
+  },
+  'today.ctaBcManquant': {
+    pote: 'Saisir le BC',
+    pro: 'Saisir le bon de commande',
+    direct: 'Saisir le BC',
+  },
   // Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE, jamais remonté au
   // serveur : composé dans le rendu du Home à partir du brouillon local (voir quote-draft).
   // Sobriété : n'apparaît qu'après ~1 h, ou à la réouverture de l'app — jamais pendant l'édition.

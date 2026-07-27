@@ -10,6 +10,7 @@ import {
   type NotificationJob,
 } from '../persistence/notification-jobs';
 import { invoiceIdOfTransmissionReminderDedupeKey } from './transmission-reminder.service';
+import { quoteIdOfQuoteRelanceReminderDedupeKey } from './quote-followup.service';
 import { NOTIFIER } from '../notifications/notifier';
 import { EXPO_PUSH, type ExpoPushService } from '../notifications/expo-push';
 import { AppLogger } from '../observability/logger';
@@ -269,6 +270,18 @@ export class NotificationDeliveryService {
     companyId: string,
     job: DeliverableNotificationJob,
   ): Promise<string | null> {
+    // PR-05 — rappel de relance devis : si le devis a QUITTÉ sent/viewed (signé, refusé,
+    // expiré, rétracté) entre l'enqueue et la livraison, le rappel est périmé — annulé.
+    if (job.kind === 'quote-relance-reminder') {
+      const quoteId = quoteIdOfQuoteRelanceReminderDedupeKey(job.dedupeKey);
+      if (quoteId === null) return 'dedupe-key-unrecognized';
+      return this.p.runWithTenant(companyId, async () => {
+        const quote = await this.p.quotes.findById(quoteId);
+        if (!quote || quote.companyId !== companyId) return 'quote-missing';
+        if (quote.status !== 'sent' && quote.status !== 'viewed') return 'quote-no-longer-open';
+        return null;
+      });
+    }
     // PR-03 — rappel de dépôt : si le dépôt a été DÉCLARÉ entre l'enqueue et la livraison,
     // le rappel est périmé — annulé, jamais livré (extinction par l'état réel).
     if (job.kind === 'invoice-transmission-reminder') {

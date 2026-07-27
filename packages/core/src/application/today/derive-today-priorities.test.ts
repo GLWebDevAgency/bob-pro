@@ -509,6 +509,145 @@ describe('deriveTodayPriorities', () => {
   });
 });
 
+// ── PR-05 « Encaisser » — relances devis J+15/J+30 + alerte « signé sans BC » ──
+
+function quoteFixture(
+  overrides: Partial<TodayQuoteData> & Pick<TodayQuoteData, 'id'>,
+): TodayQuoteData {
+  return {
+    customerId: 'cust-1',
+    status: 'sent',
+    number: 'D-2026-0007',
+    totals: totalsOf(200000),
+    ...overrides,
+  };
+}
+
+describe('deriveTodayPriorities — devis_a_relancer (PR-05)', () => {
+  it('paliers J+15 puis J+30 ancrés sur issuedAt RÉEL ; sous J+15 : rien', () => {
+    const j14 = derive({ quotes: [quoteFixture({ id: 'q1', issuedAt: '2026-06-26' })] });
+    expect(j14).toEqual([]);
+    const j15 = derive({ quotes: [quoteFixture({ id: 'q1', issuedAt: '2026-06-25' })] });
+    expect(j15).toMatchObject([
+      { kind: 'devis_a_relancer', quoteId: 'q1', palier: 'j15', daysSinceIssued: 15 },
+    ]);
+    const j30 = derive({ quotes: [quoteFixture({ id: 'q1', issuedAt: '2026-06-10' })] });
+    expect(j30).toMatchObject([{ kind: 'devis_a_relancer', palier: 'j30', daysSinceIssued: 30 }]);
+  });
+
+  it('extinction par TOUTES les transitions de statut : signé, refusé, expiré — draft jamais candidat', () => {
+    for (const status of ['signed', 'refused', 'expired', 'draft'] as const) {
+      expect(
+        derive({ quotes: [quoteFixture({ id: 'q1', status, issuedAt: '2026-06-01' })] }).filter(
+          (p) => p.kind === 'devis_a_relancer',
+        ),
+      ).toEqual([]);
+    }
+    // `viewed` reste candidat : vu n'est pas signé.
+    expect(
+      derive({ quotes: [quoteFixture({ id: 'q1', status: 'viewed', issuedAt: '2026-06-20' })] }),
+    ).toMatchObject([{ kind: 'devis_a_relancer', palier: 'j15' }]);
+  });
+
+  it('fail-closed : devis sans date d’ancrage (issuedAt absent OU null) — JAMAIS relancé', () => {
+    expect(derive({ quotes: [quoteFixture({ id: 'q1' })] })).toEqual([]);
+    expect(derive({ quotes: [quoteFixture({ id: 'q1', issuedAt: null })] })).toEqual([]);
+  });
+
+  it('tri : attente la plus longue d’abord, puis montant', () => {
+    const priorities = derive({
+      quotes: [
+        quoteFixture({ id: 'q-15', issuedAt: '2026-06-25', totals: totalsOf(500000) }),
+        quoteFixture({ id: 'q-40', issuedAt: '2026-05-31', totals: totalsOf(100000) }),
+      ],
+    });
+    expect(priorities.map((p) => p.id)).toEqual([
+      'devis-a-relancer-q-40',
+      'devis-a-relancer-q-15',
+    ]);
+  });
+});
+
+describe('deriveTodayPriorities — bc_manquant (PR-05)', () => {
+  const B2G: TodayCustomerData[] = [
+    { id: 'cust-ratp', name: 'RATP CAP', email: 'compta@ratp.fr', type: 'b2g' },
+  ];
+  const B2B_PORTAIL: TodayCustomerData[] = [
+    {
+      id: 'cust-vinci',
+      name: 'Vinci Énergies',
+      email: 'compta@vinci.fr',
+      type: 'b2b',
+      billingChannel: { type: 'portail' },
+    },
+  ];
+  const B2B_EMAIL: TodayCustomerData[] = [
+    { id: 'cust-pme', name: 'PME Locale', email: 'c@pme.fr', type: 'b2b', billingChannel: { type: 'email' } },
+  ];
+
+  it('signé + BC null + client b2g OU canal chorus/portail → alerte ; canal email → jamais', () => {
+    const signedNoBc = quoteFixture({
+      id: 'q1',
+      customerId: 'cust-ratp',
+      status: 'signed',
+      purchaseOrder: null,
+    });
+    expect(derive({ quotes: [signedNoBc], customers: B2G })).toMatchObject([
+      { kind: 'bc_manquant', quoteId: 'q1', customerName: 'RATP CAP' },
+    ]);
+    expect(
+      derive({
+        quotes: [{ ...signedNoBc, customerId: 'cust-vinci' }],
+        customers: B2B_PORTAIL,
+      }),
+    ).toMatchObject([{ kind: 'bc_manquant' }]);
+    expect(
+      derive({ quotes: [{ ...signedNoBc, customerId: 'cust-pme' }], customers: B2B_EMAIL }),
+    ).toEqual([]);
+  });
+
+  it('extinction : BC saisi → plus d’alerte ; statut non signé → jamais ; fail-closed si BC non transporté', () => {
+    expect(
+      derive({
+        quotes: [
+          quoteFixture({
+            id: 'q1',
+            customerId: 'cust-ratp',
+            status: 'signed',
+            purchaseOrder: { number: 'BC-450001' },
+          }),
+        ],
+        customers: B2G,
+      }),
+    ).toEqual([]);
+    expect(
+      derive({
+        quotes: [
+          quoteFixture({ id: 'q1', customerId: 'cust-ratp', status: 'sent', purchaseOrder: null }),
+        ],
+        customers: B2G,
+      }),
+    ).toEqual([]);
+    // purchaseOrder NON transporté (undefined) : on n'affirme jamais qu'il manque.
+    expect(
+      derive({
+        quotes: [quoteFixture({ id: 'q1', customerId: 'cust-ratp', status: 'signed' })],
+        customers: B2G,
+      }),
+    ).toEqual([]);
+  });
+
+  it('fail-closed : type et canal du client non transportés → aucun signal, aucune alerte', () => {
+    expect(
+      derive({
+        quotes: [
+          quoteFixture({ id: 'q1', customerId: 'cust-1', status: 'signed', purchaseOrder: null }),
+        ],
+      }),
+    ).toEqual([]);
+  });
+});
+
 // ── PR-02 « Encaisser » — facture ÉMISE jamais transmise (état 100 % dérivé) ──
 
 describe('deriveTodayPriorities — facture_a_transmettre (PR-02)', () => {

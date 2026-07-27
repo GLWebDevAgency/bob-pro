@@ -1036,6 +1036,8 @@ export class LocalBobClient implements BobClient {
       revision: q.revision,
       // Exception dépannage urgent : parité serveur (mapQuote de l'API expose le même champ).
       urgentRepair: q.urgentRepair ? { ...q.urgentRepair } : null,
+      // PR-05 : parité serveur — ancre réelle des relances devis (null = legacy, jamais relancé).
+      issuedAt: q.issuedAt,
     };
   }
 

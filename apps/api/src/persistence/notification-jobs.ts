@@ -30,9 +30,12 @@ export interface NotificationJob {
    *  geste explicite de l'artisan, jamais un effet de bord de l'émission ; payload = lien
    *  public + PDF archivé joint, expéditeur perçu = la société (amendement fondateur).
    *  `invoice-transmission-reminder` : rappel INTERNE de dépôt portail/Chorus J+2 (PR-03) —
-   *  un seul rappel par facture (clé stable), annulé à la livraison si le dépôt est déclaré. */
+   *  un seul rappel par facture (clé stable), annulé à la livraison si le dépôt est déclaré.
+   *  `quote-relance-reminder` : rappel INTERNE de relance devis J+15/J+30 (PR-05) — dédupliqué
+   *  PAR PALIER, annulé à la livraison si le devis a quitté sent/viewed (extinction réelle). */
   kind:
     | 'quote-signature'
+    | 'quote-relance-reminder'
     | 'invoice-relance'
     | 'invoice-delivery'
     | 'invoice-transmission-reminder'
