@@ -509,7 +509,9 @@ flowchart TD
 > JORF n° 0174 du 28/07/2026) et la tolérance des anciennes références au CGI court jusqu'au
 > **30/06/2028** ; la rédaction de la mention post-bascule relèvera d'un décret **non paru**, donc
 > rien n'est à planifier ni à présumer. Les deux échéances sont armées dans le code
-> (`veille-mentions-legales.ts` : test-sentinelle + signal au démarrage), pas dans un calendrier.
+> (`veille-mentions-legales.ts`), pas dans un calendrier, sous un régime à **deux étages** :
+> préavis **visible mais non bloquant** (annotation + résumé de run sur chaque PR, signal au
+> démarrage de l'API), puis **blocage** de la CI le jour où l'échéance est atteinte.
 > Sans effet sur ce plan P1 : PR-20 était déjà hors chemin critique. Vérifié le 28/07/2026.
 
 Chaque PR : Vitest par invariant + `tsc -p tsconfig.json` complet + cert release SQL staging pour toute migration + audit consommateurs pour tout changement sémantique. Cap V1 : accord Claude+GPT puis GO fondateur PAR PR ; 1 build EAS par train complet sur GO explicite.
