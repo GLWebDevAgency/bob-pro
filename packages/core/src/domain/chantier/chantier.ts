@@ -63,6 +63,15 @@ export class Chantier {
     this.p.status = 'closed';
   }
 
+  /**
+   * PR-11a [revue A12] — symétrie de `close()` : un site clôturé se ROUVRE (le parc, les
+   * passages et les contrats exigent un site `open` — le refus actionnable « rouvre-le pour
+   * ajouter » propose exactement cette transition).
+   */
+  reopen(): void {
+    this.p.status = 'open';
+  }
+
   toProps(): ChantierProps {
     return { ...this.p };
   }

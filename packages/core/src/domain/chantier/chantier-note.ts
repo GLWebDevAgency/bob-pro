@@ -10,6 +10,10 @@ export interface ChantierNoteProps {
    * champ est déjà prêt pour un futur multi-utilisateur (cabinet, salariés) sans migration. */
   authorLabel: string;
   createdAt: Instant;
+  /** PR-11 (Bloc A) — équipement du site visé par la note (tag ADDITIF) : `null`/absent =
+   * note du site. La cohérence équipement↔site est PROUVÉE par le use case (fail-closed),
+   * puis re-vérifiée par le trigger SQL — les notes historiques restent non taguées. */
+  equipmentId?: string | null;
 }
 
 /**
@@ -28,11 +32,13 @@ export class ChantierNote {
     const authorLabel = props.authorLabel.trim();
     if (!authorLabel)
       return err({ code: 'VALIDATION', field: 'authorLabel', message: 'Auteur requis.' });
-    return ok(new ChantierNote({ ...props, text, authorLabel }));
+    const equipmentId = props.equipmentId?.trim() || null;
+    return ok(new ChantierNote({ ...props, text, authorLabel, equipmentId }));
   }
 
   static rehydrate(props: ChantierNoteProps): ChantierNote {
-    return new ChantierNote({ ...props });
+    // Compat ascendante PR-11 : les notes antérieures au tag équipement restent non taguées.
+    return new ChantierNote({ ...props, equipmentId: props.equipmentId ?? null });
   }
 
   get id(): string {
@@ -52,6 +58,10 @@ export class ChantierNote {
   }
   get createdAt(): Instant {
     return this.p.createdAt;
+  }
+  /** PR-11 — équipement visé (null = note du site). */
+  get equipmentId(): string | null {
+    return this.p.equipmentId ?? null;
   }
 
   toProps(): ChantierNoteProps {

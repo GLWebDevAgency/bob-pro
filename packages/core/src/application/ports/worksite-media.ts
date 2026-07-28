@@ -7,6 +7,9 @@ export interface WorksiteMediaItem {
   byteSize: number;
   storageKey: string;
   createdAt: string;
+  /** PR-11 (Bloc A) — équipement du site visé par la photo (tag ADDITIF) : absent/null =
+   * photo du site. Cohérence équipement↔site prouvée par UploadWorksitePhoto (fail-closed). */
+  equipmentId?: string | null;
 }
 
 /**
