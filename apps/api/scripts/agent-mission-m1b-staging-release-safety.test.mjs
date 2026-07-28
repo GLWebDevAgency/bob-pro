@@ -27,10 +27,7 @@ const capacityAuthorityCertificate = readFileSync(
   'utf8',
 );
 const fingerprintManagerSource = readFileSync(
-  resolve(
-    repositoryRoot,
-    'apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs',
-  ),
+  resolve(repositoryRoot, 'apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs'),
   'utf8',
 );
 
@@ -64,6 +61,7 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
 
 test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
+  assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
   assert.match(
     railwayReleaseWorkflow,
     /uses: \.\/\.github\/workflows\/agent-mission-m1b-staging\.yml/u,
@@ -72,11 +70,15 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   assert.match(railwayReleaseWorkflow, /test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"/u);
   assert.match(
     railwayReleaseWorkflow,
-    /release-api:[\s\S]*?if: \$\{\{ always\(\) && inputs\.purpose != 'm1b-staging-certification' \}\}/u,
+    /release-api:[\s\S]*?if: \$\{\{ always\(\) && inputs\.purpose != 'm1b-staging-certification' && inputs\.purpose != 'm1b-staging-recovery' \}\}/u,
   );
   assert.match(
     railwayReleaseWorkflow,
     /certify-agent-mission-m1b-staging:[\s\S]*?secrets: inherit/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /mode: \$\{\{ inputs\.purpose == 'm1b-staging-recovery' && 'recovery' \|\| 'certification' \}\}/u,
   );
 });
 
@@ -102,10 +104,7 @@ test('workflow cible le SHA et les UUID sans relier le checkout ni changer de ba
 });
 
 test('le compte Bob Live échoue avant toute installation, build ou mutation staging coûteuse', () => {
-  assert.equal(
-    occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs preflight/gu),
-    1,
-  );
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs preflight/gu), 1);
   const preflight = workflow.indexOf(
     'node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs preflight',
   );
@@ -123,31 +122,13 @@ test('le compte Bob Live échoue avant toute installation, build ou mutation sta
 });
 
 test('les trois déploiements API et le déploiement Whisper ont un ID exact', () => {
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-release\.mjs predeploy/gu), 3);
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-release\.mjs postdeploy/gu), 3);
   assert.equal(
-    occurrences(
-      workflow,
-      /agent-mission-m1b-staging-release\.mjs predeploy/gu,
-    ),
-    3,
-  );
-  assert.equal(
-    occurrences(
-      workflow,
-      /agent-mission-m1b-staging-release\.mjs postdeploy/gu,
-    ),
-    3,
-  );
-  assert.equal(
-    occurrences(
-      workflow,
-      /agent-mission-m1b-staging-release\.mjs restore-capacity/gu,
-    ),
+    occurrences(workflow, /agent-mission-m1b-staging-release\.mjs restore-capacity/gu),
     1,
   );
-  assert.equal(
-    occurrences(workflow, /env CABINET_RELEASE_ENV=staging/gu),
-    7,
-  );
+  assert.equal(occurrences(workflow, /env CABINET_RELEASE_ENV=staging/gu), 7);
   assert.doesNotMatch(workflow, /BOB_RELEASE_PHASE/u);
   assert.doesNotMatch(workflow, /apps\/api\/scripts\/release\.sh/u);
   const explicitStagingReleaseGates = occurrences(
@@ -171,8 +152,8 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
   );
   assert.equal(
     occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu),
-    6,
-    'readiness at the exact SHA must follow each deploy and precede every real smoke, cleanup included',
+    7,
+    'each mutually exclusive certification/recovery smoke plus cleanup must replay readiness',
   );
   assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
   for (const stepId of ['deploy_whisper', 'deploy_baseline', 'deploy_active', 'deploy_off']) {
@@ -245,17 +226,8 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
   assert.match(workflow, /id: enable_override/u);
   assert.match(workflow, /variables_owned: \$\{\{ steps\.activate_variables\.outputs\.owned \}\}/u);
   assert.match(workflow, /override_owned: \$\{\{ steps\.enable_override\.outputs\.owned \}\}/u);
-  assert.equal(
-    occurrences(
-      workflow,
-      /BOB_M1B_STAGING_RUN_ID: \$\{\{ github\.run_id \}\}$/gmu,
-    ),
-    2,
-  );
-  assert.doesNotMatch(
-    workflow,
-    /BOB_M1B_STAGING_RUN_ID:[^\n]*github\.run_attempt/u,
-  );
+  assert.equal(occurrences(workflow, /BOB_M1B_STAGING_RUN_ID: \$\{\{ github\.run_id \}\}$/gmu), 2);
+  assert.doesNotMatch(workflow, /BOB_M1B_STAGING_RUN_ID:[^\n]*github\.run_attempt/u);
   assert.match(workflow, /steps\.remove_variables\.outputs\.removed == 'true'/u);
   assert.match(workflow, /steps\.remove_override\.outputs\.removed/u);
   assert.match(
@@ -273,6 +245,12 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs bootstrap/u);
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs active/u);
   assert.match(workflow, /agent-mission-m1b-staging-key-state\.mjs off/u);
+  const hmacPreflight = workflowStepByName('Prove stable HMAC keyspace cannot rotate');
+  assert.doesNotMatch(hmacPreflight, /\n\s+if:/u);
+  assert.ok(
+    workflow.indexOf('Prove stable HMAC keyspace cannot rotate') <
+      workflow.indexOf('Activate only the complete M1-B variable block'),
+  );
   assert.doesNotMatch(
     workflow,
     /manage-agent-mission-fingerprint-key-versions\.mjs\s+(?:stage|retire)/u,
@@ -318,9 +296,7 @@ test('la restauration distingue le certificat actif du certificat fermé avant m
     /const ACTIVE_CAPACITY_CONFIGURATION_SQL = `[\s\S]*?state_row\.mode <> 'active'[\s\S]*?state_row\."providerId" IS DISTINCT FROM selected_provider[\s\S]*?state_row\."configVersion" IS DISTINCT FROM selected_version/u,
   );
 
-  const restoreStart = targetedReleaseSource.indexOf(
-    'async function restoreCapacity(',
-  );
+  const restoreStart = targetedReleaseSource.indexOf('async function restoreCapacity(');
   const restoreEnd = targetedReleaseSource.indexOf(
     '\nexport async function runM1BStagingRelease(',
     restoreStart,
@@ -421,13 +397,19 @@ test('le lane staging refuse toute réparation Prisma et laisse le gate strict f
 test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict binaire', () => {
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu), 2);
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu), 1);
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs recovery/gu), 1);
   assert.match(workflow, /Execute real positive WebRTC mission and runtime RLS proof/u);
+  assert.match(workflow, /Recover only the exact technical staging residue/u);
   assert.match(workflow, /Final independent OFF data cleanliness proof/u);
   assert.match(workflow, /Final independent OFF negotiation proof when M1-B binary was deployed/u);
   assert.match(workflow, /needs:\n      - certify\n      - cleanup\n      - evidence/u);
   assert.match(workflow, /test "\$CERTIFY_RESULT" = success/u);
   assert.match(workflow, /test "\$CLEANUP_RESULT" = success/u);
   assert.match(workflow, /test "\$EVIDENCE_RESULT" = success/u);
+  assert.match(
+    workflow,
+    /recovery-verdict:[\s\S]*?if: \$\{\{ always\(\) && inputs\.mode == 'recovery' \}\}[\s\S]*?test "\$RECOVERY_RESULT" = success[\s\S]*?test "\$CLEANUP_RESULT" = success/u,
+  );
   assert.match(
     workflow,
     /Preserve bounded staging evidence[\s\S]*?Require the measured staging budget after preserving evidence[\s\S]*?verify-performance/u,
@@ -442,6 +424,10 @@ test('chaque smoke réel, cleanup compris, repart d’une readiness re-certifié
     [
       'Execute real positive WebRTC mission and runtime RLS proof',
       'agent-mission-m1b-staging-smoke.mjs positive',
+    ],
+    [
+      'Recover only the exact technical staging residue',
+      'agent-mission-m1b-staging-smoke.mjs recovery',
     ],
     [
       'Final independent OFF negotiation proof when M1-B binary was deployed',
@@ -490,14 +476,8 @@ test('le gate ciblé ne traverse aucun mutateur étranger ni réparation globale
     targetedReleaseSource,
     /release\.sh|prisma migrate deploy|rls\.sql|runtime-grants|certify-mistral|manage-mistral|manage-bob-live-native/u,
   );
-  assert.match(
-    targetedReleaseSource,
-    /manage-agent-mission-fingerprint-key-versions\.mjs/u,
-  );
-  assert.match(
-    targetedReleaseSource,
-    /realtime-global-capacity-release-cert\.sql/u,
-  );
+  assert.match(targetedReleaseSource, /manage-agent-mission-fingerprint-key-versions\.mjs/u);
+  assert.match(targetedReleaseSource, /realtime-global-capacity-release-cert\.sql/u);
   assert.match(targetedReleaseSource, /PGCONNECT_TIMEOUT/u);
   assert.match(targetedReleaseSource, /boundedPsqlSpawnOptions/u);
   assert.match(targetedReleaseSource, /timeout: KEY_MANAGER_PROCESS_TIMEOUT_MS/u);
@@ -506,22 +486,16 @@ test('le gate ciblé ne traverse aucun mutateur étranger ni réparation globale
     /manage-mistral|manage-bob-live-native|document_archive_protocol_state|invoice_settlement_protocol_state/u,
   );
 
-  const snapshotStart = targetedReleaseSource.indexOf(
-    'const FOREIGN_AUTHORITY_SNAPSHOT_SQL = `',
-  );
+  const snapshotStart = targetedReleaseSource.indexOf('const FOREIGN_AUTHORITY_SNAPSHOT_SQL = `');
   const snapshotEnd = targetedReleaseSource.indexOf('\n`;', snapshotStart);
   assert.ok(snapshotStart >= 0 && snapshotEnd > snapshotStart);
   const outsideForeignSnapshot =
-    targetedReleaseSource.slice(0, snapshotStart)
-    + targetedReleaseSource.slice(snapshotEnd + 3);
+    targetedReleaseSource.slice(0, snapshotStart) + targetedReleaseSource.slice(snapshotEnd + 3);
   assert.doesNotMatch(
     outsideForeignSnapshot,
     /realtime_mistral_conversation_(?:key|identity)|document_archive_protocol_state|invoice_settlement_protocol_state/u,
   );
-  assert.match(
-    targetedReleaseSource,
-    /UPDATE public\.realtime_global_capacity/g,
-  );
+  assert.match(targetedReleaseSource, /UPDATE public\.realtime_global_capacity/g);
   assert.doesNotMatch(
     targetedReleaseSource,
     /\b(?:INSERT INTO|DELETE FROM|ALTER TABLE|CREATE TABLE|DROP TABLE|TRUNCATE TABLE)\b/iu,

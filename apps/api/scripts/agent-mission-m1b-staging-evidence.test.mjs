@@ -7,18 +7,24 @@ import {
   M1B_CLEAN_EVIDENCE_SQL,
   M1B_FINAL_EVIDENCE_SQL,
   M1B_NEGATIVE_FINAL_EVIDENCE_SQL,
+  M1B_RECOVERY_STATE_EVIDENCE_SQL,
+  M1B_RECOVERY_TERMINAL_EVIDENCE_SQL,
   M1B_START_RECOVERY_EVIDENCE_SQL,
   certifyM1BActiveEvidence,
   certifyM1BCancellationRecoveryEvidence,
   certifyM1BCleanEvidence,
   certifyM1BFinalEvidence,
   certifyM1BNegativeFinalEvidence,
+  certifyM1BRecoveryStateEvidence,
+  certifyM1BRecoveryTerminalEvidence,
   certifyM1BStartRecoveryEvidence,
   decodeM1BActiveEvidence,
   decodeM1BCancellationRecoveryEvidence,
   decodeM1BCleanEvidence,
   decodeM1BFinalEvidence,
   decodeM1BNegativeFinalEvidence,
+  decodeM1BRecoveryStateEvidence,
+  decodeM1BRecoveryTerminalEvidence,
   decodeM1BStartRecoveryEvidence,
   parseM1BStagingEvidenceEnvironment,
 } from './agent-mission-m1b-staging-evidence.mjs';
@@ -103,6 +109,59 @@ function cleanProof(overrides = {}) {
   };
 }
 
+function recoveryStateProof(overrides = {}) {
+  return {
+    roleMatches: true,
+    roleSafe: true,
+    activeMissionCount: 1,
+    missionEventCount: 1,
+    draftCount: 1,
+    tenantLeaseCount: 0,
+    candidateCount: 1,
+    candidateMatches: true,
+    missionId: MISSION_ID,
+    missionRevision: 1,
+    startCommandId: START_COMMAND_ID,
+    draftSessionId: 'draft-m1b-staging',
+    draftSlotRevision: 1,
+    draftContentRevision: 0,
+    ...overrides,
+  };
+}
+
+function cleanRecoveryStateProof(overrides = {}) {
+  return recoveryStateProof({
+    activeMissionCount: 0,
+    missionEventCount: 0,
+    draftCount: 0,
+    candidateCount: 0,
+    candidateMatches: false,
+    missionId: null,
+    missionRevision: null,
+    startCommandId: null,
+    draftSessionId: null,
+    draftSlotRevision: null,
+    draftContentRevision: null,
+    ...overrides,
+  });
+}
+
+function recoveryTerminalProof(overrides = {}) {
+  return {
+    roleMatches: true,
+    roleSafe: true,
+    terminalCount: 1,
+    terminalMatches: true,
+    missionEventCount: 2,
+    activeMissionCount: 0,
+    missionId: MISSION_ID,
+    terminalStatus: 'cancelled',
+    missionRevision: 2,
+    terminalAt: '2026-07-28T04:00:00.000Z',
+    ...overrides,
+  };
+}
+
 function startRecoveryProof(overrides = {}) {
   return {
     roleMatches: true,
@@ -148,22 +207,30 @@ function negativeFinalProof(overrides = {}) {
 test('exige DATABASE_URL connecté comme le rôle runtime attendu', () => {
   assert.equal(parseM1BStagingEvidenceEnvironment(environment()).appRole, 'bob_app');
   assert.equal(
-    parseM1BStagingEvidenceEnvironment(environment({
-      DATABASE_URL:
-        'postgresql://bob_app.abcdefghijklmnopqrst:secret@pooler.example.test/postgres',
-    })).appRole,
+    parseM1BStagingEvidenceEnvironment(
+      environment({
+        DATABASE_URL:
+          'postgresql://bob_app.abcdefghijklmnopqrst:secret@pooler.example.test/postgres',
+      }),
+    ).appRole,
     'bob_app',
   );
   assert.throws(
-    () => parseM1BStagingEvidenceEnvironment(environment({
-      DATABASE_URL: 'postgresql://postgres:secret@db.example.test/postgres',
-    })),
+    () =>
+      parseM1BStagingEvidenceEnvironment(
+        environment({
+          DATABASE_URL: 'postgresql://postgres:secret@db.example.test/postgres',
+        }),
+      ),
     /connect as APP_DATABASE_ROLE/u,
   );
   assert.throws(
-    () => parseM1BStagingEvidenceEnvironment(environment({
-      BOB_M1B_STAGING_USER_ID: 'user-staging',
-    })),
+    () =>
+      parseM1BStagingEvidenceEnvironment(
+        environment({
+          BOB_M1B_STAGING_USER_ID: 'user-staging',
+        }),
+      ),
     /must be a UUID/u,
   );
 });
@@ -194,56 +261,116 @@ test('préflight runtime refuse mission, brouillon ou toute lease tenant préexi
   );
 });
 
-test('récupération start lie le commandId à l’unique mission et brouillon vides', () => {
+test('preuve de récupération accepte seulement un compte propre ou le résidu technique exact', () => {
+  assert.deepEqual(decodeM1BRecoveryStateEvidence(cleanRecoveryStateProof()), {
+    stage: 'recovery-state',
+    passed: true,
+    state: 'clean',
+  });
+  assert.deepEqual(decodeM1BRecoveryStateEvidence(recoveryStateProof()), {
+    stage: 'recovery-state',
+    passed: true,
+    state: 'recoverable',
+    candidate: {
+      missionId: MISSION_ID,
+      missionRevision: 1,
+      startCommandId: START_COMMAND_ID,
+      draftSessionId: 'draft-m1b-staging',
+      draftSlotRevision: 1,
+      draftContentRevision: 0,
+    },
+  });
+  assert.throws(
+    () => decodeM1BRecoveryStateEvidence(recoveryStateProof({ draftCount: 2 })),
+    /not the exact technical residue/u,
+  );
+  assert.throws(
+    () => decodeM1BRecoveryStateEvidence(recoveryStateProof({ tenantLeaseCount: 1 })),
+    /runtime\/RLS proof/u,
+  );
+});
+
+test('preuve terminale de récupération accepte uniquement cancel ou expiration métier exacts', () => {
+  assert.deepEqual(decodeM1BRecoveryTerminalEvidence(recoveryTerminalProof()), {
+    stage: 'recovery-terminal',
+    passed: true,
+    status: 'cancelled',
+    missionRevision: 2,
+  });
   assert.deepEqual(
-    decodeM1BStartRecoveryEvidence(startRecoveryProof()),
+    decodeM1BRecoveryTerminalEvidence(
+      recoveryTerminalProof({
+        terminalStatus: 'expired',
+      }),
+    ),
     {
-      stage: 'start-recovered',
+      stage: 'recovery-terminal',
       passed: true,
-      mission: {
-        id: MISSION_ID,
-        status: 'active',
-        actionable: true,
-        phase: 'awaiting_quote_screen',
-        revision: 1,
-        currentBinding: null,
-        payload: {
-          draft: {
-            sessionId: 'draft-m1b-staging',
-            slotRevision: 1,
-            contentRevision: 0,
-          },
-        },
-      },
+      status: 'expired',
+      missionRevision: 2,
     },
   );
   assert.throws(
-    () => decodeM1BStartRecoveryEvidence(startRecoveryProof({
-      activeMissionCount: 2,
-    })),
+    () =>
+      decodeM1BRecoveryTerminalEvidence(
+        recoveryTerminalProof({
+          missionEventCount: 3,
+        }),
+      ),
+    /terminal proof/u,
+  );
+});
+
+test('récupération start lie le commandId à l’unique mission et brouillon vides', () => {
+  assert.deepEqual(decodeM1BStartRecoveryEvidence(startRecoveryProof()), {
+    stage: 'start-recovered',
+    passed: true,
+    mission: {
+      id: MISSION_ID,
+      status: 'active',
+      actionable: true,
+      phase: 'awaiting_quote_screen',
+      revision: 1,
+      currentBinding: null,
+      payload: {
+        draft: {
+          sessionId: 'draft-m1b-staging',
+          slotRevision: 1,
+          contentRevision: 0,
+        },
+      },
+    },
+  });
+  assert.throws(
+    () =>
+      decodeM1BStartRecoveryEvidence(
+        startRecoveryProof({
+          activeMissionCount: 2,
+        }),
+      ),
     /start response-loss recovery proof/u,
   );
 });
 
 test('récupération cancel exige la transition terminale exacte et horodatée', () => {
-  assert.deepEqual(
-    decodeM1BCancellationRecoveryEvidence(cancellationRecoveryProof()),
-    {
-      stage: 'cancellation-recovered',
-      passed: true,
-      mission: {
-        id: MISSION_ID,
-        status: 'cancelled',
-        actionable: false,
-        revision: 3,
-        terminalAt: '2026-07-27T12:00:00.000Z',
-      },
+  assert.deepEqual(decodeM1BCancellationRecoveryEvidence(cancellationRecoveryProof()), {
+    stage: 'cancellation-recovered',
+    passed: true,
+    mission: {
+      id: MISSION_ID,
+      status: 'cancelled',
+      actionable: false,
+      revision: 3,
+      terminalAt: '2026-07-27T12:00:00.000Z',
     },
-  );
+  });
   assert.throws(
-    () => decodeM1BCancellationRecoveryEvidence(cancellationRecoveryProof({
-      recoveryMatches: false,
-    })),
+    () =>
+      decodeM1BCancellationRecoveryEvidence(
+        cancellationRecoveryProof({
+          recoveryMatches: false,
+        }),
+      ),
     /cancellation response-loss recovery proof/u,
   );
 });
@@ -265,15 +392,21 @@ test('preuve OFF finale exige la disparition de la lease exacte et de toute leas
     passed: true,
   });
   assert.throws(
-    () => decodeM1BNegativeFinalEvidence(negativeFinalProof({
-      sessionLeaseCount: 1,
-    })),
+    () =>
+      decodeM1BNegativeFinalEvidence(
+        negativeFinalProof({
+          sessionLeaseCount: 1,
+        }),
+      ),
     /negative runtime cleanup proof/u,
   );
   assert.throws(
-    () => decodeM1BNegativeFinalEvidence(negativeFinalProof({
-      tenantLeaseCount: 1,
-    })),
+    () =>
+      decodeM1BNegativeFinalEvidence(
+        negativeFinalProof({
+          tenantLeaseCount: 1,
+        }),
+      ),
     /negative runtime cleanup proof/u,
   );
 });
@@ -289,17 +422,20 @@ test('certification passe les identités en variables psql et ne les imprime pas
       stderr: '',
     };
   };
-  assert.deepEqual(
-    certifyM1BActiveEvidence(activeInput(), environment(), { spawnSync }),
-    { stage: 'active', passed: true },
-  );
+  assert.deepEqual(certifyM1BActiveEvidence(activeInput(), environment(), { spawnSync }), {
+    stage: 'active',
+    passed: true,
+  });
   assert.equal(calls[0].command, 'psql');
   assert.equal(calls[0].options.input, M1B_ACTIVE_EVIDENCE_SQL);
   assert.equal(calls[0].options.input.includes(MISSION_ID), false);
   assert.equal(calls[0].options.input.includes('secret'), false);
   assert.equal(calls[0].args.includes(`mission_id=${MISSION_ID}`), true);
   assert.equal(calls[0].args.includes(environment().DATABASE_URL), false);
-  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(
+    calls[0].args.some((value) => String(value).includes('secret')),
+    false,
+  );
   assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
   assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
   assert.equal(calls[0].options.env.PGUSER, 'bob_app');
@@ -331,12 +467,49 @@ test('certification de propreté utilise le rôle runtime et un SQL sans identif
   assert.equal(calls[0].args.includes('company_id=company-staging'), true);
 });
 
+test('preuves de récupération restent read-only, sous RLS et à paramètres liés', () => {
+  const calls = [];
+  const outputs = [recoveryStateProof(), recoveryTerminalProof()];
+  const spawnSync = (_command, args, options) => {
+    calls.push({ args, options });
+    return {
+      status: 0,
+      stdout: `${JSON.stringify(outputs.shift())}\n`,
+      stderr: '',
+    };
+  };
+  assert.equal(certifyM1BRecoveryStateEvidence(environment(), { spawnSync }).state, 'recoverable');
+  assert.deepEqual(
+    certifyM1BRecoveryTerminalEvidence(
+      {
+        missionId: MISSION_ID,
+        startCommandId: START_COMMAND_ID,
+        cancelCommandId: CANCEL_COMMAND_ID,
+        draftSessionId: 'draft-m1b-staging',
+        draftSlotRevision: 1,
+        draftContentRevision: 0,
+      },
+      environment(),
+      { spawnSync },
+    ),
+    {
+      stage: 'recovery-terminal',
+      passed: true,
+      status: 'cancelled',
+      missionRevision: 2,
+    },
+  );
+  assert.equal(calls[0].options.input, M1B_RECOVERY_STATE_EVIDENCE_SQL);
+  assert.equal(calls[1].options.input, M1B_RECOVERY_TERMINAL_EVIDENCE_SQL);
+  assert.equal(calls[0].options.input.includes(MISSION_ID), false);
+  assert.equal(calls[1].args.includes(`mission_id=${MISSION_ID}`), true);
+  assert.equal(calls[1].args.includes(`start_command_id=${START_COMMAND_ID}`), true);
+  assert.equal(calls[1].args.includes(`cancel_command_id=${CANCEL_COMMAND_ID}`), true);
+});
+
 test('les récupérations response-loss restent sous rôle runtime et paramètres liés', () => {
   const calls = [];
-  const outputs = [
-    startRecoveryProof(),
-    cancellationRecoveryProof(),
-  ];
+  const outputs = [startRecoveryProof(), cancellationRecoveryProof()];
   const spawnSync = (_command, args, options) => {
     calls.push({ args, options });
     return {
@@ -346,22 +519,24 @@ test('les récupérations response-loss restent sous rôle runtime et paramètre
     };
   };
   assert.equal(
-    certifyM1BStartRecoveryEvidence(
-      { startCommandId: START_COMMAND_ID },
-      environment(),
-      { spawnSync },
-    ).mission.id,
+    certifyM1BStartRecoveryEvidence({ startCommandId: START_COMMAND_ID }, environment(), {
+      spawnSync,
+    }).mission.id,
     MISSION_ID,
   );
   assert.equal(
-    certifyM1BCancellationRecoveryEvidence({
-      missionId: MISSION_ID,
-      startCommandId: START_COMMAND_ID,
-      cancelCommandId: CANCEL_COMMAND_ID,
-      expectedMissionRevision: 2,
-      draftSessionId: 'draft-m1b-staging',
-      draftContentRevision: 0,
-    }, environment(), { spawnSync }).mission.revision,
+    certifyM1BCancellationRecoveryEvidence(
+      {
+        missionId: MISSION_ID,
+        startCommandId: START_COMMAND_ID,
+        cancelCommandId: CANCEL_COMMAND_ID,
+        expectedMissionRevision: 2,
+        draftSessionId: 'draft-m1b-staging',
+        draftContentRevision: 0,
+      },
+      environment(),
+      { spawnSync },
+    ).mission.revision,
     3,
   );
   assert.equal(calls[0].options.input, M1B_START_RECOVERY_EVIDENCE_SQL);
@@ -382,14 +557,21 @@ test('preuve finale lie les trois commandes et la révision terminale', () => {
       stderr: '',
     };
   };
-  assert.deepEqual(certifyM1BFinalEvidence({
-    missionId: MISSION_ID,
-    sessionId: SESSION_ID,
-    startCommandId: START_COMMAND_ID,
-    ackCommandId: ACK_COMMAND_ID,
-    cancelCommandId: CANCEL_COMMAND_ID,
-    missionRevision: 3,
-  }, environment(), { spawnSync }), { stage: 'final', passed: true });
+  assert.deepEqual(
+    certifyM1BFinalEvidence(
+      {
+        missionId: MISSION_ID,
+        sessionId: SESSION_ID,
+        startCommandId: START_COMMAND_ID,
+        ackCommandId: ACK_COMMAND_ID,
+        cancelCommandId: CANCEL_COMMAND_ID,
+        missionRevision: 3,
+      },
+      environment(),
+      { spawnSync },
+    ),
+    { stage: 'final', passed: true },
+  );
   assert.equal(calls[0].options.input, M1B_FINAL_EVIDENCE_SQL);
   assert.equal(calls[0].args.includes(`cancel_command_id=${CANCEL_COMMAND_ID}`), true);
   assert.equal(calls[0].args.includes('mission_revision=3'), true);
@@ -406,18 +588,11 @@ test('preuve OFF finale cible uniquement la session créée par le smoke', () =>
     };
   };
   assert.deepEqual(
-    certifyM1BNegativeFinalEvidence(
-      { sessionId: SESSION_ID },
-      environment(),
-      { spawnSync },
-    ),
+    certifyM1BNegativeFinalEvidence({ sessionId: SESSION_ID }, environment(), { spawnSync }),
     { stage: 'negative-final', passed: true },
   );
   assert.equal(calls[0].options.input, M1B_NEGATIVE_FINAL_EVIDENCE_SQL);
   assert.equal(calls[0].options.input.includes(SESSION_ID), false);
-  assert.equal(
-    calls[0].options.input.includes('"agentMissionProtocolVersion"'),
-    false,
-  );
+  assert.equal(calls[0].options.input.includes('"agentMissionProtocolVersion"'), false);
   assert.equal(calls[0].args.includes(`session_id=${SESSION_ID}`), true);
 });

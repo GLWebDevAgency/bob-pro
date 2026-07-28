@@ -41,6 +41,8 @@ Une seule PR courte rend la certification M1-B :
 
 - classification centralisée du timeout local exact du bootstrap Bob Live ;
 - reprise unique après réconciliation durable ;
+- récupération explicite, optionnelle et staging-only d'un résidu appartenant au compte
+  technique M1-B après perte de la capability de la tentative précédente ;
 - preuve SQL atomique de zéro lease exacte et zéro lease tenant ;
 - diagnostic par classes fermées ;
 - gate de recertification staging ciblé M1-B, borné au SHA et à la base ;
@@ -51,6 +53,7 @@ Une seule PR courte rend la certification M1-B :
 
 - modification de la deadline UX Bob Live de 12 s ;
 - activation M1-B en production ;
+- suppression SQL directe d'une mission ou d'un brouillon et récupération d'une donnée utilisateur ;
 - évolution du protocole ou des fonctions métier de mission ;
 - suppression d'une certification générale de release ;
 - cache d'un reçu de sécurité ou confiance dans un simple cache GitHub.
@@ -118,6 +121,36 @@ Une seule PR courte rend la certification M1-B :
   admise que si Railway permet de le rattacher et de le vérifier explicitement ; sinon chaque
   déploiement reconstruit le même checkout exact.
 
+### 4.4 Récupération bornée du compte technique
+
+- La récupération est désactivée par défaut et n'est sélectionnable que par le purpose explicite
+  `m1b-staging-recovery` ; le chemin `production` ne l'accepte pas.
+- Avant toute mutation, une preuve PostgreSQL sous le rôle runtime RLS certifie exactement :
+  un seul résidu `quote_creation` encore stocké `active`, phase `awaiting_quote_screen`,
+  révision 1, sans binding, un seul événement initial `mission_started/no_slot`, un seul brouillon
+  vide lié à cette mission et zéro lease pour tout le tenant technique.
+- La preuve et l'authentification portent toutes deux les identifiants versionnés du compte
+  technique. Toute donnée significative, mission supplémentaire, événement supplémentaire,
+  binding, révision différente ou lease restante fait échouer la récupération sans mutation.
+- Le run de récupération est distinct de la certification : il active temporairement le même SHA,
+  récupère le résidu, puis remet M1-B OFF et prouve le compte propre. La certification suivante
+  conserve intégralement son ordre normatif et ses preuves `clean` OFF → actif → OFF.
+- Le même préflight HMAC anti-rotation précède l'activation en certification comme en récupération :
+  une récupération ne peut ni élargir ni retirer silencieusement le writer floor.
+- Après activation et création d'une nouvelle session WebRTC réelle, le client relit la mission
+  par la capability négociée, rapproche tous ses champs de la preuve PostgreSQL, puis appelle
+  l'annulation métier avec CAS. Si le TTL est déjà dépassé, seul le conflit exact `expired`,
+  qui terminalise la mission et libère son slot dans le use case, est accepté.
+- Une perte de réponse d'annulation autorise au plus deux appels avec le même `commandId`, puis une
+  preuve terminale PostgreSQL exacte est repollée de façon bornée ; aucun champ libre de l'erreur
+  serveur n'est publié pendant cette réconciliation.
+- Le brouillon n'est supprimé que par l'API avec sa révision CAS, après vérification qu'il est
+  toujours vide, lié au même `sessionId` et libéré de la mission. Le smoke n'appelle jamais
+  `startQuoteCreation` pendant la récupération.
+- Peer, capability et lease sont fermés même en cas d'échec. Le workflow ne poursuit vers le
+  smoke positif nominal qu'après preuve `clean` (zéro mission active, zéro brouillon, zéro lease).
+- Les diagnostics et artefacts ne publient aucun identifiant, email, token, SDP ou payload.
+
 ## 5. Critères d'acceptation binaires
 
 - [ ] Timeout exact → nettoyage prouvé → un seul retry → succès avec UUID et peer neufs.
@@ -142,6 +175,16 @@ Une seule PR courte rend la certification M1-B :
       la restauration indépendante : capacité déjà active = certificat de configuration exact +
       no-op ; capacité fermée = drain + certificat fermé + réouverture ; aucun key manager et
       aucun déploiement API.
+- [ ] Le mode de récupération est staging-only, opt-in, distinct de la certification et refuse
+      fermé toute forme autre que l'unique résidu technique exact.
+- [ ] La récupération négocie une capability neuve, ne démarre aucune mission, annule ou expire
+      l'exact résidu via le use case, supprime le seul brouillon vide par CAS, ferme la session et
+      obtient la preuve `clean` avant le scénario positif nominal.
+- [ ] Un brouillon significatif, un binding, une seconde mission/lease, une révision ou un
+      événement inattendu, une capability discordante ou une erreur CAS empêchent toute suite.
+- [ ] Le recovery exécute le préflight HMAC anti-rotation avant activation ; deux réponses
+      d'annulation perdues suivies d'un commit tardif convergent par polling vers la preuve
+      terminale, sans fuite de `cause`, `reason`, payload ou identifiant dans stderr.
 - [ ] Les tests ciblés, typecheck/build concernés et tests de release safety sont verts.
 - [ ] Le SHA exact passe la vraie certification Supabase/Railway staging puis rend global OFF,
       zéro override possédé, zéro lease et zéro mission/brouillon.

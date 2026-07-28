@@ -6,6 +6,14 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Staging operation to execute
+        required: true
+        default: certification
+        type: choice
+        options:
+          - certification
+          - recovery
       founder_authorization_date:
         description: Founder authorization date (YYYY-MM-DD)
         required: true
@@ -28,6 +36,11 @@ on:
         type: string
   workflow_call:
     inputs:
+      mode:
+        description: Staging operation to execute
+        required: false
+        default: certification
+        type: string
       founder_authorization_date:
         description: Founder authorization date (YYYY-MM-DD)
         required: true
@@ -101,6 +114,7 @@ jobs:
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
           BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
           BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+          BOB_M1B_WORKFLOW_MODE: ${{ inputs.mode }}
         run: |
           started_at="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
           echo "release_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
@@ -140,6 +154,9 @@ jobs:
             }
           }
           if (!sha.test(process.env.GITHUB_SHA ?? '')) throw new Error('GITHUB_SHA must be exact');
+          if (!['certification', 'recovery'].includes(process.env.BOB_M1B_WORKFLOW_MODE ?? '')) {
+            throw new Error('BOB_M1B_WORKFLOW_MODE must be certification or recovery');
+          }
           for (const name of [
             'RAILWAY_PROJECT_ID',
             'RAILWAY_ENVIRONMENT_ID',
@@ -204,6 +221,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
       - name: Preflight and deploy the private Whisper auditor at the exact SHA
         id: deploy_whisper
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -220,6 +238,7 @@ jobs:
             wait-deployment "$deployment_id"
           node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs preflight
       - name: Baseline OFF predeploy
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 120
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -240,6 +259,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
       - name: Deploy exact SHA with M1-B OFF
         id: deploy_baseline
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -255,6 +275,7 @@ jobs:
             wait-deployment "$deployment_id"
           echo "deployment_acknowledged=true" >> "$GITHUB_OUTPUT"
       - name: Prove baseline topology, readiness and postdeploy
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 120
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -277,6 +298,7 @@ jobs:
             env CABINET_RELEASE_ENV=staging \
               node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
       - name: Prove real WebRTC negotiation remains OFF
+        if: ${{ inputs.mode == 'certification' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
@@ -385,7 +407,26 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs enable
           echo "owned=true" >> "$GITHUB_OUTPUT"
+      - name: Recover only the exact technical staging residue
+        if: ${{ inputs.mode == 'recovery' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs recovery
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs assert-active
       - name: Execute real positive WebRTC mission and runtime RLS proof
+        if: ${{ inputs.mode == 'certification' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
@@ -632,7 +673,7 @@ jobs:
     needs:
       - certify
       - cleanup
-    if: ${{ always() }}
+    if: ${{ always() && inputs.mode == 'certification' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -682,7 +723,7 @@ jobs:
       - certify
       - cleanup
       - evidence
-    if: ${{ always() }}
+    if: ${{ always() && inputs.mode == 'certification' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -695,3 +736,19 @@ jobs:
           test "$CERTIFY_RESULT" = success
           test "$CLEANUP_RESULT" = success
           test "$EVIDENCE_RESULT" = success
+
+  recovery-verdict:
+    needs:
+      - certify
+      - cleanup
+    if: ${{ always() && inputs.mode == 'recovery' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require bounded recovery and independent OFF cleanup
+        env:
+          RECOVERY_RESULT: ${{ needs.certify.result }}
+          CLEANUP_RESULT: ${{ needs.cleanup.result }}
+        run: |
+          test "$RECOVERY_RESULT" = success
+          test "$CLEANUP_RESULT" = success
