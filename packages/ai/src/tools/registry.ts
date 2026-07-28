@@ -48,6 +48,7 @@ import {
   type CompleteInterventionActionInput,
   type SendInterventionReportActionOutput,
   type PrepareInterventionInvoiceActionOutput,
+  type InterventionBillingDueAction,
   type InterventionSettingsActionInput,
   type InterventionSettingsActionOutput,
   type RetireEquipmentActionInput,
@@ -1942,6 +1943,23 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => prepareInterventionInvoiceAction(input),
     };
     tools.push(facturerIntervention as AnyTool);
+  }
+
+  // —— §3.1/§3.5 « facturer sans délai » — dérivation PURE partagée avec l'écran. ——
+  const interventionsToBillAction = actions.listInterventionsToBill?.bind(actions);
+  if (interventionsToBillAction) {
+    const passagesAFacturer: Tool<Record<string, never>, InterventionBillingDueAction[]> = {
+      name: 'passages_a_facturer',
+      description:
+        'Liste les passages terminés ou signés, hors contrat, qu’aucune facture vivante ne couvre (« qu’est-ce qu’il me reste à facturer ? ») — dérivation pure, jamais un statut inventé.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: () => interventionsToBillAction(),
+    };
+    tools.push(passagesAFacturer as AnyTool);
   }
 
   // —— PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : parité stricte avec l'écran. ——

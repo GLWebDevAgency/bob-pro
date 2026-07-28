@@ -806,6 +806,20 @@ export interface InterventionSettingsActionInput {
   checklistTemplates?: Record<string, string[]>;
 }
 
+/**
+ * §3.1/§3.5 — passage À FACTURER (dérivation pure `deriveInterventionBillingDue`) : terminé ou
+ * signé, HORS contrat, sans pièce liée vivante. Fail-closed sur projection absente ; l'annulation
+ * de la facture liée RALLUME le fait. Lecture pure — Bob ne facture jamais tout seul.
+ */
+export interface InterventionBillingDueAction {
+  interventionId: string;
+  kind: string;
+  chantierId: string;
+  chantierNom: string;
+  customerNom: string | null;
+  finishedAt: string | null;
+}
+
 export interface InterventionSettingsActionOutput {
   /** Titre RÉELLEMENT imprimé sur la fiche (défaut produit compris) — jamais vide. */
   effectiveReportTitle: string;
@@ -1091,6 +1105,9 @@ export interface BobActions {
   prepareInterventionInvoice?(
     input: InterventionActionInput,
   ): Promise<Result<PrepareInterventionInvoiceActionOutput, AppError>>;
+  /** §3.1/§3.5 — « qu'est-ce qu'il me reste à facturer sur mes passages ? » : MÊME dérivation
+   * `deriveInterventionBillingDue` que l'écran (fail-closed, réallumage par l'état réel). */
+  listInterventionsToBill?(): Promise<Result<InterventionBillingDueAction[], AppError>>;
   /** PR-16 §3.2 — « comment s'appelle ma fiche de passage ? » : lecture pure des réglages. */
   getInterventionSettings?(): Promise<Result<InterventionSettingsActionOutput, AppError>>;
   /** PR-16 §3.2/§4.5 — « appelle ma fiche Certificat sanitaire » : MÊME use case

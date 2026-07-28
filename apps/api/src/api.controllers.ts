@@ -4505,6 +4505,11 @@ export class InterventionsController {
   async settings() {
     return unwrap(await this.backend.getInterventionSettings());
   }
+  /** §3.1/§3.5 « facturer sans délai » — dérivation PURE, jamais un statut inventé. */
+  @Get('billing-due')
+  async billingDue() {
+    return unwrap(await this.backend.listInterventionsToBill());
+  }
   @Put('settings')
   async updateSettings(@Body() body: unknown) {
     assertJsonObjectBody(body);

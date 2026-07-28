@@ -191,7 +191,9 @@ import {
   PrepareInterventionInvoiceDraft,
   UpdateCompanyInterventionSettings,
   effectiveInterventionSettings,
+  deriveInterventionBillingDue,
   type CompanyInterventionSettings,
+  type InterventionBillingDueFact,
   type UpdateCompanyInterventionSettingsInput,
   UpdateEquipment,
   RetireEquipment,
@@ -409,6 +411,16 @@ import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 import { ExpenseCreationCoordinator } from './expenses/expense-creation-coordinator';
 import { RepositoryDocumentLinkTargets } from './documents/document-link-targets';
 import { QuoteCreationCoordinator } from './quotes/quote-creation-coordinator';
+
+/**
+ * §3.1/§3.5 — passage à facturer, ENRICHI des noms lisibles (site, client) pour l'écran et la
+ * voix. Le FAIT lui-même reste la dérivation pure `deriveInterventionBillingDue` : la couche
+ * serveur ne fait qu'y coller des libellés, jamais une règle d'éligibilité parallèle.
+ */
+export interface InterventionBillingDueView extends InterventionBillingDueFact {
+  chantierNom: string;
+  customerNom: string | null;
+}
 
 export interface QuoteView {
   id: string;
@@ -4418,6 +4430,22 @@ export class BackendService {
           totalTtcCents: r.value.totals.ttc,
         });
       },
+      // §3.1/§3.5 — « qu'est-ce qu'il me reste à facturer ? » : MÊME dérivation pure que
+      // l'endpoint /interventions/billing-due (aucune règle d'éligibilité parallèle).
+      listInterventionsToBill: async () => {
+        const r = await this.listInterventionsToBill();
+        if (!r.ok) return r;
+        return ok(
+          r.value.map((fact) => ({
+            interventionId: fact.interventionId,
+            kind: fact.kind,
+            chantierId: fact.chantierId,
+            chantierNom: fact.chantierNom,
+            customerNom: fact.customerNom,
+            finishedAt: fact.finishedAt,
+          })),
+        );
+      },
       // PR-16 §3.2/§4.5 — réglages de fiche : MÊME use case que l'écran Réglages ; la révision
       // (CAS) est résolue ICI, jamais devinée par l'agent (aucune vue optimiste à la voix).
       getInterventionSettings: async () => {
@@ -6762,6 +6790,51 @@ export class BackendService {
         id: input.interventionId,
       });
     return r;
+  }
+
+  /**
+   * §3.1/§3.5 « Facturer sans délai » — passages TERMINÉS/SIGNÉS hors contrat que RIEN ne
+   * couvre : dérivation PURE `deriveInterventionBillingDue` (@bob/core), aucun statut inventé.
+   * Fail-closed : une pièce liée non transportée n'allume jamais le fait ; l'annulation de la
+   * facture liée le RALLUME (extinction par l'état réel). MÊME source pour l'écran et la voix.
+   */
+  async listInterventionsToBill(): Promise<Result<InterventionBillingDueView[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const [interventions, invoices, chantiers, customers] = await Promise.all([
+      this.p.interventions.listByCompany(companyId),
+      this.p.invoices.listByCompany(companyId),
+      this.p.chantiers.listByCompany(companyId),
+      this.p.customers.listByCompany(companyId),
+    ]);
+    const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+    const props = interventions.map((intervention) => intervention.toProps());
+    const customerOf = new Map(props.map((row) => [row.id, row.customerId]));
+    const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+    const due = deriveInterventionBillingDue(
+      props.map((row) => ({
+        id: row.id,
+        status: row.status,
+        contractId: row.contractId,
+        billedInvoiceId: row.billedInvoiceId,
+        kind: row.kind,
+        chantierId: row.chantierId,
+        finishedAt: row.finishedAt,
+      })),
+      new Map(invoices.map((invoice) => [invoice.id, { id: invoice.id, status: invoice.status }])),
+    );
+    return ok(
+      due.map((fact) => {
+        const customerId = customerOf.get(fact.interventionId) ?? null;
+        return {
+          ...fact,
+          chantierNom: chantierNames.get(fact.chantierId) ?? fact.chantierId,
+          customerNom:
+            customerId === null ? null : (customerNames.get(customerId) ?? customerId),
+        };
+      }),
+    );
   }
 
   // ── PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES par société (titre + templates) ──

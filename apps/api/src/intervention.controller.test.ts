@@ -5,6 +5,7 @@ import {
   Company,
   Customer,
   Equipment,
+  Intervention,
   type InterventionReportData,
   type OcrPort,
   type PaymentGatewayPort,
@@ -808,6 +809,54 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
       env.service.prepareInterventionInvoiceDraft(created.value.id, { urgentOnSiteRepair: true }),
     );
     expect(urgent.ok).toBe(true);
+  });
+
+  it('« facturer sans délai » BRANCHÉ : le passage sort de la liste, et y REVIENT si la facture est annulée', async () => {
+    const env = await completedIntervention();
+    const controller = new InterventionsController(env.service);
+
+    const due = await env.run(() => controller.billingDue());
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({
+      interventionId: env.interventionId,
+      kind: 'Visite d’entretien',
+      chantierNom: 'Site site-bastille',
+      customerNom: 'RATP CAP',
+    });
+
+    // Brouillon lié : la pièce est VIVANTE, le passage sort de la liste.
+    const drafted = await env.run(() =>
+      env.service.prepareInterventionInvoiceDraft(env.interventionId),
+    );
+    expect(drafted.ok).toBe(true);
+    if (!drafted.ok) return;
+    expect(await env.run(() => controller.billingDue())).toHaveLength(0);
+
+    // Facture ANNULÉE : le fait se RALLUME par l'ÉTAT RÉEL, sans aucun code dédié. Aucun use
+    // case applicatif n'annule encore une pièce (l'avoir A6 est une pièce distincte) : on pose
+    // donc l'état persisté à la main, ce que la dérivation doit déjà savoir lire.
+    const invoice = await env.run(() => env.p.invoices.findById(drafted.value.invoiceId));
+    const cancelled = invoice!.cancel('avoir', '2026-08-05T10:00:00.000Z');
+    expect(cancelled.ok).toBe(true);
+    await env.run(() => env.p.invoices.save(invoice!));
+    const again = await env.run(() => controller.billingDue());
+    expect(again.map((fact) => fact.interventionId)).toEqual([env.interventionId]);
+  });
+
+  it('une VISITE CONTRACTUELLE n’entre jamais dans « à facturer » (discriminant contractId)', async () => {
+    const env = await completedIntervention();
+    // contractId n'est jamais accepté par CreateIntervention dans ce train : on force l'état
+    // persisté pour prouver que la DÉRIVATION, elle, le respecte déjà (direction 6).
+    const stored = await env.run(() =>
+      env.p.interventions.findById(env.companyId, env.interventionId),
+    );
+    await env.run(() =>
+      env.p.interventions.save(
+        Intervention.rehydrate({ ...stored!.toProps(), contractId: 'contract-1' }),
+      ),
+    );
+    const controller = new InterventionsController(env.service);
+    expect(await env.run(() => controller.billingDue())).toHaveLength(0);
   });
 
   it('réglages ÉCRIVABLES : le titre choisi devient l’identité du PDF ET du sujet d’e-mail', async () => {
