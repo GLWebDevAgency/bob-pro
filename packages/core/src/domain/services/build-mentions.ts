@@ -62,7 +62,7 @@ export const MENTION_FRANCHISE_BASE = 'TVA non applicable, article 293 B du CGI'
 export const MENTION_OPTION_DEBITS = "Option pour le paiement de la taxe d'après les débits";
 
 /** Une rédaction de la mention de franchise, avec sa date d'effet et le texte qui la fonde. */
-interface RedactionFranchise {
+export interface RedactionFranchise {
   /** Date à partir de laquelle cette rédaction s'applique (comparaison lexicographique DateOnly). */
   readonly aPartirDu: DateOnly;
   readonly mention: string;
@@ -82,8 +82,14 @@ interface RedactionFranchise {
  * logique : ajouter { aPartirDu: <date d'effet du décret>, mention: <verbatim du décret>,
  * source: <référence du décret> }. C'est très exactement le geste que réclame l'alarme de veille
  * (`veille-mentions-legales.ts`), et l'ajouter est ce qui la fait taire légitimement.
+ *
+ * Exportée pour que ses invariants soient VÉRIFIÉS et non seulement écrits : le corpus fige la
+ * présence d'une source sur chaque rédaction, l'ordre croissant des dates d'effet, et un garde-fou
+ * anti-fabrication (aucune rédaction CIBS tant que le décret n'est pas paru). C'est au moment où
+ * un développeur ajoutera la deuxième ligne — le moment le plus dangereux de toute cette histoire —
+ * que ces tests parleront.
  */
-const REDACTIONS_FRANCHISE: readonly RedactionFranchise[] = [
+export const REDACTIONS_FRANCHISE: readonly RedactionFranchise[] = [
   {
     // Rédaction en vigueur depuis toujours du point de vue de Bob : aucune pièce du dépôt n'est
     // antérieure, et l'art. 293 E, II est le droit applicable à toute date servie aujourd'hui.
@@ -108,7 +114,9 @@ const REDACTIONS_FRANCHISE: readonly RedactionFranchise[] = [
 export function mentionFranchiseAu(asOf: DateOnly): string {
   const applicables = REDACTIONS_FRANCHISE.filter((r) => r.aPartirDu <= asOf);
   const retenue = applicables[applicables.length - 1] ?? REDACTIONS_FRANCHISE[0];
-  // La table n'est jamais vide (invariant figé par test) ; le repli protège d'une régression.
+  // La table est non vide et ordonnée — deux invariants figés par le corpus. Le repli sur la
+  // constante ne sert qu'à garantir qu'aucune régression ne puisse produire une facture SANS
+  // mention de franchise, ce qui serait un manquement (art. 293 E, II du CGI).
   return retenue?.mention ?? MENTION_FRANCHISE_BASE;
 }
 

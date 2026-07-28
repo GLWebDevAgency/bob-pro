@@ -6,6 +6,7 @@ import {
   CIBS_TOLERANCE_REFERENCES_CGI,
   MENTION_FRANCHISE_BASE,
   MENTION_OPTION_DEBITS,
+  REDACTIONS_FRANCHISE,
   type BuildMentionsInput,
 } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
@@ -230,6 +231,37 @@ describe('buildMentions', () => {
       // 30/06/2028 par la même ordonnance — seule échéance qui engage les mentions de Bob.
       expect(CIBS_TOLERANCE_REFERENCES_CGI).toBe('2028-06-30');
       expect(CIBS_TVA_ENTREE_EN_VIGUEUR < CIBS_TOLERANCE_REFERENCES_CGI).toBe(true);
+    });
+
+    // Le moment le plus dangereux de toute cette histoire n'est pas aujourd'hui : c'est le jour où
+    // quelqu'un ajoutera la DEUXIÈME rédaction à la table. Ces invariants sont là pour ce jour-là.
+    describe('table des rédactions — garde-fous pour le jour où le décret paraîtra', () => {
+      it('non vide, ordonnée par date d’effet croissante (le resolver prend la dernière atteinte)', () => {
+        expect(REDACTIONS_FRANCHISE.length).toBeGreaterThan(0);
+        const dates = REDACTIONS_FRANCHISE.map((r) => r.aPartirDu);
+        expect(dates).toEqual([...dates].sort());
+        expect(new Set(dates).size).toBe(dates.length);
+      });
+
+      it('aucune rédaction sans texte qui la prescrit — la source n’est pas décorative', () => {
+        for (const r of REDACTIONS_FRANCHISE) {
+          expect(r.mention.trim().length).toBeGreaterThan(0);
+          expect(r.source.trim().length).toBeGreaterThan(0);
+          expect(r.aPartirDu).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+        }
+      });
+
+      it('GARDE ANTI-FABRICATION : aucune rédaction CIBS en table tant que le décret n’est pas paru', () => {
+        // Si ce test échoue, deux cas et deux seuls. Le décret est paru : rouvrez ce test
+        // SCIEMMENT, en citant le décret dans `source`. Il ne l'est pas : la rédaction ajoutée est
+        // déduite (impots.gouv.fr, un article de presse, un raisonnement) — retirez-la. Une mention
+        // est figée à l'émission : une pièce émise sur une rédaction présumée reste fausse à jamais.
+        for (const r of REDACTIONS_FRANCHISE) {
+          expect(r.mention).not.toContain('CIBS');
+          expect(r.mention).not.toContain('L. 223-3');
+          expect(r.mention).not.toContain('impositions sur les biens et services');
+        }
+      });
     });
 
     it('régime réel : jamais de mention de franchise, quelle que soit la date', () => {
