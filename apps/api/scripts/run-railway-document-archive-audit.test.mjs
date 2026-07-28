@@ -1840,12 +1840,12 @@ test('le contrat image/config impose Node épinglé, rôle non-root et sandbox l
     /Preserve the non-PII archive audit envelope\n\s+if: always\(\)\n\s+timeout-minutes: 10/u,
   );
   assert.ok(
-    workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-document-archive-v2.sh'),
+    workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-release-protocols-v2.sh'),
     'durable archive cleanup must run before any irreversible activation',
   );
   assert.match(
     workflow,
-    /Retire the previous Mistral key[^\n]*\n\s+if: \$\{\{ success\(\) && steps\.archive_audit\.outcome == 'success' \}\}\n\s+timeout-minutes: 60/u,
+    /Activate archive\/settlement\/outbox v2 and finalize the certified release\n\s+if: \$\{\{ success\(\) && steps\.archive_audit\.outcome == 'success' \}\}\n\s+timeout-minutes: 60[\s\S]*?certify_exact_revision before-activation[\s\S]*?activate-release-protocols-v2\.sh[\s\S]*?certify_exact_revision before-postdeploy[\s\S]*?env BOB_RELEASE_PHASE=postdeploy/u,
   );
 });
 

@@ -347,8 +347,7 @@ $$;
 SQL
 }
 
-configure() {
-  ensure_role
+activate_existing() {
   if [ "${BOB_LIVE_ENABLED+x}" = x ]; then
     live_enabled="$BOB_LIVE_ENABLED"
   else
@@ -454,10 +453,19 @@ $$;
 SQL
 }
 
+configure() {
+  ensure_role
+  activate_existing
+}
+
 case "$phase" in
   ensure) ensure_role ;;
   provision) provision ;;
   close-existing) close_existing ;;
   configure) configure ;;
-  *) echo "usage: $0 <ensure|provision|close-existing|configure>" >&2; exit 2 ;;
+  activate-existing) activate_existing ;;
+  *)
+    echo "usage: $0 <ensure|provision|close-existing|configure|activate-existing>" >&2
+    exit 2
+    ;;
 esac

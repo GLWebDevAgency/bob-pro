@@ -270,9 +270,15 @@ jobs:
           RELEASE_ENVIRONMENT: ${{ inputs.environment }}
           REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE: ${{ steps.predecessor_capabilities.outputs.realtime_cancellation_fence }}
         run: |
-          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/check-release-env.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" \
+            env BOB_RELEASE_EXPECTED_ENV="$RELEASE_ENVIRONMENT" \
+              sh apps/api/scripts/check-release-env.sh
           railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" \
             env BOB_RELEASE_PHASE=predeploy \
+              BOB_RELEASE_EXPECTED_ENV="$RELEASE_ENVIRONMENT" \
+              BOB_RELEASE_SHA="$GITHUB_SHA" \
+              BOB_RELEASE_RUN_ID="$GITHUB_RUN_ID" \
+              BOB_RELEASE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
               REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE="$REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE" \
               sh apps/api/scripts/release.sh
       - name: Deploy API and wait for the new revision
@@ -281,8 +287,8 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
           TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
-        # Attached mode streams build + deployment logs and exits non-zero when
-        # the uploaded revision fails. Detached mode could smoke the old revision.
+        # En CI, le flux attaché ne constitue pas une preuve suffisante de disponibilité.
+        # La topologie et la readiness SHA exacte ci-dessous restent les autorités bloquantes.
         run: railway up --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME"
       - name: Re-certify the deployed replica topology
         timeout-minutes: 3
@@ -358,15 +364,6 @@ jobs:
           echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
           echo "release_sha=$EXPECTED_RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "release_environment=$EXPECTED_RELEASE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
-      - name: Postdeploy certify and reopen Bob Live
-        timeout-minutes: 120
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE: ${{ inputs.service }}
-          TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
-        run: |
-          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
       - name: Reserve the archive audit and cleanup time budget
         if: ${{ success() && !cancelled() }}
         env:
@@ -418,22 +415,88 @@ jobs:
           path: .release-evidence/document-archive/
           if-no-files-found: error
           retention-days: 90
-      - name: Retire the previous Mistral key, activate archive/settlement/outbox v2 and certify the contract
+      - name: Activate archive/settlement/outbox v2 and finalize the certified release
         if: ${{ success() && steps.archive_audit.outcome == 'success' }}
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
           TARGET_ENVIRONMENT_NAME: ${{ inputs.environment }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          EXPECTED_RELEASE_ENVIRONMENT: ${{ inputs.environment }}
         # Les activations n'interviennent qu'après readiness du SHA et preuve mono-réplique.
         # Avant cette étape, N-1 peut continuer les écritures V1 et les messages restent spoolés.
         # Après activation, tout rollback N-1 est interdit : seule une correction roll-forward est sûre.
         run: |
-          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
-          DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
-            railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-document-archive-v2.sh
-          INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$GITHUB_SHA" \
-            railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-invoice-settlement-v2.sh
-          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" sh apps/api/scripts/activate-notification-outbox-v2.sh
+          certify_exact_revision() {
+            probe_phase="$1"
+            topology_matched=false
+            for attempt in $(seq 1 3); do
+              if timeout 20s railway status --environment "$TARGET_ENVIRONMENT_NAME" --json \
+                | node apps/api/scripts/certify-railway-single-replica.mjs "$TARGET_ENVIRONMENT_NAME" "$RAILWAY_SERVICE"
+              then
+                topology_matched=true
+                break
+              fi
+              sleep 5
+            done
+            [ "$topology_matched" = true ] || {
+              echo "Railway topology drifted during $probe_phase" >&2
+              return 1
+            }
+
+            body="$(mktemp)"
+            revision_matched=false
+            for attempt in $(seq 1 3); do
+              if curl --fail --silent --show-error --location \
+                --connect-timeout 3 --max-time 10 \
+                "$API_BASE_URL/health/ready" >"$body"
+              then
+                if HEALTH_BODY="$body" node <<'NODE'
+          const fs = require('node:fs');
+          const payload = JSON.parse(fs.readFileSync(process.env.HEALTH_BODY, 'utf8'));
+          if (payload?.ready !== true) process.exit(1);
+          if (payload?.release?.sha !== process.env.EXPECTED_RELEASE_SHA) process.exit(1);
+          if (payload?.release?.environment !== process.env.EXPECTED_RELEASE_ENVIRONMENT) process.exit(1);
+          if (payload?.capabilities?.realtimeAdmissionCancellationFence !== 'v1') process.exit(1);
+          if (payload?.capabilities?.agentMissionBootstrapReceipt !== 'v1') process.exit(1);
+          if (payload?.network?.clientIpSource !== 'railway-x-real-ip') process.exit(1);
+          NODE
+                then
+                  revision_matched=true
+                  break
+                fi
+              fi
+              sleep 5
+            done
+            [ "$revision_matched" = true ] || {
+              echo "The deployed revision drifted during $probe_phase" >&2
+              return 1
+            }
+          }
+
+          certify_exact_revision before-activation
           railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env BOB_RELEASE_EXPECTED_ENV="$TARGET_ENVIRONMENT_NAME" \
+              BOB_RELEASE_SHA="$GITHUB_SHA" \
+              BOB_RELEASE_RUN_ID="$GITHUB_RUN_ID" \
+              BOB_RELEASE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+              sh apps/api/scripts/activate-release-protocols-v2.sh
+          certify_exact_revision before-postdeploy
+          railway run --service "$RAILWAY_SERVICE" --environment "$TARGET_ENVIRONMENT_NAME" \
+            env BOB_RELEASE_PHASE=postdeploy \
+              BOB_RELEASE_EXPECTED_ENV="$TARGET_ENVIRONMENT_NAME" \
+              BOB_RELEASE_SHA="$GITHUB_SHA" \
+              BOB_RELEASE_RUN_ID="$GITHUB_RUN_ID" \
+              BOB_RELEASE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+              sh apps/api/scripts/release.sh
+      - name: Preserve the non-PII release phase receipt
+        if: always()
+        timeout-minutes: 10
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-release-receipt-${{ inputs.environment }}-${{ github.sha }}
+          path: .release-evidence/api/predeploy-receipt.json
+          if-no-files-found: warn
+          retention-days: 30

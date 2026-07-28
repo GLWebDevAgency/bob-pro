@@ -133,7 +133,7 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
   assert.doesNotMatch(workflow, /apps\/api\/scripts\/release\.sh/u);
   const explicitStagingReleaseGates = occurrences(
     workflow,
-    /env RELEASE_ENVIRONMENT=staging \\\n\s+sh apps\/api\/scripts\/check-release-env\.sh/gu,
+    /env RELEASE_ENVIRONMENT=staging BOB_RELEASE_EXPECTED_ENV=staging \\\n\s+sh apps\/api\/scripts\/check-release-env\.sh/gu,
   );
   assert.equal(
     explicitStagingReleaseGates,

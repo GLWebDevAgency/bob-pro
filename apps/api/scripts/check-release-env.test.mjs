@@ -24,6 +24,7 @@ const baseEnvironment = Object.freeze({
   SUPABASE_STORAGE_BUCKET: 'bob-documents',
   JOB_COMPANY_IDS: 'company-one',
   CABINET_RELEASE_ENV: 'production',
+  BOB_RELEASE_EXPECTED_ENV: 'production',
   CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: 'c'.repeat(32),
   CABINET_INVITATION_TOKEN_KEY_VERSION: '1',
   CABINET_INVITATION_WEB_BASE_URL: 'https://cabinet.bobpro.fr',
@@ -83,6 +84,13 @@ test('autorise la release V1 en accès anticipé quand Stripe est entièrement a
   assert.match(result.stdout, /release-env-ok/u);
 });
 
+test('refuse une cible attendue différente de l’environnement Railway distant', () => {
+  const result = runReleaseGate({ BOB_RELEASE_EXPECTED_ENV: 'staging' });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /BOB_RELEASE_EXPECTED_ENV must match RELEASE_ENVIRONMENT/u);
+});
+
 test('refuse une capacité Bob Live partielle et certifie le groupe complet', () => {
   const partial = runReleaseGate({ BOB_LIVE_GLOBAL_MAX_CONCURRENT_SESSIONS: '50' });
   assert.notEqual(partial.status, 0);
@@ -139,7 +147,10 @@ test('refuse une configuration Stripe entamée mais incomplète', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /STRIPE_PRICE_SOLO is required when Stripe payments are configured/u);
-  assert.match(result.stderr, /PAYMENT_RETURN_BASE_URL is required when Stripe payments are configured/u);
+  assert.match(
+    result.stderr,
+    /PAYMENT_RETURN_BASE_URL is required when Stripe payments are configured/u,
+  );
 });
 
 test('certifie une configuration Stripe live complète', () => {
@@ -217,5 +228,8 @@ test('refuse d’armer le certificat PostgreSQL destructif dans une release live
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT must be absent or false/u);
+  assert.match(
+    result.stderr,
+    /RUN_POSTGRES_OPENAI_NATIVE_KEY_LIFECYCLE_CERT must be absent or false/u,
+  );
 });

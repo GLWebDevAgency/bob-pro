@@ -11,6 +11,27 @@ cd "$ROOT_DIR"
 : "${APP_DATABASE_ROLE:?APP_DATABASE_ROLE runtime role name is required}"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
+: "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
+: "${BOB_RELEASE_EXPECTED_ENV:?BOB_RELEASE_EXPECTED_ENV is required}"
+
+case "$CABINET_RELEASE_ENV" in
+  development|staging|production) ;;
+  *)
+    echo "CABINET_RELEASE_ENV must be development, staging or production" >&2
+    exit 1
+    ;;
+esac
+case "$BOB_RELEASE_EXPECTED_ENV" in
+  development|staging|production) ;;
+  *)
+    echo "BOB_RELEASE_EXPECTED_ENV must be development, staging or production" >&2
+    exit 1
+    ;;
+esac
+if [ "$CABINET_RELEASE_ENV" != "$BOB_RELEASE_EXPECTED_ENV" ]; then
+  echo "CABINET_RELEASE_ENV does not match the immutable release target" >&2
+  exit 1
+fi
 
 : "${BOB_RELEASE_PHASE:?BOB_RELEASE_PHASE=predeploy or postdeploy is required}"
 case "$BOB_RELEASE_PHASE" in
@@ -2427,19 +2448,295 @@ SQL
   fi
 }
 
+assert_postactivation_protocols() {
+  psql "$DIRECT_URL" -X -q -v ON_ERROR_STOP=1 \
+    -v release_sha="${BOB_RELEASE_SHA:-${GITHUB_SHA:-}}" <<'SQL'
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT pg_catalog.set_config('bob.postactivation_release_sha', :'release_sha', true);
+
+DO $postactivation_protocol_certificate$
+DECLARE
+  archive_state public.document_archive_protocol_state%ROWTYPE;
+  settlement_state public.invoice_settlement_protocol_state%ROWTYPE;
+  expected_outbox_tenant_policy CONSTANT TEXT :=
+    '(("companyId" = current_setting(''app.current_company_id''::text, true)) ' ||
+    'AND (current_setting(''app.notification_outbox_version''::text, true) = ''2''::text))';
+  expected_outbox_payload_constraint CONSTANT TEXT :=
+    $payload_shape$CHECK (((payload IS NULL) OR COALESCE(((jsonb_typeof(payload) = 'object'::text) AND ((payload ->> 'channel'::text) = ANY (ARRAY['email'::text, 'sms'::text])) AND ((payload ->> 'channel'::text) = channel) AND (jsonb_typeof((payload -> 'to'::text)) = 'string'::text) AND ((payload ->> 'to'::text) = recipient) AND (jsonb_typeof((payload -> 'subject'::text)) = 'string'::text) AND ((payload ->> 'subject'::text) = subject) AND (jsonb_typeof((payload -> 'body'::text)) = 'string'::text) AND ("payloadFingerprint" IS NOT NULL) AND (length("payloadFingerprint") > 0) AND ((channel <> 'email'::text) OR (((payload ->> 'idempotencyKey'::text) = lower(id)) AND ((payload ->> 'idempotencyKey'::text) ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text)))), false)))$payload_shape$;
+  expected_outbox_lease_constraint CONSTANT TEXT :=
+    $lease_shape$CHECK ((("leaseToken" IS NULL) OR ((payload IS NOT NULL) AND ("providerAttemptedAt" IS NOT NULL) AND (status = ANY (ARRAY['pending'::"NotificationJobStatus", 'failed'::"NotificationJobStatus"])))))$lease_shape$;
+BEGIN
+  SELECT *
+    INTO STRICT archive_state
+    FROM public.document_archive_protocol_state
+   WHERE id = 1;
+  IF archive_state."activeVersion" <> 2
+     OR archive_state."activatedAt" IS NULL
+     OR btrim(archive_state."activatedByReleaseSha"::TEXT) !~ '^[0-9a-f]{40}$'
+     OR archive_state."databaseIdentity" IS NULL THEN
+    RAISE EXCEPTION 'document archive protocol V2 terminal proof is incomplete';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.document_archive_audit_evidence AS evidence
+     WHERE evidence."databaseIdentity" = archive_state."databaseIdentity"
+       AND evidence."readyForActivation"
+       AND btrim(evidence."releaseSha"::TEXT) =
+             pg_catalog.current_setting('bob.postactivation_release_sha')
+       AND (
+         (
+           btrim(archive_state."activatedByReleaseSha"::TEXT) =
+             pg_catalog.current_setting('bob.postactivation_release_sha')
+           AND evidence."protocolVersion" = 1
+           AND evidence.mode = 'apply-attestations'
+         )
+         OR (
+           evidence."protocolVersion" = 2
+           AND evidence.mode = 'protocol-v2-verified'
+         )
+       )
+  ) THEN
+    RAISE EXCEPTION 'document archive protocol V2 has no exact-release terminal audit evidence';
+  END IF;
+
+  SELECT *
+    INTO STRICT settlement_state
+    FROM public.invoice_settlement_protocol_state
+   WHERE id = 1;
+  IF settlement_state."activeVersion" <> 2
+     OR settlement_state."activatedAt" IS NULL
+     OR btrim(settlement_state."activatedByReleaseSha"::TEXT) !~ '^[0-9a-f]{40}$' THEN
+    RAISE EXCEPTION 'invoice settlement protocol V2 terminal proof is incomplete';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_trigger AS trigger_catalog
+     WHERE trigger_catalog.tgrelid = 'public.notification_jobs'::regclass
+       AND trigger_catalog.tgname = 'notification_jobs_cutover_spool_v2'
+       AND NOT trigger_catalog.tgisinternal
+  ) OR EXISTS (
+    SELECT 1
+      FROM information_schema.columns AS attribute
+     WHERE attribute.table_schema = 'public'
+       AND attribute.table_name = 'notification_jobs'
+       AND attribute.column_name = 'cutoverResumeAt'
+  ) THEN
+    RAISE EXCEPTION 'notification outbox V2 retained an expand-only object';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_constraint AS table_constraint
+     WHERE table_constraint.conrelid = 'public.notification_jobs'::regclass
+       AND table_constraint.conname = 'notification_jobs_payload_shape'
+       AND table_constraint.contype = 'c'
+       AND table_constraint.convalidated
+       AND pg_catalog.pg_get_constraintdef(table_constraint.oid, false) =
+         expected_outbox_payload_constraint
+  ) OR NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_constraint AS table_constraint
+     WHERE table_constraint.conrelid = 'public.notification_jobs'::regclass
+       AND table_constraint.conname = 'notification_jobs_lease_shape'
+       AND table_constraint.contype = 'c'
+       AND table_constraint.convalidated
+       AND pg_catalog.pg_get_constraintdef(table_constraint.oid, false) =
+         expected_outbox_lease_constraint
+  ) THEN
+    RAISE EXCEPTION 'notification outbox V2 validated constraint definition drift';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_index AS catalog_index
+      JOIN pg_catalog.pg_class AS index_relation
+        ON index_relation.oid = catalog_index.indexrelid
+      JOIN pg_catalog.pg_namespace AS index_namespace
+        ON index_namespace.oid = index_relation.relnamespace
+     WHERE catalog_index.indrelid = 'public.notification_jobs'::regclass
+       AND index_namespace.nspname = 'public'
+       AND index_relation.relname = 'notification_jobs_due_deliverable_idx'
+       AND catalog_index.indisvalid
+       AND catalog_index.indisready
+       AND catalog_index.indislive
+       AND NOT catalog_index.indisunique
+       AND catalog_index.indnkeyatts = 3
+       AND catalog_index.indnatts = 3
+       AND catalog_index.indoption::TEXT = '0 0 0'
+       AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 1, false) = '"companyId"'
+       AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 2, false) = '"nextAttemptAt"'
+       AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 3, false) = '"createdAt"'
+       AND pg_catalog.pg_get_expr(catalog_index.indpred, catalog_index.indrelid) =
+         '((status = ANY (ARRAY[''pending''::text, ''failed''::text])) AND (payload IS NOT NULL))'
+  ) THEN
+    RAISE EXCEPTION 'notification outbox V2 due index definition drift';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_index AS catalog_index
+      JOIN pg_catalog.pg_class AS index_relation
+        ON index_relation.oid = catalog_index.indexrelid
+      JOIN pg_catalog.pg_namespace AS index_namespace
+        ON index_namespace.oid = index_relation.relnamespace
+     WHERE catalog_index.indrelid = 'public.notification_jobs'::regclass
+       AND index_namespace.nspname = 'public'
+       AND index_relation.relname = 'notification_jobs_recent_idx'
+       AND catalog_index.indisvalid
+       AND catalog_index.indisready
+       AND catalog_index.indislive
+       AND NOT catalog_index.indisunique
+       AND catalog_index.indnkeyatts = 2
+       AND catalog_index.indnatts = 2
+       AND catalog_index.indoption::TEXT = '0 3'
+       AND catalog_index.indpred IS NULL
+       AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 1, false) = '"companyId"'
+       AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 2, false) = '"createdAt"'
+  ) THEN
+    RAISE EXCEPTION 'notification outbox V2 recent index definition drift';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_policy AS policy
+     WHERE policy.polrelid = 'public.notification_jobs'::regclass
+       AND policy.polname = 'tenant_isolation'
+       AND policy.polpermissive
+       AND policy.polcmd = '*'
+       AND policy.polroles = ARRAY[0::OID]
+       AND pg_catalog.pg_get_expr(policy.polqual, policy.polrelid) =
+         expected_outbox_tenant_policy
+       AND pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid) =
+         expected_outbox_tenant_policy
+  ) THEN
+    RAISE EXCEPTION 'notification outbox V2 tenant policy definition drift';
+  END IF;
+END;
+$postactivation_protocol_certificate$;
+
+ROLLBACK;
+SQL
+}
+
+run_nonproduction_mutating_certifications() {
+  trap cleanup_release_on_exit EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  cleanup_rls_cert
+  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/certify-cabinet-concurrency.sh
+  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/certify-release-flag-ops.sh
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cabinet-seed.sql
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/cabinet-rls-cert-privileged.sql
+  RUN_POSTGRES_DEVICE_REBIND_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/devices.postgres.test.ts
+  RUN_POSTGRES_CATALOGUE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/catalogue-chantiers.postgres.test.ts
+  RUN_POSTGRES_EQUIPMENT_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/equipments.postgres.test.ts
+  RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-draft-slots.postgres.test.ts
+  RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/expense-payment-evidence.postgres.test.ts
+  RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-billing-settings.postgres.test.ts
+  RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
+  RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
+  RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
+  RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
+  certify_document_archive_protocol
+  RUN_POSTGRES_CREDIT_NOTE_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/credit-note-traceability.postgres.test.ts
+  certify_invoice_settlement_protocol
+  RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
+  RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
+  RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
+  DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
+    sh apps/api/scripts/certify-mistral-conversation-authority.sh
+  cleanup_rls_cert
+  trap - EXIT HUP INT TERM
+}
+
+run_nonproduction_postactivation_certifications() {
+  trap cleanup_release_on_exit EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  # L'activation Outbox remplace la policy tenant : rejouer le certificat runtime sur staging
+  # prouve la branche V2/no-trigger avec les mêmes fixtures bornées puis les retire.
+  cleanup_rls_cert
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cabinet-seed.sql
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
+
+  archive_activated_now="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v release_sha="$BOB_RELEASE_SHA" <<'SQL'
+SELECT CASE WHEN EXISTS (
+  SELECT 1
+    FROM public.document_archive_protocol_state AS state
+   WHERE state.id = 1
+     AND state."activeVersion" = 2
+     AND btrim(state."activatedByReleaseSha"::TEXT) = :'release_sha'
+) THEN 'true' ELSE 'false' END;
+SQL
+  )"
+  if [ "$archive_activated_now" = true ]; then
+    RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
+      pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
+        src/persistence/prisma/document-archive-integrity.postgres.test.ts
+  fi
+
+  settlement_activated_now="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v release_sha="$BOB_RELEASE_SHA" <<'SQL'
+SELECT CASE WHEN EXISTS (
+  SELECT 1
+    FROM public.invoice_settlement_protocol_state AS state
+   WHERE state.id = 1
+     AND state."activeVersion" = 2
+     AND btrim(state."activatedByReleaseSha"::TEXT) = :'release_sha'
+) THEN 'true' ELSE 'false' END;
+SQL
+  )"
+  if [ "$settlement_activated_now" = true ]; then
+    RUN_POSTGRES_INVOICE_SETTLEMENT_CERT=true \
+      pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
+        src/persistence/prisma/invoice-settlement-semantics.postgres.test.ts
+  fi
+
+  cleanup_rls_cert
+  trap - EXIT HUP INT TERM
+}
+
 command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
+node apps/api/scripts/release-phase-receipt.mjs preflight
+if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  node apps/api/scripts/release-phase-receipt.mjs clear
+fi
 node apps/api/scripts/assert-database-pair.mjs
-node --test \
-  apps/api/scripts/assert-database-pair.test.mjs \
-  apps/api/scripts/assert-migration-lineage.test.mjs \
-  apps/api/scripts/assert-applied-migration-checksums.test.mjs
 # Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
 # octet au dépôt. Seul predeploy accepte des fichiers locaux en attente jusqu'au migrate deploy ;
 # postdeploy exige une bijection stricte et ne sert jamais de voie de migration de secours.
 if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  node --test \
+    apps/api/scripts/assert-database-pair.test.mjs \
+    apps/api/scripts/assert-migration-lineage.test.mjs \
+    apps/api/scripts/assert-applied-migration-checksums.test.mjs \
+    apps/api/scripts/release-phase-receipt.test.mjs
   node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local
 else
   node apps/api/scripts/assert-applied-migration-checksums.mjs
@@ -2450,14 +2747,31 @@ fi
 # rôle ou de schéma de ce train.
 sh apps/api/scripts/check-document-archive-legacy-audience.sh
 if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
-  # Un postdeploy n'est jamais une voie de migration de secours. Cette preuve est placée avant
-  # le build et avant toute création/transfert de rôle afin qu'une mauvaise phase reste sans
-  # mutation de schéma ou d'autorité.
+  # Un postdeploy n'est jamais une voie de migration, de provisioning ou de certification large.
+  # Il accepte uniquement le reçu du predeploy de ce même run, sur cette même base encore fermée.
   assert_agent_mission_m1b_ready_for_postdeploy
-  # Le postdeploy est l'unique autorité de réouverture. Fermer avant le build et avant toute
-  # mutation d'ACL garantit qu'un échec intermédiaire laisse Bob Live indisponible, jamais ouvert
-  # sur une release seulement partiellement certifiée.
-  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh close-existing
+  node apps/api/scripts/release-phase-receipt.mjs verify
+  assert_postactivation_protocols
+  if [ "$CABINET_RELEASE_ENV" != production ]; then
+    run_nonproduction_postactivation_certifications
+  fi
+  certify_generated_legal_storage_fence
+  certify_agent_mission_release_acl
+  certify_agent_mission_realtime_release_acl
+  certify_openai_native_release_metadata
+  certify_realtime_reaper_release_metadata
+  certify_realtime_global_capacity_release_metadata
+  certify_document_archive_evidence_privacy
+  certify_cabinet_worker_scope
+  # Relecture finale juste avant le premier geste mutable : toute dérive concurrente laisse
+  # l'admission fermée et empêche le retrait N-1 comme la réouverture.
+  assert_postactivation_protocols
+  node apps/api/scripts/release-phase-receipt.mjs verify
+  node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
+  node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs retire
+  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh activate-existing
+  echo "Bob Pro API postdeploy release checks passed"
+  exit 0
 fi
 pnpm --filter '@bob/api...' run build
 
@@ -2507,62 +2821,16 @@ certify_realtime_reaper_release_metadata
 certify_realtime_global_capacity_release_metadata
 certify_document_archive_evidence_privacy
 
-trap cleanup_release_on_exit EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-cleanup_rls_cert
 node apps/api/scripts/bootstrap-cabinet-pilots.mjs
 certify_cabinet_worker_scope
-DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/certify-cabinet-concurrency.sh
-DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/certify-release-flag-ops.sh
-psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cabinet-seed.sql
-psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
-psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/cabinet-rls-cert-privileged.sql
-RUN_POSTGRES_DEVICE_REBIND_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/devices.postgres.test.ts
-RUN_POSTGRES_CATALOGUE_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/catalogue-chantiers.postgres.test.ts
-RUN_POSTGRES_EQUIPMENT_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/equipments.postgres.test.ts
-RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-draft-slots.postgres.test.ts
-RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/expense-payment-evidence.postgres.test.ts
-RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-billing-settings.postgres.test.ts
-RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
-RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
-RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
-RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
-certify_document_archive_protocol
-RUN_POSTGRES_CREDIT_NOTE_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/credit-note-traceability.postgres.test.ts
-certify_invoice_settlement_protocol
-RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
-  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
-RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
-RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
-DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
-  sh apps/api/scripts/certify-mistral-conversation-authority.sh
-cleanup_rls_cert
-trap - EXIT HUP INT TERM
-
-# Le pré-déploiement ne rouvre JAMAIS les anciens pods : la capacité reste fermée jusqu'à la
-# readiness du SHA et la preuve de retrait N-1 dans le pipeline. Seule une recertification
-# post-déploiement peut réappliquer la configuration live demandée.
-if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
-  # Le nouveau SHA est seul, les admissions sont encore fermées et la capacité doit être drainée.
-  # Le retrait ferme alors le droit d'écriture N-1 ; il reste rejouable tant que son secret est
-  # conservé dans le keyring pour les events durables.
-  node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs retire
-  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
-else
-  DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
-    sh apps/api/scripts/realtime-capacity-release.sh configure
+if [ "$CABINET_RELEASE_ENV" != production ]; then
+  run_nonproduction_mutating_certifications
 fi
-echo "Bob Pro API release checks passed"
+
+# Le pré-déploiement ne rouvre JAMAIS les anciens pods. Le reçu n'est écrit qu'après le cleanup
+# complet et après une dernière fermeture explicite. Il devient donc impossible d'atteindre le
+# postdeploy ciblé avec une certification interrompue ou une capacité active.
+DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
+  sh apps/api/scripts/realtime-capacity-release.sh configure
+node apps/api/scripts/release-phase-receipt.mjs write
+echo "Bob Pro API predeploy release checks passed"

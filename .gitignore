@@ -10,6 +10,8 @@ dist
 _design_extract
 *.zip
 .agent-sync/
+.release-evidence/
+.release-evidence-private/
 
 # Artefacts de build (jamais versionnés)
 .next

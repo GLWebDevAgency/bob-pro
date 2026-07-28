@@ -9,6 +9,8 @@ const apiDir = path.resolve(scriptDir, '..');
 const repositoryRoot = path.resolve(apiDir, '..', '..');
 const [
   release,
+  releaseProtocolActivation,
+  notificationOutboxActivation,
   realtimeCapacityRelease,
   localCertificate,
   fingerprintManager,
@@ -33,6 +35,8 @@ const [
   documentArchiveRunbook,
 ] = await Promise.all([
   readFile(path.join(scriptDir, 'release.sh'), 'utf8'),
+  readFile(path.join(scriptDir, 'activate-release-protocols-v2.sh'), 'utf8'),
+  readFile(path.join(scriptDir, 'activate-notification-outbox-v2.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'realtime-capacity-release.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'certify-agent-missions-local.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'manage-agent-mission-fingerprint-key-versions.mjs'), 'utf8'),
@@ -151,29 +155,61 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
     /assert_agent_mission_m1b_ready_for_postdeploy\(\)[\s\S]*?20260727140000_agent_mission_realtime_lease_expand[\s\S]*?20260727150000_agent_mission_realtime_lease_validate[\s\S]*?20260727160000_realtime_admission_cancellation_fence_expand[\s\S]*?20260727170000_realtime_admission_cancellation_fence_validate[\s\S]*?20260727180000_agent_mission_event_command_namespace_expand[\s\S]*?20260727190000_agent_mission_event_command_namespace_validate[\s\S]*?20260727200000_agent_mission_event_command_namespace_cutover[\s\S]*?20260727210000_agent_mission_fingerprint_key_readiness[\s\S]*?20260727220000_agent_mission_bootstrap_receipt_expand[\s\S]*?20260727230000_agent_mission_bootstrap_receipt_validate[\s\S]*?\$\{agent_mission_m1b_migrations:-missing\}" != 10/u,
   );
   const postdeployGuard = release.indexOf('if [ "$BOB_RELEASE_PHASE" = postdeploy ]');
-  const build = release.indexOf("pnpm --filter '@bob/api...' run build", postdeployGuard);
+  const postdeployExit = release.indexOf('\n  exit 0\nfi', postdeployGuard);
+  const build = release.indexOf("pnpm --filter '@bob/api...' run build", postdeployExit);
   const phaseBranch = release.indexOf('if [ "$BOB_RELEASE_PHASE" = predeploy ]', build);
   const phaseMigrate = release.indexOf('prisma migrate deploy', phaseBranch);
   assert.ok(
     postdeployGuard >= 0 &&
+      postdeployExit > postdeployGuard &&
       build > postdeployGuard &&
       phaseBranch > build &&
       phaseMigrate > phaseBranch,
   );
+  const postdeployBody = release.slice(postdeployGuard, postdeployExit);
   assert.match(
-    release.slice(postdeployGuard, build),
-    /assert_agent_mission_m1b_ready_for_postdeploy[\s\S]*?realtime-capacity-release\.sh close-existing/u,
+    postdeployBody,
+    /assert_agent_mission_m1b_ready_for_postdeploy[\s\S]*?release-phase-receipt\.mjs verify[\s\S]*?assert_postactivation_protocols/u,
+  );
+  assert.match(
+    release,
+    /assert_postactivation_protocols\(\)[\s\S]*?bob\.postactivation_release_sha[\s\S]*?evidence\."releaseSha"[\s\S]*?protocol-v2-verified/u,
+    'Le finaliseur doit exiger la preuve archive du SHA exact, y compris après une activation antérieure.',
+  );
+  assert.doesNotMatch(
+    postdeployBody,
+    /(?:prisma migrate deploy|rls\.sql|provision_)/u,
+    'Le corps final ne doit ni migrer, ni rejouer rls.sql, ni reprovisionner une autorité.',
   );
   const postdeployRetire = release.lastIndexOf(
     'manage-agent-mission-fingerprint-key-versions.mjs retire',
   );
+  const mistralRetire = release.lastIndexOf('manage-mistral-conversation-key-version.mjs retire');
   const postdeployReopen = release.indexOf(
-    'realtime-capacity-release.sh configure',
+    'realtime-capacity-release.sh activate-existing',
     postdeployRetire,
   );
   assert.ok(
-    postdeployRetire > build && postdeployReopen > postdeployRetire,
+    mistralRetire > postdeployGuard &&
+      postdeployRetire > mistralRetire &&
+      postdeployRetire < postdeployExit &&
+      postdeployReopen > postdeployRetire &&
+      postdeployReopen < postdeployExit,
     'Le retrait N-1 doit suivre la certification du nouveau SHA et précéder la réouverture.',
+  );
+  assert.equal(
+    (postdeployBody.match(/release-phase-receipt\.mjs verify/gu) ?? []).length,
+    2,
+    'Le reçu doit être vérifié avant les preuves puis immédiatement avant la réouverture.',
+  );
+  assert.equal(
+    (postdeployBody.match(/assert_postactivation_protocols/gu) ?? []).length,
+    2,
+    'Les protocoles doivent être prouvés avant et après les certificats staging mutables.',
+  );
+  assert.match(
+    postdeployBody,
+    /run_nonproduction_postactivation_certifications[\s\S]*?certify_cabinet_worker_scope[\s\S]*?assert_postactivation_protocols[\s\S]*?release-phase-receipt\.mjs verify[\s\S]*?manage-mistral-conversation-key-version\.mjs retire/u,
   );
   assert.match(realtimeCapacityRelease, /close_existing\(\)[\s\S]*?mode = 'closed'/u);
   assert.match(
@@ -184,13 +220,16 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
     release.slice(phaseBranch, phaseMigrate),
     /close_and_drain_realtime_before_cancellation_fence_expand/u,
   );
-  const checksumPhase = release.indexOf(
+  const allowPendingChecksum = release.indexOf(
+    'node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local',
+  );
+  const checksumPhase = release.lastIndexOf(
     'if [ "$BOB_RELEASE_PHASE" = predeploy ]',
-    release.indexOf('assert-applied-migration-checksums.test.mjs'),
+    allowPendingChecksum,
   );
   const legacyPreflight = release.indexOf(
     'check-document-archive-legacy-audience.sh',
-    checksumPhase,
+    allowPendingChecksum,
   );
   assert.match(
     release.slice(checksumPhase, legacyPreflight),
@@ -211,7 +250,7 @@ test('l’expand du fence ferme et draine réellement les pods N-1 avant migrate
   );
 });
 
-test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre par postdeploy', () => {
+test('le pipeline garde la capacité fermée jusqu’aux activations puis finalise une seule fois', () => {
   const predecessor = railway.indexOf(
     'Certify predecessor B2C HTTP fence before archive expansion',
   );
@@ -232,26 +271,23 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
     "payload?.capabilities?.agentMissionBootstrapReceipt !== 'v1'",
     deployedCapability,
   );
-  const immediatePostdeployStep = railway.indexOf(
-    'Postdeploy certify and reopen Bob Live',
-    bootstrapReceiptCapability,
-  );
-  const immediatePostdeploy = railway.indexOf(
-    'env BOB_RELEASE_PHASE=postdeploy',
-    immediatePostdeployStep,
-  );
   const archiveAudit = railway.indexOf(
     'Preflight and run the isolated Railway archive byte-audit',
-    immediatePostdeploy,
+    bootstrapReceiptCapability,
   );
   const activation = railway.indexOf(
-    'Retire the previous Mistral key, activate archive/settlement/outbox v2',
+    'Activate archive/settlement/outbox v2 and finalize the certified release',
     archiveAudit,
   );
-  const postActivationRecertification = railway.indexOf(
-    'env BOB_RELEASE_PHASE=postdeploy',
+  const preactivationRevisionProbe = railway.indexOf(
+    'certify_exact_revision before-activation',
     activation,
   );
+  const postactivationRevisionProbe = railway.indexOf(
+    'certify_exact_revision before-postdeploy',
+    preactivationRevisionProbe,
+  );
+  const finalPostdeploy = railway.indexOf('env BOB_RELEASE_PHASE=postdeploy', activation);
   assert.ok(
     predecessor >= 0 &&
       predecessorCapability > predecessor &&
@@ -262,17 +298,48 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
       exactSha > readiness &&
       deployedCapability > exactSha &&
       bootstrapReceiptCapability > deployedCapability &&
-      immediatePostdeployStep > bootstrapReceiptCapability &&
-      immediatePostdeploy > immediatePostdeployStep &&
-      archiveAudit > immediatePostdeploy &&
+      archiveAudit > bootstrapReceiptCapability &&
       activation > archiveAudit &&
-      postActivationRecertification > activation,
-    'Le pipeline doit fermer, déployer, prouver topologie/SHA/capability, rouvrir par postdeploy puis recertifier après activation.',
+      preactivationRevisionProbe > activation &&
+      postactivationRevisionProbe > preactivationRevisionProbe &&
+      finalPostdeploy > postactivationRevisionProbe,
+    'Le pipeline doit fermer, déployer, prouver le SHA, auditer, activer puis finaliser.',
+  );
+  assert.equal(
+    (railway.match(/env BOB_RELEASE_PHASE=postdeploy/gu) ?? []).length,
+    1,
+    'Le workflow Railway ne doit exécuter qu’un seul postdeploy.',
   );
   assert.doesNotMatch(
-    railway.slice(readiness, archiveAudit),
-    /realtime-capacity-release\.sh configure/u,
-    'Aucun raccourci ne doit rouvrir Bob Live sans la certification postdeploy complète.',
+    railway.slice(readiness, activation),
+    /BOB_RELEASE_PHASE=postdeploy|realtime-capacity-release\.sh configure/u,
+    'Aucune réouverture ne doit précéder l’audit et les activations.',
+  );
+  assert.match(
+    railway.slice(predeploy, deploy),
+    /BOB_RELEASE_SHA="\$GITHUB_SHA"[\s\S]*?BOB_RELEASE_RUN_ID="\$GITHUB_RUN_ID"[\s\S]*?BOB_RELEASE_RUN_ATTEMPT="\$GITHUB_RUN_ATTEMPT"/u,
+  );
+  assert.match(
+    railway.slice(finalPostdeploy, railway.indexOf('\n      - name:', finalPostdeploy)),
+    /BOB_RELEASE_EXPECTED_ENV="\$TARGET_ENVIRONMENT_NAME"[\s\S]*?BOB_RELEASE_SHA="\$GITHUB_SHA"[\s\S]*?BOB_RELEASE_RUN_ID="\$GITHUB_RUN_ID"[\s\S]*?BOB_RELEASE_RUN_ATTEMPT="\$GITHUB_RUN_ATTEMPT"/u,
+  );
+  assert.match(
+    railway.slice(predeploy, deploy),
+    /BOB_RELEASE_EXPECTED_ENV="\$RELEASE_ENVIRONMENT"/u,
+  );
+  assert.match(
+    railway.slice(activation, finalPostdeploy),
+    /certify_exact_revision\(\)[\s\S]*?timeout 20s railway status[\s\S]*?payload\?\.release\?\.sha !== process\.env\.EXPECTED_RELEASE_SHA[\s\S]*?payload\?\.release\?\.environment !== process\.env\.EXPECTED_RELEASE_ENVIRONMENT[\s\S]*?certify_exact_revision before-activation[\s\S]*?activate-release-protocols-v2\.sh[\s\S]*?certify_exact_revision before-postdeploy/u,
+  );
+  assert.match(
+    releaseProtocolActivation,
+    /assert-database-pair\.mjs[\s\S]*?release-phase-receipt\.mjs verify[\s\S]*?activate-document-archive-v2\.sh[\s\S]*?activate-invoice-settlement-v2\.sh[\s\S]*?activate-notification-outbox-v2\.sh/u,
+    'Les trois activations doivent partager le snapshot Railway déjà relié au reçu.',
+  );
+  assert.equal(
+    (railway.match(/payload\?\.network\?\.clientIpSource !== 'railway-x-real-ip'/gu) ?? []).length,
+    2,
+    'La source IP doit être attestée à la readiness initiale et dans chaque re-probe critique.',
   );
   assert.match(
     railway,
@@ -284,17 +351,127 @@ test('le pipeline garde la capacité fermée jusqu’au SHA exact puis rouvre pa
   );
   assert.match(
     infrastructure,
-    /BOB_RELEASE_PHASE=predeploy[\s\S]*?closed\|0[\s\S]*?SHA complet[\s\S]*?realtimeAdmissionCancellationFence:v1[\s\S]*?BOB_RELEASE_PHASE=postdeploy/u,
+    /BOB_RELEASE_PHASE=predeploy[\s\S]*?closed\|0[\s\S]*?SHA complet[\s\S]*?audit archive[\s\S]*?activations[\s\S]*?BOB_RELEASE_PHASE=postdeploy/u,
   );
   assert.equal(
     (railway.match(/--connect-timeout 3 --max-time 10/gu) ?? []).length,
-    3,
+    4,
     'Chaque probe HTTP de release doit être bornée.',
   );
   assert.equal(
     (railway.match(/timeout 20s railway status/gu) ?? []).length,
+    3,
+    'Les trois lectures de topologie Railway doivent avoir une deadline.',
+  );
+  assert.equal(
+    (ci.match(/BOB_RELEASE_EXPECTED_ENV: development/gu) ?? []).length,
+    3,
+    'Chaque job PostgreSQL qui appelle release.sh doit figer son environnement attendu.',
+  );
+  assert.match(
+    release,
+    /BOB_RELEASE_EXPECTED_ENV:\?BOB_RELEASE_EXPECTED_ENV is required[\s\S]*?CABINET_RELEASE_ENV does not match the immutable release target/u,
+  );
+});
+
+test('le gate Outbox V2 lie index et policy exacts à public.notification_jobs', () => {
+  for (const source of [release, notificationOutboxActivation]) {
+    assert.match(source, /catalog_index\.indrelid = 'public\.notification_jobs'::regclass/u);
+    assert.match(source, /index_namespace\.nspname = 'public'/u);
+    assert.match(
+      source,
+      /catalog_index\.indisvalid[\s\S]*?catalog_index\.indisready[\s\S]*?catalog_index\.indislive/u,
+    );
+    assert.match(
+      source,
+      /notification_jobs_due_deliverable_idx[\s\S]*?indoption::TEXT = '0 0 0'[\s\S]*?pg_get_indexdef\(catalog_index\.indexrelid, 3, false\) = '"createdAt"'[\s\S]*?payload IS NOT NULL/u,
+    );
+    assert.match(
+      source,
+      /notification_jobs_recent_idx[\s\S]*?indoption::TEXT = '0 3'[\s\S]*?catalog_index\.indpred IS NULL/u,
+    );
+    assert.match(
+      source,
+      /policy\.polroles = ARRAY\[0::OID\][\s\S]*?policy\.polqual[\s\S]*?policy\.polwithcheck/u,
+    );
+  }
+  assert.match(
+    release,
+    /expected_outbox_payload_constraint[\s\S]*?expected_outbox_lease_constraint[\s\S]*?NotificationJobStatus[\s\S]*?conname = 'notification_jobs_payload_shape'[\s\S]*?contype = 'c'[\s\S]*?pg_get_constraintdef[\s\S]*?expected_outbox_payload_constraint[\s\S]*?conname = 'notification_jobs_lease_shape'[\s\S]*?contype = 'c'[\s\S]*?pg_get_constraintdef[\s\S]*?expected_outbox_lease_constraint/u,
+  );
+  assert.match(
+    notificationOutboxActivation,
+    /notification_jobs_payload_shape[\s\S]*?notification_jobs_lease_shape[\s\S]*?NotificationJobStatus[\s\S]*?contype[\s\S]*?pg_get_constraintdef/u,
+  );
+  assert.match(
+    notificationOutboxActivation,
+    /constraints_match_expected false[\s\S]*?constraint definition drift blocks activation[\s\S]*?indexes_are_verified[\s\S]*?notification-outbox-v2-activate\.sql/u,
+    'Les contraintes et index homonymes doivent être refusés avant le cutover destructif.',
+  );
+  assert.doesNotMatch(
+    notificationOutboxActivation,
+    /WHERE index_class\.relname IN/u,
+    'Un homonyme dans un autre schéma ne doit jamais satisfaire le certificat.',
+  );
+});
+
+test('la production ne peut jamais atteindre les fixtures de certification', () => {
+  const mutatingStart = release.indexOf('run_nonproduction_mutating_certifications()');
+  const mutatingEnd = release.indexOf('\n}\n\ncommand -v pnpm', mutatingStart);
+  const mutatingBody = release.slice(mutatingStart, mutatingEnd);
+  assert.match(mutatingBody, /rls-cert-cabinet-seed\.sql/u);
+  assert.match(mutatingBody, /certify-release-flag-ops\.sh/u);
+  assert.match(mutatingBody, /pnpm --filter @bob\/api exec vitest run/u);
+  assert.match(mutatingBody, /certify-mistral-conversation-authority\.sh/u);
+  assert.doesNotMatch(
+    mutatingBody,
+    /(?:^|\n)[^\n]*&(?:\s|$)/u,
+    'Les suites qui partagent la base doivent rester strictement séquentielles.',
+  );
+
+  const bootstrapPilots = release.indexOf('node apps/api/scripts/bootstrap-cabinet-pilots.mjs');
+  const guardedCall = release.indexOf(
+    'if [ "$CABINET_RELEASE_ENV" != production ]; then',
+    bootstrapPilots,
+  );
+  const receiptWrite = release.indexOf('release-phase-receipt.mjs write', guardedCall);
+  assert.match(
+    release.slice(guardedCall, receiptWrite),
+    /if \[ "\$CABINET_RELEASE_ENV" != production \]; then[\s\S]*?run_nonproduction_mutating_certifications[\s\S]*?fi/u,
+  );
+  assert.equal(
+    (release.slice(mutatingEnd).match(/run_nonproduction_mutating_certifications/gu) ?? []).length,
+    1,
+    'Le corps mutable ne doit avoir qu’un seul point d’appel gardé.',
+  );
+  const closeBeforeReceipt = release.lastIndexOf(
+    'realtime-capacity-release.sh configure',
+    receiptWrite,
+  );
+  assert.ok(
+    closeBeforeReceipt > guardedCall && receiptWrite > closeBeforeReceipt,
+    'Le reçu doit être écrit après cleanup et fermeture finale.',
+  );
+
+  const postdeployGuard = release.indexOf('if [ "$BOB_RELEASE_PHASE" = postdeploy ]');
+  const postdeployExit = release.indexOf('\n  exit 0\nfi', postdeployGuard);
+  const postdeployBody = release.slice(postdeployGuard, postdeployExit);
+  assert.match(
+    postdeployBody,
+    /if \[ "\$CABINET_RELEASE_ENV" != production \]; then[\s\S]*?run_nonproduction_postactivation_certifications[\s\S]*?fi/u,
+  );
+  const postactivationStart = release.indexOf('run_nonproduction_postactivation_certifications()');
+  const postactivationEnd = release.indexOf('\n}\n\ncommand -v pnpm', postactivationStart);
+  const postactivationBody = release.slice(postactivationStart, postactivationEnd);
+  assert.match(postactivationBody, /rls-cert-cabinet-seed\.sql[\s\S]*?rls-cert\.sql/u);
+  assert.equal(
+    (postactivationBody.match(/pnpm --filter @bob\/api exec vitest run/gu) ?? []).length,
     2,
-    'Les deux lectures de topologie Railway doivent avoir une deadline.',
+    'Le premier cutover ne doit rejouer que les deux certificats V2 ciblés.',
+  );
+  assert.match(
+    postactivationBody,
+    /document-archive-integrity\.postgres\.test\.ts[\s\S]*?invoice-settlement-semantics\.postgres\.test\.ts/u,
   );
 });
 
@@ -875,13 +1052,24 @@ test('local et CI statique exercent les mêmes ACL que release', () => {
   );
   assert.match(parsedPackage.scripts.test, /agent-missions-release-safety\.test\.mjs/u);
   for (const runbook of [invoiceSettlementRunbook, documentArchiveRunbook]) {
-    assert.doesNotMatch(
-      runbook,
-      /(?:Exécuter|Rejouer) `release\.sh`/u,
-      'Les runbooks actifs doivent rendre la phase de release explicite.',
+    assert.match(runbook, /workflow GitHub \*\*Railway API\*\*/u);
+    assert.match(runbook, /BOB_RELEASE_SHA/u);
+    assert.match(runbook, /BOB_RELEASE_RUN_ID/u);
+    assert.match(runbook, /BOB_RELEASE_RUN_ATTEMPT/u);
+    assert.match(runbook, /BOB_RELEASE_EXPECTED_ENV/u);
+    assert.match(runbook, /activate-release-protocols-v2\.sh/u);
+    assert.doesNotMatch(runbook, /_ACTIVATION_RELEASE_SHA="\$RELEASE_SHA"/u);
+  }
+  for (const requiredContext of [
+    'BOB_RELEASE_SHA=',
+    'BOB_RELEASE_RUN_ID=',
+    'BOB_RELEASE_RUN_ATTEMPT=',
+  ]) {
+    assert.equal(
+      (infrastructure.match(new RegExp(requiredContext, 'gu')) ?? []).length,
+      2,
+      `${requiredContext} doit être fourni aux phases manuelles predeploy et postdeploy.`,
     );
-    assert.match(runbook, /BOB_RELEASE_PHASE=predeploy sh apps\/api\/scripts\/release\.sh/u);
-    assert.match(runbook, /BOB_RELEASE_PHASE=postdeploy sh apps\/api\/scripts\/release\.sh/u);
   }
 });
 

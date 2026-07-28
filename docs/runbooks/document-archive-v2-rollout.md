@@ -280,30 +280,28 @@ une nouvelle preuve, sans modifier l’historique.
 ## Séquence obligatoire du train 1
 
 1. Prouver le train 0 et enregistrer les checksums locaux des migrations encore non appliquées.
-2. Exécuter `BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh` : son préflight audience
-   refuse le train avant toute mutation si un historique non revu existe ; sinon il applique les
-   migrations puis certifie V1. Les jobs sont alors spoolés et les sorties légales générées sont
-   gelées.
-3. Déployer N. Attendre la readiness du SHA exact, prouver que toutes les répliques sont sur N et
-   qu’aucun worker N-1 déjà claimé ne peut encore écrire. Ne jamais scanner pendant qu’une ancienne
-   réplique ou un ancien lease peut finir un upload.
-4. Comparer les checksums base/local, puis laisser le workflow déployer et attendre le service
-   one-shot au SHA exact. En V1, son unique passage byte-derived applique atomiquement les
-   attestations seulement après un inventaire intégral sans P0, persiste la preuve puis émet
-   l’enveloppe sans PII. Il se place **après** le retrait de N-1 et immédiatement avant l’activation.
-5. Exécuter l’activation avec le SHA observé :
-
-   ```sh
-   SUPABASE_STORAGE_BUCKET="$SUPABASE_STORAGE_BUCKET" \
-   DOCUMENT_ARCHIVE_V2_ACTIVATION_RELEASE_SHA="$RELEASE_SHA" \
-     sh apps/api/scripts/activate-document-archive-v2.sh
-   ```
-
-6. Rejouer `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh`. Il détecte V2 et lance la
-   certification PostgreSQL active avec le rôle runtime `NOSUPERUSER/NOBYPASSRLS`.
+2. Déclencher le workflow GitHub **Railway API** avec `purpose=release` sur le ref exact. Le
+   predeploy reçoit obligatoirement `BOB_RELEASE_SHA`, `BOB_RELEASE_RUN_ID`,
+   `BOB_RELEASE_RUN_ATTEMPT` et `BOB_RELEASE_EXPECTED_ENV`; son préflight audience refuse le train
+   avant toute mutation si un historique non revu existe. Sinon il applique les migrations,
+   certifie V1, ferme Bob Live et écrit le reçu du run.
+3. Le workflow déploie N, attend la readiness du SHA exact et prouve topologie, environnement,
+   capacités et source d'IP. Ne jamais scanner pendant qu'une ancienne réplique ou un ancien lease
+   peut finir un upload.
+4. Le service one-shot archive audite le même SHA. En V1, son passage byte-derived applique
+   atomiquement les attestations seulement après un inventaire intégral sans P0, persiste la preuve
+   puis émet l'enveloppe sans PII.
+5. Le workflow revalide la révision puis appelle l'opérateur unique
+   `activate-release-protocols-v2.sh`. Il certifie la paire de bases, relit le reçu et active
+   Archive, Settlement puis Outbox dans un seul snapshot Railway. Lancer
+   `activate-document-archive-v2.sh` isolément n'est plus un chemin supporté.
+6. Après une seconde preuve de la révision, le finaliseur postdeploy relit les preuves structurelles
+   et ne rejoue le certificat comportemental Archive V2 que si ce SHA vient de l'activer en staging.
+   Il ne relance ni migrations, ni provisioning, ni suite métier large.
 7. Vérifier les métriques du worker : le backlog spoolé décroît, aucun échec de représentation ne se
-   répète et aucun nouvel orphelin Storage n’apparaît.
-8. Conserver logs, SHA, checksums, inventaires et résultats des deux certifications avec la release.
+   répète et aucun nouvel orphelin Storage n'apparaît.
+8. Conserver logs, SHA, checksums, inventaires, reçu public non-PII et résultats ciblés avec la
+   release. La liaison de secrets reste privée au runner et n'est jamais uploadée.
 
 ## Ce que fait atomiquement le script
 

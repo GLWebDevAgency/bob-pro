@@ -139,6 +139,7 @@ jobs:
       CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_ci
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
+      BOB_RELEASE_EXPECTED_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
       RUN_RLS_CERT: 'true'
       RLS_CERT_CLEANUP: 'true'
@@ -336,6 +337,7 @@ jobs:
       CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_global_capacity
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
+      BOB_RELEASE_EXPECTED_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
       RUN_RLS_CERT: 'true'
       RLS_CERT_CLEANUP: 'true'
@@ -472,6 +474,7 @@ jobs:
       CI_POSTGRES_ADMIN_URL: postgresql://bob_ci_supabase_admin:bob_ci_supabase_admin@localhost:5432/bob_ephemeral_key_rotation
       APP_DATABASE_ROLE: bob_app
       CABINET_RELEASE_ENV: development
+      BOB_RELEASE_EXPECTED_ENV: development
       CABINET_INVITATION_WORKER_ENABLED: 'false'
       RUN_RLS_CERT: 'true'
       RLS_CERT_CLEANUP: 'true'

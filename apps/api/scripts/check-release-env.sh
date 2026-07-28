@@ -27,6 +27,7 @@ const required = [
   'SUPABASE_STORAGE_BUCKET',
   'JOB_COMPANY_IDS',
   'CABINET_RELEASE_ENV',
+  'BOB_RELEASE_EXPECTED_ENV',
   'CABINET_INVITATION_TOKEN_ENCRYPTION_KEY',
   'CABINET_INVITATION_TOKEN_KEY_VERSION',
   'CABINET_INVITATION_WEB_BASE_URL',
@@ -510,6 +511,9 @@ for (const [name, parsed] of [
 const expectedReleaseEnvironment = process.env.RELEASE_ENVIRONMENT || 'production';
 if (!['staging', 'production'].includes(expectedReleaseEnvironment)) {
   fail('RELEASE_ENVIRONMENT must be staging or production');
+}
+if (process.env.BOB_RELEASE_EXPECTED_ENV !== expectedReleaseEnvironment) {
+  fail('BOB_RELEASE_EXPECTED_ENV must match RELEASE_ENVIRONMENT');
 }
 if (process.env.CABINET_RELEASE_ENV !== expectedReleaseEnvironment) {
   fail('CABINET_RELEASE_ENV must match RELEASE_ENVIRONMENT');

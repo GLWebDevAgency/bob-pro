@@ -13,23 +13,25 @@ writers N-1 continuent à fonctionner.
 
 ## Séquence obligatoire
 
-1. Appliquer les migrations et RLS avec l'ancien processus encore disponible via
-   `BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh`. Le script certifie alors que V1
-   reste insérable et que V2 est fermé.
-2. Déployer la révision N. Ne pas activer V2 tant que `/health/ready` ne renvoie pas son SHA exact.
-3. Certifier qu'une seule réplique applicative est active et que l'ancienne révision est retirée.
-4. Exécuter, avec le SHA complet de la révision certifiée :
+Le seul chemin normatif est le workflow GitHub **Railway API**, `purpose=release`, sur le ref exact
+à livrer. Il porte lui-même `github.sha`, `github.run_id`, `github.run_attempt` et l'environnement
+attendu ; une activation isolée lancée à la main est interdite.
 
-   ```sh
-   INVOICE_SETTLEMENT_V2_ACTIVATION_RELEASE_SHA="$RELEASE_SHA" \
-     sh apps/api/scripts/activate-invoice-settlement-v2.sh
-   ```
-
-5. Rejouer `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh`. Il détecte V2 et exécute
-   la certification PostgreSQL complète avec le rôle runtime `NOSUPERUSER/NOBYPASSRLS`.
+1. Le workflow exécute le predeploy avec
+   `BOB_RELEASE_SHA`, `BOB_RELEASE_RUN_ID`, `BOB_RELEASE_RUN_ATTEMPT` et
+   `BOB_RELEASE_EXPECTED_ENV`. Il ferme Bob Live, applique les migrations, certifie les writers
+   N-1 et écrit le reçu privé/public du run.
+2. Il déploie la révision N, puis refuse de poursuivre tant que la topologie mono-réplique,
+   `/health/ready`, le SHA, l'environnement, les capacités et la source d'IP ne correspondent pas.
+3. Après l'audit archive, il revalide la même révision et appelle une seule fois
+   `activate-release-protocols-v2.sh`. Cet opérateur prouve la paire `DATABASE_URL`/`DIRECT_URL`,
+   vérifie le reçu et active Archive, Settlement puis Outbox dans le même snapshot Railway.
+4. Il revalide immédiatement la révision, puis exécute le finaliseur postdeploy avec le même
+   contexte. Celui-ci prouve l'état terminal et, uniquement si ce SHA vient d'activer Settlement
+   V2 en staging, rejoue le certificat comportemental ciblé. Il ne relance pas la suite complète.
 
 Le pipeline Railway suit cet ordre : migration/certification gate fermé → déploiement → readiness
-du SHA → topologie mono-réplique → activation → certification V2.
+du SHA → topologie mono-réplique → audit → opérateur d'activations unique → certificat final ciblé.
 
 ## Propriétés et arrêts obligatoires
 
@@ -47,7 +49,8 @@ du SHA → topologie mono-réplique → activation → certification V2.
 
 ## Preuves attendues
 
-- `RUN_POSTGRES_INVOICE_SETTLEMENT_ROLLOUT_CERT=true` avant activation ;
-- `RUN_POSTGRES_INVOICE_SETTLEMENT_CERT=true` après activation ;
+- reçu predeploy du même SHA/run/environnement/base/configuration, plus sa liaison secrète privée ;
+- `RUN_POSTGRES_INVOICE_SETTLEMENT_ROLLOUT_CERT=true` dans le predeploy staging ;
+- certificat Settlement V2 postactivation seulement lors du cutover de ce SHA en staging ;
 - SHA activé identique à celui renvoyé par `/health/ready` ;
 - zéro P0/P1 sur la persistance et le parcours domaine réel.
