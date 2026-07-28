@@ -4318,6 +4318,94 @@ export class BackendService {
           terminationEffectiveDate: r.value.terminationEffectiveDate,
         });
       },
+      // PR-15/16 (parité papa vocal §3.7) — fiche de passage : les adapters délèguent aux MÊMES
+      // use cases que les endpoints (Start/Complete/Send/PrepareInvoice) ; la révision courante
+      // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.
+      listInterventions: async () => {
+        const companyId = this.companyId();
+        const [interventions, chantiers, customers] = await Promise.all([
+          this.p.interventions.listByCompany(companyId),
+          this.p.chantiers.listByCompany(companyId),
+          this.p.customers.listByCompany(companyId),
+        ]);
+        const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+        const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+        return ok(
+          interventions.map((intervention) => {
+            const props = intervention.toProps();
+            return {
+              id: props.id,
+              kind: props.kind,
+              status: props.status,
+              chantierId: props.chantierId,
+              chantierNom: chantierNames.get(props.chantierId) ?? props.chantierId,
+              customerNom: customerNames.get(props.customerId) ?? props.customerId,
+              plannedAt: props.plannedAt,
+              contractId: props.contractId,
+              reportDocumentId: props.reportDocumentId,
+              billedInvoiceId: props.billedInvoiceId,
+              revision: props.revision,
+            };
+          }),
+        );
+      },
+      startIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.startIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
+      completeIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.completeIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+          ...(input.summary !== undefined && input.summary !== null ? { summary: input.summary } : {}),
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
+      // Sortant : la fiche est ARCHIVÉE (idempotent) puis envoyée — l'archive n'est jamais
+      // re-rendue, et l'envoi reste un geste confirmé côté agent (outil `outbound`).
+      sendInterventionReport: async (input) => {
+        const archived = await this.generateInterventionReport(input.interventionId);
+        if (!archived.ok) return archived;
+        const sent = await this.sendInterventionReport(input.interventionId);
+        if (!sent.ok) return sent;
+        return ok({
+          interventionId: input.interventionId,
+          recipient: sent.value.recipient,
+          deliveryStatus: sent.value.deliveryStatus,
+        });
+      },
+      prepareInterventionInvoice: async (input) => {
+        const r = await this.prepareInterventionInvoiceDraft(input.interventionId);
+        if (!r.ok) return r;
+        return ok({
+          interventionId: input.interventionId,
+          invoiceId: r.value.invoiceId,
+          totalTtcCents: r.value.totals.ttc,
+        });
+      },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
       // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
       // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :

@@ -42,6 +42,12 @@ import {
   type ActivateContractActionInput,
   type TerminateContractActionInput,
   type ContractLifecycleActionOutput,
+  type AgentIntervention,
+  type InterventionActionInput,
+  type InterventionActionOutput,
+  type CompleteInterventionActionInput,
+  type SendInterventionReportActionOutput,
+  type PrepareInterventionInvoiceActionOutput,
   type RetireEquipmentActionInput,
   type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
@@ -1813,6 +1819,127 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => terminateContractAction(input),
     };
     tools.push(resilierContrat as AnyTool);
+  }
+
+  // —— PR-15/16 — fiche de passage : MÊMES use cases que l'écran fiche (parité §3.7). ——
+  const parseInterventionId = (raw: unknown): Result<InterventionActionInput, AppError> => {
+    const r = raw as { interventionId?: unknown };
+    if (typeof r?.interventionId !== 'string' || r.interventionId.length === 0)
+      return err(appValidation('interventionId', 'Fiche de passage ciblée invalide.'));
+    return ok({ interventionId: r.interventionId });
+  };
+
+  const listInterventionsAction = actions.listInterventions?.bind(actions);
+  if (listInterventionsAction) {
+    const passagesDuJour: Tool<{ chantierId?: string }, AgentIntervention[]> = {
+      name: 'passages_du_site',
+      description:
+        'Liste les fiches de passage réelles (par site, ou tout le tenant) — lecture pure, jamais une fiche inventée.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<{ chantierId?: string }, AppError> => {
+        const r = raw as { chantierId?: unknown };
+        if (r?.chantierId !== undefined && (typeof r.chantierId !== 'string' || r.chantierId.length === 0))
+          return err(appValidation('chantierId', 'Site ciblé invalide.'));
+        return ok({ ...(typeof r?.chantierId === 'string' ? { chantierId: r.chantierId } : {}) });
+      },
+      run: async (input) => {
+        const all = await listInterventionsAction();
+        if (!all.ok) return all;
+        return ok(
+          input.chantierId === undefined
+            ? all.value
+            : all.value.filter((intervention) => intervention.chantierId === input.chantierId),
+        );
+      },
+    };
+    tools.push(passagesDuJour as AnyTool);
+  }
+
+  const startInterventionAction = actions.startIntervention?.bind(actions);
+  if (startInterventionAction) {
+    const commencerIntervention: Tool<InterventionActionInput, InterventionActionOutput> = {
+      name: 'commencer_intervention',
+      description:
+        'Démarre un passage planifié (« démarre l’intervention chez Carrefour ») — même use case StartIntervention que le bouton « Démarrer le passage ».',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // §3.7 — mutation de fiche : confirmation, jamais un chrono lancé en silence.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: parseInterventionId,
+      run: (input) => startInterventionAction(input),
+    };
+    tools.push(commencerIntervention as AnyTool);
+  }
+
+  const completeInterventionAction = actions.completeIntervention?.bind(actions);
+  if (completeInterventionAction) {
+    const terminerIntervention: Tool<CompleteInterventionActionInput, InterventionActionOutput> = {
+      name: 'terminer_intervention',
+      description:
+        'Termine le passage (« c’est terminé ») — même use case CompleteIntervention : la checklist est FIGÉE et le résumé dicté posé dans le même geste.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<CompleteInterventionActionInput, AppError> => {
+        const base = parseInterventionId(raw);
+        if (!base.ok) return base;
+        const r = raw as { summary?: unknown };
+        if (r?.summary !== undefined && r.summary !== null) {
+          if (typeof r.summary !== 'string' || r.summary.trim().length === 0 || r.summary.length > 2000)
+            return err(appValidation('summary', 'Résumé invalide (2000 caractères maximum).'));
+          return ok({ ...base.value, summary: r.summary.trim() });
+        }
+        return ok(base.value);
+      },
+      run: (input) => completeInterventionAction(input),
+    };
+    tools.push(terminerIntervention as AnyTool);
+  }
+
+  const sendInterventionReportAction = actions.sendInterventionReport?.bind(actions);
+  if (sendInterventionReportAction) {
+    const envoyerFichePassage: Tool<InterventionActionInput, SendInterventionReportActionOutput> = {
+      name: 'envoyer_fiche_passage',
+      description:
+        'Envoie la fiche de passage ARCHIVÉE au client (« envoie la fiche de passage ») — geste CONFIRMÉ, jamais un effet de bord ; la fiche est archivée avant d’être envoyée.',
+      mutating: true,
+      // SORTANT : sa confirmation est TOUJOURS la sienne, jamais fusionnée avec les mutations
+      // locales du flux (§3.7 — « annuler = rien n'est parti »).
+      outbound: true,
+      compliance: 'medium',
+      safetyFloor: true,
+      riskTier: 'outbound',
+      parse: parseInterventionId,
+      run: (input) => sendInterventionReportAction(input),
+    };
+    tools.push(envoyerFichePassage as AnyTool);
+  }
+
+  const prepareInterventionInvoiceAction = actions.prepareInterventionInvoice?.bind(actions);
+  if (prepareInterventionInvoiceAction) {
+    const facturerIntervention: Tool<
+      InterventionActionInput,
+      PrepareInterventionInvoiceActionOutput
+    > = {
+      name: 'facturer_intervention',
+      description:
+        'Prépare le BROUILLON de facture d’un passage (« facture cette intervention ») — même ComposeStandaloneInvoice que le CTA : tous les invariants d’émission repassent, rien n’est émis ni envoyé.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      safetyFloor: true,
+      riskTier: 'draft',
+      parse: parseInterventionId,
+      run: (input) => prepareInterventionInvoiceAction(input),
+    };
+    tools.push(facturerIntervention as AnyTool);
   }
 
   return tools;

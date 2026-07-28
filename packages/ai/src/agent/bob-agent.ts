@@ -5579,6 +5579,306 @@ export class BobAgent {
       });
     }
 
+
+    if (
+      intent === 'commencer_intervention' ||
+      intent === 'terminer_intervention' ||
+      intent === 'faire_signer_intervention' ||
+      intent === 'envoyer_fiche_passage' ||
+      intent === 'facturer_intervention'
+    ) {
+      // PR-15/16 — fiche de passage À LA VOIX (§3.7) : MÊMES use cases que l'écran fiche.
+      // La fiche est RÉSOLUE contre les passages réels (site dicté via resolveSpokenChantier,
+      // sinon état du flux) — jamais un id inventé ; une VRAIE ambiguïté pose une question
+      // ciblée dont les followUps portent l'id (le tour suivant ne reboucle jamais).
+      // Confirmations : groupées aux mutations de fiche, et TOUJOURS séparée pour le sortant.
+      const listInterventions = this.deps.actions.listInterventions?.bind(this.deps.actions);
+      if (!listInterventions) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Fiche de passage indisponible',
+            body: 'Je ne peux pas piloter les passages depuis cet appareil. Rien n’a été modifié — passe par la fiche.',
+          },
+        });
+      }
+      const all = await listInterventions();
+      if (!all.ok) return err(all.error);
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+
+      // États ÉLIGIBLES par geste — un passage signé ne se re-démarre pas, une fiche non
+      // terminée ne s'envoie pas : le refus est dérivé de l'état RÉEL, jamais d'un statut deviné.
+      const eligible = all.value.filter((intervention) => {
+        if (intent === 'commencer_intervention') return intervention.status === 'scheduled';
+        if (intent === 'terminer_intervention') return intervention.status === 'in_progress';
+        if (intent === 'faire_signer_intervention') return intervention.status === 'completed';
+        if (intent === 'envoyer_fiche_passage')
+          return intervention.status === 'completed' || intervention.status === 'signed';
+        // facturer_intervention : hors contrat (direction 6) et pas déjà facturé.
+        return (
+          (intervention.status === 'completed' || intervention.status === 'signed') &&
+          intervention.contractId === null &&
+          intervention.billedInvoiceId === null
+        );
+      });
+
+      // Site dicté (« chez Carrefour ») résolu contre les sites RÉELS des passages éligibles.
+      const siteResolution = resolveSpokenChantier({
+        conversation,
+        currentTurn: message,
+        chantiers: [
+          ...new Map(
+            all.value.map((intervention) => [
+              intervention.chantierId,
+              { id: intervention.chantierId, nom: intervention.chantierNom },
+            ]),
+          ).values(),
+        ],
+        customerName: null,
+      });
+      const siteScoped =
+        siteResolution.matched.length === 1
+          ? eligible.filter(
+              (intervention) => intervention.chantierId === siteResolution.matched[0]!.id,
+            )
+          : eligible;
+      // Le client peut aussi être nommé (« chez RATP ») : filtre supplémentaire honnête.
+      const conversationTokens = new Set(
+        normalized(conversation)
+          .split(/[^a-z0-9]+/)
+          .filter((word) => word.length >= 3),
+      );
+      const byCustomer = siteScoped.filter((intervention) =>
+        destinationNameTokens(intervention.customerNom).some((word) =>
+          conversationTokens.has(word),
+        ),
+      );
+      const byId = siteScoped.filter(
+        (intervention) =>
+          normalized(intervention.id).length >= 3 &&
+          containsExactTokens(normalized(conversation), normalized(intervention.id)),
+      );
+      const pool =
+        byId.length > 0
+          ? byId
+          : siteResolution.matched.length === 1 || byCustomer.length === 0
+            ? siteScoped
+            : byCustomer;
+      const target = pool.length === 1 ? pool[0]! : null;
+
+      const gestureLabel =
+        intent === 'commencer_intervention'
+          ? 'démarrer'
+          : intent === 'terminer_intervention'
+            ? 'terminer'
+            : intent === 'faire_signer_intervention'
+              ? 'faire signer'
+              : intent === 'envoyer_fiche_passage'
+                ? 'envoyer la fiche'
+                : 'facturer';
+
+      if (!target) {
+        if (pool.length === 0) {
+          // Rien d'éligible : Bob DIT pourquoi, avec l'état réel — jamais un échec muet.
+          const contractual = all.value.filter(
+            (intervention) =>
+              intent === 'facturer_intervention' && intervention.contractId !== null,
+          );
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les passages réels'],
+            card: {
+              title: 'Aucun passage concerné',
+              body:
+                contractual.length > 0
+                  ? 'Ce passage est une visite contractuelle : il est couvert par la facture annuelle du contrat — il ne se facture pas à part. Rien n’a été modifié.'
+                  : `Aucun passage à ${gestureLabel}${siteResolution.matched.length === 1 ? ` sur le site ${siteResolution.matched[0]!.nom}` : ''} pour l’instant. Rien n’a été modifié.`,
+            },
+          });
+        }
+        const options = pool.slice(0, 4);
+        const commandOf = (intervention: { id: string }): string =>
+          intent === 'commencer_intervention'
+            ? `Démarre l'intervention ${intervention.id}`
+            : intent === 'terminer_intervention'
+              ? `Termine l'intervention ${intervention.id}`
+              : intent === 'faire_signer_intervention'
+                ? `Fais signer l'intervention ${intervention.id}`
+                : intent === 'envoyer_fiche_passage'
+                  ? `Envoie la fiche de passage ${intervention.id}`
+                  : `Facture le passage ${intervention.id}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté du passage'],
+          card: {
+            title: 'Quel passage ?',
+            body: `Plusieurs passages peuvent être ${
+              intent === 'envoyer_fiche_passage' ? 'envoyés' : 'concernés'
+            } — dis-moi lequel. Rien n’a été modifié.`,
+          },
+          choices: options.map((intervention) => ({
+            label: `${intervention.kind} — ${intervention.chantierNom} (${intervention.customerNom})`,
+            value: commandOf(intervention),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.passage`,
+              question: `Quel passage veux-tu ${gestureLabel} ?`,
+              header: 'Passage',
+              items: options.map((intervention) => ({
+                value: intervention.id,
+                label: `${intervention.kind} — ${intervention.chantierNom}`,
+                description: intervention.customerNom,
+                followUp: commandOf(intervention),
+              })),
+            }),
+          ],
+        });
+      }
+
+      // « fais signer » : le tracé ne se DICTE jamais — Bob ouvre le pad (micro suspendu).
+      if (intent === 'faire_signer_intervention') {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le passage', 'Ouvrir le pad de signature'],
+          card: {
+            title: 'Signature sur place',
+            body: `J’ouvre la signature du passage « ${target.kind} » (${target.chantierNom}). Passe le téléphone au client : une signature se trace, elle ne se dicte pas. Valeur probante : signature simple (eIDAS).`,
+          },
+          navigate: `intervention/${target.id}?action=sign`,
+        });
+      }
+
+      const toolName =
+        intent === 'commencer_intervention'
+          ? 'commencer_intervention'
+          : intent === 'terminer_intervention'
+            ? 'terminer_intervention'
+            : intent === 'envoyer_fiche_passage'
+              ? 'envoyer_fiche_passage'
+              : 'facturer_intervention';
+      const tool = this.tool(toolName);
+      if (!tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Geste indisponible',
+            body: `Je ne peux pas ${gestureLabel} ce passage depuis cet appareil. Rien n’a été modifié — passe par la fiche.`,
+          },
+        });
+      }
+
+      // Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé, note-le »)
+      // — extrait de la phrase courante, jamais réinventé au tour suivant.
+      const summaryMatch =
+        intent === 'terminer_intervention'
+          ? /\b(?:note[sz]?(?:-le| le)?\s*[:,]?\s*|resume\s*[:,]?\s*|avec le resume\s*[:,]?\s*)([^.!?]{3,300})/i.exec(
+              message,
+            )
+          : null;
+      const summary = summaryMatch?.[1]?.trim() ?? null;
+      const args =
+        intent === 'terminer_intervention' && summary !== null
+          ? { interventionId: target.id, summary }
+          : { interventionId: target.id };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+
+      // §3.7 — consigne composite « c'est terminé, fais signer » : la complétion se confirme
+      // d'abord (la signature n'est possible QUE depuis `completed`), et Bob ANNONCE la suite
+      // sans jamais la fusionner — le pad s'ouvre après, sur son propre geste.
+      const signAsked =
+        intent === 'terminer_intervention' &&
+        /\b(fais(?:-| )?(?:le |la )?signer|faire signer|signature)\b/i.test(message);
+      const label =
+        intent === 'commencer_intervention'
+          ? `Démarrer le passage « ${target.kind} » sur le site ${target.chantierNom}`
+          : intent === 'terminer_intervention'
+            ? `Terminer le passage « ${target.kind} » sur le site ${target.chantierNom}${summary !== null ? ` avec le résumé « ${summary} »` : ''}`
+            : intent === 'envoyer_fiche_passage'
+              ? `Envoyer la fiche de passage « ${target.kind} » (${target.chantierNom}) à ${target.customerNom}`
+              : `Préparer le brouillon de facture du passage « ${target.kind} » (${target.chantierNom})`;
+
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le passage', 'Attendre ta confirmation'],
+          card: {
+            title:
+              intent === 'envoyer_fiche_passage'
+                ? 'Envoi à confirmer'
+                : intent === 'facturer_intervention'
+                  ? 'Brouillon à confirmer'
+                  : 'Passage à confirmer',
+            body:
+              intent === 'envoyer_fiche_passage'
+                ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti. Je confirme ?`
+                : intent === 'facturer_intervention'
+                  ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé. Je confirme ?`
+                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''} Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        // Refus du domaine (fiche verrouillée, visite contractuelle, garde B2C) : VERBATIM.
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      const output = run.value as { recipient?: unknown; invoiceId?: unknown };
+      const done =
+        intent === 'envoyer_fiche_passage' && typeof output?.recipient === 'string'
+          ? `${label} — c’est parti (destinataire : ${output.recipient}).`
+          : intent === 'facturer_intervention' && typeof output?.invoiceId === 'string'
+            ? `${label} — le brouillon est prêt. Relis-le, puis émets-le quand tu veux.`
+            : `${label} — c’est fait.`;
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: [
+          intent === 'envoyer_fiche_passage'
+            ? 'Archiver puis envoyer la fiche'
+            : intent === 'facturer_intervention'
+              ? 'Préparer le brouillon de facture'
+              : 'Enregistrer le geste sur la fiche',
+        ],
+        card: {
+          title:
+            intent === 'commencer_intervention'
+              ? 'Passage démarré ✓'
+              : intent === 'terminer_intervention'
+                ? 'Passage terminé ✓'
+                : intent === 'envoyer_fiche_passage'
+                  ? 'Fiche envoyée ✓'
+                  : 'Brouillon prêt ✓',
+          body: done,
+        },
+      });
+    }
+
     if (intent === 'envoyer_devis') {
       const r = await this.deps.actions.listSendableQuotes();
       if (!r.ok) return err(r.error);

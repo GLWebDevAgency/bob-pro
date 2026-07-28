@@ -632,6 +632,59 @@ export interface EquipmentHistoryActionOutput {
   entries: EquipmentHistoryActionEntry[];
 }
 
+/** PR-15/16 — fiche de passage RÉELLE du tenant : matière de résolution par nom parlé
+ * (site + client) des outils de la fiche. Lecture pure, jamais une fiche inventée. */
+export interface AgentIntervention {
+  id: string;
+  /** Libellé LIBRE (« Visite d'entretien ») — descriptif, jamais un discriminant. */
+  kind: string;
+  status: 'scheduled' | 'in_progress' | 'completed' | 'signed' | 'cancelled';
+  chantierId: string;
+  chantierNom: string;
+  customerNom: string;
+  plannedAt: string | null;
+  /** SEUL discriminant d'une visite contractuelle (direction 6) — jamais `kind`. */
+  contractId: string | null;
+  /** Archive de fiche déjà produite (PR-16) — null = à générer avant tout envoi. */
+  reportDocumentId: string | null;
+  /** Facture liée par « Facturer ce passage » — null = passage encore à facturer. */
+  billedInvoiceId: string | null;
+  revision: number;
+}
+
+export interface InterventionActionInput {
+  /** Fiche RÉSOLUE contre la liste réelle par l'agent — jamais un id récité. */
+  interventionId: string;
+}
+
+export interface CompleteInterventionActionInput extends InterventionActionInput {
+  /** Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé »). */
+  summary?: string | null;
+}
+
+export interface InterventionActionOutput {
+  interventionId: string;
+  status: 'scheduled' | 'in_progress' | 'completed' | 'signed' | 'cancelled';
+  kind: string;
+  chantierNom: string;
+}
+
+/** Outil envoyer_fiche_passage (PR-16) : MÊME chaîne que le bouton — génération de l'archive
+ * (idempotente) puis envoi CONFIRMÉ par l'outbox `intervention-report`. */
+export interface SendInterventionReportActionOutput {
+  interventionId: string;
+  recipient: string;
+  deliveryStatus: 'queued' | 'sent';
+}
+
+/** Outil facturer_intervention (PR-16) : MÊME ComposeStandaloneInvoice que le CTA — brouillon
+ * pré-rempli, tous les invariants d'émission repassés (garde B2C comprise). */
+export interface PrepareInterventionInvoiceActionOutput {
+  interventionId: string;
+  invoiceId: string;
+  totalTtcCents: number;
+}
+
 /**
  * PR-12c — contrat de maintenance projeté pour la voix (Bloc B §2.7) : l'agrégat + les FAITS
  * DÉRIVÉS par le serveur (période arithmétique, couverture par factures réelles, alerte de
@@ -983,4 +1036,28 @@ export interface BobActions {
   terminateMaintenanceContract?(
     input: TerminateContractActionInput,
   ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** PR-15 — fiches de passage RÉELLES du tenant : matière de résolution par nom parlé
+   * (« démarre l'intervention chez Carrefour »). Lecture pure, jamais une fiche inventée. */
+  listInterventions?(): Promise<Result<AgentIntervention[], AppError>>;
+  /** PR-15 — « démarre l'intervention chez Carrefour » : MÊME use case StartIntervention que
+   * l'écran (la révision courante est résolue par l'hôte — le geste vocal n'a pas de vue
+   * optimiste). */
+  startIntervention?(
+    input: InterventionActionInput,
+  ): Promise<Result<InterventionActionOutput, AppError>>;
+  /** PR-15 — « c'est terminé » : MÊME use case CompleteIntervention ; la checklist est FIGÉE
+   * par ce geste et le résumé dicté est posé dans la même confirmation groupée. */
+  completeIntervention?(
+    input: CompleteInterventionActionInput,
+  ): Promise<Result<InterventionActionOutput, AppError>>;
+  /** PR-16 — « envoie la fiche de passage » : génération de l'archive (idempotente) PUIS envoi
+   * CONFIRMÉ — jamais un sortant automatique. */
+  sendInterventionReport?(
+    input: InterventionActionInput,
+  ): Promise<Result<SendInterventionReportActionOutput, AppError>>;
+  /** PR-16 — « facture cette intervention » : MÊME CTA que l'écran — BROUILLON pré-rempli,
+   * jamais une émission, jamais un envoi. */
+  prepareInterventionInvoice?(
+    input: InterventionActionInput,
+  ): Promise<Result<PrepareInterventionInvoiceActionOutput, AppError>>;
 }

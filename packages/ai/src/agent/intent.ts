@@ -31,6 +31,11 @@ export type BobIntent =
   | 'creer_contrat_maintenance' // « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » — CreateMaintenanceContract (§2.7)
   | 'activer_contrat' // « active le contrat Bastille » — ActivateContract, geste distinct de la création (§2.7)
   | 'resilier_contrat' // « le client résilie au 1er juin » — TerminateContract, préavis expliqué jamais bloquant (§2.7)
+  | 'commencer_intervention' // « démarre l'intervention chez Carrefour » — StartIntervention (PR-15)
+  | 'terminer_intervention' // « c'est terminé » — CompleteIntervention, checklist figée (PR-15)
+  | 'faire_signer_intervention' // « fais signer » — ouvre le pad de signature (PR-15)
+  | 'envoyer_fiche_passage' // « envoie la fiche de passage » — sortant CONFIRMÉ (PR-16)
+  | 'facturer_intervention' // « facture cette intervention » — brouillon pré-rempli (PR-16)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -172,6 +177,82 @@ export function detectIntent(message: string): BobIntent {
     )
       return 'creer_contrat_maintenance';
   }
+  // PR-15/16 — FICHE DE PASSAGE : AVANT le parc (« chez », « site » y collisionnent), AVANT
+  // envoyer_facture/facture_directe (« envoie », « facture » y collisionnent). Le NOM de la
+  // fiche est résolu contre les passages RÉELS dans le handler — jamais un id deviné.
+  // Envoi de la fiche (sortant) : le mot fiche/passage/rapport EST requis — « envoie la
+  // facture » reste un envoi de facture. Négation ⇒ rien.
+  if (
+    /\b(envoie|envoyer|envoies|transmets|transmettre|adresse|adresser|expedie|expedier)\b/.test(
+      normalizedMessage,
+    ) &&
+    /\b(fiche|fiches|rapport|rapports|compte rendu|passage|passages|intervention|interventions)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(devis|factures?|avoirs?|relances?)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(envoie|envoyer|transmets|transmettre|adresse)\b|\b(envoie|envoyer|transmets|transmettre|adresse)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'envoyer_fiche_passage';
+  // Facturer un PASSAGE (« facture cette intervention », « facture ce passage ») : le mot
+  // intervention/passage est REQUIS — « facture 380 € à Mme Girard » reste une facture directe.
+  if (
+    /\b(facture|facturer|factures)\b/.test(normalizedMessage) &&
+    // Une référence DÉMONSTRATIVE au passage, jamais le simple mot « intervention » : la
+    // facture directe dictée (« facture 500 € HT à Durand pour l'intervention sur site »)
+    // garde son intent — un MONTANT dit exclut d'ailleurs toujours ce chemin.
+    /\b(ce passage|cette intervention|cette visite|ce depannage|le passage|la visite|l\W{0,3}intervention de)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/(€|\beuros?\b|\bht\b|\bttc\b|\btva\b|\d+\s*(e|eur))/.test(normalizedMessage) &&
+    !/\b(annuelle?s?|contrats?|situations?)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(facture|facturer)\b|\b(facture|facturer)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'facturer_intervention';
+  // Terminer le passage : « c'est terminé », « j'ai fini chez RATP », « passage terminé ».
+  // Les clôtures comptables (« clôture du mois ») et les devis/factures gardent leur intent.
+  if (
+    /\b(termine|terminee?s?|terminer|fini|finie?s?|finir|cloture le passage|j.{0,3}ai fini|c.{0,3}est fini|c.{0,3}est termine)\b/.test(
+      normalizedMessage,
+    ) &&
+    (/\b(interventions?|passages?|chantier|site|chez)\b/.test(normalizedMessage) ||
+      /^\s*(c.{0,3}est (fini|termine)|j.{0,3}ai fini|termine)\b/.test(normalizedMessage)) &&
+    !/\b(devis|factures?|mois|cloture comptable|exercice|tva)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(termine|terminer|fini|finir)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'terminer_intervention';
+  // Faire signer : « fais signer », « le client signe » — ouvre le PAD (micro suspendu), le
+  // tracé ne se dicte jamais. Le mot signature/signer est requis ; un devis signé garde son
+  // intent (le mot devis exclut).
+  if (
+    // Geste IMPÉRATIF de signature uniquement : « c'est prêt à signer ? » (question d'état)
+    // garde son intent, jamais un pad ouvert sur une interrogation.
+    /\b(fais(?:-| )?(?:le |la )?signer|faire signer|fais(?:-| )?moi signer|prends? la signature|prendre la signature|(?:le |la )?client signe|signature (?:du|de la) client)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(devis|factures?|contrats?|bons? de commande)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(signer|signe|signature)\b|\b(signer|signe|signature)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'faire_signer_intervention';
+  // Démarrer le passage : « démarre l'intervention chez Carrefour », « je commence le passage ».
+  if (
+    /\b(demarre|demarrer|demarres|commence|commencer|commences|debute|debuter|lance|lancer)\b/.test(
+      normalizedMessage,
+    ) &&
+    /\b(interventions?|passages?|visites?|chantier|depannage)\b/.test(normalizedMessage) &&
+    !/\b(devis|factures?|relances?|scan)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(demarre|demarrer|commence|commencer|debute|lance)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'commencer_intervention';
   // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
   // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
   // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement
