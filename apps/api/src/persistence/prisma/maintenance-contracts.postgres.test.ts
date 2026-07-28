@@ -82,6 +82,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
   const companyA = `contract-cert-a-${randomUUID()}`;
   const companyB = `contract-cert-b-${randomUUID()}`;
   const customerA = `contract-customer-a-${randomUUID()}`;
+  /** Second client du MÊME tenant A : cible de mutation `customerId` qui PASSE le trigger
+   * d'audience d'archive (même tenant) et fait donc parler la LISTE D'IMMUTABILITÉ seule. */
+  const customerA2 = `contract-customer-a2-${randomUUID()}`;
   const customerB = `contract-customer-b-${randomUUID()}`;
   const chantierA = `contract-chantier-a-${randomUUID()}`;
   const chantierB = `contract-chantier-b-${randomUUID()}`;
@@ -181,6 +184,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
           addrCity: 'Paris',
         },
       });
+      if (companyId === companyA) {
+        await admin.customer.create({
+          data: {
+            id: customerA2,
+            companyId,
+            type: 'b2b',
+            name: 'Carrefour Certification',
+            addrLine1: '3 rue du Dépôt',
+            addrZip: '75012',
+            addrCity: 'Paris',
+          },
+        });
+      }
       await admin.chantier.create({
         data: {
           id: chantierId,
@@ -297,23 +313,36 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
 
   afterAll(async () => {
     // Cleanup transactionnel SANS .catch : toute dépendance oubliée fait échouer le gate au
-    // lieu de fuir des lignes dans la base commune. Sociétés jamais clôturées ici.
+    // lieu de fuir des lignes dans la base commune. Sociétés jamais clôturées ici. Les lignes
+    // d'une facture ÉMISE sont protégées par un trigger légal : le compte DIRECT_URL ne le
+    // neutralise (replica) QUE pour ce DELETE, puis RÉOUVRE origin AVANT les DELETE finaux —
+    // toute future dépendance oubliée doit refaire échouer le gate (doctrine certs).
     if (admin) {
-      await admin.$transaction([
-        admin.lineItem.deleteMany({ where: { invoiceId: issuedAnnualA } }),
-        admin.invoice.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
-        admin.maintenanceContractEquipment.deleteMany({
+      await admin.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        await tx.lineItem.deleteMany({
+          where: { invoice: { companyId: { in: [companyA, companyB] } } },
+        });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+        await tx.invoice.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+        await tx.maintenanceContractEquipment.deleteMany({
           where: { companyId: { in: [companyA, companyB] } },
-        }),
-        admin.maintenanceContractLine.deleteMany({
+        });
+        await tx.maintenanceContractLine.deleteMany({
           where: { companyId: { in: [companyA, companyB] } },
-        }),
-        admin.maintenanceContract.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
-        admin.equipment.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
-        admin.chantier.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
-        admin.customer.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
-        admin.company.deleteMany({ where: { id: { in: [companyA, companyB] } } }),
-      ]);
+        });
+        // Le trigger draft-only borne le DELETE d'un contrat vivant : neutralisation admin
+        // bornée aux fixtures, refermée aussitôt (le contrat actif de la suite doit partir).
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        await tx.maintenanceContract.deleteMany({
+          where: { companyId: { in: [companyA, companyB] } },
+        });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+        await tx.equipment.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+        await tx.chantier.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+        await tx.customer.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+        await tx.company.deleteMany({ where: { id: { in: [companyA, companyB] } } });
+      });
     }
     await Promise.all([workerA?.$disconnect(), workerB?.$disconnect(), admin?.$disconnect()]);
   });
@@ -456,7 +485,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
     // comparaison de complétude ci-dessous.
     const mutations: Record<string, string> = {
       companyId: `'${companyB}'`,
-      customerId: `'${customerB}'`,
+      // Client du MÊME tenant : le trigger d'audience passe, la liste d'immutabilité refuse.
+      customerId: `'${customerA2}'`,
       kind: `'deposit_invoice'`,
       number: `'F-MUT-1'`,
       issuedAt: `'2026-01-01'`,
@@ -499,6 +529,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
     expect([...liveFrozen].sort()).toEqual(Object.keys(mutations).sort());
 
     for (const [field, literal] of Object.entries(mutations)) {
+      // `companyId` est défendu EN PROFONDEUR : le trigger d'audience d'archive (FK logique
+      // client↔tenant) refuse AVANT la liste d'immutabilité — la mutation est refusée dans
+      // tous les cas, et la PRÉSENCE du champ dans la liste figée est prouvée par la
+      // comparaison de complétude ci-dessus (liveFrozen) + le test champ à champ des corps.
+      const refusal =
+        field === 'companyId'
+          ? /invoices_issued_legal_immutability|issued invoice legal fields|archive audience/
+          : /invoices_issued_legal_immutability|issued invoice legal fields/;
       await expect(
         workerA.withTenant(companyA, () =>
           workerA
@@ -508,7 +546,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
             ),
         ),
         `champ figé non protégé : ${field}`,
-      ).rejects.toThrowError(/invoices_issued_legal_immutability|issued invoice legal fields/);
+      ).rejects.toThrowError(refusal);
     }
     // Contrôle POSITIF : le suivi de transmission reste mutable après émission (jamais figé).
     await workerA.withTenant(companyA, async () => {
@@ -554,40 +592,6 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
     expect(mirrorFieldsOf(live[0]?.definition ?? '')).toEqual(redefinedMirror);
   });
 
-  it('writer N-1 : la forme de ligne SANS maintenanceContractId traverse sous CHAQUE état du trigger', async () => {
-    const n1Id = `writer-n1-${randomUUID()}`;
-    await workerA.withTenant(companyA, async () => {
-      // INSERT brouillon N-1 (colonne jamais assignée).
-      await workerA.client().$executeRaw`
-        INSERT INTO "invoices" ("id", "companyId", "customerId", "kind", "status")
-        VALUES (${n1Id}, ${companyA}, ${customerA}, 'invoice', 'draft')
-      `;
-      // Émission N-1 (draft → issued, colonne toujours absente de l'UPDATE).
-      await workerA.client().$executeRaw`
-        UPDATE "invoices"
-           SET "status" = 'issued', "number" = ${`F-N1-${randomInt(1000, 9999)}`},
-               "issuedAt" = '2026-07-14', "dueAt" = '2026-08-13',
-               "legalMentions" = ARRAY['Certification'],
-               "totalsHt" = 100000, "totalsVat" = 20000, "totalsTtc" = 120000,
-               "totalsNetToPay" = 120000, "vatByRate" = '{"20": 20000}'::jsonb
-         WHERE "id" = ${n1Id}
-      `;
-      // Progression d'une pièce ÉMISE par un writer N-1 (paiement) : la colonne non assignée
-      // laisse NEW = OLD (IS DISTINCT FROM faux) — aucun chemin applicatif bloqué. Le même
-      // UPDATE traverse AUSSI la facture de CONTRAT émise (issuedAnnualA).
-      await workerA.client().$executeRaw`
-        UPDATE "invoices" SET "paidCents" = 120000, "status" = 'paid' WHERE "id" = ${n1Id}
-      `;
-      await workerA.client().$executeRaw`
-        UPDATE "invoices" SET "paidCents" = 1000, "status" = 'partially_paid'
-         WHERE "id" = ${issuedAnnualA}
-      `;
-      await workerA.client().$executeRaw`
-        UPDATE "invoices" SET "paidCents" = 0, "status" = 'issued' WHERE "id" = ${issuedAnnualA}
-      `;
-    });
-  });
-
   it('[erratum n° 8] lecture BATCHÉE par société : projections groupées par contrat, index partiel présent', async () => {
     const read = new PrismaContractInvoicesRead(workerA);
     await workerA.withTenant(companyA, async () => {
@@ -617,6 +621,40 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
       const labels = await coverage.activeContractLabels(companyA, equipA);
       expect(labels).toHaveLength(1);
       expect(labels[0]).toContain('Entretien');
+    });
+  });
+
+  // Placé APRÈS les lectures de projections : la progression N-1 laisse la facture de contrat
+  // en `partially_paid` (état RÉEL post-paiement — la machine SQL n'admet aucun retour vers
+  // `issued`, et la dérivation de couverture continue de la compter, ce qui est le fait vrai).
+  it('writer N-1 : la forme de ligne SANS maintenanceContractId traverse sous CHAQUE état du trigger', async () => {
+    const n1Id = `writer-n1-${randomUUID()}`;
+    await workerA.withTenant(companyA, async () => {
+      // INSERT brouillon N-1 (colonne jamais assignée).
+      await workerA.client().$executeRaw`
+        INSERT INTO "invoices" ("id", "companyId", "customerId", "kind", "status")
+        VALUES (${n1Id}, ${companyA}, ${customerA}, 'invoice', 'draft')
+      `;
+      // Émission N-1 (draft → issued, colonne toujours absente de l'UPDATE).
+      await workerA.client().$executeRaw`
+        UPDATE "invoices"
+           SET "status" = 'issued', "number" = ${`F-N1-${randomInt(1000, 9999)}`},
+               "issuedAt" = '2026-07-14', "dueAt" = '2026-08-13',
+               "legalMentions" = ARRAY['Certification'],
+               "totalsHt" = 100000, "totalsVat" = 20000, "totalsTtc" = 120000,
+               "totalsNetToPay" = 120000, "vatByRate" = '{"20": 20000}'::jsonb
+         WHERE "id" = ${n1Id}
+      `;
+      // Progression d'une pièce ÉMISE par un writer N-1 (paiement) : la colonne non assignée
+      // laisse NEW = OLD (IS DISTINCT FROM faux) — aucun chemin applicatif bloqué. Le même
+      // UPDATE traverse AUSSI la facture de CONTRAT émise (issuedAnnualA).
+      await workerA.client().$executeRaw`
+        UPDATE "invoices" SET "paidCents" = 120000, "status" = 'paid' WHERE "id" = ${n1Id}
+      `;
+      await workerA.client().$executeRaw`
+        UPDATE "invoices" SET "paidCents" = 1000, "status" = 'partially_paid'
+         WHERE "id" = ${issuedAnnualA}
+      `;
     });
   });
 
