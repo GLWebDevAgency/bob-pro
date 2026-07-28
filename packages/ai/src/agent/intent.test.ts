@@ -607,6 +607,8 @@ describe('detectIntent — parc d’équipements (PR-11) : intents dédiés SANS
     // Prénom+nom NU après « de » : quelqu'un — l'historique client a son propre chemin.
     expect(detectIntent("L'historique de Jean Martin")).not.toBe('historique_equipement');
     expect(detectIntent("Montre-moi l'historique de Jean Martin")).not.toBe('historique_equipement');
+    // Prénom composé : le trait d'union ne doit pas rendre la personne invisible au patron.
+    expect(detectIntent("L'historique de Jean-Pierre Durand")).not.toBe('historique_equipement');
     // Les machines gardent leur chemin : l'article (« de la », « de l' ») dit l'objet.
     expect(detectIntent("L'historique de la clim")).toBe('historique_equipement');
     expect(detectIntent("L'historique de la fontaine de l'accueil")).toBe('historique_equipement');

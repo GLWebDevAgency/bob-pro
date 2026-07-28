@@ -139,7 +139,7 @@ export function detectIntent(message: string): BobIntent {
       normalizedMessage,
     ) &&
     (/\b(equipements?|machines?|parc)\b/.test(normalizedMessage) ||
-      !/\bhistoriques?\s+(?:complet\s+)?de\s+(?!(?:la|le|les|l\W|un|une|des|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|votre|nos|vos|leur|leurs|ce|cet|cette|ces|chaque)\b)[a-z]{2,}\s+[a-z]{2,}\b/.test(
+      !/\bhistoriques?\s+(?:complet\s+)?de\s+(?!(?:la|le|les|l\W|un|une|des|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|votre|nos|vos|leur|leurs|ce|cet|cette|ces|chaque)\b)[a-z]{2,}(?:-[a-z]{2,})*\s+[a-z]{2,}\b/.test(
         normalizedMessage,
       ))
   )
