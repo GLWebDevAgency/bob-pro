@@ -1,6 +1,6 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appConflict, appDomain, appNotFound } from '../result';
-import { type DateOnly } from '../../shared-kernel/time';
+import { type DateOnly, parisDateOnly } from '../../shared-kernel/time';
 import {
   CONTRACT_B2C_REFUSED_MESSAGE,
   MaintenanceContract,
@@ -311,7 +311,10 @@ export class TerminateContract {
     if (contract.revision !== input.expectedRevision)
       return err(appConflict('maintenance_contract', 'stale_revision'));
     const now = this.deps.clock.now();
-    const today = now.slice(0, 10);
+    // Jour MÉTIER Paris (vigilance §7.7 : tout calcul de date en DateOnly Paris) — un slice UTC
+    // ferait retomber, entre minuit et ~2 h à Paris, le défaut « prochain anniversaire
+    // strictement futur » sur l'anniversaire du jour même : couverture éteinte immédiatement.
+    const today = parisDateOnly(now);
     const effectiveDate =
       input.effectiveDate ?? nextComputedAnniversary(contract.anniversaryDate, today);
     const terminated = contract.terminate({ decidedAt: now, effectiveDate, note: input.note });

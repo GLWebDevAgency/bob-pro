@@ -323,6 +323,27 @@ describe('TerminateContract — date d’effet par défaut = prochain anniversai
     expect(terminated.value.status).toBe('terminated');
     expect(terminated.value.terminationEffectiveDate).toBe('2026-10-12');
   });
+
+  it('[vigilance §7.7] « today » = jour MÉTIER Paris : la nuit de l’anniversaire (00:30 Paris), le défaut vise l’anniversaire SUIVANT — jamais une extinction immédiate', async () => {
+    const env = makeEnv();
+    seedContract(env, { status: 'active', activatedAt: '2025-10-12T08:00:00.000Z' });
+    // 2026-10-11T23:30:00Z = 12/10/2026 01:30 à Paris (CEST) : côté Paris l'anniversaire est
+    // AUJOURD'HUI. Un slice UTC (« 2026-10-11 ») rendrait « 2026-10-12 » comme prochain
+    // anniversaire strictement futur → couverture éteinte dès today ≥ effective. En Paris,
+    // le prochain strictement futur est 2027-10-12 : la couverture court une année pleine.
+    const terminated = await new TerminateContract({
+      contracts: env.contractRepo,
+      clock: { now: () => '2026-10-11T23:30:00.000Z' },
+    }).execute({
+      companyId: COMPANY,
+      contractId: 'contract-seed',
+      expectedRevision: 1,
+      note: 'Résiliation dictée la nuit de l’anniversaire.',
+    });
+    expect(terminated.ok).toBe(true);
+    if (!terminated.ok) return;
+    expect(terminated.value.terminationEffectiveDate).toBe('2027-10-12');
+  });
 });
 
 describe('DeleteDraftContract — brouillon seulement', () => {
