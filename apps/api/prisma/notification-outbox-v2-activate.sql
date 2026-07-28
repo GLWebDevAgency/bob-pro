@@ -1,7 +1,8 @@
 -- Phase CONTRACT/ACTIVATE du protocole outbox v2.
 -- Exécutée uniquement après que /health/ready a prouvé la nouvelle révision Railway.
--- Idempotente : une activation déjà terminée ne possède plus le trigger de spool et sort sans
--- réouvrir la compatibilité N-1.
+-- Transition transactionnelle à usage unique. L'opérateur activate-notification-outbox-v2.sh
+-- porte l'idempotence : il certifie l'état terminal avant d'appeler ce fichier et refuse toute
+-- forme intermédiaire incomplète.
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
@@ -17,8 +18,8 @@ BEGIN
        AND tgname = 'notification_jobs_cutover_spool_v2'
        AND NOT tgisinternal
   ) THEN
-    RAISE NOTICE 'notification outbox v2 already activated';
-    RETURN;
+    RAISE EXCEPTION
+      'notification outbox v2 expand trigger is missing; use the idempotent activation operator';
   END IF;
 
   IF EXISTS (

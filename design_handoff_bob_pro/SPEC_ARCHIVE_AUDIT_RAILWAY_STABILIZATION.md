@@ -33,6 +33,12 @@ PostgreSQL historique a échoué après activation : sa fixture utilisait un `co
 avec un SIRET réel et un NIC choisi dans seulement 10 000 valeurs. Une interruption antérieure
 avait laissé une société de test orpheline ; le run suivant a heurté l’unicité de `companies.siret`.
 
+Le passage suivant a certifié cette reprise et activé archive/settlement V2, puis a révélé un second
+défaut de rejouabilité : l’opérateur outbox rappelait un SQL de transition après un cutover déjà
+terminal. Le `RETURN` contenu dans un bloc `DO` quittait seulement ce bloc, pas le fichier ; les
+instructions suivantes relisaient donc la colonne expand `cutoverResumeAt`, volontairement retirée
+à la première activation.
+
 ## 2. Résultat attendu
 
 Le one-shot Railway sait certifier un inventaire ne contenant aucune paire Factur-X professionnelle.
@@ -66,6 +72,8 @@ au lieu d’attendre le timeout complet.
    jamais dépendre de la latence d’un fournisseur LLM pour atteindre son repli déterministe.
 9. Rendre le certificat d’émission facture rejouable après interruption : identité explicitement
    fictive, réconciliation préalable limitée au namespace d’id de la suite, cleanup final commun.
+10. Rendre l’opérateur d’activation outbox V2 réellement rejouable : état terminal certifié =
+    succès sans mutation ; forme expand complète = transition ; toute forme mixte = refus fermé.
 
 ### Non inclus
 
@@ -98,6 +106,9 @@ au lieu d’attendre le timeout complet.
 11. **Fixtures distantes bornées.** Une reprise ne supprime jamais par SIREN ou libellé : elle ne
     réconcilie que le préfixe d’identifiants réservé au certificat, puis réactive les triggers avant
     chaque suppression finale.
+12. **Idempotence au bon niveau.** Le SQL de cutover reste une transition atomique à usage unique ;
+    l’opérateur détecte et certifie l’état terminal avant de l’appeler. Un `RETURN` PL/pgSQL n’est
+    jamais interprété comme une sortie du fichier `psql`.
 
 ## 5. Critères d’acceptation binaires
 
@@ -123,6 +134,8 @@ au lieu d’attendre le timeout complet.
       vers un fournisseur LLM et restent stables sous charge CI.
 - [ ] Le certificat PostgreSQL d’émission purge une fixture interrompue puis repasse intégralement
       sur staging sans collision ni résidu.
+- [ ] Deux appels successifs de l’opérateur outbox V2 réussissent sur PostgreSQL, le second sans
+      mutation ni dépendance à la colonne expand supprimée.
 - [ ] L’image `Dockerfile.archive-audit` est réellement construite.
 - [ ] Le one-shot staging au SHA exact produit une enveloppe corrélée puis termine arrêté, sans
       déploiement actif résiduel.
