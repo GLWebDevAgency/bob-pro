@@ -90,6 +90,8 @@ const CATEGORY_KEY: Record<CatalogueCategory, I18nKey> = {
   labor: 'voix.catLabor',
   supply: 'voix.catSupply',
   travel: 'voix.catTravel',
+  // PR-14 « Le métier » — forfaits/contrats récurrents (entretien annuel, maintenance).
+  subscription: 'voix.catSubscription',
 };
 
 /** Taux proposés à l'édition (ensemble légal courant) — CreateQuote revalide à la génération. */

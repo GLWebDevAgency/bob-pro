@@ -193,6 +193,8 @@ const LINE_CATEGORIES: readonly { key: LineCategory; labelKey: I18nKey }[] = [
   { key: 'labor', labelKey: 'voix.catLabor' },
   { key: 'supply', labelKey: 'voix.catSupply' },
   { key: 'travel', labelKey: 'voix.catTravel' },
+  // PR-14 — forfaits/abonnements (contrats d'entretien) proposés à la saisie du devis.
+  { key: 'subscription', labelKey: 'voix.catSubscription' },
 ];
 
 /**

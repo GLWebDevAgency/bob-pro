@@ -255,5 +255,7 @@ export function parseDiscountInput(
   return validated.ok ? { ok: true, discount: validated.value } : { ok: false };
 }
 
-/** Catégories proposées à la saisie (mêmes libellés que le wizard devis). */
-export const FACTURE_DIRECTE_CATEGORIES: readonly LineCategory[] = ['labor', 'supply', 'travel'];
+/** Catégories proposées à la saisie (mêmes libellés que le wizard devis).
+ * PR-14 — `subscription` (forfaits/contrats récurrents) rejoint la saisie directe : la
+ * facturation d'un entretien annuel hors devis porte sa vraie catégorie. */
+export const FACTURE_DIRECTE_CATEGORIES: readonly LineCategory[] = ['labor', 'supply', 'travel', 'subscription'];

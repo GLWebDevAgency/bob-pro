@@ -12,6 +12,7 @@ import type {
   AppError,
   CreateQuoteInput,
   CreateQuoteOutput,
+  DuplicateQuoteOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -1441,6 +1442,18 @@ export interface BobClient {
   createQuote(
     input: Omit<CreateQuoteInput, 'companyId'>,
   ): Promise<Result<CreateQuoteOutput, AppError>>;
+  /** PR-14 « Refaire ce devis » — POST /quotes/:id/duplicate : NOUVEAU brouillon repassant
+   * INTÉGRALEMENT par CreateQuote côté serveur (TVA re-suggérée au régime du jour ; signature,
+   * urgence, n°, validité JAMAIS copiés). OPTIONNELLE (compat transports existants) —
+   * HttpBobClient et LocalBobClient l'implémentent tous les deux (parité stricte). */
+  duplicateQuote?(
+    quoteId: string,
+    input?: {
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      standardRateForReducedLines?: boolean;
+      idempotencyKey?: string | null;
+    },
+  ): Promise<Result<DuplicateQuoteOutput, AppError>>;
   /** Slot BDD du brouillon courant, isolé côté serveur par companyId + userId du JWT. */
   getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>>;
   /** expectedRevision=0 crée ; toute reprise ultérieure exige la révision exacte observée. */

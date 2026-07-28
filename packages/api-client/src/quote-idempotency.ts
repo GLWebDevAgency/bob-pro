@@ -2,6 +2,7 @@ import {
   canonicalCreateQuotePayload,
   type CreateQuoteInput,
   type CreateQuoteOutput,
+  type DuplicateQuoteOutput,
   type Totals,
 } from '@bob/core';
 import { portableSha256Hex } from './expense-idempotency';
@@ -104,4 +105,40 @@ export function cloneQuoteCreation(output: CreateQuoteOutput): CreateQuoteOutput
     quoteId: output.quoteId,
     totals: { ...output.totals, vatByRate: { ...output.totals.vatByRate } },
   };
+}
+
+/** PR-14 — décode strictement la réponse de POST /quotes/:id/duplicate (création + ajustements
+ * TVA tracés). Même rigueur défensive que decodeQuoteCreation : une forme déviante est nulle. */
+export function decodeQuoteDuplication(value: unknown): DuplicateQuoteOutput | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 3
+    || !Object.hasOwn(candidate, 'vatAdjustments')
+    || !Array.isArray(candidate.vatAdjustments)
+    || candidate.vatAdjustments.length > 100
+  ) return null;
+  const base = decodeQuoteCreation({ quoteId: candidate.quoteId, totals: candidate.totals });
+  if (base === null) return null;
+  const vatAdjustments: DuplicateQuoteOutput['vatAdjustments'] = [];
+  for (const raw of candidate.vatAdjustments) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const entry = raw as Record<string, unknown>;
+    if (
+      Object.keys(entry).length !== 4
+      || typeof entry.label !== 'string'
+      || entry.label.length === 0
+      || entry.label.length > 500
+      || typeof entry.from !== 'number'
+      || typeof entry.to !== 'number'
+      || (entry.reason !== 'regime' && entry.reason !== 'standard_rate_choice')
+    ) return null;
+    vatAdjustments.push({
+      label: entry.label,
+      from: entry.from,
+      to: entry.to,
+      reason: entry.reason,
+    });
+  }
+  return { ...base, vatAdjustments };
 }

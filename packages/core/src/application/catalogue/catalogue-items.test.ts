@@ -158,7 +158,7 @@ describe('Catalogue propriétaire — CRUD tenant-scoped et CAS', () => {
 
     for (const item of [
       { ...labor, unitPriceHT: 0 },
-      { ...labor, category: 'subscription' },
+      { ...labor, category: 'disbursement' },
       { ...labor, vatRate: 7 },
       { ...labor, label: '   ' },
       { ...labor, unexpected: 'forbidden' },

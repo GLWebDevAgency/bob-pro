@@ -1272,6 +1272,30 @@ export function useCreateQuoteViewLink() {
   });
 }
 
+/** PR-14 « Refaire ce devis » — duplication serveur (CreateQuote intégral : TVA revalidée,
+ * faits légaux jamais copiés). La clé d'idempotence par geste protège le double-tap réseau. */
+export function useDuplicateQuote() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      quoteId: string;
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      standardRateForReducedLines?: boolean;
+      idempotencyKey: string;
+    }) => {
+      if (!client.duplicateQuote) {
+        throw { kind: 'unavailable', service: 'quote-duplication' } satisfies AppError;
+      }
+      const { quoteId, ...rest } = input;
+      const r = await client.duplicateQuote(quoteId, rest);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.quotes }),
+  });
+}
+
 /** Lien public de VISUALISATION (facture) — même doctrine que useCreateQuoteViewLink. */
 export function useCreateInvoiceViewLink() {
   const client = useBobClient();

@@ -16,6 +16,7 @@ import type {
   AppError,
   CreateQuoteInput,
   CreateQuoteOutput,
+  DuplicateQuoteOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -179,7 +180,7 @@ import {
 } from './purchase-order-codec';
 import { decodeInvoiceView, decodeInvoiceViewList } from './credit-note-source-codec';
 import { decodeTransmission } from './billing-terrain-codec';
-import { decodeQuoteCreation } from './quote-idempotency';
+import { decodeQuoteCreation, decodeQuoteDuplication } from './quote-idempotency';
 import {
   decodeQuoteDraftDeletion,
   decodeQuoteDraftEnvelope,
@@ -3501,6 +3502,44 @@ export class HttpBobClient implements BobClient {
       body,
       undefined,
       decodeQuoteCreation,
+      QUOTE_CREATION_TIMEOUT_MS,
+    );
+  }
+  /** PR-14 « Refaire ce devis » — le serveur relit le devis source et repasse par CreateQuote
+   * (coordinateur idempotent) ; seuls l'éligibilité re-déclarée, le choix « 20 % » explicite
+   * et la clé d'idempotence traversent le réseau. */
+  duplicateQuote(
+    quoteId: string,
+    input: {
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      standardRateForReducedLines?: boolean;
+      idempotencyKey?: string | null;
+    } = {},
+  ) {
+    const body: Record<string, unknown> = {
+      ...(input.context !== undefined
+        ? {
+            context: {
+              ...(input.context.housingOlderThan2y !== undefined
+                ? { housingOlderThan2y: input.context.housingOlderThan2y }
+                : {}),
+              ...(input.context.energyRenovation !== undefined
+                ? { energyRenovation: input.context.energyRenovation }
+                : {}),
+            },
+          }
+        : {}),
+      ...(input.standardRateForReducedLines !== undefined
+        ? { standardRateForReducedLines: input.standardRateForReducedLines }
+        : {}),
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+    };
+    return this.req<DuplicateQuoteOutput>(
+      'POST',
+      `/quotes/${encodeURIComponent(quoteId)}/duplicate`,
+      body,
+      undefined,
+      decodeQuoteDuplication,
       QUOTE_CREATION_TIMEOUT_MS,
     );
   }

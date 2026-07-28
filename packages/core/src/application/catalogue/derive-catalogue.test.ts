@@ -106,7 +106,7 @@ describe('parseCustomPrestation', () => {
     for (const id of ['', ' owner-1', 'owner_1', 'a'.repeat(129)]) {
       expect(parseCustomPrestation(custom({ id }))).toBeNull();
     }
-    expect(parseCustomPrestation(custom({ category: 'subscription' }))).toBeNull();
+    expect(parseCustomPrestation(custom({ category: 'disbursement' }))).toBeNull();
     expect(parseCustomPrestation(custom({ vatRate: 7 }))).toBeNull();
     expect(parseCustomPrestation({ ...custom(), extra: true })).toBeNull();
     expect(parseCustomPrestation(null)).toBeNull();
@@ -149,7 +149,7 @@ describe('application/catalogue/deriveCatalogue — données propriétaire uniqu
   it('écarte chaque entrée invalide sans fabriquer de valeur de remplacement', () => {
     const invalidEntries = [
       custom({ id: 'invalid-price', unitPriceHT: 0 }),
-      custom({ id: 'invalid-category', category: 'subscription' }),
+      custom({ id: 'invalid-category', category: 'disbursement' }),
       { ...custom({ id: 'invalid-shape' }), tenantId: 'foreign-tenant' },
     ] as unknown as CustomPrestation[];
 
@@ -188,12 +188,24 @@ describe('application/catalogue/deriveCatalogue — données propriétaire uniqu
   });
 
   it('expose uniquement les catégories facturables fermées', () => {
-    expect(CATALOGUE_CATEGORIES).toEqual(['labor', 'supply', 'travel']);
+    // PR-14 « Le métier » : `subscription` (forfaits/contrats récurrents) rejoint le catalogue.
+    expect(CATALOGUE_CATEGORIES).toEqual(['labor', 'supply', 'travel', 'subscription']);
     for (const category of CATALOGUE_CATEGORIES) {
       expect(isCatalogueCategory(category)).toBe(true);
     }
-    expect(isCatalogueCategory('subscription')).toBe(false);
+    // Un débours (remboursement à l'euro près, art. 267 CGI) n'est jamais une prestation
+    // cataloguable — la catégorie reste hors du catalogue propriétaire.
+    expect(isCatalogueCategory('disbursement')).toBe(false);
     expect(isCatalogueCategory(null)).toBe(false);
+  });
+
+  it('trie les forfaits/abonnements après les catégories historiques (ordre stable)', () => {
+    const entries: CustomPrestation[] = [
+      { ...ownerChauffeEau, id: 'sub-alpha', label: 'Entretien annuel fontaine', category: 'subscription' },
+      { ...ownerChauffeEau, id: 'labor-alpha', label: 'Alpha', category: 'labor' },
+    ];
+    const view = deriveCatalogue({ trade: 'autre', custom: entries });
+    expect(view.prestations.map((prestation) => prestation.id)).toEqual(['labor-alpha', 'sub-alpha']);
   });
 });
 

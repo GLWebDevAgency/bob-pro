@@ -110,7 +110,7 @@ const CAT_KEY: Record<LineCategory, I18nKey> = {
   supply: 'voix.catSupply',
   travel: 'voix.catTravel',
   disbursement: 'voix.catSupply',
-  subscription: 'voix.catSupply',
+  subscription: 'voix.catSubscription',
 };
 
 /** Mêmes couples taux+contexte que le wizard devis (le serveur revalide via suggestVatRate). */

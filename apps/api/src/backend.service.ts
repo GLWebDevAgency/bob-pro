@@ -175,6 +175,8 @@ import {
   type Result,
   type AppError,
   type CreateQuoteInput,
+  buildQuoteDuplicationInput,
+  type DuplicateQuoteOutput,
   type Scenario,
   type Horizon,
   type CashflowProjection,
@@ -1437,6 +1439,59 @@ export class BackendService {
       ids: this.ids,
       clock: this.clock,
     }).execute({ companyId: this.companyId(), quote: input });
+  }
+  /** PR-14 « Refaire ce devis » — duplication repassant INTÉGRALEMENT par CreateQuote (via le
+   * coordinateur idempotent) : TVA re-suggérée au régime courant, site re-prouvé anti-IDOR,
+   * faits légaux horodatés (urgence, signature) et temporels (n°, validité) JAMAIS copiés —
+   * l'autorité de ce qui se copie est buildQuoteDuplicationInput (@bob/core). */
+  async duplicateQuote(
+    quoteId: string,
+    input: {
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      standardRateForReducedLines?: boolean;
+      idempotencyKey?: string | null;
+    } = {},
+  ): Promise<Result<DuplicateQuoteOutput, AppError>> {
+    const companyId = this.companyId();
+    // Lectures RLS-scopées (la route est hors transaction d'intercepteur, comme POST /quotes) ;
+    // la garde applicative ownedQuote reste la première ligne anti-IDOR.
+    const draft = await this.p.runWithTenant(companyId, async () => {
+      const source = await this.ownedQuote(quoteId);
+      if (!source) return err(appNotFound('quote', quoteId));
+      const company = await this.p.companies.findById(companyId);
+      if (!company) return err(appNotFound('company', companyId));
+      const customer = await this.p.customers.findById(source.customerId);
+      if (!customer || customer.companyId !== companyId)
+        return err(appNotFound('customer', source.customerId));
+      return buildQuoteDuplicationInput({
+        source,
+        company,
+        customer,
+        ...(input.context !== undefined ? { context: input.context } : {}),
+        ...(input.standardRateForReducedLines !== undefined
+          ? { standardRateForReducedLines: input.standardRateForReducedLines }
+          : {}),
+      });
+    });
+    if (!draft.ok) return draft;
+    const created = await new QuoteCreationCoordinator({
+      persistence: this.p,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId,
+      quote: {
+        ...draft.value.input,
+        ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+      },
+    });
+    if (!created.ok) return created;
+    this.logger.audit('quote.duplicated', {
+      companyId,
+      sourceQuoteId: quoteId,
+      quoteId: created.value.quoteId,
+    });
+    return ok({ ...created.value, vatAdjustments: draft.value.vatAdjustments });
   }
   async sendQuote(quoteId: string): Promise<
     Result<

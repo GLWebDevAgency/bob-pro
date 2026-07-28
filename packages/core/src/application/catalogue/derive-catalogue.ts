@@ -6,10 +6,21 @@ import {
   type LineCategory,
 } from '../../domain/billing/shared/line-item';
 
-/** Catégories facturables exposées par le catalogue propriétaire. */
-export type CatalogueCategory = Extract<LineCategory, 'labor' | 'supply' | 'travel'>;
+/** Catégories facturables exposées par le catalogue propriétaire.
+ * PR-14 « Le métier » — `subscription` (forfaits/contrats récurrents : entretien annuel,
+ * abonnement de maintenance) rejoint le catalogue : la catégorie existait déjà côté domaine
+ * (LineCategory), la chaîne catalogue/UI la propose désormais à la saisie. */
+export type CatalogueCategory = Extract<
+  LineCategory,
+  'labor' | 'supply' | 'travel' | 'subscription'
+>;
 
-export const CATALOGUE_CATEGORIES: readonly CatalogueCategory[] = ['labor', 'supply', 'travel'];
+export const CATALOGUE_CATEGORIES: readonly CatalogueCategory[] = [
+  'labor',
+  'supply',
+  'travel',
+  'subscription',
+];
 
 export function isCatalogueCategory(value: unknown): value is CatalogueCategory {
   return (CATALOGUE_CATEGORIES as readonly unknown[]).includes(value);
@@ -157,7 +168,7 @@ export function deriveCatalogue(input: DeriveCatalogueInput): CatalogueView {
       indicative: false,
     }));
 
-  const order: Record<CatalogueCategory, number> = { labor: 0, supply: 1, travel: 2 };
+  const order: Record<CatalogueCategory, number> = { labor: 0, supply: 1, travel: 2, subscription: 3 };
   prestations.sort((left, right) => {
     const categoryOrder = order[left.category] - order[right.category];
     return categoryOrder !== 0 ? categoryOrder : left.label.localeCompare(right.label, 'fr');

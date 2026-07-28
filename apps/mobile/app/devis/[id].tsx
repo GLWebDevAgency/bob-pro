@@ -11,13 +11,14 @@ import { Feather } from '@expo/vector-icons';
 import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, parisDateOnly, type PieceLineView, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { PERSONALITY_LABELS, t } from '@bob/i18n';
-import { Card, ErrorRetry, FadeIn, SectionHeader, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
+import { Button, Card, ErrorRetry, FadeIn, SectionHeader, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import {
   appErrorMessage,
   useAttachQuotePurchaseOrder,
   useCreateQuoteViewLink,
   useCustomers,
   useDetachQuotePurchaseOrder,
+  useDuplicateQuote,
   useInvoices,
   useQuote,
   useRemoveQuoteLine,
@@ -301,6 +302,77 @@ export default function DevisDetail() {
     open: () => undefined,
   });
   poVoiceRef.current = { canOpen: screenDataReady && poEditable, open: openPoSheet };
+
+  // ── PR-14 « Refaire ce devis » : NOUVEAU brouillon via CreateQuote serveur — TVA revalidée
+  //    au régime du jour, faits légaux (signature, urgence) et temporels (n°, validité) JAMAIS
+  //    copiés. Taux réduits : l'éligibilité est RE-DEMANDÉE au point de décision (jamais copiée). ──
+  const duplicate = useDuplicateQuote();
+  const runDuplicate = async (vatChoice: {
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    standardRateForReducedLines?: boolean;
+  }): Promise<void> => {
+    const ok = await confirm({
+      title: t('devis.duplicateConfirmTitle', { personality }),
+      message: t('devis.duplicateConfirmBody', { personality }),
+      challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+    });
+    if (!ok) return;
+    try {
+      const created = await duplicate.mutateAsync({
+        quoteId: id,
+        ...vatChoice,
+        // Clé par GESTE : un retry réseau rejoue LA même création ; un nouveau tap volontaire
+        // (seconde copie) reçoit une nouvelle clé.
+        idempotencyKey: `refaire:${id}:${Date.now()}`,
+      });
+      if (created.vatAdjustments.length > 0) {
+        Alert.alert(
+          t('devis.duplicateDone', { personality }),
+          t('devis.duplicateVatAdjusted', {
+            personality,
+            params: { count: String(created.vatAdjustments.length) },
+          }),
+        );
+      }
+      router.push(`/devis/${created.quoteId}`);
+    } catch (error) {
+      Alert.alert('Oups', appErrorMessage(error));
+    }
+  };
+  const handleDuplicate = (): void => {
+    const q = quote.data;
+    if (!q || duplicate.isPending) return;
+    const reducedRates = q.lines.some((line) => line.vatRate === 10 || line.vatRate === 5.5);
+    if (!reducedRates) {
+      void runDuplicate({});
+      return;
+    }
+    const energy = q.lines.some((line) => line.vatRate === 5.5)
+      ? t('devis.duplicateEligibilityEnergy', { personality })
+      : '';
+    // Pédagogie légale au point de décision : l'éligibilité appartient à la NOUVELLE pièce.
+    Alert.alert(
+      t('devis.duplicateEligibilityTitle', { personality }),
+      t('devis.duplicateEligibilityBody', { personality, params: { energy } }),
+      [
+        { text: t('common.cancel', { personality }), style: 'cancel' },
+        {
+          text: t('devis.duplicateEligibilityNo', { personality }),
+          onPress: () => void runDuplicate({ standardRateForReducedLines: true }),
+        },
+        {
+          text: t('devis.duplicateEligibilityYes', { personality }),
+          onPress: () =>
+            void runDuplicate({
+              context: {
+                housingOlderThan2y: true,
+                ...(q.lines.some((line) => line.vatRate === 5.5) ? { energyRenovation: true } : {}),
+              },
+            }),
+        },
+      ],
+    );
+  };
 
   // ── R7 (parité vocale) : « génère la facture finale »/« facture d'acompte »/« facture complète »
   //    sur un devis SIGNÉ. Plancher de sûreté : l'affordance dit (say) et, au mieux, OUVRE le Sheet
@@ -702,6 +774,25 @@ export default function DevisDetail() {
                 onRemove={() => void removePurchaseOrder()}
                 onOpenDocument={(documentId) => router.push(`/documents/${documentId}`)}
               />
+            ) : null}
+            {/* PR-14 — « Refaire ce devis » : pertinent dès que la pièce a vécu (envoyée, signée,
+                refusée, expirée) ; un brouillon s'édite directement. */}
+            {q.status !== 'draft' ? (
+              <Card style={{ marginTop: 12 }}>
+                <SectionHeader title={t('devis.duplicateCta', { personality })} />
+                <Text style={[font('sub', 500), { color: colors.slate500, marginBottom: 10 }]}>
+                  {t('devis.duplicateConfirmBody', { personality })}
+                </Text>
+                <View style={{ alignSelf: 'flex-start' }}>
+                  <Button
+                    title={t('devis.duplicateCta', { personality })}
+                    variant="secondary"
+                    loading={duplicate.isPending}
+                    icon={<Feather name="copy" size={15} color={colors.ink900} />}
+                    onPress={handleDuplicate}
+                  />
+                </View>
+              </Card>
             ) : null}
           </>
         }

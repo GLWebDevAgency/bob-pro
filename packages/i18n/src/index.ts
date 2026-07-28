@@ -340,6 +340,65 @@ const legacyFr = {
     pro: 'Sans réponse depuis {days} jours. Le message ci-dessous est pré-rédigé — rien ne part sans votre geste.',
     direct: '{days} j sans réponse. Message prêt — rien ne part sans toi.',
   },
+  // PR-14 — « Refaire ce devis » : duplication en NOUVEAU brouillon via CreateQuote (TVA
+  // revalidée au régime du jour ; signature, urgence, n°, validité JAMAIS copiés).
+  'devis.duplicateCta': {
+    pote: 'Refaire ce devis',
+    pro: 'Refaire ce devis',
+    direct: 'Refaire',
+  },
+  'devis.duplicateConfirmTitle': {
+    pote: 'Refaire ce devis ?',
+    pro: 'Dupliquer ce devis ?',
+    direct: 'Refaire ce devis ?',
+  },
+  'devis.duplicateConfirmBody': {
+    pote: 'Bob crée un NOUVEAU brouillon : mêmes lignes, remises et site. La TVA est revalidée au régime du jour ; signature, urgence, numéro et validité repartent de zéro.',
+    pro: 'Un nouveau brouillon est créé : lignes, remises et site identiques. La TVA est revalidée au régime actuel ; signature, urgence, numéro et validité ne sont jamais repris.',
+    direct: 'Nouveau brouillon. Mêmes lignes. TVA revalidée. Rien d’autre repris.',
+  },
+  'devis.duplicateConfirmCta': {
+    pote: 'Créer le brouillon',
+    pro: 'Créer le brouillon',
+    direct: 'Créer',
+  },
+  // Taux réduits travaux : l'éligibilité est RE-DEMANDÉE — le fait légal appartient à la
+  // nouvelle pièce, jamais copié (suggestVatRate refuse sinon, refus actionnable).
+  'devis.duplicateEligibilityTitle': {
+    pote: 'TVA réduite : toujours d’actualité ?',
+    pro: 'Taux réduit : conditions à reconfirmer',
+    direct: 'TVA réduite : on reconfirme ?',
+  },
+  'devis.duplicateEligibilityBody': {
+    pote: 'Ce devis porte de la TVA réduite (logement de plus de 2 ans{energy}). C’est encore le cas pour le nouveau devis ?',
+    pro: 'Ce devis comporte des lignes au taux réduit (logement achevé depuis plus de 2 ans{energy}). Ces conditions valent-elles pour le nouveau devis ?',
+    direct: 'TVA réduite (logement > 2 ans{energy}). Toujours vrai ?',
+  },
+  'devis.duplicateEligibilityEnergy': {
+    pote: ' et rénovation énergétique',
+    pro: ' et rénovation énergétique',
+    direct: ' + rénov énergétique',
+  },
+  'devis.duplicateEligibilityYes': {
+    pote: 'Oui — conditions remplies',
+    pro: 'Oui — conditions remplies',
+    direct: 'Oui',
+  },
+  'devis.duplicateEligibilityNo': {
+    pote: 'Non — TVA 20 %',
+    pro: 'Non — repasser à 20 %',
+    direct: 'Non — 20 %',
+  },
+  'devis.duplicateDone': {
+    pote: 'Brouillon créé — à toi de jouer.',
+    pro: 'Brouillon créé.',
+    direct: 'Brouillon créé.',
+  },
+  'devis.duplicateVatAdjusted': {
+    pote: 'TVA recalculée au régime actuel : {count} ligne(s) ajustée(s).',
+    pro: 'TVA recalculée au régime actuel : {count} ligne(s) ajustée(s).',
+    direct: 'TVA ajustée sur {count} ligne(s).',
+  },
   // PR-05 — devis signé SANS n° de bon de commande alors que le contexte l'exige (b2g ou
   // canal chorus/portail) : sans BC, la facture dérivée sera rejetée par l'acheteur.
   'today.prioBcManquantTitle': {
@@ -3719,6 +3778,12 @@ const legacyFr = {
     pote: 'Déplacement',
     pro: 'Déplacement',
     direct: 'Déplacement',
+  },
+  // PR-14 « Le métier » — forfaits/contrats récurrents (entretien annuel, maintenance).
+  'voix.catSubscription': {
+    pote: 'Abonnement / forfait',
+    pro: 'Abonnement / forfait',
+    direct: 'Abonnement',
   },
   'voix.totalHt': {
     pote: 'Total HT',

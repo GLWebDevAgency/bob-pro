@@ -23,6 +23,7 @@ import { InMemoryJournalStore } from '@bob/ai/testing';
 import {
   buildValueDigest,
   CreateQuote,
+  buildQuoteDuplicationInput,
   SendQuote,
   SignQuote,
   CreateQuoteSignatureLink,
@@ -154,6 +155,7 @@ import {
   type QualifiedBankBalanceWithPosition,
   type CustomerListItem,
   type CreateQuoteOutput,
+  type DuplicateQuoteOutput,
   type DiagnosticResult,
   type DiagnosticAssessmentView,
   type DiagnosticAssessmentWriteRequest,
@@ -3307,6 +3309,46 @@ export class LocalBobClient implements BobClient {
         throw cause;
       }
     });
+  }
+
+  /** PR-14 « Refaire ce devis » — parité serveur : dérivation buildQuoteDuplicationInput
+   * (@bob/core, autorité de la non-copie des faits légaux + TVA re-suggérée) puis passage
+   * INTÉGRAL par createQuote (mêmes gardes, même idempotence locale). */
+  async duplicateQuote(
+    quoteId: string,
+    input: {
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      standardRateForReducedLines?: boolean;
+      idempotencyKey?: string | null;
+    } = {},
+  ): Promise<Result<DuplicateQuoteOutput, AppError>> {
+    await this.ready;
+    const source = await this.quotes.findById(quoteId);
+    if (!source || source.companyId !== this.companyId) {
+      return err({ kind: 'not_found', entity: 'quote', id: quoteId });
+    }
+    const company = await this.companies.findById(this.companyId);
+    if (!company) return err({ kind: 'not_found', entity: 'company', id: this.companyId });
+    const customer = await this.customers.findById(source.customerId);
+    if (!customer || customer.companyId !== this.companyId) {
+      return err({ kind: 'not_found', entity: 'customer', id: source.customerId });
+    }
+    const draft = buildQuoteDuplicationInput({
+      source,
+      company,
+      customer,
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      ...(input.standardRateForReducedLines !== undefined
+        ? { standardRateForReducedLines: input.standardRateForReducedLines }
+        : {}),
+    });
+    if (!draft.ok) return draft;
+    const created = await this.createQuote({
+      ...draft.value.input,
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+    });
+    if (!created.ok) return created;
+    return ok({ ...created.value, vatAdjustments: draft.value.vatAdjustments });
   }
 
   private createQuoteInternal(

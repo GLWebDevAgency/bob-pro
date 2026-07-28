@@ -1494,6 +1494,73 @@ function parseDiscountField(
   return undefined;
 }
 
+/** PR-14 — POST /quotes/:id/duplicate : la duplication n'accepte AUCUNE matière libre — le
+ * contenu vient du devis source relu serveur ; seuls l'éligibilité re-déclarée des taux
+ * réduits, le choix explicite « repasser à 20 % » et la clé d'idempotence traversent. */
+const DUPLICATE_QUOTE_FIELDS = new Set(['context', 'standardRateForReducedLines', 'idempotencyKey']);
+
+function parseDuplicateQuoteBody(body: Record<string, unknown>): {
+  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+  standardRateForReducedLines?: boolean;
+  idempotencyKey?: string | null;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!DUPLICATE_QUOTE_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const rawContext = body['context'];
+  let context: { housingOlderThan2y?: boolean; energyRenovation?: boolean } | undefined;
+  if (rawContext !== undefined) {
+    if (!isJsonRecord(rawContext)) {
+      issues.push({ field: 'context', message: 'Contexte objet requis.' });
+    } else {
+      const unknownField = Object.keys(rawContext).find((f) => !CREATE_QUOTE_CONTEXT_FIELDS.has(f));
+      if (unknownField !== undefined) {
+        issues.push({ field: 'context', message: `Champ non autorisé : ${unknownField}.` });
+      }
+      for (const field of CREATE_QUOTE_CONTEXT_FIELDS) {
+        if (rawContext[field] !== undefined && typeof rawContext[field] !== 'boolean') {
+          issues.push({ field: `context.${field}`, message: 'Booléen attendu.' });
+        }
+      }
+      context = {
+        ...(typeof rawContext['housingOlderThan2y'] === 'boolean'
+          ? { housingOlderThan2y: rawContext['housingOlderThan2y'] }
+          : {}),
+        ...(typeof rawContext['energyRenovation'] === 'boolean'
+          ? { energyRenovation: rawContext['energyRenovation'] }
+          : {}),
+      };
+    }
+  }
+  const rawStandard = body['standardRateForReducedLines'];
+  if (rawStandard !== undefined && typeof rawStandard !== 'boolean') {
+    issues.push({ field: 'standardRateForReducedLines', message: 'Booléen attendu.' });
+  }
+  const rawKey = body['idempotencyKey'];
+  if (
+    rawKey !== undefined &&
+    rawKey !== null &&
+    (typeof rawKey !== 'string' ||
+      rawKey.trim().length === 0 ||
+      rawKey.length > 200 ||
+      hasControlCharacter(rawKey))
+  ) {
+    issues.push({
+      field: 'idempotencyKey',
+      message: "Clé d'idempotence invalide (1 à 200 caractères imprimables).",
+    });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    ...(context !== undefined ? { context } : {}),
+    ...(typeof rawStandard === 'boolean' ? { standardRateForReducedLines: rawStandard } : {}),
+    ...(rawKey !== undefined ? { idempotencyKey: rawKey as string | null } : {}),
+  };
+}
+
 function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteInput, 'companyId'> {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
@@ -2738,6 +2805,15 @@ export class QuotesController {
   async create(@Body() body: unknown) {
     assertJsonObjectBody(body);
     return unwrap(await this.backend.createQuote(parseCreateQuoteBody(body)));
+  }
+  /** PR-14 « Refaire ce devis » — NOUVEAU brouillon repassant intégralement par CreateQuote
+   * (TVA revalidée au régime du jour ; signature/urgence/n°/validité jamais copiés). Hors
+   * transaction d'intercepteur : le coordinateur idempotent gère les siennes (patron POST /). */
+  @Post(':id/duplicate')
+  @WithoutTenantPersistenceTransaction()
+  async duplicate(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.duplicateQuote(id, parseDuplicateQuoteBody(body)));
   }
   @Post(':id/send')
   async send(@Param('id') id: string) {

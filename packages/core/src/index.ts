@@ -115,6 +115,7 @@ export * from './application/banking/create-bank-balance-snapshot';
 export * from './application/banking/get-latest-qualified-bank-balance';
 export * from './application/banking/derive-cash-position';
 export * from './application/billing/create-quote';
+export * from './application/billing/duplicate-quote';
 export * from './application/billing/compose-standalone-invoice';
 export * from './application/billing/line-input-validation';
 export * from './application/billing/send-quote';
