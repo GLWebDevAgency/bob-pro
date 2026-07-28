@@ -30,9 +30,17 @@ on:
       - packages/ai/src/realtime/**
       - pnpm-lock.yaml
 
+# Dédoublonnage (audit CI 2026-07-28) : les runs PR d'une même ref s'annulent quand un commit
+# les rend caducs — comportement historique conservé, c'est lui qui borne le coût macOS des
+# rafales de branche. Les runs de main et les dispatch reçoivent un groupe unique par run
+# (run_id) : deux merges rapprochés ne s'annulent jamais entre eux, chaque merge sur main
+# garde sa preuve native complète (main est la vérité de référence des caches ci-dessous).
 concurrency:
-  group: bob-live-native-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.event_name == 'pull_request'
+    && format('bob-live-native-pr-{0}', github.ref)
+    || format('bob-live-native-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Le config Expo refuse volontairement tout binaire sans API, auth et liens légaux. Les valeurs
 # ci-dessous sont des origines réservées au harnais de compilation : elles ne sont ni des données
@@ -80,6 +88,24 @@ jobs:
           pnpm --dir apps/mobile exec expo-modules-autolinking verify --platform apple
       - name: Generate the ephemeral Android project
         run: pnpm --filter @bob/mobile exec expo prebuild --platform android --no-install
+      # Cache d'ENTRÉES uniquement (audit CI 2026-07-28 : distribution Gradle + dépendances
+      # retéléchargées à froid ≈ 2-3 min sur les 4,1 min du step). GRADLE_USER_HOME reste un
+      # répertoire dédié hors du dépôt et `--no-daemon` est conservé : on ne met en cache que
+      # `caches/` et `wrapper/`, jamais une sortie de build. Gradle revalide chaque dépendance
+      # par empreinte : un cache partiel ou périmé est complété, jamais cru sur parole — les
+      # tests VAD restent strictement déterministes. Le step est placé APRÈS le prebuild pour
+      # que la clé hache le wrapper Gradle réellement généré par Expo.
+      - name: Mettre en cache les dépendances Gradle (wrapper + dépôts)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ${{ runner.temp }}/bob-live-gradle/caches
+            ${{ runner.temp }}/bob-live-gradle/wrapper
+          key: bob-live-gradle-${{ runner.os }}-${{ hashFiles('apps/mobile/android/gradle/wrapper/gradle-wrapper.properties', 'pnpm-lock.yaml', 'apps/mobile/app.json', 'apps/mobile/package.json', 'apps/mobile/modules/bob-live-audio/android/build.gradle') }}
+          # Préfixe partiel sûr pour un cache de dépendances : Gradle télécharge ce qui manque
+          # et ignore ce qui ne correspond plus, il ne peut pas produire de faux vert.
+          restore-keys: |
+            bob-live-gradle-${{ runner.os }}-
       - name: Compile the Android bridge and run its deterministic VAD tests
         working-directory: apps/mobile/android
         env:
@@ -95,6 +121,11 @@ jobs:
     timeout-minutes: 35
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      # Déclinaison « clé de cache » du pin ci-dessus (contrainte documentée : toute clé
+      # DerivedData doit inclure la version Xcode épinglée). Monter de Xcode = changer les
+      # DEUX valeurs ; le garde apps/api/scripts/ci-cost-guardrails.test.mjs vérifie qu'elles
+      # restent alignées, et le changement invalide mécaniquement le cache DerivedData.
+      XCODE_CACHE_PIN: xcode-26.6
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -137,9 +168,39 @@ jobs:
           "${RUNNER_TEMP}/bob-live-vad-tests"
       - name: Generate the ephemeral iOS project
         run: pnpm --filter @bob/mobile exec expo prebuild --platform ios --no-install
+      # Cache d'ENTRÉES CocoaPods (audit CI 2026-07-28 : pod install à froid p50 1,2 min) :
+      # le cache de téléchargement (~/Library/Caches/CocoaPods) et les sources de pods déjà
+      # résolues (ios/Pods). `pod install` revalide toujours Podfile/Manifest : un contenu
+      # partiel ou périmé est réinstallé, jamais accepté tel quel — pas de faux vert possible.
+      # Le step est placé APRÈS le prebuild pour que la clé hache le Podfile réellement généré.
+      - name: Mettre en cache CocoaPods (téléchargements + Pods résolus)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            apps/mobile/ios/Pods
+          key: bob-live-pods-${{ runner.os }}-${{ hashFiles('apps/mobile/ios/Podfile', 'pnpm-lock.yaml', 'apps/mobile/app.json') }}
+          restore-keys: |
+            bob-live-pods-${{ runner.os }}-
       - name: Resolve the generated CocoaPods workspace
         working-directory: apps/mobile/ios
         run: pod install
+      # DerivedData — LE poste dominant du parc CI (audit 2026-07-28 : xcodebuild à froid p50
+      # 16,5 min, ~86 % du coût pondéré au multiplicateur macOS). Discipline anti-faux-vert :
+      #   1. restauration UNIQUEMENT en pull_request et UNIQUEMENT sur clé EXACTE (aucune
+      #      restore-key partielle) — un build incrémental n'est accepté que si le Xcode épinglé,
+      #      le Podfile.lock généré, pnpm-lock.yaml et app.json sont identiques ; au moindre
+      #      écart, build à froid complet ;
+      #   2. les runs de main (push/dispatch) ne restaurent JAMAIS : chaque merge garde son
+      #      build à froid comme vérité de référence, et c'est lui qui sème le cache exact que
+      #      les PR consomment ; en cas de doute sur un vert de PR, le run de main tranche.
+      - name: Restaurer DerivedData (PR uniquement, clé exacte)
+        id: deriveddata_restore
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/bob-live-derived-data
+          key: bob-live-deriveddata-${{ env.XCODE_CACHE_PIN }}-${{ hashFiles('apps/mobile/ios/Podfile.lock', 'pnpm-lock.yaml', 'apps/mobile/app.json') }}
       - name: Compile the real Expo iOS application and BobLiveAudio pod
         working-directory: apps/mobile/ios
         run: |
@@ -153,3 +214,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
+      # Sauvegarde du DerivedData seulement après un xcodebuild VERT (un step sans `always()`
+      # ne tourne pas si un step précédent a échoué : aucun état partiel d'un build rouge ne
+      # peut être semé), et seulement si la clé exacte n'était pas déjà servie. Sur main, le
+      # restore est sauté donc `cache-hit` est vide : c'est bien main qui sème la référence.
+      - name: Sauvegarder DerivedData après un build vert
+        if: steps.deriveddata_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/bob-live-derived-data
+          key: bob-live-deriveddata-${{ env.XCODE_CACHE_PIN }}-${{ hashFiles('apps/mobile/ios/Podfile.lock', 'pnpm-lock.yaml', 'apps/mobile/app.json') }}
