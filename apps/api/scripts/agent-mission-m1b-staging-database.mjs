@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
+import {
+  boundedPsqlSpawnOptions,
+  withPsqlChildEnvironment,
+} from './psql-child-environment.mjs';
 
 const SYSTEM_IDENTIFIER = /^[1-9][0-9]{0,29}$/u;
 const POSITIVE_INTEGER = /^[1-9][0-9]{0,9}$/u;
@@ -198,8 +201,11 @@ export function assertM1BStagingDatabaseIdentity(config, direct, runtime) {
   if (direct.currentUser !== 'postgres' || direct.sessionUser !== 'postgres') {
     fail('DIRECT_URL did not connect as the migration role');
   }
-  if (!direct.roleSuperuser && !direct.roleBypassRls) {
-    fail('DIRECT_URL cannot prove global state through forced RLS');
+  if (direct.roleSuperuser) {
+    fail('DIRECT_URL staging certification requires the real non-superuser Supabase deployer');
+  }
+  if (!direct.roleBypassRls) {
+    fail('DIRECT_URL cannot prove global state through forced RLS without BYPASSRLS');
   }
   if (
     runtime.currentUser !== config.appRole ||
@@ -216,14 +222,17 @@ export function assertM1BStagingDatabaseIdentity(config, direct, runtime) {
   });
 }
 
-function queryIdentity(url, source, dependencies = {}) {
+function queryIdentity(url, source, environment, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
-  const result = withPsqlChildEnvironment(url, process.env, (childEnvironment) =>
-    spawn('psql', ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'], {
-      input: IDENTITY_SQL,
-      encoding: 'utf8',
-      env: childEnvironment,
-    }),
+  const result = withPsqlChildEnvironment(url, environment, (childEnvironment) =>
+    spawn(
+      'psql',
+      ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'],
+      boundedPsqlSpawnOptions(childEnvironment, {
+        input: IDENTITY_SQL,
+        encoding: 'utf8',
+      }),
+    ),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
@@ -238,8 +247,18 @@ function queryIdentity(url, source, dependencies = {}) {
 
 export function certifyM1BStagingDatabase(environment = process.env, dependencies = {}) {
   const config = parseM1BStagingDatabaseEnvironment(environment);
-  const direct = queryIdentity(config.directUrl, 'DIRECT_URL', dependencies);
-  const runtime = queryIdentity(config.runtimeUrl, 'DATABASE_URL', dependencies);
+  const direct = queryIdentity(
+    config.directUrl,
+    'DIRECT_URL',
+    environment,
+    dependencies,
+  );
+  const runtime = queryIdentity(
+    config.runtimeUrl,
+    'DATABASE_URL',
+    environment,
+    dependencies,
+  );
   return assertM1BStagingDatabaseIdentity(config, direct, runtime);
 }
 

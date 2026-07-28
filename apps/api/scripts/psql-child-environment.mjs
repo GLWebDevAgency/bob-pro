@@ -52,6 +52,31 @@ const CONNECTION_ALIASES = Object.freeze([
   ...Object.values(QUERY_PARAMETER_ENVIRONMENT),
 ]);
 
+export const PSQL_CONNECT_TIMEOUT_SECONDS = '10';
+export const PSQL_PROCESS_TIMEOUT_MILLISECONDS = 45_000;
+
+export function boundedPsqlSpawnOptions(childEnvironment, options = {}) {
+  if (
+    childEnvironment === null
+    || typeof childEnvironment !== 'object'
+    || Array.isArray(childEnvironment)
+    || options === null
+    || typeof options !== 'object'
+    || Array.isArray(options)
+  ) {
+    throw new TypeError('bounded psql spawn options require objects');
+  }
+  return {
+    ...options,
+    env: {
+      ...childEnvironment,
+      PGCONNECT_TIMEOUT: PSQL_CONNECT_TIMEOUT_SECONDS,
+    },
+    timeout: PSQL_PROCESS_TIMEOUT_MILLISECONDS,
+    killSignal: 'SIGKILL',
+  };
+}
+
 function invalidConnectionUrl() {
   throw new TypeError('PostgreSQL connection URL is missing or invalid');
 }

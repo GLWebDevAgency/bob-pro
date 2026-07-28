@@ -190,7 +190,7 @@ jobs:
             apps/api/scripts/psql-child-environment.test.mjs \
             apps/api/scripts/agent-mission-m1b-staging-*.test.mjs
           node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
-      - name: Preflight Railway variables and migration-aware flag baseline
+      - name: Preflight Railway variables and strict flag baseline
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
@@ -199,9 +199,6 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            node apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
@@ -236,9 +233,8 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
@@ -278,7 +274,8 @@ jobs:
           node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
       - name: Prove real WebRTC negotiation remains OFF
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -325,9 +322,8 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
       - name: Deploy exact SHA with M1-B configured
         id: deploy_active
         timeout-minutes: 60
@@ -371,7 +367,8 @@ jobs:
           echo "acoustic_readiness_ms=$acoustic_readiness_ms" >> "$GITHUB_OUTPUT"
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-active
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -523,9 +520,8 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
       - name: Deploy exact SHA with M1-B OFF again
         id: deploy_off
         if: ${{ always() && steps.remove_variables.outputs.removed == 'true' }}
@@ -575,7 +571,8 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs off
@@ -660,6 +657,11 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 90
+      - name: Require the measured staging budget after preserving evidence
+        run: |
+          node apps/api/scripts/agent-mission-m1b-staging-report.mjs \
+            verify-performance \
+            ".release-evidence/agent-mission-m1b/${GITHUB_SHA}.json"
 
   verdict:
     needs:

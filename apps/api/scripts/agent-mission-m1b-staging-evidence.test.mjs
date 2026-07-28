@@ -98,7 +98,7 @@ function cleanProof(overrides = {}) {
     roleSafe: true,
     activeMissionCount: 0,
     draftCount: 0,
-    protocolLeaseCount: 0,
+    tenantLeaseCount: 0,
     ...overrides,
   };
 }
@@ -138,6 +138,7 @@ function negativeFinalProof(overrides = {}) {
     roleMatches: true,
     roleSafe: true,
     sessionLeaseCount: 0,
+    tenantLeaseCount: 0,
     activeMissionCount: 0,
     draftCount: 0,
     ...overrides,
@@ -182,13 +183,13 @@ test('preuve active exige mission, événements, brouillon, lease et RLS exacts'
   );
 });
 
-test('préflight runtime refuse mission, brouillon ou lease V1 préexistants', () => {
+test('préflight runtime refuse mission, brouillon ou toute lease tenant préexistants', () => {
   assert.deepEqual(decodeM1BCleanEvidence(cleanProof()), {
     stage: 'clean',
     passed: true,
   });
   assert.throws(
-    () => decodeM1BCleanEvidence(cleanProof({ protocolLeaseCount: 1 })),
+    () => decodeM1BCleanEvidence(cleanProof({ tenantLeaseCount: 1 })),
     /account\/tenant is not clean/u,
   );
 });
@@ -258,7 +259,7 @@ test('preuve finale exige mission annulée, journal complet, brouillon et lease 
   );
 });
 
-test('preuve OFF finale exige la disparition de la lease exacte après hangup', () => {
+test('preuve OFF finale exige la disparition de la lease exacte et de toute lease tenant', () => {
   assert.deepEqual(decodeM1BNegativeFinalEvidence(negativeFinalProof()), {
     stage: 'negative-final',
     passed: true,
@@ -266,6 +267,12 @@ test('preuve OFF finale exige la disparition de la lease exacte après hangup', 
   assert.throws(
     () => decodeM1BNegativeFinalEvidence(negativeFinalProof({
       sessionLeaseCount: 1,
+    })),
+    /negative runtime cleanup proof/u,
+  );
+  assert.throws(
+    () => decodeM1BNegativeFinalEvidence(negativeFinalProof({
+      tenantLeaseCount: 1,
     })),
     /negative runtime cleanup proof/u,
   );
@@ -296,6 +303,9 @@ test('certification passe les identités en variables psql et ne les imprime pas
   assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
   assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
   assert.equal(calls[0].options.env.PGUSER, 'bob_app');
+  assert.equal(calls[0].options.env.PGCONNECT_TIMEOUT, '10');
+  assert.equal(calls[0].options.timeout, 45_000);
+  assert.equal(calls[0].options.killSignal, 'SIGKILL');
   assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
   assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
   assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
@@ -405,5 +415,9 @@ test('preuve OFF finale cible uniquement la session créée par le smoke', () =>
   );
   assert.equal(calls[0].options.input, M1B_NEGATIVE_FINAL_EVIDENCE_SQL);
   assert.equal(calls[0].options.input.includes(SESSION_ID), false);
+  assert.equal(
+    calls[0].options.input.includes('"agentMissionProtocolVersion"'),
+    false,
+  );
   assert.equal(calls[0].args.includes(`session_id=${SESSION_ID}`), true);
 });

@@ -120,7 +120,16 @@ test('preuve croise cluster, base, migration role et runtime RLS exacts', () => 
         { ...direct, roleBypassRls: false, roleSuperuser: false },
         runtime,
       ),
-    /cannot prove global state through forced RLS/u,
+    /without BYPASSRLS/u,
+  );
+  assert.throws(
+    () =>
+      assertM1BStagingDatabaseIdentity(
+        config,
+        { ...direct, roleSuperuser: true },
+        runtime,
+      ),
+    /non-superuser Supabase deployer/u,
   );
 });
 
@@ -162,6 +171,9 @@ test('certification interroge DIRECT puis runtime sans imprimer les URLs', () =>
   assert.equal(calls[0].options.env.PGUSER, `postgres.${PROJECT_REF}`);
   assert.equal(calls[1].options.env.PGUSER, `${APP_ROLE}.${PROJECT_REF}`);
   for (const call of calls) {
+    assert.equal(call.options.timeout, 45_000);
+    assert.equal(call.options.killSignal, 'SIGKILL');
+    assert.equal(call.options.env.PGCONNECT_TIMEOUT, '10');
     assert.equal(call.args.includes(environment().DIRECT_URL), false);
     assert.equal(call.args.includes(environment().DATABASE_URL), false);
     assert.equal(call.args.some((value) => String(value).includes('secret')), false);

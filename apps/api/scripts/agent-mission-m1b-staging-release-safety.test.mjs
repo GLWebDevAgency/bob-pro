@@ -18,6 +18,17 @@ const readinessSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-readiness.mjs'),
   'utf8',
 );
+const targetedReleaseSource = readFileSync(
+  resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-release.mjs'),
+  'utf8',
+);
+const fingerprintManagerSource = readFileSync(
+  resolve(
+    repositoryRoot,
+    'apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs',
+  ),
+  'utf8',
+);
 
 function occurrences(value, pattern) {
   return value.match(pattern)?.length ?? 0;
@@ -108,8 +119,26 @@ test('le compte Bob Live échoue avant toute installation, build ou mutation sta
 });
 
 test('les trois déploiements API et le déploiement Whisper ont un ID exact', () => {
-  assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=predeploy/gu), 3);
-  assert.equal(occurrences(workflow, /BOB_RELEASE_PHASE=postdeploy/gu), 3);
+  assert.equal(
+    occurrences(
+      workflow,
+      /agent-mission-m1b-staging-release\.mjs predeploy/gu,
+    ),
+    3,
+  );
+  assert.equal(
+    occurrences(
+      workflow,
+      /agent-mission-m1b-staging-release\.mjs postdeploy/gu,
+    ),
+    3,
+  );
+  assert.equal(
+    occurrences(workflow, /env CABINET_RELEASE_ENV=staging/gu),
+    6,
+  );
+  assert.doesNotMatch(workflow, /BOB_RELEASE_PHASE/u);
+  assert.doesNotMatch(workflow, /apps\/api\/scripts\/release\.sh/u);
   const explicitStagingReleaseGates = occurrences(
     workflow,
     /env RELEASE_ENVIRONMENT=staging \\\n\s+sh apps\/api\/scripts\/check-release-env\.sh/gu,
@@ -239,7 +268,7 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
   );
 });
 
-test('premier run N-1 est migration-aware puis exige le flag canonique juste après predeploy', () => {
+test('staging est réconcilié avant la recertification stricte puis exige le flag canonique', () => {
   assert.equal(
     occurrences(workflow, /agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/gu),
     2,
@@ -252,7 +281,7 @@ test('premier run N-1 est migration-aware puis exige le flag canonique juste apr
   );
   assert.match(
     workflow,
-    /- name: Baseline OFF predeploy[\s\S]*?BOB_RELEASE_PHASE=predeploy[\s\S]*?sh apps\/api\/scripts\/release\.sh[\s\S]*?agent-mission-m1b-staging-flag\.mjs preflight[\s\S]*?- name: Deploy exact SHA with M1-B OFF/u,
+    /- name: Baseline OFF predeploy[\s\S]*?agent-mission-m1b-staging-release\.mjs predeploy[\s\S]*?agent-mission-m1b-staging-flag\.mjs preflight[\s\S]*?- name: Deploy exact SHA with M1-B OFF/u,
   );
   assert.match(
     workflow,
@@ -282,31 +311,29 @@ test('chaque mutation DB est précédée de la preuve du Supabase staging éping
   assert.match(workflow, /id: off_predeploy[\s\S]*?steps\.remove_override\.outcome == 'success'/u);
 });
 
-test('la réconciliation Prisma staging est unique, épinglée et précède tout release.sh', () => {
+test('le lane staging refuse toute réparation Prisma et laisse le gate strict faire autorité', () => {
   assert.equal(
     occurrences(
       workflow,
       /node apps\/api\/scripts\/agent-mission-m1b-staging-migration-reconcile\.mjs/gu,
     ),
-    1,
+    0,
   );
   const databasePin = workflow.indexOf(
     'node apps/api/scripts/agent-mission-m1b-staging-database.mjs',
   );
-  const reconciliation = workflow.indexOf(
-    'node apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs',
-  );
   const flagPreflight = workflow.indexOf(
     'node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight',
   );
-  const firstRelease = workflow.indexOf('sh apps/api/scripts/release.sh');
+  const firstRelease = workflow.indexOf(
+    'node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy',
+  );
   assert.ok(databasePin >= 0);
-  assert.ok(reconciliation > databasePin);
-  assert.ok(flagPreflight > reconciliation);
-  assert.ok(firstRelease > reconciliation);
+  assert.ok(flagPreflight > databasePin);
+  assert.ok(firstRelease > flagPreflight);
   assert.match(
     workflow,
-    /agent-mission-m1b-staging-database\.mjs[\s\S]*?agent-mission-m1b-staging-migration-reconcile\.mjs[\s\S]*?agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/u,
+    /agent-mission-m1b-staging-database\.mjs[\s\S]*?agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/u,
   );
 });
 
@@ -320,6 +347,12 @@ test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict bi
   assert.match(workflow, /test "\$CERTIFY_RESULT" = success/u);
   assert.match(workflow, /test "\$CLEANUP_RESULT" = success/u);
   assert.match(workflow, /test "\$EVIDENCE_RESULT" = success/u);
+  assert.match(
+    workflow,
+    /Preserve bounded staging evidence[\s\S]*?Require the measured staging budget after preserving evidence[\s\S]*?verify-performance/u,
+  );
+  assert.match(reportSource, /targetDurationMilliseconds/u);
+  assert.match(reportSource, /targetMet: durationMilliseconds < TARGET_DURATION_MILLISECONDS/u);
 });
 
 test('chaque smoke réel, cleanup compris, repart d’une readiness re-certifiée au SHA exact, cache acoustique chaud', () => {
@@ -359,4 +392,47 @@ test('le lane M1-B ne mute aucun protocole étranger et ne masque aucun échec',
   assert.match(reportSource, /containsTokenSecretOrSdp: false/u);
   assert.match(reportSource, /containsAudioOrTranscript: false/u);
   assert.match(reportSource, /containsSignedUrl: false/u);
+});
+
+test('le gate ciblé ne traverse aucun mutateur étranger ni réparation globale', () => {
+  assert.doesNotMatch(
+    targetedReleaseSource,
+    /release\.sh|prisma migrate deploy|rls\.sql|runtime-grants|certify-mistral|manage-mistral|manage-bob-live-native/u,
+  );
+  assert.match(
+    targetedReleaseSource,
+    /manage-agent-mission-fingerprint-key-versions\.mjs/u,
+  );
+  assert.match(
+    targetedReleaseSource,
+    /realtime-global-capacity-release-cert\.sql/u,
+  );
+  assert.match(targetedReleaseSource, /PGCONNECT_TIMEOUT/u);
+  assert.match(targetedReleaseSource, /boundedPsqlSpawnOptions/u);
+  assert.match(targetedReleaseSource, /timeout: KEY_MANAGER_PROCESS_TIMEOUT_MS/u);
+  assert.doesNotMatch(
+    fingerprintManagerSource,
+    /manage-mistral|manage-bob-live-native|document_archive_protocol_state|invoice_settlement_protocol_state/u,
+  );
+
+  const snapshotStart = targetedReleaseSource.indexOf(
+    'const FOREIGN_AUTHORITY_SNAPSHOT_SQL = `',
+  );
+  const snapshotEnd = targetedReleaseSource.indexOf('\n`;', snapshotStart);
+  assert.ok(snapshotStart >= 0 && snapshotEnd > snapshotStart);
+  const outsideForeignSnapshot =
+    targetedReleaseSource.slice(0, snapshotStart)
+    + targetedReleaseSource.slice(snapshotEnd + 3);
+  assert.doesNotMatch(
+    outsideForeignSnapshot,
+    /realtime_mistral_conversation_(?:key|identity)|document_archive_protocol_state|invoice_settlement_protocol_state/u,
+  );
+  assert.match(
+    targetedReleaseSource,
+    /UPDATE public\.realtime_global_capacity/g,
+  );
+  assert.doesNotMatch(
+    targetedReleaseSource,
+    /\b(?:INSERT INTO|DELETE FROM|ALTER TABLE|CREATE TABLE|DROP TABLE|TRUNCATE TABLE)\b/iu,
+  );
 });

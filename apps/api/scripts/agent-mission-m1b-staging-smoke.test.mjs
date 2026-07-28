@@ -12,6 +12,7 @@ import {
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = '22222222-2222-4222-8222-222222222222';
+const RETRY_SESSION_ID = '77777777-7777-4777-8777-777777777777';
 const START_COMMAND_ID = '33333333-3333-4333-8333-333333333333';
 const ACK_COMMAND_ID = '44444444-4444-4444-8444-444444444444';
 const CANCEL_COMMAND_ID = '55555555-5555-4555-8555-555555555555';
@@ -91,14 +92,17 @@ function quoteDraft(meaningful = false) {
 
 function fakeDependencies(options = {}) {
   const events = [];
-  const ids = [
+  const ids = [...(options.ids ?? [
     SESSION_ID,
     START_COMMAND_ID,
     ACK_COMMAND_ID,
     CANCEL_COMMAND_ID,
-  ];
+  ])];
   let draft = options.preexistingDraft ?? null;
   let mission = options.preexistingMission ?? null;
+  let realtimeSessionId = SESSION_ID;
+  let createAttempts = 0;
+  let peerCreations = 0;
   let startAttempts = 0;
   let acknowledgementAttempts = 0;
   let cancelAttempts = 0;
@@ -106,7 +110,9 @@ function fakeDependencies(options = {}) {
   let negativeFinalEvidenceAttempts = 0;
   const missionSession = {
     protocolVersion: 1,
-    realtimeSessionId: SESSION_ID,
+    get realtimeSessionId() {
+      return realtimeSessionId;
+    },
     disposed: false,
     async getCurrentQuoteCreation() {
       events.push('mission:get-current');
@@ -142,7 +148,7 @@ function fakeDependencies(options = {}) {
         return { ok: false, error: options.ackError };
       }
       mission = activeMission(2, 'awaiting_customer', {
-        realtimeSessionId: SESSION_ID,
+        realtimeSessionId,
         contextRevision: 1,
         contextDigest: CONTEXT_DIGEST,
         screenName: '/devis/new',
@@ -210,10 +216,18 @@ function fakeDependencies(options = {}) {
       };
     },
     async createRealtimeVoiceCall(input) {
+      createAttempts += 1;
+      realtimeSessionId = input.sessionHandle;
       events.push(`realtime:create:${input.agentMissionProtocolVersion}`);
+      if (
+        Array.isArray(options.createErrors)
+        && options.createErrors[createAttempts - 1] !== undefined
+      ) {
+        return { ok: false, error: options.createErrors[createAttempts - 1] };
+      }
       const call = {
         transport: 'webrtc',
-        sessionHandle: SESSION_ID,
+        sessionHandle: input.sessionHandle,
         configVersion: 'bob-live-provider-neutral-v4',
         model: 'gpt-realtime',
         voice: 'marin',
@@ -245,7 +259,7 @@ function fakeDependencies(options = {}) {
         : { ok: true, value: { ended: true } };
     },
   };
-  const peer = {
+  const createFakePeer = () => ({
     offerSdp: OFFER_SDP,
     async applyAnswer(answer) {
       events.push(`peer:answer:${answer === ANSWER_SDP}`);
@@ -253,14 +267,24 @@ function fakeDependencies(options = {}) {
     async close() {
       events.push('peer:close');
     },
-  };
+  });
+  const sharedPeer = createFakePeer();
   return {
     events,
     dependencies: {
       authenticate: async () => ({ accessToken: token() }),
       createClient: async () => client,
-      createPeer: async () => peer,
+      createPeer: async () => {
+        peerCreations += 1;
+        events.push(`peer:create:${peerCreations}`);
+        return options.reusePeer === true ? sharedPeer : createFakePeer();
+      },
       randomUUID: () => ids.shift(),
+      isRealtimeBootstrapTimeoutError: (error) =>
+        error?.kind === 'dependency'
+        && error.port === 'api'
+        && error.cause === 'Délai réseau dépassé après 12000 ms.'
+        && Object.keys(error).length === 3,
       isMeaningfulQuoteDraftPayload: (payload) => payload.meaningful === true,
       certifyCleanEvidence() {
         events.push('evidence:clean');
@@ -320,6 +344,8 @@ function fakeDependencies(options = {}) {
       return {
         draft,
         mission,
+        createAttempts,
+        peerCreations,
         startAttempts,
         acknowledgementAttempts,
         cancelAttempts,
@@ -484,12 +510,15 @@ test('preuve OFF établit une vraie session WebRTC avec capability Mission nulle
     agentMission: 'off',
     cleanup: 'complete',
     hangupAccepted: true,
+    bootstrapAttempts: 1,
+    recoveredTimeout: false,
   });
   assert.deepEqual(fake.events, [
     'company:get',
     'evidence:clean',
     'draft:get',
     'realtime:config',
+    'peer:create:1',
     'realtime:create:1',
     'peer:answer:true',
     'realtime:hangup',
@@ -510,6 +539,158 @@ test('preuve OFF repolle la lease exacte après un hangup indisponible', async (
   assert.equal(fake.state().negativeFinalEvidenceAttempts, 3);
 });
 
+const bootstrapTimeout = {
+  kind: 'dependency',
+  port: 'api',
+  cause: 'Délai réseau dépassé après 12000 ms.',
+};
+
+test('un timeout bootstrap est réconcilié avant un unique retry avec session et peer neufs', async () => {
+  const fake = fakeDependencies({
+    agentMissionOff: true,
+    ids: [SESSION_ID, RETRY_SESSION_ID],
+    createErrors: [bootstrapTimeout],
+  });
+
+  const result = await runM1BNegativeStagingSmoke(environment(), fake.dependencies);
+
+  assert.equal(result.bootstrapAttempts, 2);
+  assert.equal(result.recoveredTimeout, true);
+  assert.equal(fake.state().createAttempts, 2);
+  assert.equal(fake.state().peerCreations, 2);
+  const firstCreate = fake.events.indexOf('realtime:create:1');
+  const firstClose = fake.events.indexOf('peer:close', firstCreate);
+  const firstHangup = fake.events.indexOf('realtime:hangup', firstClose);
+  const reconciled = fake.events.indexOf(
+    `evidence:negative-final:${SESSION_ID}`,
+    firstHangup,
+  );
+  const secondPeer = fake.events.indexOf('peer:create:2', reconciled);
+  const secondCreate = fake.events.indexOf('realtime:create:1', firstCreate + 1);
+  assert.equal(
+    firstCreate < firstClose
+      && firstClose < firstHangup
+      && firstHangup < reconciled
+      && reconciled < secondPeer
+      && secondPeer < secondCreate,
+    true,
+  );
+});
+
+test('la preuve positive reprend aussi un timeout avant de créer la mission', async () => {
+  const fake = fakeDependencies({
+    ids: [
+      SESSION_ID,
+      RETRY_SESSION_ID,
+      START_COMMAND_ID,
+      ACK_COMMAND_ID,
+      CANCEL_COMMAND_ID,
+    ],
+    createErrors: [bootstrapTimeout],
+  });
+
+  const result = await runM1BPositiveStagingSmoke(environment(), fake.dependencies);
+
+  assert.equal(result.bootstrapAttempts, 2);
+  assert.equal(result.recoveredTimeout, true);
+  assert.equal(fake.state().createAttempts, 2);
+  assert.equal(
+    fake.events.indexOf(`evidence:negative-final:${SESSION_ID}`)
+      < fake.events.indexOf(`mission:start:${START_COMMAND_ID}`),
+    true,
+  );
+});
+
+test('un second timeout bootstrap échoue fermé après exactement deux POST', async () => {
+  const fake = fakeDependencies({
+    agentMissionOff: true,
+    ids: [SESSION_ID, RETRY_SESSION_ID],
+    createErrors: [bootstrapTimeout, bootstrapTimeout],
+  });
+
+  await assert.rejects(
+    runM1BNegativeStagingSmoke(environment(), fake.dependencies),
+    /class=bootstrap_timeout, attempt=2/u,
+  );
+  assert.equal(fake.state().createAttempts, 2);
+  assert.equal(fake.state().negativeFinalEvidenceAttempts, 2);
+});
+
+test('aucune erreur bootstrap non ambiguë n’est rejouée et le diagnostic reste borné', async () => {
+  const privateValues = [
+    'm1b-staging@bob.test',
+    COMPANY_ID,
+    USER_ID,
+    'eyJhbGciOiJSUzI1NiJ9.private.jwt',
+    'v=0\r\na=private-sdp',
+  ];
+  const cases = [
+    { kind: 'conflict', entity: privateValues[1], reason: privateValues[4] },
+    { kind: 'validation', issues: [{ field: privateValues[2], message: privateValues[0] }] },
+    { kind: 'forbidden', reason: privateValues[3] },
+    { kind: 'rate_limited', reason: privateValues[0], retryAfterSeconds: 1 },
+    { kind: 'unavailable', service: privateValues[1] },
+    { kind: 'dependency', port: 'api', cause: 'Requête annulée.' },
+    { kind: 'dependency', port: 'api', cause: privateValues[4] },
+  ];
+
+  for (const createError of cases) {
+    const fake = fakeDependencies({
+      agentMissionOff: true,
+      createErrors: [createError],
+    });
+    await assert.rejects(
+      runM1BNegativeStagingSmoke(environment(), fake.dependencies),
+      (error) => {
+        assert.match(error.message, /class=[a-z_]+, attempt=1/u);
+        for (const value of privateValues) {
+          assert.equal(error.message.includes(value), false);
+        }
+        return true;
+      },
+    );
+    assert.equal(fake.state().createAttempts, 1);
+  }
+});
+
+test('absence de preuve cleanup, UUID dupliqué ou peer réutilisé interdisent le second POST', async () => {
+  const noCleanup = fakeDependencies({
+    agentMissionOff: true,
+    ids: [SESSION_ID, RETRY_SESSION_ID],
+    createErrors: [bootstrapTimeout],
+    negativeFinalEvidencePending: 12,
+  });
+  await assert.rejects(
+    runM1BNegativeStagingSmoke(environment(), noCleanup.dependencies),
+    /negative runtime cleanup proof/u,
+  );
+  assert.equal(noCleanup.state().createAttempts, 1);
+
+  const duplicateUuid = fakeDependencies({
+    agentMissionOff: true,
+    ids: [SESSION_ID, SESSION_ID],
+    createErrors: [bootstrapTimeout],
+  });
+  await assert.rejects(
+    runM1BNegativeStagingSmoke(environment(), duplicateUuid.dependencies),
+    /reused its session UUID/u,
+  );
+  assert.equal(duplicateUuid.state().createAttempts, 1);
+
+  const reusedPeer = fakeDependencies({
+    agentMissionOff: true,
+    ids: [SESSION_ID, RETRY_SESSION_ID],
+    createErrors: [bootstrapTimeout],
+    reusePeer: true,
+  });
+  await assert.rejects(
+    runM1BNegativeStagingSmoke(environment(), reusedPeer.dependencies),
+    /reused its peer/u,
+  );
+  assert.equal(reusedPeer.state().createAttempts, 1);
+  assert.equal(reusedPeer.state().peerCreations, 2);
+});
+
 test('preuve positive lie écran, mission, DB/RLS puis nettoie dans l’ordre sûr', async () => {
   const fake = fakeDependencies({ hangupError: { kind: 'unavailable' } });
   const result = await runM1BPositiveStagingSmoke(environment(), fake.dependencies);
@@ -520,6 +701,8 @@ test('preuve positive lie écran, mission, DB/RLS puis nettoie dans l’ordre s�
     missionStage: 'awaiting_customer',
     cleanup: 'complete',
     hangupAccepted: false,
+    bootstrapAttempts: 1,
+    recoveredTimeout: false,
   });
   assert.equal(fake.state().draft, null);
   assert.equal(fake.state().mission.status, 'cancelled');

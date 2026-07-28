@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRun, JournalEntry, PendingAction } from '@bob/ai';
-import { HttpBobClient } from './http-client';
+import {
+  HttpBobClient,
+  isRealtimeBootstrapTimeoutError,
+} from './http-client';
 
 const pushBindingInput = () => ({
   installationId: '11111111-1111-4111-8111-111111111111',
@@ -35,6 +38,30 @@ describe('HttpBobClient', () => {
       baseUrl: 'http://localhost:3000',
       companyId: 'company-1',
     })).not.toThrow();
+  });
+
+  it('classifie uniquement le timeout local exact du bootstrap Bob Live', () => {
+    expect(isRealtimeBootstrapTimeoutError({
+      kind: 'dependency',
+      port: 'api',
+      cause: 'Délai réseau dépassé après 12000 ms.',
+    })).toBe(true);
+    for (const error of [
+      { kind: 'dependency', port: 'api', cause: 'Requête annulée.' },
+      { kind: 'dependency', port: 'api', cause: 'Délai réseau dépassé après 11999 ms.' },
+      { kind: 'dependency', port: 'database', cause: 'Délai réseau dépassé après 12000 ms.' },
+      { kind: 'unavailable', service: 'realtime' },
+      { kind: 'conflict', entity: 'realtime_session', reason: 'active_lease' },
+      {
+        kind: 'dependency',
+        port: 'api',
+        cause: 'Délai réseau dépassé après 12000 ms.',
+        retryable: true,
+      },
+      null,
+    ]) {
+      expect(isRealtimeBootstrapTimeoutError(error)).toBe(false);
+    }
   });
 
   it('closeAccount : DELETE /account avec le confirmationText en body, décode closedAt', async () => {
@@ -2150,6 +2177,42 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('termine la session exacte après le timeout local du bootstrap Mission', async () => {
+    vi.useFakeTimers();
+    const sessionHandle = '00000000-0000-4000-8000-000000000041';
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        expect(String(url)).toBe(
+          `https://api.bob.test/voice/realtime/calls/${sessionHandle}`,
+        );
+        return new Response(JSON.stringify({ ended: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      expect(init?.method).toBe('POST');
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+    });
+
+    const bootstrap = client.createRealtimeVoiceCall({
+      transport: 'webrtc',
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      ...nativeBinding(currentConfigVersion),
+      sessionHandle,
+      agentMissionProtocolVersion: 1,
+    });
+    await vi.advanceTimersByTimeAsync(12_000);
+    const result = await bootstrap;
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(isRealtimeBootstrapTimeoutError(result.error)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('négocie explicitement Mistral v2 et conserve le repli v1 pour un ancien serveur', async () => {

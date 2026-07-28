@@ -31,6 +31,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const PEER_TIMEOUT_MS = 20_000;
 const CONTEXT_STALE_ATTEMPTS = 10;
 const FINAL_EVIDENCE_ATTEMPTS = 12;
+const REALTIME_BOOTSTRAP_MAX_ATTEMPTS = 2;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 
 function fail(message) {
@@ -262,6 +263,26 @@ function expectSuccess(result, operation) {
     fail(`${operation} failed`);
   }
   return result.value;
+}
+
+function safeBootstrapFailureClass(result, isTimeout) {
+  if (record(result) === null || result.ok !== false || record(result.error) === null) {
+    return 'invalid_result';
+  }
+  if (isTimeout(result.error)) return 'bootstrap_timeout';
+  switch (result.error.kind) {
+    case 'conflict':
+    case 'validation':
+    case 'forbidden':
+    case 'rate_limited':
+    case 'unavailable':
+    case 'dependency':
+    case 'not_found':
+    case 'domain':
+      return result.error.kind;
+    default:
+      return 'invalid_result';
+  }
 }
 
 function expectUuid(value, operation) {
@@ -623,17 +644,25 @@ async function cancelQuoteWithResponseLossRecovery(
 }
 
 async function importRuntimeDependencies() {
-  const [{ HttpBobClient }, { isMeaningfulQuoteDraftPayload }] = await Promise.all([
+  const [
+    { HttpBobClient, isRealtimeBootstrapTimeoutError },
+    { isMeaningfulQuoteDraftPayload },
+  ] = await Promise.all([
     import(new URL('../../../packages/api-client/dist/index.js', import.meta.url)),
     import(new URL('../../../packages/core/dist/index.js', import.meta.url)),
   ]);
   if (
     typeof HttpBobClient !== 'function'
+    || typeof isRealtimeBootstrapTimeoutError !== 'function'
     || typeof isMeaningfulQuoteDraftPayload !== 'function'
   ) {
     fail('built Bob runtime dependencies are unavailable');
   }
-  return { HttpBobClient, isMeaningfulQuoteDraftPayload };
+  return {
+    HttpBobClient,
+    isRealtimeBootstrapTimeoutError,
+    isMeaningfulQuoteDraftPayload,
+  };
 }
 
 async function createRuntimeClient(config, accessToken, dependencies) {
@@ -653,6 +682,13 @@ async function meaningfulDraftPredicate(dependencies) {
     return dependencies.isMeaningfulQuoteDraftPayload;
   }
   return (await importRuntimeDependencies()).isMeaningfulQuoteDraftPayload;
+}
+
+async function realtimeBootstrapTimeoutPredicate(dependencies) {
+  if (typeof dependencies.isRealtimeBootstrapTimeoutError === 'function') {
+    return dependencies.isRealtimeBootstrapTimeoutError;
+  }
+  return (await importRuntimeDependencies()).isRealtimeBootstrapTimeoutError;
 }
 
 export async function createM1BChromiumPeer(speechDelivery) {
@@ -832,6 +868,8 @@ async function authenticateAndPrepare(environment, dependencies) {
     config,
     client,
     isMeaningfulQuoteDraftPayload: await meaningfulDraftPredicate(dependencies),
+    isRealtimeBootstrapTimeoutError:
+      await realtimeBootstrapTimeoutPredicate(dependencies),
   };
 }
 
@@ -854,7 +892,11 @@ export async function runM1BNegativeStagingSmoke(
   dependencies = {},
 ) {
   const prepared = await authenticateAndPrepare(environment, dependencies);
-  const { client, isMeaningfulQuoteDraftPayload } = prepared;
+  const {
+    client,
+    isMeaningfulQuoteDraftPayload,
+    isRealtimeBootstrapTimeoutError,
+  } = prepared;
   const draft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
   expectCleanDraft(draft, isMeaningfulQuoteDraftPayload);
   if (draft !== null) fail('the dedicated account already contains a quote draft');
@@ -862,22 +904,22 @@ export async function runM1BNegativeStagingSmoke(
     await client.realtimeVoiceConfig(),
     'realtimeVoiceConfig',
   ));
-  const peer = await createPeer(config, dependencies);
-  const sessionHandle = expectUuid(
-    (dependencies.randomUUID ?? nodeRandomUUID)(),
-    'randomUUID',
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
   );
-  let call = null;
+  const {
+    call,
+    peer,
+    sessionHandle,
+    attempts: bootstrapAttempts,
+    recoveredTimeout,
+  } = bootstrap;
   let hangupAccepted = false;
   try {
-    call = expectCall(expectSuccess(await client.createRealtimeVoiceCall({
-      transport: 'webrtc',
-      sdp: peer.offerSdp,
-      sessionHandle,
-      configVersion: config.configVersion,
-      speechDelivery: config.speechDelivery,
-      agentMissionProtocolVersion: 1,
-    }), 'createRealtimeVoiceCall'), config, sessionHandle);
     if (call.agentMissionSession !== null) {
       fail('M1-B negotiated while the staging circuit was expected OFF');
     }
@@ -886,7 +928,7 @@ export async function runM1BNegativeStagingSmoke(
     hangupAccepted = await hangupAndClose(
       client,
       peer,
-      call?.sessionHandle ?? sessionHandle,
+      call.sessionHandle,
       null,
     );
   }
@@ -905,6 +947,8 @@ export async function runM1BNegativeStagingSmoke(
     agentMission: 'off',
     cleanup: 'complete',
     hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
   });
 }
 
@@ -955,12 +999,122 @@ async function pollNegativeFinalEvidence(input, environment, dependencies) {
   throw lastError;
 }
 
+async function reconcileFailedRealtimeBootstrap(
+  client,
+  peer,
+  sessionHandle,
+  environment,
+  dependencies,
+) {
+  await peer.close().catch(() => {});
+  let hangupAccepted = false;
+  try {
+    const hangup = await client.hangupRealtimeVoiceCall(sessionHandle);
+    hangupAccepted = record(hangup) !== null && hangup.ok === true;
+  } catch {
+    // La preuve PostgreSQL ci-dessous, pas la réponse réseau, fait autorité.
+  }
+  const evidence = await pollNegativeFinalEvidence(
+    { sessionId: sessionHandle },
+    environment,
+    dependencies,
+  );
+  if (evidence?.stage !== 'negative-final' || evidence.passed !== true) {
+    fail('negative final evidence adapter did not return its exact receipt');
+  }
+  return hangupAccepted;
+}
+
+async function createRealtimeCallWithBoundedTimeoutRecovery(
+  client,
+  config,
+  environment,
+  dependencies,
+  isRealtimeBootstrapTimeoutError,
+) {
+  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+  const sessionHandles = new Set();
+  const peers = new Set();
+  let recoveredTimeout = false;
+  for (let attempt = 1; attempt <= REALTIME_BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
+    const sessionHandle = expectUuid(randomUUID(), 'sessionHandle');
+    if (sessionHandles.has(sessionHandle)) {
+      fail('realtime bootstrap retry reused its session UUID');
+    }
+    sessionHandles.add(sessionHandle);
+    const peer = await createPeer(config, dependencies);
+    if (peers.has(peer)) {
+      await peer.close().catch(() => {});
+      fail('realtime bootstrap retry reused its peer');
+    }
+    peers.add(peer);
+
+    const result = await client.createRealtimeVoiceCall({
+      transport: 'webrtc',
+      sdp: peer.offerSdp,
+      sessionHandle,
+      configVersion: config.configVersion,
+      speechDelivery: config.speechDelivery,
+      agentMissionProtocolVersion: 1,
+    });
+    if (record(result) !== null && result.ok === true && Object.hasOwn(result, 'value')) {
+      let call;
+      try {
+        call = expectCall(result.value, config, sessionHandle);
+      } catch {
+        await reconcileFailedRealtimeBootstrap(
+          client,
+          peer,
+          sessionHandle,
+          environment,
+          dependencies,
+        );
+        fail(`createRealtimeVoiceCall failed (class=invalid_result, attempt=${attempt})`);
+      }
+      return Object.freeze({
+        call,
+        peer,
+        sessionHandle,
+        attempts: attempt,
+        recoveredTimeout,
+      });
+    }
+
+    const failureClass = safeBootstrapFailureClass(
+      result,
+      isRealtimeBootstrapTimeoutError,
+    );
+    await reconcileFailedRealtimeBootstrap(
+      client,
+      peer,
+      sessionHandle,
+      environment,
+      dependencies,
+    );
+    if (
+      failureClass === 'bootstrap_timeout'
+      && attempt < REALTIME_BOOTSTRAP_MAX_ATTEMPTS
+    ) {
+      recoveredTimeout = true;
+      continue;
+    }
+    fail(
+      `createRealtimeVoiceCall failed (class=${failureClass}, attempt=${attempt})`,
+    );
+  }
+  fail('createRealtimeVoiceCall exhausted its bounded retry contract');
+}
+
 export async function runM1BPositiveStagingSmoke(
   environment = process.env,
   dependencies = {},
 ) {
   const prepared = await authenticateAndPrepare(environment, dependencies);
-  const { client, isMeaningfulQuoteDraftPayload } = prepared;
+  const {
+    client,
+    isMeaningfulQuoteDraftPayload,
+    isRealtimeBootstrapTimeoutError,
+  } = prepared;
   const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
   if (existingDraft !== null) {
     expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
@@ -970,26 +1124,29 @@ export async function runM1BPositiveStagingSmoke(
     await client.realtimeVoiceConfig(),
     'realtimeVoiceConfig',
   ));
-  const peer = await createPeer(config, dependencies);
   const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
-  const sessionHandle = expectUuid(randomUUID(), 'sessionHandle');
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+  );
+  const {
+    call,
+    peer,
+    sessionHandle,
+    attempts: bootstrapAttempts,
+    recoveredTimeout,
+  } = bootstrap;
   const startCommandId = expectUuid(randomUUID(), 'startCommandId');
   const ackCommandId = expectUuid(randomUUID(), 'ackCommandId');
   const cancelCommandId = expectUuid(randomUUID(), 'cancelCommandId');
-  let call = null;
   let missionSession = null;
   let ownedMission = null;
   let primaryError = null;
   let activeEvidence = null;
   try {
-    call = expectCall(expectSuccess(await client.createRealtimeVoiceCall({
-      transport: 'webrtc',
-      sdp: peer.offerSdp,
-      sessionHandle,
-      configVersion: config.configVersion,
-      speechDelivery: config.speechDelivery,
-      agentMissionProtocolVersion: 1,
-    }), 'createRealtimeVoiceCall'), config, sessionHandle);
     missionSession = call.agentMissionSession;
     if (record(missionSession) === null) {
       fail('M1-B did not negotiate for the dedicated staging account');
@@ -1150,7 +1307,7 @@ export async function runM1BPositiveStagingSmoke(
   const hangupAccepted = await hangupAndClose(
     client,
     peer,
-    call?.sessionHandle ?? sessionHandle,
+    call.sessionHandle,
     missionSession,
   );
 
@@ -1182,6 +1339,8 @@ export async function runM1BPositiveStagingSmoke(
     missionStage: 'awaiting_customer',
     cleanup: 'complete',
     hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
   });
 }
 

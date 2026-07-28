@@ -537,6 +537,12 @@ Règles :
 
 ### 8.1 Fenêtre de certification staging et rollback exact
 
+La stabilisation du bootstrap ambigu et le remplacement des appels transitifs au rituel global
+par un gate M1-B ciblé sont spécifiés dans
+`SPEC_M1B_STAGING_STABILIZATION.md`. Ce raffinement est normatif pour cette fenêtre : staging doit
+déjà porter le train M1-A/M1-B exact, toute migration en attente échoue fermée, et aucune
+recertification M1-B ne peut appeler `release.sh` ou réparer un protocole étranger.
+
 La certification positive est une opération bornée, `workflow_dispatch` uniquement, sur le SHA
 candidat. Elle possède son propre workflow staging et ne réutilise pas le pipeline Railway
 générique : elle ne lance ni audit archive, ni cutover settlement/outbox, ni mutation d'un autre
@@ -609,10 +615,12 @@ de cardinalité, checksum, état ou identité annule la transaction. La preuve p
 les onze nouveaux noms, les mêmes checksums et l'absence des anciens noms. Production ne reçoit
 aucune réconciliation : elle applique directement la lignée finale dans l'ordre canonique.
 L'opérateur idempotent
-`apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs` est appelé exactement une fois
-par le workflow staging, après la preuve d'identité initiale et avant le préflight du flag comme
-avant tout `release.sh`. Il revalide l'identité dans sa propre transaction afin de fermer la
-fenêtre TOCTOU ; un état déjà réconcilié est un succès explicite, tout état mixte échoue fermé.
+`apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs` a été appelé une seule fois
+pendant la réparation tracée de staging et revalidait l'identité dans sa propre transaction afin
+de fermer la fenêtre TOCTOU. Une fois cette réparation acquittée, il reste dans le dépôt comme
+preuve auditée mais sort définitivement du lane M1-B : le workflow exige désormais la lignée
+finale et ses checksums exacts, sans aucune mutation de `_prisma_migrations`. Un état ancien,
+mixte, divergent ou incomplet échoue fermé avant le gate.
 
 La négociation WebRTC OFF finale n'est exigée que si un deployment du binaire M1-B a réellement
 été acquitté `SUCCESS` par Railway — un identifiant créé ne vaut pas cet ACK — ou si le bloc
@@ -737,11 +745,12 @@ Séquence :
    `[N,N]` avec binding inchangé et `writerEnabled=false`, et zéro lease ;
 10. consigner heure de fin, acteur, deployment IDs et résultats dans un artefact borné sans PII,
     token, SDP, identifiant brut ou secret. Un échec déclenche le cleanup ; il ne transforme jamais
-    une preuve partielle en succès. L'artefact `schemaVersion: 4` conserve
+    une preuve partielle en succès. L'artefact `schemaVersion: 5` conserve
     `workflowRun.id` comme chaîne décimale canonique de 1 à 20 chiffres, car l'identifiant GitHub
     est opaque et peut dépasser la précision sûre de JavaScript ; `workflowRun.attempt` reste un
-    entier borné. La V4 est volontairement distincte de la V3, qui encodait le run ID en nombre :
-    aucun consommateur ne doit confondre silencieusement les deux contrats.
+    entier borné. La V5 ajoute la durée totale et le verdict binaire strictement inférieur à
+    30 minutes ; elle ne transforme pas un dépassement en succès. Aucun consommateur ne doit
+    confondre silencieusement ce contrat avec les versions antérieures.
 
 Le pipeline est autorisé à monter au statut `certified` uniquement si le job positif **et** le job
 de cleanup sont verts. Une annulation forcée de runner reste un incident de release : avant tout

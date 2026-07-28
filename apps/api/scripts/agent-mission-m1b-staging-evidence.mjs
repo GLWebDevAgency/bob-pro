@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
+import {
+  boundedPsqlSpawnOptions,
+  withPsqlChildEnvironment,
+} from './psql-child-environment.mjs';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -31,10 +34,9 @@ SELECT jsonb_build_object(
      WHERE "companyId" = :'company_id'
        AND "ownerUserId" = :'user_id'
   ),
-  'protocolLeaseCount', (
+  'tenantLeaseCount', (
     SELECT count(*) FROM public.realtime_session_leases
      WHERE "companyId" = :'company_id'
-       AND "agentMissionProtocolVersion" = 1
   )
 )
 FROM configured
@@ -400,6 +402,10 @@ SELECT jsonb_build_object(
     SELECT count(*) FROM public.realtime_session_leases
      WHERE "sessionId" = :'session_id'::uuid
   ),
+  'tenantLeaseCount', (
+    SELECT count(*) FROM public.realtime_session_leases
+     WHERE "companyId" = :'company_id'
+  ),
   'activeMissionCount', (
     SELECT count(*) FROM public.agent_missions
      WHERE "companyId" = :'company_id'
@@ -513,7 +519,7 @@ function baseVariables(config, input) {
   };
 }
 
-function psql(config, sql, variables, dependencies = {}) {
+function psql(config, sql, variables, environment, dependencies = {}) {
   const spawn = dependencies.spawnSync ?? spawnSync;
   const args = ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'];
   for (const [name, value] of Object.entries(variables)) {
@@ -521,13 +527,12 @@ function psql(config, sql, variables, dependencies = {}) {
   }
   const result = withPsqlChildEnvironment(
     config.databaseUrl,
-    process.env,
+    environment,
     (childEnvironment) =>
-      spawn('psql', args, {
+      spawn('psql', args, boundedPsqlSpawnOptions(childEnvironment, {
         input: sql,
         encoding: 'utf8',
-        env: childEnvironment,
-      }),
+      })),
   );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed')
@@ -595,7 +600,7 @@ export function decodeM1BCleanEvidence(value) {
     'roleSafe',
     'activeMissionCount',
     'draftCount',
-    'protocolLeaseCount',
+    'tenantLeaseCount',
   ];
   if (!exactObject(value, keys)) fail('clean-account proof shape is invalid');
   const passed =
@@ -603,7 +608,7 @@ export function decodeM1BCleanEvidence(value) {
     && value.roleSafe === true
     && value.activeMissionCount === 0
     && value.draftCount === 0
-    && value.protocolLeaseCount === 0;
+    && value.tenantLeaseCount === 0;
   if (!passed) fail('dedicated staging account/tenant is not clean');
   return Object.freeze({ stage: 'clean', passed: true });
 }
@@ -731,6 +736,7 @@ export function decodeM1BNegativeFinalEvidence(value) {
     'roleMatches',
     'roleSafe',
     'sessionLeaseCount',
+    'tenantLeaseCount',
     'activeMissionCount',
     'draftCount',
   ];
@@ -739,6 +745,7 @@ export function decodeM1BNegativeFinalEvidence(value) {
     value.roleMatches === true
     && value.roleSafe === true
     && value.sessionLeaseCount === 0
+    && value.tenantLeaseCount === 0
     && value.activeMissionCount === 0
     && value.draftCount === 0;
   if (!passed) fail('negative runtime cleanup proof did not pass exactly');
@@ -763,7 +770,9 @@ export function certifyM1BActiveEvidence(input, environment = process.env, depen
     sentinel_company_id: `m1b-sentinel-${input.missionId}`,
     sentinel_user_id: '00000000-0000-4000-8000-000000000000',
   };
-  return decodeM1BActiveEvidence(psql(config, ACTIVE_SQL, variables, dependencies));
+  return decodeM1BActiveEvidence(
+    psql(config, ACTIVE_SQL, variables, environment, dependencies),
+  );
 }
 
 export function certifyM1BCleanEvidence(
@@ -775,7 +784,7 @@ export function certifyM1BCleanEvidence(
     app_role: config.appRole,
     company_id: config.companyId,
     user_id: config.userId,
-  }, dependencies));
+  }, environment, dependencies));
 }
 
 export function certifyM1BStartRecoveryEvidence(
@@ -789,7 +798,7 @@ export function certifyM1BStartRecoveryEvidence(
     company_id: config.companyId,
     user_id: config.userId,
     start_command_id: uuid(input.startCommandId, 'startCommandId'),
-  }, dependencies));
+  }, environment, dependencies));
 }
 
 export function certifyM1BCancellationRecoveryEvidence(
@@ -821,6 +830,7 @@ export function certifyM1BCancellationRecoveryEvidence(
         true,
       ),
     },
+    environment,
     dependencies,
   ));
 }
@@ -832,7 +842,9 @@ export function certifyM1BFinalEvidence(input, environment = process.env, depend
     cancel_command_id: uuid(input.cancelCommandId, 'cancelCommandId'),
     mission_revision: positiveRevision(input.missionRevision, 'missionRevision'),
   };
-  return decodeM1BFinalEvidence(psql(config, FINAL_SQL, variables, dependencies));
+  return decodeM1BFinalEvidence(
+    psql(config, FINAL_SQL, variables, environment, dependencies),
+  );
 }
 
 export function certifyM1BNegativeFinalEvidence(
@@ -846,7 +858,7 @@ export function certifyM1BNegativeFinalEvidence(
     company_id: config.companyId,
     user_id: config.userId,
     session_id: uuid(input.sessionId, 'sessionId'),
-  }, dependencies));
+  }, environment, dependencies));
 }
 
 export const M1B_CLEAN_EVIDENCE_SQL = CLEAN_SQL;

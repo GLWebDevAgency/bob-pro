@@ -222,8 +222,12 @@ const QUOTE_CREATION_TIMEOUT_MS = 20_000;
 // À l'expiration, `req` rend un AppError kind 'dependency' — l'Assistant mobile retombe alors
 // sur ses circuits hors-ligne existants (assistant.offline / live.error + ré-écoute).
 const AGENT_TURN_TIMEOUT_MS = 50_000;
-// Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
+// Deadline UX du bootstrap complet (auth, admission, reaping, DB et fournisseur inclus).
+// Un dépassement est ambigu : le serveur peut encore avoir créé une lease. Toute reprise exige
+// donc une terminaison puis une preuve durable de réconciliation, jamais un retry aveugle.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const REALTIME_BOOTSTRAP_TIMEOUT_CAUSE =
+  `Délai réseau dépassé après ${REALTIME_BOOTSTRAP_TIMEOUT_MS} ms.`;
 const REALTIME_CONFIG_VERSION_CURRENT = 'bob-live-provider-neutral-v4';
 const REALTIME_CONFIG_VERSION_N_MINUS_ONE = 'bob-live-provider-neutral-v3';
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
@@ -376,6 +380,21 @@ function decodeRealtimeAgentMissionBootstrapReceipt(
 
 function canRetryRealtimeAgentMissionBootstrapReceipt(error: AppError): boolean {
   return error.kind === 'dependency' && error.port === 'api';
+}
+
+/**
+ * Classifie uniquement le timeout local exact du bootstrap Bob Live.
+ *
+ * Ce prédicat n'autorise jamais, à lui seul, un retry : l'appelant doit d'abord terminer la
+ * session ambiguë et prouver durablement qu'aucune lease ne subsiste.
+ */
+export function isRealtimeBootstrapTimeoutError(error: unknown): error is AppError {
+  if (!isRecord(error) || !hasExactKeys(error, ['kind', 'port', 'cause'])) return false;
+  return (
+    error.kind === 'dependency'
+    && error.port === 'api'
+    && error.cause === REALTIME_BOOTSTRAP_TIMEOUT_CAUSE
+  );
 }
 
 function assertSecureApiBaseUrl(value: string): void {
