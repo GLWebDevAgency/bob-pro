@@ -294,13 +294,147 @@ export function useAddChantierNote(chantierId: string) {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { text: string }) => {
+    mutationFn: async (input: { text: string; equipmentId?: string | null }) => {
       const r = await client.addChantierNote(chantierId, input);
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantier-notes', chantierId] }),
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: ['chantier-notes', chantierId] });
+      // PR-11 — une note taguée alimente l'historique dérivé de l'équipement.
+      if (input.equipmentId) {
+        void qc.invalidateQueries({ queryKey: ['equipment-history', input.equipmentId] });
+      }
+    },
     onError: alertError,
+  });
+}
+
+// ── PR-11 — parc d'équipements du site (Bloc A) : mêmes endpoints que la voix. ──
+
+function requireEquipmentCapability<T>(value: T | undefined): T {
+  if (!value) throw { kind: 'unavailable', service: 'equipments' } satisfies AppError;
+  return value;
+}
+
+export function useChantierEquipments(chantierId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['equipments', chantierId],
+    enabled: enabled && chantierId.length > 0,
+    queryFn: async () => {
+      const r = await requireEquipmentCapability(client.listChantierEquipments?.bind(client))(chantierId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useEquipmentHistory(equipmentId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['equipment-history', equipmentId],
+    enabled: enabled && equipmentId.length > 0,
+    queryFn: async () => {
+      const r = await requireEquipmentCapability(client.getEquipmentHistory?.bind(client))(equipmentId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useCreateEquipment(chantierId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      label: string;
+      kind?: string | null;
+      brand?: string | null;
+      serialNumber?: string | null;
+      location?: string | null;
+      installedAt?: string | null;
+      warrantyUntil?: string | null;
+    }) => {
+      const r = await requireEquipmentCapability(client.createEquipment?.bind(client))(chantierId, input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['equipments', chantierId] }),
+  });
+}
+
+export function useRetireEquipment() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { equipmentId: string; chantierId: string; expectedRevision: number }) => {
+      const r = await requireEquipmentCapability(client.retireEquipment?.bind(client))(input.equipmentId, {
+        expectedRevision: input.expectedRevision,
+      });
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: ['equipments', input.chantierId] });
+      void qc.invalidateQueries({ queryKey: ['equipment-history', input.equipmentId] });
+    },
+  });
+}
+
+export function useReactivateEquipment() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { equipmentId: string; chantierId: string; expectedRevision: number }) => {
+      const r = await requireEquipmentCapability(client.reactivateEquipment?.bind(client))(input.equipmentId, {
+        expectedRevision: input.expectedRevision,
+      });
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: ['equipments', input.chantierId] });
+      void qc.invalidateQueries({ queryKey: ['equipment-history', input.equipmentId] });
+    },
+  });
+}
+
+export function useUpdateEquipment() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      equipmentId: string;
+      chantierId: string;
+      expectedRevision: number;
+      patch: Record<string, string | null>;
+    }) => {
+      const r = await requireEquipmentCapability(client.updateEquipment?.bind(client))(input.equipmentId, {
+        expectedRevision: input.expectedRevision,
+        patch: input.patch,
+      });
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: ['equipments', input.chantierId] });
+      void qc.invalidateQueries({ queryKey: ['equipment-history', input.equipmentId] });
+    },
+  });
+}
+
+/** [Revue A12] — réouverture d'un site clôturé (réponse au refus actionnable). */
+export function useReopenChantier() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (chantierId: string) => {
+      const r = await requireEquipmentCapability(client.reopenChantier?.bind(client))(chantierId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantiers'] }),
   });
 }
 

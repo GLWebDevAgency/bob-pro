@@ -12,6 +12,8 @@ import {
 const palette: StatusBadgePalette = {
   danger: semantic.danger,
   dangerBadgeBg: controls.dangerBadgeBg,
+  neutralInk: neutrals.slate500,
+  neutralBg: neutrals.lineSoft,
   warning: semantic.warning,
   warningBg: semantic.warningBg,
   b2b: semantic.b2b,
@@ -69,6 +71,24 @@ describe('statusBadgeColors — redlines §7', () => {
 
   it('radius de badge = 6 (redlines §Fondations)', () => {
     expect(BADGE_RADIUS).toBe(6);
+  });
+});
+
+describe('statusBadgeColors — variante additive `neutral` (P1 §1.5)', () => {
+  it('état sorti du flux (Retirée, Résilié, Échu) → slate500 sur lineSoft', () => {
+    expect(statusBadgeColors('neutral', palette)).toEqual({
+      fg: neutrals.slate500,
+      bg: neutrals.lineSoft,
+    });
+  });
+
+  it('non-régression : les 6 variantes historiques restent inchangées au pixel', () => {
+    expect(statusBadgeColors('danger', palette)).toEqual({ fg: semantic.danger, bg: controls.dangerBadgeBg });
+    expect(statusBadgeColors('warning', palette)).toEqual({ fg: semantic.warning, bg: semantic.warningBg });
+    expect(statusBadgeColors('b2b', palette)).toEqual({ fg: semantic.b2b, bg: semantic.b2bBg });
+    expect(statusBadgeColors('b2g', palette)).toEqual({ fg: semantic.b2g, bg: semantic.b2gBg });
+    expect(statusBadgeColors('particulier', palette)).toEqual({ fg: semantic.particulier, bg: semantic.particulierBg });
+    expect(statusBadgeColors('success', palette)).toEqual({ fg: semantic.success, bg: semantic.successBg });
   });
 });
 

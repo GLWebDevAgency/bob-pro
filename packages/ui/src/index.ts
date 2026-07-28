@@ -15,6 +15,8 @@ export {
 } from './theme';
 
 // Fondamentaux
+export * from './components/bob-surface';
+export { bobSurfaceColors } from './components/bob-surface.logic';
 export * from './components/button';
 export * from './components/status-badge';
 export { statusBadgeColors } from './components/status-badge.logic';

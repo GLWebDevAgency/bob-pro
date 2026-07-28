@@ -47,6 +47,7 @@ import {
 } from '@bob/ui';
 import {
   useAddChantierNote,
+  useChantierEquipments,
   useChantierNotes,
   useChantiers,
   useDeleteWorksitePhoto,
@@ -187,6 +188,8 @@ export default function ChantierDetail() {
     [quotes.data, invoices.data, id],
   );
   const photos = useWorksitePhotos(id);
+  // PR-11 — parc du site (section 3 rows + Voir tout, matière réelle uniquement).
+  const equipments = useChantierEquipments(id);
   const uploadPhoto = useUploadWorksitePhoto(id);
   const deletePhoto = useDeleteWorksitePhoto(id);
   const confirm = useConfirm();
@@ -538,6 +541,73 @@ export default function ChantierDetail() {
               <RetenueSuiviCard customerId={chantier.customerId} />
             </View>
           ) : null}
+
+          {/* ── PR-11 — ÉQUIPEMENTS du site (3 premières rows + Voir tout, écrans §6.2) :
+               la section se tait tant que le parc est vide (matière réelle uniquement). ── */}
+          {(equipments.data ?? []).length > 0 ? (
+            <>
+              <View
+                style={{
+                  marginTop: 28,
+                  marginBottom: 10,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500 }]}>
+                  {t('equipements.sectionOnSite', { personality })} ({(equipments.data ?? []).length})
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('equipements.seeAll', { personality })}
+                  onPress={() => router.push(`/equipements/${chantier.id}`)}
+                  hitSlop={8}
+                  style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, minHeight: 44, justifyContent: 'center' })}
+                >
+                  <Text style={[font('label', 700), { fontSize: 13, color: colors.ink600 }]}>
+                    {t('equipements.seeAll', { personality })}
+                  </Text>
+                </Pressable>
+              </View>
+              <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
+                {(equipments.data ?? []).slice(0, 3).map((equipment, index, rows) => (
+                  <Pressable
+                    key={equipment.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={equipment.label}
+                    onPress={() => router.push(`/equipement/${equipment.id}`)}
+                    style={({ pressed }) => [
+                      {
+                        minHeight: 48,
+                        paddingVertical: 11,
+                        borderBottomWidth: index === rows.length - 1 ? 0 : 1,
+                        borderBottomColor: colors.lineSoft,
+                      },
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text accessible={false} style={[font('sub', 600), { color: colors.ink800 }]} numberOfLines={1}>
+                      {equipment.label}
+                    </Text>
+                    {equipment.kind ? (
+                      <Text accessible={false} style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                        {equipment.kind}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </Card>
+            </>
+          ) : (
+            <View style={{ marginTop: 28 }}>
+              <Button
+                title={t('equipements.addCta', { personality })}
+                variant="secondary"
+                onPress={() => router.push(`/equipements/${chantier.id}`)}
+              />
+            </View>
+          )}
 
           {/* ── PR-08 — Pièces du site : devis + factures rattachés (dérivation pure sur les
                listes existantes ; chaque row navigue vers sa fiche). ── */}

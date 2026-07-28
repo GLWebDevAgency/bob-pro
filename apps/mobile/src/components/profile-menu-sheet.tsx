@@ -35,7 +35,9 @@ export interface ProfileMenuSheetProps {
 interface MenuItem {
   readonly key: string;
   readonly icon: keyof typeof Feather.glyphMap;
-  readonly tone: StatusBadgeVariant;
+  /** Teintes pastel sémantiques (IconTile) — `neutral` (P1) n'a pas de pastel semantic.* :
+   * on reste sur le sous-ensemble historique, inchangé. */
+  readonly tone: Exclude<StatusBadgeVariant, 'neutral'>;
   readonly title: string;
   readonly subtitle: string;
   readonly onPress: () => void;

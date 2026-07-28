@@ -13,6 +13,7 @@ import {
   type as typeScale,
   type ThemeName,
   type BrandTheme,
+  type SurfaceTintAppearance,
 } from '@bob/tokens';
 import { DEFAULT_PERSONALITY, normalizePersonality, type Personality } from '@bob/i18n';
 
@@ -41,6 +42,9 @@ const PREFS_KEY = 'bob.prefs.v1';
 export interface ThemeContextValue {
   theme: BrandTheme;
   themeName: ThemeName;
+  /** Kit « matière Bob » (P1 §1.1) — apparence des surfaces teintées : `light` par défaut
+   * tant qu'UX-ADR-004 n'active pas le dark (palettes livrées, activation différée). */
+  appearance: SurfaceTintAppearance;
   grad: ReturnType<typeof gradients>;
   personality: Personality;
   density: Density;
@@ -107,6 +111,7 @@ export function ThemeProvider({
     () => ({
       theme,
       themeName: prefs.themeName,
+      appearance: 'light',
       grad: gradients(theme),
       personality: prefs.personality,
       density: prefs.density,

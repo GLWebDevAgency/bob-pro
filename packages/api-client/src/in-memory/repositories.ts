@@ -2,6 +2,7 @@ import {
   AccountingEntry,
   ChantierNote,
   ChartOfAccounts,
+  Equipment,
   Expense,
   Invoice,
   Quote,
@@ -28,6 +29,7 @@ import type {
   ChartOfAccountsRepository,
   ChantierRepository,
   ChantierNoteRepository,
+  EquipmentRepository,
   WorksiteMediaItem,
   WorksiteMediaStorage,
   DocumentStoragePort,
@@ -391,6 +393,32 @@ export class InMemoryChantierRepository implements ChantierRepository {
   }
   async listByCompany(companyId: string): Promise<Chantier[]> {
     return [...this.map.values()].filter((c) => c.companyId === companyId);
+  }
+}
+
+/** PR-11 — parc d'équipements local (mêmes contrats tenant-scopés que PrismaEquipmentRepository). */
+export class InMemoryEquipmentRepository implements EquipmentRepository {
+  private readonly map = new Map<string, Equipment>();
+  async save(equipment: Equipment): Promise<void> {
+    this.map.set(equipment.id, Equipment.rehydrate(equipment.toProps()));
+  }
+  async findById(companyId: string, id: string): Promise<Equipment | null> {
+    const equipment = this.map.get(id);
+    return equipment && equipment.companyId === companyId
+      ? Equipment.rehydrate(equipment.toProps())
+      : null;
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<Equipment[]> {
+    return [...this.map.values()]
+      .filter((e) => e.companyId === companyId && e.chantierId === chantierId)
+      .map((e) => Equipment.rehydrate(e.toProps()))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
+  }
+  async listByCompany(companyId: string): Promise<Equipment[]> {
+    return [...this.map.values()]
+      .filter((e) => e.companyId === companyId)
+      .map((e) => Equipment.rehydrate(e.toProps()))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
   }
 }
 

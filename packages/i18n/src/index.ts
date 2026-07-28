@@ -1404,6 +1404,166 @@ const legacyFr = {
     direct: 'Brouillon',
   },
 
+  // ── PR-11 — parc d'équipements d'un site (Bloc A « Le métier »). Chaque fait affiché est
+  // ADOSSÉ à une colonne réelle (retiredAt, warrantyUntil) — jamais une date fabriquée. ──
+  'equipements.title': { pote: 'Équipements', pro: 'Équipements', direct: 'Équipements' },
+  'equipements.eyebrow': { pote: 'PARC DU SITE', pro: 'PARC DU SITE', direct: 'PARC' },
+  'equipements.count': {
+    pote: '{count} équipement(s)',
+    pro: '{count} équipement(s)',
+    direct: '{count} équip.',
+  },
+  'equipements.searchPlaceholder': {
+    pote: 'Rechercher un équipement…',
+    pro: 'Rechercher un équipement…',
+    direct: 'Rechercher…',
+  },
+  'equipements.segmentActive': { pote: 'Actifs', pro: 'Actifs', direct: 'Actifs' },
+  'equipements.segmentRetired': { pote: 'Retirés', pro: 'Retirés', direct: 'Retirés' },
+  'equipements.addCta': {
+    pote: 'Ajouter un équipement',
+    pro: 'Ajouter un équipement',
+    direct: 'Ajouter',
+  },
+  'equipements.emptyTitle': {
+    pote: 'Aucun équipement pour l’instant',
+    pro: 'Aucun équipement enregistré',
+    direct: 'Parc vide',
+  },
+  'equipements.emptyBody': {
+    pote: 'Ajoute les machines du site : chaque passage, note et photo s’y accrochera.',
+    pro: 'Ajoutez les équipements du site : passages, notes et photos s’y rattacheront.',
+    direct: 'Ajoute les machines du site.',
+  },
+  'equipements.emptyFilter': {
+    pote: 'Rien ne correspond à ta recherche.',
+    pro: 'Aucun équipement ne correspond à la recherche.',
+    direct: 'Aucun résultat.',
+  },
+  'equipements.closedSiteTitle': {
+    pote: 'Site clôturé',
+    pro: 'Site clôturé',
+    direct: 'Site clôturé',
+  },
+  'equipements.closedSiteBody': {
+    pote: 'Ce site est clôturé — rouvre-le pour modifier le parc.',
+    pro: 'Ce site est clôturé — rouvrez-le pour modifier le parc.',
+    direct: 'Clôturé. Rouvre pour modifier.',
+  },
+  'equipements.reopenCta': {
+    pote: 'Rouvrir le site',
+    pro: 'Rouvrir le site',
+    direct: 'Rouvrir',
+  },
+  'equipements.sheetTitle': {
+    pote: 'Nouvel équipement',
+    pro: 'Nouvel équipement',
+    direct: 'Nouvel équipement',
+  },
+  'equipements.labelField': {
+    pote: 'Nom (ex. Fontaine accueil R+2)',
+    pro: 'Nom de l’équipement',
+    direct: 'Nom',
+  },
+  'equipements.kindField': {
+    pote: 'Type (libre — ex. Fontaine réseau)',
+    pro: 'Type (libellé libre)',
+    direct: 'Type (libre)',
+  },
+  'equipements.brandField': { pote: 'Marque', pro: 'Marque', direct: 'Marque' },
+  'equipements.serialField': { pote: 'N° de série', pro: 'Numéro de série', direct: 'N° série' },
+  'equipements.locationField': {
+    pote: 'Emplacement (ex. R+2, accueil)',
+    pro: 'Emplacement dans le site',
+    direct: 'Emplacement',
+  },
+  'equipements.installedField': {
+    pote: 'Posée le (AAAA-MM-JJ)',
+    pro: 'Date de pose (AAAA-MM-JJ)',
+    direct: 'Pose (AAAA-MM-JJ)',
+  },
+  'equipements.warrantyField': {
+    pote: 'Garantie jusqu’au (AAAA-MM-JJ)',
+    pro: 'Fin de garantie (AAAA-MM-JJ)',
+    direct: 'Garantie (AAAA-MM-JJ)',
+  },
+  'equipements.saveCta': { pote: 'Ajouter', pro: 'Enregistrer', direct: 'Ajouter' },
+  'equipements.labelRequired': {
+    pote: 'Donne un nom à l’équipement.',
+    pro: 'Le nom de l’équipement est requis.',
+    direct: 'Nom requis.',
+  },
+  'equipements.dateInvalid': {
+    pote: 'Date invalide (AAAA-MM-JJ).',
+    pro: 'Date invalide (AAAA-MM-JJ).',
+    direct: 'Date invalide.',
+  },
+  'equipements.editCta': { pote: 'Modifier', pro: 'Modifier', direct: 'Modifier' },
+  'equipements.editSaveCta': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'equipements.retireCta': { pote: 'Retirer', pro: 'Retirer du parc', direct: 'Retirer' },
+  'equipements.retireConfirmTitle': {
+    pote: 'Retirer cet équipement ?',
+    pro: 'Retirer cet équipement du parc ?',
+    direct: 'Retirer ?',
+  },
+  'equipements.retireConfirmBody': {
+    pote: '« {label} » passe en Retirés — l’historique reste lisible, et tu peux réactiver à tout moment.',
+    pro: '« {label} » passera dans les équipements retirés. L’historique reste intégral ; la réactivation est possible.',
+    direct: '« {label} » → Retirés. Historique conservé.',
+  },
+  'equipements.retiredBadge': {
+    pote: 'Retirée le {date}',
+    pro: 'Retirée le {date}',
+    direct: 'Retirée {date}',
+  },
+  'equipements.reactivateCta': { pote: 'Réactiver', pro: 'Réactiver', direct: 'Réactiver' },
+  'equipements.activeBadge': { pote: 'Actif', pro: 'Actif', direct: 'Actif' },
+  'equipements.warrantyUntil': {
+    pote: 'Garantie jusqu’au {date}',
+    pro: 'Garantie jusqu’au {date}',
+    direct: 'Garantie → {date}',
+  },
+  'equipements.warrantyExpired': {
+    pote: 'Garantie échue le {date}',
+    pro: 'Garantie échue le {date}',
+    direct: 'Garantie échue {date}',
+  },
+  'equipements.installedOn': {
+    pote: 'Posée le {date}',
+    pro: 'Posée le {date}',
+    direct: 'Pose {date}',
+  },
+  'equipements.historyTitle': { pote: 'Historique', pro: 'Historique', direct: 'Historique' },
+  'equipements.historyEmpty': {
+    pote: 'Rien encore ici : les notes et photos taguées sur cette machine apparaîtront là.',
+    pro: 'Aucune trace pour l’instant : notes et photos liées à cet équipement s’afficheront ici.',
+    direct: 'Aucune trace.',
+  },
+  'equipements.historyNote': { pote: 'Note', pro: 'Note', direct: 'Note' },
+  'equipements.historyPhoto': { pote: 'Photo', pro: 'Photo', direct: 'Photo' },
+  'equipements.addNoteCta': {
+    pote: 'Ajouter une note',
+    pro: 'Ajouter une note',
+    direct: 'Note',
+  },
+  'equipements.notePlaceholder': {
+    pote: 'Ex. détartrage complet, pression basse réglée…',
+    pro: 'Note d’intervention sur cet équipement…',
+    direct: 'Note…',
+  },
+  'equipements.noteCta': { pote: 'Enregistrer la note', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'equipements.sectionOnSite': {
+    pote: 'ÉQUIPEMENTS',
+    pro: 'ÉQUIPEMENTS',
+    direct: 'ÉQUIPEMENTS',
+  },
+  'equipements.seeAll': { pote: 'Voir tout', pro: 'Voir tout', direct: 'Tout' },
+  'equipements.notFound': {
+    pote: 'Équipement introuvable — il a peut-être été retiré d’un autre appareil.',
+    pro: 'Équipement introuvable.',
+    direct: 'Introuvable.',
+  },
+
   // ── PR-08 — picker « site/chantier » des créations de pièces (wizard devis + facture
   // directe) : rattachement OPTIONNEL, terminologie adaptative ({termCap} = Chantier/Site…). ──
   'pieceSite.title': {

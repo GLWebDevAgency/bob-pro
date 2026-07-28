@@ -4023,6 +4023,73 @@ export class BackendService {
             }),
         });
       },
+      // PR-11 — parc d'équipements À LA VOIX (parité stricte avec l'écran parc) : la matière
+      // de résolution par nom parlé = les équipements RÉELS avec leur site ; les mutations
+      // passent par les MÊMES use cases que l'API (CreateEquipment/RetireEquipment), la
+      // révision courante est résolue ici (le geste vocal n'a pas de vue optimiste).
+      listEquipments: async () => {
+        if (!(await this.chantiersAllowed())) return ok([]);
+        const companyId = this.companyId();
+        const [equipments, chantiers] = await Promise.all([
+          this.p.equipments.listByCompany(companyId),
+          this.p.chantiers.listByCompany(companyId),
+        ]);
+        const nameOf = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+        return ok(
+          equipments.map((equipment) => {
+            const props = equipment.toProps();
+            return {
+              id: props.id,
+              label: props.label,
+              kind: props.kind,
+              status: props.status,
+              chantierId: props.chantierId,
+              chantierNom: nameOf.get(props.chantierId) ?? props.chantierId,
+            };
+          }),
+        );
+      },
+      createEquipment: async (input) => {
+        const { chantierId, ...rest } = input;
+        return this.createEquipment(chantierId, rest);
+      },
+      retireEquipment: async (input) => {
+        const companyId = this.companyId();
+        const current = await this.p.equipments.findById(companyId, input.equipmentId);
+        if (!current || current.companyId !== companyId)
+          return err(appNotFound('equipment', input.equipmentId));
+        const r = await this.retireEquipment({
+          equipmentId: input.equipmentId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        return ok({
+          equipmentId: input.equipmentId,
+          label: r.value.equipment.label,
+          contractWarning: r.value.contractWarning,
+        });
+      },
+      getEquipmentHistory: async (input) => {
+        const r = await this.getEquipmentHistory(input.equipmentId);
+        if (!r.ok) return r;
+        return ok({
+          equipmentId: r.value.equipment.id,
+          label: r.value.equipment.label,
+          status: r.value.equipment.status,
+          entries: r.value.entries.map((entry) => ({
+            type: entry.type,
+            at: entry.at,
+            label:
+              entry.type === 'note'
+                ? `${entry.text} — ${entry.authorLabel}`
+                : entry.type === 'photo'
+                  ? entry.filename
+                  : entry.type === 'intervention'
+                    ? `${entry.label} (${entry.status})`
+                    : entry.filename,
+          })),
+        });
+      },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
       // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
       // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :

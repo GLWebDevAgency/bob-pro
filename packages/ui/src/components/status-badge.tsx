@@ -21,10 +21,13 @@ export type { StatusBadgeVariant };
 
 /** Construit la palette §7 depuis le contexte de thème (réutilisé par Avatar/IconTile). */
 export function useStatusBadgePalette(): StatusBadgePalette {
-  const { semantic, controls } = useTheme();
+  const { semantic, controls, colors } = useTheme();
   return {
     danger: semantic.danger,
     dangerBadgeBg: controls.dangerBadgeBg,
+    // P1 §1.5 — badge `neutral` (Retirée, Résilié, Échu) : texte courant sur séparateur doux.
+    neutralInk: colors.slate500,
+    neutralBg: colors.lineSoft,
     warning: semantic.warning,
     warningBg: semantic.warningBg,
     b2b: semantic.b2b,

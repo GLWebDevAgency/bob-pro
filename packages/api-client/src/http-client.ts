@@ -17,6 +17,9 @@ import type {
   CreateQuoteInput,
   CreateQuoteOutput,
   DuplicateQuoteOutput,
+  EquipmentPatch,
+  EquipmentProps,
+  RetireEquipmentOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -70,6 +73,8 @@ import type {
 } from '@bob/core';
 import type {
   BobClient,
+  CreateEquipmentClientInput,
+  EquipmentHistoryView,
   QuoteView,
   InvoiceView,
   PaymentView,
@@ -3324,11 +3329,15 @@ export class HttpBobClient implements BobClient {
       `/chantiers/${encodeURIComponent(chantierId)}/notes`,
     );
   }
-  addChantierNote(chantierId: string, input: { text: string }) {
+  addChantierNote(chantierId: string, input: { text: string; equipmentId?: string | null }) {
     return this.req<{ id: string }>(
       'POST',
       `/chantiers/${encodeURIComponent(chantierId)}/notes`,
-      input,
+      {
+        text: input.text,
+        // PR-11 — le tag équipement atteint le serveur (perte silencieuse interdite).
+        ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      },
     );
   }
   listWorksitePhotos(chantierId: string) {
@@ -3339,12 +3348,63 @@ export class HttpBobClient implements BobClient {
   }
   uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string },
+    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
   ) {
     return this.req<WorksiteMediaItem>(
       'POST',
       `/chantiers/${encodeURIComponent(chantierId)}/photos`,
+      {
+        contentBase64: input.contentBase64,
+        mimeType: input.mimeType,
+        filename: input.filename,
+        ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      },
+    );
+  }
+  // ── PR-11 — parc d'équipements (mêmes endpoints que la voix, parité stricte) ──
+  listChantierEquipments(chantierId: string) {
+    return this.req<EquipmentProps[]>(
+      'GET',
+      `/chantiers/${encodeURIComponent(chantierId)}/equipments`,
+    );
+  }
+  createEquipment(chantierId: string, input: CreateEquipmentClientInput) {
+    return this.req<{ id: string }>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/equipments`,
       input,
+    );
+  }
+  updateEquipment(equipmentId: string, input: { expectedRevision: number; patch: EquipmentPatch }) {
+    return this.req<EquipmentProps>('PUT', `/equipments/${encodeURIComponent(equipmentId)}`, {
+      expectedRevision: input.expectedRevision,
+      ...input.patch,
+    });
+  }
+  retireEquipment(equipmentId: string, input: { expectedRevision: number }) {
+    return this.req<RetireEquipmentOutput>(
+      'POST',
+      `/equipments/${encodeURIComponent(equipmentId)}/retire`,
+      input,
+    );
+  }
+  reactivateEquipment(equipmentId: string, input: { expectedRevision: number }) {
+    return this.req<EquipmentProps>(
+      'POST',
+      `/equipments/${encodeURIComponent(equipmentId)}/reactivate`,
+      input,
+    );
+  }
+  getEquipmentHistory(equipmentId: string) {
+    return this.req<EquipmentHistoryView>(
+      'GET',
+      `/equipments/${encodeURIComponent(equipmentId)}/history`,
+    );
+  }
+  reopenChantier(chantierId: string) {
+    return this.req<{ changed: boolean }>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/reopen`,
     );
   }
   worksitePhotoViewUrl(photoId: string) {

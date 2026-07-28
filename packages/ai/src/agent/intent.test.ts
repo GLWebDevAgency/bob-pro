@@ -550,3 +550,43 @@ describe('detectIntent — lecture de l’encaissement (PR-07 : pilotage, jamais
     expect(detectIntent('Quel est mon délai d’encaissement ?')).toBe('dso');
   });
 });
+
+
+describe('detectIntent — parc d’équipements (PR-11) : intents dédiés SANS détourner l’existant', () => {
+  it('ajout au parc : verbe d’ajout + marqueur site/parc (kind LIBRE, aucun lexique matériel)', () => {
+    for (const m of [
+      'Ajoute la clim du local serveur chez Carrefour',
+      'Ajoute un équipement au site Bastille',
+      'Ajoute la fontaine de l’accueil au parc',
+      'Installe la PAC gainable sur le site Docks Rouen',
+    ]) {
+      expect(detectIntent(m)).toBe('ajouter_equipement');
+    }
+  });
+
+  it('lecture du parc et historique d’une machine', () => {
+    expect(detectIntent('Montre-moi le parc du site RATP Bastille')).toBe('parc_equipements');
+    expect(detectIntent('Les équipements de Carrefour Vitry')).toBe('parc_equipements');
+    expect(detectIntent("L'historique de la fontaine de l'accueil")).toBe('historique_equipement');
+  });
+
+  it('retrait : le mot parc/équipement est REQUIS — « retire » seul ne suffit jamais', () => {
+    expect(detectIntent('La vitrine froide est déposée, retire-la du parc')).toBe('retirer_equipement');
+    expect(detectIntent('Retire l’équipement Fontaine quai A')).toBe('retirer_equipement');
+  });
+
+  it('ne détourne AUCUN flux existant (notes, dépenses, documents, chantiers, pièces)', () => {
+    expect(detectIntent('Ajoute une note au chantier Lefèvre : fuite réparée')).not.toBe('ajouter_equipement');
+    expect(detectIntent('Mets la dépense Aldi sur le chantier Durand')).toBe('lier_depense_chantier');
+    expect(detectIntent('Range le ticket Aldi dans le chantier Durand')).toBe('classer_document');
+    expect(detectIntent('Mes chantiers')).toBe('voir_chantiers');
+    expect(detectIntent("L'historique des factures de Durand")).not.toBe('historique_equipement');
+    expect(detectIntent('Fais un devis pour Martin')).toBe('nouveau_devis');
+    expect(detectIntent('Facture 380 € à Mme Girard pour le dépannage')).toBe('facture_directe');
+  });
+
+  it('négation ⇒ rien (jamais une mutation sur une intention niée)', () => {
+    expect(detectIntent('Ne retire pas la fontaine du parc')).not.toBe('retirer_equipement');
+    expect(detectIntent("N'ajoute pas d'équipement chez Carrefour")).not.toBe('ajouter_equipement');
+  });
+});

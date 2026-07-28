@@ -561,6 +561,66 @@ export interface CreateCustomerActionInput {
   type: 'b2c' | 'b2b' | 'b2g';
 }
 
+/** PR-11 — équipement RÉEL du tenant (avec son site) : la SEULE matière de résolution par nom
+ * parlé (« la clim du local serveur chez Carrefour ») — jamais un id inventé par le LLM. */
+export interface AgentEquipment {
+  id: string;
+  label: string;
+  /** Type LIBRE (« Fontaine réseau ») — descriptif, jamais un discriminant. */
+  kind: string | null;
+  status: 'active' | 'retired';
+  chantierId: string;
+  chantierNom: string;
+}
+
+/** Outil ajouter_equipement (PR-11) : MÊME use case CreateEquipment (@bob/core) que
+ * POST /chantiers/:id/equipments et l'écran parc — site PROUVÉ dans le tenant + `open`
+ * (refus actionnable « rouvre-le » restitué verbatim). */
+export interface CreateEquipmentActionInput {
+  /** Site RÉSOLU contre la liste réelle par l'agent (resolveSpokenChantier) — jamais récité. */
+  chantierId: string;
+  label: string;
+  kind?: string | null;
+  brand?: string | null;
+  serialNumber?: string | null;
+  location?: string | null;
+  installedAt?: string | null;
+  warrantyUntil?: string | null;
+}
+
+/** Outil retirer_equipement (PR-11) : MÊME use case RetireEquipment que l'écran — l'hôte
+ * résout la révision courante côté serveur (le geste vocal n'a pas de vue optimiste). */
+export interface RetireEquipmentActionInput {
+  equipmentId: string;
+}
+
+export interface RetireEquipmentActionOutput {
+  equipmentId: string;
+  label: string;
+  /** [Amélioration 4] — avertissement contrat HONNÊTE non bloquant, null si aucune couverture. */
+  contractWarning: string | null;
+}
+
+/** Outil historique_equipement (PR-11) : MÊME dérivation deriveEquipmentHistory que
+ * GET /equipments/:id/history — lecture pure, entrées réelles uniquement. */
+export interface EquipmentHistoryActionInput {
+  equipmentId: string;
+}
+
+export interface EquipmentHistoryActionEntry {
+  type: 'note' | 'photo' | 'intervention' | 'document';
+  at: string;
+  /** Résumé LISIBLE de la trace (texte de note, nom de fichier, libellé d'intervention). */
+  label: string;
+}
+
+export interface EquipmentHistoryActionOutput {
+  equipmentId: string;
+  label: string;
+  status: 'active' | 'retired';
+  entries: EquipmentHistoryActionEntry[];
+}
+
 /**
  * Surface d'actions de Bob — implémentée par l'app via le BobClient (donc le domaine/use cases).
  * INVARIANT DE PARITÉ : chaque action faisable à la main dans l'UI a ici sa méthode, et les deux
@@ -762,4 +822,19 @@ export interface BobActions {
   attachPurchaseOrderToQuote?(
     input: AttachPurchaseOrderActionInput,
   ): Promise<Result<AttachPurchaseOrderActionOutput, AppError>>;
+  /** PR-11 — équipements RÉELS du tenant (avec leur site) : la matière de résolution par nom
+   * parlé des outils du parc. Lecture pure, bornée par l'hôte, jamais un équipement inventé. */
+  listEquipments?(): Promise<Result<AgentEquipment[], AppError>>;
+  /** PR-11 — « ajoute la clim du local serveur chez Carrefour » : MÊME use case CreateEquipment
+   * que l'écran parc (site prouvé + open, refus actionnable restitué verbatim). */
+  createEquipment?(input: CreateEquipmentActionInput): Promise<Result<{ id: string }, AppError>>;
+  /** PR-11 — « la vitrine froide est déposée, retire-la du parc » : MÊME use case
+   * RetireEquipment ; l'avertissement contrat (amélioration 4) traverse tel quel. */
+  retireEquipment?(
+    input: RetireEquipmentActionInput,
+  ): Promise<Result<RetireEquipmentActionOutput, AppError>>;
+  /** PR-11 — « l'historique de la fontaine de l'accueil » : MÊME dérivation que l'écran. */
+  getEquipmentHistory?(
+    input: EquipmentHistoryActionInput,
+  ): Promise<Result<EquipmentHistoryActionOutput, AppError>>;
 }

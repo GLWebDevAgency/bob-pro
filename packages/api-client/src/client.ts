@@ -13,6 +13,10 @@ import type {
   CreateQuoteInput,
   CreateQuoteOutput,
   DuplicateQuoteOutput,
+  EquipmentHistoryEntry,
+  EquipmentPatch,
+  EquipmentProps,
+  RetireEquipmentOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -1087,6 +1091,24 @@ export interface SubscriptionBillingInvoiceView {
   invoicePdfUrl: string | null;
 }
 
+/** PR-11 — création d'équipement côté client (le site est porté par la route). */
+export interface CreateEquipmentClientInput {
+  label: string;
+  kind?: string | null;
+  brand?: string | null;
+  serialNumber?: string | null;
+  location?: string | null;
+  installedAt?: string | null;
+  warrantyUntil?: string | null;
+  notes?: string | null;
+}
+
+/** PR-11 — fiche + historique DÉRIVÉ (mêmes entrées que deriveEquipmentHistory). */
+export interface EquipmentHistoryView {
+  equipment: EquipmentProps;
+  entries: EquipmentHistoryEntry[];
+}
+
 export interface BobClient {
   readonly companyId: string;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
@@ -1384,12 +1406,42 @@ export interface BobClient {
   listChantiers(): Promise<Result<ChantierListItem[], AppError>>;
   // ── Journal + photos de chantier (fiche chantier, extension V1) ──
   listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>>;
-  addChantierNote(chantierId: string, input: { text: string }): Promise<Result<{ id: string }, AppError>>;
+  /** PR-11 (additif) — `equipmentId` tague la note sur un équipement DU MÊME site (prouvé
+   * serveur, fail-closed) ; absent = note du site, comportement historique inchangé. */
+  addChantierNote(
+    chantierId: string,
+    input: { text: string; equipmentId?: string | null },
+  ): Promise<Result<{ id: string }, AppError>>;
   listWorksitePhotos(chantierId: string): Promise<Result<WorksiteMediaItem[], AppError>>;
   uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string },
+    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
   ): Promise<Result<WorksiteMediaItem, AppError>>;
+  // ── PR-11 — parc d'équipements d'un site (Bloc A) : MÊMES use cases que la voix.
+  // OPTIONNELLES (compat transports existants) — HttpBobClient et LocalBobClient les
+  // implémentent tous les deux (parité stricte). ──
+  listChantierEquipments?(chantierId: string): Promise<Result<EquipmentProps[], AppError>>;
+  createEquipment?(
+    chantierId: string,
+    input: CreateEquipmentClientInput,
+  ): Promise<Result<{ id: string }, AppError>>;
+  updateEquipment?(
+    equipmentId: string,
+    input: { expectedRevision: number; patch: EquipmentPatch },
+  ): Promise<Result<EquipmentProps, AppError>>;
+  retireEquipment?(
+    equipmentId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<RetireEquipmentOutput, AppError>>;
+  reactivateEquipment?(
+    equipmentId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<EquipmentProps, AppError>>;
+  getEquipmentHistory?(
+    equipmentId: string,
+  ): Promise<Result<EquipmentHistoryView, AppError>>;
+  /** [Revue A12] — réponse au refus actionnable « site clôturé — rouvre-le » (idempotent). */
+  reopenChantier?(chantierId: string): Promise<Result<{ changed: boolean }, AppError>>;
   worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
   deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
@@ -1445,7 +1497,7 @@ export interface BobClient {
   /** PR-14 « Refaire ce devis » — POST /quotes/:id/duplicate : NOUVEAU brouillon repassant
    * INTÉGRALEMENT par CreateQuote côté serveur (TVA re-suggérée au régime du jour ; signature,
    * urgence, n°, validité JAMAIS copiés). OPTIONNELLE (compat transports existants) —
-   * HttpBobClient et LocalBobClient l'implémentent tous les deux (parité stricte). */
+   * les deux transports du repo l'implémentent (parité stricte). */
   duplicateQuote?(
     quoteId: string,
     input?: {

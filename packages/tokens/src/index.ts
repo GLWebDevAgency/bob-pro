@@ -188,6 +188,74 @@ export const motion = {
   ambient: 1500,
 } as const;
 
+/**
+ * MOTION SÉMANTIQUE — kit « matière Bob » (P1 §1.4), ADDITIF au registre `motion` historique.
+ * Durées NOMMÉES PAR INTENTION (feedback, entrée, sortie, remplacement) pour les NOUVEAUX
+ * composants P1 (parc, contrats, fiches de passage) — transform/opacity uniquement,
+ * interruptible, et la table reduce-motion = ÉQUIVALENCE D'INFORMATION (immédiat + annonce),
+ * jamais une info perdue. Les écrans existants gardent `motion` (jamais de restyling).
+ */
+export const motionSemantic = {
+  /** Micro-feedback d'appui (pressed) — perceptible, jamais spongieux. */
+  feedbackIn: 80,
+  feedbackOut: 160,
+  /** Sortie d'un élément (rangée retirée) — plus rapide que l'entrée (l'œil suit l'arrivée). */
+  exitFast: 140,
+  /** Entrée d'un élément secondaire (chip de synchro, badge). */
+  enterFast: 180,
+  /** Entrée de contenu après ACK (nouvelle rangée insérée). */
+  enter: 240,
+  /** Remplacement d'un état par un autre (badge morph success → neutral). */
+  replace: 280,
+  /** Ressort standard des layout transitions (interruptible, sans rebond excessif). */
+  spring: { damping: 26, stiffness: 300, mass: 1 },
+} as const;
+
+/**
+ * SURFACE TINT — kit « matière Bob » (P1 §1.1) : surfaces TEINTÉES OPAQUES (jamais la
+ * transparence iOS — opacités pré-composées en hex), 2 apparences livrées dès P1.
+ * `light` = résolution par défaut tant qu'UX-ADR-004 n'active pas le dark ; `dark` sur la
+ * rampe marine d1/d2/d3. `surface` porte le fond, `border` le liseré (renforcé en Increase
+ * Contrast côté composant), `ink` le texte principal certifié AA sur `surface`
+ * (index.test.ts). Chaque tone a 2 niveaux : `flat` (fond) et `raised` (carte posée).
+ */
+export type SurfaceTintTone = 'neutral' | 'marine' | 'ai' | 'success' | 'warning' | 'danger';
+export type SurfaceTintAppearance = 'light' | 'dark';
+
+export interface SurfaceTintSpec {
+  /** Fond `flat` (aplat calme). */
+  flat: string;
+  /** Fond `raised`/`floating` (carte détachée du fond). */
+  raised: string;
+  border: string;
+  /** Encre principale certifiée AA (4,5:1) sur `flat` ET `raised`. */
+  ink: string;
+  /** Encre secondaire certifiée AA sur `flat` ET `raised`. */
+  inkMuted: string;
+}
+
+export const surfaceTint: Record<
+  SurfaceTintAppearance,
+  Record<SurfaceTintTone, SurfaceTintSpec>
+> = {
+  light: {
+    neutral: { flat: '#FFFFFF', raised: '#EAEEF3', border: '#E0E6EE', ink: '#0F2235', inkMuted: '#5B6B7B' },
+    marine: { flat: '#F4F7FB', raised: '#E2E9F2', border: '#D3DEEC', ink: '#0C2340', inkMuted: '#43587A' },
+    ai: { flat: '#F6F4FD', raised: '#E7E2F8', border: '#DAD2F1', ink: '#4B2A86', inkMuted: '#5A4795' },
+    success: { flat: '#EAF2EC', raised: '#DCEDE3', border: '#C9E2D2', ink: '#0E5C44', inkMuted: '#20654F' },
+    warning: { flat: '#FBF0DF', raised: '#F6E4C6', border: '#EED9B4', ink: '#7A4A0A', inkMuted: '#8A5A12' },
+    danger: { flat: '#FBEAE8', raised: '#F6DBD8', border: '#EFC9C4', ink: '#8F2F27', inkMuted: '#A03A31' },
+  },
+  dark: {
+    neutral: { flat: '#0C2340', raised: '#122E52', border: '#1E3D66', ink: '#F1F5FA', inkMuted: '#A9BBD4' },
+    marine: { flat: '#122E52', raised: '#163763', border: '#234879', ink: '#F1F5FA', inkMuted: '#AFC2DB' },
+    ai: { flat: '#221D45', raised: '#2C2560', border: '#3A3178', ink: '#E9E4FB', inkMuted: '#BCB1E8' },
+    success: { flat: '#0D2E24', raised: '#123D30', border: '#1B5343', ink: '#CFF2E2', inkMuted: '#8FCDB3' },
+    warning: { flat: '#33230A', raised: '#463010', border: '#5E431A', ink: '#F8E5C4', inkMuted: '#DBB97E' },
+    danger: { flat: '#351312', raised: '#481B19', border: '#622825', ink: '#FADDD9', inkMuted: '#E5A9A2' },
+  },
+} as const;
+
 export const shadowNative = {
   e1: {
     shadowColor: '#0D2644',

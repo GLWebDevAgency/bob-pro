@@ -936,6 +936,67 @@ function resolveSpokenChantier(input: {
   };
 }
 
+/** Mots du GESTE parc d'équipements (PR-11) — neutralisés avant le ciblage par jetons : dans
+ * « retire la fontaine du parc », seuls « fontaine » (et un éventuel site) ciblent — jamais
+ * « retire » ni « parc ». Même doctrine que PURCHASE_ORDER_GESTURE_WORDS. */
+const EQUIPMENT_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'equipement', 'equipements', 'parc', 'machine', 'machines', 'historique', 'historiques',
+  'ajoute', 'ajouter', 'ajoutes', 'installe', 'installer', 'enregistre', 'enregistrer', 'cree',
+  'creer', 'mets', 'mettre', 'pose', 'poser', 'retire', 'retirer', 'retires', 'enleve',
+  'enlever', 'sors', 'sortir', 'deposee', 'deposees', 'depose', 'deposes', 'montre', 'montrer',
+  'affiche', 'afficher', 'liste', 'lister', 'voir', 'donne', 'donner', 'site', 'sites',
+  'chantier', 'chantiers', 'chez', 'pour', 'dans', 'sur', 'avec', 'sans', 'marque', 'garantie',
+  'jusqu', 'serie', 'numero', 'bob', 'peux', 'veux', 'voudrais', 'faut', 'merci', 'bonjour',
+  'salut', 'stp', 'plait', 'cest', 'est', 'elle', 'elles', 'nous', 'vous', 'mon', 'mes', 'ton',
+  'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'tout', 'tous', 'toute', 'toutes', 'aussi',
+  'alors', 'donc', 'bien', 'voila', 'local', // « local » seul reste ambigu (« le local serveur » vit dans le label)
+]);
+
+/**
+ * PR-11 — résolution de l'ÉQUIPEMENT dicté contre le parc RÉEL (« la clim du local serveur »,
+ * « la fontaine de l'accueil ») — patron resolveSpokenChantier : jamais un id inventé ;
+ * `byId` (followUps des questions) prime ; `strong` = tous les jetons significatifs du label
+ * dits ; sinon `loose` (au moins un jeton) ne sert qu'à proposer des options. Le départage en
+ * INCLUSION de nom (« Clim local » / « Clim local serveur ») préfère le label le PLUS
+ * SPÉCIFIQUE entièrement dit (preferMostSpecificChantiers, convergence des followUps) ; des
+ * labels disjoints restent une VRAIE ambiguïté — question posée, jamais un choix silencieux.
+ */
+function resolveSpokenEquipment<E extends { id: string; label: string }>(input: {
+  conversation: string;
+  equipments: readonly E[];
+}): { byId: E[]; strong: E[]; loose: E[]; saidTokens: string[] } {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  const saidTokens = [...conversationTokens].filter((word) => !EQUIPMENT_GESTURE_WORDS.has(word));
+  const byId = input.equipments.filter(
+    (equipment) =>
+      normalized(equipment.id).length >= 3 &&
+      containsExactTokens(normalizedConversation, normalized(equipment.id)),
+  );
+  const strong = input.equipments.filter((equipment) => {
+    const tokens = destinationNameTokens(equipment.label);
+    return tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  });
+  const loose = input.equipments.filter((equipment) =>
+    destinationNameTokens(equipment.label).some(
+      (word) => conversationTokens.has(word) && !EQUIPMENT_GESTURE_WORDS.has(word),
+    ),
+  );
+  const preferred = preferMostSpecificChantiers(
+    strong.map((equipment) => ({ id: equipment.id, nom: equipment.label })),
+    normalizedConversation,
+  );
+  const preferredIds = new Set(preferred.map((entry) => entry.id));
+  return {
+    byId,
+    strong: strong.filter((equipment) => preferredIds.has(equipment.id)),
+    loose,
+    saidTokens,
+  };
+}
+
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
  * m'a envoyé un bon de commande » ne doit cibler que par « ratp », jamais par « commande ». */
 const PURCHASE_ORDER_GESTURE_WORDS: ReadonlySet<string> = new Set([
@@ -1394,6 +1455,10 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'cadence_relances' || tool === 'regler_relances_auto') return 'cadence_relances';
   if (tool === 'scan_depense') return 'depense_dictee';
   if (tool === 'lier_depense_chantier') return 'lier_depense_chantier';
+  if (tool === 'ajouter_equipement') return 'ajouter_equipement';
+  if (tool === 'retirer_equipement') return 'retirer_equipement';
+  if (tool === 'parc_du_site') return 'parc_equipements';
+  if (tool === 'historique_equipement') return 'historique_equipement';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -3914,6 +3979,473 @@ export class BobAgent {
         model,
         plan: ['Imputer la dépense au chantier'],
         card: { title: 'Dépense imputée ✓', body: `${label} — c’est noté.` },
+      });
+    }
+
+    if (
+      intent === 'parc_equipements' ||
+      intent === 'historique_equipement' ||
+      intent === 'retirer_equipement' ||
+      intent === 'ajouter_equipement'
+    ) {
+      // PR-11 — parc d'équipements À LA VOIX : MÊMES use cases que l'écran parc (parité).
+      // Résolution par NOM PARLÉ contre les données réelles : site via resolveSpokenChantier
+      // (matching scopé au marqueur), équipement via resolveSpokenEquipment (départage
+      // convergent, refus honnête, jamais un id récité). Confirmations aux SEULES mutations.
+      const listEquipments = this.deps.actions.listEquipments?.bind(this.deps.actions);
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      if (!listEquipments || !listDestinations) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Parc d’équipements',
+            body: 'Je ne peux pas travailler sur le parc d’équipements depuis cet appareil. Rien n’a été modifié — passe par la fiche du site.',
+          },
+        });
+      }
+      const [equipmentsResult, destinationsResult] = await Promise.all([
+        listEquipments(),
+        listDestinations(),
+      ]);
+      if (!equipmentsResult.ok) return err(equipmentsResult.error);
+      if (!destinationsResult.ok) return err(destinationsResult.error);
+      const equipments = equipmentsResult.value;
+      const chantiers = destinationsResult.value.chantiers;
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+
+      // SITE dicté (« chez Carrefour », « du site Bastille ») : même résolution que les pièces
+      // (PR-08) — le marqueur scope, l'inclusion de nom départage, « sans site » est respecté.
+      const siteResolution = resolveSpokenChantier({
+        conversation,
+        currentTurn: `${message} ${reference ?? ''}`,
+        chantiers,
+        customerName: null,
+      });
+      const site =
+        !siteResolution.declined && siteResolution.matched.length === 1
+          ? siteResolution.matched[0]!
+          : null;
+      const siteAmbiguous = !siteResolution.declined && siteResolution.matched.length > 1;
+
+      if (intent === 'parc_equipements') {
+        if (siteAmbiguous) {
+          const options = siteResolution.matched.slice(0, 4);
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Lever l’ambiguïté du site'],
+            card: { title: 'Quel site ?', body: 'Le parc de quel site veux-tu voir ?' },
+            choices: options.map((chantier) => ({
+              label: chantier.nom,
+              value: `Montre le parc du site ${chantier.nom}`,
+            })),
+            ask: [
+              askToPick({
+                id: 'parc_equipements.site',
+                question: 'Le parc de quel site ?',
+                header: 'Site',
+                items: options.map((chantier) => ({
+                  value: chantier.id,
+                  label: chantier.nom,
+                  followUp: `Montre le parc du site ${chantier.nom}`,
+                })),
+              }),
+            ],
+          });
+        }
+        const pool = site
+          ? equipments.filter((equipment) => equipment.chantierId === site.id)
+          : equipments;
+        if (pool.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Lister le parc réel'],
+            card: {
+              title: site ? `Parc — ${site.nom}` : 'Parc d’équipements',
+              body: site
+                ? `Aucun équipement enregistré sur le site ${site.nom} pour l’instant. Dis « ajoute … chez ${site.nom} » pour démarrer le parc.`
+                : 'Aucun équipement enregistré pour l’instant. Dis « ajoute la fontaine de l’accueil chez {ton client} » pour démarrer le parc.',
+            },
+          });
+        }
+        const actifs = pool.filter((equipment) => equipment.status === 'active');
+        const retirees = pool.length - actifs.length;
+        const lines = pool
+          .slice(0, 8)
+          .map(
+            (equipment) =>
+              `• ${equipment.label}${equipment.kind ? ` — ${equipment.kind}` : ''}${
+                site ? '' : ` (${equipment.chantierNom})`
+              }${equipment.status === 'retired' ? ' · retirée' : ''}`,
+          )
+          .join('\n');
+        const more = pool.length > 8 ? `\n… et ${pool.length - 8} de plus (fiche du site).` : '';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister le parc réel du tenant'],
+          card: {
+            title: site ? `Parc — ${site.nom}` : 'Parc d’équipements',
+            body: `${actifs.length} actif(s)${retirees > 0 ? `, ${retirees} retiré(s)` : ''} :\n${lines}${more}`,
+          },
+        });
+      }
+
+      // Cible ÉQUIPEMENT (historique / retrait) : pool scopé au site quand il est nommé.
+      const pool = site
+        ? equipments.filter((equipment) => equipment.chantierId === site.id)
+        : equipments;
+      const activePool =
+        intent === 'retirer_equipement'
+          ? pool.filter((equipment) => equipment.status === 'active')
+          : pool;
+      const resolution = resolveSpokenEquipment({ conversation, equipments: activePool });
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : null;
+
+      if (intent === 'historique_equipement' || intent === 'retirer_equipement') {
+        const commandOf = (equipment: { id: string }): string =>
+          intent === 'historique_equipement'
+            ? `L'historique de l'équipement ${equipment.id}`
+            : `Retire l'équipement ${equipment.id} du parc`;
+        if (!target) {
+          const candidates =
+            resolution.strong.length > 1
+              ? resolution.strong
+              : resolution.loose.length > 0
+                ? resolution.loose
+                : activePool;
+          if (candidates.length === 0) {
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier le parc réel'],
+              card: {
+                title: 'Aucun équipement',
+                body: site
+                  ? `Aucun équipement ${intent === 'retirer_equipement' ? 'actif ' : ''}sur le site ${site.nom}. Rien n’a été modifié.`
+                  : `Aucun équipement ${intent === 'retirer_equipement' ? 'actif ' : ''}dans le parc. Rien n’a été modifié.`,
+              },
+            });
+          }
+          // Nom dit mais introuvable dans le parc réel → refus HONNÊTE (jamais un équipement
+          // inventé) ; sinon, vraie ambiguïté → question ciblée. Les followUps portent l'ID :
+          // le tour suivant résout par `byId`, la question ne reboucle jamais.
+          const named =
+            resolution.saidTokens.length > 0 &&
+            resolution.strong.length === 0 &&
+            resolution.loose.length === 0;
+          const options = candidates.slice(0, 4);
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: named
+              ? ['Vérifier l’équipement contre le parc réel']
+              : ['Lever l’ambiguïté de l’équipement'],
+            card: named
+              ? {
+                  title: 'Équipement introuvable',
+                  body: `Je ne trouve aucun équipement correspondant à « ${resolution.saidTokens.join(' ')} »${site ? ` sur le site ${site.nom}` : ''}. Rien n’a été modifié — choisis dans le parc :`,
+                }
+              : {
+                  title: 'Quel équipement ?',
+                  body:
+                    intent === 'historique_equipement'
+                      ? 'De quel équipement veux-tu l’historique ?'
+                      : 'Quel équipement veux-tu retirer du parc ?',
+                },
+            choices: options.map((equipment) => ({
+              label: `${equipment.label} (${equipment.chantierNom})`,
+              value: commandOf(equipment),
+            })),
+            ask: [
+              askToPick({
+                id: `${intent}.equipement`,
+                question:
+                  intent === 'historique_equipement'
+                    ? 'De quel équipement veux-tu l’historique ?'
+                    : 'Quel équipement retirer ?',
+                header: 'Équipement',
+                items: options.map((equipment) => ({
+                  value: equipment.id,
+                  label: equipment.label,
+                  description: equipment.chantierNom,
+                  followUp: commandOf(equipment),
+                })),
+              }),
+            ],
+          });
+        }
+
+        if (intent === 'historique_equipement') {
+          const tool = this.tool('historique_equipement');
+          if (!tool) {
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier la capacité de l’hôte'],
+              card: {
+                title: 'Historique indisponible',
+                body: 'Je ne peux pas lire l’historique depuis cet appareil — ouvre la fiche de l’équipement.',
+              },
+            });
+          }
+          const parsed = tool.parse({ equipmentId: target.id });
+          if (!parsed.ok) return err(parsed.error);
+          const run = await tool.run(parsed.value);
+          if (!run.ok) return err(run.error);
+          const output = run.value as {
+            entries?: { type?: unknown; at?: unknown; label?: unknown }[];
+          };
+          const entries = Array.isArray(output?.entries) ? output.entries : [];
+          const lines = entries
+            .slice(0, 6)
+            .map((entry) =>
+              typeof entry.at === 'string' && typeof entry.label === 'string'
+                ? `• ${frDate(entry.at.slice(0, 10))} — ${entry.label}`
+                : null,
+            )
+            .filter((line): line is string => line !== null)
+            .join('\n');
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Résoudre l’équipement', 'Lire son historique réel'],
+            card: {
+              title: `Historique — ${target.label}`,
+              body:
+                entries.length === 0
+                  ? `Aucune trace pour l’instant sur ${target.label} (${target.chantierNom}) : les notes et photos taguées sur cette machine apparaîtront ici.`
+                  : `${lines}${entries.length > 6 ? `\n… et ${entries.length - 6} de plus (fiche équipement).` : ''}`,
+            },
+          });
+        }
+
+        // retirer_equipement — mutation : TOUJOURS proposée à confirmation (jamais un retrait
+        // silencieux) ; l'avertissement contrat éventuel est DIT dans la carte de résultat.
+        const tool = this.tool('retirer_equipement');
+        if (!tool) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier la capacité de l’hôte'],
+            card: {
+              title: 'Retrait indisponible',
+              body: 'Je ne peux pas retirer d’équipement depuis cet appareil. Rien n’a été modifié — passe par la fiche.',
+            },
+          });
+        }
+        const args = { equipmentId: target.id };
+        const parsed = tool.parse(args);
+        if (!parsed.ok) return err(parsed.error);
+        const label = `Retirer « ${target.label} » du parc du site ${target.chantierNom}`;
+        if (requiresConfirmation(tool, autonomy)) {
+          return ok({
+            kind: 'proposed',
+            intent,
+            model,
+            plan: ['Résoudre l’équipement', 'Attendre ta confirmation'],
+            card: {
+              title: 'Retrait à confirmer',
+              body: `${label}. L’historique reste lisible et la réactivation possible. Je confirme ?`,
+            },
+            pending: { tool: tool.name, args, label },
+            spokenPrompt: buildSpokenConfirmation(label),
+          });
+        }
+        const run = await tool.run(parsed.value);
+        if (!run.ok) {
+          const guard = domainGuardCard(run.error);
+          if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+          return err(run.error);
+        }
+        const output = run.value as { contractWarning?: unknown };
+        const warning =
+          typeof output?.contractWarning === 'string' && output.contractWarning.length > 0
+            ? ` ${output.contractWarning}`
+            : '';
+        return ok({
+          kind: 'done',
+          intent,
+          model,
+          plan: ['Retirer l’équipement du parc'],
+          card: { title: 'Équipement retiré ✓', body: `${label} — c’est fait.${warning}` },
+        });
+      }
+
+      // ajouter_equipement — consigne composite désordonnée acceptée : Bob extrait label,
+      // site, marque, garantie en UNE passe ; questions ciblées sur les seuls manques REQUIS
+      // (site, nom) ; UNE confirmation groupée avant la seule mutation (CreateEquipment).
+      const createTool = this.tool('ajouter_equipement');
+      if (!this.deps.actions.createEquipment || !createTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Ajout d’équipement',
+            body: 'Je ne peux pas ajouter d’équipement depuis cet appareil. Rien n’a été créé — passe par la fiche du site.',
+          },
+        });
+      }
+      // Extraction des FAITS de la phrase courante (jamais réinventés au tour suivant).
+      const brandMatch = /\bmarque\s+([\p{L}\p{N}][\p{L}\p{N}' -]{1,30})/iu.exec(message);
+      const brand = brandMatch?.[1]?.trim().replace(/[,.;]+$/, '') ?? null;
+      const warrantyMatch = /garantie[^0-9]{0,20}(\d{2})\/(\d{2})\/(\d{4})/i.exec(message) ??
+        /garantie[^0-9]{0,20}(\d{4})-(\d{2})-(\d{2})/i.exec(message);
+      const warrantyUntil = warrantyMatch
+        ? warrantyMatch[0].includes('-')
+          ? `${warrantyMatch[1]}-${warrantyMatch[2]}-${warrantyMatch[3]}`
+          : `${warrantyMatch[3]}-${warrantyMatch[2]}-${warrantyMatch[1]}`
+        : null;
+      // Libellé : la phrase après le verbe d'ajout, AMPUTÉE du marqueur site et des faits déjà
+      // extraits — le kind reste implicite dans le libellé libre (« clim du local serveur »).
+      let labelPart = message;
+      const verbMatch = /\b(ajoute[sz]?|ajouter|installe[sz]?|installer|enregistre[sz]?|enregistrer|cr[ée]e[sz]?|cr[ée]er|mets|mettre|pose[sz]?|poser)\b/i.exec(labelPart);
+      if (verbMatch) labelPart = labelPart.slice(verbMatch.index + verbMatch[0].length);
+      const siteMarker = /\b(chez|au site|sur le site|du site|à|a)\s/i.exec(labelPart);
+      if (siteMarker && site) labelPart = labelPart.slice(0, siteMarker.index);
+      labelPart = labelPart
+        .replace(/\bmarque\s+[\p{L}\p{N}][\p{L}\p{N}' -]{1,30}/giu, ' ')
+        .replace(/garantie[^,;.]*/gi, ' ')
+        .replace(/\b(un|une|le|la|les|l'|mon|ma|mes|nouvel(le)?|equipement|équipement)\b/gi, ' ')
+        .replace(/[,;.]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const label = labelPart.length > 0
+        ? labelPart.charAt(0).toUpperCase() + labelPart.slice(1)
+        : null;
+
+      if (siteAmbiguous || (!site && !siteResolution.declined)) {
+        // Site REQUIS : question ciblée sur le seul manque — le followUp REDIT la commande
+        // complète (les faits déjà énoncés ne sont jamais re-demandés).
+        const options = (siteAmbiguous ? siteResolution.matched : chantiers).slice(0, 4);
+        if (options.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Lister les sites ouverts'],
+            card: {
+              title: 'Aucun site ouvert',
+              body: 'Je ne vois aucun site ouvert où rattacher cet équipement. Rien n’a été créé — crée d’abord le site.',
+            },
+          });
+        }
+        const restated = (chantierNom: string): string =>
+          `Ajoute ${label ?? 'l’équipement'}${brand ? ` marque ${brand}` : ''}${
+            warrantyUntil ? ` garantie ${warrantyUntil}` : ''
+          } chez ${chantierNom}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Extraire les faits énoncés', 'Demander le seul manque : le site'],
+          card: {
+            title: siteAmbiguous ? 'Quel site ?' : 'Sur quel site ?',
+            body: siteResolution.explicit && !siteAmbiguous
+              ? `Je ne trouve aucun site ouvert correspondant à « ${siteResolution.saidName ?? 'ce site'} ». Rien n’a été créé — choisis un site ouvert :`
+              : `Sur quel site j’ajoute ${label ? `« ${label} »` : 'cet équipement'} ?`,
+          },
+          choices: options.map((chantier) => ({
+            label: chantier.nom,
+            value: restated(chantier.nom),
+          })),
+          ask: [
+            askToPick({
+              id: 'ajouter_equipement.site',
+              question: `Sur quel site j’ajoute ${label ? `« ${label} »` : 'cet équipement'} ?`,
+              header: 'Site',
+              items: options.map((chantier) => ({
+                value: chantier.id,
+                label: chantier.nom,
+                followUp: restated(chantier.nom),
+              })),
+            }),
+          ],
+        });
+      }
+      if (!site) {
+        // « sans site » dit : un équipement N'EXISTE que rattaché à un site — refus honnête.
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Expliquer le rattachement'],
+          card: {
+            title: 'Un équipement vit sur un site',
+            body: 'Un équipement du parc est toujours rattaché à un site — dis-moi lequel (« … chez Carrefour ») et je l’ajoute.',
+          },
+        });
+      }
+      if (!label) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : le nom'],
+          card: {
+            title: 'Comment s’appelle l’équipement ?',
+            body: `Donne-moi son nom (ex. « Fontaine accueil R+2 ») : redis-moi « ajoute {nom} chez ${site.nom} ».`,
+          },
+        });
+      }
+      const args = {
+        chantierId: site.id,
+        label,
+        ...(brand ? { brand } : {}),
+        ...(warrantyUntil ? { warrantyUntil } : {}),
+      };
+      const parsed = createTool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const summary = `Ajouter « ${label} » au parc du site ${site.nom}${brand ? ` · marque ${brand}` : ''}${
+        warrantyUntil ? ` · garantie jusqu'au ${frDate(warrantyUntil)}` : ''
+      }`;
+      if (requiresConfirmation(createTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Extraire les faits énoncés', 'Résoudre le site', 'Attendre ta confirmation'],
+          card: { title: 'Équipement à confirmer', body: `${summary}. Je confirme ?` },
+          pending: { tool: createTool.name, args, label: summary },
+          spokenPrompt: buildSpokenConfirmation(summary),
+        });
+      }
+      const run = await createTool.run(parsed.value);
+      if (!run.ok) {
+        // Site clôturé → refus actionnable du domaine restitué VERBATIM (« rouvre-le »).
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Ajouter l’équipement au parc'],
+        card: { title: 'Équipement ajouté ✓', body: `${summary} — c’est fait.` },
       });
     }
 
@@ -6802,6 +7334,21 @@ export class BobAgent {
           });
         }
       }
+      // PR-11 — parc d'équipements : l'état a pu changer entre la proposition et la
+      // confirmation (site clôturé, révision bougée à deux appareils) — le refus du DOMAINE
+      // est restitué verbatim (« Ce site est clôturé — rouvre-le… »), jamais un code brut.
+      if (pending.tool === 'ajouter_equipement' || pending.tool === 'retirer_equipement') {
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Restituer le refus du domaine'],
+            card: guard,
+          });
+        }
+      }
       return err(run.error);
     }
     if (pending.tool === 'marquer_notifications_lues') {
@@ -6824,6 +7371,32 @@ export class BobAgent {
             updatedCount === 0
               ? 'Aucune notification supplémentaire n’était encore non lue au moment de la confirmation.'
               : `${updatedCount} notification${updatedCount > 1 ? 's ont' : ' a'} été marquée${updatedCount > 1 ? 's' : ''} comme lue${updatedCount > 1 ? 's' : ''}.`,
+        },
+      });
+    }
+    // PR-11 — l'ajout confirmé d'un équipement : la fiche existe, la voix le dit simplement.
+    if (pending.tool === 'ajouter_equipement') {
+      return ok({
+        kind: 'done',
+        intent: 'ajouter_equipement',
+        model,
+        plan: ['Ajouter l’équipement confirmé'],
+        card: { title: 'Équipement ajouté ✓', body: `${pending.label} — c’est fait.` },
+      });
+    }
+    // PR-11 — le retrait confirmé DIT l'avertissement contrat du domaine quand il existe
+    // (amélioration 4 : couverture qui continue) — info honnête, jamais un blocage.
+    if (pending.tool === 'retirer_equipement') {
+      const warning = (run.value as { contractWarning?: unknown }).contractWarning;
+      const warningNote = typeof warning === 'string' && warning.length > 0 ? ` ${warning}` : '';
+      return ok({
+        kind: 'done',
+        intent: 'retirer_equipement',
+        model,
+        plan: ['Retirer l’équipement confirmé'],
+        card: {
+          title: 'Équipement retiré ✓',
+          body: `${pending.label} — c’est fait. L’historique reste lisible, la réactivation possible.${warningNote}`,
         },
       });
     }

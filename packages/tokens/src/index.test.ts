@@ -3,9 +3,11 @@ import {
   controls,
   defaultTheme,
   gradients,
+  motionSemantic,
   neutrals,
   radius,
   resolveColorRole,
+  surfaceTint,
   themes,
   toCssVars,
   type,
@@ -49,6 +51,56 @@ const CERTIFIED_LARGE_TEXT_OR_UI_PAIRS = [
   ['texte secondaire / fond app', resolveColorRole('text.secondary'), neutrals.bg],
   ['navigation inactive / fond app', resolveColorRole('navigation.inactive'), neutrals.bg],
 ] as const;
+
+describe('surfaceTint — kit « matière Bob » (P1 §1.1)', () => {
+  it('certifie AA (4,5:1) chaque encre sur ses fonds flat ET raised, dans les 2 apparences', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const [tone, spec] of Object.entries(surfaceTint[appearance])) {
+        for (const surface of [spec.flat, spec.raised]) {
+          expect(
+            contrastRatio(spec.ink, surface),
+            `${appearance}/${tone} ink sur ${surface}`,
+          ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+          expect(
+            contrastRatio(spec.inkMuted, surface),
+            `${appearance}/${tone} inkMuted sur ${surface}`,
+          ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT);
+        }
+      }
+    }
+  });
+
+  it('reste OPAQUE par construction : aucun canal alpha, jamais la transparence iOS', () => {
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const spec of Object.values(surfaceTint[appearance])) {
+        for (const value of [spec.flat, spec.raised, spec.border, spec.ink, spec.inkMuted]) {
+          expect(value).toMatch(/^#[\da-f]{6}$/i);
+        }
+      }
+    }
+  });
+
+  it('expose les 6 tones dans les 2 apparences (light par défaut tant que UX-ADR-004 dort)', () => {
+    const tones = ['neutral', 'marine', 'ai', 'success', 'warning', 'danger'];
+    expect(Object.keys(surfaceTint.light)).toEqual(tones);
+    expect(Object.keys(surfaceTint.dark)).toEqual(tones);
+  });
+});
+
+describe('motionSemantic — kit « matière Bob » (P1 §1.4)', () => {
+  it('fige les durées nommées par intention (sorties plus rapides que les entrées)', () => {
+    expect(motionSemantic).toMatchObject({
+      feedbackIn: 80,
+      feedbackOut: 160,
+      exitFast: 140,
+      enterFast: 180,
+      enter: 240,
+      replace: 280,
+    });
+    expect(motionSemantic.exitFast).toBeLessThan(motionSemantic.enter);
+    expect(motionSemantic.feedbackIn).toBeLessThan(motionSemantic.feedbackOut);
+  });
+});
 
 describe('tokens', () => {
   it('expose les 4 thèmes de marque avec marine par défaut', () => {

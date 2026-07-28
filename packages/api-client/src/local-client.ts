@@ -24,6 +24,12 @@ import {
   buildValueDigest,
   CreateQuote,
   buildQuoteDuplicationInput,
+  CreateEquipment,
+  UpdateEquipment,
+  RetireEquipment,
+  ReactivateEquipment,
+  ReopenChantier,
+  deriveEquipmentHistory,
   SendQuote,
   SignQuote,
   CreateQuoteSignatureLink,
@@ -156,6 +162,9 @@ import {
   type CustomerListItem,
   type CreateQuoteOutput,
   type DuplicateQuoteOutput,
+  type EquipmentPatch,
+  type EquipmentProps,
+  type RetireEquipmentOutput,
   type DiagnosticResult,
   type DiagnosticAssessmentView,
   type DiagnosticAssessmentWriteRequest,
@@ -221,6 +230,7 @@ import {
   InMemoryChantierRepository,
   InMemoryChantierNoteRepository,
   InMemoryWorksiteMediaStorage,
+  InMemoryEquipmentRepository,
   InMemoryDocumentStorage,
   InMemoryAccountingEntryRepository,
   InMemoryChartOfAccountsRepository,
@@ -313,6 +323,8 @@ import type {
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
   PurchaseOrderMutationView,
+  CreateEquipmentClientInput,
+  EquipmentHistoryView,
 } from './client';
 import { documentAnalysisSummaryView, documentExtractionSummaryView } from './document-codecs';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
@@ -556,6 +568,7 @@ export class LocalBobClient implements BobClient {
     },
   };
   private readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
+  private readonly equipments = new InMemoryEquipmentRepository();
   private readonly worksitePhotoBytes = new InMemoryDocumentStorage();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
@@ -3195,7 +3208,7 @@ export class LocalBobClient implements BobClient {
 
   async addChantierNote(
     chantierId: string,
-    input: { text: string },
+    input: { text: string; equipmentId?: string | null },
   ): Promise<Result<{ id: string }, AppError>> {
     const company = await this.companies.findById(this.companyId);
     return new AddChantierNote({
@@ -3203,11 +3216,14 @@ export class LocalBobClient implements BobClient {
       notes: this.chantierNotes,
       ids: this.ids,
       clock: this.clock,
+      // PR-11 — parité serveur : tag équipement PROUVÉ (même site, même tenant).
+      equipments: this.equipments,
     }).execute({
       companyId: this.companyId,
       chantierId,
       text: input.text,
       authorLabel: company?.name ?? 'Bob Pro',
+      ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
     });
   }
 
@@ -3217,7 +3233,7 @@ export class LocalBobClient implements BobClient {
 
   async uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string },
+    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
   ): Promise<Result<WorksiteMediaItem, AppError>> {
     return new UploadWorksitePhoto({
       chantiers: this.chantiers,
@@ -3225,12 +3241,103 @@ export class LocalBobClient implements BobClient {
       storage: this.worksitePhotoBytes,
       ids: this.ids,
       clock: this.clock,
+      equipments: this.equipments,
     }).execute({
       companyId: this.companyId,
       chantierId,
       bytes: new Uint8Array(Buffer.from(input.contentBase64, 'base64')),
       contentType: input.mimeType,
       filename: input.filename,
+      ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+    });
+  }
+
+  // ── PR-11 — parc d'équipements : MÊMES use cases @bob/core que le serveur (parité). ──
+
+  async listChantierEquipments(chantierId: string): Promise<Result<EquipmentProps[], AppError>> {
+    const chantier = await this.chantiers.findById(chantierId);
+    if (!chantier || chantier.companyId !== this.companyId)
+      return err(appNotFound('chantier', chantierId));
+    const list = await this.equipments.listByChantier(this.companyId, chantierId);
+    return ok(list.map((equipment) => equipment.toProps()));
+  }
+
+  async createEquipment(
+    chantierId: string,
+    input: CreateEquipmentClientInput,
+  ): Promise<Result<{ id: string }, AppError>> {
+    return new CreateEquipment({
+      equipments: this.equipments,
+      chantiers: this.chantiers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, chantierId, ...input });
+  }
+
+  async updateEquipment(
+    equipmentId: string,
+    input: { expectedRevision: number; patch: EquipmentPatch },
+  ): Promise<Result<EquipmentProps, AppError>> {
+    return new UpdateEquipment({ equipments: this.equipments }).execute({
+      companyId: this.companyId,
+      equipmentId,
+      expectedRevision: input.expectedRevision,
+      patch: input.patch,
+    });
+  }
+
+  async retireEquipment(
+    equipmentId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<RetireEquipmentOutput, AppError>> {
+    return new RetireEquipment({ equipments: this.equipments, clock: this.clock }).execute({
+      companyId: this.companyId,
+      equipmentId,
+      expectedRevision: input.expectedRevision,
+    });
+  }
+
+  async reactivateEquipment(
+    equipmentId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<EquipmentProps, AppError>> {
+    return new ReactivateEquipment({ equipments: this.equipments }).execute({
+      companyId: this.companyId,
+      equipmentId,
+      expectedRevision: input.expectedRevision,
+    });
+  }
+
+  async getEquipmentHistory(equipmentId: string): Promise<Result<EquipmentHistoryView, AppError>> {
+    const equipment = await this.equipments.findById(this.companyId, equipmentId);
+    if (!equipment) return err(appNotFound('equipment', equipmentId));
+    const [notes, photos] = await Promise.all([
+      this.chantierNotes.listByChantier(this.companyId, equipment.chantierId),
+      this.worksiteMedia.listByChantier(this.companyId, equipment.chantierId),
+    ]);
+    const entries = deriveEquipmentHistory({
+      equipmentId,
+      notes: notes.map((note) => ({
+        id: note.id,
+        text: note.text,
+        authorLabel: note.authorLabel,
+        createdAt: note.createdAt,
+        equipmentId: note.equipmentId,
+      })),
+      photos: photos.map((photo) => ({
+        id: photo.id,
+        filename: photo.filename,
+        createdAt: photo.createdAt,
+        equipmentId: photo.equipmentId ?? null,
+      })),
+    });
+    return ok({ equipment: equipment.toProps(), entries });
+  }
+
+  async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {
+    return new ReopenChantier({ chantiers: this.chantiers }).execute({
+      companyId: this.companyId,
+      chantierId,
     });
   }
 

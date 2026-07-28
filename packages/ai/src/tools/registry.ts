@@ -29,6 +29,11 @@ import {
   type AssignExpenseChantierActionOutput,
   type AttachPurchaseOrderActionInput,
   type AttachPurchaseOrderActionOutput,
+  type CreateEquipmentActionInput,
+  type EquipmentHistoryActionInput,
+  type EquipmentHistoryActionOutput,
+  type RetireEquipmentActionInput,
+  type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
   type FileDocumentActionOutput,
   type RenameDocumentActionInput,
@@ -1396,6 +1401,149 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => createCustomerAction(input),
     };
     tools.push(creerClient as AnyTool);
+  }
+
+  // —— PR-11 — parc d'équipements d'un site : MÊMES use cases que l'écran parc (parité). ——
+  const listEquipmentsAction = actions.listEquipments?.bind(actions);
+  if (listEquipmentsAction) {
+    const parcDuSite: Tool<{ chantierId?: string }, unknown> = {
+      name: 'parc_du_site',
+      description:
+        'Liste les équipements du parc (par site, ou tout le tenant) — lecture pure, jamais un équipement inventé.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<{ chantierId?: string }, AppError> => {
+        const r = raw as { chantierId?: unknown };
+        if (r?.chantierId !== undefined && (typeof r.chantierId !== 'string' || r.chantierId.length === 0))
+          return err(appValidation('chantierId', 'Site ciblé invalide.'));
+        return ok({ ...(typeof r?.chantierId === 'string' ? { chantierId: r.chantierId } : {}) });
+      },
+      run: async (input) => {
+        const all = await listEquipmentsAction();
+        if (!all.ok) return all;
+        return ok(
+          input.chantierId === undefined
+            ? all.value
+            : all.value.filter((equipment) => equipment.chantierId === input.chantierId),
+        );
+      },
+    };
+    tools.push(parcDuSite as AnyTool);
+  }
+
+  const createEquipmentAction = actions.createEquipment?.bind(actions);
+  if (createEquipmentAction) {
+    const ajouterEquipement: Tool<CreateEquipmentActionInput, { id: string }> = {
+      name: 'ajouter_equipement',
+      description:
+        'Ajoute un équipement au parc d’un site (« ajoute la clim du local serveur chez Carrefour ») — même use case CreateEquipment que l’écran ; le site doit être ouvert.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Conception vocale P1 (§1.6) : UNE confirmation groupée avant la SEULE mutation — et
+      // pas de vue d'annulation vocale : plancher de consentement (décision M3 transposée).
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<CreateEquipmentActionInput, AppError> => {
+        const r = raw as {
+          chantierId?: unknown;
+          label?: unknown;
+          kind?: unknown;
+          brand?: unknown;
+          serialNumber?: unknown;
+          location?: unknown;
+          installedAt?: unknown;
+          warrantyUntil?: unknown;
+        };
+        if (typeof r?.chantierId !== 'string' || r.chantierId.trim().length === 0)
+          return err(appValidation('chantierId', 'Site de rattachement manquant.'));
+        if (typeof r?.label !== 'string' || r.label.trim().length === 0 || r.label.length > 200)
+          return err(appValidation('label', 'Nom d’équipement manquant (200 caractères maximum).'));
+        const freeField = (value: unknown, field: string): Result<string | undefined, AppError> => {
+          if (value === undefined || value === null) return ok(undefined);
+          if (typeof value !== 'string' || value.trim().length === 0 || value.length > 200)
+            return err(appValidation(field, 'Champ invalide (200 caractères maximum).'));
+          return ok(value.trim());
+        };
+        const dateField = (value: unknown, field: string): Result<string | undefined, AppError> => {
+          if (value === undefined || value === null) return ok(undefined);
+          if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+            return err(appValidation(field, 'Date attendue (AAAA-MM-JJ).'));
+          return ok(value);
+        };
+        const kind = freeField(r.kind, 'kind');
+        if (!kind.ok) return kind;
+        const brand = freeField(r.brand, 'brand');
+        if (!brand.ok) return brand;
+        const serialNumber = freeField(r.serialNumber, 'serialNumber');
+        if (!serialNumber.ok) return serialNumber;
+        const location = freeField(r.location, 'location');
+        if (!location.ok) return location;
+        const installedAt = dateField(r.installedAt, 'installedAt');
+        if (!installedAt.ok) return installedAt;
+        const warrantyUntil = dateField(r.warrantyUntil, 'warrantyUntil');
+        if (!warrantyUntil.ok) return warrantyUntil;
+        return ok({
+          chantierId: r.chantierId.trim(),
+          label: r.label.trim(),
+          ...(kind.value !== undefined ? { kind: kind.value } : {}),
+          ...(brand.value !== undefined ? { brand: brand.value } : {}),
+          ...(serialNumber.value !== undefined ? { serialNumber: serialNumber.value } : {}),
+          ...(location.value !== undefined ? { location: location.value } : {}),
+          ...(installedAt.value !== undefined ? { installedAt: installedAt.value } : {}),
+          ...(warrantyUntil.value !== undefined ? { warrantyUntil: warrantyUntil.value } : {}),
+        });
+      },
+      run: (input) => createEquipmentAction(input),
+    };
+    tools.push(ajouterEquipement as AnyTool);
+  }
+
+  const retireEquipmentAction = actions.retireEquipment?.bind(actions);
+  if (retireEquipmentAction) {
+    const retirerEquipement: Tool<RetireEquipmentActionInput, RetireEquipmentActionOutput> = {
+      name: 'retirer_equipement',
+      description:
+        'Retire un équipement du parc (retrait LOGIQUE réversible — l’historique reste intégral) — même use case RetireEquipment que l’écran.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Même plancher : le retrait change la vue du parc et l'avertissement contrat doit être
+      // DIT — jamais un retrait silencieux, même en autonomie 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<RetireEquipmentActionInput, AppError> => {
+        const r = raw as { equipmentId?: unknown };
+        if (typeof r?.equipmentId !== 'string' || r.equipmentId.length === 0)
+          return err(appValidation('equipmentId', 'Équipement ciblé invalide.'));
+        return ok({ equipmentId: r.equipmentId });
+      },
+      run: (input) => retireEquipmentAction(input),
+    };
+    tools.push(retirerEquipement as AnyTool);
+  }
+
+  const equipmentHistoryAction = actions.getEquipmentHistory?.bind(actions);
+  if (equipmentHistoryAction) {
+    const historiqueEquipement: Tool<EquipmentHistoryActionInput, EquipmentHistoryActionOutput> = {
+      name: 'historique_equipement',
+      description:
+        'Historique RÉEL d’un équipement (notes, photos, passages tagués) — même dérivation que GET /equipments/:id/history. Lecture pure.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<EquipmentHistoryActionInput, AppError> => {
+        const r = raw as { equipmentId?: unknown };
+        if (typeof r?.equipmentId !== 'string' || r.equipmentId.length === 0)
+          return err(appValidation('equipmentId', 'Équipement ciblé invalide.'));
+        return ok({ equipmentId: r.equipmentId });
+      },
+      run: (input) => equipmentHistoryAction(input),
+    };
+    tools.push(historiqueEquipement as AnyTool);
   }
 
   return tools;

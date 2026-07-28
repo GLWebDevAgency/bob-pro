@@ -14,6 +14,8 @@ export const AGENT_ENTITY_TYPES = [
   'expense',
   'document',
   'chantier',
+  // PR-11 — parc d'équipements d'un site (résolution d'anaphore « cette machine »).
+  'equipment',
   'notification',
   'accounting_entry',
 ] as const;
@@ -218,6 +220,7 @@ function sanitizeContextRoute(value: unknown, type: AgentEntityType): string | n
     expense: [],
     document: ['documents'],
     chantier: [],
+    equipment: [],
     notification: ['facture', 'devis'],
     accounting_entry: [],
   };

@@ -21,6 +21,10 @@ export type BobIntent =
   | 'payer_depense' // enregistrer un règlement fournisseur déjà effectué — mutation comptable
   | 'depense_dictee' // « j'ai dépensé 89 € chez Leroy Merlin en carte » — dépense créée à la voix (M4), DISTINCT du scanner
   | 'lier_depense_chantier' // « mets la dépense Aldi sur le chantier Durand » — imputation dépense→chantier (M3)
+  | 'ajouter_equipement' // « ajoute la clim du local serveur chez Carrefour » — création au parc du site (PR-11)
+  | 'parc_equipements' // « montre-moi le parc du site Bastille » — lecture du parc (PR-11)
+  | 'historique_equipement' // « l'historique de la fontaine de l'accueil » — historique dérivé (PR-11)
+  | 'retirer_equipement' // « la vitrine froide est déposée, retire-la du parc » — retrait logique (PR-11)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -99,6 +103,59 @@ export function detectIntent(message: string): BobIntent {
     /^\s*(aide|aide[- ]moi|de l.{0,3}aide|help|au secours)\s*[!?.…]*\s*$/.test(normalizedMessage)
   )
     return 'aide';
+  // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
+  // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
+  // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement
+  // est REQUIS — « retire » seul resterait ambigu. Négation ⇒ rien.
+  if (
+    /\b(retire|retirer|retires|enleve|enlever|enleves|sors|sortir|deposee?s? ?[,.]? ?retire)\b/.test(normalizedMessage) &&
+    /\b(equipements?|parc|machines?)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(retire|retirer|enleve|enlever|sors)\b|\b(retire|retirer|enleve|enlever|sors)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'retirer_equipement';
+  // Historique d'une machine : « l'historique de la fontaine de l'accueil » — la résolution du
+  // NOM se fait contre le parc réel dans le handler ; les historiques d'autres objets restent
+  // à leurs intents (client, facture…).
+  if (
+    /\bhistoriques?\b/.test(normalizedMessage) &&
+    !/\b(clients?|factures?|devis|paiements?|reglements?|relances?|comptes?|depenses?|documents?)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'historique_equipement';
+  // Lecture du parc : « le parc du site Bastille », « les équipements de Carrefour ».
+  if (
+    /\b(parc|equipements?)\b/.test(normalizedMessage) &&
+    !/\b(ajoute|ajouter|ajoutes|installe|installer|enregistre|enregistrer|cree|creer|mets|mettre)\b/.test(
+      normalizedMessage,
+    ) &&
+    // Les gestes documentaires et dépenses gardent leurs intents même si un libellé contient
+    // « équipement » (« range le document équipements… »).
+    !/\b(range|ranger|ranges|classe|classer|classes|deplace|deplacer|renomme|renommer|rebaptise|cherche|chercher|retrouve|retrouver|trouve|trouver|recherche|rechercher|scanne|scanner|valide|valider)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(depenses?|documents?|tickets?|recus?|justificatifs?)\b/.test(normalizedMessage)
+  )
+    return 'parc_equipements';
+  // Création : « ajoute un équipement au site X », « ajoute la clim du local serveur chez
+  // Carrefour » (kind LIBRE — aucun lexique matériel codé : le marqueur site/chez + le verbe
+  // d'ajout suffisent, les gestes documentaires/notes/dépenses sont EXCLUS explicitement).
+  if (
+    /\b(ajoute|ajouter|ajoutes|installe|installer|enregistre|enregistrer|cree|creer|mets|mettre|pose|poser)\b/.test(
+      normalizedMessage,
+    ) &&
+    (/\b(equipements?|au parc|dans le parc)\b/.test(normalizedMessage) ||
+      /\b(chez|au site|sur le site|du site)\b/.test(normalizedMessage)) &&
+    !/\b(notes?|depenses?|documents?|tickets?|recus?|justificatifs?|devis|factures?|bons? de commande|bc\b|contacts?|lignes?|prestations?|clients?|rendez|rdv)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(ajoute|installe|enregistre|cree|mets|pose)\b|\b(ajoute|installe|enregistre|cree|mets|pose)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'ajouter_equipement';
   // M3 — imputation d'une dépense EXISTANTE à un chantier (« mets la dépense Aldi sur le
   // chantier Durand », « impute la dépense gasoil au chantier Sèvres ») : AVANT la dépense
   // dictée (« mets » y collisionne), AVANT payer_depense/classer_document/voir_chantiers

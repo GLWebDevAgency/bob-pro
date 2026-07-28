@@ -4,14 +4,25 @@
  * (mêmes teintes pastel sémantiques).
  */
 
-/** Les 5 variantes des redlines §7 + `warning` (état « à justifier », ambre doux). */
-export type StatusBadgeVariant = 'danger' | 'warning' | 'b2b' | 'b2g' | 'particulier' | 'success';
+/** Les 5 variantes des redlines §7 + `warning` (état « à justifier », ambre doux)
+ * + `neutral` (P1 §1.5 — états SORTIS du flux : Résilié, Annulée, Retirée, Échu). */
+export type StatusBadgeVariant =
+  | 'danger'
+  | 'warning'
+  | 'b2b'
+  | 'b2g'
+  | 'particulier'
+  | 'success'
+  | 'neutral';
 
 /** Sous-ensemble de tokens nécessaires (injecté depuis useTheme). */
 export interface StatusBadgePalette {
   /** semantic.danger — retard / impayé (fond = controls.dangerBadgeBg) */
   danger: string;
   dangerBadgeBg: string;
+  /** P1 — état neutre sorti du flux (Retirée, Résilié…) : slate sur lineSoft. */
+  neutralInk: string;
+  neutralBg: string;
   /** semantic.warning — attention douce (payée à justifier, en attente) */
   warning: string;
   warningBg: string;
@@ -63,6 +74,8 @@ export function statusBadgeColors(
       return { fg: p.particulier, bg: p.particulierBg };
     case 'success':
       return { fg: p.success, bg: p.successBg };
+    case 'neutral':
+      return { fg: p.neutralInk, bg: p.neutralBg };
   }
 }
 
