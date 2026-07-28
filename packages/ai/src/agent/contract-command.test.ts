@@ -79,6 +79,59 @@ describe('extractSpokenContractLabel — le libellé guillemeté des followUps s
     expect(extractSpokenContractLabel('Crée le contrat')).toBeNull();
     expect(extractSpokenContractLabel('Active le contrat')).toBeNull();
   });
+
+  /**
+   * IMPACT LÉGAL — ce libellé est persisté comme libellé du contrat ET de sa LIGNE UNIQUE ;
+   * la facture annuelle reprend cette ligne telle quelle (contractLinesToLineInputs). Un
+   * libellé pollué s'IMPRIME donc sur une pièce légale. La confirmation groupée ne protège
+   * pas : elle récite le libellé fautif, le pro n'entend que sa propre phrase.
+   */
+  it('le MONTANT dit ne pollue jamais le libellé — il finirait imprimé sur la facture annuelle', () => {
+    expect(
+      extractSpokenContractLabel('crée le contrat entretien 12 ascenseurs à 15 000 € par an'),
+    ).toBe('Entretien 12 ascenseurs');
+    // Espace fine insécable + « euros » dit en toutes lettres.
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines à 1 200 euros par an'),
+    ).toBe('Entretien vitrines');
+    // Décimales : la borne de ponctuation tronque le montant sur la virgule décimale — le
+    // nombre nu qui reste ne doit pas davantage devenir un morceau du libellé.
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines à 1 200,50 euros par an'),
+    ).toBe('Entretien vitrines');
+  });
+
+  it('la DATE dite ne pollue jamais le libellé — « ça démarre », « à partir du » sont ACCENTUÉS', () => {
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines ça démarre au 1er octobre'),
+    ).toBe('Entretien vitrines');
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines à partir du 01/10/2026'),
+    ).toBe('Entretien vitrines');
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines dès le 01/10/2026'),
+    ).toBe('Entretien vitrines');
+  });
+
+  it('la périodicité dite ne pollue jamais le libellé, même sans virgule pour la borner', () => {
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines 2 passages par an'),
+    ).toBe('Entretien vitrines');
+  });
+
+  it('le libellé NETTOYÉ converge : relu depuis la forme canonique, il ne bouge plus', () => {
+    const first = extractSpokenContractLabel(
+      'crée le contrat entretien 12 ascenseurs à 15 000 € par an',
+    );
+    expect(first).toBe('Entretien 12 ascenseurs');
+    // Forme canonique que Bob REDIT à chaque followUp (restate) : elle doit se relire à
+    // l'identique, sinon le libellé se reconstruirait autrement d'un tour à l'autre.
+    expect(
+      extractSpokenContractLabel(
+        `Crée le contrat « ${first!} » pour le client cus-x à 15000 € par an, à partir du 01/10/2026`,
+      ),
+    ).toBe(first);
+  });
 });
 
 describe('extractSpokenContractFacts — lecture en UNE passe de la consigne composite', () => {

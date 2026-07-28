@@ -15,8 +15,15 @@ const FRENCH_MONTHS: readonly string[] = [
 
 const MONTH_ALTERNATION = FRENCH_MONTHS.join('|');
 
-/** Espaces de MILLIERS réellement produits par un clavier/une dictée FR (fine, insécable). */
-const THOUSAND_GAP = '[\\s\\u00a0\\u202f]';
+/**
+ * Espaces de MILLIERS réellement produits par un clavier/une dictée FR (fine, insécable),
+ * exprimés SANS crochets : le jour où ce fragment est inliné DANS une classe de caractères,
+ * la classe imbriquée se refermerait sur le premier « ] » et la regex ne matcherait plus
+ * rien — en silence. Les deux formes vivent donc côte à côte, chacune à sa place.
+ */
+const THOUSAND_GAP_CHARS = '\\s\\u00a0\\u202f';
+/** La même chose EN classe, pour les usages hors classe (alternance, remplacement global). */
+const THOUSAND_GAP = `[${THOUSAND_GAP_CHARS}]`;
 
 /**
  * Montant en euros dit — le séparateur de MILLIERS est LU (« 1 200 € » vaut 1 200 €, jamais
@@ -103,9 +110,54 @@ export interface SpokenContractFacts {
 const LABEL_LEADING = /^(?:de\s+maintenance\s+)?(?:pour\s+)?(?:le\s+|la\s+|les\s+|l\W\s*|un\s+|une\s+|du\s+|des\s+|de\s+|d\W\s*)*/i;
 
 /**
+ * Désaccentuation ALIGNÉE : la chaîne rendue a EXACTEMENT la même longueur (en unités UTF-16)
+ * que l'originale, index par index. C'est ce qui permet de RECONNAÎTRE une charnière accentuée
+ * (« à partir du », « ça démarre ») sur la copie désaccentuée, puis de COUPER le texte
+ * D'ORIGINE au même index — le libellé garde donc ses accents, et aucune variante accentuée
+ * n'échappe aux nettoyeurs. Tout caractère dont la forme repliée changerait de longueur est
+ * laissé tel quel : l'alignement prime, il est la condition de sûreté de la coupe.
+ */
+function foldAccentsAligned(text: string): string {
+  let folded = '';
+  for (const char of text) {
+    const stripped = char.normalize('NFD').replace(/\p{Diacritic}/gu, '');
+    folded += stripped.length === char.length ? stripped : char;
+  }
+  return folded;
+}
+
+/**
+ * FAITS déjà lus ailleurs (montant, date de démarrage, périodicité, client) : à partir du
+ * premier d'entre eux, le reste de la phrase n'appartient plus au libellé. Évalués sur la
+ * copie DÉSACCENTUÉE alignée — « à partir du » et « ça démarre » ne s'écrivent jamais sans
+ * accent dans la vraie vie, un nettoyeur qui ne connaît que la forme nue est INERTE.
+ */
+const LABEL_TAIL_CUTTERS: readonly RegExp[] = [
+  // Montant : « 15 000 € », « 1 200 euros ». Le séparateur de milliers est inliné SANS ses
+  // crochets (THOUSAND_GAP_CHARS) — une classe imbriquée se refermerait sur le premier « ] ».
+  new RegExp(`\\d[\\d${THOUSAND_GAP_CHARS}.,]*\\s*(?:€|euros?\\b|eur\\b)`, 'i'),
+  // Montant TRONQUÉ par la borne de ponctuation (« … à 1 200 » quand « 1 200,50 € » a été dit :
+  // la virgule décimale ferme le segment) — reconnu à la charnière « à/au » + nombre EN FIN de
+  // segment, jamais au milieu d'un nom (« Entretien à 3 niveaux » reste intact).
+  new RegExp(`\\b(?:a|au)\\s+\\d[\\d${THOUSAND_GAP_CHARS}.,]*\\s*$`, 'i'),
+  /\b(?:a\s+partir\s+d[eu]?|des\s+le|a\s+compter\s+d[eu]?|ca\s+demarre|demarre|demarrage)\b/i,
+  /\b\d{1,2}\s*(?:visites?|passages?|interventions?)\b/i,
+  /\bpour\s+le\s+client\b/i,
+];
+
+/** Charnière laissée PENDANTE par une coupe (« … 12 ascenseurs à | 15 000 € ») — un libellé
+ *  ne se termine jamais sur une préposition orpheline ni sur un tiret de liaison. */
+const LABEL_DANGLING_TAIL = /[\s\-–—:,;]+(?:a|au|aux|de|du|des|d|pour|et|en|sur|par)?[\s\-–—:,;]*$/i;
+
+/**
  * Libellé dit : le segment qui SUIT le mot « contrat », borné à la première ponctuation forte.
  * La forme canonique des followUps guillemette le libellé — elle est lue en priorité, ce qui
  * fait CONVERGER les tours suivants (le libellé ne se reconstruit jamais deux fois autrement).
+ *
+ * IMPACT LÉGAL : ce libellé est persisté comme libellé du contrat ET de sa LIGNE UNIQUE, donc
+ * repris tel quel comme LIGNE de la facture annuelle — il s'IMPRIME sur une pièce légale. Un
+ * fait dicté (montant, date) qui y resterait collé serait facturé ; la confirmation groupée ne
+ * protège de rien puisqu'elle récite le libellé fautif.
  */
 export function extractSpokenContractLabel(message: string): string | null {
   const quoted = /contrats?\s+«\s*([^»]{2,80})\s*»/i.exec(message);
@@ -114,16 +166,19 @@ export function extractSpokenContractLabel(message: string): string | null {
     /contrats?\s+([^,;.!?()«»]{2,80})/i.exec(message)?.[1] ??
     null;
   if (raw === null) return null;
+  // Toutes les coupes se CALCULENT sur la copie désaccentuée alignée puis s'APPLIQUENT au
+  // texte d'origine (mapping d'index 1:1 garanti par foldAccentsAligned).
+  const folded = foldAccentsAligned(raw);
+  const lead = LABEL_LEADING.exec(folded)?.[0].length ?? 0;
+  let end = raw.length;
+  for (const cutter of LABEL_TAIL_CUTTERS) {
+    const hit = cutter.exec(folded.slice(lead));
+    if (hit !== null) end = Math.min(end, lead + hit.index);
+  }
+  const dangling = LABEL_DANGLING_TAIL.exec(folded.slice(lead, end))?.[0].length ?? 0;
   const stripped = raw
-    .replace(LABEL_LEADING, '')
-    // Faits déjà lus ailleurs : ils ne polluent jamais le libellé.
-    .replace(new RegExp(`\\d[\\d${THOUSAND_GAP}.,]*\\s*(?:€|euros?|eur)\\b.*$`, 'i'), '')
-    .replace(/\b(?:a\s+partir\s+du?|des\s+le|ca\s+demarre|demarre|demarrage)\b.*$/i, '')
-    .replace(/\b\d{1,2}\s*(?:visites?|passages?)\b.*$/i, '')
-    .replace(/\bpour\s+le\s+client\b.*$/i, '')
+    .slice(lead, end - dangling)
     .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/[-–—:,;]+$/, '')
     .trim();
   if (stripped.length < 2) return null;
   return stripped.charAt(0).toUpperCase() + stripped.slice(1);
