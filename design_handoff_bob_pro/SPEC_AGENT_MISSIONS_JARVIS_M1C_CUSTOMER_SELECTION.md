@@ -50,7 +50,9 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
    indisponible, sans ancien nom affiché.
 10. Handle capability transféré à un unique `AgentMissionProvider`, sans double ownership.
 11. Synchronisation mission + brouillon après `turn_settled`, foreground et action tactile.
-12. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
+12. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
+    d'une capability Live disparue au kill.
+13. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
 
 ### Non inclus
 
@@ -109,6 +111,8 @@ autre payload échoue. Une décision ou un écran périmé échoue sans « meill
 ### 3.4 Runtime et reprise
 
 - Le secret capability reste privé dans le handle mobile ; il n'est ni sérialisé ni reconstruit.
+- La reprise froide ne recrée jamais une capability : elle utilise un endpoint de lecture séparé,
+  dérive tenant/owner du JWT et traverse une transaction RLS sans accès aux mutations.
 - Le serveur réutilise seulement l'attestation de capability persistée lors de l'admission
   Realtime ; aucune capability fournie par le modèle ou le datachannel n'est acceptée.
 - Chaque tour expose un `turnId` UUID stable et produit exactement un `turn_settled` terminal
@@ -156,7 +160,27 @@ POST /agent-missions/:missionId/decisions
 Le body est exactement l'une des deux formes de la spec parente §13.1 :
 `choose_presented_option` ou `select_screen_customer`. Champs inconnus rejetés.
 
-### 4.3 Vue
+### 4.3 Reprise froide read-only
+
+```text
+GET /agent-missions/current/quote-creation/resume
+Authorization: Bearer <JWT>
+```
+
+Ce endpoint :
+
+- dérive `companyId` et `ownerUserId` exclusivement du principal authentifié ;
+- n'accepte aucun body, capability, tenant ou owner fourni par le mobile ;
+- n'expose que la vue owner-scopée nécessaire à la reprise ;
+- utilise FORCE RLS avec les GUC tenant + owner ;
+- n'expire, ne rejoint, n'ACK et ne modifie jamais une mission ;
+- retourne `mission: null` seulement après une lecture DB réussie ; une DB indisponible donne
+  `503`, jamais un faux vide.
+
+Le `GET /agent-missions/current/quote-creation` historique reste lié à la capability Live pour les
+relectures pendant une session. Toutes les mutations restent exclusivement sous cette capability.
+
+### 4.4 Vue
 
 La vue ajoute le brouillon observé et, pour une décision client :
 
@@ -186,7 +210,10 @@ choix vides.
 - [ ] `turn_settled` est émis exactement une fois pour `done`, `cancelled` et `failed` sur les deux
       chemins OpenAI, et provoque une relecture mobile.
 - [ ] La capability n'apparaît dans aucun JSON, log, métrique, trace ou stockage mobile.
-- [ ] Kill/relaunch reprend le même draft/choix sans navigation, parole ni mutation automatique.
+- [ ] Kill/relaunch relit par JWT+RLS le même draft/choix sans recréer de capability, sans
+      navigation, parole ni mutation automatique.
+- [ ] Une panne de la lecture de reprise affiche erreur/retry et ne devient jamais
+      `mission: null`.
 - [ ] Mission absente, protocole `null` ou flag OFF conserve le flow manuel actuel.
 - [ ] Aucune donnée mockée n'est atteignable dans les artefacts API/mobile.
 
@@ -202,4 +229,3 @@ choix vides.
 - [ ] Le registre reste `implemented` tant que device réel et preuve staging C3 ne sont pas verts.
 - [ ] **[BLOQUÉ FONDATEUR : clé OpenAI production + budget]** pour la certification de publication
       sur appareils réels ; ce blocage n'empêche ni l'implémentation ni la certification staging.
-
