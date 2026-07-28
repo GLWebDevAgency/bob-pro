@@ -55,9 +55,20 @@ export const MENTION_FRANCHISE_BASE = 'TVA non applicable, article 293 B du CGI'
  * mention : "Option pour le paiement de la taxe d'après les débits" ». Aucun numéro d'article à
  * accoler (le texte n'en impose pas, contrairement à la franchise), et surtout PAS le raccourci
  * de langage « TVA sur les débits », qui n'est pas la mention légale.
- * Cette mention ne changera PAS de référence au 01/01/2027 : elle vit dans l'annexe II au CGI,
- * de rang réglementaire, hors du champ de l'ordonnance de recodification (qui est purement
- * législative) — vérifié le 28/07/2026, aucune version future sur la fiche de l'art. 242 nonies A.
+ *
+ * SON SORT AU 01/01/2027 — UN FAIT, PUIS UN RAISONNEMENT ; ce fichier ne doit jamais présenter le
+ * second comme le premier :
+ *  • LE FAIT, vérifiable en trois secondes juste au-dessus : la chaîne imprimée ne contient AUCUNE
+ *    référence d'article. Elle ne peut donc pas devenir fausse par un changement de référence.
+ *    C'est ce fait, et lui seul, qui met Bob à l'abri ici ;
+ *  • LE RAISONNEMENT, À VÉRIFIER, non sourcé (constat du 28/07/2026) : le 11° bis vit dans
+ *    l'annexe II au CGI, de rang RÉGLEMENTAIRE, alors que l'ordonnance 2025-1247 recodifie des
+ *    dispositions LÉGISLATIVES — le texte semble donc hors de son champ. Deux réserves qui
+ *    interdisent d'en faire une certitude : aucune table de concordance consultée ne porte sur
+ *    l'annexe II, et rien n'empêche un décret de recodification parallèle de la modifier. Le
+ *    constat de l'époque (« aucune version future sur la fiche Légifrance de l'art. 242 nonies A »)
+ *    est daté, donc périssable : il ne vaut pas preuve pour l'avenir.
+ * À revérifier avec l'échéance `cibs-fin-tolerance-references-cgi` (veille-mentions-legales.ts).
  */
 export const MENTION_OPTION_DEBITS = "Option pour le paiement de la taxe d'après les débits";
 
