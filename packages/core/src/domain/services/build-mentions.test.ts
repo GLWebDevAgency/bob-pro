@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildMentions, operationNatureOf, type BuildMentionsInput } from './build-mentions';
+import {
+  buildMentions,
+  operationNatureOf,
+  CIBS_TVA_ENTREE_EN_VIGUEUR,
+  CIBS_TOLERANCE_REFERENCES_CGI,
+  MENTION_FRANCHISE_BASE,
+  type BuildMentionsInput,
+} from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
 import { formatEUR } from '../../format/money';
@@ -176,12 +183,55 @@ describe('buildMentions', () => {
     const m = mentions({ operationNature: 'services' });
     expect(m.some((s) => s.includes('Prestation de services'))).toBe(true);
   });
-  it('franchise : 293 B avant 2026-09-01, CIBS à partir', () => {
-    const before = mentions({ company: company({ vatRegime: 'franchise' }), asOf: '2026-08-31' });
-    expect(before.some((s) => s.includes('293 B'))).toBe(true);
-    const after = mentions({ company: company({ vatRegime: 'franchise' }), asOf: '2026-09-01' });
-    expect(after.some((s) => s.includes('CIBS'))).toBe(true);
-    expect(after.some((s) => s.includes('293 B'))).toBe(false);
+
+  // —— Franchise en base : recodification CIBS, AUCUNE bascule automatique ————————
+  // L'ancienne bascule datée au 2026-09-01 émettait « TVA non applicable — franchise en base
+  // (CIBS) » : mention SANS base légale (l'art. 293 E, II du CGI exige « la mention correspondant
+  // à la base légale de la franchise »), et sur une date d'entrée en vigueur désormais reportée
+  // au 01/01/2027 (ord. n° 2026-671 du 27/07/2026). Ces tests gèlent l'état sourcé et certain.
+  describe('franchise en base — pas de bascule CIBS présumée', () => {
+    const franchise = (asOf: string): string[] =>
+      mentions({ company: company({ vatRegime: 'franchise' }), asOf });
+
+    it('la mention est LITTÉRALEMENT celle de l’art. 293 E, II du CGI', () => {
+      expect(franchise('2026-06-01')).toContain('TVA non applicable, art. 293 B du CGI');
+      expect(MENTION_FRANCHISE_BASE).toBe('TVA non applicable, art. 293 B du CGI');
+    });
+
+    it('même mention à TOUTE date — y compris au 2026-09-01, date de l’ancienne bascule (reportée)', () => {
+      for (const asOf of ['2026-06-01', '2026-08-31', '2026-09-01', '2026-12-31', CIBS_TVA_ENTREE_EN_VIGUEUR, '2027-06-30', CIBS_TOLERANCE_REFERENCES_CGI]) {
+        const m = franchise(asOf);
+        expect(m).toContain(MENTION_FRANCHISE_BASE);
+        // La rédaction CIBS relèvera d'un décret NON PARU (art. 293 E, II « déclassé ») : tant
+        // qu'il n'existe pas, aucune pièce ne doit porter une formulation présumée.
+        expect(m.some((s) => s.includes('CIBS'))).toBe(false);
+        expect(m.some((s) => s.includes('L. 223-3'))).toBe(false);
+      }
+    });
+
+    it('aucune mention de franchise SANS numéro d’article (exigence de base légale, 293 E, II)', () => {
+      for (const asOf of ['2026-08-31', '2026-09-01', CIBS_TVA_ENTREE_EN_VIGUEUR]) {
+        const franchiseMention = franchise(asOf).find((s) => s.startsWith('TVA non applicable'));
+        expect(franchiseMention).toBeDefined();
+        expect(franchiseMention).toMatch(/\bart(?:icle)?\.?\s+(?:293 B|L\.\s?223-3)\b/u);
+      }
+    });
+
+    it('les dates de la réforme sont des CONSTANTES sourcées, jamais des dates en dur', () => {
+      // Entrée en vigueur du transfert de la TVA au CIBS : reportée du 01/09/2026 au 01/01/2027
+      // (ord. n° 2026-671 du 27/07/2026, JORF n° 0174 du 28/07/2026).
+      expect(CIBS_TVA_ENTREE_EN_VIGUEUR).toBe('2027-01-01');
+      // Tolérance des anciennes références CGI sur les factures : portée du 31/12/2027 au
+      // 30/06/2028 par la même ordonnance — seule échéance qui engage les mentions de Bob.
+      expect(CIBS_TOLERANCE_REFERENCES_CGI).toBe('2028-06-30');
+      expect(CIBS_TVA_ENTREE_EN_VIGUEUR < CIBS_TOLERANCE_REFERENCES_CGI).toBe(true);
+    });
+
+    it('régime réel : jamais de mention de franchise, quelle que soit la date', () => {
+      for (const asOf of ['2026-08-31', '2026-09-01', CIBS_TVA_ENTREE_EN_VIGUEUR]) {
+        expect(mentions({ asOf }).some((s) => s.includes('TVA non applicable'))).toBe(false);
+      }
+    });
   });
 
   // —— A6 : bloc émetteur complet (SIREN, TVA intracom, forme + capital, suffixe « EI ») ——

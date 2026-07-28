@@ -7,6 +7,40 @@ import { formatEUR } from '../../format/money';
 
 export type OperationNature = 'biens' | 'services' | 'mixte';
 
+/**
+ * Recodification de la TVA dans le CIBS (code des impositions sur les biens et services) —
+ * DATE D'ENTRÉE EN VIGUEUR, en constante nommée et non éparpillée, parce qu'elle a DÉJÀ bougé
+ * une fois : l'ordonnance n° 2025-1247 du 17 décembre 2025 (JORF du 20/12/2025), qui crée le
+ * livre II du CIBS (art. L200-1 à L246-12), la fixait au 1er septembre 2026 ; l'ordonnance
+ * n° 2026-671 du 27 juillet 2026 (JORF n° 0174 du 28/07/2026) la reporte au 1er janvier 2027 —
+ * rapport au Président de la République : « le décalage du 1er septembre 2026 au 1er janvier
+ * 2027 de l'entrée en vigueur du transfert des dispositions régissant la TVA au sein du CIBS ».
+ * La recodification se fait à DROIT CONSTANT : « ces changements présentent un caractère formel
+ * et n'emporte aucune modification quant aux règles de fond applicable » (rapport au Président
+ * de l'ordonnance 2025-1247) — rien ne change pour l'entreprise, seule la référence bouge.
+ * Vérifié le 28/07/2026 (JORF + compte rendu du conseil des ministres du 27/07/2026).
+ */
+export const CIBS_TVA_ENTREE_EN_VIGUEUR = '2027-01-01';
+
+/**
+ * Date jusqu'à laquelle les anciennes références au CGI restent ADMISES SUR LES FACTURES
+ * (tolérance posée par l'ordonnance 2025-1247, reportée du 31/12/2027 au 30/06/2028 par
+ * l'ordonnance 2026-671 : « la date jusqu'à laquelle les anciennes références au CGI peuvent
+ * continuer à être utilisées est reportée du 31 décembre 2027 au 30 juin 2028 »).
+ * C'est la SEULE échéance qui engage les mentions de Bob : jusque-là, citer le CGI est licite.
+ */
+export const CIBS_TOLERANCE_REFERENCES_CGI = '2028-06-30';
+
+/**
+ * Franchise en base — mention obligatoire, dans la formulation LITTÉRALE de l'art. 293 E, II du
+ * CGI : la facture « doit comporter la mention correspondant à la base légale de la franchise :
+ * "TVA non applicable, article 293 B du CGI" […] ». Reprise à l'identique par la doctrine
+ * (BOFiP BOI-TVA-DECLA-40-10-20, I-B § 50, version du 01/07/2026).
+ * Le texte exige une BASE LÉGALE : une mention de franchise sans numéro d'article n'est jamais
+ * conforme, quelle que soit la date.
+ */
+export const MENTION_FRANCHISE_BASE = 'TVA non applicable, art. 293 B du CGI';
+
 const NATURE_LABEL: Record<OperationNature, string> = {
   biens: 'Livraison de biens',
   services: 'Prestation de services',
@@ -37,6 +71,11 @@ export interface BuildMentionsInput {
   company: Company;
   customer: Customer;
   kind: 'quote' | 'invoice';
+  /**
+   * Date de référence de la pièce (jour ouvré courant au point d'appel). Conservée comme point
+   * d'accroche des règles DATÉES : aucune mention n'en dépend aujourd'hui — la bascule CIBS est
+   * délibérément non automatique, cf. le bloc franchise et CIBS_TVA_ENTREE_EN_VIGUEUR.
+   */
   asOf: string;
   validUntilDays?: number;
   /** Nature des opérations (obligatoire sur facture dès la réforme). */
@@ -136,11 +175,31 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   }
 
   if (company.isVatFranchise()) {
-    // Réforme : à compter du 1er sept. 2026, la franchise en base relève du CIBS (Code des impositions
-    // sur les biens et services) ; mention « art. 293 B du CGI » tolérée jusqu'au 31/12/2027.
-    // NB : l'article CIBS exact est à confirmer sur le décret définitif avant mise en prod.
-    const cibs = input.asOf >= '2026-09-01';
-    m.push(cibs ? 'TVA non applicable — franchise en base (CIBS)' : 'TVA non applicable, art. 293 B du CGI');
+    // Mention de franchise : UNE SEULE formulation, à toute date, et AUCUNE bascule automatique
+    // vers le CIBS. Trois faits, tous vérifiés le 28/07/2026 :
+    //  1. la recodification de la TVA dans le CIBS n'entre en vigueur qu'au
+    //     CIBS_TVA_ENTREE_EN_VIGUEUR — reportée du 01/09/2026 au 01/01/2027 par l'ordonnance
+    //     n° 2026-671 du 27/07/2026. Une bascule datée au 1er septembre 2026 aurait fait citer
+    //     un code non encore applicable : le risque de mention fausse venait de la bascule
+    //     elle-même, pas de l'inaction ;
+    //  2. « art. 293 B du CGI » reste ADMIS sur les factures jusqu'au
+    //     CIBS_TOLERANCE_REFERENCES_CGI : il n'existe, avant cette date, AUCUN moment où cette
+    //     mention devient fausse. S'ajoute le principe de correspondance automatique des
+    //     références posé par l'ordonnance 2025-1247 (rescrit BOI-RES-TVA-000253) ;
+    //  3. l'article CIBS correspondant est CONNU — la table de concordance officielle publiée
+    //     avec le JO n° 0298 du 20/12/2025 porte « CGI art. 293 B, I, al. 1 → L. 223-3 » — mais
+    //     l'OBLIGATION DE MENTION elle-même (art. 293 E, II du CGI) y est portée « déclassée »
+    //     au rang réglementaire : la rédaction exacte à imprimer après bascule relèvera d'un
+    //     DÉCRET QUI N'EST PAS PARU. impots.gouv.fr (MAJ 21/05/2026) écrit « TVA non applicable,
+    //     article L. 223-3 du code des impositions des biens et des services », mais aucune
+    //     norme ne l'impose à ce jour — et cette page est antérieure au report.
+    // Les mentions sont FIGÉES à l'émission (Invoice.legalMentions) : une pièce émise avec une
+    // rédaction présumée resterait fausse pour toujours. Tant que le décret n'est pas publié,
+    // Bob n'imprime que la rédaction dont la base légale est certaine.
+    // POINT DE VEILLE DATÉ : à la parution du décret portant la partie réglementaire TVA du CIBS
+    // — et au plus tard avant CIBS_TOLERANCE_REFERENCES_CGI — remplacer MENTION_FRANCHISE_BASE
+    // par la rédaction que ce décret impose. Pas avant, et jamais les deux mentions à la fois.
+    m.push(MENTION_FRANCHISE_BASE);
   }
   // A4 — la FRANCHISE EN BASE PRIME sur l'autoliquidation : le sous-traitant en franchise
   // facture sous l'art. 293 B CGI (mention ci-dessus), il n'est pas concerné par le dispositif
