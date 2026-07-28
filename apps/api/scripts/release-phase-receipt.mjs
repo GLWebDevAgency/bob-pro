@@ -378,6 +378,13 @@ function readDatabaseSnapshot(directUrl) {
     psql(
       directUrl,
       `
+      BEGIN;
+      SET LOCAL statement_timeout = '5s';
+      SET LOCAL lock_timeout = '2s';
+      -- L'autorité globale n'est volontairement pas lisible par le déployeur Supabase après le
+      -- transfert d'ownership. L'adhésion SET implicite créée avec ce rôle est le seul accès
+      -- administratif autorisé, comme pour toutes ses mutations de release.
+      SET LOCAL ROLE bob_realtime_capacity;
       SELECT pg_catalog.json_build_object(
         'systemIdentifier', control.system_identifier::text,
         'databaseOid', database.oid::bigint,
@@ -390,7 +397,9 @@ function readDatabaseSnapshot(directUrl) {
           ON database.datname = pg_catalog.current_database()
         JOIN public.realtime_global_capacity AS capacity
           ON capacity.id = 1
-    `,
+      ;
+      COMMIT;
+      `,
     ),
   );
 }

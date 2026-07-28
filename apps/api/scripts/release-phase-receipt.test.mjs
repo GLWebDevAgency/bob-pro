@@ -319,6 +319,21 @@ test('parse strictement la cible PostgreSQL fermée', () => {
   }
 });
 
+test('le snapshot de release relit l’autorité globale sous son owner NOLOGIN exact', () => {
+  const source = readFileSync(
+    resolve(REPOSITORY_ROOT, 'apps/api/scripts/release-phase-receipt.mjs'),
+    'utf8',
+  );
+  assert.match(
+    source,
+    /BEGIN;[\s\S]*SET LOCAL ROLE bob_realtime_capacity;[\s\S]*JOIN public\.realtime_global_capacity[\s\S]*COMMIT;/u,
+  );
+  assert.doesNotMatch(
+    source,
+    /GRANT\s+(?:SELECT\s+ON\s+TABLE\s+public\.realtime_global_capacity|bob_realtime_capacity\s+TO)/iu,
+  );
+});
+
 test('le digest de migrations est canonique et refuse toute ligne ambiguë', () => {
   const first = `20260701000000_alpha|${DIGEST_A}`;
   const second = `20260702000000_beta|${DIGEST_B}`;
