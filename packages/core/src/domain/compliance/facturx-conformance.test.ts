@@ -54,7 +54,9 @@ function issuedInvoice(
   const terms = (PaymentTerms.of({ days: 30, endOfMonth: false, label: '30 jours' }) as { ok: true; value: PaymentTerms }).value;
   inv.issue({
     mentions: [
-      'TVA sur les débits',
+      // Mention LITTÉRALE de l'art. 242 nonies A, I-11° bis de l'annexe II au CGI (le raccourci
+      // de langage « TVA sur les débits » n'est pas la mention légale — cf. build-mentions).
+      "Option pour le paiement de la taxe d'après les débits",
       'Escompte pour paiement anticipé : néant.',
       'Pénalités de retard : taux BCE + 10 points (art. L441-10 du code de commerce). Indemnité forfaitaire de recouvrement : 40 € (art. D441-5 du code de commerce).',
     ],

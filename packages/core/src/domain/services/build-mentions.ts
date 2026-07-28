@@ -41,6 +41,18 @@ export const CIBS_TOLERANCE_REFERENCES_CGI = '2028-06-30';
  */
 export const MENTION_FRANCHISE_BASE = 'TVA non applicable, art. 293 B du CGI';
 
+/**
+ * Option pour les débits — mention LITTÉRALE de l'art. 242 nonies A, I-11° bis de l'annexe II
+ * au CGI : « Lorsque le prestataire a opté pour le paiement de la taxe d'après les débits, la
+ * mention : "Option pour le paiement de la taxe d'après les débits" ». Aucun numéro d'article à
+ * accoler (le texte n'en impose pas, contrairement à la franchise), et surtout PAS le raccourci
+ * de langage « TVA sur les débits », qui n'est pas la mention légale.
+ * Cette mention ne changera PAS de référence au 01/01/2027 : elle vit dans l'annexe II au CGI,
+ * de rang réglementaire, hors du champ de l'ordonnance de recodification (qui est purement
+ * législative) — vérifié le 28/07/2026, aucune version future sur la fiche de l'art. 242 nonies A.
+ */
+export const MENTION_OPTION_DEBITS = "Option pour le paiement de la taxe d'après les débits";
+
 const NATURE_LABEL: Record<OperationNature, string> = {
   biens: 'Livraison de biens',
   services: 'Prestation de services',
@@ -78,6 +90,30 @@ export interface BuildMentionsInput {
    */
   asOf: string;
   validUntilDays?: number;
+  /**
+   * Option pour le paiement de la TVA d'après les DÉBITS, réellement exercée par l'entreprise
+   * (fondement de l'option : art. 269, 2-c du CGI ; modalités : art. 77 de l'annexe III au CGI —
+   * option adressée au service des impôts, révocable). Exercée = la facture porte la mention
+   * littérale de l'art. 242 nonies A, I-11° bis de l'annexe II au CGI (MENTION_OPTION_DEBITS).
+   *
+   * POURQUOI CE CHAMP EST OPTIONNEL ET AUCUN APPELANT NE LE RENSEIGNE ENCORE : l'option n'est
+   * représentée NULLE PART dans le domaine (ni Company, ni le profil fiscal) — Bob ne peut donc
+   * pas savoir si l'entreprise l'a exercée. Absent/false = mention OMISE : jamais une mention
+   * fiscale déduite d'une information que l'entreprise n'a pas donnée. Le jour où le réglage
+   * existe (case « J'ai opté pour le paiement de la TVA d'après les débits »), il suffit de le
+   * passer ici, aux deux points d'appel (émission de facture et rendu de devis).
+   *
+   * ÉCHÉANCE RÉELLE — la mention n'est PAS encore obligatoire pour les entreprises servies :
+   * l'art. 242 nonies A, I-11° bis (créé par l'art. 1er du décret n° 2022-1299 du 7 octobre 2022)
+   * ne s'applique aux microentreprises et PME qu'aux factures émises à compter du 1er septembre
+   * 2027 (art. 3 du décret 2022-1299, dans sa rédaction issue de l'art. 2 du décret n° 2024-266
+   * du 25 mars 2024). D'ici là elle est FACULTATIVE mais conseillée, le droit à déduction du
+   * client étant lié à l'exigibilité chez le fournisseur (BOFiP BOI-TVA-DECLA-30-20-20-30 § 310,
+   * version du 08/01/2025 : « Les redevables qui ont exercé cette option ne sont pas obligés
+   * d'indiquer sur leurs factures le fait qu'ils acquittent la TVA d'après les débits »).
+   * Vérifié le 28/07/2026.
+   */
+  vatOnDebitsOption?: boolean;
   /** Nature des opérations (obligatoire sur facture dès la réforme). */
   operationNature?: OperationNature;
   /**
@@ -212,6 +248,16 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   ) {
     m.push('Autoliquidation de la TVA (sous-traitance BTP, art. 283-2 nonies du CGI)');
   }
+  // Option pour le paiement de la TVA d'après les DÉBITS : mention de FACTURE (art. 242 nonies A,
+  // I-11° bis de l'annexe II au CGI), donc omise du devis — même traitement que les autres
+  // mentions de ce même article portées ici (nature de l'opération, rabais/remises/ristournes).
+  // Imprimée UNIQUEMENT si l'entreprise a déclaré avoir exercé l'option (cf. vatOnDebitsOption :
+  // aucun champ ne la porte encore, donc rien ne s'imprime aujourd'hui). La franchise en base
+  // prime, comme au-dessus : elle ne collecte pas la TVA, l'exigibilité — et donc l'option —
+  // est sans objet ; jamais deux mentions fiscales concurrentes sur la même pièce.
+  if (kind === 'invoice' && input.vatOnDebitsOption === true && !company.isVatFranchise()) {
+    m.push(MENTION_OPTION_DEBITS);
+  }
 
   // P11 — mention certifiée taux réduits travaux (art. 41, loi 2025-127 : remplace l'attestation
   // Cerfa depuis le 16/2/2025 ; BOI-TVA-LIQ-30-20-90-40). La signature « Bon pour accord » du devis
@@ -262,9 +308,10 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   // A7 — l'adresse de livraison/chantier et la date de prestation sont désormais portées par la
   // pièce elle-même (Invoice.servicePeriod/deliveryAddress, figées à l'émission) : imprimées dans
   // la zone références du PDF (pdf-renderer) et injectées au XML Factur-X (BT-72/BG-14/BG-13) —
-  // pas une mention de ce bloc. À COMPLÉTER (réforme) : option « TVA sur les débits » si
-  // l'entreprise l'a exercée. Conservation légale des factures émises/reçues = 10 ans (règle
-  // d'archivage, hors mention imprimée).
+  // pas une mention de ce bloc. L'option « débits » de l'art. 242 nonies A, I-11° bis est, elle,
+  // traitée plus haut (MENTION_OPTION_DEBITS) et attend le seul champ qui lui manque.
+  // Conservation légale des factures émises/reçues = 10 ans (règle d'archivage, hors mention
+  // imprimée).
 
   if (kind === 'quote') {
     // A1 — arrêté du 24 janvier 2017 (art. 2) : le devis des prestations de dépannage,

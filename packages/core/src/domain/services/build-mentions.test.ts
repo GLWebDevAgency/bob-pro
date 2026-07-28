@@ -5,6 +5,7 @@ import {
   CIBS_TVA_ENTREE_EN_VIGUEUR,
   CIBS_TOLERANCE_REFERENCES_CGI,
   MENTION_FRANCHISE_BASE,
+  MENTION_OPTION_DEBITS,
   type BuildMentionsInput,
 } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
@@ -231,6 +232,43 @@ describe('buildMentions', () => {
       for (const asOf of ['2026-08-31', '2026-09-01', CIBS_TVA_ENTREE_EN_VIGUEUR]) {
         expect(mentions({ asOf }).some((s) => s.includes('TVA non applicable'))).toBe(false);
       }
+    });
+  });
+
+  // —— Option pour le paiement de la TVA d'après les DÉBITS (242 nonies A, I-11° bis) ————
+  describe('option pour les débits', () => {
+    it('non renseignée : mention OMISE — jamais un régime fiscal déduit d’une information absente', () => {
+      expect(mentions().some((s) => s.includes('débits'))).toBe(false);
+      expect(mentions({ vatOnDebitsOption: false }).some((s) => s.includes('débits'))).toBe(false);
+    });
+
+    it('option exercée : mention LITTÉRALE du 11° bis — jamais le raccourci « TVA sur les débits »', () => {
+      const m = mentions({ vatOnDebitsOption: true });
+      expect(m).toContain("Option pour le paiement de la taxe d'après les débits");
+      expect(MENTION_OPTION_DEBITS).toBe("Option pour le paiement de la taxe d'après les débits");
+      expect(m.some((s) => s === 'TVA sur les débits')).toBe(false);
+      // Le texte n'impose aucun numéro d'article, contrairement à la franchise : on n'en ajoute pas.
+      expect(m.find((s) => s.includes('débits'))).not.toMatch(/CGI|annexe/u);
+    });
+
+    it('devis : mention omise — c’est une mention de FACTURE (art. 242 nonies A, annexe II CGI)', () => {
+      const m = mentions({ kind: 'quote', vatOnDebitsOption: true });
+      expect(m.some((s) => s.includes('débits'))).toBe(false);
+    });
+
+    it('franchise en base : l’option est sans objet — la franchise PRIME, jamais les deux mentions', () => {
+      const m = mentions({ company: company({ vatRegime: 'franchise' }), vatOnDebitsOption: true });
+      expect(m).toContain(MENTION_FRANCHISE_BASE);
+      expect(m.some((s) => s.includes('débits'))).toBe(false);
+    });
+
+    it('autoliquidation BTP + option débits : régimes distincts (redevable ≠ exigibilité), les deux mentions coexistent', () => {
+      const m = mentions({
+        customer: customer({ type: 'b2b', siren: '552081317', isSubcontractingBtp: true }),
+        vatOnDebitsOption: true,
+      });
+      expect(m.some((s) => s.includes('Autoliquidation'))).toBe(true);
+      expect(m).toContain(MENTION_OPTION_DEBITS);
     });
   });
 
