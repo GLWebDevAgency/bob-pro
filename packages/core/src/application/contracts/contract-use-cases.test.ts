@@ -333,7 +333,7 @@ describe('TerminateContract — date d’effet par défaut = prochain anniversai
     // le prochain strictement futur est 2027-10-12 : la couverture court une année pleine.
     const terminated = await new TerminateContract({
       contracts: env.contractRepo,
-      clock: { now: () => '2026-10-11T23:30:00.000Z' },
+      clock: { now: () => '2026-10-11T23:30:00.000Z', today: () => '2026-10-11' },
     }).execute({
       companyId: COMPANY,
       contractId: 'contract-seed',

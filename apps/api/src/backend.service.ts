@@ -4120,6 +4120,11 @@ export class BackendService {
           contractWarning: r.value.contractWarning,
         });
       },
+      // [Amélioration 4] — couverture contractuelle lue AVANT la proposition de retrait :
+      // MÊME lecture que GET /equipments/:id/contract-coverage (ConfirmSheet écran et
+      // proposition vocale disent le même avertissement, avant le geste).
+      getEquipmentContractCoverage: async (input) =>
+        this.equipmentContractCoverage(input.equipmentId),
       getEquipmentHistory: async (input) => {
         const r = await this.getEquipmentHistory(input.equipmentId);
         if (!r.ok) return r;

@@ -601,6 +601,17 @@ export interface RetireEquipmentActionOutput {
   contractWarning: string | null;
 }
 
+/** [Amélioration 4] — couverture contractuelle lue AVANT la confirmation de retrait :
+ * MÊME lecture que GET /equipments/:id/contract-coverage (une seule vérité écran/voix). */
+export interface EquipmentContractCoverageActionInput {
+  equipmentId: string;
+}
+
+export interface EquipmentContractCoverageActionOutput {
+  /** Labels des contrats ACTIFS couvrant l'équipement — vide = aucune couverture connue. */
+  activeContractLabels: string[];
+}
+
 /** Outil historique_equipement (PR-11) : MÊME dérivation deriveEquipmentHistory que
  * GET /equipments/:id/history — lecture pure, entrées réelles uniquement. */
 export interface EquipmentHistoryActionInput {
@@ -884,6 +895,14 @@ export interface BobActions {
   retireEquipment?(
     input: RetireEquipmentActionInput,
   ): Promise<Result<RetireEquipmentActionOutput, AppError>>;
+  /** [Amélioration 4] — couverture contractuelle ACTIVE d'un équipement, lue AVANT la
+   * proposition de retrait : l'avertissement du domaine est DIT dans la confirmation (écran
+   * ET voix), jamais seulement après le geste. MÊME lecture que
+   * GET /equipments/:id/contract-coverage. Optionnelle : hôte antérieur → l'avertissement
+   * post-exécution du use case reste le filet. */
+  getEquipmentContractCoverage?(
+    input: EquipmentContractCoverageActionInput,
+  ): Promise<Result<EquipmentContractCoverageActionOutput, AppError>>;
   /** PR-11 — « l'historique de la fontaine de l'accueil » : MÊME dérivation que l'écran. */
   getEquipmentHistory?(
     input: EquipmentHistoryActionInput,

@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -4612,7 +4612,10 @@ export class BobAgent {
         }
 
         // retirer_equipement — mutation : TOUJOURS proposée à confirmation (jamais un retrait
-        // silencieux) ; l'avertissement contrat éventuel est DIT dans la carte de résultat.
+        // silencieux). [Amélioration 4, domaine §1.5-1.6] l'avertissement de couverture
+        // contractuelle est LU puis DIT AVANT la confirmation — la proposition le porte,
+        // comme la ConfirmSheet de l'écran ; la carte de résultat le redit (filet honnête si
+        // la lecture a échoué ou en autonomie sans confirmation). Info, jamais un blocage.
         const tool = this.tool('retirer_equipement');
         if (!tool) {
           return ok({
@@ -4631,17 +4634,28 @@ export class BobAgent {
         if (!parsed.ok) return err(parsed.error);
         const label = `Retirer « ${target.label} » du parc du site ${target.chantierNom}`;
         if (requiresConfirmation(tool, autonomy)) {
+          // Couverture lue AVANT le geste — fail-open : une lecture indisponible ne bloque
+          // jamais le retrait (la réalité du terrain prime), le filet post-ACK subsiste.
+          const readCoverage = this.deps.actions.getEquipmentContractCoverage?.bind(this.deps.actions);
+          let coverageWarning = '';
+          if (readCoverage) {
+            const coverage = await readCoverage({ equipmentId: target.id });
+            if (coverage.ok) {
+              const warning = equipmentContractCoverageWarning(coverage.value.activeContractLabels);
+              if (warning !== null) coverageWarning = ` ${warning}`;
+            }
+          }
           return ok({
             kind: 'proposed',
             intent,
             model,
-            plan: ['Résoudre l’équipement', 'Attendre ta confirmation'],
+            plan: ['Résoudre l’équipement', 'Lire la couverture contractuelle', 'Attendre ta confirmation'],
             card: {
               title: 'Retrait à confirmer',
-              body: `${label}. L’historique reste lisible et la réactivation possible. Je confirme ?`,
+              body: `${label}.${coverageWarning} L’historique reste lisible et la réactivation possible. Je confirme ?`,
             },
             pending: { tool: tool.name, args, label },
-            spokenPrompt: buildSpokenConfirmation(label),
+            spokenPrompt: buildSpokenConfirmation(`${label}${coverageWarning ? ` —${coverageWarning}` : ''}`),
           });
         }
         const run = await tool.run(parsed.value);

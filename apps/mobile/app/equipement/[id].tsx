@@ -3,8 +3,9 @@
  * (« montre-moi l'historique de la fontaine Y ») : fusion RÉELLE notes+photos taguées
  * (deriveEquipmentHistory serveur), jamais une trace inventée. Kit « matière Bob » : héros
  * BobSurface marine raised ; équipement retiré → bandeau `neutral` « Retirée le {retiredAt} »
- * (fait réel) + « Réactiver » — l'historique reste intégral. Retrait via ConfirmSheet,
- * avertissement contrat du domaine restitué tel quel quand il existe (amélioration 4).
+ * (fait réel) + « Réactiver » — l'historique reste intégral. Retrait via ConfirmSheet qui
+ * PORTE l'avertissement contrat du domaine lu AVANT la confirmation (amélioration 4 —
+ * GET /equipments/:id/contract-coverage) ; filet post-ACK seulement si la lecture a échoué.
  * [Revue n°2] badge morph `replace 280` (Actif ↔ Retirée) après ACK — reduce-motion =
  * bascule immédiate + ANNONCE (MorphReplace, @bob/ui).
  */
@@ -44,7 +45,9 @@ import {
 import { ScreenHeader } from '../../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { warrantyChipOf } from '../../src/components/equipment-row.logic';
+import { retireConfirmMessage } from '../../src/components/equipment-retire.logic';
 import { useConfirm } from '../../src/components/ConfirmSheet';
+import { useBobClient } from '../../src/data/client';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 
 const MONTHS_SHORT = [
@@ -129,6 +132,7 @@ export default function FicheEquipement() {
   const router = useRouter();
   const scrollInsets = useBobAwareScrollInsets();
   const confirm = useConfirm();
+  const client = useBobClient();
   const today = parisDateOnly();
 
   const history = useEquipmentHistory(id);
@@ -206,12 +210,26 @@ export default function FicheEquipement() {
 
   const handleRetire = async (): Promise<void> => {
     if (!equipment) return;
-    const ok = await confirm({
-      title: t('equipements.retireConfirmTitle', { personality }),
-      message: t('equipements.retireConfirmBody', {
+    // [Amélioration 4, domaine §1.5-1.6] — la couverture contractuelle est LUE AVANT la
+    // confirmation : la ConfirmSheet PORTE l'avertissement honnête du domaine (info, jamais
+    // un blocage). Fail-open : lecture indisponible → feuille sans avertissement (le retrait
+    // n'est jamais bloqué par une lecture) et le filet post-ACK du use case reprend la main.
+    const readCoverage = client.equipmentContractCoverage?.bind(client);
+    let coverageLabels: readonly string[] | null = null;
+    if (readCoverage) {
+      const coverage = await readCoverage(equipment.id);
+      if (coverage.ok) coverageLabels = coverage.value.activeContractLabels;
+    }
+    const { message, warningShown } = retireConfirmMessage(
+      t('equipements.retireConfirmBody', {
         personality,
         params: { label: equipment.label },
       }),
+      coverageLabels,
+    );
+    const ok = await confirm({
+      title: t('equipements.retireConfirmTitle', { personality }),
+      message,
       challenge: { kind: 'tap' },
       destructive: true,
     });
@@ -227,9 +245,9 @@ export default function FicheEquipement() {
       AccessibilityInfo.announceForAccessibility(
         t('equipements.retiredAnnounce', { personality, params: { label: equipment.label } }),
       );
-      // [Amélioration 4] — l'avertissement contrat du DOMAINE, restitué tel quel (info, jamais
-      // un blocage) : la couverture continue jusqu'à modification du contrat.
-      if (result.contractWarning) {
+      // Filet HONNÊTE uniquement quand l'avertissement n'a PAS pu être dit avant le geste
+      // (lecture échouée) : le fait du use case n'est jamais perdu — ni répété inutilement.
+      if (result.contractWarning && !warningShown) {
         Alert.alert(t('equipements.retireConfirmTitle', { personality }), result.contractWarning);
       }
     } catch (error) {

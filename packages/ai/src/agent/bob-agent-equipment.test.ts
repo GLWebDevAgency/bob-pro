@@ -324,6 +324,49 @@ describe('retirer_equipement — mutation TOUJOURS confirmée + avertissement co
     expect(confirmed.value.card.body).toContain('Entretien fontaines 2026');
     expect(retired).toEqual([{ equipmentId: 'equip-fontaine' }]);
   });
+
+  it('[amélioration 4 — domaine §1.5-1.6] la couverture est LUE et l’avertissement DIT AVANT la confirmation : la PROPOSITION le porte (carte ET voix), rien n’est retiré', async () => {
+    const coverageReads: unknown[] = [];
+    const retired: unknown[] = [];
+    const agent = makeAgent({
+      getEquipmentContractCoverage: async (input) => {
+        coverageReads.push(input);
+        return ok({ activeContractLabels: ['Entretien fontaines 2026'] });
+      },
+      retireEquipment: async (input) => {
+        retired.push(input);
+        return ok({ equipmentId: 'equip-fontaine', label: 'Fontaine accueil R+2', contractWarning: null });
+      },
+    });
+    const proposed = await agent.ask('Retire la fontaine de l’accueil du parc');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    // La lecture a eu lieu AVANT le geste ; la mutation, elle, n'a PAS eu lieu.
+    expect(coverageReads).toEqual([{ equipmentId: 'equip-fontaine' }]);
+    expect(retired).toEqual([]);
+    // La proposition PORTE l'avertissement du domaine — même copy que le use case (@bob/core).
+    expect(proposed.value.card.body).toContain(
+      "Couvert par le contrat Entretien fontaines 2026 : la couverture (et son prix) continue jusqu'à modification du contrat.",
+    );
+    expect(proposed.value.spokenPrompt).toContain('Entretien fontaines 2026');
+  });
+
+  it('[amélioration 4] couverture ILLISIBLE (lecture en échec) : la proposition reste possible SANS avertissement inventé — info jamais bloquante', async () => {
+    const agent = makeAgent({
+      getEquipmentContractCoverage: async () => ({
+        ok: false as const,
+        error: { kind: 'unavailable' as const, service: 'contracts' },
+      }),
+      retireEquipment: async () =>
+        ok({ equipmentId: 'equip-fontaine', label: 'Fontaine accueil R+2', contractWarning: null }),
+    });
+    const proposed = await agent.ask('Retire la fontaine de l’accueil du parc');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    expect(proposed.value.card.body).not.toContain('Couvert par le contrat');
+  });
 });
 
 describe('parc_equipements — lecture pure scopée au site dit', () => {
