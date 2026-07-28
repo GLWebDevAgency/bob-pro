@@ -134,6 +134,187 @@ describe('extractSpokenContractLabel — le libellé guillemeté des followUps s
   });
 });
 
+/**
+ * REFONTE STRUCTURELLE — le libellé est le SEGMENT UTILE entre l'amorce de geste et la PREMIÈRE
+ * charnière factuelle, et chaque charnière est portée par le LECTEUR du fait lui-même (qui sait
+ * où son fait commence). Les cas ci-dessous sont ceux que la construction rend justes SANS
+ * nettoyeur dédié — et ceux où sur-couper serait aussi grave que sous-couper.
+ */
+describe('extractSpokenContractLabel — construit par charnières, jamais par soustraction', () => {
+  const FICHIER = ['RATP', 'Carrefour', 'Vinci Immobilier'];
+
+  it('« pour le client … » borne le libellé même SANS guillemets (forme inerte en passe 4)', () => {
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines pour le client RATP'),
+    ).toBe('Entretien vitrines');
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines pour la société Vinci Immobilier'),
+    ).toBe('Entretien vitrines');
+  });
+
+  /**
+   * « pour RATP » (sans le mot « client ») n'est reconnaissable QUE si RATP est un client du
+   * fichier : aucun motif ne peut le deviner. L'hôte passe donc ses noms réels au module pur —
+   * il ne résout rien, il reconnaît juste la charnière. Sans le fichier, Bob garde la phrase
+   * telle qu'entendue plutôt que de couper au hasard.
+   */
+  it('« pour <nom propre RÉSOLU> » borne le libellé ; sans le fichier client, rien n’est coupé', () => {
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines pour RATP', {
+        customerNames: FICHIER,
+      }),
+    ).toBe('Entretien vitrines');
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines chez Carrefour', {
+        customerNames: FICHIER,
+      }),
+    ).toBe('Entretien vitrines');
+    expect(extractSpokenContractLabel('Crée le contrat entretien vitrines pour RATP')).toBe(
+      'Entretien vitrines pour RATP',
+    );
+  });
+
+  /**
+   * Contre-épreuve indispensable : SUR-couper mutile le nom du contrat sur la facture annuelle
+   * aussi sûrement qu'une sous-coupe y imprime un montant. Un nom propre de client DANS le
+   * libellé (« Fontaines RATP ») nomme le contrat, il ne l'attribue pas — seule la préposition
+   * d'attribution fait la charnière.
+   */
+  it('les libellés LÉGITIMES survivent — chiffres, prépositions, traits d’union, noms propres', () => {
+    const cases: readonly [string, string][] = [
+      ['Fais-moi le contrat porte-à-faux quai 3, 1 200 € par an', 'Porte-à-faux quai 3'],
+      ['Crée le contrat entretien à 3 niveaux à 15 000 € par an', 'Entretien à 3 niveaux'],
+      ['Crée le contrat Eurotunnel Nord, 2 visites par an', 'Eurotunnel Nord'],
+      ['Crée le contrat Carrefour Europe 2 à 900 € par an', 'Carrefour Europe 2'],
+      ['fais-moi le contrat fontaines RATP, 1 200 € par an', 'Fontaines RATP'],
+      ['Crée le contrat Bastille à partir du 01/10/2026', 'Bastille'],
+    ];
+    for (const [said, expected] of cases) {
+      expect(extractSpokenContractLabel(said, { customerNames: FICHIER })).toBe(expected);
+    }
+  });
+
+  /**
+   * Dictée D'UNE TRAITE (sans virgule) : c'est là que les trois revues précédentes ont trouvé
+   * leurs failles, faute de ponctuation pour borner le segment. Le tarif en argot est reconnu à
+   * sa STRUCTURE distributive (« tant par quelque chose »), pas à un lexique d'argot.
+   */
+  it('dictée d’une traite : le tarif en argot n’emporte pas le chiffre DU libellé', () => {
+    expect(extractSpokenContractLabel('Crée le contrat porte-à-faux quai 3 400 balles par an')).toBe(
+      'Porte-à-faux quai 3',
+    );
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines 400 balles par machine'),
+    ).toBe('Entretien vitrines');
+  });
+
+  it('un CADRE de parc dit borne le libellé (« ils ont … », « … à entretenir »)', () => {
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines ils ont 3 machines'),
+    ).toBe('Entretien vitrines');
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien vitrines 12 ascenseurs à entretenir'),
+    ).toBe('Entretien vitrines');
+    // … mais « 12 ascenseurs » SANS cadre appartient au nom du contrat, et y reste.
+    expect(
+      extractSpokenContractLabel('Crée le contrat entretien 12 ascenseurs à partir du 01/10/2026'),
+    ).toBe('Entretien 12 ascenseurs');
+  });
+});
+
+describe('faits voisins — la découpe ne s’obtient jamais en abîmant la lecture', () => {
+  /**
+   * Dictée d'une traite : « … au 1er octobre 1200 euros par an » offrait « 1200 » comme ANNÉE.
+   * Le contrat naissait avec une date anniversaire en l'an 1200 — donc des échéances aberrantes —
+   * et la confirmation la récitait sans que personne ne la relise. Un millésime hors de portée
+   * n'est pas un fait, c'est un artefact de dictée.
+   */
+  it('une ANNÉE implausible n’est pas un fait : la date sans année reprend la main', () => {
+    const facts = extractSpokenContractFacts(
+      'Crée le contrat entretien vitrines ça démarre au 1er octobre 1200 euros par an',
+      TODAY,
+    );
+    expect(facts.startDate).toBe('2026-10-01');
+    expect(facts.annualAmountCents).toBe(120_000);
+    expect(facts.label).toBe('Entretien vitrines');
+  });
+
+  it('la cadence se lit aussi hors « N visites » — et reste NON LUE si le compte n’est pas exact', () => {
+    const visits = (said: string): number | null =>
+      extractSpokenContractFacts(`Crée le contrat « Entretien vitrines », ${said}`, TODAY)
+        .visitsPerYear;
+    expect(visits('tous les 6 mois')).toBe(2);
+    expect(visits('une fois par trimestre')).toBe(4);
+    expect(visits('tous les ans')).toBe(1);
+    // 12 / 5 n'est pas un compte entier : la cadence reste non lue plutôt que fausse.
+    expect(visits('tous les 5 mois')).toBeNull();
+  });
+});
+
+/**
+ * RÈGLE POSITIVE du nombre d'équipements. L'ancienne garde comptait par DÉFAUT tout « nombre +
+ * nom d'au moins 4 lettres », sauf liste noire d'unités et d'argot : tout autre nom commun
+ * passait. Ici un nombre ne compte des équipements que s'il QUALIFIE UN OBJET DU PARC — cadre de
+ * parc dit, vocabulaire réel du parc, ou reprise du libellé. Au moindre doute : aucun fait.
+ */
+describe('extractSpokenEquipmentCount — corroboré, sinon null (jamais un nombre faux)', () => {
+  it('un nom commun quelconque ne compte RIEN sans corroboration', () => {
+    expect(
+      extractSpokenContractFacts('Crée le contrat « Entretien vitrines », 3 tabourets', TODAY)
+        .equipmentCount,
+    ).toBeNull();
+    expect(
+      extractSpokenContractFacts('Crée le contrat « Entretien vitrines », 6 étages', TODAY)
+        .equipmentCount,
+    ).toBeNull();
+  });
+
+  it('un CADRE de parc dit corrobore (« ils ont », « il y a », « à entretenir », « parc de »)', () => {
+    const count = (said: string): number | null =>
+      extractSpokenContractFacts(`Crée le contrat « Entretien vitrines », ${said}`, TODAY)
+        .equipmentCount;
+    expect(count('ils ont 3 tabourets')).toBe(3);
+    expect(count('il y a 8 tabourets')).toBe(8);
+    expect(count('un parc de 12 tabourets')).toBe(12);
+    expect(count('4 tabourets à entretenir')).toBe(4);
+    expect(count('5 tabourets en service')).toBe(5);
+  });
+
+  it('le VOCABULAIRE RÉEL du parc corrobore ce que la seule phrase ne qualifiait pas', () => {
+    expect(
+      extractSpokenContractFacts('Crée le contrat « Entretien vitrines », 3 tabourets', TODAY, {
+        parkVocabulary: ['Tabouret hall A', 'Tabouret quai 3'],
+      }).equipmentCount,
+    ).toBe(3);
+  });
+
+  it('le LIBELLÉ dit corrobore la reprise (« contrat fontaines RATP, 3 fontaines »)', () => {
+    expect(
+      extractSpokenContractFacts('Fais-moi le contrat fontaines RATP, 3 fontaines', TODAY)
+        .equipmentCount,
+    ).toBe(3);
+  });
+
+  it('un CADRE dit prime sur une simple reprise du libellé — c’est la preuve la plus forte', () => {
+    expect(
+      extractSpokenContractFacts(
+        'Crée le contrat entretien 12 ascenseurs, ils ont 3 machines, 900 € par an',
+        TODAY,
+      ).equipmentCount,
+    ).toBe(3);
+  });
+
+  it('un nombre qui appartient à un AUTRE fait lu n’est jamais un comptage d’équipements', () => {
+    const facts = extractSpokenContractFacts(
+      'Crée le contrat « Entretien vitrines » à 1 200 € par an, 2 visites par an, à partir du 01/10/2026',
+      TODAY,
+    );
+    expect(facts.equipmentCount).toBeNull();
+    expect(facts.annualAmountCents).toBe(120_000);
+    expect(facts.visitsPerYear).toBe(2);
+  });
+});
+
 describe('extractSpokenContractFacts — lecture en UNE passe de la consigne composite', () => {
   it('« fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an, ça démarre au 1er octobre, 2 passages »', () => {
     const facts = extractSpokenContractFacts(

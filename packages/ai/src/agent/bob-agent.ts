@@ -29,6 +29,7 @@ import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense
 import { extractSpokenWarranty } from './equipment-warranty';
 import {
   extractSpokenContractFacts,
+  extractSpokenEquipmentCount,
   extractSpokenStartDate,
   extractSpokenTerminationNote,
 } from './contract-command';
@@ -4691,7 +4692,12 @@ export class BobAgent {
       ].join(' ');
       const now = this.deps.runtime?.clock.now();
       const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
-      const facts = extractSpokenContractFacts(message, today);
+      // Les noms des clients RÉELS sont donnés au lecteur PUR : sans eux, « pour RATP » (sans le
+      // mot « client ») reste indevinable et le nom du client se collerait au libellé — donc à la
+      // LIGNE de la facture annuelle. Le module ne résout rien, il reconnaît juste la charnière.
+      const facts = extractSpokenContractFacts(message, today, {
+        customerNames: customers.map((candidate) => candidate.name),
+      });
 
       const customerResolution = resolveSpokenContractCustomer({ conversation, customers });
       const customer =
@@ -4909,11 +4915,18 @@ export class BobAgent {
       // équipement inventé ; l'écart entre ce qui est dit et ce que le parc porte est DIT
       // honnêtement à la confirmation, jamais corrigé en silence.
       let coveredEquipments: { id: string; label: string }[] = [];
+      // Vocabulaire RÉEL du parc du site — il corrobore positivement le nombre d'équipements
+      // annoncé (« 3 machines ») au lieu d'une liste noire d'unités et d'argot : hors cadre de
+      // parc et hors vocabulaire réel, aucun nombre n'est promu comptage.
+      let parkVocabulary: string[] = [];
       const listEquipments = this.deps.actions.listEquipments?.bind(this.deps.actions);
       if (site !== null && listEquipments) {
         const equipmentsResult = await listEquipments();
         if (equipmentsResult.ok) {
           const stem = (word: string): string => word.replace(/s$/, '');
+          parkVocabulary = equipmentsResult.value
+            .filter((equipment) => equipment.chantierId === site!.id && equipment.status === 'active')
+            .map((equipment) => equipment.label);
           const spoken = new Set(
             normalized(conversation)
               .split(/[^a-z0-9]+/)
@@ -4932,6 +4945,13 @@ export class BobAgent {
             .map((equipment) => ({ id: equipment.id, label: equipment.label }));
         }
       }
+      // Relecture du comptage avec le parc RÉEL en main : le vocabulaire du site corrobore un
+      // nombre que la seule phrase ne suffisait pas à qualifier. En l'absence de corroboration,
+      // le comptage reste `null` — Bob préfère ne rien dire à dire un nombre faux.
+      const spokenEquipmentCount =
+        parkVocabulary.length > 0
+          ? extractSpokenEquipmentCount(message, { label: facts.label, today, parkVocabulary })
+          : facts.equipmentCount;
 
       const args = {
         customerId: customer.id,
@@ -4964,10 +4984,10 @@ export class BobAgent {
       // Un écart entre le nombre d'équipements ANNONCÉ et ce que le parc réel porte est DIT —
       // jamais rattrapé par un équipement inventé, jamais tu.
       const equipmentGap =
-        facts.equipmentCount !== null && facts.equipmentCount !== coveredEquipments.length
+        spokenEquipmentCount !== null && spokenEquipmentCount !== coveredEquipments.length
           ? site === null
-            ? ` Tu as parlé de ${facts.equipmentCount} machine(s) : sans site rattaché, je ne peux en couvrir aucune — ajoute-les depuis la fiche.`
-            : ` Tu as parlé de ${facts.equipmentCount} machine(s) et j’en retrouve ${coveredEquipments.length} au parc du site ${site.nom} — complète depuis la fiche si besoin.`
+            ? ` Tu as parlé de ${spokenEquipmentCount} machine(s) : sans site rattaché, je ne peux en couvrir aucune — ajoute-les depuis la fiche.`
+            : ` Tu as parlé de ${spokenEquipmentCount} machine(s) et j’en retrouve ${coveredEquipments.length} au parc du site ${site.nom} — complète depuis la fiche si besoin.`
           : '';
       const draftNote =
         ' Il naîtra en BROUILLON : l’activation reste un second geste, que tu confirmeras.';
