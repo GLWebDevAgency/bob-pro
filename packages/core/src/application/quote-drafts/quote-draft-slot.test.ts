@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   QUOTE_DRAFT_PAYLOAD_SCHEMA,
   QUOTE_DRAFT_PAYLOAD_VERSION,
+  QUOTE_DRAFT_REVISION_MAX,
   createEmptyQuoteDraftPayload,
   isMeaningfulQuoteDraftPayload,
   parseQuoteDraftPayload,
@@ -122,5 +123,16 @@ describe('QuoteDraftPayloadV1', () => {
       },
     };
     expect(isMeaningfulQuoteDraftPayload(candidate)).toBe(false);
+  });
+
+  it('rejette les révisions qui dépassent PostgreSQL integer', () => {
+    const input = payload();
+    expect(parseQuoteDraftPayload({
+      ...input,
+      draft: { ...input.draft, contentRevision: QUOTE_DRAFT_REVISION_MAX + 1 },
+    })).toEqual({
+      ok: false,
+      error: { code: 'invalid_value', path: '$.draft.contentRevision' },
+    });
   });
 });
