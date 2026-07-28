@@ -10,6 +10,19 @@ on:
   push:
   pull_request:
 
+# Borne les rafales de commits (audit CI 2026-07-28 : 36 runs rouges répétés = la moitié du
+# spend CI) : seuls les runs PULL_REQUEST d'une même ref s'annulent entre eux — un commit
+# successif rend le run PR précédent caduc. Les runs PUSH reçoivent un groupe unique par run
+# (run_id) : ils ne s'annulent JAMAIS et ne peuvent pas être évincés d'une file d'attente,
+# car la leçon 2 du postmortem exige que CHAQUE push de CHAQUE branche — main comprise —
+# construise et démarre l'artefact API, sans qu'aucun SHA ne saute.
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+    && format('ci-pr-{0}', github.ref)
+    || format('ci-push-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     # Portée inchangée malgré l'élargissement du déclencheur push ci-dessus.
@@ -625,8 +638,16 @@ jobs:
     # l'artefact API complet et le fait DÉMARRER (comme Railway le ferait) sur CHAQUE push, sur
     # TOUTE branche — pas seulement main —, afin d'attraper avant tout déploiement : un commit de
     # lane croisée qui casse le build (causes 3-5), une config live cassée au boot (cause 6), et
-    # un point d'entrée Docker invalide (cause 7). Volontairement SANS `if:` : contrairement aux
-    # trois jobs ci-dessus, celui-ci doit tourner sur toute branche, pas seulement main/PR.
+    # un point d'entrée Docker invalide (cause 7).
+    # Dédoublonnage mesuré (audit CI 2026-07-28) : chaque SHA de branche déclenchait DEUX
+    # exécutions identiques de ce job — run push + run PR du même commit. Le `if:` ci-dessous ne
+    # retire que la répétition côté PR d'une branche interne : l'événement push couvre déjà
+    # chaque SHA de chaque branche, ce qui est la lettre exacte de la leçon 2. Une PR ouverte
+    # depuis un fork ne produit aucun événement push dans ce dépôt : dans ce cas le job tourne
+    # côté PR pour conserver la couverture.
+    if: >-
+      github.event_name == 'push'
+      || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
