@@ -142,6 +142,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
           quote: persistence.quotes,
           expense: persistence.expenses,
           chantier: { findById: async () => null },
+          equipment: { findById: async () => null },
         }),
       }).execute({
         companyId,

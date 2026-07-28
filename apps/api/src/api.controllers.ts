@@ -4518,6 +4518,57 @@ export class InterventionsController {
       }),
     );
   }
+  // ── PR-16 — fiche PDF archivée, envoi confirmé, CTA facturer ──
+  /** Rend PUIS ARCHIVE (A8) : rejouable, jamais re-rendu pour un même état de fiche. */
+  @Post(':id/report')
+  async generateReport(@Param('id') id: string) {
+    return unwrap(await this.backend.generateInterventionReport(id));
+  }
+  /** Envoi = geste CONFIRMÉ (destinataire choisi via les contacts PR-09, sinon fiche client). */
+  @Post(':id/report/send')
+  async sendReport(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => field !== 'recipientEmail');
+    if (unknownField !== undefined)
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    if (
+      'recipientEmail' in body &&
+      (typeof body.recipientEmail !== 'string' || body.recipientEmail.length > 320)
+    ) {
+      throwValidationIssues([{ field: 'recipientEmail', message: 'Destinataire invalide.' }]);
+    }
+    return unwrap(
+      await this.backend.sendInterventionReport(id, {
+        ...(typeof body.recipientEmail === 'string'
+          ? { recipientEmail: body.recipientEmail }
+          : {}),
+      }),
+    );
+  }
+  /** « Facturer ce passage » : BROUILLON pré-rempli — tous les invariants d'émission repassent. */
+  @Post(':id/invoice-draft')
+  async invoiceDraft(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const allowed = new Set(['lines', 'urgentOnSiteRepair', 'context']);
+    const unknownField = Object.keys(body).find((field) => !allowed.has(field));
+    if (unknownField !== undefined)
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    if ('lines' in body && !Array.isArray(body.lines))
+      throwValidationIssues([{ field: 'lines', message: 'Lignes invalides.' }]);
+    if ('urgentOnSiteRepair' in body && typeof body.urgentOnSiteRepair !== 'boolean')
+      throwValidationIssues([{ field: 'urgentOnSiteRepair', message: 'Champ invalide.' }]);
+    return unwrap(
+      await this.backend.prepareInterventionInvoiceDraft(id, {
+        ...(Array.isArray(body.lines) ? { lines: body.lines as LineInput[] } : {}),
+        ...(typeof body.urgentOnSiteRepair === 'boolean'
+          ? { urgentOnSiteRepair: body.urgentOnSiteRepair }
+          : {}),
+        ...(typeof body.context === 'object' && body.context !== null
+          ? { context: body.context as { housingOlderThan2y?: boolean; energyRenovation?: boolean } }
+          : {}),
+      }),
+    );
+  }
 }
 
 @Controller('expenses')

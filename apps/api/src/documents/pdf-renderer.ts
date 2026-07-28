@@ -17,6 +17,8 @@ import {
   type InvoicePdfData,
   type InvoicePdfAccentColor,
   type QuotePdfData,
+  type InterventionReportData,
+  type InterventionReportRendererPort,
 } from '@bob/core';
 import { loadPdfFontBytes } from './pdf-fonts';
 import { applyPdfA3bEnvelope } from './pdfa3';
@@ -1341,7 +1343,239 @@ async function embedLogo(
   }
 }
 
-export class PdfRenderer implements PdfRendererPort {
+/* ── PR-16 : fiche de passage — sobriété de terrain, honnêteté des faits ─── */
+
+/** `2026-08-04T10:31:00.000Z` → `04/08/2026 10:31` (heure locale Europe/Paris, jour métier). */
+function frDateTime(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  const parts = new Intl.DateTimeFormat('fr-FR', {
+    timeZone: 'Europe/Paris',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).formatToParts(parsed);
+  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('day')}/${get('month')}/${get('year')} ${get('hour')}:${get('minute')}`;
+}
+
+/** Bloc « libellé : valeur » d'une ligne de fait — jamais un trou, jamais une valeur inventée. */
+function drawFactRow(ctx: Ctx, label: string, value: string): void {
+  ensureSpace(ctx, 16);
+  drawRun(ctx.page, sanitize(label), MARGIN_X, ctx.y - 9, ctx.fonts.text600, 8, { color: SLATE500 });
+  const lines = wrapMeasured(sanitize(value), ctx.fonts.text500, 9, CONTENT_W - 150);
+  let y = ctx.y - 9;
+  for (const line of lines) {
+    drawRun(ctx.page, line, MARGIN_X + 150, y, ctx.fonts.text500, 9, { color: INK800 });
+    y -= 11;
+  }
+  ctx.y = Math.min(ctx.y - 16, y - 4);
+}
+
+function drawReportSectionTitle(ctx: Ctx, title: string): void {
+  ensureSpace(ctx, 30);
+  ctx.page.drawLine({
+    start: { x: MARGIN_X, y: ctx.y },
+    end: { x: RIGHT_X, y: ctx.y },
+    thickness: 0.75,
+    color: LINE,
+  });
+  drawRun(ctx.page, sanitize(title), MARGIN_X, ctx.y - 14, ctx.fonts.text700, 8, { color: SLATE500 });
+  ctx.y -= 26;
+}
+
+export class PdfRenderer implements PdfRendererPort, InterventionReportRendererPort {
+  /**
+   * PR-16 — fiche de passage : le titre est PARAMÉTRABLE par société (« Certificat sanitaire »
+   * = un libellé, jamais un modèle). Le document dit la VÉRITÉ du terrain et rien d'autre :
+   *  • une fiche non signée l'écrit noir sur blanc (client absent), jamais une signature
+   *    suggérée ni fabriquée ;
+   *  • une signature capturée hors-ligne affiche les DEUX horodatages (convention §3.4, P12) :
+   *    heure du geste déclarée par l'appareil ET réception serveur ;
+   *  • les photos sont listées par PHASE (avant/après) en TEXTE — la fiche reste lisible et
+   *    légère ; les octets vivent dans le coffre.
+   * Le rendu est ARCHIVÉ IMMUABLE par GenerateInterventionReport (patron A8) : jamais re-rendu
+   * pour un même état de fiche.
+   */
+  async renderInterventionReport(data: InterventionReportData): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    const fonts = await embedFonts(doc);
+    const accent = accentRoles('navy');
+    const pieceTitle = data.title;
+
+    const ctx: Ctx = {
+      doc,
+      fonts,
+      accent,
+      page: doc.addPage([PAGE_W, PAGE_H]),
+      y: PAGE_H,
+      pieceTitle,
+      companyName: data.companyName,
+      tableHeaderPainter: null,
+    };
+
+    const chips: string[] = [];
+    if (data.finishedAt !== null) chips.push(`Passage du ${frDateTime(data.finishedAt)}`);
+    chips.push(data.signature !== null ? 'Signee sur site' : 'Non signee (client absent)');
+
+    drawHeroHeader(
+      ctx,
+      {
+        companyName: data.companyName,
+        companyAddress: '',
+        companyRcsOrRm: null,
+      },
+      chips,
+      pieceTitle,
+      null,
+    );
+
+    drawMetaCard(
+      ctx,
+      { eyebrow: 'INTERVENANT', name: data.companyName, address: '', extra: data.technicianLabel },
+      {
+        eyebrow: 'CLIENT / SITE',
+        name: data.customerName,
+        address: data.chantierAddress ?? data.chantierName,
+      },
+      [],
+    );
+
+    drawReportSectionTitle(ctx, 'Le passage');
+    drawFactRow(ctx, 'Site', data.chantierName);
+    if (data.equipmentLabel !== null) drawFactRow(ctx, 'Equipement', data.equipmentLabel);
+    drawFactRow(ctx, 'Type de passage', data.kind);
+    if (data.technicianLabel !== null) drawFactRow(ctx, 'Intervenant', data.technicianLabel);
+    if (data.plannedAt !== null) drawFactRow(ctx, 'Planifie le', frDateTime(data.plannedAt));
+    if (data.startedAt !== null) drawFactRow(ctx, 'Debut', frDateTime(data.startedAt));
+    if (data.finishedAt !== null) drawFactRow(ctx, 'Fin', frDateTime(data.finishedAt));
+
+    if (data.checklist.length > 0) {
+      drawReportSectionTitle(ctx, 'Points controles');
+      for (const item of data.checklist) {
+        ensureSpace(ctx, 16);
+        // Jamais la couleur seule : le fait « fait / non fait » est ÉCRIT.
+        const mark = item.done ? '[x]' : '[ ]';
+        drawRun(ctx.page, mark, MARGIN_X, ctx.y - 9, ctx.fonts.text700, 9, {
+          color: item.done ? SUCCESS_INK : SLATE500,
+        });
+        const lines = wrapMeasured(sanitize(item.label), ctx.fonts.text500, 9, CONTENT_W - 26);
+        let y = ctx.y - 9;
+        for (const line of lines) {
+          drawRun(ctx.page, line, MARGIN_X + 26, y, ctx.fonts.text500, 9, { color: INK800 });
+          y -= 11;
+        }
+        if (item.note !== undefined) {
+          for (const line of wrapMeasured(sanitize(item.note), ctx.fonts.text500, 8, CONTENT_W - 26)) {
+            drawRun(ctx.page, line, MARGIN_X + 26, y, ctx.fonts.text500, 8, { color: SLATE500 });
+            y -= 10;
+          }
+        }
+        ctx.y = Math.min(ctx.y - 16, y - 4);
+      }
+    }
+
+    if (data.summary !== null) {
+      drawReportSectionTitle(ctx, 'Compte rendu');
+      for (const paragraph of data.summary.split('\n')) {
+        const lines = wrapMeasured(sanitize(paragraph), ctx.fonts.text500, 9, CONTENT_W);
+        ensureSpace(ctx, lines.length * 11 + 4);
+        for (const line of lines) {
+          drawRun(ctx.page, line, MARGIN_X, ctx.y - 9, ctx.fonts.text500, 9, { color: INK800 });
+          ctx.y -= 11;
+        }
+        ctx.y -= 4;
+      }
+    }
+
+    if (data.notes.length > 0) {
+      drawReportSectionTitle(ctx, 'Notes du passage');
+      for (const note of data.notes) {
+        const lines = wrapMeasured(
+          sanitize(`${frDateTime(note.createdAt)} — ${note.authorLabel} : ${note.text}`),
+          ctx.fonts.text500,
+          8.5,
+          CONTENT_W,
+        );
+        ensureSpace(ctx, lines.length * 10.5 + 4);
+        for (const line of lines) {
+          drawRun(ctx.page, line, MARGIN_X, ctx.y - 8, ctx.fonts.text500, 8.5, { color: INK800 });
+          ctx.y -= 10.5;
+        }
+        ctx.y -= 4;
+      }
+    }
+
+    if (data.photos.length > 0) {
+      drawReportSectionTitle(ctx, 'Photos jointes au dossier');
+      const phaseLabel = (phase: 'before' | 'after' | null): string =>
+        phase === 'before' ? 'Avant' : phase === 'after' ? 'Apres' : 'Sans phase';
+      for (const photo of data.photos) {
+        ensureSpace(ctx, 12);
+        drawRun(
+          ctx.page,
+          sanitize(`${phaseLabel(photo.phase)} — ${photo.filename} (${frDateTime(photo.createdAt)})`),
+          MARGIN_X,
+          ctx.y - 8,
+          ctx.fonts.text500,
+          8.5,
+          { color: INK800 },
+        );
+        ctx.y -= 12;
+      }
+      ctx.y -= 4;
+    }
+
+    drawReportSectionTitle(ctx, 'Signature du client');
+    if (data.signature === null) {
+      // Mention HONNÊTE : le terminal `completed` est légitime, il ne se déguise jamais.
+      for (const line of wrapMeasured(
+        sanitize(
+          'Le client etait absent au moment du passage : cette fiche n\'a pas ete signee sur place. '
+            + 'Elle rend compte du passage realise, sans valeur de reception contradictoire.',
+        ),
+        ctx.fonts.text500,
+        8.5,
+        CONTENT_W,
+      )) {
+        ensureSpace(ctx, 11);
+        drawRun(ctx.page, line, MARGIN_X, ctx.y - 8, ctx.fonts.text500, 8.5, { color: SLATE500 });
+        ctx.y -= 11;
+      }
+    } else {
+      drawFactRow(ctx, 'Signataire', data.signature.signerName);
+      if (data.signature.capturedAtDevice !== null) {
+        // Convention §3.4 (P12) : les deux horloges sont dites, jamais confondues.
+        drawFactRow(
+          ctx,
+          'Signee sur site le',
+          `${frDateTime(data.signature.capturedAtDevice)} (horloge de l'appareil)`,
+        );
+        drawFactRow(ctx, 'Synchronisee le', frDateTime(data.signature.capturedAt));
+      } else {
+        drawFactRow(ctx, 'Signee le', frDateTime(data.signature.capturedAt));
+      }
+      for (const line of wrapMeasured(
+        sanitize(
+          'Signature manuscrite capturee sur place (signature simple au sens du reglement eIDAS) : '
+            + 'son empreinte SHA-256 est conservee par Bob Pro comme preuve d\'integrite.',
+        ),
+        ctx.fonts.text500,
+        7.5,
+        CONTENT_W,
+      )) {
+        ensureSpace(ctx, 10);
+        drawRun(ctx.page, line, MARGIN_X, ctx.y - 8, ctx.fonts.text500, 7.5, { color: SLATE500 });
+        ctx.y -= 10;
+      }
+    }
+
+    stampFooters(ctx);
+    return doc.save();
+  }
+
   async renderInvoice(data: InvoicePdfData, facturX?: { xml: string }): Promise<Uint8Array> {
     const doc = await PDFDocument.create();
     const fonts = await embedFonts(doc);

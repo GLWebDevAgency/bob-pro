@@ -7,7 +7,9 @@ import {
 
 const COMPANY = 'company-a';
 const OTHER_COMPANY = 'company-b';
-const TYPES: readonly DocumentLinkedEntityType[] = ['invoice', 'quote', 'expense', 'chantier', 'company'];
+const TYPES: readonly DocumentLinkedEntityType[] = [
+  'invoice', 'quote', 'expense', 'chantier', 'equipment', 'company',
+];
 
 function repositories(): DocumentLinkTargetRepositories {
   const tenantLookup = (prefix: string) => ({
@@ -22,6 +24,7 @@ function repositories(): DocumentLinkTargetRepositories {
     quote: tenantLookup('quote'),
     expense: tenantLookup('expense'),
     chantier: tenantLookup('chantier'),
+    equipment: tenantLookup('equipment'),
     company: {
       findById: async (id: string) => {
         if (id === COMPANY || id === OTHER_COMPANY) return { id };

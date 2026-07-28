@@ -1,10 +1,12 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type DateOnly, type Instant, isValidDateOnly } from '../../shared-kernel/time';
 
-export type DocumentKind = 'invoice_pdf' | 'quote_pdf' | 'facturx_xml' | 'expense_receipt' | 'signed_quote' | 'other';
+// PR-16 (Bloc C) — `intervention_report` : fiche de passage PDF archivée immuable (A8) ;
+// `equipment` : liaison d'un document au parc (historique par équipement, PR-11).
+export type DocumentKind = 'invoice_pdf' | 'quote_pdf' | 'facturx_xml' | 'expense_receipt' | 'signed_quote' | 'intervention_report' | 'other';
 export type DocumentOrigin = 'generated' | 'uploaded' | 'ocr';
 export type DocumentStatus = 'active' | 'deleted';
-export type DocumentLinkedEntityType = 'invoice' | 'quote' | 'expense' | 'chantier' | 'company';
+export type DocumentLinkedEntityType = 'invoice' | 'quote' | 'expense' | 'chantier' | 'equipment' | 'company';
 
 export interface DocumentVersionProps {
   id: string;
@@ -51,10 +53,10 @@ export interface DocumentProps {
   reviewedAt?: Instant | null;
 }
 
-const KINDS: readonly DocumentKind[] = ['invoice_pdf', 'quote_pdf', 'facturx_xml', 'expense_receipt', 'signed_quote', 'other'];
+const KINDS: readonly DocumentKind[] = ['invoice_pdf', 'quote_pdf', 'facturx_xml', 'expense_receipt', 'signed_quote', 'intervention_report', 'other'];
 const ORIGINS: readonly DocumentOrigin[] = ['generated', 'uploaded', 'ocr'];
 const STATUSES: readonly DocumentStatus[] = ['active', 'deleted'];
-const LINKED_ENTITY_TYPES: readonly DocumentLinkedEntityType[] = ['invoice', 'quote', 'expense', 'chantier', 'company'];
+const LINKED_ENTITY_TYPES: readonly DocumentLinkedEntityType[] = ['invoice', 'quote', 'expense', 'chantier', 'equipment', 'company'];
 const SHA256 = /^[a-f0-9]{64}$/;
 
 function nonEmpty(value: unknown): value is string {

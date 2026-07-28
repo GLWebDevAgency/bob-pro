@@ -186,6 +186,9 @@ import {
   CancelIntervention,
   UpdateIntervention,
   SignIntervention,
+  GenerateInterventionReport,
+  SendInterventionReport,
+  PrepareInterventionInvoiceDraft,
   UpdateEquipment,
   RetireEquipment,
   ReactivateEquipment,
@@ -221,6 +224,10 @@ import {
   type CreateInterventionInput,
   type InterventionPatch,
   type ChecklistItem,
+  type InterventionReportRendererPort,
+  type GenerateInterventionReportOutput,
+  type SendInterventionReportOutput,
+  type PrepareInterventionInvoiceDraftOutput,
   type InterventionProps,
   type Scenario,
   type Horizon,
@@ -354,6 +361,8 @@ import { PDF_RENDERER } from './documents/pdf-renderer';
 import { inspectInvoicePdfRepresentation } from './documents/pdfa3';
 import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
 import {
+  generatedInterventionReportDocumentId,
+  generatedInterventionReportVersionId,
   generatedInvoiceDocumentId,
   generatedInvoiceDocumentVersionId,
   generatedQuoteDocumentId,
@@ -1246,7 +1255,11 @@ export class BackendService {
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
-    @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
+    // PR-16 — le rendu de fiche de passage est une capacité ADDITIVE du même adapter :
+    // absente (double de test, adapter dégradé), la génération répond « indisponible »,
+    // jamais un PDF vide ni un rendu de secours fabriqué.
+    @Inject(PDF_RENDERER)
+    private readonly pdf: PdfRendererPort & Partial<InterventionReportRendererPort>,
     @Inject(OCR_PORT) private readonly ocr: OcrPort,
     @Inject(SUPABASE_ADMIN) private readonly supabaseAdmin: SupabaseAdminPort,
     private readonly notificationDelivery: NotificationDeliveryService,
@@ -2174,6 +2187,9 @@ export class BackendService {
     const r = await new DeleteDraftInvoice({
       invoices: this.p.invoices,
       uow: this.p,
+      // PR-16 (audit consommateur) — la fiche de passage liée au brouillon supprimé est
+      // DÉTACHÉE dans la même transaction : « Facturer ce passage » se rallume par l'état réel.
+      interventionBillingLinks: this.p.interventions,
     }).execute({
       invoiceId,
     });
@@ -4300,72 +4316,6 @@ export class BackendService {
           status: r.value.status,
           anniversaryDate: r.value.anniversaryDate,
           terminationEffectiveDate: r.value.terminationEffectiveDate,
-        });
-      },
-      // PR-15/16 (parité papa vocal §3.7) — fiche de passage : les adapters délèguent aux MÊMES
-      // use cases que les endpoints (Start/Complete/Send/PrepareInvoice) ; la révision courante
-      // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.
-      listInterventions: async () => {
-        const companyId = this.companyId();
-        const [interventions, chantiers, customers] = await Promise.all([
-          this.p.interventions.listByCompany(companyId),
-          this.p.chantiers.listByCompany(companyId),
-          this.p.customers.listByCompany(companyId),
-        ]);
-        const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
-        const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
-        return ok(
-          interventions.map((intervention) => {
-            const props = intervention.toProps();
-            return {
-              id: props.id,
-              kind: props.kind,
-              status: props.status,
-              chantierId: props.chantierId,
-              chantierNom: chantierNames.get(props.chantierId) ?? props.chantierId,
-              customerNom: customerNames.get(props.customerId) ?? props.customerId,
-              plannedAt: props.plannedAt,
-              contractId: props.contractId,
-              reportDocumentId: props.reportDocumentId,
-              billedInvoiceId: props.billedInvoiceId,
-              revision: props.revision,
-            };
-          }),
-        );
-      },
-      startIntervention: async (input) => {
-        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
-        if (!current || current.companyId !== this.companyId())
-          return err(appNotFound('intervention', input.interventionId));
-        const r = await this.startIntervention({
-          interventionId: input.interventionId,
-          expectedRevision: current.revision,
-        });
-        if (!r.ok) return r;
-        const chantier = await this.p.chantiers.findById(r.value.chantierId);
-        return ok({
-          interventionId: r.value.id,
-          status: r.value.status,
-          kind: r.value.kind,
-          chantierNom: chantier?.name ?? r.value.chantierId,
-        });
-      },
-      completeIntervention: async (input) => {
-        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
-        if (!current || current.companyId !== this.companyId())
-          return err(appNotFound('intervention', input.interventionId));
-        const r = await this.completeIntervention({
-          interventionId: input.interventionId,
-          expectedRevision: current.revision,
-          ...(input.summary !== undefined && input.summary !== null ? { summary: input.summary } : {}),
-        });
-        if (!r.ok) return r;
-        const chantier = await this.p.chantiers.findById(r.value.chantierId);
-        return ok({
-          interventionId: r.value.id,
-          status: r.value.status,
-          kind: r.value.kind,
-          chantierNom: chantier?.name ?? r.value.chantierId,
         });
       },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
@@ -6683,6 +6633,193 @@ export class BackendService {
       this.logger.audit('intervention.signed', {
         companyId: this.companyId(),
         id: input.interventionId,
+      });
+    return r;
+  }
+
+  // ── PR-16 — fiche de passage PDF : rendue PUIS ARCHIVÉE IMMUABLE, envoi confirmé, CTA facturer ──
+
+  /**
+   * Rend la fiche de passage et l'ARCHIVE (StoredDocument `intervention_report`, patron A8) :
+   * une archive par ÉTAT de fiche (`completed`, puis au plus `signed`), JAMAIS re-rendue —
+   * un second appel sert l'archive existante (`alreadyArchived`). La fiche archivée suit
+   * l'ÉQUIPEMENT du passage quand il en vise un, sinon le site (historique parc/site).
+   */
+  async generateInterventionReport(
+    interventionId: string,
+  ): Promise<Result<GenerateInterventionReportOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const renderInterventionReport = this.pdf.renderInterventionReport?.bind(this.pdf);
+    if (renderInterventionReport === undefined) {
+      // Fail-closed honnête : jamais un PDF de secours, jamais une archive fabriquée.
+      return { ok: false, error: appUnavailable('intervention-report-renderer') };
+    }
+    const companyId = this.companyId();
+    const r = await new GenerateInterventionReport({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      notes: this.p.chantierNotes,
+      media: this.p.worksiteMedia,
+      equipments: this.p.equipments,
+      interventionSettings: this.p.interventionSettings,
+      renderer: { renderInterventionReport },
+      documents: {
+        insertInitialOrConfirmExact: (document) =>
+          this.p.runWithTenant(companyId, () =>
+            this.p.documents.insertInitialOrConfirmExact(document),
+          ),
+        findById: (scopedCompanyId, documentId) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documents.findById(scopedCompanyId, documentId),
+          ),
+      },
+      folders: {
+        findById: (scopedCompanyId, folderId) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documentFolders.findById(scopedCompanyId, folderId),
+          ),
+      },
+      linkTargets: this.documentLinkTargets(),
+      storage: this.documentStorage,
+      documentIds: {
+        documentId: generatedInterventionReportDocumentId,
+        versionId: generatedInterventionReportVersionId,
+      },
+      hash: { sha256HexOfBytes: (bytes) => documentSha256(bytes) },
+      clock: this.clock,
+    }).execute({ companyId, interventionId });
+    if (r.ok)
+      this.logger.audit('intervention.report_archived', {
+        companyId,
+        interventionId,
+        documentId: r.value.documentId,
+        state: r.value.state,
+        alreadyArchived: r.value.alreadyArchived,
+      });
+    return r;
+  }
+
+  /**
+   * Envoi e-mail de la fiche ARCHIVÉE — geste CONFIRMÉ (jamais un effet de bord de la
+   * génération) : le PDF joint est l'ORIGINAL relu et vérifié (octets + sha256), l'outbox
+   * durable `intervention-report` livre (worker cron), l'expéditeur perçu est la société.
+   */
+  async sendInterventionReport(
+    interventionId: string,
+    input?: { recipientEmail?: string },
+  ): Promise<Result<SendInterventionReportOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new SendInterventionReport({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      interventionSettings: this.p.interventionSettings,
+      archive: {
+        loadArchivedReportPdf: async (companyId, documentId) => {
+          const document = await this.p.runWithTenant(companyId, () =>
+            this.p.documents.findById(companyId, documentId),
+          );
+          if (!document) return err(appUnavailable('intervention-report-archive'));
+          const archive = document.toProps();
+          if (archive.status !== 'active' || archive.kind !== 'intervention_report') {
+            return err(appUnavailable('intervention-report-archive'));
+          }
+          if (archive.mimeType !== 'application/pdf') {
+            return err(appUnavailable('intervention-report-archive'));
+          }
+          const stored = await loadVerifiedStoredObject(this.documentStorage, {
+            companyId,
+            key: archive.storageKey,
+            sizeBytes: archive.byteSize,
+            sha256: archive.sha256,
+            contentType: archive.mimeType,
+          });
+          // Archive absente/corrompue = indisponibilité à réparer, JAMAIS un re-rendu.
+          if (!stored.ok) return err(appUnavailable('intervention-report-archive'));
+          return ok({
+            attachment: {
+              filename: archive.filename,
+              mimeType: archive.mimeType,
+              contentBase64: Buffer.from(stored.value.bytes).toString('base64'),
+            },
+            sha256: archive.sha256,
+          });
+        },
+      },
+      outbox: {
+        enqueue: async (order) => {
+          const job = await this.notificationDelivery.enqueue(order);
+          return { jobId: job.id, status: job.status === 'cancelled' ? 'failed' : job.status };
+        },
+      },
+    }).execute({
+      companyId: this.companyId(),
+      interventionId,
+      ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
+    });
+    if (r.ok)
+      // Jamais le contenu ni l'adresse dans les journaux — corrélation technique seulement.
+      this.logger.audit('intervention.report_email_queued', {
+        companyId: this.companyId(),
+        interventionId,
+        jobId: r.value.jobId,
+        deliveryStatus: r.value.deliveryStatus,
+      });
+    return r;
+  }
+
+  /**
+   * CTA « Facturer ce passage » — BROUILLON de facture directe pré-rempli depuis la fiche
+   * (client, site, référence du passage en libellé de ligne) via ComposeStandaloneInvoice :
+   * TOUS les invariants (garde B2C sans urgence qualifiée, international, TVA) sont repassés,
+   * aucun chemin parallèle. Rien n'est émis, rien n'est envoyé.
+   */
+  async prepareInterventionInvoiceDraft(
+    interventionId: string,
+    input?: {
+      lines?: LineInput[];
+      urgentOnSiteRepair?: boolean;
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    },
+  ): Promise<Result<PrepareInterventionInvoiceDraftOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new PrepareInterventionInvoiceDraft({
+      interventions: this.p.interventions,
+      invoices: this.p.invoices,
+      chantiers: this.p.chantiers,
+      equipments: this.p.equipments,
+      compose: {
+        execute: (composeInput) =>
+          this.composeStandaloneInvoice({
+            customerId: composeInput.customerId,
+            lines: composeInput.lines,
+            ...(composeInput.chantierId !== undefined ? { chantierId: composeInput.chantierId } : {}),
+            ...(composeInput.urgentOnSiteRepair !== undefined
+              ? { urgentOnSiteRepair: composeInput.urgentOnSiteRepair }
+              : {}),
+            ...(composeInput.context !== undefined ? { context: composeInput.context } : {}),
+          }),
+      },
+    }).execute({
+      companyId: this.companyId(),
+      interventionId,
+      ...(input?.lines !== undefined ? { lines: input.lines } : {}),
+      ...(input?.urgentOnSiteRepair !== undefined
+        ? { urgentOnSiteRepair: input.urgentOnSiteRepair }
+        : {}),
+      ...(input?.context !== undefined ? { context: input.context } : {}),
+    });
+    if (r.ok)
+      this.logger.audit('intervention.invoice_drafted', {
+        companyId: this.companyId(),
+        interventionId,
+        invoiceId: r.value.invoiceId,
       });
     return r;
   }

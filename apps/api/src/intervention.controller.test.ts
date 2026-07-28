@@ -4,6 +4,7 @@ import {
   Chantier,
   Customer,
   Equipment,
+  type InterventionReportData,
   type OcrPort,
   type PaymentGatewayPort,
   type PdfRendererPort,
@@ -16,12 +17,14 @@ import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 import { InterventionsController } from './api.controllers';
+import { PdfRenderer } from './documents/pdf-renderer';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
+import { pdfVisibleText } from './documents/pdf-text.testing';
 
 /**
- * PR-15b — câblage serveur de la fiche de passage : mêmes use cases que le mobile et la voix
- * (parité), gate module chantiers identique au parc/notes/photos, verrouillage post-signature
- * (photos, notes, retrait, édition), séquence ERRATUM 6 acceptée côté serveur.
+ * PR-15b/PR-16 — câblage serveur de la fiche de passage : mêmes use cases que le mobile et la
+ * voix (parité), gate module chantiers identique au parc/notes/photos, verrouillage
+ * post-signature, séquence ERRATUM 6 acceptée, archive IMMUABLE + envoi confirmé + CTA facturer.
  */
 
 interface EnqueuedJob {
@@ -31,7 +34,7 @@ interface EnqueuedJob {
   notification: { to: string; subject: string; body: string; attachments?: unknown[] };
 }
 
-function makeService() {
+function makeService(options: { withRenderer?: boolean } = {}) {
   const p = new InMemoryPersistence();
   const admin: SupabaseAdminPort = {
     setUserCompanyId: async () => undefined,
@@ -52,10 +55,13 @@ function makeService() {
     },
   } as unknown as NotificationDeliveryService;
   const storage = new InMemoryDocumentStorage();
+  const renderer = (
+    options.withRenderer === false ? ({} as PdfRendererPort) : new PdfRenderer()
+  ) as PdfRendererPort;
   const service = new BackendService(
     p,
     {} as PaymentGatewayPort,
-    {} as PdfRendererPort,
+    renderer,
     {} as OcrPort,
     admin,
     notificationDelivery,
@@ -415,5 +421,321 @@ describe('fiche de passage — service (PR-15b)', () => {
     await expect(controller.start('x', { expectedRevision: 1, bidon: true })).rejects.toThrow();
     await expect(controller.sign('x', { expectedRevision: 1, signerName: 'A' })).rejects.toThrow();
     await expect(controller.update('x', { expectedRevision: 0 })).rejects.toThrow();
+  });
+});
+
+describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA facturer (PR-16)', () => {
+  async function completedIntervention(withEquipment = true) {
+    const env = makeService();
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    await seedCustomer(env.p, 'cust-ratp', companyId);
+    if (withEquipment) await seedEquipment(env.p, 'equip-fontaine', companyId, 'site-bastille');
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-ratp',
+        kind: 'Visite d’entretien',
+        ...(withEquipment ? { equipmentId: 'equip-fontaine' } : {}),
+        technicianLabel: 'Papa',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({
+        interventionId: created.value.id,
+        expectedRevision: 2,
+        checklist: [{ label: 'Détartrage', done: true, note: 'Filtre remplacé' }],
+        summary: 'Pression basse au démarrage, réglée.',
+      }),
+    );
+    return { ...env, companyId, run, interventionId: created.value.id };
+  }
+
+  it('rend PUIS archive (A8) : second appel = archive servie, JAMAIS re-rendue', async () => {
+    const env = await completedIntervention();
+    const first = await env.run(() => env.service.generateInterventionReport(env.interventionId));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value).toMatchObject({ alreadyArchived: false, state: 'completed' });
+    expect(first.value.filename).toMatch(/^fiche-de-passage-\d{4}-\d{2}-\d{2}\.pdf$/);
+
+    const archived = await env.run(() =>
+      env.p.documents.findById(env.companyId, first.value.documentId),
+    );
+    expect(archived).not.toBeNull();
+    const props = archived!.toProps();
+    expect(props.kind).toBe('intervention_report');
+    expect(props.origin).toBe('generated');
+    // Archive liée à l'ÉQUIPEMENT du passage (historique parc), jamais au hasard.
+    expect(props.linkedEntityType).toBe('equipment');
+    expect(props.linkedEntityId).toBe('equip-fontaine');
+
+    const second = await env.run(() => env.service.generateInterventionReport(env.interventionId));
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value).toMatchObject({ alreadyArchived: true, documentId: first.value.documentId });
+    // Aucune seconde version : l'octet archivé est unique et immuable.
+    expect(props.sha256).toBe(archived!.toProps().sha256);
+  });
+
+  it('sans équipement : l’archive suit le SITE (l’historique reste vrai)', async () => {
+    const env = await completedIntervention(false);
+    const generated = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const archived = await env.run(() =>
+      env.p.documents.findById(env.companyId, generated.value.documentId),
+    );
+    expect(archived!.toProps().linkedEntityType).toBe('chantier');
+    expect(archived!.toProps().linkedEntityId).toBe('site-bastille');
+  });
+
+  it('la signature crée une NOUVELLE archive ; l’ancienne reste intacte', async () => {
+    const env = await completedIntervention();
+    const beforeSign = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(beforeSign.ok).toBe(true);
+    if (!beforeSign.ok) return;
+    await env.run(() =>
+      env.service.signIntervention({
+        interventionId: env.interventionId,
+        expectedRevision: 4,
+        signerName: 'M. Responsable',
+        proofDataUrl: TRACE,
+      }),
+    );
+    const afterSign = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(afterSign.ok).toBe(true);
+    if (!afterSign.ok) return;
+    expect(afterSign.value.state).toBe('signed');
+    expect(afterSign.value.documentId).not.toBe(beforeSign.value.documentId);
+    const original = await env.run(() =>
+      env.p.documents.findById(env.companyId, beforeSign.value.documentId),
+    );
+    expect(original!.toProps().status).toBe('active');
+  });
+
+  it('envoi = geste CONFIRMÉ : archive exigée, destinataire résolu, outbox dédiée', async () => {
+    const env = await completedIntervention();
+    const tooEarly = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+    expect(tooEarly.ok).toBe(false);
+    if (tooEarly.ok) return;
+    expect(JSON.stringify(tooEarly.error)).toContain('pas encore générée');
+    expect(env.enqueued).toHaveLength(0);
+
+    await env.run(() => env.service.generateInterventionReport(env.interventionId));
+    const sent = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+    expect(sent.ok).toBe(true);
+    if (!sent.ok) return;
+    expect(sent.value).toMatchObject({ recipient: 'compta@ratp.example', deliveryStatus: 'queued' });
+    expect(env.enqueued).toHaveLength(1);
+    expect(env.enqueued[0]!.kind).toBe('intervention-report');
+    expect(env.enqueued[0]!.dedupeKey).toMatch(/^intervention:.+:report:[0-9a-f]{64}$/);
+    // Le PDF ARCHIVÉ est joint, et la mention « non signée » est HONNÊTE.
+    expect(env.enqueued[0]!.notification.attachments).toHaveLength(1);
+    expect(env.enqueued[0]!.notification.body).toContain('sans signature sur place');
+  });
+
+  it('aucun destinataire : refus ACTIONNABLE (« ajoute un contact »), rien n’est parti', async () => {
+    const env = makeService();
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    const customer = Customer.of({
+      id: 'cust-sans-email',
+      companyId,
+      type: 'b2b',
+      name: 'Client sans e-mail',
+      address: { line1: '1 rue X', zip: '75001', city: 'Paris' },
+    });
+    if (!customer.ok) throw new Error('fixture invalide');
+    await env.p.customers.save(customer.value);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-sans-email',
+        kind: 'Dépannage',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({ interventionId: created.value.id, expectedRevision: 2 }),
+    );
+    await run(() => env.service.generateInterventionReport(created.value.id));
+    const sent = await run(() => env.service.sendInterventionReport(created.value.id));
+    expect(sent.ok).toBe(false);
+    if (sent.ok) return;
+    expect(JSON.stringify(sent.error)).toContain('Ajoute un contact');
+    expect(env.enqueued).toHaveLength(0);
+  });
+
+  it('CTA facturer : brouillon pré-rempli, repasse par TOUS les invariants, jamais deux fois', async () => {
+    const env = await completedIntervention();
+    const drafted = await env.run(() =>
+      env.service.prepareInterventionInvoiceDraft(env.interventionId),
+    );
+    expect(drafted.ok).toBe(true);
+    if (!drafted.ok) return;
+
+    const invoice = await env.run(() => env.p.invoices.findById(drafted.value.invoiceId));
+    expect(invoice).not.toBeNull();
+    expect(invoice!.status).toBe('draft');
+    expect(invoice!.customerId).toBe('cust-ratp');
+    // Site du passage porté par le brouillon (PR-08) + référence LISIBLE du passage.
+    expect(invoice!.chantierId).toBe('site-bastille');
+    expect(invoice!.lines[0]!.label).toContain('Visite d’entretien');
+    expect(invoice!.lines[0]!.label).toContain('Fontaine accueil R+2');
+
+    const again = await env.run(() =>
+      env.service.prepareInterventionInvoiceDraft(env.interventionId),
+    );
+    expect(again.ok).toBe(false);
+    if (again.ok) return;
+    expect(JSON.stringify(again.error)).toContain('déjà');
+
+    // Le brouillon supprimé DÉTACHE la fiche : le droit se rallume par l'état réel.
+    const deleted = await env.run(() => env.service.deleteDraftInvoice(drafted.value.invoiceId));
+    expect(deleted.ok).toBe(true);
+    const redrafted = await env.run(() =>
+      env.service.prepareInterventionInvoiceDraft(env.interventionId),
+    );
+    expect(redrafted.ok).toBe(true);
+  });
+
+  it('B2C sans urgence qualifiée : la garde standalone s’applique INTÉGRALEMENT au CTA', async () => {
+    const env = makeService();
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    await seedCustomer(env.p, 'cust-part', companyId, { type: 'b2c' });
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-part',
+        kind: 'Dépannage fontaine',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({ interventionId: created.value.id, expectedRevision: 2 }),
+    );
+    const refused = await run(() =>
+      env.service.prepareInterventionInvoiceDraft(created.value.id),
+    );
+    expect(refused.ok).toBe(false);
+
+    const urgent = await run(() =>
+      env.service.prepareInterventionInvoiceDraft(created.value.id, { urgentOnSiteRepair: true }),
+    );
+    expect(urgent.ok).toBe(true);
+  });
+
+  it('renderer indisponible : indisponibilité honnête, jamais un PDF de secours', async () => {
+    const env = makeService({ withRenderer: false });
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    await seedCustomer(env.p, 'cust-ratp', companyId);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-ratp',
+        kind: 'Dépannage',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    const generated = await run(() => env.service.generateInterventionReport(created.value.id));
+    expect(generated).toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+  });
+});
+
+describe('rendu PDF de la fiche — la vérité du terrain (PR-16)', () => {
+  function reportData(overrides: Partial<InterventionReportData> = {}): InterventionReportData {
+    return {
+      title: 'Fiche de passage',
+      companyName: 'Fly Services',
+      customerName: 'RATP CAP',
+      chantierName: 'Bastille',
+      chantierAddress: '1 place de la Bastille, 75011 Paris',
+      equipmentLabel: 'Fontaine accueil R+2',
+      kind: 'Visite d’entretien',
+      technicianLabel: 'Papa',
+      plannedAt: '2026-08-04T07:00:00.000Z',
+      startedAt: '2026-08-04T07:04:00.000Z',
+      finishedAt: '2026-08-04T08:12:00.000Z',
+      checklist: [
+        { label: 'Détartrage', done: true, note: 'Filtre remplacé' },
+        { label: 'Contrôle de pression', done: false },
+      ],
+      summary: 'Pression basse au démarrage, réglée.',
+      photos: [{ filename: 'avant.jpg', phase: 'before', createdAt: '2026-08-04T07:10:00.000Z' }],
+      notes: [
+        {
+          text: '1 photo n’a pas pu être jointe.',
+          authorLabel: 'Fly Services',
+          createdAt: '2026-08-04T08:20:00.000Z',
+        },
+      ],
+      signature: null,
+      ...overrides,
+    };
+  }
+
+  it('fiche NON signée : la mention « client absent » est ÉCRITE, jamais suggérée', async () => {
+    const bytes = await new PdfRenderer().renderInterventionReport(reportData());
+    expect(Buffer.from(bytes.slice(0, 5)).toString('utf8')).toBe('%PDF-');
+    const text = await pdfVisibleText(bytes);
+    expect(text).toContain('Fiche de passage');
+    expect(text).toContain('Bastille');
+    expect(text).toContain('Fontaine accueil R+2');
+    // Les points contrôlés disent OUI/NON par le texte, jamais par la couleur seule.
+    expect(text).toContain('Détartrage');
+    expect(text).toContain('[x]');
+    expect(text).toContain('[ ]');
+    expect(text).toContain('client etait absent');
+    expect(text).not.toContain('Signataire');
+    // Photos listées par phase, notes du passage reprises verbatim.
+    expect(text).toContain('Avant');
+    expect(text).toContain('avant.jpg');
+  });
+
+  it('titre PARAMÉTRABLE par société : il devient l’identité du document', async () => {
+    const bytes = await new PdfRenderer().renderInterventionReport(
+      reportData({ title: 'Certificat sanitaire' }),
+    );
+    const text = await pdfVisibleText(bytes);
+    expect(text).toContain('Certificat sanitaire');
+    expect(text).not.toContain('Fiche de passage');
+  });
+
+  it('signature hors-ligne : les DEUX horodatages sont rendus (convention §3.4)', async () => {
+    const bytes = await new PdfRenderer().renderInterventionReport(
+      reportData({
+        signature: {
+          signerName: 'M. Responsable',
+          capturedAt: '2026-08-04T10:00:00.000Z',
+          capturedAtDevice: '2026-08-04T08:41:00.000Z',
+        },
+      }),
+    );
+    const text = await pdfVisibleText(bytes);
+    expect(text).toContain('M. Responsable');
+    expect(text).toContain("horloge de l'appareil");
+    expect(text).toContain('Synchronisee le');
+    // Valeur probante dite telle quelle (LegalHint eIDAS), jamais surévaluée.
+    expect(text).toContain('eIDAS');
+    expect(text).not.toContain('client etait absent');
   });
 });

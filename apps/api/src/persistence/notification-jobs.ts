@@ -40,7 +40,11 @@ export interface NotificationJob {
    *  `contract-annual-invoice-reminder` : rappel INTERNE « facture annuelle à émettre »
    *  (PR-13) — dédupliqué par (contrat, début de période) ; annulé à la livraison si la
    *  période n'est plus due (facture émise entre-temps, contrat résilié). JAMAIS un envoi
-   *  client. */
+   *  client.
+   *  `intervention-report` : envoi EMAIL de la FICHE DE PASSAGE archivée (PR-16) — geste
+   *  CONFIRMÉ de l'artisan, jamais un effet de bord de la génération ; dédupliqué par VERSION
+   *  d'archive (`intervention:{id}:report:{sha256}`) : rejouer le même geste n'envoie pas deux
+   *  fois, mais une fiche re-générée après signature est un envoi NOUVEAU et légitime. */
   kind:
     | 'quote-signature'
     | 'quote-relance-reminder'
@@ -49,6 +53,7 @@ export interface NotificationJob {
     | 'invoice-transmission-reminder'
     | 'contract-renewal-reminder'
     | 'contract-annual-invoice-reminder'
+    | 'intervention-report'
     | 'weekly-digest'
     | 'retractation-acknowledgment'
     | 'embargo-scheduled-payment';

@@ -7,9 +7,21 @@ export interface DeleteDraftInvoiceInput {
   invoiceId: string;
 }
 
+/**
+ * PR-16 (Bloc C §3.5) — port ÉTROIT de détachement des passages liés : la suppression d'un
+ * brouillon créé par « Facturer ce passage » remet `billedInvoiceId` à null sur la ou les
+ * fiches qui le référencent — la priorité `intervention_a_facturer` se rallume par l'état
+ * réel. Optionnel : les hôtes sans interventions restent inchangés.
+ */
+export interface InterventionBillingDetachPort {
+  detachByInvoice(companyId: string, invoiceId: string): Promise<void>;
+}
+
 export interface DeleteDraftInvoiceDeps {
   invoices: InvoiceRepository;
   uow: UnitOfWorkPort;
+  /** PR-16 — audit consommateur : détache les fiches de passage liées au brouillon supprimé. */
+  interventionBillingLinks?: InterventionBillingDetachPort;
 }
 
 /** Sentinelle : lever DANS runInTransaction pour annuler proprement (rollback) sur erreur applicative. */
@@ -39,6 +51,10 @@ export class DeleteDraftInvoice {
         if (invoice.status !== 'draft')
           throw new TxAppError(appConflict('invoice', 'Seule une facture brouillon peut être supprimée.'));
         await this.deps.invoices.deleteById(invoice.id);
+        // PR-16 — même transaction : la fiche de passage liée est détachée, jamais orpheline.
+        if (this.deps.interventionBillingLinks) {
+          await this.deps.interventionBillingLinks.detachByInvoice(invoice.companyId, invoice.id);
+        }
       });
     } catch (e) {
       if (e instanceof TxAppError) return err(e.appError);

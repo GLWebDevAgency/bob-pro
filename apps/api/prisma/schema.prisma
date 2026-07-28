@@ -108,6 +108,9 @@ enum StoredDocumentKind {
   facturx_xml
   expense_receipt
   signed_quote
+  /// PR-16 — fiche de passage PDF ARCHIVÉE IMMUABLE (patron A8) : rendue une fois par état
+  /// (`completed` puis, au plus, `signed`), jamais re-rendue.
+  intervention_report
   other
 }
 
@@ -132,6 +135,9 @@ enum StoredDocumentLinkedEntityType {
   quote
   expense
   chantier
+  /// PR-16 — la fiche archivée suit l'ÉQUIPEMENT du passage quand il en vise un (historique
+  /// par équipement, PR-11) ; sinon elle reste liée au site.
+  equipment
   company
 }
 
