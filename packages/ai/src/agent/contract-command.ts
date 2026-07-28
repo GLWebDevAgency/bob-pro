@@ -199,10 +199,13 @@ export function extractSpokenContractFacts(
       ? Number(visits[1])
       : null;
   // Équipements ANNONCÉS : le nom de la machine est LIBRE (« 3 machines », « 3 fontaines »,
-  // « 2 ascenseurs ») — aucun lexique matériel codé. Les unités de la consigne (passages,
-  // euros, durées) sont exclues : elles ne comptent jamais des équipements.
+  // « 2 ascenseurs ») — aucun lexique matériel codé. Sont exclues les UNITÉS de la consigne
+  // (passages, euros, durées) et l'ARGOT MONÉTAIRE : sur la phrase canonique §2.7 « 400 balles
+  // PAR MACHINE, ils ont 3 machines », « 400 balles » est un PRIX unitaire — le compter pour
+  // des machines ferait ÉNONCER un fait faux au point de décision d'une mutation (« Tu as
+  // parlé de 400 machine(s) »), ce que la doctrine interdit.
   const equipments =
-    /\b(\d{1,3})\s+(?!visites?|passages?|interventions?|euros?|eur\b|ans?\b|annees?|mois\b|jours?|semaines?|fois\b|heures?)([\p{L}]{4,})/u.exec(
+    /\b(\d{1,3})\s+(?!visites?\b|passages?\b|interventions?\b|euros?\b|eur\b|balles?\b|boules?\b|patates?\b|briques?\b|sacs?\b|keuros?\b|ans?\b|annees?\b|mois\b|jours?\b|semaines?\b|fois\b|heures?\b|pourcents?\b)([\p{L}]{4,})/u.exec(
       normalized,
     );
   const tacitRefused = /\bsans\s+(?:reconduction|renouvellement)\s+tacite\b|\bnon\s+tacite\b|\bpas\s+de\s+(?:reconduction|renouvellement)\s+tacite\b/.test(

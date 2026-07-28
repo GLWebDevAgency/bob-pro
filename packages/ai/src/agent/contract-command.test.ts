@@ -157,6 +157,35 @@ describe('extractSpokenContractFacts — lecture en UNE passe de la consigne com
     expect(extractSpokenContractFacts('Crée le contrat « X »', TODAY).tacitRenewal).toBeNull();
   });
 
+  /**
+   * Phrase CANONIQUE de la spec §2.7, dictée telle quelle. « 400 balles PAR MACHINE » est un
+   * PRIX unitaire en argot ; le nombre de machines est « ils ont 3 machines ». Bob ÉNONCE ce
+   * nombre au point de décision d'une mutation (« Tu as parlé de N machine(s) ») — la doctrine
+   * interdit d'y énoncer un fait faux.
+   */
+  it('« 400 balles par machine, ils ont 3 machines » : 3 machines, jamais 400 (§2.7)', () => {
+    const facts = extractSpokenContractFacts(
+      'fais-moi le contrat fontaines RATP, 400 balles par machine, ils ont 3 machines à Bastille, ça démarre au 1er octobre, 2 passages',
+      TODAY,
+    );
+    expect(facts.equipmentCount).toBe(3);
+    expect(facts.label).toBe('Fontaines RATP');
+    expect(facts.visitsPerYear).toBe(2);
+    expect(facts.startDate).toBe('2026-10-01');
+    // « balles » n'est pas une unité monétaire lisible : aucun montant inventé, Bob demandera.
+    expect(facts.annualAmountCents).toBeNull();
+  });
+
+  it('l’argot monétaire ne compte jamais des machines, même seul dans la phrase', () => {
+    expect(
+      extractSpokenContractFacts('Crée le contrat « X », 400 balles par machine', TODAY)
+        .equipmentCount,
+    ).toBeNull();
+    expect(
+      extractSpokenContractFacts('Crée le contrat « X », 2000 boules par an', TODAY).equipmentCount,
+    ).toBeNull();
+  });
+
   it('les unités de la consigne ne comptent JAMAIS des équipements', () => {
     const facts = extractSpokenContractFacts(
       'Crée le contrat « Entretien vitrines » à 900 € par an, 2 visites par an, à partir du 01/10/2026',
