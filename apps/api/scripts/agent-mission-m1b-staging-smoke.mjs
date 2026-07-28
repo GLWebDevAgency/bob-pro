@@ -559,6 +559,11 @@ async function acknowledgeScreenWithBoundedRetry(missionSession, input, dependen
       !isExactContextStale(result.error) ||
       attempt === CONTEXT_STALE_ATTEMPTS
     ) {
+      process.stderr.write(
+        `agent-mission-m1b-staging-smoke:screen ACK failed ${describeM1BOperationFailure(
+          record(result)?.error,
+        )}\n`,
+      );
       fail('screen ACK failed outside the bounded context_stale retry contract');
     }
     await sleep(Math.min(100 * 2 ** (attempt - 1), 800));

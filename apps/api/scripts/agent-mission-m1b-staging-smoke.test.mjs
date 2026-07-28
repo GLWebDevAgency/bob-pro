@@ -897,17 +897,33 @@ test('récupère une double réponse cancel perdue avant de supprimer le brouill
 });
 
 test('une autre erreur ACK échoue mais annule uniquement la mission créée par le run', async () => {
+  const privateValues = [COMPANY_ID, USER_ID, 'm1b-staging@bob.test', 'v=0\r\na=private-sdp'];
   const fake = fakeDependencies({
     ackError: {
       kind: 'conflict',
-      entity: 'agent_mission',
-      reason: 'stale_revision',
+      entity: privateValues[0],
+      reason: privateValues[3],
     },
   });
-  await assert.rejects(
-    runM1BPositiveStagingSmoke(environment(), fake.dependencies),
-    /outside the bounded context_stale retry contract/u,
+  const stderrLines = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    stderrLines.push(String(chunk));
+    return true;
+  };
+  try {
+    await assert.rejects(
+      runM1BPositiveStagingSmoke(environment(), fake.dependencies),
+      /outside the bounded context_stale retry contract/u,
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  assert.equal(
+    stderrLines.find((entry) => entry.includes('screen ACK failed')),
+    'agent-mission-m1b-staging-smoke:screen ACK failed class=conflict\n',
   );
+  for (const value of privateValues) assert.equal(stderrLines.join('').includes(value), false);
   assert.equal(fake.state().mission.status, 'cancelled');
   assert.equal(fake.state().mission.revision, 2);
   assert.equal(fake.state().draft, null);

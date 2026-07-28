@@ -7,6 +7,7 @@ import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
 import {
   type RealtimeAdmissionPolicy,
   type RealtimeAdmissionPort,
+  prepareRealtimeContext,
 } from './realtime-admission';
 import {
   admissionSubjectHash,
@@ -2468,20 +2469,22 @@ describe('RealtimeVoiceService', () => {
       entities: [{ type: 'invoice' as const, id: 'invoice-1', label: 'Facture F-2026-014' }],
       capabilities: ['screen.read' as const, 'invoice.read' as const],
     };
+    const preparedContext = prepareRealtimeContext({ version: 1, revision: 4, context });
+    if (preparedContext === null) throw new Error('contexte canonique attendu');
     await expect(runAsPrincipal(() => service.updateContext(handle, {
       version: 1,
       revision: 4,
       context,
     }))).resolves.toEqual({
       ok: true,
-      value: { revision: 4, contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      value: { revision: 4, contextDigest: preparedContext.digest },
     });
     expect(sideband.contextChanged).toHaveBeenCalledWith({
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: handle,
       revision: 4,
-      digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      digest: preparedContext.digest,
     });
 
     await expect(runAsPrincipal(

@@ -3,6 +3,7 @@ import type { AgentAskPayload, AgentRun } from '@bob/ai';
 import type { AppError, Result } from '@bob/core';
 import { getPrincipal } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
+import { prepareRealtimeContext } from './realtime-context';
 import {
   classifyRealtimeAgentSpeechPurpose,
   RealtimeBobAgentTurnAdapter,
@@ -43,6 +44,26 @@ const context = {
 };
 
 const contextVersion = realtimeAgentContextVersion({ version: 1, revision: 1, context });
+
+describe('realtimeAgentContextVersion', () => {
+  it('réutilise exactement le digest canonique durable sans y mélanger la révision', () => {
+    const first = { version: 1 as const, revision: 1, context };
+    const second = { version: 1 as const, revision: 2, context };
+    const prepared = prepareRealtimeContext(first);
+    if (prepared === null) throw new Error('contexte de test canonique attendu');
+
+    expect(realtimeAgentContextVersion(first)).toEqual({
+      version: 1,
+      revision: 1,
+      digest: prepared.digest,
+    });
+    expect(realtimeAgentContextVersion(second)).toEqual({
+      version: 1,
+      revision: 2,
+      digest: prepared.digest,
+    });
+  });
+});
 
 function contextFence(
   revalidate: RealtimeAgentContextFence['revalidate'] = async () => contextVersion,

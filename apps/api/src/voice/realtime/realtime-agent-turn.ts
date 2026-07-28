@@ -14,6 +14,7 @@ import type {
   OpenAiNativeSpeechPurpose,
   OpenAiNativeSpeechSource,
 } from './openai-native-speech-risk';
+import { prepareRealtimeContext } from './realtime-context';
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
 
@@ -82,26 +83,29 @@ interface ContextSnapshotLike {
   readonly context: AgentContext;
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(',')}}`;
-}
-
 /** Empreinte non réversible d'un snapshot ; aucune donnée écran n'est journalisée. */
 export function realtimeAgentContextVersion(
   snapshot: ContextSnapshotLike | null,
 ): RealtimeAgentContextVersion {
+  if (snapshot !== null) {
+    const prepared = prepareRealtimeContext(snapshot);
+    if (prepared === null) {
+      throw new Error('Realtime agent context snapshot is not canonical.');
+    }
+    return {
+      version: snapshot.version,
+      revision: snapshot.revision,
+      // Autorité unique : ce digest est aussi celui persisté, appliqué par le sideband et
+      // présenté aux ACK. Version et révision restent des fences séparées.
+      digest: prepared.digest,
+    };
+  }
   return {
-    version: snapshot?.version ?? null,
-    revision: snapshot?.revision ?? null,
+    version: null,
+    revision: null,
     digest: createHash('sha256')
       .update('bob-pro:realtime-context-turn:v1\u0000', 'utf8')
-      .update(canonicalJson(snapshot), 'utf8')
+      .update('null', 'utf8')
       .digest('hex'),
   };
 }

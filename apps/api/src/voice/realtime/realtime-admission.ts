@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
-import { parseAgentContext, type AgentContext } from '@bob/ai';
 import type { ReleaseFlagEnvironment } from '@bob/core';
 import { resolveBobLiveEnv, type Env } from '../../config/env';
 import type { RealtimeGlobalCapacityExpectation } from './realtime-capacity';
 import { AGENT_MISSION_PROTOCOL_VERSION } from './realtime-agent-mission-negotiation';
+import type { RealtimeContextSnapshot } from './realtime-context';
+export {
+  prepareRealtimeContext,
+  REALTIME_CONTEXT_SCHEMA_VERSION,
+  type PreparedRealtimeContext,
+  type RealtimeContextSnapshot,
+} from './realtime-context';
 
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -12,10 +18,8 @@ const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
-export const REALTIME_CONTEXT_SCHEMA_VERSION = 1 as const;
 export const REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY =
   'bob.agent_missions.quote.v1' as const;
-const REALTIME_CONTEXT_MAX_BYTES = 16_384;
 
 export type RealtimeAdmissionDenial =
   | 'global_capacity'
@@ -266,13 +270,6 @@ export type RealtimeSessionIdentityResolution =
   | { ok: true; identity: RealtimeContextIdentity | null }
   | { ok: false; reason: 'unavailable' };
 
-/** Snapshot canonique stocké : schéma figé, révision client monotone et contexte déjà assaini. */
-export interface RealtimeContextSnapshot {
-  version: typeof REALTIME_CONTEXT_SCHEMA_VERSION;
-  revision: number;
-  context: AgentContext;
-}
-
 export interface RealtimeContextUpdateInput extends RealtimeContextIdentity {
   version: number;
   revision: number;
@@ -407,41 +404,4 @@ function validCredential(input: RealtimeLeaseCredential): boolean {
     && SESSION_ID_PATTERN.test(input.sessionId)
     && input.leaseToken.length >= 32
     && input.leaseToken.length <= 128;
-}
-
-export interface PreparedRealtimeContext {
-  snapshot: RealtimeContextSnapshot;
-  serialized: string;
-  digest: string;
-}
-
-/**
- * Produit l'unique représentation persistable. Deux retries de même révision ne sont
- * idempotents que si les octets de cette représentation canonique sont identiques.
- */
-export function prepareRealtimeContext(input: {
-  version: number;
-  revision: number;
-  context: unknown;
-}): PreparedRealtimeContext | null {
-  if (
-    input.version !== REALTIME_CONTEXT_SCHEMA_VERSION
-    || !Number.isSafeInteger(input.revision)
-    || input.revision < 1
-    || input.revision > POSTGRES_INTEGER_MAX
-  ) return null;
-  const parsed = parseAgentContext(input.context);
-  if (!parsed.ok) return null;
-  const snapshot: RealtimeContextSnapshot = {
-    version: REALTIME_CONTEXT_SCHEMA_VERSION,
-    revision: input.revision,
-    context: parsed.value,
-  };
-  const serialized = JSON.stringify(snapshot.context);
-  if (Buffer.byteLength(serialized, 'utf8') > REALTIME_CONTEXT_MAX_BYTES) return null;
-  return {
-    snapshot,
-    serialized,
-    digest: createHash('sha256').update(serialized, 'utf8').digest('hex'),
-  };
 }

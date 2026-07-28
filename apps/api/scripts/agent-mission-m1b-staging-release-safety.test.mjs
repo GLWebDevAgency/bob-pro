@@ -152,7 +152,7 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
   );
   assert.equal(
     occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu),
-    7,
+    8,
     'each mutually exclusive certification/recovery smoke plus cleanup must replay readiness',
   );
   assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
@@ -255,6 +255,34 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
     workflow,
     /manage-agent-mission-fingerprint-key-versions\.mjs\s+(?:stage|retire)/u,
   );
+});
+
+test('le cleanup récupère le résidu borné avant de retirer override et variables', () => {
+  const recovery = workflow.indexOf(
+    'Recover the exact technical residue before disabling M1-B',
+  );
+  const removeOverride = workflow.indexOf(
+    'Remove only the user override durably owned by this run',
+  );
+  const removeVariables = workflow.indexOf(
+    'Remove only the Railway block durably owned by this run',
+  );
+  assert.ok(recovery > workflow.indexOf('Pin exact staging database before cleanup mutations'));
+  assert.ok(recovery < removeOverride);
+  assert.ok(recovery < removeVariables);
+
+  const recoveryStep = workflowStep('recover_account');
+  assert.match(recoveryStep, /certifyM1BRecoveryStateEvidence/u);
+  assert.match(recoveryStep, /case "\$\(printf '%s\\n' "\$recovery_state" \| tail -n 1\)"/u);
+  assert.match(recoveryStep, /clean\) ;;/u);
+  assert.match(recoveryStep, /recoverable\)[\s\S]*?staging-readiness\.mjs/u);
+  assert.match(recoveryStep, /agent-mission-m1b-staging-smoke\.mjs recovery/u);
+  assert.doesNotMatch(recoveryStep, /continue-on-error/u);
+
+  const removeOverrideStep = workflowStep('remove_override');
+  const removeVariablesStep = workflowStep('remove_variables');
+  assert.match(removeOverrideStep, /if: \$\{\{ always\(\)/u);
+  assert.match(removeVariablesStep, /if: \$\{\{ always\(\) \}\}/u);
 });
 
 test('le cleanup restaure toujours la capacité après une désactivation Railway prouvée', () => {
@@ -397,7 +425,7 @@ test('le lane staging refuse toute réparation Prisma et laisse le gate strict f
 test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict binaire', () => {
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu), 2);
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu), 1);
-  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs recovery/gu), 1);
+  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs recovery/gu), 2);
   assert.match(workflow, /Execute real positive WebRTC mission and runtime RLS proof/u);
   assert.match(workflow, /Recover only the exact technical staging residue/u);
   assert.match(workflow, /Final independent OFF data cleanliness proof/u);

@@ -25,6 +25,13 @@ L'échec WebRTC est une réponse ambiguë après timeout : le client a initié l
 harness pouvait réessayer ou conclure sans preuve atomique que la lease exacte **et toutes les
 leases du tenant technique** avaient disparu.
 
+Le run `30328210635` a ensuite prouvé un second défaut d'intégration au SHA exact : après création
+de la mission et du brouillon, `updateContext` persistait le SHA-256 canonique produit par
+`prepareRealtimeContext`, mais notifiait le sideband et répondait au client avec une autre
+empreinte interne incluant version et révision. Le sideband durable exigeant
+`contextDigest === contextAppliedDigest`, l'application du contexte était impossible, la session
+était fermée, l'ACK écran ne pouvait jamais aboutir et le cleanup perdait sa capability.
+
 ## 2. Résultat attendu
 
 Une seule PR courte rend la certification M1-B :
@@ -111,6 +118,10 @@ Une seule PR courte rend la certification M1-B :
 - Le job de cleanup reste autonome, `always()`, `cancel-in-progress=false` et fail-closed. Il
   revalide toujours la base et l'ownership durable, ferme et nettoie l'état possédé et ne dépend
   jamais d'un output/cache pour exercer son autorité.
+- Avant de retirer l'override et les variables M1-B, le cleanup relit sous RLS l'état du compte
+  technique. Un état propre est un no-op ; l'unique résidu technique autorisé est récupéré via
+  une capability neuve pendant que le runtime actif existe encore. Un refus de récupération rend
+  le job rouge mais n'empêche jamais la remise OFF indépendante qui suit.
 - Après toute tentative de cleanup dont la suppression du bloc Railway M1-B est prouvée, une voie
   indépendante et limitée à la capacité globale remet Bob Live dans l'état configuré. Elle est
   sans effet si la capacité est déjà active **et** que sa configuration exacte est certifiée,
@@ -151,6 +162,18 @@ Une seule PR courte rend la certification M1-B :
   smoke positif nominal qu'après preuve `clean` (zéro mission active, zéro brouillon, zéro lease).
 - Les diagnostics et artefacts ne publient aucun identifiant, email, token, SDP ou payload.
 
+### 4.5 Autorité unique du digest de contexte
+
+- Pour un contexte non nul, `prepareRealtimeContext(...).digest` est l'unique
+  `contextDigest` public et durable.
+- La réponse de `PUT /voice/realtime/calls/:sessionHandle/context`, la notification au sideband,
+  `realtime_session_leases.contextDigest`, `contextAppliedDigest`, les fences de tour, les
+  contrôles et l'ACK écran portent exactement cette même valeur.
+- Version et révision restent des fences séparées ; elles ne modifient pas l'algorithme du digest.
+- Aucun composant ne recalcule une seconde empreinte sémantiquement appelée `contextDigest`.
+- Un test de contrat compare les octets exacts du digest retourné, notifié et recalculé à partir
+  du snapshot canonique. Une simple validation de forme hexadécimale ne satisfait pas ce critère.
+
 ## 5. Critères d'acceptation binaires
 
 - [ ] Timeout exact → nettoyage prouvé → un seul retry → succès avec UUID et peer neufs.
@@ -180,11 +203,17 @@ Une seule PR courte rend la certification M1-B :
 - [ ] La récupération négocie une capability neuve, ne démarre aucune mission, annule ou expire
       l'exact résidu via le use case, supprime le seul brouillon vide par CAS, ferme la session et
       obtient la preuve `clean` avant le scénario positif nominal.
+- [ ] Après tout échec du smoke positif, le cleanup tente et prouve la récupération bornée avant
+      de retirer l'override/les variables ; la remise OFF continue même si cette récupération
+      échoue et le job conserve alors un verdict rouge.
 - [ ] Un brouillon significatif, un binding, une seconde mission/lease, une révision ou un
       événement inattendu, une capability discordante ou une erreur CAS empêchent toute suite.
 - [ ] Le recovery exécute le préflight HMAC anti-rotation avant activation ; deux réponses
       d'annulation perdues suivies d'un commit tardif convergent par polling vers la preuve
       terminale, sans fuite de `cause`, `reason`, payload ou identifiant dans stderr.
+- [ ] Le digest retourné par `updateContext`, appliqué par le sideband, relu par le fence de tour
+      et présenté à l'ACK écran est exactement `prepareRealtimeContext(...).digest`.
+- [ ] Une divergence entre deux algorithmes de digest casse un test de contrat avant déploiement.
 - [ ] Les tests ciblés, typecheck/build concernés et tests de release safety sont verts.
 - [ ] Le SHA exact passe la vraie certification Supabase/Railway staging puis rend global OFF,
       zéro override possédé, zéro lease et zéro mission/brouillon.
