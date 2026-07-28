@@ -65,7 +65,7 @@ describe('ajouter_equipement — « ajoute la clim du local serveur chez Carrefo
     expect(r.value.kind).toBe('proposed');
     expect(created).toEqual([]);
     expect(r.value.pending?.tool).toBe('ajouter_equipement');
-    const args = r.value.pending?.args as CreateEquipmentActionInput;
+    const args = r.value.pending?.args as unknown as CreateEquipmentActionInput;
     // Départage en inclusion : « Carrefour » dit seul = le site le plus spécifique ENTIÈREMENT
     // dit — jamais une question Carrefour vs Carrefour Vitry qui rebouclerait.
     expect(args.chantierId).toBe('site-carrefour');
@@ -81,10 +81,46 @@ describe('ajouter_equipement — « ajoute la clim du local serveur chez Carrefo
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe('proposed');
-    const args = r.value.pending?.args as CreateEquipmentActionInput;
+    const args = r.value.pending?.args as unknown as CreateEquipmentActionInput;
     expect(args.chantierId).toBe('site-bastille');
     expect(args.brand).toBe('Culligan');
     expect(args.warrantyUntil).toBe('2027-03-12');
+  });
+
+  it('[revue n°2] exemple NORMATIF fondateur (§1.6) : « sous garantie jusqu’en mars 2027 » → FIN de mois extraite en UNE passe', async () => {
+    const agent = makeAgent({ createEquipment: async () => ok({ id: 'equip-new' }) });
+    const r = await agent.ask(
+      'La fontaine du deuxième chez RATP Bastille, marque Culligan, elle est sous garantie jusqu’en mars 2027, ajoute-la',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    const args = r.value.pending?.args as unknown as CreateEquipmentActionInput;
+    expect(args.chantierId).toBe('site-bastille');
+    expect(args.brand).toBe('Culligan');
+    // Mois-année parlé = fin de mois — le fait n'est plus perdu en silence.
+    expect(args.warrantyUntil).toBe('2027-03-31');
+    // Verbe en FIN de consigne (« ajoute-la ») : le libellé vit AVANT le verbe.
+    expect(args.label.toLowerCase()).toContain('fontaine');
+    // La confirmation groupée DIT la garantie extraite (frDate : 31/03/2027).
+    expect(r.value.card.body).toContain('garantie');
+    expect(r.value.card.body).toContain('31/03/2027');
+  });
+
+  it('[revue n°2] garantie dite mais ILLISIBLE (« constructeur deux ans ») : Bob le DIT à la confirmation — jamais strippée en silence', async () => {
+    const agent = makeAgent({ createEquipment: async () => ok({ id: 'equip-new' }) });
+    const r = await agent.ask(
+      'Ajoute la clim du local serveur chez Carrefour, garantie constructeur deux ans',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    const args = r.value.pending?.args as unknown as CreateEquipmentActionInput;
+    // Aucune date inventée…
+    expect(args.warrantyUntil).toBeUndefined();
+    // …mais l'honnêteté au point de décision : le manque est dit, avec le chemin de rattrapage.
+    expect(r.value.card.body).toContain('pas su lire');
+    expect(r.value.card.body).toContain('fiche');
   });
 
   it('site MANQUANT : question ciblée sur le seul manque, followUps qui REDISENT la commande complète', async () => {
@@ -304,9 +340,11 @@ describe('parc_equipements — lecture pure scopée au site dit', () => {
   });
 
   it('hôte sans capacité : réponse honnête, jamais un parc inventé', async () => {
+    // exactOptionalPropertyTypes : l'absence de capacité = clé ABSENTE, jamais `undefined` explicite.
+    const { listEquipments: _sansParc, ...actionsSansParc } = baseActions;
     const r = await new BobAgent({
       router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
-      actions: { ...baseActions, listEquipments: undefined },
+      actions: actionsSansParc,
       runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-equipment' } },
     }).ask('Montre-moi le parc du site RATP Bastille');
     expect(r.ok).toBe(true);

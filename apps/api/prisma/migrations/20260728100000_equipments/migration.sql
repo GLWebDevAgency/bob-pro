@@ -89,13 +89,16 @@ CREATE TABLE "equipments" (
         AND "location" !~ '[[:cntrl:]]'
       )
     ),
+  -- [Revue train n°2] notes de terrain MULTILIGNES (§1.2/§1.3 : seule borne = 2000) :
+  -- \n et \t admis, tout AUTRE caractère de contrôle refusé (miroir du domaine
+  -- hasForbiddenNotesCharacter — le test sur translate() retire les admis avant le filet).
   CONSTRAINT "equipments_notes_check"
     CHECK (
       "notes" IS NULL
       OR (
         char_length(btrim("notes")) BETWEEN 1 AND 2000
         AND "notes" = btrim("notes")
-        AND "notes" !~ '[[:cntrl:]]'
+        AND translate("notes", E'\n\t', '') !~ '[[:cntrl:]]'
       )
     ),
   CONSTRAINT "equipments_warranty_check"

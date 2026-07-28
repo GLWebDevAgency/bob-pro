@@ -117,10 +117,20 @@ export function detectIntent(message: string): BobIntent {
     return 'retirer_equipement';
   // Historique d'une machine : « l'historique de la fontaine de l'accueil » — la résolution du
   // NOM se fait contre le parc réel dans le handler ; les historiques d'autres objets restent
-  // à leurs intents (client, facture…).
+  // à leurs intents (client, facture…). [Revue train n°2] l'historique DU chantier/site
+  // lui-même (« l'historique du chantier Durand ») et celui d'une PERSONNE désignée par sa
+  // civilité (« l'historique de Mme Girard ») ne sont JAMAIS des équipements — mais une
+  // machine SCOPÉE à son site (« l'historique de la clim du site Bastille ») en reste un :
+  // l'exclusion ne porte que sur l'objet qui suit IMMÉDIATEMENT « historique de/du ».
   if (
     /\bhistoriques?\b/.test(normalizedMessage) &&
     !/\b(clients?|factures?|devis|paiements?|reglements?|relances?|comptes?|depenses?|documents?)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\bhistoriques?\s+(?:complet\s+)?(?:du|des|de\s+la|de\s+l\W{0,3}|de)\s*(?:chantiers?|sites?)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\bhistoriques?\s+(?:complet\s+)?(?:du|des|de)\s+(?:m\.|mr|mme|mlle|monsieur|madame|mademoiselle)\b/.test(
       normalizedMessage,
     )
   )

@@ -21,9 +21,16 @@ const MAX_LABEL_LENGTH = 200;
 const MAX_FREE_FIELD_LENGTH = 200;
 const MAX_NOTES_LENGTH = 2000;
 
-/** Tous les caractères de contrôle Unicode sont interdits dans un champ du parc (miroir SQL `[[:cntrl:]]`). */
+/** Tous les caractères de contrôle Unicode sont interdits dans un champ MONO-LIGNE du parc (miroir SQL `[[:cntrl:]]`). */
 function hasControlCharacter(value: string): boolean {
   return /\p{Cc}/u.test(value);
+}
+
+/** [Revue train n°2] `notes` est un texte LIBRE de terrain (§1.2/§1.3 : seule borne = 2000) :
+ * les retours à la ligne et tabulations y sont légitimes — seuls les AUTRES caractères de
+ * contrôle restent interdits (miroir SQL `translate(notes, \n\t, '') !~ '[[:cntrl:]]'`). */
+function hasForbiddenNotesCharacter(value: string): boolean {
+  return /(?![\n\t])\p{Cc}/u.test(value);
 }
 
 export interface EquipmentProps {
@@ -54,13 +61,14 @@ function canonicalOptional(
   field: string,
   value: string | null,
   maxLength: number,
+  hasForbiddenCharacter: (candidate: string) => boolean = hasControlCharacter,
 ): DomainResult<string | null> {
   if (value === null) return ok(null);
   const trimmed = value.trim();
   if (trimmed.length === 0) return ok(null);
   if (trimmed.length > maxLength)
     return err({ code: 'VALIDATION', field, message: `Champ limité à ${maxLength} caractères.` });
-  if (hasControlCharacter(trimmed))
+  if (hasForbiddenCharacter(trimmed))
     return err({ code: 'VALIDATION', field, message: 'Caractères de contrôle interdits.' });
   return ok(trimmed);
 }
@@ -123,7 +131,8 @@ export class Equipment {
     if (!serialNumber.ok) return serialNumber;
     const location = canonicalOptional('location', props.location, MAX_FREE_FIELD_LENGTH);
     if (!location.ok) return location;
-    const notes = canonicalOptional('notes', props.notes, MAX_NOTES_LENGTH);
+    // Notes de terrain MULTILIGNES : \n et \t admis, tout autre caractère de contrôle refusé.
+    const notes = canonicalOptional('notes', props.notes, MAX_NOTES_LENGTH, hasForbiddenNotesCharacter);
     if (!notes.ok) return notes;
 
     const dates = validateDates(props.installedAt, props.warrantyUntil);

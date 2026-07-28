@@ -54,6 +54,25 @@ describe('Equipment — invariants de composition (Bloc A §1.3)', () => {
     expect(Equipment.record(props({ serialNumber: 's'.repeat(201) })).ok).toBe(false);
   });
 
+  it('[revue n°2] notes de terrain MULTILIGNES : \\n et \\t admis, autres contrôles refusés — les champs mono-ligne restent stricts', () => {
+    // La conception (§1.2/§1.3) ne borne notes qu'à 2000 caractères : une note de terrain
+    // multiligne est légitime (miroir SQL translate(notes, \n\t, '') !~ '[[:cntrl:]]').
+    const multiline = Equipment.record(
+      props({ notes: 'Détartrage complet.\nPrévoir cartouche au prochain passage.\tRéf 88-4121' }),
+    );
+    expect(multiline.ok).toBe(true);
+    if (multiline.ok)
+      expect(multiline.value.toProps().notes).toBe(
+        'Détartrage complet.\nPrévoir cartouche au prochain passage.\tRéf 88-4121',
+      );
+    // Les AUTRES caractères de contrôle restent interdits dans les notes.
+    expect(Equipment.record(props({ notes: 'sonnerie \u0007' })).ok).toBe(false);
+    expect(Equipment.record(props({ notes: 'nul \u0000' })).ok).toBe(false);
+    // Les champs MONO-LIGNE (label, kind…) refusent toujours \n : rien n'est relâché ailleurs.
+    expect(Equipment.record(props({ label: 'Fontaine\naccueil' })).ok).toBe(false);
+    expect(Equipment.record(props({ kind: 'PAC\ngainable' })).ok).toBe(false);
+  });
+
   it('cohérence TRIPLE : jamais un demi-état statut/retiredAt', () => {
     expect(Equipment.record(props({ status: 'retired', retiredAt: null })).ok).toBe(false);
     expect(Equipment.record(props({ status: 'active', retiredAt: '2026-05-02T08:00:00.000Z' })).ok).toBe(false);

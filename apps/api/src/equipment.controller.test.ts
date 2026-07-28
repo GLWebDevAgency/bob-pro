@@ -243,4 +243,26 @@ describe('EquipmentsController — frontière HTTP stricte', () => {
       patch: { label: 'Fontaine quai A', warrantyUntil: null },
     });
   });
+
+  it('[revue n°2] notes MULTILIGNES acceptées à la frontière — autres contrôles toujours refusés, mono-lignes stricts', async () => {
+    const multiline = 'Détartrage complet.\nPrévoir cartouche.\tRéf 88-4121';
+    const updateEquipment = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const c = controller({ updateEquipment } as never);
+    // \n et \t traversent la frontière pour notes (miroir domaine + CHECK SQL translate()).
+    await c.update('e-1', { expectedRevision: 2, notes: multiline });
+    expect(updateEquipment).toHaveBeenCalledWith({
+      equipmentId: 'e-1',
+      expectedRevision: 2,
+      patch: { notes: multiline },
+    });
+    // Un caractère de contrôle NON admis (BEL) reste un 422 avant le domaine.
+    await expect(
+      c.update('e-1', { expectedRevision: 2, notes: 'sonnerie \u0007' }),
+    ).rejects.toMatchObject({ status: 422 });
+    // Les champs MONO-LIGNE (label, kind…) refusent toujours \n : rien n'est relâché ailleurs.
+    await expect(
+      c.update('e-1', { expectedRevision: 2, label: 'Fontaine\naccueil' }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(updateEquipment).toHaveBeenCalledTimes(1);
+  });
 });

@@ -26,6 +26,7 @@ import {
 } from '../runtime';
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
+import { extractSpokenWarranty } from './equipment-warranty';
 import {
   type AgentAskPayload,
   type AgentCapability,
@@ -4312,27 +4313,38 @@ export class BobAgent {
       // Extraction des FAITS de la phrase courante (jamais réinventés au tour suivant).
       const brandMatch = /\bmarque\s+([\p{L}\p{N}][\p{L}\p{N}' -]{1,30})/iu.exec(message);
       const brand = brandMatch?.[1]?.trim().replace(/[,.;]+$/, '') ?? null;
-      const warrantyMatch = /garantie[^0-9]{0,20}(\d{2})\/(\d{2})\/(\d{4})/i.exec(message) ??
-        /garantie[^0-9]{0,20}(\d{4})-(\d{2})-(\d{2})/i.exec(message);
-      const warrantyUntil = warrantyMatch
-        ? warrantyMatch[0].includes('-')
-          ? `${warrantyMatch[1]}-${warrantyMatch[2]}-${warrantyMatch[3]}`
-          : `${warrantyMatch[3]}-${warrantyMatch[2]}-${warrantyMatch[1]}`
-        : null;
-      // Libellé : la phrase après le verbe d'ajout, AMPUTÉE du marqueur site et des faits déjà
+      // [Revue train n°2] garantie PARLÉE (norme fondateur §1.6 : « sous garantie jusqu'en
+      // mars 2027 » = fin de mois) ; une mention ILLISIBLE est signalée pour être DITE à la
+      // confirmation groupée — un fait énoncé n'est jamais perdu en silence.
+      const warranty = extractSpokenWarranty(message);
+      const warrantyUntil = warranty.date;
+      const warrantyUnread = warranty.mentioned && warranty.date === null;
+      // Libellé : la phrase autour du verbe d'ajout, AMPUTÉE du marqueur site et des faits déjà
       // extraits — le kind reste implicite dans le libellé libre (« clim du local serveur »).
-      let labelPart = message;
-      const verbMatch = /\b(ajoute[sz]?|ajouter|installe[sz]?|installer|enregistre[sz]?|enregistrer|cr[ée]e[sz]?|cr[ée]er|mets|mettre|pose[sz]?|poser)\b/i.exec(labelPart);
-      if (verbMatch) labelPart = labelPart.slice(verbMatch.index + verbMatch[0].length);
-      const siteMarker = /\b(chez|au site|sur le site|du site|à|a)\s/i.exec(labelPart);
-      if (siteMarker && site) labelPart = labelPart.slice(0, siteMarker.index);
-      labelPart = labelPart
-        .replace(/\bmarque\s+[\p{L}\p{N}][\p{L}\p{N}' -]{1,30}/giu, ' ')
-        .replace(/garantie[^,;.]*/gi, ' ')
-        .replace(/\b(un|une|le|la|les|l'|mon|ma|mes|nouvel(le)?|equipement|équipement)\b/gi, ' ')
-        .replace(/[,;.]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      const stripSpokenFacts = (part: string): string =>
+        part
+          .replace(/\bmarque\s+[\p{L}\p{N}][\p{L}\p{N}' -]{1,30}/giu, ' ')
+          .replace(/\b(sous\s+)?garantie[^,;.]*/gi, ' ')
+          .replace(/\b(elle|il)\s+est\b/gi, ' ')
+          .replace(/\b(un|une|le|la|les|l'|mon|ma|mes|nouvel(le)?|equipement|équipement)\b/gi, ' ')
+          .replace(/[,;.]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      const cutAtSiteMarker = (part: string): string => {
+        const marker = /\b(chez|au site|sur le site|du site|à|a)\s/i.exec(part);
+        return marker && site ? part.slice(0, marker.index) : part;
+      };
+      const verbMatch = /\b(ajoute[sz]?|ajouter|installe[sz]?|installer|enregistre[sz]?|enregistrer|cr[ée]e[sz]?|cr[ée]er|mets|mettre|pose[sz]?|poser)\b/i.exec(message);
+      const afterVerb = verbMatch
+        ? message
+            .slice(verbMatch.index + verbMatch[0].length)
+            .replace(/^\s*-?\s*(la|le|les|moi)\b/i, ' ')
+        : message;
+      let labelPart = stripSpokenFacts(cutAtSiteMarker(afterVerb));
+      // Verbe en FIN de consigne (« …, ajoute-la » — norme §1.6) : le libellé vit AVANT le verbe.
+      if (labelPart.length === 0 && verbMatch && verbMatch.index > 0) {
+        labelPart = stripSpokenFacts(cutAtSiteMarker(message.slice(0, verbMatch.index)));
+      }
       const label = labelPart.length > 0
         ? labelPart.charAt(0).toUpperCase() + labelPart.slice(1)
         : null;
@@ -4353,9 +4365,11 @@ export class BobAgent {
             },
           });
         }
+        // Le followUp REDIT tous les faits énoncés — y compris une garantie ILLISIBLE, re-portée
+        // VERBATIM pour survivre au tour suivant (elle y sera re-signalée à la confirmation).
         const restated = (chantierNom: string): string =>
           `Ajoute ${label ?? 'l’équipement'}${brand ? ` marque ${brand}` : ''}${
-            warrantyUntil ? ` garantie ${warrantyUntil}` : ''
+            warrantyUntil ? ` garantie ${warrantyUntil}` : warrantyUnread && warranty.raw ? ` ${warranty.raw}` : ''
           } chez ${chantierNom}`;
         return ok({
           kind: 'answer',
@@ -4422,15 +4436,24 @@ export class BobAgent {
       const summary = `Ajouter « ${label} » au parc du site ${site.nom}${brand ? ` · marque ${brand}` : ''}${
         warrantyUntil ? ` · garantie jusqu'au ${frDate(warrantyUntil)}` : ''
       }`;
+      // [Revue train n°2] garantie dite mais ILLISIBLE : Bob le DIT au point de décision —
+      // jamais un fait énoncé strippé en silence de la confirmation groupée.
+      const warrantyNote = warrantyUnread
+        ? ' Je n’ai pas su lire la fin de garantie dite — ajoute-la sur la fiche.'
+        : '';
       if (requiresConfirmation(createTool, autonomy)) {
         return ok({
           kind: 'proposed',
           intent,
           model,
           plan: ['Extraire les faits énoncés', 'Résoudre le site', 'Attendre ta confirmation'],
-          card: { title: 'Équipement à confirmer', body: `${summary}. Je confirme ?` },
+          card: { title: 'Équipement à confirmer', body: `${summary}.${warrantyNote} Je confirme ?` },
           pending: { tool: createTool.name, args, label: summary },
-          spokenPrompt: buildSpokenConfirmation(summary),
+          spokenPrompt: buildSpokenConfirmation(
+            warrantyUnread
+              ? `${summary}. Je n’ai pas su lire la fin de garantie dite — ajoute-la sur la fiche`
+              : summary,
+          ),
         });
       }
       const run = await createTool.run(parsed.value);
@@ -4445,7 +4468,7 @@ export class BobAgent {
         intent,
         model,
         plan: ['Ajouter l’équipement au parc'],
-        card: { title: 'Équipement ajouté ✓', body: `${summary} — c’est fait.` },
+        card: { title: 'Équipement ajouté ✓', body: `${summary} — c’est fait.${warrantyNote}` },
       });
     }
 

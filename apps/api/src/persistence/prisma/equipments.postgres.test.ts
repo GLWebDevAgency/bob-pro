@@ -176,6 +176,35 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Équipements — certification PostgreSQL t
     ).rejects.toBeDefined();
   });
 
+  it('[revue n°2] notes de terrain MULTILIGNES : \\n/\\t admis par le CHECK, autres contrôles refusés', async () => {
+    // Miroir SQL du domaine hasForbiddenNotesCharacter : translate(notes, \n\t, '') !~ cntrl.
+    const accepted = await admin.equipment.create({
+      data: {
+        id: randomUUID(),
+        companyId: companyA,
+        chantierId: chantierA,
+        label: 'Adoucisseur local technique',
+        notes: 'Détartrage complet.\nPrévoir cartouche au prochain passage.\tRéf 88-4121',
+        updatedAt: new Date(),
+      },
+    });
+    expect(accepted.notes).toContain('\n');
+    await admin.equipment.delete({ where: { id: accepted.id } });
+    // Un caractère de contrôle NON admis (BEL) reste refusé par la base.
+    await expect(
+      admin.equipment.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          label: 'Note polluée',
+          notes: 'sonnerie \u0007',
+          updatedAt: new Date(),
+        },
+      }),
+    ).rejects.toBeDefined();
+  });
+
   it('cohérence TRIPLE statut/retiredAt (revue P11) : jamais un demi-état', async () => {
     await expect(
       admin.equipment.create({

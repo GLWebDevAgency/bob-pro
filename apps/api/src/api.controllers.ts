@@ -3648,11 +3648,21 @@ function parseEquipmentFreeField(
   field: string,
   maxLength: number,
   issues: ValidationIssue[],
+  // [Revue train n°2] notes de terrain MULTILIGNES : \n/\t admis, autres contrôles refusés
+  // (miroir du domaine hasForbiddenNotesCharacter et du CHECK SQL translate()).
+  multiline = false,
 ): string | null | undefined {
   if (!(field in body)) return undefined;
   const value = body[field];
   if (value === null) return null;
-  if (typeof value !== 'string' || value.length > maxLength || hasControlCharacter(value)) {
+  const controlProbe =
+    typeof value === 'string' && multiline ? value.replaceAll('\n', '').replaceAll('\t', '') : value;
+  if (
+    typeof value !== 'string' ||
+    typeof controlProbe !== 'string' ||
+    value.length > maxLength ||
+    hasControlCharacter(controlProbe)
+  ) {
     issues.push({ field, message: `Champ invalide (${maxLength} caractères maximum).` });
     return undefined;
   }
@@ -3679,7 +3689,7 @@ function parseEquipmentFields(body: Record<string, unknown>, issues: ValidationI
   const brand = parseEquipmentFreeField(body, 'brand', 200, issues);
   const serialNumber = parseEquipmentFreeField(body, 'serialNumber', 200, issues);
   const location = parseEquipmentFreeField(body, 'location', 200, issues);
-  const notes = parseEquipmentFreeField(body, 'notes', 2000, issues);
+  const notes = parseEquipmentFreeField(body, 'notes', 2000, issues, true);
   const installedAt = parseEquipmentDateField(body, 'installedAt', issues);
   const warrantyUntil = parseEquipmentDateField(body, 'warrantyUntil', issues);
   return {

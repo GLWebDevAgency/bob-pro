@@ -585,6 +585,20 @@ describe('detectIntent — parc d’équipements (PR-11) : intents dédiés SANS
     expect(detectIntent('Facture 380 € à Mme Girard pour le dépannage')).toBe('facture_directe');
   });
 
+  it('[revue n°2] l’historique DU chantier/site ou d’une personne par civilité n’est JAMAIS un équipement', () => {
+    // Les trois sur-captures prouvées par exécution en revue adversariale.
+    expect(detectIntent("L'historique du chantier Durand")).not.toBe('historique_equipement');
+    expect(detectIntent("Montre-moi l'historique du site Bastille")).not.toBe('historique_equipement');
+    expect(detectIntent("L'historique de Mme Girard")).not.toBe('historique_equipement');
+    expect(detectIntent("L'historique de Monsieur Bernard")).not.toBe('historique_equipement');
+    // L'historique du chantier reste chez les chantiers (jamais un refus équipement hors-sujet).
+    expect(detectIntent("L'historique du chantier Durand")).toBe('voir_chantiers');
+    // Mais une MACHINE scopée à son site reste un équipement : l'exclusion ne porte que sur
+    // l'objet qui suit immédiatement « historique de/du ».
+    expect(detectIntent("L'historique de la clim du site Bastille")).toBe('historique_equipement');
+    expect(detectIntent('Montre l’historique de la fontaine du chantier Bastille')).toBe('historique_equipement');
+  });
+
   it('négation ⇒ rien (jamais une mutation sur une intention niée)', () => {
     expect(detectIntent('Ne retire pas la fontaine du parc')).not.toBe('retirer_equipement');
     expect(detectIntent("N'ajoute pas d'équipement chez Carrefour")).not.toBe('ajouter_equipement');
