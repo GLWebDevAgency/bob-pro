@@ -2454,6 +2454,7 @@ assert_postactivation_protocols() {
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
+SET LOCAL search_path = pg_catalog, public;
 SELECT pg_catalog.set_config('bob.postactivation_release_sha', :'release_sha', true);
 
 DO $postactivation_protocol_certificate$
@@ -2571,7 +2572,7 @@ BEGIN
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 2, false) = '"nextAttemptAt"'
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 3, false) = '"createdAt"'
        AND pg_catalog.pg_get_expr(catalog_index.indpred, catalog_index.indrelid) =
-         '((status = ANY (ARRAY[''pending''::text, ''failed''::text])) AND (payload IS NOT NULL))'
+         '((status = ANY (ARRAY[''pending''::"NotificationJobStatus", ''failed''::"NotificationJobStatus"])) AND (payload IS NOT NULL))'
   ) THEN
     RAISE EXCEPTION 'notification outbox V2 due index definition drift';
   END IF;

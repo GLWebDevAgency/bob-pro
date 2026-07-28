@@ -116,6 +116,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           dueIndex: boolean;
           recentIndex: boolean;
           dueIndexDefinition: string;
+          dueIndexPredicate: string;
           recentIndexDefinition: string;
           persistedProtocolGuc: boolean;
         }>
@@ -149,6 +150,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         to_regclass('public.notification_jobs_due_deliverable_idx') IS NOT NULL AS "dueIndex",
         to_regclass('public.notification_jobs_recent_idx') IS NOT NULL AS "recentIndex",
         pg_get_indexdef('notification_jobs_due_deliverable_idx'::regclass) AS "dueIndexDefinition",
+        pg_get_expr(
+          (
+            SELECT indpred
+              FROM pg_index
+             WHERE indexrelid = 'notification_jobs_due_deliverable_idx'::regclass
+          ),
+          'notification_jobs'::regclass
+        ) AS "dueIndexPredicate",
         pg_get_indexdef('notification_jobs_recent_idx'::regclass) AS "recentIndexDefinition",
         EXISTS (
           SELECT 1 FROM pg_db_role_setting setting,
@@ -168,6 +177,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         dueIndex: true,
         recentIndex: true,
         dueIndexDefinition: expect.stringContaining('("companyId", "nextAttemptAt", "createdAt")'),
+        dueIndexPredicate:
+          '((status = ANY (ARRAY[\'pending\'::"NotificationJobStatus", \'failed\'::"NotificationJobStatus"])) AND (payload IS NOT NULL))',
         recentIndexDefinition: expect.stringContaining('("companyId", "createdAt" DESC)'),
         persistedProtocolGuc: false,
       });

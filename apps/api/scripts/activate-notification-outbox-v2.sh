@@ -52,7 +52,7 @@ SELECT CASE WHEN
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 2, false) = '"nextAttemptAt"'
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 3, false) = '"createdAt"'
        AND pg_catalog.pg_get_expr(catalog_index.indpred, catalog_index.indrelid) =
-         '((status = ANY (ARRAY[''pending''::text, ''failed''::text])) AND (payload IS NOT NULL))'
+         '((status = ANY (ARRAY[''pending''::"NotificationJobStatus", ''failed''::"NotificationJobStatus"])) AND (payload IS NOT NULL))'
   )
   AND EXISTS (
     SELECT 1
@@ -166,7 +166,7 @@ SELECT CASE WHEN
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 2, false) = '"nextAttemptAt"'
        AND pg_catalog.pg_get_indexdef(catalog_index.indexrelid, 3, false) = '"createdAt"'
        AND pg_catalog.pg_get_expr(catalog_index.indpred, catalog_index.indrelid) =
-         '((status = ANY (ARRAY[''pending''::text, ''failed''::text])) AND (payload IS NOT NULL))'
+         '((status = ANY (ARRAY[''pending''::"NotificationJobStatus", ''failed''::"NotificationJobStatus"])) AND (payload IS NOT NULL))'
   )
   AND EXISTS (
     SELECT 1

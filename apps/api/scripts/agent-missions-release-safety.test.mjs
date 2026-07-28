@@ -384,7 +384,7 @@ test('le gate Outbox V2 lie index et policy exacts à public.notification_jobs',
     );
     assert.match(
       source,
-      /notification_jobs_due_deliverable_idx[\s\S]*?indoption::TEXT = '0 0 0'[\s\S]*?pg_get_indexdef\(catalog_index\.indexrelid, 3, false\) = '"createdAt"'[\s\S]*?payload IS NOT NULL/u,
+      /notification_jobs_due_deliverable_idx[\s\S]*?indoption::TEXT = '0 0 0'[\s\S]*?pg_get_indexdef\(catalog_index\.indexrelid, 3, false\) = '"createdAt"'[\s\S]*?pending''::"NotificationJobStatus"[\s\S]*?failed''::"NotificationJobStatus"[\s\S]*?payload IS NOT NULL/u,
     );
     assert.match(
       source,
