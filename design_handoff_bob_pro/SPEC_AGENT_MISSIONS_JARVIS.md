@@ -13,6 +13,8 @@
 - [SPEC_GPT_REALTIME_NATIVE_DUPLEX.md](SPEC_GPT_REALTIME_NATIVE_DUPLEX.md) définit le transport
   audio et l'autorité acoustique ;
 - [SPEC_BOB_LIVE_CAPACITY.md](SPEC_BOB_LIVE_CAPACITY.md) définit la capacité et les preuves C3 ;
+- [SPEC_BOB_LIVE_SEMANTIC_PLANNER.md](SPEC_BOB_LIVE_SEMANTIC_PLANNER.md) définit la compréhension
+  française, le contexte métier, les faits typés et le plan d'exécution ;
 - le présent document définit l'autorité **métier** durable. Un transport fluide ne certifie pas
   une mission Jarvis et une mission simulée ne certifie pas le transport.
 
@@ -1091,7 +1093,8 @@ le runner, une phrase LLM ou un simple screenshot n'est pas une preuve.
 
 ### M2 — devis complet, scénario canonique
 
-- extraire tous les faits d'une phrase longue ou les compléter progressivement ;
+- extraire tous les faits d'une phrase longue ou les compléter progressivement via le cadre
+  sémantique typé de `SPEC_BOB_LIVE_SEMANTIC_PLANNER.md`, jamais par accumulation de regex ;
 - recherche catalogue 0/1/N, choix existant ou nouvelle ligne, catégories main-d'œuvre/fourniture/
   déplacement, quantité, unité, prix et texte professionnel ;
 - suggestions TVA déterministes fondées sur les données métier, jamais décision fiscale LLM ;

@@ -6,6 +6,9 @@
 
 **Spec parente :** [SPEC_AGENT_MISSIONS_JARVIS.md](SPEC_AGENT_MISSIONS_JARVIS.md)
 
+**Contrat de compréhension :**
+[SPEC_BOB_LIVE_SEMANTIC_PLANNER.md](SPEC_BOB_LIVE_SEMANTIC_PLANNER.md)
+
 ## 1. Résultat produit
 
 Depuis une session Bob Live V1 admise, « crée un devis » démarre ou reprend une mission durable,
@@ -33,26 +36,29 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
    - un fuzzy : proposer ;
    - deux à cinq : présenter des choix stables.
 3. Relecture du client par ID sous le même tenant avant toute sélection.
-4. Transition pure partagée qui applique `select_customer + next_step` au payload durable.
-5. `AdvanceQuoteAgentMission` avec idempotence, CAS et transaction unique
+4. Cadre sémantique M1-C typé, sans regex de production, capable d'extraire une référence client
+   de « crée un devis pour Camping les Pins », d'un tour complémentaire ou un ordinal du choix
+   courant. Les arguments LLM passent un parseur exact avant toute recherche.
+5. Transition pure partagée qui applique `select_customer + next_step` au payload durable.
+6. `AdvanceQuoteAgentMission` avec idempotence, CAS et transaction unique
    brouillon + mission + événement.
-6. Endpoint tactile exact `POST /agent-missions/:missionId/decisions`.
-7. Orchestrateur Realtime mission-aware :
+7. Endpoint tactile exact `POST /agent-missions/:missionId/decisions`.
+8. Orchestrateur Realtime mission-aware :
    - démarre/reprend la mission après une navigation canonique « nouveau devis » ;
    - consomme une requête client seulement en phase `awaiting_customer` ;
    - consomme un ordinal ou un nom seulement dans le jeu courant en
      `awaiting_customer_choice` ;
    - délègue au BobAgent historique lorsqu'aucune transition M1-C n'est applicable.
-8. Autorité Realtime formée uniquement depuis la lease admise côté serveur :
+9. Autorité Realtime formée uniquement depuis la lease admise côté serveur :
    `subjectHashCandidates + principalBindingHash + capabilityHash`; aucun secret client ni
    release flag request-time ne décide après admission.
-9. Vue mobile enrichie des choix dont les libellés sont relus en base. Un client supprimé devient
+10. Vue mobile enrichie des choix dont les libellés sont relus en base. Un client supprimé devient
    indisponible, sans ancien nom affiché.
-10. Handle capability transféré à un unique `AgentMissionProvider`, sans double ownership.
-11. Synchronisation mission + brouillon après `turn_settled`, foreground et action tactile.
-12. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
+11. Handle capability transféré à un unique `AgentMissionProvider`, sans double ownership.
+12. Synchronisation mission + brouillon après `turn_settled`, foreground et action tactile.
+13. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
     d'une capability Live disparue au kill.
-13. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
+14. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
 
 ### Non inclus
 
@@ -197,6 +203,10 @@ choix vides.
 
 - [ ] Dire « crée un devis » sous une lease V1 crée/reprend exactement une mission et retourne une
       navigation sûre `/devis/new`.
+- [ ] Dire « crée un devis pour Camping les Pins » conserve la référence client dans le même tour,
+      puis applique la politique DB 0/1/N sans redemander quel client.
+- [ ] Un appel d'outil sémantique avec clé inconnue, ordinal hors bornes ou référence vide est
+      refusé sans recherche, mission, brouillon ni événement.
 - [ ] Aucun tour client n'est consommé avant l'ACK contexte + brouillon exact.
 - [ ] Les cas 0, 1 exact, 1 fuzzy, 2–5 et >5 sont prouvés avec clients créés en base.
 - [ ] Accents, casse et homonymes ont un ordre stable ; la requête SQL contient `LIMIT 6` et le
