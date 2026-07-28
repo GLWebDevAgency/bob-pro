@@ -7,7 +7,10 @@
  * ne tourne pas — l'orchestrateur ne démarre le repli qu'après fermeture COMPLÈTE du primaire.
  */
 import type { AgentContext } from '@bob/ai';
-import type { RealtimeVoiceConfig } from '@bob/api-client';
+import type {
+  RealtimeAgentMissionSession,
+  RealtimeVoiceConfig,
+} from '@bob/api-client';
 import type {
   LegacyVoiceFallbackPort,
   RealtimeResilienceEvent,
@@ -53,7 +56,11 @@ export interface RealtimeSessionHooks {
 /** Sous-ensemble de l'orchestrateur consommé ici — injectable en test. */
 export interface RealtimeOrchestratorLike {
   subscribe(listener: (event: RealtimeResilienceEvent) => void): () => void;
-  start(): Promise<{ readonly phase: string; readonly fallbackChannel: unknown }>;
+  start(): Promise<{
+    readonly phase: string;
+    readonly fallbackChannel: unknown;
+    readonly lastFailureReason: RealtimeFallbackReason | null;
+  }>;
   stop(reason?: 'user' | 'background' | 'unmount'): Promise<void>;
 }
 
@@ -65,6 +72,7 @@ export interface RealtimeTransportLike {
   finishUserInput?(): Promise<boolean>;
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean;
   getSessionHandle(): string | null;
+  takeAgentMissionSession(): RealtimeAgentMissionSession | null;
 }
 
 /** Gate d'ACK one-shot (lane GPT) : échange une référence provider NON FIABLE contre le
@@ -101,7 +109,11 @@ export interface RealtimeSessionDeps {
   readonly allowMicrophoneActivation: () => Promise<boolean>;
 }
 
-export type RealtimeStartOutcome = 'realtime' | 'unavailable' | 'fallback';
+export type RealtimeStartOutcome =
+  | 'realtime'
+  | 'unavailable'
+  | 'fallback'
+  | 'failed_closed';
 
 export class RealtimeSessionController {
   private orchestrator: RealtimeOrchestratorLike | null = null;
@@ -128,6 +140,8 @@ export class RealtimeSessionController {
   private committedTurnId: string | null = null;
   /** READY technique ne doit pas ecraser THINKING entre le commit et le debut de Bob. */
   private responsePendingForCurrentInput = false;
+  private agentMissionSession: RealtimeAgentMissionSession | null = null;
+  private agentMissionSessionClaimed = false;
 
   constructor(
     private readonly deps: RealtimeSessionDeps,
@@ -158,6 +172,7 @@ export class RealtimeSessionController {
     this.contextPublished = false;
     const fallbackPort: LegacyVoiceFallbackPort = {
       start: async (input) => {
+        this.disposeAgentMissionSession();
         // Le primaire est ENTIÈREMENT fermé (garantie orchestrateur). La session temps réel
         // est TERMINÉE : on se scelle (génération invalidée, événements tardifs ignorés,
         // prochain start() propre) SANS stopper l'orchestrateur depuis son propre callback.
@@ -186,8 +201,10 @@ export class RealtimeSessionController {
     if (this.fallbackTaken) return 'fallback'; // le repli a DÉJÀ relancé la boucle historique
     if (gen !== this.generation) return 'unavailable'; // stop() pendant le bootstrap — déjà démonté
     if (state.phase === 'failed' || state.phase === 'stopped' || state.phase === 'legacy') {
+      const failedClosed =
+        state.lastFailureReason === 'agent_mission_negotiation_failed';
       await this.stop('user');
-      return 'unavailable';
+      return failedClosed ? 'failed_closed' : 'unavailable';
     }
     return 'realtime';
   }
@@ -259,6 +276,7 @@ export class RealtimeSessionController {
   }
 
   private async teardown(reason: 'user' | 'background' | 'unmount'): Promise<void> {
+    this.disposeAgentMissionSession();
     this.activeFlag = false;
     this.pendingControlAcks.clear();
     this.pendingTerminalDecision = null;
@@ -368,6 +386,11 @@ export class RealtimeSessionController {
         this.hooks.onCompleted?.();
         return;
       }
+      case 'fallback':
+        // L'autorité Mission meurt au premier signal de dégradation, avant le hangup réseau,
+        // même si l'orchestrateur attend encore la preuve de fermeture audio.
+        this.disposeAgentMissionSession();
+        return;
       default:
         return;
     }
@@ -394,6 +417,7 @@ export class RealtimeSessionController {
   /** Une reconnexion ne change pas la génération de mission. Elle doit néanmoins rendre
    * immédiatement inertes le publieur, le gate et les décisions du peer remplacé. */
   private adoptPrimary(transport: RealtimeTransportLike): void {
+    this.disposeAgentMissionSession();
     // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
     transport.setMicrophoneEnabled(false);
     this.primaryGeneration += 1;
@@ -409,6 +433,7 @@ export class RealtimeSessionController {
     this.pendingTerminalDecision = null;
     this.resetCommittedInputLifecycle();
     this.lastTransport = transport;
+    this.agentMissionSessionClaimed = false;
     this.contextPublished = false;
     this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
   }
@@ -513,6 +538,10 @@ export class RealtimeSessionController {
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     if (!transport) return;
+    if (!this.agentMissionSessionClaimed) {
+      this.agentMissionSession = transport.takeAgentMissionSession();
+      this.agentMissionSessionClaimed = true;
+    }
     const handle = transport.getSessionHandle();
     if (handle === null) {
       await this.stopCurrentPrimaryWithFallback(
@@ -553,5 +582,12 @@ export class RealtimeSessionController {
       primaryGeneration,
       transport,
     );
+  }
+
+  private disposeAgentMissionSession(): void {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    this.agentMissionSessionClaimed = false;
+    session?.dispose();
   }
 }

@@ -150,21 +150,6 @@ class MemoryReleaseFlagRepository implements ReleaseFlagRepository {
     const row = [...this.rows.values()].find((candidate) => candidate.environment === environment && candidate.key === key);
     return row ? ReleaseFlag.rehydrate(clone(row)) : null;
   }
-
-  lockByKey(environment: ReleaseFlagSnapshot['environment'], key: string): Promise<ReleaseFlag | null> {
-    return this.findByKey(environment, key);
-  }
-
-  async save(flag: ReleaseFlag, expectedVersion: number | null): Promise<void> {
-    const current = this.rows.get(flag.id);
-    if (expectedVersion === null) {
-      if (current) throw new CabinetPersistenceConflictError('release_flag_already_exists');
-    } else if (!current || current.version !== expectedVersion) {
-      throw new CabinetOptimisticConflictError('release_flag');
-    }
-    this.rows.set(flag.id, clone(flag.toSnapshot()));
-    flag.pullEvents();
-  }
 }
 
 export class MemoryCabinetInfrastructure implements CabinetInfrastructure {

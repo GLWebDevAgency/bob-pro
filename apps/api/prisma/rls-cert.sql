@@ -1138,6 +1138,118 @@ END;
 $$;
 COMMIT;
 
+-- Bob Live cancellation : cette autorité doit rester certifiée même lorsque la release a fermé
+-- la capacité globale avant migration. La preuve est donc volontairement hors du bloc conditionnel
+-- `bob_live_capacity_active` ci-dessous. Elle exerce le rôle runtime, FORCE RLS, le trigger N-1 et
+-- la projection reaper sans créer de session réelle ; la transaction est intégralement annulée.
+BEGIN;
+SET LOCAL app.current_company_id = 'rls-co-a';
+WITH authoritative_clock AS MATERIALIZED (
+  SELECT clock_timestamp() AS cancelled_at
+)
+INSERT INTO realtime_admission_cancellation_fences (
+  "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+)
+SELECT
+  'rls-co-a',
+  '00000000-0000-4000-8000-00000000d0a1',
+  repeat('9', 64),
+  cancelled_at,
+  cancelled_at + INTERVAL '2 hours'
+FROM authoritative_clock;
+
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM realtime_admission_cancellation_fences
+    WHERE "companyId" = 'rls-co-a'
+      AND "sessionId" = '00000000-0000-4000-8000-00000000d0a1'),
+  1,
+  'realtime cancellation fence tenant A visible while capacity is closed'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM realtime_reaper_tenant_schedule AS schedule
+    WHERE schedule."companyId" = 'rls-co-a'
+      AND schedule."nextLeaseDueAt" = (
+        SELECT fence."expiresAt"
+          FROM realtime_admission_cancellation_fences AS fence
+         WHERE fence."companyId" = 'rls-co-a'
+           AND fence."sessionId" = '00000000-0000-4000-8000-00000000d0a1'
+           AND fence."subjectHash" = repeat('9', 64)
+      )),
+  1,
+  'realtime cancellation fence schedules its exact expiry while capacity is closed'
+);
+
+DO $realtime_cancellation_closed_capacity$
+BEGIN
+  BEGIN
+    INSERT INTO realtime_session_leases (
+      "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+      "providerId", "providerCallId", "reaperTokenHash", "reservedAt", "leaseExpiresAt",
+      "hardExpiresAt", "activatedAt", "updatedAt", version
+    ) VALUES (
+      'rls-co-a',
+      repeat('9', 64),
+      '00000000-0000-4000-8000-00000000d0a1',
+      repeat('8', 64),
+      'reserved',
+      NULL,
+      NULL,
+      NULL,
+      clock_timestamp(),
+      clock_timestamp() + INTERVAL '30 seconds',
+      clock_timestamp() + INTERVAL '60 seconds',
+      NULL,
+      clock_timestamp(),
+      1
+    );
+    RAISE EXCEPTION 'RLS cert failed: cancelled N-1 realtime lease insert succeeded';
+  EXCEPTION
+    WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  IF EXISTS (
+    SELECT 1
+      FROM realtime_session_leases
+     WHERE "companyId" = 'rls-co-a'
+       AND "sessionId" = '00000000-0000-4000-8000-00000000d0a1'
+  ) THEN
+    RAISE EXCEPTION 'RLS cert failed: cancelled N-1 realtime lease survived';
+  END IF;
+
+  BEGIN
+    INSERT INTO realtime_admission_cancellation_fences (
+      "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+    ) VALUES (
+      'rls-co-b',
+      '00000000-0000-4000-8000-00000000d0b1',
+      repeat('7', 64),
+      clock_timestamp(),
+      clock_timestamp() + INTERVAL '2 hours'
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant cancellation fence insert succeeded while capacity is closed';
+  EXCEPTION
+    WHEN insufficient_privilege THEN NULL;
+  END;
+END;
+$realtime_cancellation_closed_capacity$;
+
+SET LOCAL app.current_company_id = 'rls-co-b';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_admission_cancellation_fences),
+  0,
+  'tenant B cannot see tenant A cancellation fence while capacity is closed'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*)
+     FROM realtime_reaper_tenant_schedule
+    WHERE "companyId" = 'rls-co-a'),
+  0,
+  'tenant B cannot see tenant A cancellation schedule while capacity is closed'
+);
+ROLLBACK;
+
 -- Les releases gardent l'autorité de capacité fermée pendant leurs autres certifications. Les
 -- sondes mutantes Bob Live ne sont exécutées que lorsqu'une capacité éphémère a explicitement été
 -- activée ; l'autorité fermée est néanmoins prouvée via son inspector agrégé.
@@ -1154,7 +1266,8 @@ SELECT pg_temp.assert_eq(
   (SELECT count(*) FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name IN (
-        'realtime_admission_events', 'realtime_session_leases',
+        'realtime_admission_events', 'realtime_admission_cancellation_fences',
+        'realtime_session_leases',
         'realtime_mistral_ingress_tickets', 'realtime_speech_artifacts',
         'realtime_native_speech_deliveries',
         'realtime_control_grants', 'realtime_control_consumptions',
@@ -1184,6 +1297,13 @@ VALUES (
   CURRENT_TIMESTAMP + INTERVAL '15 minutes', 1, 1, '{"screen":{"name":"RLS","instanceId":"rls"},"entities":[],"capabilities":[]}'::jsonb,
   repeat('e', 64), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
 );
+INSERT INTO realtime_admission_cancellation_fences (
+  "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+)
+VALUES (
+  'rls-co-a', '00000000-0000-4000-8000-00000000b0a9', repeat('f', 64),
+  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '2 hours'
+);
 SELECT pg_temp.assert_eq(
   (SELECT count(*) FROM realtime_reaper_tenant_schedule
     WHERE "companyId" = 'rls-co-a'
@@ -1192,9 +1312,19 @@ SELECT pg_temp.assert_eq(
          WHERE "companyId" = 'rls-co-a'
       )
       AND "nextLeaseDueAt" IS NOT DISTINCT FROM (
-        SELECT min(LEAST("leaseExpiresAt", "hardExpiresAt"))
-          FROM realtime_session_leases
-         WHERE "companyId" = 'rls-co-a' AND state IN ('reserved', 'active', 'reaping')
+        SELECT LEAST(
+          (
+            SELECT min(LEAST("leaseExpiresAt", "hardExpiresAt"))
+              FROM realtime_session_leases
+             WHERE "companyId" = 'rls-co-a'
+               AND state IN ('reserved', 'active', 'reaping')
+          ),
+          (
+            SELECT min("expiresAt")
+              FROM realtime_admission_cancellation_fences
+             WHERE "companyId" = 'rls-co-a'
+          )
+        )
       )),
   1,
   'realtime schedule tenant A is materialized from its exact source minima'
@@ -1273,6 +1403,11 @@ VALUES (
   CURRENT_TIMESTAMP + INTERVAL '1 day', 1
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 1, 'realtime event tenant A visible');
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_admission_cancellation_fences),
+  1,
+  'realtime cancellation fence tenant A visible'
+);
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 1, 'realtime lease tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 1, 'Mistral ticket tenant A visible');
 DO $$
@@ -1284,6 +1419,18 @@ BEGIN
       '00000000-0000-4000-8000-00000000b0b2', '2026-01-01T00:00:00Z'
     );
     RAISE EXCEPTION 'RLS cert failed: cross-tenant realtime event insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO realtime_admission_cancellation_fences (
+      "companyId", "sessionId", "subjectHash", "cancelledAt", "expiresAt"
+    )
+    VALUES (
+      'rls-co-b', '00000000-0000-4000-8000-00000000b0b9', repeat('c', 64),
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '2 hours'
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant cancellation fence insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -1305,6 +1452,11 @@ END;
 $$;
 SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 0, 'tenant B cannot see tenant A realtime event');
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM realtime_admission_cancellation_fences),
+  0,
+  'tenant B cannot see tenant A realtime cancellation fence'
+);
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 0, 'tenant B cannot see tenant A realtime lease');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 0, 'tenant B cannot see tenant A Mistral ticket');
 SELECT pg_temp.assert_eq(

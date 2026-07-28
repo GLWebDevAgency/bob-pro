@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import {
   parseReleaseFlagArgs,
@@ -55,6 +56,7 @@ test('ne transmet pas DIRECT_URL dans stdin et échoue fermé sans résultat', (
   assert.throws(() => runReleaseFlagOperation(base, {
     directUrl: 'postgresql://postgres:secret@db.example.test/postgres',
     spawnSync: (command, args, options) => {
+      assert.equal(existsSync(options.env.PGPASSFILE), true);
       calls.push({ command, args, options });
       return { status: 0, stdout: '', stderr: '' };
     },
@@ -62,6 +64,18 @@ test('ne transmet pas DIRECT_URL dans stdin et échoue fermé sans résultat', (
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.input.includes('secret'), false);
   assert.equal(calls[0].options.input.includes('FOR UPDATE'), true);
+  assert.equal(
+    calls[0].args.includes('postgresql://postgres:secret@db.example.test/postgres'),
+    false,
+  );
+  assert.equal(calls[0].args.some((value) => String(value).includes('secret')), false);
+  assert.equal(calls[0].options.env.PGHOST, 'db.example.test');
+  assert.equal(calls[0].options.env.PGDATABASE, 'postgres');
+  assert.equal(calls[0].options.env.PGUSER, 'postgres');
+  assert.equal(Object.hasOwn(calls[0].options.env, 'PGPASSWORD'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DIRECT_URL'), false);
+  assert.equal(Object.hasOwn(calls[0].options.env, 'DATABASE_URL'), false);
+  assert.equal(existsSync(calls[0].options.env.PGPASSFILE), false);
 });
 
 test('bloque toute activation live sans couverture explicite du worker', () => {

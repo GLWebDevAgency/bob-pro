@@ -35,6 +35,10 @@ import type {
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
 import type { DocumentFolderDeletionPlanStore } from '../documents/document-folder-deletion-plan';
 import type {
+  AgentMissionFingerprintKeyBinding,
+  AgentMissionFingerprintKeyVersionAuthority,
+} from '../agent-missions/agent-mission-fingerprint-key-version';
+import type {
   MistralRealtimeIngressIdentityKeyRing,
   MistralRealtimeIngressTicketAuthority,
   MistralRealtimeIngressTicketPolicy,
@@ -155,6 +159,14 @@ export interface Persistence {
    * doubles qui ne peuvent pas prouver RLS, verrou distribué et horloge PostgreSQL.
    */
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null;
+  /**
+   * Readiness globale bornée des versions de fingerprint encore retenues par le journal durable.
+   * `null` refuse l'activation : un double mémoire ne peut pas attester cette vérité PostgreSQL.
+   */
+  createAgentMissionFingerprintKeyVersionAuthority(
+    configuredBindings: readonly AgentMissionFingerprintKeyBinding[],
+    currentVersion: number,
+  ): AgentMissionFingerprintKeyVersionAuthority | null;
   /** Inspection agrégée globale, séparée des commandes tenantées d'admission. */
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector;
   createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort;

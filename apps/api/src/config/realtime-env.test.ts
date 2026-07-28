@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadEnv,
+  resolveAgentMissionHmacKeyRing,
   resolveBobLiveEnv,
   resolveBobLiveProofKeyRing,
   resolveBobLiveSubjectHmacKeyRing,
@@ -22,7 +23,7 @@ function validRealtimeEnv(): void {
   vi.stubEnv('OPENAI_REALTIME_MAX_CALLS_PER_HOUR', '30');
   vi.stubEnv('OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE', '50');
   vi.stubEnv('OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR', '1000');
-  vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '15');
+  vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '20');
   vi.stubEnv('OPENAI_REALTIME_ACTIVE_LEASE_SECONDS', '30');
   vi.stubEnv('OPENAI_REALTIME_HEARTBEAT_SECONDS', '10');
   vi.stubEnv('OPENAI_REALTIME_REAPER_LEASE_SECONDS', '30');
@@ -57,13 +58,85 @@ function enableMistralV2TerminalReplay(): void {
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_SECRET', subjectSecret);
   vi.stubEnv('BOB_LIVE_SUBJECT_HMAC_KEYRING', JSON.stringify({ 1: subjectSecret }));
   vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
-  vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({
-    1: Buffer.alloc(32, 7).toString('base64url'),
-  }));
+  vi.stubEnv(
+    'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+    JSON.stringify({
+      1: Buffer.alloc(32, 7).toString('base64url'),
+    }),
+  );
 }
 
 describe('Bob Live — validation de la politique d’admission', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('garde AgentMission dormant sans keyring lorsque le master est OFF', () => {
+    validRealtimeEnv();
+    const env = loadEnv();
+    expect(env.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED).toBe('false');
+    expect(resolveAgentMissionHmacKeyRing(env)).toBeNull();
+  });
+
+  it('impose le bloc AgentMission tout-ou-rien et absent lorsque le master est OFF', () => {
+    validRealtimeEnv();
+    const missionSecret = Buffer.alloc(32, 11).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: missionSecret }));
+    expect(() => loadEnv()).toThrow(/keyring AgentMission doit être absent/u);
+
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', undefined);
+    expect(() => loadEnv()).toThrow(/indissociables/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', undefined);
+    expect(() => loadEnv()).toThrow(/keyring HMAC AgentMission complet/u);
+  });
+
+  it('résout un keyring AgentMission canonique uniquement avec Bob Live OpenAI actif', () => {
+    validRealtimeEnv();
+    const previous = Buffer.alloc(32, 12).toString('base64url');
+    const current = Buffer.alloc(32, 13).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '2');
+    vi.stubEnv(
+      'BOB_AGENT_MISSION_HMAC_KEYRING',
+      JSON.stringify({
+        1: previous,
+        2: current,
+      }),
+    );
+
+    const keyRing = resolveAgentMissionHmacKeyRing(loadEnv());
+    expect(keyRing?.currentVersion).toBe(2);
+    expect(keyRing?.versions).toEqual([1, 2]);
+    expect(keyRing?.secret(1)).toBe(previous);
+    expect(keyRing?.secret(2)).toBe(current);
+    expect(keyRing?.secret(3)).toBeNull();
+
+    vi.unstubAllEnvs();
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: current }));
+    expect(() => loadEnv()).toThrow(/BOB_LIVE_PROVIDER=openai/u);
+  });
+
+  it('refuse une version absente, un secret dupliqué ou une clé AgentMission réutilisée', () => {
+    validRealtimeEnv();
+    const previous = Buffer.alloc(32, 14).toString('base64url');
+    const current = Buffer.alloc(32, 15).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '3');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: previous, 2: current }));
+    expect(() => loadEnv()).toThrow(/version courante AgentMission/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '2');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: current, 2: current }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/u);
+
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 2: current }));
+    vi.stubEnv('OPENAI_REALTIME_SAFETY_SECRET', current);
+    expect(() => loadEnv()).toThrow(/doit être dédiée/u);
+  });
 
   it('charge les quotas et baux production par défaut arbitrés', () => {
     validRealtimeEnv();
@@ -72,7 +145,7 @@ describe('Bob Live — validation de la politique d’admission', () => {
       OPENAI_REALTIME_MAX_CALLS_PER_HOUR: 30,
       OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE: 50,
       OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR: 1_000,
-      OPENAI_REALTIME_RESERVATION_TTL_SECONDS: 15,
+      OPENAI_REALTIME_RESERVATION_TTL_SECONDS: 20,
       OPENAI_REALTIME_ACTIVE_LEASE_SECONDS: 30,
       OPENAI_REALTIME_HEARTBEAT_SECONDS: 10,
       OPENAI_REALTIME_REAPER_LEASE_SECONDS: 30,
@@ -118,8 +191,12 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(() => loadEnv()).toThrow(/quota Bob Live utilisateur horaire/i);
   });
 
-  it('refuse une réservation plus courte que le bootstrap borné', () => {
+  it('refuse une réservation plus courte que bootstrap plus deux reçus bornés', () => {
     validRealtimeEnv();
+    vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '15');
+    expect(() => loadEnv()).toThrow(/deux tentatives de reçu AgentMission/i);
+
+    vi.stubEnv('OPENAI_REALTIME_RESERVATION_TTL_SECONDS', '20');
     vi.stubEnv('OPENAI_REALTIME_PROVIDER_TIMEOUT_MS', '6000');
     vi.stubEnv('OPENAI_REALTIME_SIDEBAND_TIMEOUT_MS', '5000');
     expect(() => loadEnv()).toThrow(/budget bootstrap Bob Live/i);
@@ -304,9 +381,12 @@ describe('Bob Live — validation de la politique d’admission', () => {
 
     enableMistralV2TerminalReplay();
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 8).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 8).toString('base64url'),
+      }),
+    );
     expect(resolveBobLiveEnv(loadEnv()).mistralV2InitialBootstrapEnabled).toBe(true);
   });
 
@@ -316,10 +396,13 @@ describe('Bob Live — validation de la politique d’admission', () => {
     const first = Buffer.alloc(32, 8).toString('base64url');
     const current = Buffer.alloc(32, 9).toString('base64url');
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '2');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: first,
-      2: current,
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: first,
+        2: current,
+      }),
+    );
 
     const drainEnv = loadEnv();
     const drainKeys = resolveMistralV2IdentityEncryptionKeyRing(drainEnv);
@@ -353,9 +436,12 @@ describe('Bob Live — validation de la politique d’admission', () => {
   it('interdit le keyring identité lorsque le replay terminal est désactivé', () => {
     validMistralRealtimeEnv();
     vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEY_VERSION', '1');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: Buffer.alloc(32, 8).toString('base64url'),
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: Buffer.alloc(32, 8).toString('base64url'),
+      }),
+    );
     expect(() => loadEnv()).toThrow(/identité.*replay terminal.*désactivé/i);
   });
 
@@ -375,10 +461,13 @@ describe('Bob Live — validation de la politique d’admission', () => {
     );
     expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
 
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: first,
-      2: first,
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: first,
+        2: first,
+      }),
+    );
     let duplicateError: unknown;
     try {
       loadEnv();
@@ -388,12 +477,17 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(String(duplicateError)).toMatch(/version ou une clé invalide/i);
     expect(String(duplicateError)).not.toContain(first);
 
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify(
-      Object.fromEntries(Array.from({ length: 9 }, (_, index) => [
-        index + 1,
-        Buffer.alloc(32, index + 8).toString('base64url'),
-      ])),
-    ));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: 9 }, (_, index) => [
+            index + 1,
+            Buffer.alloc(32, index + 8).toString('base64url'),
+          ]),
+        ),
+      ),
+    );
     expect(() => loadEnv()).toThrow(/entre 1 et 8 clés/i);
   });
 
@@ -405,9 +499,12 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
 
     const persistenceSecret = Buffer.alloc(32, 7).toString('base64url');
-    vi.stubEnv('BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING', JSON.stringify({
-      1: persistenceSecret,
-    }));
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_IDENTITY_ENCRYPTION_KEYRING',
+      JSON.stringify({
+        1: persistenceSecret,
+      }),
+    );
     expect(() => loadEnv()).toThrow(/doit être dédiée/i);
   });
 
@@ -493,7 +590,24 @@ describe('Bob Live — validation de la politique d’admission', () => {
   it('refuse qu’un faux Whisper local exfiltre l’audio vers un hôte distant', () => {
     validMistralRealtimeEnv();
     vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'https://audit-compatible.example/v1');
-    expect(() => loadEnv()).toThrow(/sidecar loopback local/);
+    expect(() => loadEnv()).toThrow(/service Whisper privé exact/);
+  });
+
+  it('impose le service Railway privé exact dans staging et production', () => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('CABINET_RELEASE_ENV', 'staging');
+    expect(() => loadEnv()).toThrow(/bob-live-whisper-audit\.railway\.internal/u);
+
+    vi.stubEnv(
+      'BOB_LIVE_LOCAL_AUDIT_BASE_URL',
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    expect(resolveBobLiveEnv(loadEnv()).localAuditBaseUrl).toBe(
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_BASE_URL', 'http://other.railway.internal:8080/v1');
+    expect(() => loadEnv()).toThrow(/service Whisper privé exact/u);
   });
 
   it('rend explicite le terminateur TLS de confiance et borne le budget du gateway', () => {
@@ -531,10 +645,44 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(() => loadEnv()).toThrow(/doit être dédiée/);
   });
 
+  it.each([
+    ['OpenAI', validRealtimeEnv, 'OPENAI_API_KEY'],
+    ['Mistral', validMistralRealtimeEnv, 'MISTRAL_API_KEY'],
+  ] as const)(
+    'interdit de réutiliser la clé fournisseur %s comme jeton Whisper',
+    (_provider, setup, providerKeyName) => {
+      setup();
+      const sharedSecret = 'x'.repeat(32);
+      vi.stubEnv(providerKeyName, sharedSecret);
+      vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', sharedSecret);
+      expect(() => loadEnv()).toThrow(/Chaque clé fournisseur.*doit être dédiée/u);
+    },
+  );
+
+  it('interdit aussi de réutiliser une clé fournisseur inactive encore configurée', () => {
+    validRealtimeEnv();
+    const sharedSecret = 'y'.repeat(32);
+    vi.stubEnv('MISTRAL_API_KEY', sharedSecret);
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', sharedSecret);
+    expect(() => loadEnv()).toThrow(/Chaque clé fournisseur.*doit être dédiée/u);
+  });
+
   it('refuse Mistral-only si l’auditeur indépendant local n’est pas entièrement configuré', () => {
     validMistralRealtimeEnv();
     vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', '');
     expect(() => loadEnv()).toThrow(/BOB_LIVE_LOCAL_AUDIT_TOKEN/);
+  });
+
+  it.each([
+    'a'.repeat(31),
+    'a'.repeat(257),
+    ` ${'a'.repeat(32)}`,
+    `${'a'.repeat(32)}\n`,
+    `é${'a'.repeat(31)}`,
+  ])('refuse un jeton Whisper que le gateway ne pourrait pas charger', (token) => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_LOCAL_AUDIT_TOKEN', token);
+    expect(() => loadEnv()).toThrow(/BOB_LIVE_LOCAL_AUDIT_TOKEN/u);
   });
 
   it('refuse une URL Mistral non chiffrée et laisse les réglages BOB_LIVE_* primer sur les alias', () => {
@@ -554,7 +702,8 @@ describe('Bob Live — validation de la politique d’admission', () => {
     expect(() => loadEnv()).toThrow(/WEBSOCKET_URL/);
 
     vi.stubEnv('BOB_LIVE_MISTRAL_WEBSOCKET_URL', 'wss://api.bob.example/v1/voice/realtime/mistral');
-    expect(resolveBobLiveEnv(loadEnv()).mistralWebsocketUrl)
-      .toBe('wss://api.bob.example/v1/voice/realtime/mistral');
+    expect(resolveBobLiveEnv(loadEnv()).mistralWebsocketUrl).toBe(
+      'wss://api.bob.example/v1/voice/realtime/mistral',
+    );
   });
 });

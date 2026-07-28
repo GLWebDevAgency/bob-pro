@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Auditeur acoustique Bob Live. Le modèle est construit dans une image séparée de l'API :
+# aucune clé provider, base ou tenant n'entre dans cette image.
+
+FROM node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e AS build
+SHELL ["/bin/sh", "-euxc"]
+# Le magasin CA n'est pas encore présent à cette étape. APT authentifie néanmoins le snapshot
+# immuable avec la signature Debian de l'InRelease ; aucun mode trusted/unauthenticated n'est admis.
+RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
+  && printf '%s\n' \
+       'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20250915T000000Z bookworm main' \
+       > /etc/apt/sources.list \
+  && apt-get -o Acquire::Check-Valid-Until=false update \
+  && apt-get install -y --no-install-recommends \
+       build-essential=12.9 \
+       ca-certificates=20230311+deb12u1 \
+       cmake=3.25.1-1 \
+       curl=7.88.1-10+deb12u14 \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY infra/whisper-audit/manifest.json /build/manifest.json
+
+RUN source_url="$(node -p "require('/build/manifest.json').engine.sourceUrl")" \
+  && source_sha="$(node -p "require('/build/manifest.json').engine.sourceSha256")" \
+  && curl --fail --location --retry 3 --retry-all-errors --retry-delay 3 \
+       --connect-timeout 20 --max-time 300 --proto '=https' --tlsv1.2 \
+       --output /build/whisper-source.tar.gz "$source_url" \
+  && printf '%s  %s\n' "$source_sha" /build/whisper-source.tar.gz | sha256sum -c - \
+  && mkdir /build/whisper-source \
+  && tar --extract --gzip --file /build/whisper-source.tar.gz \
+       --directory /build/whisper-source --strip-components=1 --no-same-owner \
+  && cmake -S /build/whisper-source -B /build/whisper-build \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DBUILD_SHARED_LIBS=OFF \
+       -DGGML_NATIVE=OFF \
+       -DGGML_OPENMP=OFF \
+       -DWHISPER_BUILD_TESTS=OFF \
+       -DWHISPER_BUILD_EXAMPLES=ON \
+       -DWHISPER_BUILD_SERVER=ON \
+       -DCMAKE_EXE_LINKER_FLAGS='-static-libgcc -static-libstdc++' \
+  && cmake --build /build/whisper-build --config Release \
+       --target whisper-server --parallel 4 \
+  && install -D -o root -g root -m 0555 \
+       /build/whisper-build/bin/whisper-server /out/whisper-server \
+  && ldd /out/whisper-server \
+  && ! ldd /out/whisper-server | grep -F 'not found'
+
+RUN model_url="$(node -p "require('/build/manifest.json').model.sourceUrl")" \
+  && model_sha="$(node -p "require('/build/manifest.json').model.sha256")" \
+  && model_bytes="$(node -p "require('/build/manifest.json').model.bytes")" \
+  && model_name="$(node -p "require('/build/manifest.json').model.artifact")" \
+  && curl --fail --location --retry 3 --retry-all-errors --retry-delay 3 \
+       --connect-timeout 20 --max-time 1200 --proto '=https' --tlsv1.2 \
+       --output "/build/$model_name" "$model_url" \
+  && test "$(wc -c < "/build/$model_name" | tr -d ' ')" = "$model_bytes" \
+  && printf '%s  %s\n' "$model_sha" "/build/$model_name" | sha256sum -c - \
+  && install -D -o root -g root -m 0444 \
+       "/build/$model_name" "/out/$model_name"
+
+FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2f4a1dd25db2f836d68a0ba771251572d23bb4f8e AS runtime
+ENV NODE_ENV="production" \
+    PORT="8080" \
+    WHISPER_AUDIT_INTERNAL_PORT="18080" \
+    WHISPER_AUDIT_THREADS="4" \
+    WHISPER_AUDIT_BINARY_PATH="/usr/local/bin/whisper-server" \
+    WHISPER_AUDIT_MODEL_PATH="/opt/bob-whisper/ggml-large-v3-turbo-q5_0.bin"
+COPY --from=build --chown=0:0 /out/whisper-server /usr/local/bin/whisper-server
+COPY --from=build --chown=0:0 /out/ggml-large-v3-turbo-q5_0.bin \
+  /opt/bob-whisper/ggml-large-v3-turbo-q5_0.bin
+COPY --chown=0:0 infra/whisper-audit/server.mjs /opt/bob-whisper-gateway/server.mjs
+COPY --chown=0:0 infra/whisper-audit/manifest.json /opt/bob-whisper-gateway/manifest.json
+COPY --chown=0:0 infra/whisper-audit/THIRD_PARTY_NOTICES.md \
+  /opt/bob-whisper-gateway/THIRD_PARTY_NOTICES.md
+COPY --chown=0:0 infra/whisper-audit/LICENSE.whisper.cpp \
+  /opt/bob-whisper-gateway/LICENSE.whisper.cpp
+COPY --chown=0:0 infra/whisper-audit/LICENSE.openai-whisper \
+  /opt/bob-whisper-gateway/LICENSE.openai-whisper
+WORKDIR /opt/bob-whisper-gateway
+EXPOSE 8080
+CMD ["/opt/bob-whisper-gateway/server.mjs"]

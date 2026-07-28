@@ -669,8 +669,9 @@ survivre à la rétention transport.
 - aucune suppression, renommage ou réécriture de table existante ;
 - aucun backfill et aucune mission créée automatiquement pour les brouillons existants ;
 - `QuoteDraftSlot` et son payload V1 restent byte-for-byte compatibles ;
-- ajout nullable à `realtime_session_leases` :
-  `agentMissionProtocolVersion INTEGER NULL` et `agentMissionProtocolBoundAt TIMESTAMPTZ NULL` ;
+- ajout nullable à `realtime_session_leases` : version/binding protocole, hash SHA-256 de la
+  capability de possession et version du release flag ; les quatre champs restent nuls ensemble
+  pour une lease historique ;
 - un binaire N-1 ignore ces colonnes et continue son comportement ;
 - les indexes online sont séparés si la taille de la table l'exige.
 
@@ -712,15 +713,22 @@ Les deux tables activent et forcent RLS.
 ```text
 POST /voice/realtime/calls
   body additif N+1 { agentMissionProtocolVersion: 1 | null, ...contrat existant }
-  response N+1 { agentMissionProtocolVersion: 1 | null, ...bootstrap existant }
+  response N+1 {
+    agentMissionProtocolVersion: 1 | null,
+    agentMissionCapability: string | null,
+    ...bootstrap existant
+  }
 
 GET /agent-missions/current/quote-creation
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
   response { mission: AgentMissionViewV1 | null }
 
 POST /agent-missions/quote-creation/start
-  body { commandId, realtimeSessionId?, contextRevision?, contextDigest? }
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
+  body { commandId }
 
 POST /agent-missions/:missionId/screen-acks
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
   body {
     commandId,
     expectedMissionRevision,
@@ -733,6 +741,7 @@ POST /agent-missions/:missionId/screen-acks
   }
 
 POST /agent-missions/:missionId/decisions
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
   body
     | {
         action: 'choose_presented_option',
@@ -756,6 +765,7 @@ POST /agent-missions/:missionId/decisions
       }
 
 POST /agent-missions/:missionId/cancel
+  header X-Bob-Agent-Mission-Capability: <secret canonique>
   body { commandId, expectedMissionRevision }
 ```
 
@@ -765,14 +775,16 @@ Les champs inconnus, les champs **déclarés UUID** non canoniques, les identifi
 dérivent.
 
 Le champ de la requête **initiale** annonce seulement la capacité du client. Le serveur réévalue
-master flag, release flag utilisateur, readiness et identité, puis calcule
-`negotiated = requested === 1 && eligible ? 1 : null`. Cette valeur est persistée avec la lease
-dans la transaction d'admission avant que le bootstrap ne soit retourné. Requête et réponse doivent
-concorder ; aucune mise à niveau tardive n'est autorisée dans cette session.
+master flag, release flag utilisateur, allowlist transport, readiness et identité, puis calcule
+`negotiated = requested === 1 && eligible ? 1 : null`. Si V1 est retenu, il génère aussi un secret
+de possession 256 bits dont seul le hash est persisté. Version, hash et version du flag sont écrits
+avec la lease dans la transaction d'admission avant que le bootstrap ne soit retourné. Requête et
+réponse doivent concorder ; aucune mise à niveau tardive n'est autorisée dans cette session.
 
-Pour préserver le mobile N, une requête qui omet le champ reçoit le bootstrap historique sans champ
-additif. Une requête N+1 qui fournit `1|null` exige ce champ dans la réponse. Ainsi, l'ancien codec
-exact ne voit jamais une clé inconnue et le nouveau codec sait distinguer la négociation.
+Pour préserver le mobile N, une requête qui omet le champ reçoit le bootstrap historique sans les
+deux champs additifs. Une requête N+1 qui fournit `1|null` exige exactement version + capability
+dans la réponse, soit `null/null`, soit `1/secret`. Ainsi, l'ancien codec exact ne voit jamais une
+clé inconnue et le nouveau codec sait distinguer la négociation.
 
 Un bootstrap absent, ambigu ou dont la version ne concorde pas ferme la session avant ouverture du
 micro. Le repli historique n'est admis que lorsqu'un bootstrap valide a explicitement négocié
@@ -812,7 +824,9 @@ brouillon, la vue contient des clés i18n canoniques, pas de prose générée.
 
 `RealtimeAgentTurnInput` reçoit l'identité durable de session/turn. Avant le `BobAgent` générique :
 
-1. vérifier que la lease annonce `agentMissionProtocolVersion = 1` et que le flag est actif ;
+1. vérifier la capability de possession et que la lease active annonce
+   `agentMissionProtocolVersion = 1` avec la version de flag admise ; le release flag request-time
+   ne réinterprète pas une session déjà admise ;
 2. relire la mission active ;
 3. si le tour correspond à la phase courante, appeler le use case mission ;
 4. construire la parole canonique à partir du résultat réel ;
@@ -922,11 +936,17 @@ Deux gates cumulatifs et fail-closed sont obligatoires :
    vrai `userId` (global OFF, overrides des comptes internes seulement pendant le rollout).
 
 Une absence ou panne du store de release flags négocie `null`. Le client ne choisit jamais
-son éligibilité. Le bloc secret
+son éligibilité. Une décision ON évaluée pour le vrai `userId` est revalidée par verrou/version
+dans la transaction qui insère la lease ; une dérive concurrente refuse l'admission au lieu de
+downgrader. Le bloc secret
 `BOB_AGENT_MISSION_HMAC_KEY_VERSION` + `BOB_AGENT_MISSION_HMAC_KEYRING` est tout-ou-rien : requis et
 distinct des clés usage/contrôle quand le master est ON, physiquement absent quand il est OFF.
 L'activation exige aussi migration, ACL/readiness et maintenance complètes ; toute configuration
 partielle fait échouer le boot Live.
+
+Le release flag est le kill switch des nouvelles admissions et permet le drain des sessions V1.
+Après une première activation, le master env et son keyring ne peuvent être retirés qu'une fois ce
+drain prouvé ; ils ne coupent pas silencieusement les capabilities déjà admises.
 
 Compatibilité :
 
@@ -1055,8 +1075,9 @@ le runner, une phrase LLM ou un simple screenshot n'est pas une preuve.
 - [ ] Barge-in, échec audio, retry HTTP et réponse tardive ne doublent aucune transition.
 - [ ] Le parcours manuel sans mission reste identique par tests de non-régression.
 - [ ] N/N-1 et flag OFF sont certifiés ; aucun flag public n'est activé par le lot.
-- [ ] La capability est négociée/persistée dans l'admission initiale avant bootstrap et micro ;
-      aucun endpoint ni upgrade tardif n'existe.
+- [ ] Version, hash de capability de possession et version de flag sont persistés dans l'admission
+      initiale avant bootstrap et micro ; le secret n'est rendu qu'au mobile N+1, reste en mémoire
+      volatile et aucun endpoint d'upgrade tardif n'existe.
 - [ ] RLS/ACL/immutabilité/concurrence/migration sont certifiées sur PostgreSQL réel avec le rôle
       runtime.
 - [ ] États loading/empty/error/data, i18n, a11y, focus et reduce-motion sont certifiés sur mobile.

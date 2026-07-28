@@ -12,6 +12,13 @@ import {
   type TtsPort,
   type TtsResult,
 } from '@bob/ai';
+import {
+  isValidLocalWhisperAuditToken,
+  isLocalWhisperAuditHealthPayload,
+  LOCAL_WHISPER_AUDIT_CONTRACT,
+  parseLocalWhisperAuditBaseUrl,
+  type LocalWhisperAuditEndpoints,
+} from './local-whisper-audit-contract';
 
 const TIMEOUT_MS = 12_000;
 const VOICE_PROVIDER_TIMEOUT_MS = 20_000;
@@ -27,6 +34,8 @@ const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9
 const OPENAI_AUDIO_SPEECH_ENDPOINT = 'https://api.openai.com/v1/audio/speech';
 const OPENAI_REALTIME_TTS_MODEL = 'gpt-4o-mini-tts-2025-12-15';
 const OPENAI_REALTIME_TTS_VOICE = 'marin';
+const WAVE_STREAMING_LENGTH_SENTINEL = 0xffff_ffff;
+const MAX_WAVE_CHUNKS = 64;
 const OPENAI_REALTIME_TTS_INSTRUCTIONS = [
   'Parle en français de France avec une voix naturelle, chaleureuse et professionnelle,',
   'à un débit conversationnel. Articule clairement les montants, dates et références.',
@@ -37,6 +46,126 @@ const MISTRAL_AUDIO_API_BASE_URL = 'https://api.mistral.ai/v1';
 function boundedProviderSignal(callerSignal?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(VOICE_PROVIDER_TIMEOUT_MS);
   return callerSignal === undefined ? timeout : AbortSignal.any([callerSignal, timeout]);
+}
+
+/**
+ * L'API Speech OpenAI diffuse le WAV et laisse actuellement les longueurs RIFF et `data` à
+ * `0xffffffff`. Une fois le téléchargement borné terminé, les octets sont pourtant complets.
+ *
+ * On matérialise uniquement ces longueurs de conteneur. Le payload PCM n'est jamais réencodé ni
+ * déplacé. Toutes les formes ambiguës restent refusées afin que le renderer et l'auditeur privé
+ * reçoivent un WAV canonique à longueurs finies.
+ */
+function materializeOpenAiWaveLengths(bytes: Uint8Array): Uint8Array {
+  if (
+    bytes.byteLength < 44
+    || bytes[0] !== 0x52
+    || bytes[1] !== 0x49
+    || bytes[2] !== 0x46
+    || bytes[3] !== 0x46
+    || bytes[8] !== 0x57
+    || bytes[9] !== 0x41
+    || bytes[10] !== 0x56
+    || bytes[11] !== 0x45
+  ) {
+    throw new Error('voice_provider_invalid_audio');
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const expectedRiffSize = bytes.byteLength - 8;
+  const declaredRiffSize = view.getUint32(4, true);
+  if (
+    declaredRiffSize !== expectedRiffSize
+    && declaredRiffSize !== WAVE_STREAMING_LENGTH_SENTINEL
+  ) {
+    throw new Error('voice_provider_invalid_audio');
+  }
+
+  let offset = 12;
+  let formatChunkSeen = false;
+  let blockAlign: number | null = null;
+  let dataChunkOffset: number | null = null;
+  let materializedDataSize: number | null = null;
+  let chunkCount = 0;
+  while (offset + 8 <= bytes.byteLength) {
+    chunkCount += 1;
+    if (chunkCount > MAX_WAVE_CHUNKS) throw new Error('voice_provider_invalid_audio');
+    const isFormat = bytes[offset] === 0x66
+      && bytes[offset + 1] === 0x6d
+      && bytes[offset + 2] === 0x74
+      && bytes[offset + 3] === 0x20;
+    const isData = bytes[offset] === 0x64
+      && bytes[offset + 1] === 0x61
+      && bytes[offset + 2] === 0x74
+      && bytes[offset + 3] === 0x61;
+    const declaredSize = view.getUint32(offset + 4, true);
+    const contentStart = offset + 8;
+    if (isFormat) {
+      if (
+        formatChunkSeen
+        || declaredSize === WAVE_STREAMING_LENGTH_SENTINEL
+        || declaredSize < 16
+        || declaredSize > bytes.byteLength - contentStart
+      ) {
+        throw new Error('voice_provider_invalid_audio');
+      }
+      formatChunkSeen = true;
+      blockAlign = view.getUint16(contentStart + 12, true);
+      if (blockAlign < 1) throw new Error('voice_provider_invalid_audio');
+    }
+    if (isData) {
+      if (!formatChunkSeen || dataChunkOffset !== null || blockAlign === null) {
+        throw new Error('voice_provider_invalid_audio');
+      }
+      dataChunkOffset = offset;
+    }
+    if (declaredSize === WAVE_STREAMING_LENGTH_SENTINEL) {
+      if (!isData) throw new Error('voice_provider_invalid_audio');
+      const actualSize = bytes.byteLength - contentStart;
+      // Une taille non alignée nécessiterait un octet de padding impossible à distinguer du
+      // payload avec une longueur sentinelle. Le refuser est la seule décision fail-closed.
+      if (
+        actualSize <= 0
+        || actualSize % 2 !== 0
+        || blockAlign === null
+        || actualSize % blockAlign !== 0
+      ) {
+        throw new Error('voice_provider_invalid_audio');
+      }
+      materializedDataSize = actualSize;
+      offset = bytes.byteLength;
+      break;
+    }
+    if (declaredSize > bytes.byteLength - contentStart) {
+      throw new Error('voice_provider_invalid_audio');
+    }
+    const paddedEnd = contentStart + declaredSize + (declaredSize % 2);
+    if (paddedEnd > bytes.byteLength) throw new Error('voice_provider_invalid_audio');
+    if (
+      isData
+      && (
+        declaredSize <= 0
+        || blockAlign === null
+        || declaredSize % blockAlign !== 0
+        || paddedEnd !== bytes.byteLength
+      )
+    ) {
+      // L'audio OpenAI qualifié ne possède aucun chunk après `data`. Accepter une queue
+      // inconnue rendrait la matérialisation sentinelle ambiguë entre deux réponses.
+      throw new Error('voice_provider_invalid_audio');
+    }
+    offset = paddedEnd;
+  }
+  if (offset !== bytes.byteLength || !formatChunkSeen || dataChunkOffset === null) {
+    throw new Error('voice_provider_invalid_audio');
+  }
+
+  if (materializedDataSize !== null) {
+    view.setUint32(dataChunkOffset + 4, materializedDataSize, true);
+  }
+  if (declaredRiffSize === WAVE_STREAMING_LENGTH_SENTINEL) {
+    view.setUint32(4, expectedRiffSize, true);
+  }
+  return bytes;
 }
 
 async function readBoundedBytes(
@@ -150,29 +279,6 @@ function decodeCanonicalAudioBase64(audioBase64: string): Uint8Array {
     throw new Error('voice_provider_invalid_audio');
   }
   return new Uint8Array(bytes);
-}
-
-function localAuditEndpoint(baseUrl: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new Error('local_whisper_invalid_config');
-  }
-  const localHost = parsed.hostname === 'localhost'
-    || parsed.hostname === '127.0.0.1'
-    || parsed.hostname === '[::1]';
-  if (
-    !localHost
-    || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')
-    || parsed.username !== ''
-    || parsed.password !== ''
-    || parsed.search !== ''
-    || parsed.hash !== ''
-  ) {
-    throw new Error('local_whisper_invalid_config');
-  }
-  return `${parsed.toString().replace(/\/$/u, '')}/audio/transcriptions`;
 }
 
 function decodeCanonicalBase64Chunk(value: unknown): Uint8Array {
@@ -509,6 +615,12 @@ export class OpenAiRealtimeSpeechAuditSttAdapter extends WhisperSttAdapter {
   }
 }
 
+export interface LocalWhisperAuditDeploymentProbePort {
+  proveDeploymentControls(
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<{ readonly healthy: boolean }>;
+}
+
 /**
  * Auditeur Whisper auto-hébergé, compatible multipart OpenAI sans dépendre d'OpenAI.
  * L'URL et le jeton restent des paramètres serveur ; le domaine de confiance n'est
@@ -518,17 +630,21 @@ export class OpenAiRealtimeSpeechAuditSttAdapter extends WhisperSttAdapter {
 export class LocalWhisperAuditSttAdapter implements SttPort {
   readonly id = 'local-whisper';
   readonly auditTrustDomain = 'bob.local-whisper' as const;
-  private readonly endpoint: string;
+  private readonly endpoints: LocalWhisperAuditEndpoints;
 
   constructor(
     private readonly token: string,
     baseUrl: string,
-    private readonly model = process.env.REALTIME_SPEECH_AUDIT_STT_MODEL ?? 'whisper-large-v3-turbo',
+    private readonly model =
+      process.env.REALTIME_SPEECH_AUDIT_STT_MODEL ?? LOCAL_WHISPER_AUDIT_CONTRACT.model.id,
   ) {
-    if (token.trim().length < 32 || model.trim().length === 0 || model.length > 128) {
+    if (
+      !isValidLocalWhisperAuditToken(token)
+      || model !== LOCAL_WHISPER_AUDIT_CONTRACT.model.id
+    ) {
       throw new Error('local_whisper_invalid_config');
     }
-    this.endpoint = localAuditEndpoint(baseUrl);
+    this.endpoints = parseLocalWhisperAuditBaseUrl(baseUrl);
   }
 
   async transcribe(
@@ -537,7 +653,7 @@ export class LocalWhisperAuditSttAdapter implements SttPort {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<SttResult> {
     const canonicalMimeType = mimeType.trim().toLowerCase().split(';', 1)[0];
-    if (canonicalMimeType !== 'audio/mpeg' && canonicalMimeType !== 'audio/wav') {
+    if (canonicalMimeType !== 'audio/wav' && canonicalMimeType !== 'audio/x-wav') {
       throw new Error('voice_provider_invalid_audio');
     }
     const bytes = decodeCanonicalAudioBase64(audioBase64);
@@ -545,16 +661,17 @@ export class LocalWhisperAuditSttAdapter implements SttPort {
     const blobBytes = new Uint8Array(bytes);
     form.append(
       'file',
-      new Blob([blobBytes], { type: canonicalMimeType }),
-      canonicalMimeType === 'audio/wav' ? 'audit.wav' : 'audit.mp3',
+      new Blob([blobBytes], { type: 'audio/wav' }),
+      'audit.wav',
     );
     form.append('model', this.model);
     form.append('language', 'fr');
     const signal = boundedProviderSignal(options.signal);
-    const res = await fetch(this.endpoint, {
+    const res = await fetch(this.endpoints.transcriptionUrl, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.token}` },
       body: form,
+      redirect: 'error',
       signal,
     });
     if (!res.ok) {
@@ -567,20 +684,124 @@ export class LocalWhisperAuditSttAdapter implements SttPort {
       throw new Error('local_whisper_invalid_response');
     }
     const data = await readBoundedJson(res, MAX_STT_JSON_BYTES, signal);
+    const text = data && typeof data === 'object' && typeof (data as { text?: unknown }).text === 'string'
+      ? (data as { text: string }).text.trim()
+      : '';
     if (
       !data
       || typeof data !== 'object'
-      || typeof (data as { text?: unknown }).text !== 'string'
-      || (data as { text: string }).text.length > MAX_STT_TEXT_CHARS
+      || text.length === 0
+      || text.length > MAX_STT_TEXT_CHARS
     ) {
       throw new Error('local_whisper_invalid_response');
     }
     signal.throwIfAborted();
-    return { text: (data as { text: string }).text.trim(), model: this.model };
+    return { text, model: this.model };
   }
 
   async health(): Promise<{ healthy: boolean }> {
-    return { healthy: this.token.trim().length >= 32 && this.endpoint.length > 0 };
+    const signal = AbortSignal.timeout(LOCAL_WHISPER_AUDIT_CONTRACT.healthTimeoutMs);
+    try {
+      const response = await fetch(this.endpoints.healthUrl, {
+        method: 'GET',
+        redirect: 'error',
+        signal,
+      });
+      if (!response.ok) {
+        await response.body?.cancel('local-whisper-health-error').catch(() => undefined);
+        return { healthy: false };
+      }
+      const responseMimeType = response.headers.get('content-type')
+        ?.split(';', 1)[0]
+        ?.trim()
+        .toLowerCase();
+      if (responseMimeType !== 'application/json') {
+        await response.body?.cancel('local-whisper-health-content-type').catch(() => undefined);
+        return { healthy: false };
+      }
+      const payload = await readBoundedJson(
+        response,
+        LOCAL_WHISPER_AUDIT_CONTRACT.maxHealthResponseBytes,
+        signal,
+      );
+      return { healthy: isLocalWhisperAuditHealthPayload(payload) };
+    } catch {
+      return { healthy: false };
+    }
+  }
+
+  /**
+   * Prouve depuis le réseau réel de l'appelant que la frontière privée reste fermée.
+   *
+   * Aucun contenu métier n'est envoyé : les trois premiers appels sont vides et le dernier
+   * contient uniquement des octets nuls au-delà de la limite annoncée. Le gateway doit le
+   * refuser sur Content-Length avant tout parsing ou appel Whisper.
+   */
+  async proveDeploymentControls(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<{ readonly healthy: boolean }> {
+    if (options.signal?.aborted) return { healthy: false };
+    const signal = boundedProviderSignal(options.signal);
+    const wrongToken = `${this.token[0] === '!' ? '"' : '!'}${this.token.slice(1)}`;
+    const oversized = new Uint8Array(LOCAL_WHISPER_AUDIT_CONTRACT.maxRequestBytes + 1);
+    const controls: readonly {
+      readonly url: string;
+      readonly init: RequestInit;
+      readonly expectedStatus: number;
+    }[] = [
+      {
+        url: this.endpoints.transcriptionUrl,
+        init: { method: 'POST', redirect: 'error', signal },
+        expectedStatus: 401,
+      },
+      {
+        url: this.endpoints.transcriptionUrl,
+        init: {
+          method: 'POST',
+          headers: { authorization: `Bearer ${wrongToken}` },
+          redirect: 'error',
+          signal,
+        },
+        expectedStatus: 401,
+      },
+      {
+        url: `${this.endpoints.baseUrl}/load`,
+        init: { method: 'GET', redirect: 'error', signal },
+        expectedStatus: 404,
+      },
+      {
+        url: this.endpoints.transcriptionUrl,
+        init: {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            'content-type': 'multipart/form-data; boundary=bob-live-audit-readiness',
+          },
+          body: oversized,
+          redirect: 'error',
+          signal,
+        },
+        expectedStatus: 413,
+      },
+    ];
+    try {
+      for (const control of controls) {
+        signal.throwIfAborted();
+        const response = await fetch(control.url, control.init);
+        const exact = response.status === control.expectedStatus
+          && response.headers.get('cache-control') === 'no-store'
+          && response.headers.get('content-type')?.toLowerCase()
+            === 'application/json; charset=utf-8';
+        await response.body?.cancel('local-whisper-deployment-control').catch(() => undefined);
+        if (!exact) return { healthy: false };
+      }
+      signal.throwIfAborted();
+      return { healthy: true };
+    } catch {
+      return { healthy: false };
+    } finally {
+      oversized.fill(0);
+    }
   }
 }
 
@@ -719,7 +940,9 @@ export class OpenAiRealtimeSpeechTtsAdapter implements TtsPort {
       await res.body?.cancel('openai-tts-invalid-content-type').catch(() => undefined);
       throw new Error('voice_provider_invalid_audio');
     }
-    const bytes = await readBoundedBytes(res, MAX_TTS_AUDIO_BYTES, signal);
+    const bytes = materializeOpenAiWaveLengths(
+      await readBoundedBytes(res, MAX_TTS_AUDIO_BYTES, signal),
+    );
     signal.throwIfAborted();
     if (bytes.byteLength === 0) throw new Error('voice_provider_invalid_audio');
     return {

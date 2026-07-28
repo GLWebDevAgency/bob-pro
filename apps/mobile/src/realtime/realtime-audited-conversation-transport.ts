@@ -116,6 +116,10 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     return this.uplink.getSessionHandle();
   }
 
+  takeAgentMissionSession(): import('@bob/api-client').RealtimeAgentMissionSession | null {
+    return this.uplink.takeAgentMissionSession();
+  }
+
   subscribe(listener: (event: RealtimeTransportEvent) => void): () => void {
     this.listeners.add(listener);
     this.safeNotify(listener, { type: 'state', state: this.currentState });

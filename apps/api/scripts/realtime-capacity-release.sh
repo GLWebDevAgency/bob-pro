@@ -51,8 +51,11 @@ BEGIN
 END;
 $$;
 
+-- Un CREATEROLE non-superuser peut verrouiller les attributs administrables, mais PostgreSQL lui
+-- interdit de réaffirmer NOSUPERUSER/NOBYPASSRLS/NOREPLICATION, même à false. Ils sont attestés
+-- juste après, sans rendre le rejeu Supabase dépendant d'un superuser.
 ALTER ROLE bob_realtime_capacity
-  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
 
 DO $$
 DECLARE authority pg_catalog.pg_roles%ROWTYPE;
@@ -114,33 +117,100 @@ provision() {
   psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
     -v app_role="$APP_DATABASE_ROLE" <<'SQL'
 DO $$
-DECLARE object_owner NAME;
+DECLARE
+  capacity_owner_oid OID := 'bob_realtime_capacity'::regrole;
+  deployer_oid OID := current_user::regrole;
+  object_owner_oid OID;
 BEGIN
-  SELECT pg_catalog.pg_get_userbyid(relation.relowner)
-    INTO STRICT object_owner
-    FROM pg_catalog.pg_class AS relation
-   WHERE relation.oid = 'public.realtime_global_capacity'::regclass;
-  IF object_owner NOT IN (current_user, 'bob_realtime_capacity') THEN
-    RAISE EXCEPTION 'Realtime capacity table has an unexpected owner';
-  END IF;
+  FOR object_owner_oid IN
+    SELECT DISTINCT protected_object.owner_oid
+      FROM (
+        SELECT relation.relowner AS owner_oid
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+        UNION
+        SELECT function.proowner AS owner_oid
+          FROM pg_catalog.pg_proc AS function
+         WHERE function.oid IN (
+           'public.sync_realtime_global_capacity_v1()'::regprocedure,
+           'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+           'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+           'public.inspect_realtime_global_capacity_v1()'::regprocedure
+         )
+      ) AS protected_object
+  LOOP
+    IF object_owner_oid NOT IN (deployer_oid, capacity_owner_oid)
+       AND NOT pg_catalog.pg_has_role(deployer_oid, object_owner_oid, 'SET') THEN
+      RAISE EXCEPTION 'Realtime capacity object has an owner unavailable to the deployer';
+    END IF;
+  END LOOP;
 
   IF EXISTS (
-    SELECT 1 FROM pg_catalog.pg_proc AS function
+    SELECT 1
+      FROM (
+        SELECT relation.relowner AS owner_oid
+          FROM pg_catalog.pg_class AS relation
+         WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+        UNION
+        SELECT function.proowner AS owner_oid
+          FROM pg_catalog.pg_proc AS function
+         WHERE function.oid IN (
+           'public.sync_realtime_global_capacity_v1()'::regprocedure,
+           'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+           'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+           'public.inspect_realtime_global_capacity_v1()'::regprocedure
+         )
+      ) AS protected_object
+     WHERE protected_object.owner_oid NOT IN (deployer_oid, capacity_owner_oid)
+  ) AND NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_auth_members AS membership
+     WHERE membership.roleid = capacity_owner_oid
+       AND membership.member = deployer_oid
+       AND membership.admin_option
+  ) THEN
+    RAISE EXCEPTION
+      'Realtime capacity owner transfer requires the deployer ADMIN OPTION created with the role';
+  END IF;
+END;
+$$;
+
+-- Le schéma et les objets peuvent déjà appartenir à un rôle de schéma distinct. Chaque opération
+-- post-transfert est exécutée sous son owner exact ; aucune élévation permanente n'est accordée.
+SELECT format(
+  'SET LOCAL ROLE %I; GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_namespace AS namespace
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = namespace.nspowner
+ WHERE namespace.nspname = 'public'
+\gexec
+
+SELECT DISTINCT format(
+  'GRANT bob_realtime_capacity TO %I WITH INHERIT FALSE, SET TRUE',
+  owner.rolname
+)
+  FROM (
+    SELECT relation.relowner AS owner_oid
+      FROM pg_catalog.pg_class AS relation
+     WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+    UNION
+    SELECT function.proowner AS owner_oid
+      FROM pg_catalog.pg_proc AS function
      WHERE function.oid IN (
        'public.sync_realtime_global_capacity_v1()'::regprocedure,
        'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
        'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
        'public.inspect_realtime_global_capacity_v1()'::regprocedure
      )
-       AND pg_catalog.pg_get_userbyid(function.proowner)
-           NOT IN (current_user, 'bob_realtime_capacity')
-  ) THEN
-    RAISE EXCEPTION 'Realtime capacity function has an unexpected owner';
-  END IF;
-END;
-$$;
+  ) AS protected_object
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = protected_object.owner_oid
+ WHERE protected_object.owner_oid NOT IN (
+   current_user::regrole,
+   'bob_realtime_capacity'::regrole
+ )
+\gexec
 
-GRANT USAGE, CREATE ON SCHEMA public TO bob_realtime_capacity;
 SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_capacity', function.oid::regprocedure)
   FROM pg_catalog.pg_proc AS function
  WHERE function.oid IN (
@@ -149,15 +219,51 @@ SELECT format('ALTER FUNCTION %s OWNER TO bob_realtime_capacity', function.oid::
    'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
    'public.inspect_realtime_global_capacity_v1()'::regprocedure
  )
-   AND function.proowner = (
-     SELECT role.oid FROM pg_catalog.pg_roles AS role WHERE role.rolname = current_user
+   AND function.proowner = current_user::regrole
+\gexec
+SELECT format(
+  'SET LOCAL ROLE %I; ALTER FUNCTION %s OWNER TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname,
+  function.oid::regprocedure
+)
+  FROM pg_catalog.pg_proc AS function
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
+ WHERE function.oid IN (
+   'public.sync_realtime_global_capacity_v1()'::regprocedure,
+   'public.deny_realtime_session_lease_truncate_v1()'::regprocedure,
+   'public.preflight_realtime_global_capacity_v1(text,text,integer,integer,integer)'::regprocedure,
+   'public.inspect_realtime_global_capacity_v1()'::regprocedure
+ )
+   AND function.proowner NOT IN (
+     current_user::regrole,
+     'bob_realtime_capacity'::regrole
+   )
+\gexec
+SELECT format(
+  'SET LOCAL ROLE %I; ALTER TABLE public.realtime_global_capacity OWNER TO bob_realtime_capacity; RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid = 'public.realtime_global_capacity'::regclass
+   AND relation.relowner NOT IN (
+     current_user::regrole,
+     'bob_realtime_capacity'::regrole
    )
 \gexec
 SELECT format('ALTER TABLE public.realtime_global_capacity OWNER TO bob_realtime_capacity')
- WHERE pg_catalog.pg_get_userbyid((
-   SELECT relation.relowner FROM pg_catalog.pg_class AS relation
+ WHERE (
+   SELECT relation.relowner
+     FROM pg_catalog.pg_class AS relation
     WHERE relation.oid = 'public.realtime_global_capacity'::regclass
- )) = current_user
+ ) = current_user::regrole
+\gexec
+
+SELECT format('REVOKE bob_realtime_capacity FROM %I CASCADE', member.rolname)
+  FROM pg_catalog.pg_auth_members AS membership
+  JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+ WHERE membership.roleid = 'bob_realtime_capacity'::regrole
+   AND membership.member <> current_user::regrole
 \gexec
 
 SET LOCAL ROLE bob_realtime_capacity;
@@ -221,6 +327,26 @@ GRANT USAGE ON SCHEMA public TO bob_realtime_capacity;
 SQL
 }
 
+close_existing() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SET LOCAL statement_timeout = '5s';
+SET LOCAL lock_timeout = '2s';
+-- Même ordre que l'admission et les triggers : singleton d'abord. Verrouiller la table des
+-- leases avant cette ligne créerait un cycle table -> singleton / singleton -> INSERT sous charge.
+SET LOCAL ROLE bob_realtime_capacity;
+SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
+DO $$
+BEGIN
+  -- `usedSessions` est l'autorité globale transactionnelle. Un count direct des leases est
+  -- interdit ici : sous FORCE RLS un déployeur Supabase non-superuser observerait un faux zéro.
+  UPDATE public.realtime_global_capacity
+     SET mode = 'closed', revision = revision + 1, "updatedAt" = clock_timestamp()
+   WHERE id = 1 AND mode = 'active';
+END;
+$$;
+SQL
+}
+
 configure() {
   ensure_role
   if [ "${BOB_LIVE_ENABLED+x}" = x ]; then
@@ -230,35 +356,7 @@ configure() {
   fi
 
   if [ "$live_enabled" != "true" ]; then
-    psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
-SET LOCAL statement_timeout = '5s';
-SET LOCAL lock_timeout = '2s';
--- Même ordre que l'admission et les triggers : singleton d'abord. Verrouiller la table des
--- leases avant cette ligne créerait un cycle table -> singleton / singleton -> INSERT sous charge.
-SET LOCAL ROLE bob_realtime_capacity;
-SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-RESET ROLE;
-SELECT set_config(
-  'bob.realtime_capacity_actual_count',
-  (SELECT count(*)::TEXT FROM public.realtime_session_leases),
-  TRUE
-);
-SET LOCAL ROLE bob_realtime_capacity;
-DO $$
-DECLARE actual_count INTEGER := current_setting('bob.realtime_capacity_actual_count')::INTEGER;
-DECLARE projected_count INTEGER;
-BEGIN
-  SELECT "usedSessions" INTO STRICT projected_count
-    FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-  IF projected_count <> actual_count THEN
-    RAISE EXCEPTION 'Realtime capacity projection mismatch';
-  END IF;
-  UPDATE public.realtime_global_capacity
-     SET mode = 'closed', revision = revision + 1, "updatedAt" = clock_timestamp()
-   WHERE id = 1 AND mode = 'active';
-END;
-$$;
-SQL
+    close_existing
     return 0
   fi
 
@@ -282,28 +380,21 @@ SET LOCAL statement_timeout = '5s';
 SET LOCAL lock_timeout = '2s';
 -- Le singleton est l'unique point de sérialisation. Une écriture N-1 déjà commencée attendra
 -- dans son trigger puis sera soit projetée avant ce verrou, soit refusée après la fermeture.
--- Aucun verrou de table n'est nécessaire pour rendre count(*) cohérent avec la projection.
+-- `usedSessions`, maintenu par les triggers ALWAYS, est l'autorité globale ; la table source
+-- tenantée ne doit jamais être comptée depuis le déployeur sous FORCE RLS.
 SET LOCAL ROLE bob_realtime_capacity;
 SELECT id FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-RESET ROLE;
 SELECT set_config('bob.realtime.capacity_provider', :'provider', TRUE);
 SELECT set_config('bob.realtime.capacity_model', :'model', TRUE);
 SELECT set_config('bob.realtime.capacity_global_max', :'global_max', TRUE);
 SELECT set_config('bob.realtime.capacity_provider_max', :'provider_max', TRUE);
 SELECT set_config('bob.realtime.capacity_config_version', :'config_version', TRUE);
-SELECT set_config(
-  'bob.realtime.capacity_actual_count',
-  (SELECT count(*)::TEXT FROM public.realtime_session_leases),
-  TRUE
-);
-SET LOCAL ROLE bob_realtime_capacity;
 DO $$
 DECLARE selected_provider TEXT := current_setting('bob.realtime.capacity_provider');
 DECLARE selected_model TEXT := current_setting('bob.realtime.capacity_model');
 DECLARE selected_global_max INTEGER := current_setting('bob.realtime.capacity_global_max')::INTEGER;
 DECLARE selected_provider_max INTEGER := current_setting('bob.realtime.capacity_provider_max')::INTEGER;
 DECLARE selected_version INTEGER := current_setting('bob.realtime.capacity_config_version')::INTEGER;
-DECLARE actual_count INTEGER := current_setting('bob.realtime.capacity_actual_count')::INTEGER;
 DECLARE state_row public.realtime_global_capacity%ROWTYPE;
 DECLARE same_configuration BOOLEAN;
 BEGIN
@@ -317,10 +408,7 @@ BEGIN
 
   SELECT * INTO STRICT state_row
     FROM public.realtime_global_capacity WHERE id = 1 FOR UPDATE;
-  IF state_row."usedSessions" <> actual_count THEN
-    RAISE EXCEPTION 'Realtime capacity projection mismatch';
-  END IF;
-  IF actual_count > selected_global_max THEN
+  IF state_row."usedSessions" > selected_global_max THEN
     RAISE EXCEPTION 'Realtime capacity cannot activate below current usage';
   END IF;
 
@@ -340,11 +428,11 @@ BEGIN
   IF state_row.mode <> 'closed' THEN
     RAISE EXCEPTION 'Realtime capacity must be closed before activation';
   END IF;
-  IF state_row."configVersion" IS NULL AND actual_count <> 0 THEN
+  IF state_row."configVersion" IS NULL AND state_row."usedSessions" <> 0 THEN
     RAISE EXCEPTION 'Initial realtime capacity activation requires a complete drain';
   END IF;
   IF state_row."configVersion" IS NOT NULL AND NOT same_configuration THEN
-    IF actual_count <> 0 OR selected_version <= state_row."configVersion" THEN
+    IF state_row."usedSessions" <> 0 OR selected_version <= state_row."configVersion" THEN
       RAISE EXCEPTION 'Realtime capacity reconfiguration requires drain and newer version';
     END IF;
   END IF;
@@ -369,6 +457,7 @@ SQL
 case "$phase" in
   ensure) ensure_role ;;
   provision) provision ;;
+  close-existing) close_existing ;;
   configure) configure ;;
-  *) echo "usage: $0 <ensure|provision|configure>" >&2; exit 2 ;;
+  *) echo "usage: $0 <ensure|provision|close-existing|configure>" >&2; exit 2 ;;
 esac

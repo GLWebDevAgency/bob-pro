@@ -71,7 +71,8 @@ active V2 dans une transaction unique. Pendant l’intervalle expand :
 
 ## Gates bloquants entre l’expand et l’activation
 
-- `release.sh` a appliqué les migrations et certifié la phase expand V1 sur la base cible.
+- `BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh` a appliqué les migrations et
+  certifié la phase expand V1 sur la base cible.
 - Les checksums appliqués correspondent exactement aux fichiers locaux enregistrés.
 - Toutes les répliques du train 1 exposent son SHA exact dans `/health/ready`; aucune N-1 ne vit.
 - Chaque facture émise possède un `archiveAudienceAtIssuance` audité.
@@ -264,9 +265,10 @@ une nouvelle preuve, sans modifier l’historique.
 ## Séquence obligatoire du train 1
 
 1. Prouver le train 0 et enregistrer les checksums locaux des migrations encore non appliquées.
-2. Exécuter `release.sh` : son préflight audience refuse le train avant toute mutation si un
-   historique non revu existe ; sinon il applique les migrations puis certifie V1. Les jobs sont
-   alors spoolés et les sorties légales générées sont gelées.
+2. Exécuter `BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh` : son préflight audience
+   refuse le train avant toute mutation si un historique non revu existe ; sinon il applique les
+   migrations puis certifie V1. Les jobs sont alors spoolés et les sorties légales générées sont
+   gelées.
 3. Déployer N. Attendre la readiness du SHA exact, prouver que toutes les répliques sont sur N et
    qu’aucun worker N-1 déjà claimé ne peut encore écrire. Ne jamais scanner pendant qu’une ancienne
    réplique ou un ancien lease peut finir un upload.
@@ -282,8 +284,8 @@ une nouvelle preuve, sans modifier l’historique.
      sh apps/api/scripts/activate-document-archive-v2.sh
    ```
 
-6. Rejouer `release.sh`. Il détecte V2 et lance la certification PostgreSQL active avec le rôle
-   runtime `NOSUPERUSER/NOBYPASSRLS`.
+6. Rejouer `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh`. Il détecte V2 et lance la
+   certification PostgreSQL active avec le rôle runtime `NOSUPERUSER/NOBYPASSRLS`.
 7. Vérifier les métriques du worker : le backlog spoolé décroît, aucun échec de représentation ne se
    répète et aucun nouvel orphelin Storage n’apparaît.
 8. Conserver logs, SHA, checksums, inventaires et résultats des deux certifications avec la release.

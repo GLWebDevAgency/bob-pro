@@ -502,20 +502,22 @@ SELECT pg_temp.assert_eq(
   'authenticated identity reads development flag definition'
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM release_flag_subjects), 1, 'user sees only own flag override');
-SELECT pg_temp.assert_eq((SELECT count(*) FROM release_flag_audit_events), 0, 'ops flag audit invisible to runtime');
+SELECT pg_temp.assert_rejected(
+  'SELECT count(*) FROM release_flag_audit_events',
+  'ops flag audit has no runtime table privilege'
+);
 SELECT pg_temp.assert_rejected(
   'INSERT INTO release_flag_audit_events (id, "flagId", actor, reason, operation, "beforeState", "afterState")
    VALUES (''rls-flag-audit-forged'', ''cabinet-slice0-development'', ''runtime'', ''forged reason'', ''set-global'', ''{}''::jsonb, ''{}''::jsonb)',
   'runtime cannot forge release flag audit'
 );
-WITH changed_flag AS (
-  UPDATE release_flags
-     SET enabled = true, version = version + 1, "updatedAt" = CURRENT_TIMESTAMP,
-         "updatedByUserId" = 'rls-user-pilot'
-   WHERE key = 'cabinet.slice0' AND environment = 'development'
-   RETURNING 1
-)
-SELECT pg_temp.assert_eq((SELECT count(*) FROM changed_flag), 0, 'runtime cannot enable global release flag');
+SELECT pg_temp.assert_rejected(
+  'UPDATE release_flags
+      SET enabled = true, version = version + 1, "updatedAt" = CURRENT_TIMESTAMP,
+          "updatedByUserId" = ''rls-user-pilot''
+    WHERE key = ''cabinet.slice0'' AND environment = ''development''',
+  'runtime has no release flag mutation privilege'
+);
 COMMIT;
 
 BEGIN;

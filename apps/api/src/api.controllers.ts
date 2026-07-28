@@ -13,6 +13,7 @@ import {
   HttpException,
   HttpStatus,
   HttpCode,
+  Inject,
   Req,
   StreamableFile,
 } from '@nestjs/common';
@@ -80,6 +81,8 @@ import {
   WithoutTenantPersistenceTransaction,
 } from './persistence/tenant-persistence.interceptor';
 import { clientIpSourceForRequest } from './config/client-ip';
+import { BOB_LIVE_RUNTIME_READINESS } from './voice/realtime/realtime.tokens';
+import type { BobLiveRuntimeReadinessPort } from './voice/realtime/realtime-readiness';
 
 function assertJsonObjectBody(value: unknown): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2102,7 +2105,11 @@ function parseClassifyDocumentBody(body: Record<string, unknown>): ClassifyDocum
 
 @Controller('health')
 export class HealthController {
-  constructor(private readonly backend: BackendService) {}
+  constructor(
+    private readonly backend: BackendService,
+    @Inject(BOB_LIVE_RUNTIME_READINESS)
+    private readonly bobLiveReadiness: BobLiveRuntimeReadinessPort,
+  ) {}
 
   @Get()
   health() {
@@ -2115,13 +2122,32 @@ export class HealthController {
     const r = await this.backend.readiness();
     if (!r.ok)
       throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
+    const bobLive = await this.bobLiveReadiness.check({ fresh: true });
+    if (!bobLive.ready) {
+      throw new HttpException(
+        { ready: false, error: 'bob_live_runtime_unavailable' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
     return {
       ready: true,
       customers: r.value.customers,
+      dependencies: {
+        bobLiveSpeechAudit: bobLive.speechAudit,
+      },
       // Capacité de compatibilité mixed-version : cette révision refuse tout XML/Factur-X B2C
       // sur l'endpoint ET rend son PDF sans enveloppe hybride. Le pipeline vérifie ce marqueur
       // sur toutes les anciennes répliques avant d'appliquer les migrations archive V2.
-      capabilities: { documentArchiveB2cHttpFence: 'v1' as const },
+      capabilities: {
+        documentArchiveB2cHttpFence: 'v1' as const,
+        // Un prédécesseur portant ce marqueur écrit le fence d'annulation durable sur tout
+        // hangup. Le pipeline peut alors éviter un drain total lors des releases suivantes ;
+        // son absence impose le cutover fermé et drainé.
+        realtimeAdmissionCancellationFence: 'v1' as const,
+        // Le client V1 acquitte durablement le bootstrap avant de prendre le micro ou
+        // d'exposer son handle. Sans ce marqueur, le pipeline interdit la réouverture.
+        agentMissionBootstrapReceipt: 'v1' as const,
+      },
       release: readReleaseMetadata(),
       network: { clientIpSource: clientIpSourceForRequest(request) },
     };

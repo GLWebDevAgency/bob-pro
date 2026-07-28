@@ -1,6 +1,11 @@
 import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { buildRealtimeSpeechAuditStt, buildRealtimeSpeechTts } from '../../ai/providers';
+import type { SttPort } from '@bob/ai';
+import {
+  buildRealtimeSpeechAuditStt,
+  buildRealtimeSpeechTts,
+  type LocalWhisperAuditDeploymentProbePort,
+} from '../../ai/providers';
 import { BackendService } from '../../backend.service';
 import {
   loadEnv,
@@ -20,6 +25,7 @@ import {
   OpenAiRealtimeCallAdapter,
 } from './openai-realtime-call.adapter';
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
+import { buildRealtimeAgentMissionAdmissionGate } from './realtime-agent-mission-admission';
 import { RealtimeGlobalCapacityMonitor } from './realtime-capacity-monitor';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
@@ -98,6 +104,7 @@ import {
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_GLOBAL_CAPACITY_INSPECTOR,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
@@ -106,12 +113,23 @@ import {
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
   REALTIME_SPEECH_SOURCE_POLICY,
+  BOB_LIVE_RUNTIME_READINESS,
 } from './realtime.tokens';
 import {
-  realtimeVoiceSettingsFromEnv,
   type OpenAiRealtimeCallProvider,
   type RealtimeVoiceSettings,
 } from './realtime.types';
+import { realtimeVoiceSettingsProvider } from './realtime-settings.provider';
+import {
+  AuditedBobLiveRuntimeReadiness,
+  gateRealtimeAdmissionOnBobLiveReadiness,
+  NonAuditedBobLiveRuntimeReadiness,
+  type BobLiveRuntimeReadinessPort,
+} from './realtime-readiness';
+import {
+  RealtimeSpeechAcousticProbe,
+  type BobLiveAcousticProofPort,
+} from './realtime-acoustic-probe';
 
 const REALTIME_SPEECH_RUNTIME = Symbol('REALTIME_SPEECH_RUNTIME');
 
@@ -121,6 +139,8 @@ interface RealtimeCommonSpeechRuntime {
 }
 
 interface RealtimeAuditedSpeechRuntime {
+  readonly auditHealth: Pick<SttPort, 'health'>;
+  readonly acousticProof: BobLiveAcousticProofPort;
   readonly storage: RealtimeSpeechStoragePort;
   readonly sourcePolicy: RealtimeSpeechSourcePolicyPort;
   readonly publisher: RealtimeSpeechPublisher;
@@ -215,6 +235,13 @@ export function buildRealtimeSpeechRuntime(
   if (!tts || !auditStt) {
     throw new Error('Bob Live audited speech providers are unavailable.');
   }
+  const deploymentControls = auditStt as SttPort
+    & Partial<LocalWhisperAuditDeploymentProbePort>;
+  if (typeof deploymentControls.proveDeploymentControls !== 'function') {
+    throw new Error('Bob Live local Whisper deployment proof is unavailable.');
+  }
+  const proveDeploymentControls =
+    deploymentControls.proveDeploymentControls.bind(deploymentControls);
 
   const storage = new SupabaseRealtimeSpeechStorage({
     url: supabaseUrl,
@@ -226,6 +253,9 @@ export function buildRealtimeSpeechRuntime(
   const renderer = new RealtimeSpeechRenderer({
     synthesizer: new BobAiRealtimeSpeechSynthesisAdapter(tts),
     auditor: new BobAiRealtimeSpeechAuditAdapter(auditStt),
+  });
+  const acousticProof = new RealtimeSpeechAcousticProbe(renderer, {
+    proveDeploymentControls,
   });
   const common = buildRealtimeCommonSpeechRuntime(
     persistence,
@@ -259,6 +289,8 @@ export function buildRealtimeSpeechRuntime(
   return Object.freeze({
     ...common,
     audited: Object.freeze({
+      auditHealth: auditStt,
+      acousticProof,
       storage,
       sourcePolicy: storage,
       deliveryRepository,
@@ -296,11 +328,6 @@ export async function buildVerifiedRealtimeSpeechRuntime(
   await keyVersions.assertCurrentKeyVersions();
   return buildRealtimeSpeechRuntime(persistence, env);
 }
-
-const settingsProvider: Provider = {
-  provide: REALTIME_VOICE_SETTINGS,
-  useFactory: (): RealtimeVoiceSettings => realtimeVoiceSettingsFromEnv(loadEnv()),
-};
 
 const realtimeGlobalCapacityInspectorProvider: Provider = {
   provide: REALTIME_GLOBAL_CAPACITY_INSPECTOR,
@@ -385,9 +412,21 @@ const providerTerminationRegistryProvider: Provider = {
 
 const admissionProvider: Provider = {
   provide: REALTIME_ADMISSION,
+  inject: [PERSISTENCE, BOB_LIVE_RUNTIME_READINESS],
+  useFactory: (
+    persistence: Persistence,
+    readiness: BobLiveRuntimeReadinessPort,
+  ) => gateRealtimeAdmissionOnBobLiveReadiness(
+    persistence.createRealtimeAdmission(realtimeAdmissionPolicyFromEnv(loadEnv())),
+    readiness,
+  ),
+};
+
+const agentMissionAdmissionProvider: Provider = {
+  provide: REALTIME_AGENT_MISSION_ADMISSION,
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) =>
-    persistence.createRealtimeAdmission(realtimeAdmissionPolicyFromEnv(loadEnv())),
+    buildRealtimeAgentMissionAdmissionGate(persistence, loadEnv()),
 };
 
 const mistralIngressTicketProvider: Provider = {
@@ -429,6 +468,24 @@ const realtimeSpeechRuntimeProvider: Provider = {
   provide: REALTIME_SPEECH_RUNTIME,
   inject: [PERSISTENCE],
   useFactory: (persistence: Persistence) => buildVerifiedRealtimeSpeechRuntime(persistence),
+};
+
+export function buildBobLiveRuntimeReadiness(
+  speech: RealtimeSpeechRuntime | null,
+): BobLiveRuntimeReadinessPort {
+  if (speech?.audited) {
+    return new AuditedBobLiveRuntimeReadiness(
+      speech.audited.auditHealth,
+      speech.audited.acousticProof,
+    );
+  }
+  return new NonAuditedBobLiveRuntimeReadiness(speech?.native ? 'native' : 'disabled');
+}
+
+const bobLiveRuntimeReadinessProvider: Provider = {
+  provide: BOB_LIVE_RUNTIME_READINESS,
+  inject: [REALTIME_SPEECH_RUNTIME],
+  useFactory: buildBobLiveRuntimeReadiness,
 };
 
 const realtimeDurableControlProvider: Provider = {
@@ -724,15 +781,17 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
   imports: [PersistenceModule],
   controllers: [RealtimeVoiceController],
   providers: [
-    settingsProvider,
+    realtimeVoiceSettingsProvider,
     openAiProvider,
     mistralRealtimeTerminationAuthorityProvider,
     providerTerminationRegistryProvider,
     admissionProvider,
+    agentMissionAdmissionProvider,
     realtimeGlobalCapacityInspectorProvider,
     realtimeGlobalCapacityMonitorProvider,
     mistralIngressTicketProvider,
     realtimeSpeechRuntimeProvider,
+    bobLiveRuntimeReadinessProvider,
     realtimeDurableControlProvider,
     mistralConversationTerminalReplayRuntimeProvider,
     mistralConversationResumeAuthorityProvider,
@@ -753,6 +812,6 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     OpenAiNativeSpeechMaintenanceScheduler,
     RealtimeVoiceService,
   ],
-  exports: [MISTRAL_REALTIME_INGRESS_RUNTIME],
+  exports: [MISTRAL_REALTIME_INGRESS_RUNTIME, BOB_LIVE_RUNTIME_READINESS],
 })
 export class RealtimeVoiceModule {}

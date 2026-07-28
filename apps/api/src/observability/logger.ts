@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Injectable, type LoggerService } from '@nestjs/common';
+import { redactTelemetryText } from '@bob/core';
 import pino from 'pino';
 
 export interface Principal {
@@ -44,10 +45,57 @@ export const requireTenant = (): string => {
   return companyId;
 };
 
+const MAX_LOG_REDACTION_DEPTH = 6;
+
+export function redactLogValue(
+  value: unknown,
+  depth = 0,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
+  if (typeof value === 'string') return redactTelemetryText(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_LOG_REDACTION_DEPTH) return '[truncated]';
+  if (value instanceof Error) {
+    const redacted = new Error(redactTelemetryText(value.message));
+    redacted.name = redactTelemetryText(value.name);
+    redacted.stack = value.stack ? redactTelemetryText(value.stack) : undefined;
+    return redacted;
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '[invalid-date]' : value.toISOString();
+  }
+  if (value instanceof URL) return redactTelemetryText(value.toString());
+  if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return '[binary]';
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactLogValue(entry, depth + 1, seen));
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return '[non-plain-object]';
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      redactTelemetryText(key),
+      redactLogValue(entry, depth + 1, seen),
+    ]),
+  );
+}
+
 export const rootLogger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
   base: { service: 'bob-pro-api' },
   formatters: { level: (label) => ({ level: label }) },
+  hooks: {
+    logMethod(args, method) {
+      const safeArgs = args.map((argument) => redactLogValue(argument));
+      method.apply(
+        this,
+        safeArgs as unknown as [obj: unknown, msg?: string, ...args: unknown[]],
+      );
+    },
+  },
 });
 
 /** Logger NestJS adossé à pino : sortie JSON structurée + correlationId automatique. */
@@ -57,22 +105,29 @@ export class AppLogger implements LoggerService {
     return { correlationId: getCorrelationId(), context };
   }
   log(message: unknown, context?: string): void {
-    rootLogger.info(this.fields(context), String(message));
+    rootLogger.info(this.fields(context), redactTelemetryText(String(message)));
   }
   error(message: unknown, trace?: string, context?: string): void {
-    rootLogger.error({ ...this.fields(context), trace }, String(message));
+    rootLogger.error(
+      { ...this.fields(context), trace: trace ? redactTelemetryText(trace) : trace },
+      redactTelemetryText(String(message)),
+    );
   }
   warn(message: unknown, context?: string): void {
-    rootLogger.warn(this.fields(context), String(message));
+    rootLogger.warn(this.fields(context), redactTelemetryText(String(message)));
   }
   debug(message: unknown, context?: string): void {
-    rootLogger.debug(this.fields(context), String(message));
+    rootLogger.debug(this.fields(context), redactTelemetryText(String(message)));
   }
   verbose(message: unknown, context?: string): void {
-    rootLogger.trace(this.fields(context), String(message));
+    rootLogger.trace(this.fields(context), redactTelemetryText(String(message)));
   }
   /** Trace d'audit des actions sensibles (émission facture, paiement, signature, IA). */
   audit(action: string, data: Record<string, unknown>): void {
-    rootLogger.info({ correlationId: getCorrelationId(), audit: true, action, ...data }, `audit:${action}`);
+    const safeData = redactLogValue(data) as Record<string, unknown>;
+    rootLogger.info(
+      { correlationId: getCorrelationId(), audit: true, action, ...safeData },
+      `audit:${action}`,
+    );
   }
 }

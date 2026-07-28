@@ -84,6 +84,7 @@ import type {
   InvoiceTransmissionStatus,
   TransmissionGuide,
 } from '@bob/core';
+import type { RealtimeAgentMissionSession } from './agent-mission-session';
 
 export interface QuoteView {
   id: string;
@@ -525,6 +526,14 @@ interface RealtimeVoiceCallCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+  /**
+   * Capability volatile liée à cette session Realtime.
+   *
+   * - propriété absente : client historique, négociation omise ;
+   * - `null` : V1 demandée mais fermée par le flag serveur ;
+   * - handle opaque : V1 acceptée, secret inaccessible et non sérialisable.
+   */
+  agentMissionSession?: RealtimeAgentMissionSession | null;
 }
 
 interface RealtimeVoiceAuditedCallCommon extends RealtimeVoiceCallCommon {
@@ -656,6 +665,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
       sessionHandle?: string;
+      agentMissionProtocolVersion?: 1 | null;
     }
   | {
       transport: 'mistral-pcm';
@@ -664,6 +674,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
+      agentMissionProtocolVersion?: 1 | null;
     }
   | {
       transport: 'mistral-pcm';
@@ -672,6 +683,7 @@ export type RealtimeVoiceCallInput =
       configVersion: string;
       speechDelivery: 'audited-signed-url-v1';
       sessionHandle?: string;
+      agentMissionProtocolVersion?: 1 | null;
     };
 
 export interface RealtimeVoiceControlReference {

@@ -4,11 +4,6 @@
 -- sans créer de lease ni modifier le singleton de production.
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SELECT pg_catalog.set_config('bob.realtime.capacity_release_app_role', :'app_role', true);
-SELECT pg_catalog.set_config(
-  'bob.realtime.capacity_release_lease_count',
-  (SELECT count(*)::TEXT FROM public.realtime_session_leases),
-  true
-);
 SET LOCAL ROLE bob_realtime_capacity;
 
 DO $$
@@ -19,9 +14,6 @@ DECLARE
   );
   capacity_role pg_catalog.pg_roles%ROWTYPE;
   capacity_relation pg_catalog.pg_class%ROWTYPE;
-  lease_count INTEGER := pg_catalog.current_setting(
-    'bob.realtime.capacity_release_lease_count'
-  )::INTEGER;
   capacity_row public.realtime_global_capacity%ROWTYPE;
   function_oids OID[] := ARRAY[
     'public.sync_realtime_global_capacity_v1()'::regprocedure,
@@ -136,10 +128,9 @@ BEGIN
   SELECT * INTO STRICT capacity_row
     FROM public.realtime_global_capacity WHERE id = 1;
   IF capacity_row.mode <> 'closed'
-     OR capacity_row."usedSessions" <> lease_count
      OR capacity_row."usedSessions" < 0
      OR capacity_row.revision < 0 THEN
-    RAISE EXCEPTION 'Realtime capacity release projection must be exact and closed';
+    RAISE EXCEPTION 'Realtime capacity authority must be coherent and closed';
   END IF;
   IF NOT (
     (

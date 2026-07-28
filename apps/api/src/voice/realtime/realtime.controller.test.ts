@@ -19,6 +19,10 @@ function responseStub() {
 function serviceStub(input: {
   createCall?: (body: unknown, signal?: AbortSignal) => Promise<Result<RealtimeCallBootstrap, AppError>>;
   hangup?: (sessionHandle: string) => Promise<Result<{ ended: true }, AppError>>;
+  acknowledgeAgentMissionBootstrap?: (
+    sessionHandle: string,
+    capability: unknown,
+  ) => Promise<Result<{ acknowledged: true; replayed: boolean }, AppError>>;
   acknowledgeControl?: (
     sessionHandle: string,
     body: unknown,
@@ -34,6 +38,9 @@ function serviceStub(input: {
     publicConfig: vi.fn(),
     createCall: vi.fn(input.createCall),
     hangup: vi.fn(input.hangup),
+    acknowledgeAgentMissionBootstrap: vi.fn(
+      input.acknowledgeAgentMissionBootstrap,
+    ),
     acknowledgeControl: vi.fn(input.acknowledgeControl),
     requestResumeTicket: vi.fn(input.requestResumeTicket),
   } as unknown as RealtimeVoiceService;
@@ -131,6 +138,45 @@ describe('RealtimeVoiceController', () => {
     await expect(controller.hangup('00000000-0000-4000-8000-000000000001', responseStub()))
       .resolves.toEqual({ ended: true });
     expect(hangup).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000001');
+  });
+
+  it('délègue le reçu Mission sans body et sans refléter la capability', async () => {
+    const capability = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+    const acknowledgeAgentMissionBootstrap = vi.fn(async () => ({
+      ok: true as const,
+      value: { acknowledged: true as const, replayed: false },
+    }));
+    const controller = new RealtimeVoiceController(serviceStub({
+      acknowledgeAgentMissionBootstrap,
+    }));
+
+    await expect(controller.acknowledgeAgentMissionBootstrap(
+      '00000000-0000-4000-8000-000000000001',
+      {},
+      capability,
+    )).resolves.toEqual({ acknowledged: true, replayed: false });
+    expect(acknowledgeAgentMissionBootstrap).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000001',
+      capability,
+    );
+  });
+
+  it('refuse tout champ dans le body du reçu Mission avant le service', async () => {
+    const acknowledgeAgentMissionBootstrap = vi.fn();
+    const controller = new RealtimeVoiceController(serviceStub({
+      acknowledgeAgentMissionBootstrap,
+    }));
+
+    const result = controller.acknowledgeAgentMissionBootstrap(
+      '00000000-0000-4000-8000-000000000001',
+      { capability: 'interdite' },
+      undefined,
+    );
+    await expect(result).rejects.toBeInstanceOf(HttpException);
+    await result.catch((error: unknown) => {
+      expect((error as HttpException).getStatus()).toBe(422);
+    });
+    expect(acknowledgeAgentMissionBootstrap).not.toHaveBeenCalled();
   });
 
   it('délègue l’acquittement opaque au service et retire le listener d’abandon', async () => {

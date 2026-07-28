@@ -30,6 +30,16 @@ function expectNoLeak(payload: unknown): void {
 }
 
 describe('redactTelemetryText — masquage du PII et de la donnée financière', () => {
+  it('masque une capability AgentMission canonique sans laisser son matériau', () => {
+    const capability = `bam1_${Buffer.alloc(32, 71).toString('base64url')}`;
+    const redacted = redactTelemetryText(`admission=${capability}`);
+    expect(redacted).toBe('admission=[capability-agent]');
+    expect(redacted).not.toContain(capability);
+    expect(redactTelemetryText(`header_${capability}_suffix`)).toBe(
+      'header_[capability-agent]_suffix',
+    );
+  });
+
   it('masque IBAN, e-mail, téléphone, SIREN/SIRET, montant, carte et jeton', () => {
     const raw = `virement ${IBAN} pour ${EMAIL} (${SIRET}) tel ${PHONE} de ${AMOUNT} carte ${CARD} auth ${JWT}`;
     const redacted = redactTelemetryText(raw);

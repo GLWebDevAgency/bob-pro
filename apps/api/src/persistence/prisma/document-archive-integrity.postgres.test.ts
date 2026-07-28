@@ -380,9 +380,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           }),
         ).resolves.toBe(true);
       });
-      // Sur Supabase réel, storage.objects porte une FK vers storage.buckets : la fixture
-      // provisionne son bucket de certification (inexistant en prod, la CI fabrique la
-      // table sans contrainte) — idempotent, jamais destructif.
+      // La fixture éphémère reproduit la FK Supabase storage.objects → storage.buckets :
+      // elle provisionne donc explicitement son bucket de certification avant l'objet.
+      // En production, le bucket canonique est déjà géré par Supabase.
       await admin.$executeRaw`
         INSERT INTO storage.buckets (id, name, public)
         VALUES ('documents', 'documents', false)

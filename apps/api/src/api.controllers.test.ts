@@ -9,6 +9,7 @@ import {
   QuotesController,
 } from './api.controllers';
 import type { BackendService } from './backend.service';
+import type { BobLiveRuntimeReadinessPort } from './voice/realtime/realtime-readiness';
 
 describe('HealthController readiness contract', () => {
   it('publie la source IP Railway certifiée sans exposer l’adresse cliente', async () => {
@@ -25,7 +26,17 @@ describe('HealthController readiness contract', () => {
     const backend = {
       readiness: vi.fn(async () => ({ ok: true as const, value: { customers: 4 } })),
     };
-    const controller = new HealthController(backend as unknown as BackendService);
+    const bobLive = {
+      check: vi.fn(async () => ({
+        ready: true as const,
+        mode: 'native' as const,
+        speechAudit: 'not_applicable' as const,
+      })),
+    };
+    const controller = new HealthController(
+      backend as unknown as BackendService,
+      bobLive satisfies BobLiveRuntimeReadinessPort,
+    );
 
     try {
       const response = await controller.ready({
@@ -36,13 +47,69 @@ describe('HealthController readiness contract', () => {
       expect(response).toMatchObject({
         ready: true,
         customers: 4,
-        capabilities: { documentArchiveB2cHttpFence: 'v1' },
+        capabilities: {
+          documentArchiveB2cHttpFence: 'v1',
+          realtimeAdmissionCancellationFence: 'v1',
+          agentMissionBootstrapReceipt: 'v1',
+        },
+        dependencies: { bobLiveSpeechAudit: 'not_applicable' },
         network: { clientIpSource: 'railway-x-real-ip' },
       });
       expect(response).not.toHaveProperty('network.clientIp');
+      expect(bobLive.check).toHaveBeenCalledWith({ fresh: true });
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it('échoue fermé sans exposer URL, token ou cause brute si l’auditeur est indisponible', async () => {
+    const backend = {
+      readiness: vi.fn(async () => ({ ok: true as const, value: { customers: 4 } })),
+    };
+    const bobLive = {
+      check: vi.fn(async () => ({
+        ready: false as const,
+        mode: 'audited' as const,
+        speechAudit: 'unavailable' as const,
+      })),
+    };
+    const controller = new HealthController(
+      backend as unknown as BackendService,
+      bobLive satisfies BobLiveRuntimeReadinessPort,
+    );
+
+    let refusal: unknown;
+    try {
+      await controller.ready({});
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(HttpException);
+    const response = (refusal as HttpException).getResponse();
+    expect(response).toEqual({
+      ready: false,
+      error: 'bob_live_runtime_unavailable',
+    });
+    expect(JSON.stringify(response)).not.toMatch(/token|railway|whisper|secret-internal/iu);
+  });
+
+  it('ne sonde pas Bob Live lorsque PostgreSQL est déjà indisponible', async () => {
+    const backend = {
+      readiness: vi.fn(async () => ({
+        ok: false as const,
+        error: { kind: 'dependency' as const, port: 'database', cause: 'unavailable' },
+      })),
+    };
+    const bobLive = {
+      check: vi.fn(),
+    };
+    const controller = new HealthController(
+      backend as unknown as BackendService,
+      bobLive as BobLiveRuntimeReadinessPort,
+    );
+
+    await expect(controller.ready({})).rejects.toBeInstanceOf(HttpException);
+    expect(bobLive.check).not.toHaveBeenCalled();
   });
 });
 

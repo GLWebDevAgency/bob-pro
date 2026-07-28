@@ -57,6 +57,7 @@ class FakePrimaryTransport implements VoiceConversationTransport {
   }
 
   getSessionHandle(): string | null { return null; }
+  takeAgentMissionSession(): null { return null; }
 
   async connect(input: { signal?: AbortSignal } = {}): Promise<void> {
     this.connectCalls += 1;
@@ -149,6 +150,7 @@ describe('politique de récupération Bob Live', () => {
       'audio_busy',
       'microphone_denied',
       'aborted',
+      'agent_mission_negotiation_failed',
     ];
     const transientReasons: readonly RealtimeFallbackReason[] = [
       'bootstrap_failed',
@@ -159,6 +161,7 @@ describe('politique de récupération Bob Live', () => {
     ];
 
     expect(fatalReasons.map(classifyRealtimeFailure)).toEqual([
+      'fatal',
       'fatal',
       'fatal',
       'fatal',
@@ -181,6 +184,7 @@ describe('politique de récupération Bob Live', () => {
     expect(legacyFallbackChannelFor('not_entitled')).toBe('voice');
     expect(legacyFallbackChannelFor('entitlement_unavailable')).toBe('voice');
     expect(legacyFallbackChannelFor('aborted')).toBeNull();
+    expect(legacyFallbackChannelFor('agent_mission_negotiation_failed')).toBeNull();
   });
 });
 
@@ -283,6 +287,31 @@ describe('RealtimeResilienceOrchestrator', () => {
       reason: 'microphone_denied',
       channel: 'text_only',
     });
+  });
+
+  it('échoue fermé sans retry ni legacy si la capacité mission ne peut pas être négociée', async () => {
+    const primary = rejectedPrimary('agent_mission_negotiation_failed');
+    const fallback = fallbackHarness();
+    const createPrimary = vi.fn(() => primary);
+    const sleep = vi.fn(async (_milliseconds: number) => undefined);
+    const orchestrator = new RealtimeResilienceOrchestrator({
+      createPrimary,
+      legacyFallback: fallback.port,
+      reconnectDelayMs: () => 0,
+      sleep,
+    });
+
+    await expect(orchestrator.start()).resolves.toMatchObject({
+      phase: 'stopped',
+      reconnectAttempts: 0,
+      lastFailureReason: 'agent_mission_negotiation_failed',
+      fallbackChannel: null,
+    });
+
+    expect(createPrimary).toHaveBeenCalledOnce();
+    expect(primary.closeReasons).toEqual(['fallback']);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fallback.start).not.toHaveBeenCalled();
   });
 
   it('annule le retry différé après background sans déclencher de fallback', async () => {

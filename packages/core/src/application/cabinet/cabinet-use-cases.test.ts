@@ -134,8 +134,6 @@ class MemoryFlags implements ReleaseFlagRepository {
   readonly snapshots = new Map<string, ReleaseFlagSnapshot>();
   unavailable = false;
 
-  constructor(private readonly inTransaction: () => boolean) {}
-
   private mapKey(environment: string, key: string): string {
     return `${environment}:${key}`;
   }
@@ -150,21 +148,6 @@ class MemoryFlags implements ReleaseFlagRepository {
     const snapshot = this.snapshots.get(this.mapKey(environment, key));
     return snapshot ? ReleaseFlag.rehydrate(structuredClone(snapshot)) : null;
   }
-
-  async lockByKey(environment: ReleaseFlagSnapshot['environment'], key: string): Promise<ReleaseFlag | null> {
-    if (!this.inTransaction()) throw new Error('flag lock outside transaction');
-    return this.findByKey(environment, key);
-  }
-
-  async save(flag: ReleaseFlag, expectedVersion: number | null): Promise<void> {
-    if (!this.inTransaction()) throw new Error('flag save outside transaction');
-    const snapshot = flag.toSnapshot();
-    const mapKey = this.mapKey(snapshot.environment, snapshot.key);
-    const current = this.snapshots.get(mapKey);
-    if (expectedVersion === null && current) throw new Error('duplicate flag');
-    if (expectedVersion !== null && current?.version !== expectedVersion) throw new Error('flag version conflict');
-    this.snapshots.set(mapKey, structuredClone(snapshot));
-  }
 }
 
 function makeEnv() {
@@ -176,7 +159,7 @@ function makeEnv() {
   const dispatched: Array<{ invitationId: string; rawToken: string }> = [];
   const cabinets = new MemoryCabinets(() => inTransaction, saveOrder, lockOrder);
   const invitations = new MemoryInvitations(() => inTransaction, saveOrder, lockOrder);
-  const flags = new MemoryFlags(() => inTransaction);
+  const flags = new MemoryFlags();
 
   const uow: UnitOfWorkPort = {
     runInTransaction: async <T>(operation: () => Promise<T>): Promise<T> => {

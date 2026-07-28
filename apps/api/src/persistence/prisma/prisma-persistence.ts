@@ -27,6 +27,13 @@ import {
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
 import type { AgentMissionUnitOfWorkPort } from '@bob/core';
+import type {
+  AgentMissionFingerprintKeyBinding,
+  AgentMissionFingerprintKeyVersionAuthority,
+} from '../../agent-missions/agent-mission-fingerprint-key-version';
+import {
+  PrismaAgentMissionFingerprintKeyVersionAuthority,
+} from './agent-mission-fingerprint-key-version.prisma';
 import { PrismaVoiceTraceRepository } from '../voice-traces';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
@@ -151,6 +158,17 @@ export class PrismaPersistence implements Persistence {
 
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort {
     return new PrismaAgentMissionUnitOfWork(this.prisma);
+  }
+
+  createAgentMissionFingerprintKeyVersionAuthority(
+    configuredBindings: readonly AgentMissionFingerprintKeyBinding[],
+    currentVersion: number,
+  ): AgentMissionFingerprintKeyVersionAuthority {
+    return new PrismaAgentMissionFingerprintKeyVersionAuthority(
+      this.prisma,
+      configuredBindings,
+      currentVersion,
+    );
   }
 
   createRealtimeGlobalCapacityInspector(): RealtimeGlobalCapacityInspector {

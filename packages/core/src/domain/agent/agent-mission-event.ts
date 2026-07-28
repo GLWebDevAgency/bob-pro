@@ -633,12 +633,23 @@ export class AgentMissionEvent {
       return invalid('actor', 'invalid_value');
     }
     const actor = value['actor'];
+    const systemEvent = eventType === 'screen_acknowledged' || eventType === 'mission_expired';
+    if ((systemEvent && actor !== 'system') || (!systemEvent && actor === 'system')) {
+      return invalid('actor', 'inconsistent_event');
+    }
     const commandId = value['commandId'];
-    if (actor === 'system') {
+    if (eventType === 'mission_expired') {
       if (!isCanonicalAgentMissionSystemCommandId(commandId)) {
         return invalid('commandId', 'invalid_uuid_version');
       }
-    } else if (!isCanonicalAgentMissionUserCommandId(commandId)) {
+    } else if (
+      eventType === 'screen_acknowledged'
+      ? (
+          !isCanonicalAgentMissionUserCommandId(commandId)
+          && !isCanonicalAgentMissionSystemCommandId(commandId)
+        )
+      : !isCanonicalAgentMissionUserCommandId(commandId)
+    ) {
       return invalid('commandId', 'invalid_uuid_version');
     }
     if (typeof value['requestFingerprintHmac'] !== 'string' || !SHA256.test(value['requestFingerprintHmac'])) {
@@ -740,7 +751,7 @@ export class AgentMissionEvent {
       eventType,
       eventVersion: 1,
       actor,
-      commandId,
+      commandId: commandId as string,
       requestFingerprintHmac: value['requestFingerprintHmac'],
       fingerprintKeyVersion: value['fingerprintKeyVersion'] as number,
       fingerprintCanonicalizationVersion: 1,

@@ -1,4 +1,9 @@
-import type { BobClient, RealtimeVoiceNativeSpeechDeliveryInput } from '@bob/api-client';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type BobClient,
+  type RealtimeAgentMissionSession,
+  type RealtimeVoiceNativeSpeechDeliveryInput,
+} from '@bob/api-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { processAudioSession, type ProcessAudioLease } from '../audio';
 import type { WebRtcRuntime } from './webrtc-runtime';
@@ -291,9 +296,34 @@ function speechSourcePolicy(sessionHandle: string) {
   };
 }
 
+function missionSessionStub(realtimeSessionId: string) {
+  let disposed = false;
+  const unused = async (): Promise<never> => {
+    throw new Error('unused_agent_mission_method');
+  };
+  const dispose = vi.fn(() => {
+    disposed = true;
+  });
+  const session = {
+    protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+    realtimeSessionId,
+    get disposed() {
+      return disposed;
+    },
+    getCurrentQuoteCreation: unused,
+    startQuoteCreation: unused,
+    cancelQuoteCreation: unused,
+    acknowledgeQuoteScreen: unused,
+    dispose,
+  } as unknown as RealtimeAgentMissionSession;
+  return { session, dispose };
+}
+
 function client(
   answerSdp = RECEIVE_ONLY_SDP,
   config: RealtimeWebRtcNegotiation = realtimeConfig,
+  agentMissionSession: RealtimeAgentMissionSession | null = null,
+  includeAgentMissionSession = true,
 ): BobClient {
   return {
     realtimeVoiceConfig: vi.fn(async () => ({ ok: true, value: config })),
@@ -309,6 +339,7 @@ function client(
         configVersion: config.configVersion,
         maxSessionSeconds: config.maxSessionSeconds,
         speechDelivery: config.speechDelivery,
+        ...(includeAgentMissionSession ? { agentMissionSession } : {}),
         ...(config.speechDelivery === 'audited-signed-url-v1'
           ? {
               speechSourcePolicy: speechSourcePolicy(
@@ -616,11 +647,90 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
       transport: 'webrtc',
       configVersion: realtimeConfig.configVersion,
       speechDelivery: realtimeConfig.speechDelivery,
+      agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
     });
     expect(bootstrapInput && 'sdp' in bootstrapInput ? bootstrapInput.sdp : null)
       .toBe(SEND_ONLY_SDP);
     value.setMicrophoneEnabled(true);
     expect(stream.track.enabled).toBe(true);
+  });
+
+  it('transfère la capability mission exactement une fois sans la détruire après transfert', async () => {
+    const capability = missionSessionStub('00000000-0000-4000-8000-000000000301');
+    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, capability.session);
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+
+    await value.connect();
+
+    expect(value.takeAgentMissionSession()).toBe(capability.session);
+    expect(value.takeAgentMissionSession()).toBeNull();
+    await value.close('user');
+    expect(capability.dispose).not.toHaveBeenCalled();
+
+    capability.session.dispose();
+    expect(capability.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('détruit synchroniquement une capability non transférée avant d attendre le hangup', async () => {
+    const capability = missionSessionStub('00000000-0000-4000-8000-000000000302');
+    const hangupGate = deferred<{ ok: true; value: { ended: true } }>();
+    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, capability.session);
+    bobClient.hangupRealtimeVoiceCall = vi.fn(() => hangupGate.promise);
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+    await value.connect();
+
+    const closing = value.close('background');
+
+    expect(capability.dispose).toHaveBeenCalledOnce();
+    expect(capability.session.disposed).toBe(true);
+    await waitUntil(() => vi.mocked(bobClient.hangupRealtimeVoiceCall).mock.calls.length === 1);
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    hangupGate.resolve({ ok: true, value: { ended: true } });
+    await closing;
+  });
+
+  it('échoue fermé si le bootstrap omet la négociation mission explicite', async () => {
+    const bobClient = client(RECEIVE_ONLY_SDP, realtimeConfig, null, false);
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    expect(value.takeAgentMissionSession()).toBeNull();
+    expect(bobClient.hangupRealtimeVoiceCall).toHaveBeenCalledOnce();
+    expect(value.state).toMatchObject({
+      phase: 'closed',
+      fallbackReason: 'agent_mission_negotiation_failed',
+    });
+  });
+
+  it('après perte de réponse bootstrap, clôt le handle demandé et réserve un nouvel UUID au retry utilisateur', async () => {
+    const bobClient = client();
+    bobClient.createRealtimeVoiceCall = vi.fn(async () => ({
+      ok: false as const,
+      error: {
+        kind: 'dependency' as const,
+        port: 'realtime',
+        cause: 'response_lost',
+      },
+    }));
+    const value = transport(bobClient, runtimeHarness(async () => new FakeStream()));
+
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+    await expect(value.connect()).rejects.toMatchObject({
+      reason: 'agent_mission_negotiation_failed',
+    });
+
+    const requestedHandles = vi.mocked(bobClient.createRealtimeVoiceCall).mock.calls.map(
+      ([input]) => input.sessionHandle,
+    );
+    expect(requestedHandles).toHaveLength(2);
+    expect(requestedHandles[0]).not.toBe(requestedHandles[1]);
+    expect(vi.mocked(bobClient.hangupRealtimeVoiceCall).mock.calls.map(([handle]) => handle))
+      .toEqual(requestedHandles);
   });
 
   it('refuse une offre locale qui ne prouve pas un unique micro sendonly', async () => {
@@ -815,6 +925,7 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
         configVersion: realtimeConfig.configVersion,
         maxSessionSeconds: realtimeConfig.maxSessionSeconds,
         speechDelivery: realtimeConfig.speechDelivery,
+        agentMissionSession: null,
         speechSourcePolicy: speechSourcePolicy(handle!),
       },
     });

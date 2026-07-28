@@ -16,6 +16,7 @@ const FAILURE_CLASS: Readonly<Record<RealtimeFallbackReason, RealtimeFailureClas
   audio_busy: 'fatal',
   microphone_denied: 'fatal',
   bootstrap_failed: 'transient',
+  agent_mission_negotiation_failed: 'fatal',
   data_channel_timeout: 'transient',
   ice_failed: 'transient',
   provider_error: 'transient',
@@ -37,6 +38,9 @@ const FALLBACK_CHANNEL: Readonly<Record<RealtimeFallbackReason, LegacyFallbackCh
     audio_busy: 'text_only',
     microphone_denied: 'text_only',
     bootstrap_failed: 'voice',
+    // Une capability absente/perdue ne peut être reconstruite. Seul un nouveau geste utilisateur
+    // peut créer une nouvelle session ; tout retry ou legacy automatique masquerait la rupture.
+    agent_mission_negotiation_failed: null,
     data_channel_timeout: 'voice',
     ice_failed: 'voice',
     provider_error: 'voice',

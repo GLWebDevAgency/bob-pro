@@ -17,6 +17,7 @@ export type RealtimeFallbackReason =
   | 'audio_busy'
   | 'microphone_denied'
   | 'bootstrap_failed'
+  | 'agent_mission_negotiation_failed'
   | 'data_channel_timeout'
   | 'ice_failed'
   | 'provider_error'
@@ -92,6 +93,11 @@ export interface VoiceConversationTransport {
   readonly state: RealtimeTransportState;
   /** Handle opaque requis par les endpoints contexte/ACK/hangup ; null hors appel établi. */
   getSessionHandle(): string | null;
+  /**
+   * Transfère au contrôleur, au plus une fois, la capability Mission liée à cet appel.
+   * Le transport reste propriétaire jusqu'à cette remise et la détruit lui-même sur tout échec.
+   */
+  takeAgentMissionSession(): import('@bob/api-client').RealtimeAgentMissionSession | null;
   connect(input?: { signal?: AbortSignal }): Promise<void>;
   sendUserText(text: string): boolean;
   setMicrophoneEnabled(enabled: boolean): void;

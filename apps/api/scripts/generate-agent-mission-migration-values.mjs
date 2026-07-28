@@ -15,10 +15,23 @@ const eventSource = path.join(
   repositoryRoot,
   'packages/core/src/domain/agent/agent-mission-event.ts',
 );
+const negotiationSource = path.join(
+  apiDir,
+  'src/voice/realtime/realtime-agent-mission-negotiation.ts',
+);
 const migrationPath = path.join(
   apiDir,
   'prisma/migrations/20260726010000_agent_missions_expand/migration.sql',
 );
+const capabilityMigrationPath = path.join(
+  apiDir,
+  'prisma/migrations/20260727140000_agent_mission_realtime_lease_expand/migration.sql',
+);
+const commandNamespaceMigrationPath = path.join(
+  apiDir,
+  'prisma/migrations/20260727180000_agent_mission_event_command_namespace_expand/migration.sql',
+);
+const frozenCapabilityExpandProtocolVersions = ['1'];
 
 function extractConstArray(source, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -50,6 +63,35 @@ function extractNumericConst(source, name) {
   return value;
 }
 
+function extractNumericConstArray(source, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const match = source.match(
+    new RegExp(`export const ${escaped} = \\[([\\s\\S]*?)\\] as const;`, 'u'),
+  );
+  if (match === null) {
+    throw new Error(`AGENT_MISSION_SQL_SOURCE_NUMERIC_ARRAY_MISSING:${name}`);
+  }
+  const body = match[1].trim();
+  if (!/^[0-9_,\s]+$/u.test(body)) {
+    throw new Error(`AGENT_MISSION_SQL_SOURCE_NUMERIC_ARRAY_INVALID:${name}`);
+  }
+  const rawValues = body.split(',');
+  if (rawValues.at(-1)?.trim() === '') rawValues.pop();
+  if (rawValues.some((value) => value.trim() === '')) {
+    throw new Error(`AGENT_MISSION_SQL_SOURCE_NUMERIC_ARRAY_INVALID:${name}`);
+  }
+  const values = rawValues
+    .map((item) => Number(item.trim().replaceAll('_', '')));
+  if (
+    values.length === 0
+    || new Set(values).size !== values.length
+    || values.some((value) => !Number.isSafeInteger(value) || value < 1)
+  ) {
+    throw new Error(`AGENT_MISSION_SQL_SOURCE_NUMERIC_ARRAY_INVALID:${name}`);
+  }
+  return values.map(String);
+}
+
 function replaceGeneratedRegion(sql, name, values) {
   const pattern = new RegExp(
     `(^[ \\t]*-- BEGIN GENERATED ${name}\\r?\\n)([\\s\\S]*?)(^[ \\t]*-- END GENERATED ${name}$)`,
@@ -61,6 +103,26 @@ function replaceGeneratedRegion(sql, name, values) {
     const indent = start.match(/^([ \t]*)/u)?.[1] ?? '';
     const rendered = values
       .map((value, index) => `${indent}'${value}'${index === values.length - 1 ? '' : ','}`)
+      .join('\n');
+    return `${start}${rendered}\n${end}`;
+  });
+  if (replacements === 0) {
+    throw new Error(`AGENT_MISSION_SQL_REGION_MISSING:${name}`);
+  }
+  return replaced;
+}
+
+function replaceGeneratedNumericRegion(sql, name, values) {
+  const pattern = new RegExp(
+    `(^[ \\t]*-- BEGIN GENERATED ${name}\\r?\\n)([\\s\\S]*?)(^[ \\t]*-- END GENERATED ${name}$)`,
+    'gmu',
+  );
+  let replacements = 0;
+  const replaced = sql.replace(pattern, (_region, start, _contents, end) => {
+    replacements += 1;
+    const indent = start.match(/^([ \t]*)/u)?.[1] ?? '';
+    const rendered = values
+      .map((value, index) => `${indent}${value}${index === values.length - 1 ? '' : ','}`)
       .join('\n');
     return `${start}${rendered}\n${end}`;
   });
@@ -121,10 +183,21 @@ function renderCustomerCandidateChecks(keys, maximumCandidates) {
   }).join('\n');
 }
 
-const [missionTs, eventTs, currentMigration] = await Promise.all([
+const [
+  missionTs,
+  eventTs,
+  negotiationTs,
+  currentMigration,
+  currentCapabilityMigration,
+  currentCommandNamespaceMigration,
+] =
+  await Promise.all([
   readFile(missionSource, 'utf8'),
   readFile(eventSource, 'utf8'),
+  readFile(negotiationSource, 'utf8'),
   readFile(migrationPath, 'utf8'),
+  readFile(capabilityMigrationPath, 'utf8'),
+  readFile(commandNamespaceMigrationPath, 'utf8'),
 ]);
 
 const regions = [
@@ -266,11 +339,61 @@ for (const [name, value] of [
   generatedMigration = replaceGeneratedBody(generatedMigration, name, `'${value}'`);
 }
 
+const currentProtocolVersions = extractNumericConstArray(
+  negotiationTs,
+  'AGENT_MISSION_PROTOCOL_VERSIONS',
+);
+if (
+  currentProtocolVersions.length !== frozenCapabilityExpandProtocolVersions.length
+  || currentProtocolVersions.some(
+    (version, index) => version !== frozenCapabilityExpandProtocolVersions[index],
+  )
+) {
+  throw new Error(
+    'AGENT_MISSION_PROTOCOL_MIGRATION_FROZEN: create a new expand/validate migration',
+  );
+}
+const generatedCapabilityMigration = replaceGeneratedNumericRegion(
+  currentCapabilityMigration,
+  'AGENT_MISSION_PROTOCOL_VERSIONS',
+  currentProtocolVersions,
+);
+const commandNamespaceRegionNames = [
+  'AGENT_MISSION_ACTORS',
+  'AGENT_MISSION_USER_ACTORS',
+  'AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES',
+  'AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES',
+  'AGENT_MISSION_CORRELATION_USER_EVENT_TYPES',
+  'AGENT_MISSION_DRAFT_START_EVENT_TYPES',
+];
+const generatedCommandNamespaceMigration = commandNamespaceRegionNames.reduce(
+  (sql, name) => {
+    const region = regions.find((candidate) => candidate.name === name);
+    if (region === undefined) {
+      throw new Error(`AGENT_MISSION_COMMAND_NAMESPACE_REGION_MISSING:${name}`);
+    }
+    return replaceGeneratedRegion(sql, name, region.values);
+  },
+  currentCommandNamespaceMigration,
+);
+
 if (process.argv.includes('--write')) {
-  await writeFile(migrationPath, generatedMigration, 'utf8');
+  await Promise.all([
+    writeFile(migrationPath, generatedMigration, 'utf8'),
+    writeFile(capabilityMigrationPath, generatedCapabilityMigration, 'utf8'),
+    writeFile(
+      commandNamespaceMigrationPath,
+      generatedCommandNamespaceMigration,
+      'utf8',
+    ),
+  ]);
   process.stdout.write('AgentMission migration value lists generated.\n');
 } else if (process.argv.includes('--check')) {
-  if (generatedMigration !== currentMigration) {
+  if (
+    generatedMigration !== currentMigration
+    || generatedCapabilityMigration !== currentCapabilityMigration
+    || generatedCommandNamespaceMigration !== currentCommandNamespaceMigration
+  ) {
     throw new Error(
       'AGENT_MISSION_SQL_VALUES_DRIFT: run generate-agent-mission-migration-values.mjs --write',
     );

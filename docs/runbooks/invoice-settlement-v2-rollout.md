@@ -13,8 +13,9 @@ writers N-1 continuent à fonctionner.
 
 ## Séquence obligatoire
 
-1. Appliquer les migrations et RLS avec l'ancien processus encore disponible. `release.sh`
-   certifie alors que V1 reste insérable et que V2 est fermé.
+1. Appliquer les migrations et RLS avec l'ancien processus encore disponible via
+   `BOB_RELEASE_PHASE=predeploy sh apps/api/scripts/release.sh`. Le script certifie alors que V1
+   reste insérable et que V2 est fermé.
 2. Déployer la révision N. Ne pas activer V2 tant que `/health/ready` ne renvoie pas son SHA exact.
 3. Certifier qu'une seule réplique applicative est active et que l'ancienne révision est retirée.
 4. Exécuter, avec le SHA complet de la révision certifiée :
@@ -24,8 +25,8 @@ writers N-1 continuent à fonctionner.
      sh apps/api/scripts/activate-invoice-settlement-v2.sh
    ```
 
-5. Rejouer `release.sh`. Il détecte V2 et exécute la certification PostgreSQL complète avec le
-   rôle runtime `NOSUPERUSER/NOBYPASSRLS`.
+5. Rejouer `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh`. Il détecte V2 et exécute
+   la certification PostgreSQL complète avec le rôle runtime `NOSUPERUSER/NOBYPASSRLS`.
 
 Le pipeline Railway suit cet ordre : migration/certification gate fermé → déploiement → readiness
 du SHA → topologie mono-réplique → activation → certification V2.

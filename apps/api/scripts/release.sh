@@ -12,6 +12,28 @@ cd "$ROOT_DIR"
 : "${RUN_RLS_CERT:?RUN_RLS_CERT=true is required}"
 : "${RLS_CERT_CLEANUP:?RLS_CERT_CLEANUP=true is required}"
 
+: "${BOB_RELEASE_PHASE:?BOB_RELEASE_PHASE=predeploy or postdeploy is required}"
+case "$BOB_RELEASE_PHASE" in
+  predeploy|postdeploy) ;;
+  *)
+    echo "BOB_RELEASE_PHASE must be predeploy or postdeploy" >&2
+    exit 1
+    ;;
+esac
+REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE="${REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE:-false}"
+case "$REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE" in
+  true|false) ;;
+  *)
+    echo "REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE must be true or false" >&2
+    exit 1
+    ;;
+esac
+if [ "$BOB_RELEASE_PHASE" != predeploy ] \
+   && [ "$REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE" != false ]; then
+  echo "REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE is only valid during predeploy" >&2
+  exit 1
+fi
+
 # Certifications contre la base DISTANTE : le defaut Prisma de 5 s par transaction
 # interactive produit des P2028 de latence WAN sans aucun drift. Rituel uniquement —
 # la variable n'existe pas dans l'environnement runtime Railway.
@@ -44,6 +66,58 @@ certify_agent_mission_release_acl() {
   psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
     -v app_role="$APP_DATABASE_ROLE" \
     -f apps/api/prisma/agent-missions-release-cert.sql
+}
+
+certify_agent_mission_realtime_release_acl() {
+  : "${CABINET_RELEASE_ENV:?CABINET_RELEASE_ENV is required}"
+  case "$CABINET_RELEASE_ENV" in
+    development|staging|production) ;;
+    *)
+      echo "CABINET_RELEASE_ENV must be development, staging or production" >&2
+      return 1
+      ;;
+  esac
+  connected_role="$(
+    psql "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SELECT current_user'
+  )"
+  if [ "$connected_role" != "$APP_DATABASE_ROLE" ]; then
+    echo "DATABASE_URL must connect as APP_DATABASE_ROLE for AgentMission realtime certification" >&2
+    return 1
+  fi
+  release_flag_snapshot="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
+      -v release_env="$CABINET_RELEASE_ENV" <<'SQL'
+SELECT pg_catalog.format(
+         '%s|%s',
+         flag.version,
+         CASE WHEN flag."killSwitch" THEN 'true' ELSE 'false' END
+       )
+  FROM public.release_flags AS flag
+ WHERE flag.key = 'bob.agent_missions.quote.v1'
+   AND flag.environment = :'release_env'::public."ReleaseEnvironment";
+SQL
+  )"
+  release_flag_version="${release_flag_snapshot%%|*}"
+  release_flag_kill_switch="${release_flag_snapshot#*|}"
+  case "$release_flag_version" in
+    ''|*[!0-9]*|0)
+      echo "AgentMission release flag version is missing or invalid for $CABINET_RELEASE_ENV" >&2
+      return 1
+      ;;
+  esac
+  case "$release_flag_kill_switch" in
+    true|false) ;;
+    *)
+      echo "AgentMission release flag kill switch is missing or invalid for $CABINET_RELEASE_ENV" >&2
+      return 1
+      ;;
+  esac
+  psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" \
+    -v release_env="$CABINET_RELEASE_ENV" \
+    -v release_flag_version="$release_flag_version" \
+    -v release_flag_kill_switch="$release_flag_kill_switch" \
+    -f apps/api/prisma/agent-mission-realtime-release-cert.sql
 }
 
 certify_invoice_settlement_protocol() {
@@ -504,8 +578,18 @@ REVOKE TRUNCATE ON TABLE
   public.realtime_mistral_conversation_resume_tickets,
   public.realtime_mistral_conversation_outbox,
   public.realtime_mistral_conversation_commands,
+  public.realtime_admission_cancellation_fences,
   public.realtime_session_leases
 FROM :"app_role";
+REVOKE UPDATE, REFERENCES, TRIGGER
+  ON TABLE public.realtime_admission_cancellation_fences
+  FROM :"app_role";
+REVOKE ALL
+  ON FUNCTION public.guard_realtime_admission_cancellation_fence_v1()
+  FROM :"app_role";
+REVOKE ALL
+  ON FUNCTION public.sync_realtime_admission_cancellation_schedule_v1()
+  FROM :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
 -- suffisent pas : un futur changement de policy ne doit pas reactiver leur mutation.
 REVOKE UPDATE, DELETE ON TABLE
@@ -1829,8 +1913,10 @@ BEGIN
 END;
 $$;
 
+-- Un CREATEROLE non-superuser ne peut pas réaffirmer NOSUPERUSER/NOBYPASSRLS/NOREPLICATION.
+-- Ces attributs restent attestés ci-dessous ; seuls les attributs administrables sont rejoués.
 ALTER ROLE bob_realtime_reaper_directory
-  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+  NOLOGIN NOCREATEDB NOCREATEROLE NOINHERIT;
 
 DO $$
 DECLARE authority pg_catalog.pg_roles%ROWTYPE;
@@ -1984,6 +2070,8 @@ RESET ROLE;
 REVOKE CREATE ON SCHEMA public FROM bob_realtime_reaper_directory;
 GRANT USAGE ON SCHEMA public TO bob_realtime_reaper_directory;
 REVOKE ALL ON TABLE public.realtime_admission_events FROM bob_realtime_reaper_directory;
+REVOKE ALL ON TABLE public.realtime_admission_cancellation_fences
+  FROM bob_realtime_reaper_directory;
 REVOKE ALL ON TABLE public.realtime_session_leases FROM bob_realtime_reaper_directory;
 REVOKE ALL ON TABLE public.realtime_mistral_conversation_bootstrap_tickets
   FROM bob_realtime_reaper_directory;
@@ -1997,6 +2085,7 @@ SELECT DISTINCT format(
  CROSS JOIN LATERAL pg_catalog.aclexplode(attribute.attacl) AS privilege
  WHERE attribute.attrelid IN (
    'public.realtime_admission_events'::regclass,
+   'public.realtime_admission_cancellation_fences'::regclass,
    'public.realtime_session_leases'::regclass,
    'public.realtime_mistral_conversation_bootstrap_tickets'::regclass,
    'public.realtime_mistral_conversation_missions'::regclass
@@ -2174,6 +2263,167 @@ SQL
   fi
 }
 
+ensure_agent_mission_release_flag_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/agent-mission-release-flag-authority-role.sql
+}
+
+ensure_agent_mission_fingerprint_readiness_authority_role() {
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -f apps/api/prisma/agent-mission-fingerprint-readiness-authority-role.sql
+}
+
+provision_agent_mission_fingerprint_readiness_authority() {
+  ensure_agent_mission_fingerprint_readiness_authority_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql
+}
+
+provision_agent_mission_release_flag_authority() {
+  ensure_agent_mission_release_flag_authority_role
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="${APP_DATABASE_ROLE:-}" \
+    -f apps/api/prisma/agent-mission-release-flag-authority-provision.sql
+}
+
+close_and_drain_realtime_before_cancellation_fence_expand() {
+  relation_snapshot="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_catalog.format(
+  '%s|%s|%s',
+  pg_catalog.to_regclass('public._prisma_migrations') IS NOT NULL,
+  pg_catalog.to_regclass('public.realtime_global_capacity') IS NOT NULL,
+  pg_catalog.to_regclass('public.realtime_session_leases') IS NOT NULL
+);
+SQL
+  )"
+  case "${relation_snapshot:-missing}" in
+    'f|f|f')
+      # Première installation : aucun pod N-1, aucune admission ni autorité à drainer.
+      return 0
+      ;;
+    't|t|t')
+      ;;
+    *)
+      echo "Realtime cancellation fence pre-migrate relation state is partial: ${relation_snapshot:-missing}" >&2
+      return 1
+      ;;
+  esac
+
+  cancellation_fence_applied="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT CASE WHEN EXISTS (
+  SELECT 1
+    FROM public._prisma_migrations
+   WHERE migration_name =
+         '20260727160000_realtime_admission_cancellation_fence_expand'
+     AND finished_at IS NOT NULL
+     AND rolled_back_at IS NULL
+) THEN 'true' ELSE 'false' END;
+SQL
+  )"
+  case "${cancellation_fence_applied:-missing}" in
+    true|false) ;;
+    *)
+      echo "Realtime cancellation fence migration state is unreadable" >&2
+      return 1
+      ;;
+  esac
+
+  # La fermeture précède toujours le déploiement. Si l'expand est déjà appliqué ET que le
+  # prédécesseur déployé publie lui-même le fence durable, ses sessions peuvent finir pendant
+  # le rollout. Sinon (premier cutover ou reprise partielle), zéro lease est exigée avant migrate.
+  DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
+    sh apps/api/scripts/realtime-capacity-release.sh configure
+  if [ "$cancellation_fence_applied" = true ] \
+     && [ "$REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE" = true ]; then
+    return 0
+  fi
+
+  drain_timeout_seconds="${BOB_LIVE_DRAIN_TIMEOUT_SECONDS:-930}"
+  case "$drain_timeout_seconds" in
+    ''|*[!0-9]*)
+      echo "BOB_LIVE_DRAIN_TIMEOUT_SECONDS must be an integer between 30 and 1800" >&2
+      return 1
+      ;;
+  esac
+  if [ "$drain_timeout_seconds" -lt 30 ] || [ "$drain_timeout_seconds" -gt 1800 ]; then
+    echo "BOB_LIVE_DRAIN_TIMEOUT_SECONDS must be an integer between 30 and 1800" >&2
+    return 1
+  fi
+  drain_deadline="$(( $(date +%s) + drain_timeout_seconds ))"
+  while :; do
+    drain_snapshot="$(
+      psql "$DIRECT_URL" -X -qAt --single-transaction -v ON_ERROR_STOP=1 <<'SQL'
+SET LOCAL statement_timeout = '5s';
+SET LOCAL lock_timeout = '2s';
+SET LOCAL ROLE bob_realtime_capacity;
+SELECT pg_catalog.format(
+  '%s|%s',
+  capacity.mode,
+  capacity."usedSessions"
+)
+  FROM public.realtime_global_capacity AS capacity
+ WHERE capacity.id = 1;
+SQL
+    )"
+    case "${drain_snapshot:-missing}" in
+      'closed|0') return 0 ;;
+      closed\|*) ;;
+      *)
+        echo "Realtime cancellation fence drain authority is invalid: ${drain_snapshot:-missing}" >&2
+        return 1
+        ;;
+    esac
+    if [ "$(date +%s)" -ge "$drain_deadline" ]; then
+      echo "Realtime cancellation fence expand requires a complete N-1 drain; observed ${drain_snapshot:-missing}" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+assert_agent_mission_m1b_ready_for_postdeploy() {
+  migration_relation="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT CASE
+  WHEN pg_catalog.to_regclass('public._prisma_migrations') IS NOT NULL THEN 'true'
+  ELSE 'false'
+END;
+SQL
+  )"
+  if [ "${migration_relation:-missing}" != true ]; then
+    echo "BOB_RELEASE_PHASE=postdeploy requires the predeploy migration train to be complete" >&2
+    return 1
+  fi
+
+  agent_mission_m1b_migrations="$(
+    psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_catalog.count(*)::TEXT
+  FROM public._prisma_migrations
+ WHERE migration_name IN (
+         '20260727140000_agent_mission_realtime_lease_expand',
+         '20260727150000_agent_mission_realtime_lease_validate',
+         '20260727160000_realtime_admission_cancellation_fence_expand',
+         '20260727170000_realtime_admission_cancellation_fence_validate',
+         '20260727180000_agent_mission_event_command_namespace_expand',
+         '20260727190000_agent_mission_event_command_namespace_validate',
+         '20260727200000_agent_mission_event_command_namespace_cutover',
+         '20260727210000_agent_mission_fingerprint_key_readiness',
+         '20260727220000_agent_mission_bootstrap_receipt_expand',
+         '20260727230000_agent_mission_bootstrap_receipt_validate'
+       )
+   AND finished_at IS NOT NULL
+   AND rolled_back_at IS NULL;
+SQL
+  )"
+  if [ "${agent_mission_m1b_migrations:-missing}" != 10 ]; then
+    echo "BOB_RELEASE_PHASE=postdeploy requires the complete AgentMission M1-B migration train" >&2
+    return 1
+  fi
+}
+
 command -v pnpm >/dev/null 2>&1 || { echo "pnpm is required" >&2; exit 1; }
 command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
@@ -2184,27 +2434,49 @@ node --test \
   apps/api/scripts/assert-migration-lineage.test.mjs \
   apps/api/scripts/assert-applied-migration-checksums.test.mjs
 # Avant la première mutation, toute migration déjà appliquée doit encore correspondre octet pour
-# octet au dépôt. Les nouveaux fichiers locaux sont attendus jusqu'au migrate deploy.
-node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local
+# octet au dépôt. Seul predeploy accepte des fichiers locaux en attente jusqu'au migrate deploy ;
+# postdeploy exige une bijection stricte et ne sert jamais de voie de migration de secours.
+if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  node apps/api/scripts/assert-applied-migration-checksums.mjs --allow-pending-local
+else
+  node apps/api/scripts/assert-applied-migration-checksums.mjs
+fi
 
 # Ne jamais installer l'expand qui gèle les sorties historiques si des factures émises n'ont pas
 # encore reçu une audience revue. Le contrôle est volontairement antérieur à toute mutation de
 # rôle ou de schéma de ce train.
 sh apps/api/scripts/check-document-archive-legacy-audience.sh
+if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
+  # Un postdeploy n'est jamais une voie de migration de secours. Cette preuve est placée avant
+  # le build et avant toute création/transfert de rôle afin qu'une mauvaise phase reste sans
+  # mutation de schéma ou d'autorité.
+  assert_agent_mission_m1b_ready_for_postdeploy
+  # Le postdeploy est l'unique autorité de réouverture. Fermer avant le build et avant toute
+  # mutation d'ACL garantit qu'un échec intermédiaire laisse Bob Live indisponible, jamais ouvert
+  # sur une release seulement partiellement certifiée.
+  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh close-existing
+fi
 pnpm --filter '@bob/api...' run build
 
 # Révoque tout ancien SET ROLE runtime avant même que la migration SECURITY DEFINER soit visible.
 ensure_mistral_bootstrap_reaper_role
 ensure_openai_native_maintenance_directory_role
 ensure_realtime_reaper_directory_role
+ensure_agent_mission_release_flag_authority_role
+ensure_agent_mission_fingerprint_readiness_authority_role
 DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh ensure
+if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  close_and_drain_realtime_before_cancellation_fence_expand
+fi
 # Adhesion implicite du createur sur tout role cree par les migrations (Supabase tue
 # la connexion sur un GRANT d'adhesion explicite vers postgres). Reglage base, idempotent.
 psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
   -c "SELECT format('ALTER DATABASE %I SET createrole_self_grant = %L', current_database(), 'set')" \
   | psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1
 
-pnpm --filter @bob/api exec prisma migrate deploy
+if [ "$BOB_RELEASE_PHASE" = predeploy ]; then
+  pnpm --filter @bob/api exec prisma migrate deploy
+fi
 node apps/api/scripts/assert-applied-migration-checksums.mjs
 certify_openai_native_legacy_gate_pregrant
 certify_generated_legal_storage_fence
@@ -2213,9 +2485,13 @@ node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 node apps/api/scripts/manage-bob-live-native-key-versions.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+provision_agent_mission_fingerprint_readiness_authority
+node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs stage
 certify_agent_mission_release_acl
 provision_openai_native_maintenance_directory
 provision_realtime_reaper_directory
+provision_agent_mission_release_flag_authority
+certify_agent_mission_realtime_release_acl
 DIRECT_URL="$DIRECT_URL" APP_DATABASE_ROLE="${APP_DATABASE_ROLE:-}" \
   sh apps/api/scripts/realtime-capacity-release.sh provision
 # Toute la suite de certification s'exécute admissions fermées. Un échec ne peut donc jamais
@@ -2271,7 +2547,17 @@ DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
 cleanup_rls_cert
 trap - EXIT HUP INT TERM
 
-# Dernier geste de la release : active la configuration exacte demandée, ou laisse explicitement
-# l'autorité fermée. Aucun test susceptible d'échouer n'est exécuté après cette transition.
-DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
+# Le pré-déploiement ne rouvre JAMAIS les anciens pods : la capacité reste fermée jusqu'à la
+# readiness du SHA et la preuve de retrait N-1 dans le pipeline. Seule une recertification
+# post-déploiement peut réappliquer la configuration live demandée.
+if [ "$BOB_RELEASE_PHASE" = postdeploy ]; then
+  # Le nouveau SHA est seul, les admissions sont encore fermées et la capacité doit être drainée.
+  # Le retrait ferme alors le droit d'écriture N-1 ; il reste rejouable tant que son secret est
+  # conservé dans le keyring pour les events durables.
+  node apps/api/scripts/manage-agent-mission-fingerprint-key-versions.mjs retire
+  DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/realtime-capacity-release.sh configure
+else
+  DIRECT_URL="$DIRECT_URL" BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false \
+    sh apps/api/scripts/realtime-capacity-release.sh configure
+fi
 echo "Bob Pro API release checks passed"

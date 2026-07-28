@@ -10,8 +10,29 @@ import {
   MistralVoxtralTtsAdapter,
   OpenAiCompatibleLlmAdapter,
 } from './providers';
+import { LOCAL_WHISPER_AUDIT_CONTRACT } from './local-whisper-audit-contract';
 
 const ORIGINAL_ENV = { ...process.env };
+
+function openAiWave(dataByteLength = 468, streamingLengths = false): Buffer {
+  const bytes = Buffer.alloc(44 + dataByteLength);
+  bytes.write('RIFF', 0, 'ascii');
+  bytes.writeUInt32LE(streamingLengths ? 0xffff_ffff : bytes.byteLength - 8, 4);
+  bytes.write('WAVEfmt ', 8, 'ascii');
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(24_000, 24);
+  bytes.writeUInt32LE(48_000, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write('data', 36, 'ascii');
+  bytes.writeUInt32LE(streamingLengths ? 0xffff_ffff : dataByteLength, 40);
+  for (let index = 44; index < bytes.byteLength; index += 1) {
+    bytes[index] = (index - 44) % 251;
+  }
+  return bytes;
+}
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
@@ -69,9 +90,7 @@ describe('Mistral Voxtral providers', () => {
     process.env.MISTRAL_API_KEY = 'mistral-key';
     process.env.OPENAI_API_KEY = 'openai-key-that-must-not-be-used';
     process.env.MISTRAL_URL = 'https://proxy-non-qualifie.example/v1';
-    const wav = Buffer.alloc(512);
-    wav.write('RIFF', 0, 'ascii');
-    wav.write('WAVE', 8, 'ascii');
+    const wav = openAiWave();
     const first = wav.subarray(0, 256).toString('base64');
     const second = wav.subarray(256).toString('base64');
     const encoder = new TextEncoder();
@@ -127,10 +146,8 @@ describe('Mistral Voxtral providers', () => {
     process.env.OPENAI_URL = 'https://proxy-non-qualifie.example/v1';
     process.env.OPENAI_REALTIME_VOICE = 'cedar';
     delete process.env.OPENAI_TTS_MODEL;
-    const wav = Buffer.alloc(512);
-    wav.write('RIFF', 0, 'ascii');
-    wav.write('WAVE', 8, 'ascii');
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(wav, {
+    const wav = openAiWave();
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(new Uint8Array(wav), {
       status: 200,
       headers: { 'content-type': 'audio/wav' },
     }));
@@ -159,6 +176,103 @@ describe('Mistral Voxtral providers', () => {
         'Lis exactement le texte fourni sans rien ajouter ni omettre.',
       ].join(' '),
     });
+  });
+
+  it('matérialise les longueurs sentinelles du WAV OpenAI sans modifier le PCM', async () => {
+    const streamed = openAiWave(32_000, true);
+    const pcm = Buffer.from(streamed.subarray(44));
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(streamed), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    const output = await adapter.synthesize('Bob vérifie le montant de 42 euros.');
+    const canonical = Buffer.from(output.audioBase64 ?? '', 'base64');
+
+    expect(typeof output.audioBase64).toBe('string');
+    expect(canonical.readUInt32LE(4)).toBe(canonical.byteLength - 8);
+    expect(canonical.readUInt32LE(40)).toBe(canonical.byteLength - 44);
+    expect(canonical.subarray(44)).toEqual(pcm);
+    expect(output).toMatchObject({
+      mimeType: 'audio/wav',
+      model: 'gpt-4o-mini-tts-2025-12-15',
+    });
+  });
+
+  it.each([
+    ['RIFF sentinelle avec data finie', true, false],
+    ['RIFF fini avec data sentinelle', false, true],
+  ] as const)('matérialise la forme mixte %s', async (_label, streamingRiff, streamingData) => {
+    const bytes = openAiWave(4_800);
+    if (streamingRiff) bytes.writeUInt32LE(0xffff_ffff, 4);
+    if (streamingData) bytes.writeUInt32LE(0xffff_ffff, 40);
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    const output = Buffer.from(
+      (await adapter.synthesize('Bonjour.')).audioBase64 ?? '',
+      'base64',
+    );
+
+    expect(output.readUInt32LE(4)).toBe(output.byteLength - 8);
+    expect(output.readUInt32LE(40)).toBe(output.byteLength - 44);
+  });
+
+  it.each([
+    ['taille RIFF contradictoire', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(12, 4);
+      return bytes;
+    }],
+    ['chunk data tronqué', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(bytes.byteLength, 40);
+      return bytes;
+    }],
+    ['sentinelle sur un chunk non-data', () => {
+      const bytes = openAiWave();
+      bytes.writeUInt32LE(0xffff_ffff, 16);
+      return bytes;
+    }],
+    ['chunk fmt manquant', () => {
+      const bytes = openAiWave();
+      bytes.write('JUNK', 12, 'ascii');
+      return bytes;
+    }],
+    ['taille sentinelle impaire sans padding prouvable', () => openAiWave(469, true)],
+    ['second chunk data', () => {
+      const duplicate = Buffer.alloc(12);
+      duplicate.write('data', 0, 'ascii');
+      duplicate.writeUInt32LE(4, 4);
+      const bytes = Buffer.concat([openAiWave(468), duplicate]);
+      bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+      return bytes;
+    }],
+    ['plus de 64 chunks', () => {
+      const junkChunks = Buffer.alloc(65 * 8);
+      for (let offset = 0; offset < junkChunks.byteLength; offset += 8) {
+        junkChunks.write('JUNK', offset, 'ascii');
+      }
+      const bytes = Buffer.concat([
+        openAiWave(468).subarray(0, 12),
+        junkChunks,
+        openAiWave(468).subarray(12),
+      ]);
+      bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+      return bytes;
+    }],
+  ] as const)('refuse un WAV OpenAI ambigu : %s', async (_label, fixture) => {
+    const adapter = new OpenAiRealtimeSpeechTtsAdapter('openai-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(fixture()), {
+      status: 200,
+      headers: { 'content-type': 'audio/wav' },
+    })));
+
+    await expect(adapter.synthesize('Bonjour.')).rejects.toThrow('voice_provider_invalid_audio');
   });
 
   it('honore le modèle OpenAI configuré et borne/refuse toute réponse non-WAV', async () => {
@@ -364,6 +478,7 @@ describe('Mistral Voxtral providers', () => {
     process.env.BOB_LIVE_LOCAL_AUDIT_BASE_URL = 'http://127.0.0.1:8080/v1';
     process.env.BOB_LIVE_LOCAL_AUDIT_TOKEN = 'a'.repeat(32);
     delete process.env.OPENAI_API_KEY;
+    delete process.env.REALTIME_SPEECH_AUDIT_STT_MODEL;
     expect(buildRealtimeSpeechAuditStt()?.id).toBe('local-whisper');
   });
 
@@ -395,13 +510,13 @@ describe('Mistral Voxtral providers', () => {
     const adapter = new LocalWhisperAuditSttAdapter(
       'audit-token-that-is-at-least-32-bytes',
       'http://localhost:8080/v1',
-      'whisper-local-test',
+      LOCAL_WHISPER_AUDIT_CONTRACT.model.id,
     );
     const audio = Buffer.from([0x52, 0x49, 0x46, 0x46]).toString('base64');
 
     await expect(adapter.transcribe(audio, 'audio/wav')).resolves.toEqual({
       text: 'Bonjour Bob.',
-      model: 'whisper-local-test',
+      model: LOCAL_WHISPER_AUDIT_CONTRACT.model.id,
     });
     expect(adapter.auditTrustDomain).toBe('bob.local-whisper');
     expect(fetchMock).toHaveBeenCalledWith(
@@ -409,6 +524,7 @@ describe('Mistral Voxtral providers', () => {
       expect.objectContaining({
         method: 'POST',
         headers: { authorization: 'Bearer audit-token-that-is-at-least-32-bytes' },
+        redirect: 'error',
       }),
     );
   });
@@ -417,20 +533,137 @@ describe('Mistral Voxtral providers', () => {
     expect(() => new LocalWhisperAuditSttAdapter('short', 'https://localhost:8080/v1')).toThrow(
       'local_whisper_invalid_config',
     );
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'é'.repeat(32),
+      'https://localhost:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(257),
+      'https://localhost:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
     expect(() => new LocalWhisperAuditSttAdapter('a'.repeat(32), 'http://audit.example/v1')).toThrow(
       'local_whisper_invalid_config',
     );
     expect(() => new LocalWhisperAuditSttAdapter('a'.repeat(32), 'https://audit.example/v1')).toThrow(
       'local_whisper_invalid_config',
     );
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://another-service.railway.internal:8080/v1',
+    )).toThrow('local_whisper_invalid_config');
+    expect(() => new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+      'whisper-latest',
+    )).toThrow('local_whisper_invalid_config');
     const adapter = new LocalWhisperAuditSttAdapter('a'.repeat(32), 'https://localhost:8080/v1');
     await expect(adapter.transcribe('!!!!', 'audio/wav')).rejects.toThrow('voice_provider_invalid_audio');
+    await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/mpeg'))
+      .rejects.toThrow('voice_provider_invalid_audio');
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ transcript: 'non' }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })));
     await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/wav'))
       .rejects.toThrow('local_whisper_invalid_response');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ text: '   ' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    await expect(adapter.transcribe(Buffer.from([1]).toString('base64'), 'audio/wav'))
+      .rejects.toThrow('local_whisper_invalid_response');
+  });
+
+  it('sonde réellement la readiness privée et exige les digests compilés', async () => {
+    const adapter = new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    const readyPayload = {
+      status: 'ready',
+      schemaVersion: LOCAL_WHISPER_AUDIT_CONTRACT.schemaVersion,
+      engine: { ...LOCAL_WHISPER_AUDIT_CONTRACT.engine },
+      model: { ...LOCAL_WHISPER_AUDIT_CONTRACT.model },
+      capacity: { active: 0, queued: 0 },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(readyPayload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.health()).resolves.toEqual({ healthy: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://bob-live-whisper-audit.railway.internal:8080/v1/health',
+      expect.objectContaining({ method: 'GET', redirect: 'error' }),
+    );
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      ...readyPayload,
+      model: { ...readyPayload.model, sha256: '0'.repeat(64) },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+    await expect(adapter.health()).resolves.toEqual({ healthy: false });
+  });
+
+  it('prouve les refus réseau du gateway sans envoyer de contenu métier', async () => {
+    const token = 'audit-token-that-is-at-least-32-bytes';
+    const adapter = new LocalWhisperAuditSttAdapter(
+      token,
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    const statuses = [401, 401, 404, 413] as const;
+    const fetchMock = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => {
+      const status = statuses[fetchMock.mock.calls.length - 1];
+      if (status === undefined) throw new Error('unexpected_call');
+      return new Response(JSON.stringify({ error: 'refused' }), {
+        status,
+        headers: {
+          'cache-control': 'no-store',
+          'content-type': 'application/json; charset=utf-8',
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(adapter.proveDeploymentControls()).resolves.toEqual({ healthy: true });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[0]).toEqual([
+      'http://bob-live-whisper-audit.railway.internal:8080/v1/audio/transcriptions',
+      expect.objectContaining({ method: 'POST', redirect: 'error' }),
+    ]);
+    const wrongAuth = (
+      (fetchMock.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>
+    ).authorization;
+    expect(wrongAuth).not.toBe(`Bearer ${token}`);
+    expect(wrongAuth).toMatch(/^Bearer [\x21-\x7e]{32,256}$/u);
+    expect(fetchMock.mock.calls[2]?.[0])
+      .toBe('http://bob-live-whisper-audit.railway.internal:8080/v1/load');
+    const oversized = (fetchMock.mock.calls[3]?.[1] as RequestInit).body;
+    expect(oversized).toBeInstanceOf(Uint8Array);
+    expect((oversized as Uint8Array).byteLength)
+      .toBe(LOCAL_WHISPER_AUDIT_CONTRACT.maxRequestBytes + 1);
+    expect(JSON.stringify(await adapter.proveDeploymentControls({
+      signal: AbortSignal.abort(),
+    }))).toBe('{"healthy":false}');
+  });
+
+  it('ferme la preuve réseau si un code ou un header de refus dérive', async () => {
+    const adapter = new LocalWhisperAuditSttAdapter(
+      'a'.repeat(32),
+      'http://bob-live-whisper-audit.railway.internal:8080/v1',
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"refused"}', {
+      status: 401,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    })));
+
+    await expect(adapter.proveDeploymentControls()).resolves.toEqual({ healthy: false });
   });
 
   it('annule physiquement un audit Whisper local et refuse une réponse au mauvais MIME', async () => {

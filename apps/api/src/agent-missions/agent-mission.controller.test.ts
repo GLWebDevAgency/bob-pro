@@ -8,7 +8,9 @@ import type {
   AgentMissionFingerprintPort,
   AgentMissionOwner,
   AgentMissionQuoteDraftSlot,
+  AgentMissionReadExecution,
   AgentMissionReadTransaction,
+  AgentMissionRealtimeAuthorityProof,
   AgentMissionTransaction,
   AgentMissionUnitOfWorkPort,
   AgentMissionWriteExecution,
@@ -26,6 +28,7 @@ import {
   AGENT_MISSION_HTTP_AUTHORITY,
   DisabledAgentMissionHttpAuthority,
   agentMissionHttpAuthorityProvider,
+  type AgentMissionHttpAuthorization,
   type AgentMissionHttpAuthority,
 } from './agent-mission-http-authority';
 import { AgentMissionModule } from './agent-mission.module';
@@ -46,6 +49,13 @@ function serviceSpies() {
       ok: true as const,
       value: {
         outcome: 'cancelled',
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    acknowledgeScreen: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'acknowledged',
         mission: { id: '20000000-0000-4000-8000-000000000001' },
       },
     })),
@@ -70,6 +80,39 @@ function statusResponse() {
 }
 
 const DATABASE_NOW = '2026-07-26T12:00:00.000Z';
+const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
+const TEST_CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
+const TEST_PROOF = Object.freeze({
+  subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
+  principalBindingHash: 'b'.repeat(64),
+  capabilityHash: 'c'.repeat(64),
+}) satisfies AgentMissionRealtimeAuthorityProof;
+
+function testAuthorization(
+  operation: AgentMissionHttpAuthorization['operation'],
+): AgentMissionHttpAuthorization {
+  return Object.freeze({
+    operation,
+    owner: Object.freeze({ companyId: 'company-1', ownerUserId: 'owner-1' }),
+    proof: TEST_PROOF,
+  });
+}
+
+function testAuthority(): AgentMissionHttpAuthority {
+  return {
+    prepare: vi.fn((operation, capability) => (
+      capability === TEST_CAPABILITY
+        ? { ok: true as const, value: testAuthorization(operation) }
+        : {
+            ok: false as const,
+            error: {
+              kind: 'forbidden' as const,
+              reason: 'agent_mission_capability_invalid',
+            },
+          }
+    )),
+  };
+}
 
 class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   mission: AgentMission | null = null;
@@ -79,10 +122,12 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
 
   async readQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
     work: (transaction: AgentMissionReadTransaction) => Promise<T>,
-  ): Promise<T> {
-    return work({
+  ): Promise<AgentMissionReadExecution<T>> {
+    const value = await work({
       databaseNow: async () => DATABASE_NOW,
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
         findById: async ({ missionId }) => {
@@ -91,15 +136,18 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         },
       },
     });
+    return { status: 'executed', value };
   }
 
   async runQuoteCreationOwner<T>(
     owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
     work: (transaction: AgentMissionTransaction) => Promise<T>,
   ): Promise<AgentMissionWriteExecution<T>> {
     this.transactions += 1;
     const value = await work({
       databaseNow: async () => DATABASE_NOW,
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
         findById: async ({ missionId }) => {
@@ -166,6 +214,12 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           return true;
         },
       },
+      quoteScreen: {
+        observeForUpdate: async () => ({
+          status: 'rejected',
+          reason: 'unavailable',
+        }),
+      },
     });
     return { status: 'executed', value };
   }
@@ -210,12 +264,22 @@ describe('AgentMissionController M1-A', () => {
   });
 
   it.each([
-    ['get', (candidate: AgentMissionController) => candidate.getCurrent()],
+    ['get', (candidate: AgentMissionController) => candidate.getCurrent(undefined)],
     ['start', (candidate: AgentMissionController) => candidate.start(
       { forged: true },
       statusResponse(),
+      undefined,
     )],
-    ['cancel', (candidate: AgentMissionController) => candidate.cancel('not-a-uuid', null)],
+    ['cancel', (candidate: AgentMissionController) => candidate.cancel(
+      'not-a-uuid',
+      null,
+      undefined,
+    )],
+    ['screen ACK', (candidate: AgentMissionController) => candidate.acknowledgeScreen(
+      'not-a-uuid',
+      null,
+      undefined,
+    )],
   ] as const)(
     'l’autorité production refuse %s avant validation métier et appel de service',
     async (_operation, invoke) => {
@@ -232,13 +296,12 @@ describe('AgentMissionController M1-A', () => {
       expect(spies.getCurrent).not.toHaveBeenCalled();
       expect(spies.start).not.toHaveBeenCalled();
       expect(spies.cancel).not.toHaveBeenCalled();
+      expect(spies.acknowledgeScreen).not.toHaveBeenCalled();
     },
   );
 
   it('une autorité de test explicite ouvre le contrat exact, jamais un champ forgé', async () => {
-    const authority: AgentMissionHttpAuthority = {
-      authorize: vi.fn(async () => true),
-    };
+    const authority = testAuthority();
     const { controller: candidate, spies } = controller(authority);
 
     const invalid = await candidate.start(
@@ -247,6 +310,7 @@ describe('AgentMissionController M1-A', () => {
         companyId: 'forged',
       },
       statusResponse(),
+      TEST_CAPABILITY,
     ).catch((error: unknown) => error);
     expect(invalid).toBeInstanceOf(HttpException);
     expect((invalid as HttpException).getStatus()).toBe(422);
@@ -256,12 +320,14 @@ describe('AgentMissionController M1-A', () => {
     await expect(candidate.start(
       { commandId: '10000000-0000-4000-8000-000000000001' },
       response,
+      TEST_CAPABILITY,
     )).resolves.toMatchObject({
       outcome: 'created',
       startOutcome: 'no_slot',
     });
     expect(response.status).toHaveBeenCalledWith(201);
     expect(spies.start).toHaveBeenCalledWith({
+      authorization: testAuthorization('start_quote_creation'),
       commandId: '10000000-0000-4000-8000-000000000001',
     });
   });
@@ -281,13 +347,19 @@ describe('AgentMissionController M1-A', () => {
     expect(controllers).toEqual([AgentMissionController]);
     expect(providers).toContain(AgentMissionService);
     expect(providers).toContain(agentMissionHttpAuthorityProvider);
-    expect(agentMissionHttpAuthorityProvider).toEqual({
+    expect(agentMissionHttpAuthorityProvider).toMatchObject({
       provide: AGENT_MISSION_HTTP_AUTHORITY,
-      useClass: DisabledAgentMissionHttpAuthority,
+      inject: expect.any(Array),
     });
-    await expect(new DisabledAgentMissionHttpAuthority().authorize(
+    expect(typeof (agentMissionHttpAuthorityProvider as { useFactory?: unknown }).useFactory)
+      .toBe('function');
+    expect(new DisabledAgentMissionHttpAuthority().prepare(
       'start_quote_creation',
-    )).resolves.toBe(false);
+      TEST_CAPABILITY,
+    )).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'agent_mission_http_capability' },
+    });
   });
 
   it('compile la DI runtime et traverse controller → service → use case → UoW réel de test', async () => {
@@ -296,7 +368,7 @@ describe('AgentMissionController M1-A', () => {
       createAgentMissionUnitOfWork: vi.fn(() => unitOfWork),
     } as unknown as Persistence;
     const logger = { audit: vi.fn() };
-    const authority: AgentMissionHttpAuthority = { authorize: vi.fn(async () => true) };
+    const authority = testAuthority();
     const moduleRef = await Test.createTestingModule({
       imports: [AgentMissionModule],
     })
@@ -327,19 +399,22 @@ describe('AgentMissionController M1-A', () => {
           const created = await candidate.start(
             { commandId: startCommand },
             createdResponse,
+            TEST_CAPABILITY,
           );
           const replayed = await candidate.start(
             { commandId: startCommand },
             replayResponse,
+            TEST_CAPABILITY,
           );
           const joined = await candidate.start(
             { commandId: joinCommand },
             joinResponse,
+            TEST_CAPABILITY,
           );
           const cancelled = await candidate.cancel(created.mission.id, {
             commandId: cancelCommand,
             expectedMissionRevision: joined.mission.revision,
-          });
+          }, TEST_CAPABILITY);
           return {
             created,
             replayed,
@@ -381,6 +456,22 @@ describe('AgentMissionController M1-A', () => {
         'agent_mission.cancelled',
         expect.objectContaining({ outcome: 'cancelled' }),
       );
+      const auditCalls = logger.audit.mock.calls as Array<
+        [string, Record<string, unknown>]
+      >;
+      const serializedAudit = JSON.stringify(auditCalls);
+      expect(serializedAudit).not.toContain('company-1');
+      expect(serializedAudit).not.toContain('owner-1');
+      expect(serializedAudit).not.toContain(outputs.created.mission.id);
+      for (const [, fields] of auditCalls) {
+        expect(fields).not.toHaveProperty('companyId');
+        expect(fields).not.toHaveProperty('ownerUserId');
+        expect(fields).not.toHaveProperty('missionId');
+        expect(fields.tenantRef).toMatch(/^amr1_1_[a-f0-9]{64}$/u);
+        expect(fields.ownerRef).toMatch(/^amr1_1_[a-f0-9]{64}$/u);
+        expect(fields.missionRef).toMatch(/^amr1_1_[a-f0-9]{64}$/u);
+        expect(new Set([fields.tenantRef, fields.ownerRef, fields.missionRef]).size).toBe(3);
+      }
       expect(persistence.createAgentMissionUnitOfWork).toHaveBeenCalledTimes(4);
     } finally {
       await moduleRef.close();
@@ -410,6 +501,7 @@ describe('AgentMissionController M1-A', () => {
         () => candidate.start(
           { commandId: 'not-even-validated' },
           statusResponse(),
+          TEST_CAPABILITY,
         )
           .catch((error: unknown) => error),
       );

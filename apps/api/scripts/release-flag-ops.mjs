@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
 
 const OPERATIONS = new Set(['set-global', 'set-kill-switch', 'set-subject', 'remove-subject']);
 const ENVIRONMENTS = new Set(['development', 'staging', 'production']);
@@ -346,12 +347,16 @@ export function runReleaseFlagOperation(input, dependencies = {}) {
   };
   const args = ['--no-psqlrc', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1'];
   for (const [name, value] of Object.entries(variables)) args.push('-v', `${name}=${value}`);
-  args.push(directUrl);
-  const result = spawn('psql', args, {
-    input: sqlForReleaseFlagOperation(input.operation),
-    encoding: 'utf8',
-    env: process.env,
-  });
+  const result = withPsqlChildEnvironment(
+    directUrl,
+    operationEnvironment,
+    (childEnvironment) =>
+      spawn('psql', args, {
+        input: sqlForReleaseFlagOperation(input.operation),
+        encoding: 'utf8',
+        env: childEnvironment,
+      }),
+  );
   if (result.status !== 0) {
     const diagnostic = String(result.stderr || 'psql failed').replaceAll(directUrl, '[redacted]').trim();
     fail(`database operation failed${diagnostic ? `: ${diagnostic}` : ''}`);

@@ -23,6 +23,8 @@ DELETE FROM realtime_speech_artifacts WHERE "companyId" IN ('rls-co-a', 'rls-co-
 DELETE FROM realtime_voice_usage_events WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_voice_usage_daily WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_session_leases WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
+DELETE FROM realtime_admission_cancellation_fences
+ WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM realtime_admission_events WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
 DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');

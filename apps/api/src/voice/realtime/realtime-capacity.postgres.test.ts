@@ -215,6 +215,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           companyId,
           subjectHash: index.toString(16).padStart(64, '0'),
           maxSessionSeconds: 900,
+          subjectHashCandidates: [index.toString(16).padStart(64, '0')],
+          principalBindingHash: index.toString(16).padStart(64, '0'),
+          agentMissionBinding: null,
         }),
       ));
       for (const [index, result] of results.entries()) {
@@ -275,6 +278,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         companyId: companyIds[retryIndex]!,
         subjectHash: retryIndex.toString(16).padStart(64, '0'),
         maxSessionSeconds: 900,
+        subjectHashCandidates: [retryIndex.toString(16).padStart(64, '0')],
+        principalBindingHash: retryIndex.toString(16).padStart(64, '0'),
+        agentMissionBinding: null,
       });
       const retriedLease = allowed(retried);
       expect(retriedLease).not.toBeNull();
@@ -404,6 +410,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         companyId: companyIds.at(-1)!,
         subjectHash: 'b'.repeat(64),
         maxSessionSeconds: 900,
+        subjectHashCandidates: ['b'.repeat(64)],
+        principalBindingHash: 'b'.repeat(64),
+        agentMissionBinding: null,
       })).resolves.toMatchObject({ allowed: false, denial: 'unavailable' });
       await expect(inspector.inspect()).resolves.toMatchObject({
         ok: true,

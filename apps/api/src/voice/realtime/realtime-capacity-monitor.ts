@@ -3,7 +3,7 @@ import { Interval } from '@nestjs/schedule';
 import { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
 import {
-  realtimeGlobalCapacityMatches,
+  classifyRealtimeGlobalCapacityAuthority,
   type RealtimeGlobalCapacityExpectation,
   type RealtimeGlobalCapacityInspector,
 } from './realtime-capacity';
@@ -55,18 +55,35 @@ export class RealtimeGlobalCapacityMonitor implements OnApplicationBootstrap {
       this.logUnhealthyOnce('Bob Live global capacity inspection unavailable.');
       return false;
     }
-    if (!this.expected || !realtimeGlobalCapacityMatches(result.snapshot, this.expected)) {
+    const authority = this.expected
+      ? classifyRealtimeGlobalCapacityAuthority(result.snapshot, this.expected)
+      : 'invalid';
+    if (authority === 'invalid') {
       this.metrics.bobLiveCapacityInspections.inc({ outcome: 'mismatch' });
       this.logUnhealthyOnce('Bob Live global capacity configuration mismatch.');
       return false;
     }
 
     this.unhealthyLogged = false;
-    this.metrics.bobLiveCapacityInspections.inc({ outcome: 'ok' });
+    this.metrics.bobLiveCapacityInspections.inc({
+      outcome: authority === 'closed_safe' ? 'closed' : 'ok',
+    });
     this.metrics.bobLiveCapacityUsed.set(result.snapshot.usedSessions);
-    this.metrics.bobLiveCapacityGlobalLimit.set(this.expected.globalMaxSessions);
-    this.metrics.bobLiveCapacityProviderLimit.set(this.expected.providerMaxSessions);
-    this.metrics.bobLiveCapacityConfigVersion.set(this.expected.configVersion);
+    if (result.snapshot.globalMaxSessions === null) {
+      this.metrics.bobLiveCapacityGlobalLimit.remove();
+    } else {
+      this.metrics.bobLiveCapacityGlobalLimit.set(result.snapshot.globalMaxSessions);
+    }
+    if (result.snapshot.providerMaxSessions === null) {
+      this.metrics.bobLiveCapacityProviderLimit.remove();
+    } else {
+      this.metrics.bobLiveCapacityProviderLimit.set(result.snapshot.providerMaxSessions);
+    }
+    if (result.snapshot.configVersion === null) {
+      this.metrics.bobLiveCapacityConfigVersion.remove();
+    } else {
+      this.metrics.bobLiveCapacityConfigVersion.set(result.snapshot.configVersion);
+    }
     this.metrics.bobLiveCapacitySnapshotAge.set(Math.max(
       0,
       (Date.now() - Date.parse(result.snapshot.updatedAt)) / 1_000,

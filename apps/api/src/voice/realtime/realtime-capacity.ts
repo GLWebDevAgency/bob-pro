@@ -32,6 +32,10 @@ export interface RealtimeGlobalCapacityInspector {
   inspect(): Promise<RealtimeGlobalCapacityInspection>;
 }
 
+/**
+ * Autorité ouverte : ce prédicat décrit l'état exigé par une admission, jamais le simple boot
+ * d'un binaire pendant un rollout fermé.
+ */
 export function realtimeGlobalCapacityMatches(
   snapshot: RealtimeGlobalCapacitySnapshot,
   expected: RealtimeGlobalCapacityExpectation,
@@ -44,6 +48,32 @@ export function realtimeGlobalCapacityMatches(
     && snapshot.configVersion === expected.configVersion
     && snapshot.usedSessions >= 0
     && snapshot.usedSessions <= expected.globalMaxSessions;
+}
+
+export type RealtimeGlobalCapacityAuthorityState =
+  | 'active_exact'
+  | 'closed_safe'
+  | 'invalid';
+
+/**
+ * Autorité structurellement prête au boot.
+ *
+ * `closed` est l'état sûr attendu entre predeploy et postdeploy. Il peut encore porter les
+ * bindings N-1 et des leases en drainage : le préflight SQL refuse néanmoins chaque nouvelle
+ * réservation jusqu'à `active`. La validité structurelle du snapshot fermé est garantie par le
+ * parser de l'inspector et les contraintes PostgreSQL.
+ */
+export function classifyRealtimeGlobalCapacityAuthority(
+  snapshot: RealtimeGlobalCapacitySnapshot,
+  expected: RealtimeGlobalCapacityExpectation,
+): RealtimeGlobalCapacityAuthorityState {
+  if (
+    snapshot.mode === 'closed'
+    && Number.isInteger(snapshot.usedSessions)
+    && snapshot.usedSessions >= 0
+  ) return 'closed_safe';
+  if (realtimeGlobalCapacityMatches(snapshot, expected)) return 'active_exact';
+  return 'invalid';
 }
 
 /** Une persistance sans autorité PostgreSQL réelle ne peut jamais annoncer Bob Live prêt. */

@@ -358,7 +358,11 @@ async function attach(
     session: value.settings.speechDelivery === 'openai-native-webrtc-v1'
       ? buildOpenAiNativeRealtimeSessionConfig(value.settings)
       : buildOpenAiRealtimeSessionConfig(value.settings),
-    lifecycle: { activate: vi.fn(async () => undefined), terminate: value.terminate },
+    lifecycle: {
+      activate: vi.fn(async () => undefined),
+      fenceAfterDurableTerminationClaim: vi.fn(),
+      terminate: value.terminate,
+    },
     turn: options.turn ? { run: options.turn as never } : undefined,
     controlContext: {
       isCurrent: vi.fn(async () => options.contextCurrent ?? true),
@@ -840,6 +844,27 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     })).resolves.toBe('confirmed');
     expect(value.cancel).toHaveBeenCalledOnce();
     expect(value.terminate).toHaveBeenCalledWith('user');
+  });
+
+  it('détache localement sous claim durable sans terminer provider ni lease', async () => {
+    const value = harness();
+    await attach(value);
+
+    expect(value.manager.fenceAndDetachSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+    })).toBe('detached');
+
+    expect(value.terminate).not.toHaveBeenCalled();
+    expect(value.provider.hangupCall).not.toHaveBeenCalled();
+    expect(value.sockets[0]?.socket.terminated).toBe(true);
+    await vi.waitFor(() => expect(value.owner.release).toHaveBeenCalledWith(OWNER));
+    expect(value.manager.fenceAndDetachSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+    })).toBe('not_found');
   });
 
   it('échoue fermé si l’owner durable est occupé ou absent', async () => {

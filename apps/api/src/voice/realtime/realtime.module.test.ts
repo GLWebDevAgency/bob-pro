@@ -18,7 +18,10 @@ import {
 } from './realtime-mistral-ingress-ticket';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import {
+  BOB_LIVE_RUNTIME_READINESS,
+  REALTIME_ADMISSION,
   REALTIME_DURABLE_CONTROLS,
+  REALTIME_AGENT_MISSION_ADMISSION,
   OPENAI_NATIVE_SPEECH_MAINTENANCE,
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   REALTIME_AGENT_TURN,
@@ -26,6 +29,7 @@ import {
   REALTIME_SPEECH_SOURCE_POLICY,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
+import { DurableRealtimeAgentMissionAdmissionGate } from './realtime-agent-mission-admission';
 import { OpenAiNativeSpeechMaintenanceScheduler } from './openai-native-speech-maintenance.scheduler';
 import { OpenAiNativeSpeechAuthority } from './openai-native-speech-authority';
 import { OpenAiNativeSpeechAcknowledgementService } from './openai-native-speech-acknowledgement';
@@ -34,6 +38,7 @@ import type { RealtimeVoiceSettings } from './realtime.types';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
 import { DisabledRealtimeDurableControlAuthority } from './realtime-control';
 import { RealtimeVoiceUsageWriter } from './realtime-voice-usage';
+import { RealtimeSpeechAcousticProbe } from './realtime-acoustic-probe';
 import {
   buildMistralConversationBootstrapReaperOptions,
   buildMistralConversationTerminalReplayRuntime,
@@ -160,6 +165,25 @@ function durable(): MistralConversationDurableAuthority {
 
 describe('RealtimeVoiceModule — composition terminale Mistral v2', () => {
   afterEach(() => vi.unstubAllEnvs());
+
+  it('compose obligatoirement le gate durable lorsque le master AgentMission est ON', () => {
+    validSpeechRuntimeEnvironment('openai');
+    const missionSecret = Buffer.alloc(32, 91).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({
+      1: missionSecret,
+    }));
+    const provider = moduleFactory(REALTIME_AGENT_MISSION_ADMISSION);
+    const persistence = {
+      cabinet: { flags: {} },
+      runWithIdentity: vi.fn(),
+    } as unknown as Persistence;
+
+    expect(provider.inject).toEqual([PERSISTENCE]);
+    expect(provider.useFactory(persistence))
+      .toBeInstanceOf(DurableRealtimeAgentMissionAdmissionGate);
+  });
 
   it('reste dormant et ne sollicite jamais la persistance sans opt-in', async () => {
     validMistralEnvironment();
@@ -575,6 +599,63 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
     },
   );
 
+  it('exporte une readiness qui réutilise l’auditeur et la preuve acoustique du renderer', async () => {
+    const health = vi.fn(async () => ({ healthy: true }));
+    const prove = vi.fn(async () => ({ healthy: true }));
+    const provider = moduleFactory(BOB_LIVE_RUNTIME_READINESS);
+    const readiness = provider.useFactory({
+      audited: { auditHealth: { health }, acousticProof: { prove } },
+    });
+    const exports = Reflect.getMetadata(
+      MODULE_METADATA.EXPORTS,
+      RealtimeVoiceModule,
+    ) as unknown[];
+
+    expect(exports).toContain(BOB_LIVE_RUNTIME_READINESS);
+    await expect(readiness.check({ fresh: true })).resolves.toEqual({
+      ready: true,
+      mode: 'audited',
+      speechAudit: 'ready',
+    });
+    expect(health).toHaveBeenCalledOnce();
+    expect(prove).toHaveBeenCalledOnce();
+    await expect(provider.useFactory({ native: {} }).check()).resolves.toMatchObject({
+      ready: true,
+      mode: 'native',
+      speechAudit: 'not_applicable',
+    });
+    await expect(provider.useFactory(null).check()).resolves.toMatchObject({
+      ready: true,
+      mode: 'disabled',
+      speechAudit: 'not_applicable',
+    });
+  });
+
+  it('câble la readiness avant toute réservation sans bloquer les autres gestes du port', async () => {
+    validSpeechRuntimeEnvironment('openai');
+    const reserve = vi.fn(async () => ({ allowed: false, denial: 'user_minute', retryAt: null }));
+    const persistence = {
+      createRealtimeAdmission: vi.fn(() => ({ reserve })),
+    } as unknown as Persistence;
+    const readiness = {
+      check: vi.fn(async () => ({
+        ready: false as const,
+        mode: 'audited' as const,
+        speechAudit: 'unavailable' as const,
+      })),
+    };
+    const provider = moduleFactory(REALTIME_ADMISSION);
+
+    expect(provider.inject).toEqual([PERSISTENCE, BOB_LIVE_RUNTIME_READINESS]);
+    const gated = provider.useFactory(persistence, readiness);
+    await expect(gated.reserve({})).resolves.toEqual({
+      allowed: false,
+      denial: 'unavailable',
+      retryAt: null,
+    });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
   it.each(['openai', 'mistral'] as const)(
     'conserve la chaîne auditée complète et exclusive avec %s',
     (provider) => {
@@ -585,6 +666,7 @@ describe('RealtimeVoiceModule — runtimes de restitution exclusifs', () => {
 
       if (!runtime?.audited) throw new Error('Audited speech runtime was not composed.');
       expect(runtime.native).toBeUndefined();
+      expect(runtime.audited.acousticProof).toBeInstanceOf(RealtimeSpeechAcousticProbe);
       expect(fixture.factories.nativeDelivery).not.toHaveBeenCalled();
       expect(fixture.factories.auditedDelivery).toHaveBeenCalledOnce();
       expect(fixture.factories.controls).toHaveBeenCalledOnce();

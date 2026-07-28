@@ -164,6 +164,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         subjectHash: subjectHmac,
         sessionId: randomUUID(),
         maxSessionSeconds: 180,
+        subjectHashCandidates: [subjectHmac],
+        principalBindingHash: subjectHmac,
+        agentMissionBinding: null,
       });
       if (!reserved.allowed) throw new Error(`Unexpected admission denial: ${reserved.denial}`);
       const lease = reserved.lease;

@@ -5,7 +5,12 @@ import {
   type MistralConversationSessionEndReason,
   type PendingAction,
 } from '@bob/ai';
-import { isCustomPrestationId, parseCustomPrestation } from '@bob/core';
+import {
+  AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS,
+  AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
+  isCustomPrestationId,
+  parseCustomPrestation,
+} from '@bob/core';
 import type {
   Result,
   AppError,
@@ -185,6 +190,15 @@ import {
   decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement,
   encodeRealtimeVoiceNativeSpeechDeliveryInput,
 } from './realtime-native-speech-ack-codec';
+import {
+  createHttpRealtimeAgentMissionSession,
+  type HttpAgentMissionRequest,
+  type HttpAgentMissionRequester,
+} from './http-agent-mission-session';
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type RealtimeAgentMissionSession,
+} from './agent-mission-session';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -252,7 +266,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isCanonicalBase64Url256Ticket(value: unknown, prefix: 'b2_' | 'r2_'): value is string {
+function isCanonicalBase64Url256Ticket(
+  value: unknown,
+  prefix: 'b2_' | 'r2_' | 'bam1_',
+): value is string {
   if (typeof value !== 'string' || value.length !== prefix.length + 43 || !value.startsWith(prefix)) {
     return false;
   }
@@ -261,6 +278,98 @@ function isCanonicalBase64Url256Ticket(value: unknown, prefix: 'b2_' | 'r2_'): v
   const lastIndex = BASE64URL_ALPHABET.indexOf(payload.at(-1) ?? '');
   // 32 octets produisent 43 caractères : les deux bits bas du dernier sextet sont nuls.
   return lastIndex >= 0 && lastIndex % 4 === 0;
+}
+
+type RealtimeAgentMissionProtocolExpectation =
+  | 'omitted'
+  | null
+  | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+
+type DecodedRealtimeAgentMissionBinding =
+  | { readonly kind: 'omitted' }
+  | { readonly kind: 'disabled' }
+  | { readonly kind: 'accepted'; readonly capability: string };
+
+interface DecodedRealtimeVoiceCallEnvelope {
+  readonly call: RealtimeVoiceCall;
+  readonly agentMissionBinding: DecodedRealtimeAgentMissionBinding;
+}
+
+function decodeRealtimeAgentMissionBinding(
+  value: Readonly<Record<string, unknown>>,
+  expected: RealtimeAgentMissionProtocolExpectation,
+): DecodedRealtimeAgentMissionBinding | null {
+  const hasVersion = Object.hasOwn(value, 'agentMissionProtocolVersion');
+  const hasCapability = Object.hasOwn(value, 'agentMissionCapability');
+  if (expected === 'omitted') {
+    return hasVersion || hasCapability ? null : { kind: 'omitted' };
+  }
+  if (!hasVersion || !hasCapability) return null;
+  if (expected === null) {
+    return value.agentMissionProtocolVersion === null
+      && value.agentMissionCapability === null
+      ? { kind: 'disabled' }
+      : null;
+  }
+  if (
+    value.agentMissionProtocolVersion === null
+    && value.agentMissionCapability === null
+  ) {
+    return { kind: 'disabled' };
+  }
+  if (
+    value.agentMissionProtocolVersion !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+    || !isCanonicalBase64Url256Ticket(value.agentMissionCapability, 'bam1_')
+  ) {
+    return null;
+  }
+  return {
+    kind: 'accepted',
+    capability: value.agentMissionCapability,
+  };
+}
+
+function attachRealtimeAgentMissionSession(
+  call: RealtimeVoiceCall,
+  binding: DecodedRealtimeAgentMissionBinding,
+  createSession: (
+    realtimeSessionId: string,
+    capability: string,
+  ) => RealtimeAgentMissionSession,
+): RealtimeVoiceCall {
+  if (binding.kind === 'omitted') return Object.freeze(call);
+  Object.defineProperty(call, 'agentMissionSession', {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: binding.kind === 'disabled'
+      ? null
+      : createSession(call.sessionHandle, binding.capability),
+  });
+  return Object.freeze(call);
+}
+
+function prepareRealtimeVoiceCall(
+  call: RealtimeVoiceCall,
+  agentMissionBinding: DecodedRealtimeAgentMissionBinding,
+): DecodedRealtimeVoiceCallEnvelope {
+  return { call, agentMissionBinding };
+}
+
+function decodeRealtimeAgentMissionBootstrapReceipt(
+  value: unknown,
+): { readonly acknowledged: true; readonly replayed: boolean } | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['acknowledged', 'replayed'])
+    || value.acknowledged !== true
+    || typeof value.replayed !== 'boolean'
+  ) return null;
+  return { acknowledged: true, replayed: value.replayed };
+}
+
+function canRetryRealtimeAgentMissionBootstrapReceipt(error: AppError): boolean {
+  return error.kind === 'dependency' && error.port === 'api';
 }
 
 function assertSecureApiBaseUrl(value: string): void {
@@ -1384,7 +1493,8 @@ function decodeRealtimeVoiceCall(
   expectedApiBaseUrl: string,
   expectedConfigVersion: string,
   expectedSpeechDelivery: RealtimeVoiceCallInput['speechDelivery'],
-): RealtimeVoiceCall | null {
+  expectedAgentMissionProtocol: RealtimeAgentMissionProtocolExpectation,
+): DecodedRealtimeVoiceCallEnvelope | null {
   if (!isRecord(value)) return null;
   const legacyWire =
     expectedConfigVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
@@ -1424,9 +1534,18 @@ function decodeRealtimeVoiceCall(
   )
     return null;
 
-  const wireCommonKeys = currentWire
+  const agentMissionBinding = decodeRealtimeAgentMissionBinding(
+    value,
+    expectedAgentMissionProtocol,
+  );
+  if (agentMissionBinding === null) return null;
+  const agentMissionWireKeys = agentMissionBinding.kind === 'omitted'
+    ? [] as const
+    : ['agentMissionProtocolVersion', 'agentMissionCapability'] as const;
+  const wireCommonKeysBase = currentWire
     ? [...commonKeys, 'speechDelivery'] as const
     : commonKeys;
+  const wireCommonKeys = [...wireCommonKeysBase, ...agentMissionWireKeys] as const;
 
   const common = {
     sessionHandle: value.sessionHandle,
@@ -1448,12 +1567,12 @@ function decodeRealtimeVoiceCall(
         !value.answerSdp.startsWith('v=0')
       )
         return null;
-      return {
+      return prepareRealtimeVoiceCall({
         transport: 'webrtc',
         speechDelivery: 'openai-native-webrtc-v1',
         answerSdp: value.answerSdp,
         ...common,
-      };
+      }, agentMissionBinding);
     }
     if (
       !hasExactKeys(value, [...wireCommonKeys, 'speechSourcePolicy', 'answerSdp']) ||
@@ -1469,13 +1588,13 @@ function decodeRealtimeVoiceCall(
       value.sessionHandle,
     );
     if (!speechSourcePolicy) return null;
-    return {
+    return prepareRealtimeVoiceCall({
       transport: 'webrtc',
       speechDelivery: 'audited-signed-url-v1',
       speechSourcePolicy,
       answerSdp: value.answerSdp,
       ...common,
-    };
+    }, agentMissionBinding);
   }
 
   if (value.transport === 'mistral-pcm') {
@@ -1523,7 +1642,7 @@ function decodeRealtimeVoiceCall(
         || value.routeMode !== 'push_to_talk'
         || value.fullDuplexCertified !== false
       ) return null;
-      return {
+      return prepareRealtimeVoiceCall({
         transport: 'mistral-pcm',
         websocketUrl: value.websocketUrl,
         companyId: value.companyId,
@@ -1536,7 +1655,7 @@ function decodeRealtimeVoiceCall(
         routeMode: value.routeMode,
         fullDuplexCertified: value.fullDuplexCertified,
         ...auditedCommon,
-      };
+      }, agentMissionBinding);
     }
     if (
       !hasExactKeys(value, [
@@ -1567,7 +1686,7 @@ function decodeRealtimeVoiceCall(
       !SHA_256_PATTERN.test(value.contextDigest)
     )
       return null;
-    return {
+    return prepareRealtimeVoiceCall({
       transport: 'mistral-pcm',
       websocketUrl: value.websocketUrl,
       companyId: value.companyId,
@@ -1578,7 +1697,7 @@ function decodeRealtimeVoiceCall(
       contextRevision: value.contextRevision,
       contextDigest: value.contextDigest,
       ...auditedCommon,
-    };
+    }, agentMissionBinding);
   }
   return null;
 }
@@ -1939,6 +2058,23 @@ export class HttpBobClient implements BobClient {
     }
   }
 
+  private terminateRealtimeBootstrapSession(sessionHandle: string) {
+    return this.req<{ ended: true }>(
+      'DELETE',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
+      undefined,
+      undefined,
+      (value) => (
+        isRecord(value)
+        && hasExactKeys(value, ['ended'])
+        && value.ended === true
+          ? { ended: true }
+          : null
+      ),
+      AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
+    );
+  }
+
   /**
    * Requête dédiée au feed acoustique : elle préserve les états HTTP 204/410, borne réellement
    * le corps et propage l'annulation jusque dans la lecture du stream. Le helper générique `req`
@@ -2229,7 +2365,10 @@ export class HttpBobClient implements BobClient {
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
     );
   }
-  createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
+  async createRealtimeVoiceCall(
+    input: RealtimeVoiceCallInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceCall, AppError>> {
     const currentWire = input.configVersion === REALTIME_CONFIG_VERSION_CURRENT;
     const legacyWire =
       input.configVersion === REALTIME_CONFIG_VERSION_N_MINUS_ONE
@@ -2240,10 +2379,33 @@ export class HttpBobClient implements BobClient {
         'Version Bob Live non prise en charge par ce client.',
       );
     }
+    const hasAgentMissionProtocolVersion = Object.hasOwn(
+      input,
+      'agentMissionProtocolVersion',
+    );
+    let requestedAgentMissionProtocol: RealtimeAgentMissionProtocolExpectation = 'omitted';
+    if (hasAgentMissionProtocolVersion) {
+      const requested = (input as { readonly agentMissionProtocolVersion?: unknown })
+        .agentMissionProtocolVersion;
+      if (
+        requested !== null
+        && requested !== REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+      ) {
+        return invalidRealtimeSpeechInput<RealtimeVoiceCall>(
+          'agentMissionProtocolVersion',
+          'Version du protocole Mission Bob non prise en charge.',
+        );
+      }
+      requestedAgentMissionProtocol = requested;
+    }
+    const agentMissionWireRequest = hasAgentMissionProtocolVersion
+      ? { agentMissionProtocolVersion: requestedAgentMissionProtocol }
+      : {};
     const body =
       input.transport === 'mistral-pcm'
         ? {
             context: input.context,
+            ...agentMissionWireRequest,
             ...(currentWire
               ? {
                   configVersion: input.configVersion,
@@ -2255,6 +2417,7 @@ export class HttpBobClient implements BobClient {
           }
         : {
             sdp: input.sdp,
+            ...agentMissionWireRequest,
             ...(currentWire
               ? {
                   configVersion: input.configVersion,
@@ -2263,7 +2426,7 @@ export class HttpBobClient implements BobClient {
               : {}),
             ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
           };
-    return this.req<RealtimeVoiceCall>(
+    const bootstrap = await this.req<DecodedRealtimeVoiceCallEnvelope>(
       'POST',
       '/voice/realtime/calls',
       body,
@@ -2274,10 +2437,103 @@ export class HttpBobClient implements BobClient {
         this.opts.baseUrl,
         input.configVersion,
         input.speechDelivery,
+        requestedAgentMissionProtocol,
       ),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
+    if (!bootstrap.ok) {
+      if (
+        requestedAgentMissionProtocol === REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+        && typeof input.sessionHandle === 'string'
+      ) {
+        await this.terminateRealtimeBootstrapSession(input.sessionHandle);
+      }
+      return bootstrap;
+    }
+
+    const { call, agentMissionBinding } = bootstrap.value;
+    if (agentMissionBinding.kind === 'accepted') {
+      const acknowledgeReceipt = () => this.req<{
+        readonly acknowledged: true;
+        readonly replayed: boolean;
+      }>(
+        'POST',
+        `/voice/realtime/calls/${encodeURIComponent(
+          call.sessionHandle,
+        )}/agent-mission-bootstrap-acknowledgements`,
+        undefined,
+        {
+          'x-bob-agent-mission-capability': agentMissionBinding.capability,
+        },
+        decodeRealtimeAgentMissionBootstrapReceipt,
+        AGENT_MISSION_BOOTSTRAP_RECEIPT_REQUEST_TIMEOUT_MS,
+        signal,
+      );
+      let receipt = await acknowledgeReceipt();
+      for (
+        let attempt = 1;
+        attempt < AGENT_MISSION_BOOTSTRAP_RECEIPT_ATTEMPTS
+          && !receipt.ok
+          && canRetryRealtimeAgentMissionBootstrapReceipt(receipt.error)
+          && !signal?.aborted;
+        attempt += 1
+      ) {
+        receipt = await acknowledgeReceipt();
+      }
+      if (!receipt.ok || signal?.aborted) {
+        await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+        return receipt.ok
+          ? {
+              ok: false,
+              error: {
+                kind: 'dependency',
+                port: 'api',
+                cause: 'Requête annulée.',
+              },
+            }
+          : { ok: false, error: receipt.error };
+      }
+    }
+
+    const request: HttpAgentMissionRequester = <T>(
+      agentMissionRequest: HttpAgentMissionRequest<T>,
+    ) =>
+      this.req<T>(
+        agentMissionRequest.method,
+        agentMissionRequest.path,
+        agentMissionRequest.body,
+        { ...agentMissionRequest.headers },
+        agentMissionRequest.decode,
+        agentMissionRequest.timeoutMs,
+        agentMissionRequest.signal,
+      );
+    try {
+      return {
+        ok: true,
+        value: attachRealtimeAgentMissionSession(
+          call,
+          agentMissionBinding,
+          (realtimeSessionId, capability) => (
+            createHttpRealtimeAgentMissionSession({
+              realtimeSessionId,
+              capability,
+              request,
+            })
+          ),
+        ),
+      };
+    } catch {
+      await this.terminateRealtimeBootstrapSession(call.sessionHandle);
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api-contract',
+          cause: 'Impossible de finaliser le handle Mission Bob.',
+        },
+      };
+    }
   }
   requestRealtimeVoiceResumeTicket(
     sessionHandle: string,

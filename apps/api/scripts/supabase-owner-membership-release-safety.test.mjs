@@ -12,6 +12,8 @@ const [
   capacityRelease,
   agentMissionLocalCertification,
   ciBootstrap,
+  rlsOwnerSplitCertification,
+  databasePairAssertion,
   ciWorkflow,
 ] = await Promise.all([
   readFile(path.join(scriptDir, 'release.sh'), 'utf8'),
@@ -19,11 +21,13 @@ const [
   readFile(path.join(scriptDir, 'realtime-capacity-release.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'certify-agent-missions-local.sh'), 'utf8'),
   readFile(path.join(scriptDir, 'bootstrap-supabase-ci-postgres.sh'), 'utf8'),
+  readFile(path.join(scriptDir, 'certify-rls-owner-split.sh'), 'utf8'),
+  readFile(path.join(scriptDir, 'assert-database-pair.mjs'), 'utf8'),
   readFile(path.join(scriptDir, '../../../.github/workflows/ci.yml'), 'utf8'),
 ]);
 
 const explicitDeployerMembership =
-  /GRANT\s+(?:%I|bob_[a-z0-9_]+)\s+TO\s+(?:CURRENT_USER|SESSION_USER|bob_deployer)\b/iu;
+  /GRANT\s+(?:%I|bob_[a-z0-9_]+)\s+TO\s+(?:CURRENT_USER|SESSION_USER|bob_deployer|postgres)\b/iu;
 
 const assertImplicitSetAuthority = (source, roleName) => {
   assert.doesNotMatch(source, explicitDeployerMembership);
@@ -67,6 +71,18 @@ const assertImplicitSetAuthority = (source, roleName) => {
   assert.match(authorityBlock, /WHERE membership\.roleid = owner_oid/u);
 };
 
+const assertNoSuperuserOnlyRoleReplay = (source, roleName) => {
+  const marker = `ALTER ROLE ${roleName}`;
+  const start = source.indexOf(marker);
+  const end = source.indexOf(';', start);
+  assert.ok(start >= 0 && end > start, `${roleName} doit verrouiller ses attributs administrables`);
+  assert.doesNotMatch(
+    source.slice(start, end + 1),
+    /\b(?:NOSUPERUSER|NOREPLICATION|NOBYPASSRLS)\b/u,
+    `${roleName} ne doit pas réaffirmer des attributs réservés au superuser Supabase`,
+  );
+};
+
 test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET implicite', () => {
   for (const roleName of [
     'bob_mistral_bootstrap_reaper',
@@ -80,6 +96,18 @@ test('les owners NOLOGIN de release utilisent uniquement l’adhésion SET impli
     mistralCertification,
     'bob_mistral_bootstrap_reaper',
   );
+  for (const roleName of [
+    'bob_mistral_bootstrap_reaper',
+    'bob_openai_native_maintenance_directory',
+    'bob_realtime_reaper_directory',
+  ]) {
+    assertNoSuperuserOnlyRoleReplay(release, roleName);
+  }
+  assertNoSuperuserOnlyRoleReplay(capacityRelease, 'bob_realtime_capacity');
+  assertNoSuperuserOnlyRoleReplay(
+    mistralCertification,
+    'bob_mistral_bootstrap_reaper',
+  );
 });
 
 test('aucun script ne réintroduit un fallback d’adhésion vers le déployeur', () => {
@@ -89,12 +117,24 @@ test('aucun script ne réintroduit un fallback d’adhésion vers le déployeur'
     capacityRelease,
     agentMissionLocalCertification,
     ciBootstrap,
+    rlsOwnerSplitCertification,
   ]) {
     assert.doesNotMatch(source, explicitDeployerMembership);
   }
   assert.match(
     agentMissionLocalCertification,
     /SET createrole_self_grant = 'set'[\s\S]*membership\.set_option[\s\S]*NOT membership\.inherit_option/u,
+  );
+});
+
+test('bootstrap et owner-split partagent la même garde d’URI CI éphémère', () => {
+  assert.match(
+    ciBootstrap,
+    /assert-database-pair\.mjs --ephemeral-supabase-ci bootstrap/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertification,
+    /assert-database-pair\.mjs --ephemeral-supabase-ci owner-split/u,
   );
 });
 
@@ -180,8 +220,22 @@ test('les jobs release CI reproduisent Supabase avant toute certification', () =
 });
 
 test('le bootstrap CI borne le client loopback, le service Docker et les pré-grants Data API', () => {
-  assert.match(ciBootstrap, /remote databases are forbidden/u);
-  assert.match(ciBootstrap, /allowedHosts = new Set\(\['localhost', '127\.0\.0\.1', '::1'\]\)/u);
+  assert.match(
+    databasePairAssertion,
+    /LOOPBACK_HOSTS = new Set\(\['localhost', '127\.0\.0\.1', '\[::1\]'\]\)/u,
+  );
+  assert.match(
+    databasePairAssertion,
+    /ephemeral_database_url_must_be_loopback/u,
+  );
+  assert.match(
+    databasePairAssertion,
+    /ephemeral_database_url_requires_explicit_port/u,
+  );
+  assert.match(
+    databasePairAssertion,
+    /ephemeral_database_url_forbids_parameters/u,
+  );
   assert.match(ciBootstrap, /bootstrap_network_mode=github-actions-service/u);
   assert.match(ciBootstrap, /server_address <<= pg_catalog\.inet '172\.16\.0\.0\/12'/u);
   assert.match(ciBootstrap, /client_address <<= pg_catalog\.inet '172\.16\.0\.0\/12'/u);
@@ -209,6 +263,18 @@ test('le bootstrap CI borne le client loopback, le service Docker et les pré-gr
   assert.match(
     ciBootstrap,
     /GRANT SET ON PARAMETER session_replication_role TO postgres/u,
+  );
+  assert.match(
+    ciBootstrap,
+    /SET createrole_self_grant = 'set';[\s\S]*?SET ROLE postgres;[\s\S]*?CREATE ROLE bob_rls_schema_owner_cert[\s\S]*?NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;[\s\S]*?RESET ROLE;[\s\S]*?ALTER ROLE bob_rls_schema_owner_cert BYPASSRLS;/u,
+  );
+  assert.match(
+    ciBootstrap,
+    /SUPABASE_CI_RLS_OWNER_PROFILE_MISMATCH[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.set_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.admin_option\), FALSE\)[\s\S]*?COALESCE\(pg_catalog\.bool_or\(membership\.inherit_option\), FALSE\)[\s\S]*?SUPABASE_CI_RLS_OWNER_MEMBERSHIP_MISMATCH/u,
+  );
+  assert.match(
+    ciBootstrap,
+    /pg_has_role\(current_user, rls_owner\.oid, 'SET'\)[\s\S]*?pg_has_role\(current_user, rls_owner\.oid, 'USAGE'\)/u,
   );
   assert.match(
     ciBootstrap,
@@ -265,7 +331,7 @@ test('le bootstrap refuse réellement les substitutions libpq et un poste local 
       },
     );
     assert.notEqual(result.status, 0, `${variable} ne doit jamais accepter un host libpq caché`);
-    assert.match(result.stderr, /must not contain connection parameters or fragments/u);
+    assert.match(result.stderr, /ephemeral_database_url_forbids_parameters/u);
   }
 
   const localResult = spawnSync(

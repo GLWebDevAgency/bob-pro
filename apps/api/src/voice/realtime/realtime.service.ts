@@ -21,6 +21,7 @@ import {
   type RealtimeAdmissionPort,
   type RealtimeAdmissionReserveInput,
   type RealtimeAdmissionResult,
+  type RealtimeAdmissionSessionLookupInput,
 } from './realtime-admission';
 import { RealtimeCallLifecycle } from './realtime-call-lifecycle';
 import {
@@ -34,6 +35,7 @@ import {
 import {
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -96,6 +98,22 @@ import {
 } from './mistral-conversation-bootstrap-ticket';
 import { isMistralConversationBootstrapReconciliationAttempt } from './mistral-conversation-bootstrap-reconciliation';
 import type { MistralConversationRuntimeCapability } from './mistral-conversation-terminal-replay';
+import {
+  hashRealtimeAgentMissionCapability,
+  isRealtimeAgentMissionCapability,
+  parseRealtimeAgentMissionNegotiation,
+  realtimeAgentMissionBootstrapBinding,
+  type RealtimeAgentMissionNegotiationRequest,
+} from './realtime-agent-mission-negotiation';
+import {
+  agentMissionPrincipalBindingHash,
+  DisabledRealtimeAgentMissionAdmissionGate,
+  type RealtimeAgentMissionAdmissionGate,
+  type RealtimeAgentMissionAdmissionPreparation,
+} from './realtime-agent-mission-admission';
+import { realtimeSubjectBindings } from './realtime-principal-binding';
+
+export { admissionSubjectHash } from './realtime-principal-binding';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
@@ -171,6 +189,7 @@ export function parseRealtimeCallBody(
 ): Result<{
   sdp: string;
   sessionHandle?: string;
+  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
 } & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
@@ -182,6 +201,7 @@ export function parseRealtimeCallBody(
       && key !== 'sessionHandle'
       && key !== 'configVersion'
       && key !== 'speechDelivery'
+      && key !== 'agentMissionProtocolVersion'
     ))
   ) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé.' }] } };
@@ -209,9 +229,12 @@ export function parseRealtimeCallBody(
   }
   const binding = parseRealtimeBootstrapWireBinding(record);
   if (!binding.ok) return binding;
+  const agentMissionNegotiation = parseRealtimeAgentMissionNegotiation(record);
+  if (!agentMissionNegotiation.ok) return agentMissionNegotiation;
   return ok({
     sdp,
     ...binding.value,
+    agentMissionNegotiation: agentMissionNegotiation.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
   });
 }
@@ -222,6 +245,7 @@ export function parseMistralRealtimeCallBody(
   sessionHandle?: string;
   protocol: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
   context: { version: 1; revision: number; context: unknown };
+  agentMissionNegotiation: RealtimeAgentMissionNegotiationRequest;
 } & RealtimeBootstrapWireBinding, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
@@ -231,6 +255,7 @@ export function parseMistralRealtimeCallBody(
     Object.keys(record).some((key) => (
       key !== 'sessionHandle' && key !== 'context' && key !== 'protocol'
       && key !== 'configVersion' && key !== 'speechDelivery'
+      && key !== 'agentMissionProtocolVersion'
     ))
     || !Object.hasOwn(record, 'context')
   ) {
@@ -250,6 +275,8 @@ export function parseMistralRealtimeCallBody(
   }
   const binding = parseRealtimeBootstrapWireBinding(record);
   if (!binding.ok) return binding;
+  const agentMissionNegotiation = parseRealtimeAgentMissionNegotiation(record);
+  if (!agentMissionNegotiation.ok) return agentMissionNegotiation;
   if (binding.value.speechDelivery !== 'audited-signed-url-v1') {
     return {
       ok: false,
@@ -267,7 +294,70 @@ export function parseMistralRealtimeCallBody(
     protocol,
     context: context.value,
     ...binding.value,
+    agentMissionNegotiation: agentMissionNegotiation.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
+  });
+}
+
+export type AgentMissionNegotiationMetricLabels = Readonly<{
+  requested: 'omitted' | 'null' | 'v1' | 'unknown';
+  outcome: 'historical' | 'accepted' | 'refused' | 'error';
+  provider: 'openai' | 'mistral' | 'unknown';
+  transport: 'webrtc' | 'mistral_pcm' | 'unknown';
+}>;
+
+function requestedAgentMissionProtocol(
+  body: unknown,
+): AgentMissionNegotiationMetricLabels['requested'] {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return 'unknown';
+  const record = body as Record<string, unknown>;
+  if (!Object.hasOwn(record, 'agentMissionProtocolVersion')) return 'omitted';
+  if (record.agentMissionProtocolVersion === null) return 'null';
+  return record.agentMissionProtocolVersion === 1 ? 'v1' : 'unknown';
+}
+
+export function agentMissionNegotiationMetricLabels(
+  body: unknown,
+  provider: RealtimeVoiceSettings['provider'],
+  result: Result<RealtimeCallBootstrap, AppError>,
+): AgentMissionNegotiationMetricLabels {
+  const requested = requestedAgentMissionProtocol(body);
+  const providerLabel = provider === 'openai' || provider === 'mistral'
+    ? provider
+    : 'unknown';
+  const transport = provider === 'openai'
+    ? 'webrtc'
+    : provider === 'mistral'
+      ? 'mistral_pcm'
+      : 'unknown';
+  if (!result.ok) {
+    const unsupportedVersion = result.error.kind === 'validation'
+      && result.error.issues.some(
+        (issue) => issue.field === 'agentMissionProtocolVersion',
+      );
+    return Object.freeze({
+      requested,
+      outcome: unsupportedVersion ? 'refused' : 'error',
+      provider: providerLabel,
+      transport,
+    });
+  }
+  if (requested === 'omitted' || requested === 'null') {
+    return Object.freeze({
+      requested,
+      outcome: 'historical',
+      provider: providerLabel,
+      transport,
+    });
+  }
+  const accepted = requested === 'v1'
+    && result.value.agentMissionProtocolVersion === 1
+    && isRealtimeAgentMissionCapability(result.value.agentMissionCapability);
+  return Object.freeze({
+    requested,
+    outcome: accepted ? 'accepted' : 'refused',
+    provider: providerLabel,
+    transport,
   });
 }
 
@@ -473,62 +563,48 @@ function safeApprovedControl(
   };
 }
 
-export function admissionSubjectHash(secret: string, companyId: string, userId: string): string {
-  return createHmac('sha256', secret)
-    .update('bob-pro:realtime-admission:v1\u0000', 'utf8')
-    .update(companyId, 'utf8')
-    .update('\u0000', 'utf8')
-    .update(userId, 'utf8')
-    .digest('hex');
-}
-
-function resumeSubjectBindings(
+function admissionSessionLookup(
   settings: RealtimeVoiceSettings,
   companyId: string,
   userId: string,
-): {
-  readonly subjectHash: string;
-  readonly subjectKeyVersion: number;
-  readonly historicalSubjectBindings: readonly Readonly<{
-    subjectHash: string;
-    subjectKeyVersion: number;
-  }>[];
-} | null {
-  if (!settings.safetySecret) return null;
-  const configured = settings.subjectHmacKeyRing ?? [];
-  const keyRing = configured.length === 0
-    ? [{ version: settings.subjectKeyVersion, secret: settings.safetySecret }]
-    : configured;
-  if (keyRing.length > 32) return null;
+  sessionId: string,
+): RealtimeAdmissionSessionLookupInput | null {
+  const bindings = realtimeSubjectBindings(settings, companyId, userId);
+  if (bindings === null) return null;
+  return {
+    companyId,
+    subjectHashCandidates: [
+      bindings.subjectHash,
+      ...bindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+    ],
+    principalBindingHash: agentMissionPrincipalBindingHash(companyId, userId),
+    sessionId,
+  };
+}
 
-  const versions = new Set<number>();
-  const secrets = new Set<string>();
-  const bindings: Array<Readonly<{ subjectHash: string; subjectKeyVersion: number }>> = [];
-  for (const entry of keyRing) {
-    if (
-      !Number.isSafeInteger(entry.version)
-      || entry.version < 1
-      || entry.version > 0x7fff_ffff
-      || typeof entry.secret !== 'string'
-      || entry.secret.length < 32
-      || versions.has(entry.version)
-      || secrets.has(entry.secret)
-    ) return null;
-    versions.add(entry.version);
-    secrets.add(entry.secret);
-    bindings.push(Object.freeze({
-      subjectHash: admissionSubjectHash(entry.secret, companyId, userId),
-      subjectKeyVersion: entry.version,
-    }));
+/**
+ * Corrèle le secret conservé par l'orchestrateur avec la preuve effectivement écrite par
+ * l'admission. Toute divergence ferme le bootstrap avant le premier appel provider.
+ */
+export function admittedAgentMissionCapability(
+  prepared: RealtimeAgentMissionAdmissionPreparation,
+  proof: Extract<RealtimeAdmissionResult, { allowed: true }>['agentMissionProof'],
+): string | null {
+  if (prepared.binding === null) {
+    if (proof !== null) {
+      throw new Error('AgentMission admission returned an unexpected durable proof.');
+    }
+    return null;
   }
-  const current = bindings.find((binding) => binding.subjectKeyVersion === settings.subjectKeyVersion);
-  const currentConfig = keyRing.find((entry) => entry.version === settings.subjectKeyVersion);
-  if (!current || currentConfig?.secret !== settings.safetySecret) return null;
-  return Object.freeze({
-    subjectHash: current.subjectHash,
-    subjectKeyVersion: current.subjectKeyVersion,
-    historicalSubjectBindings: Object.freeze(bindings.filter((binding) => binding !== current)),
-  });
+  if (
+    proof === null
+    || proof.protocolVersion !== prepared.binding.protocolVersion
+    || proof.capabilityHash !== prepared.binding.capabilityHash
+    || proof.releaseFlagVersion !== prepared.binding.releaseFlagVersion
+  ) {
+    throw new Error('AgentMission admission proof does not match the prepared capability.');
+  }
+  return prepared.capability;
 }
 
 function retryAfterSeconds(retryAt: string | null, fallback: number): number {
@@ -590,6 +666,7 @@ function providerErrorClass(error: unknown): string {
     'realtime_admission_bind_rejected',
     'realtime_admission_bind_expired',
     'realtime_admission_bind_unavailable',
+    'realtime_bootstrap_fenced',
   ]);
   return allowed.has(value) ? value : 'provider_unknown';
 }
@@ -638,6 +715,10 @@ export class RealtimeVoiceService {
     @Optional()
     @Inject(MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME)
     private readonly conversationRuntime: MistralConversationRuntimeCapability | null = null,
+    @Optional()
+    @Inject(REALTIME_AGENT_MISSION_ADMISSION)
+    private readonly agentMissionAdmission: RealtimeAgentMissionAdmissionGate =
+      new DisabledRealtimeAgentMissionAdmissionGate(),
   ) {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
@@ -703,7 +784,106 @@ export class RealtimeVoiceService {
     };
   }
 
-  async createCall(body: unknown, signal?: AbortSignal): Promise<Result<RealtimeCallBootstrap, AppError>> {
+  async acknowledgeAgentMissionBootstrap(
+    sessionHandle: string,
+    presentedCapability: unknown,
+  ): Promise<Result<{ acknowledged: true; replayed: boolean }, AppError>> {
+    const principal = getPrincipal();
+    if (
+      !principal?.userId
+      || !principal.companyId
+      || !isRealtimeSessionId(sessionHandle)
+      || !isRealtimeAgentMissionCapability(presentedCapability)
+    ) {
+      this.metrics.agentMissionCapabilityRejections.inc({
+        operation: 'bootstrap_ack',
+        reason: presentedCapability === undefined ? 'missing' : 'malformed',
+      });
+      this.metrics.agentMissionBootstrapReceipts.inc({ outcome: 'refused' });
+      return { ok: false, error: appForbidden('agent_mission_bootstrap_receipt_rejected') };
+    }
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      this.metrics.agentMissionBootstrapReceipts.inc({ outcome: 'error' });
+      return {
+        ok: false,
+        error: appUnavailable('agent_mission_bootstrap_receipt', 5),
+      };
+    }
+
+    const acknowledgement = await this.admission.acknowledgeAgentMissionBootstrap({
+      ...lookup,
+      capabilityHash: hashRealtimeAgentMissionCapability(presentedCapability),
+    });
+    if (!acknowledgement.ok) {
+      const unavailable = acknowledgement.reason === 'unavailable';
+      this.metrics.agentMissionBootstrapReceipts.inc({
+        outcome: unavailable ? 'error' : 'refused',
+      });
+      if (!unavailable) {
+        this.metrics.agentMissionCapabilityRejections.inc({
+          operation: 'bootstrap_ack',
+          reason: acknowledgement.reason,
+        });
+      }
+      return unavailable
+        ? {
+            ok: false,
+            error: appUnavailable('agent_mission_bootstrap_receipt', 5),
+          }
+        : {
+            ok: false,
+            error: appForbidden('agent_mission_bootstrap_receipt_rejected'),
+          };
+    }
+    this.metrics.agentMissionBootstrapReceipts.inc({
+      outcome: acknowledgement.status,
+    });
+    this.logger.audit('bob.live.agent_mission.bootstrap_receipt', {
+      outcome: acknowledgement.status,
+    });
+    return ok({
+      acknowledged: true,
+      replayed: acknowledgement.status === 'replayed',
+    });
+  }
+
+  async createCall(
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeCallBootstrap, AppError>> {
+    try {
+      const result = await this.createCallWithoutAgentMissionMetric(body, signal);
+      this.metrics.agentMissionNegotiations.inc(
+        agentMissionNegotiationMetricLabels(body, this.settings.provider, result),
+      );
+      return result;
+    } catch (cause) {
+      this.metrics.agentMissionNegotiations.inc({
+        requested: requestedAgentMissionProtocol(body),
+        outcome: 'error',
+        provider: this.settings.provider === 'openai' || this.settings.provider === 'mistral'
+          ? this.settings.provider
+          : 'unknown',
+        transport: this.settings.provider === 'openai'
+          ? 'webrtc'
+          : this.settings.provider === 'mistral'
+            ? 'mistral_pcm'
+            : 'unknown',
+      });
+      throw cause;
+    }
+  }
+
+  private async createCallWithoutAgentMissionMetric(
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const startedAt = performance.now();
     if (!this.settings.enabled) return this.finishError('disabled', startedAt, appForbidden('Bob Live est désactivé.'));
     if (this.settings.provider === 'mistral') {
@@ -753,9 +933,48 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
+    const subjectBindings = realtimeSubjectBindings(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+    );
+    if (subjectBindings === null) {
+      return this.finishError(
+        'misconfigured',
+        startedAt,
+        appUnavailable('bob-live-admission-identity', 60),
+      );
+    }
+    const principalBindingHash = agentMissionPrincipalBindingHash(
+      principal.companyId,
+      principal.userId,
+    );
+    let preparedAgentMission: RealtimeAgentMissionAdmissionPreparation;
+    try {
+      preparedAgentMission = await this.agentMissionAdmission.prepare({
+        negotiation: parsed.value.agentMissionNegotiation,
+        companyId: principal.companyId,
+        userId: principal.userId,
+        providerId: 'openai',
+        transport: 'webrtc',
+        speechDelivery: parsed.value.speechDelivery,
+      });
+    } catch {
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     const reserveInput: RealtimeAdmissionReserveInput = {
       companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
+      subjectHash: subjectBindings.subjectHash,
+      subjectHashCandidates: [
+        subjectBindings.subjectHash,
+        ...subjectBindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+      ],
+      principalBindingHash,
+      agentMissionBinding: preparedAgentMission.binding,
       maxSessionSeconds: this.settings.maxSessionSeconds,
       ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
     };
@@ -767,6 +986,26 @@ export class RealtimeVoiceService {
     }
 
     const lease = admission.lease;
+    let agentMissionBinding: ReturnType<typeof realtimeAgentMissionBootstrapBinding>;
+    try {
+      agentMissionBinding = realtimeAgentMissionBootstrapBinding(
+        parsed.value.agentMissionNegotiation,
+        admittedAgentMissionCapability(
+          preparedAgentMission,
+          admission.agentMissionProof,
+        ),
+      );
+    } catch {
+      await this.admission.release({
+        ...lease,
+        providerTermination: 'not_created',
+      }).catch(() => undefined);
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     let speechSourcePolicy: RealtimeSpeechSourcePolicy | null = null;
     if (parsed.value.speechDelivery === 'audited-signed-url-v1') {
       try {
@@ -822,6 +1061,13 @@ export class RealtimeVoiceService {
         admission: this.admission,
         provider: this.provider,
         lease,
+        terminationLookup: {
+          companyId: lease.companyId,
+          subjectHashCandidates: reserveInput.subjectHashCandidates,
+          principalBindingHash: reserveInput.principalBindingHash,
+          sessionId: lease.sessionId,
+        },
+        providerId: this.settings.provider,
         providerCallId: registeredProviderCallId,
         hardExpiresAt: lease.hardExpiresAt,
         heartbeatSeconds: this.settings.heartbeatSeconds,
@@ -887,6 +1133,22 @@ export class RealtimeVoiceService {
         },
       });
       if (signal?.aborted) throw new Error('bootstrap_aborted');
+      const finalResolution = await this.admission.resolveSession({
+        companyId: lease.companyId,
+        subjectHashCandidates: reserveInput.subjectHashCandidates,
+        principalBindingHash: reserveInput.principalBindingHash,
+        sessionId: lease.sessionId,
+      });
+      if (
+        !finalResolution.ok
+        || finalResolution.identity === null
+        || finalResolution.identity.companyId !== lease.companyId
+        || finalResolution.identity.subjectHash !== lease.subjectHash
+        || finalResolution.identity.sessionId !== lease.sessionId
+      ) {
+        throw new Error('realtime_bootstrap_fenced');
+      }
+      if (signal?.aborted) throw new Error('bootstrap_aborted');
       const elapsedSeconds = (performance.now() - startedAt) / 1_000;
       this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome: 'ok' });
       this.metrics.bobLiveBootstrapDuration.observe({ model: this.settings.model, outcome: 'ok' }, elapsedSeconds);
@@ -908,12 +1170,14 @@ export class RealtimeVoiceService {
       if (parsed.value.speechDelivery === 'openai-native-webrtc-v1') {
         return ok({
           ...bootstrap,
+          ...agentMissionBinding,
           speechDelivery: 'openai-native-webrtc-v1',
         });
       }
       if (speechSourcePolicy === null) throw new Error('speech_source_policy_missing');
       return ok({
         ...bootstrap,
+        ...agentMissionBinding,
         ...(parsed.value.wireContract === 'v4'
           ? { speechDelivery: 'audited-signed-url-v1' as const }
           : {}),
@@ -972,7 +1236,7 @@ export class RealtimeVoiceService {
       || signal.aborted
     ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
 
-    const subjectBindings = resumeSubjectBindings(
+    const subjectBindings = realtimeSubjectBindings(
       this.settings,
       principal.companyId,
       principal.userId,
@@ -1200,32 +1464,37 @@ export class RealtimeVoiceService {
       };
     }
 
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+
+    const termination = await this.admission.claimTermination(lookup);
+    if (!termination.ok) return { ok: false, error: appUnavailable('bob-live-admission', 10) };
+    // Le fence durable précède toute fermeture process-local : un bootstrap concurrent, y
+    // compris sur une autre réplique, doit perdre la course avant que l’UI puisse croire la
+    // session terminée. Ce détachement ne touche ni provider ni lease : le claim ci-dessus est
+    // désormais leur unique propriétaire.
     try {
-      const local = await this.sideband.closeSession({
+      this.sideband.fenceAndDetachSession({
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle,
       });
-      if (local === 'confirmed') return ok({ ended: true });
-      if (local === 'pending_reaper') {
-        this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
-        return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
-      }
     } catch {
       // Une autre réplique ou le reaper durable reprend ci-dessous.
     }
-
-    const subjectHash = admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId);
-    const termination = await this.admission.claimTermination({
-      companyId: principal.companyId,
-      subjectHash,
-      sessionId: sessionHandle,
-    });
-    if (!termination.ok) return { ok: false, error: appUnavailable('bob-live-admission', 10) };
     if (!termination.claim) {
-      return termination.pending
-        ? { ok: false, error: appUnavailable('bob-live-hangup', 10) }
-        : ok({ ended: true });
+      if (termination.pending) {
+        this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
+        return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
+      }
+      return ok({ ended: true });
     }
 
     try {
@@ -1275,10 +1544,24 @@ export class RealtimeVoiceService {
         error: { kind: 'validation', issues: [{ field: 'context', message: 'Contexte écran invalide ou trop volumineux.' }] },
       };
     }
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+    const resolved = await this.admission.resolveSession(lookup);
+    if (!resolved.ok) {
+      return { ok: false, error: appUnavailable('bob-live-admission', 5) };
+    }
+    if (resolved.identity === null) {
+      return { ok: false, error: appNotFound('realtime_session', 'redacted') };
+    }
     const result = await this.admission.updateContext({
-      companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
-      sessionId: sessionHandle,
+      ...resolved.identity,
       ...parsed.value,
     });
     if (result.ok) {
@@ -1325,16 +1608,26 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeControlAcknowledgementBody(body);
     if (!parsed.ok) return parsed;
+    const lookup = admissionSessionLookup(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+      sessionHandle,
+    );
+    if (lookup === null) {
+      return { ok: false, error: appUnavailable('bob-live-admission-identity', 60) };
+    }
+    const resolved = await this.admission.resolveSession(lookup);
+    if (!resolved.ok) {
+      return { ok: false, error: appUnavailable('bob-live-admission', 1) };
+    }
+    if (resolved.identity === null) {
+      return { ok: false, error: appNotFound('realtime_control', 'redacted') };
+    }
     let consumed: Awaited<ReturnType<RealtimeDurableControlPort['consume']>>;
     try {
       consumed = await this.controls.consume({
-        companyId: principal.companyId,
-        subjectHash: admissionSubjectHash(
-          this.settings.safetySecret,
-          principal.companyId,
-          principal.userId,
-        ),
-        sessionId: sessionHandle,
+        ...resolved.identity,
         turnId: parsed.value.turnId,
         acknowledgementId: parsed.value.acknowledgementId,
         contextRevision: parsed.value.contextRevision,
@@ -1352,11 +1645,7 @@ export class RealtimeVoiceService {
     const control = safeApprovedControl(consumed.control, parsed.value);
     if (!control) return { ok: false, error: appNotFound('realtime_control', 'redacted') };
     const stillCurrent = await this.isCurrentContextVersion(
-      {
-        companyId: principal.companyId,
-        subjectHash: admissionSubjectHash(this.settings.safetySecret, principal.companyId, principal.userId),
-        sessionId: sessionHandle,
-      },
+      resolved.identity,
       {
         version: 1,
         revision: control.contextRevision,
@@ -1433,6 +1722,9 @@ export class RealtimeVoiceService {
   ): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const parsed = parseMistralRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
+    const agentMissionBinding = realtimeAgentMissionBootstrapBinding(
+      parsed.value.agentMissionNegotiation,
+    );
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId) {
       return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
@@ -1482,13 +1774,30 @@ export class RealtimeVoiceService {
     }
     this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
 
+    const subjectBindings = realtimeSubjectBindings(
+      this.settings,
+      principal.companyId,
+      principal.userId,
+    );
+    if (subjectBindings === null) {
+      return this.finishError(
+        'misconfigured',
+        startedAt,
+        appUnavailable('bob-live-admission-identity', 60),
+      );
+    }
     const reserveInput: RealtimeAdmissionReserveInput = {
       companyId: principal.companyId,
-      subjectHash: admissionSubjectHash(
-        this.settings.safetySecret,
+      subjectHash: subjectBindings.subjectHash,
+      subjectHashCandidates: [
+        subjectBindings.subjectHash,
+        ...subjectBindings.historicalSubjectBindings.map((binding) => binding.subjectHash),
+      ],
+      principalBindingHash: agentMissionPrincipalBindingHash(
         principal.companyId,
         principal.userId,
       ),
+      agentMissionBinding: null,
       maxSessionSeconds: this.settings.maxSessionSeconds,
       ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
     };
@@ -1499,6 +1808,22 @@ export class RealtimeVoiceService {
       return this.finishError(error.kind, startedAt, error);
     }
     const lease = admission.lease;
+    try {
+      admittedAgentMissionCapability(
+        { capability: null, binding: null },
+        admission.agentMissionProof,
+      );
+    } catch {
+      await this.admission.release({
+        ...lease,
+        providerTermination: 'not_created',
+      }).catch(() => undefined);
+      return this.finishError(
+        'admission_unavailable',
+        startedAt,
+        appUnavailable('bob-live-agent-mission-admission', 5),
+      );
+    }
     let speechSourcePolicy: RealtimeSpeechSourcePolicy;
     try {
       if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');
@@ -1555,6 +1880,7 @@ export class RealtimeVoiceService {
       });
       return ok({
         transport: 'mistral-pcm',
+        ...agentMissionBinding,
         websocketUrl: this.settings.mistralWebsocketUrl,
         ...bootstrap,
         model: this.settings.model,
@@ -1602,6 +1928,7 @@ export class RealtimeVoiceService {
     });
     return ok({
       transport: 'mistral-pcm',
+      ...agentMissionBinding,
       websocketUrl: this.settings.mistralWebsocketUrl,
       companyId: issued.bootstrap.companyId,
       ticket: issued.bootstrap.ticket,

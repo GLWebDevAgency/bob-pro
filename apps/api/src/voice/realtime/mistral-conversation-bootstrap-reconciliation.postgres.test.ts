@@ -380,6 +380,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         subjectHash: subject(label),
         sessionId: randomUUID(),
         maxSessionSeconds,
+        subjectHashCandidates: [subject(label)],
+        principalBindingHash: subject(label),
+        agentMissionBinding: null,
       });
       if (!result.allowed) throw new Error(`Unexpected admission denial: ${result.denial}`);
       return result.lease;

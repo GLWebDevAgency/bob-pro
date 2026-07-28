@@ -1,9 +1,11 @@
 import type { AgentContext } from '@bob/ai';
-import type {
-  BobClient,
-  RealtimeVoiceConfig,
-  RealtimeVoiceMistralPcmCall,
-  RealtimeVoiceSpeechSourcePolicy,
+import {
+  REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+  type BobClient,
+  type RealtimeAgentMissionSession,
+  type RealtimeVoiceConfig,
+  type RealtimeVoiceMistralPcmCall,
+  type RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
 import { AudioModule } from 'expo-audio';
 import { randomUUID } from 'expo-crypto';
@@ -82,6 +84,7 @@ interface AttemptResources {
   uplink: MistralPcmUplink | null;
   unsubscribeUplink: (() => void) | null;
   sessionHandle: string | null;
+  agentMissionSession: RealtimeAgentMissionSession | null;
 }
 
 function defaultSocketFactory(url: string, protocols: readonly string[]): MistralPcmMobileSocket {
@@ -174,6 +177,7 @@ export class MistralRealtimeTransport
   private uplink: MistralPcmUplink | null = null;
   private unsubscribeUplink: (() => void) | null = null;
   private sessionHandle: string | null = null;
+  private agentMissionSession: RealtimeAgentMissionSession | null = null;
   private speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy | null = null;
   private microphoneRequested = false;
   private captureActive = false;
@@ -204,6 +208,12 @@ export class MistralRealtimeTransport
 
   getSessionHandle(): string | null {
     return this.sessionHandle;
+  }
+
+  takeAgentMissionSession(): RealtimeAgentMissionSession | null {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    return session;
   }
 
   getProcessAudioLease(): ProcessAudioLease | null {
@@ -248,6 +258,7 @@ export class MistralRealtimeTransport
       uplink: null,
       unsubscribeUplink: null,
       sessionHandle: null,
+      agentMissionSession: null,
     };
     this.resetAttemptState();
     this.metrics.markConnectStarted();
@@ -292,14 +303,25 @@ export class MistralRealtimeTransport
           context: { version: 1, revision: 1, context },
           configVersion: this.negotiation.configVersion,
           speechDelivery: this.negotiation.speechDelivery,
+          agentMissionProtocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
           sessionHandle: requestedSessionHandle,
         },
         bootstrapAbort.signal,
       );
+      if (!call.ok) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      const agentMissionSession = call.value.agentMissionSession;
+      if (
+        !Object.hasOwn(call.value, 'agentMissionSession')
+        || agentMissionSession === undefined
+      ) {
+        throw new RealtimeTransportError('agent_mission_negotiation_failed');
+      }
+      resources.agentMissionSession = agentMissionSession;
       this.assertGeneration(generation);
       if (
-        !call.ok
-        || call.value.transport !== 'mistral-pcm'
+        call.value.transport !== 'mistral-pcm'
         || call.value.protocol !== MISTRAL_PCM_UPLINK_PROTOCOL
       ) {
         throw new RealtimeTransportError('bootstrap_failed');
@@ -345,11 +367,14 @@ export class MistralRealtimeTransport
         { signal: bootstrapAbort.signal },
       );
       this.assertGeneration(generation);
+      this.agentMissionSession = resources.agentMissionSession;
+      resources.agentMissionSession = null;
       this.metrics.markSessionReady();
       this.transition({ type: 'CONNECTED' });
       this.emit({ type: 'connectivity', state: 'connected' });
       this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
     } catch (error) {
+      this.disposeAttemptAgentMissionSession(resources);
       this.unbindAbort();
       if (generation !== this.generation) {
         // Un DELETE parti avant le commit serveur peut avoir repondu 404. Une seconde
@@ -488,6 +513,7 @@ export class MistralRealtimeTransport
   }
 
   close(_reason: RealtimeCloseReason): Promise<void> {
+    this.disposeAgentMissionSession();
     if (this.closeTask) return this.closeTask;
     if (this.currentState.phase === 'closed') return Promise.resolve();
     const task = this.performClose().finally(() => {
@@ -513,6 +539,7 @@ export class MistralRealtimeTransport
       uplink: this.uplink,
       unsubscribeUplink: this.unsubscribeUplink,
       sessionHandle: this.sessionHandle,
+      agentMissionSession: null,
     };
     await this.disposeAttempt(resources, true);
     this.transition({ type: 'CLOSED' });
@@ -520,6 +547,7 @@ export class MistralRealtimeTransport
   }
 
   private async disposeAttempt(resources: AttemptResources, hangup: boolean): Promise<void> {
+    this.disposeAttemptAgentMissionSession(resources);
     try {
       resources.unsubscribeUplink?.();
     } catch {
@@ -549,6 +577,18 @@ export class MistralRealtimeTransport
     if (this.unsubscribeUplink === resources.unsubscribeUplink) this.unsubscribeUplink = null;
     if (this.sessionHandle === resources.sessionHandle) this.sessionHandle = null;
     if (this.sessionHandle === null) this.speechSourcePolicy = null;
+  }
+
+  private disposeAttemptAgentMissionSession(resources: AttemptResources): void {
+    const session = resources.agentMissionSession;
+    resources.agentMissionSession = null;
+    session?.dispose();
+  }
+
+  private disposeAgentMissionSession(): void {
+    const session = this.agentMissionSession;
+    this.agentMissionSession = null;
+    session?.dispose();
   }
 
   private onUplinkEvent(event: MistralPcmUplinkEvent, generation: number): void {

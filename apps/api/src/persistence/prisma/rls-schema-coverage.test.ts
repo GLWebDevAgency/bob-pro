@@ -21,11 +21,22 @@ function prismaModels(source: string): PrismaModel[] {
 }
 
 function forcedTables(source: string): ReadonlySet<string> {
-  const forceLoop = source.match(
-    /FOR t IN SELECT unnest\(ARRAY\[([\s\S]*?)\]\) LOOP[\s\S]*?FORCE ROW LEVEL SECURITY/u,
+  const protectedTables = source.match(
+    /table_names\s+TEXT\[\]\s*:=\s*ARRAY\[([\s\S]*?)\]\s*::\s*TEXT\[\]\s*;/u,
   )?.[1];
-  if (forceLoop === undefined) return new Set();
-  return new Set([...forceLoop.matchAll(/'([^']+)'/gu)].map((match) => match[1]!));
+  if (protectedTables === undefined) {
+    throw new Error('La liste table_names protégée par RLS est absente de prisma/rls.sql');
+  }
+  if (
+    !/FOREACH\s+t\s+IN\s+ARRAY\s+table_names\s+LOOP[\s\S]*?FORCE ROW LEVEL SECURITY/u.test(
+      source,
+    )
+  ) {
+    throw new Error(
+      'La liste table_names de prisma/rls.sql n’est pas reliée à FORCE ROW LEVEL SECURITY',
+    );
+  }
+  return new Set([...protectedTables.matchAll(/'([^']+)'/gu)].map((match) => match[1]!));
 }
 
 describe('couverture RLS du schéma Prisma tenant', () => {
