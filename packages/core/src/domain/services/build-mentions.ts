@@ -107,9 +107,18 @@ export interface BuildMentionsInput {
    * POURQUOI CE CHAMP EST OPTIONNEL ET AUCUN APPELANT NE LE RENSEIGNE ENCORE : l'option n'est
    * représentée NULLE PART dans le domaine (ni Company, ni le profil fiscal) — Bob ne peut donc
    * pas savoir si l'entreprise l'a exercée. Absent/false = mention OMISE : jamais une mention
-   * fiscale déduite d'une information que l'entreprise n'a pas donnée. Le jour où le réglage
-   * existe (case « J'ai opté pour le paiement de la TVA d'après les débits »), il suffit de le
-   * passer ici, aux deux points d'appel (émission de facture et rendu de devis).
+   * fiscale déduite d'une information que l'entreprise n'a pas donnée.
+   *
+   * OÙ LE BRANCHER LE JOUR OÙ LE RÉGLAGE EXISTE (case « J'ai opté pour le paiement de la TVA
+   * d'après les débits ») : à UN SEUL point d'appel, l'émission de facture
+   * (`application/billing/issue-invoice.ts`, là où les mentions sont figées). PAS au rendu du
+   * devis (`backend.service.quoteMentions`) : l'art. 242 nonies A de l'annexe II au CGI énumère
+   * les mentions des FACTURES, et l'exigibilité de la taxe — l'objet même de l'option — ne naît
+   * d'aucun devis, qui n'est qu'une offre. Même traitement que les autres mentions du même
+   * article portées ici (nature de l'opération, rabais/remises/ristournes).
+   * Le champ est donc volontairement INERTE sur un devis : `kind === 'quote'` l'ignore même s'il
+   * est passé, et un test gèle cette omission — passer `true` sur un devis n'imprime rien, ce
+   * n'est ni un oubli ni un bug à « corriger ».
    *
    * ÉCHÉANCE RÉELLE — la mention n'est PAS encore obligatoire pour les entreprises servies :
    * l'art. 242 nonies A, I-11° bis (créé par l'art. 1er du décret n° 2022-1299 du 7 octobre 2022)

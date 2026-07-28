@@ -255,7 +255,9 @@ describe('buildMentions', () => {
       expect(m.find((s) => s.includes('débits'))).not.toMatch(/CGI|annexe/u);
     });
 
-    it('devis : mention omise — c’est une mention de FACTURE (art. 242 nonies A, annexe II CGI)', () => {
+    it('devis : le champ est INERTE — mention de FACTURE (art. 242 nonies A, annexe II CGI), l’exigibilité ne naît d’aucun devis', () => {
+      // DÉCISION FIGÉE ICI : l'option ne se branche qu'au point d'appel FACTURE (issue-invoice).
+      // Passer `true` au rendu d'un devis n'imprime rien — ce n'est pas un oubli de câblage.
       const m = mentions({ kind: 'quote', vatOnDebitsOption: true });
       expect(m.some((s) => s.includes('débits'))).toBe(false);
     });
