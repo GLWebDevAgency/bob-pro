@@ -194,9 +194,13 @@ describe('buildMentions', () => {
     const franchise = (asOf: string): string[] =>
       mentions({ company: company({ vatRegime: 'franchise' }), asOf });
 
-    it('la mention est LITTÉRALEMENT celle de l’art. 293 E, II du CGI', () => {
-      expect(franchise('2026-06-01')).toContain('TVA non applicable, art. 293 B du CGI');
-      expect(MENTION_FRANCHISE_BASE).toBe('TVA non applicable, art. 293 B du CGI');
+    it('la mention est LITTÉRALEMENT celle de l’art. 293 E, II du CGI — verbatim, sans abréviation', () => {
+      // Le texte prescrit une rédaction ENTRE GUILLEMETS : elle est reproduite caractère pour
+      // caractère. « art. » est le raccourci du métier (licite, mais pas le verbatim) — même
+      // exigence que pour l'option débits, où « TVA sur les débits » a été écarté.
+      expect(franchise('2026-06-01')).toContain('TVA non applicable, article 293 B du CGI');
+      expect(MENTION_FRANCHISE_BASE).toBe('TVA non applicable, article 293 B du CGI');
+      expect(MENTION_FRANCHISE_BASE).not.toMatch(/\bart\./u);
     });
 
     it('même mention à TOUTE date — y compris au 2026-09-01, date de l’ancienne bascule (reportée)', () => {

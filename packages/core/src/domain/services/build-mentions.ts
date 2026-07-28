@@ -32,14 +32,22 @@ export const CIBS_TVA_ENTREE_EN_VIGUEUR = '2027-01-01';
 export const CIBS_TOLERANCE_REFERENCES_CGI = '2028-06-30';
 
 /**
- * Franchise en base — mention obligatoire, dans la formulation LITTÉRALE de l'art. 293 E, II du
- * CGI : la facture « doit comporter la mention correspondant à la base légale de la franchise :
+ * Franchise en base — mention obligatoire, reproduite VERBATIM depuis l'art. 293 E, II du CGI :
+ * la facture « doit comporter la mention correspondant à la base légale de la franchise :
  * "TVA non applicable, article 293 B du CGI" […] ». Reprise à l'identique par la doctrine
  * (BOFiP BOI-TVA-DECLA-40-10-20, I-B § 50, version du 01/07/2026).
  * Le texte exige une BASE LÉGALE : une mention de franchise sans numéro d'article n'est jamais
  * conforme, quelle que soit la date.
+ *
+ * POURQUOI « article » ET NON L'ABRÉVIATION « art. » COURANTE : le texte prescrit une rédaction
+ * ENTRE GUILLEMETS ; Bob l'imprime alors caractère pour caractère, exactement comme pour l'option
+ * pour les débits (MENTION_OPTION_DEBITS), plutôt que le raccourci de langage du métier. La forme
+ * abrégée « art. 293 B du CGI » reste licite et universellement admise (elle a d'ailleurs été
+ * imprimée par Bob jusqu'ici — les pièces déjà émises la portent, figée, et restent conformes) ;
+ * le verbatim est simplement la seule rédaction qu'aucun contrôle ne peut discuter.
+ * Vérifié le 28/07/2026.
  */
-export const MENTION_FRANCHISE_BASE = 'TVA non applicable, art. 293 B du CGI';
+export const MENTION_FRANCHISE_BASE = 'TVA non applicable, article 293 B du CGI';
 
 /**
  * Option pour les débits — mention LITTÉRALE de l'art. 242 nonies A, I-11° bis de l'annexe II

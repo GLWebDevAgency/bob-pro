@@ -145,7 +145,7 @@ function computeTotals(lines: LineItem[], opts?: { depositPct?: number }): Total
 
 - Identité émetteur : raison sociale, **SIREN/SIRET**, forme juridique, adresse.
 - **RCS** (ville) pour commerçants **ou RM** (n° répertoire des métiers) pour artisans.
-- **TVA** : n° de TVA intracom **ou**, si franchise, la mention exacte *« TVA non applicable, art. 293 B du CGI »*.
+- **TVA** : n° de TVA intracom **ou**, si franchise, la mention exacte *« TVA non applicable, article 293 B du CGI »* — verbatim de l'art. 293 E, II du CGI (le raccourci « art. » reste licite, mais Bob imprime la rédaction prescrite caractère pour caractère ; `MENTION_FRANCHISE_BASE`, vérifié le 28/07/2026).
 - N° de facture **séquentiel**, date d'émission, date de vente/prestation.
 - Désignation, quantité, PU HT, **taux de TVA par ligne**, totaux HT/TVA/TTC.
 - Conditions de règlement + **pénalités de retard** + **indemnité forfaitaire de recouvrement 40 €** (réf. L441-10 c. com.).
