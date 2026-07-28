@@ -5,7 +5,7 @@ import { type DocumentStoragePort } from '../ports/document-storage';
 import { type ChantierNoteRepository } from '../ports/repositories';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type InterventionRepository } from '../intervention/intervention-repository';
-import { INTERVENTION_SIGNED_LOCKED_MESSAGE } from '../../domain/intervention/intervention';
+import { interventionFieldTraceRefusal } from '../../domain/intervention/intervention';
 import { ChantierNote } from '../../domain/chantier/chantier-note';
 
 export interface DeleteWorksitePhotoInput {
@@ -40,7 +40,10 @@ export class DeleteWorksitePhoto {
     const item = await this.deps.media.findById(input.companyId, input.id);
     if (!item) return err(appNotFound('worksite_photo', input.id));
 
-    // PR-15 §3.4 — photo d'une fiche SIGNÉE : immuable, retrait refusé (use case ET trigger).
+    // PR-15 §3.4 — photo d'une fiche qui n'accepte plus de traces : retrait ET note de
+    // résolution refusés (use case ET trigger). [Revue adversariale 28/07 — finding 9b] on
+    // appelle le MÊME prédicat `acceptsFieldTraces()` qu'AddChantierNote/UploadWorksitePhoto :
+    // une fiche `cancelled` refusait la note ici et l'acceptait là — deux chemins, deux règles.
     const interventionId = item.interventionId ?? null;
     if (interventionId !== null) {
       if (!this.deps.interventions) {
@@ -53,12 +56,12 @@ export class DeleteWorksitePhoto {
       const intervention = await this.deps.interventions.findById(input.companyId, interventionId);
       if (!intervention || intervention.companyId !== input.companyId)
         return err(appNotFound('intervention', interventionId));
-      if (intervention.status === 'signed')
+      if (!intervention.acceptsFieldTraces())
         return err(
           appDomain({
             code: 'VALIDATION',
             field: 'interventionId',
-            message: INTERVENTION_SIGNED_LOCKED_MESSAGE,
+            message: interventionFieldTraceRefusal(intervention.status),
           }),
         );
     }

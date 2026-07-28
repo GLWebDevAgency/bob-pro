@@ -3515,6 +3515,13 @@ export class HttpBobClient implements BobClient {
   deleteWorksitePhoto(photoId: string) {
     return this.req<void>('DELETE', `/chantiers/photos/${encodeURIComponent(photoId)}`);
   }
+  removeWorksitePhoto(photoId: string, input: { resolutionNote: string }) {
+    return this.req<void>(
+      'POST',
+      `/chantiers/photos/${encodeURIComponent(photoId)}/retirer`,
+      input,
+    );
+  }
   listCustomers() {
     return this.req<CustomerListItem[]>(
       'GET',

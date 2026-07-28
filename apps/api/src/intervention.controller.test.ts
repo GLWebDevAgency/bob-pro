@@ -18,7 +18,7 @@ import { requestContext, type AppLogger, type Principal } from './observability/
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
-import { InterventionsController } from './api.controllers';
+import { ChantiersController, InterventionsController } from './api.controllers';
 import { PdfRenderer } from './documents/pdf-renderer';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
 import { pdfVisibleText } from './documents/pdf-text.testing';
@@ -396,12 +396,20 @@ describe('fiche de passage — service (PR-15b)', () => {
     );
 
     // La file bloque sur la photo : le choix humain « Retirer » porte la note de résolution.
+    // [finding 8] Le geste passe par POST …/retirer — un corps de DELETE peut être dépouillé
+    // en route et la photo partirait SANS sa note, sans que le use case puisse le détecter.
+    const chantiers = new ChantiersController(service);
     const removed = await run(() =>
-      service.deleteWorksitePhoto(photo.value.id, {
+      chantiers.removePhoto(photo.value.id, {
         resolutionNote: '1 photo n’a pas pu être jointe à la fiche.',
       }),
     );
-    expect(removed.ok).toBe(true);
+    expect(removed).toBeUndefined();
+    // La note est OBLIGATOIRE sur ce geste : un corps vide n'y ressemble jamais par accident.
+    await expect(run(() => chantiers.removePhoto(photo.value.id, {}))).rejects.toThrow();
+    await expect(
+      run(() => chantiers.removePhoto(photo.value.id, { bidon: 'x' })),
+    ).rejects.toThrow();
     const notes = await run(() => service.listChantierNotes('site-bastille'));
     expect(notes.ok).toBe(true);
     if (!notes.ok) return;
@@ -432,6 +440,28 @@ describe('fiche de passage — service (PR-15b)', () => {
     await expect(controller.start('x', { expectedRevision: 1, bidon: true })).rejects.toThrow();
     await expect(controller.sign('x', { expectedRevision: 1, signerName: 'A' })).rejects.toThrow();
     await expect(controller.update('x', { expectedRevision: 0 })).rejects.toThrow();
+  });
+
+  it('[finding 8] frontière : `lines` VALIDÉ comme partout en facturation (jamais un cast direct)', async () => {
+    const { service } = makeService();
+    const controller = new InterventionsController(service);
+    // Ligne sans libellé, TVA hors référentiel, catégorie inconnue, quantité négative : 400.
+    await expect(
+      controller.invoiceDraft('x', { lines: [{ category: 'labor', qty: 1, unitPriceHT: 0, vatRate: 20 }] }),
+    ).rejects.toThrow();
+    await expect(
+      controller.invoiceDraft('x', {
+        lines: [{ label: 'Passage', category: 'labor', qty: 1, unitPriceHT: 0, vatRate: 17 }],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      controller.invoiceDraft('x', {
+        lines: [{ label: 'Passage', category: 'inconnue', qty: 1, unitPriceHT: 0, vatRate: 20 }],
+      }),
+    ).rejects.toThrow();
+    await expect(controller.invoiceDraft('x', { lines: 'pas-un-tableau' })).rejects.toThrow();
+    await expect(controller.invoiceDraft('x', { context: { bidon: true } })).rejects.toThrow();
+    await expect(controller.invoiceDraft('x', { bidon: true })).rejects.toThrow();
   });
 });
 

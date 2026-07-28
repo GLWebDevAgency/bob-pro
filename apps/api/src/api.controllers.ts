@@ -959,36 +959,14 @@ function parseCustomerContactBody(body: Record<string, unknown>): {
 }
 
 /**
- * B1 — POST /invoices (facture DIRECTE sans devis signé) : mêmes contraintes de forme que les
- * lignes de devis (500 caractères, TVA du référentiel, 100 lignes max, plafond HT), remise de
- * ligne et remise globale B3 comprises. La substance (client du tenant, urgence B2C A3bis,
- * garde-fou pro étranger B6, TVA suggérée) reste l'autorité du use case ComposeStandaloneInvoice.
+ * Lignes facturables d'une pièce commerciale : forme SEULEMENT (500 caractères, TVA du
+ * référentiel, 100 lignes maximum, plafond HT, remise de ligne B3). La substance — TVA
+ * réellement applicable (suggestVatRate), invariants d'agrégat — reste l'autorité du domaine.
+ * [Revue adversariale 28/07 — finding 8] Extrait pour que TOUT endpoint qui accepte des
+ * lignes les valide à la frontière : `POST /interventions/:id/invoice-draft` les castait
+ * directement en `LineInput[]`, contrairement au reste des endpoints de facturation.
  */
-function parseComposeInvoiceBody(body: Record<string, unknown>): {
-  customerId: string;
-  lines: LineInput[];
-  globalDiscount?: Discount | null;
-  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
-  urgentOnSiteRepair?: boolean;
-  chantierId?: string;
-} {
-  const issues: ValidationIssue[] = [];
-  for (const field of Object.keys(body)) {
-    if (!COMPOSE_INVOICE_FIELDS.has(field)) {
-      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
-    }
-  }
-  const customerId = body['customerId'];
-  if (
-    typeof customerId !== 'string' ||
-    customerId.length === 0 ||
-    customerId.length > 240 ||
-    customerId !== customerId.trim() ||
-    hasControlCharacter(customerId)
-  ) {
-    issues.push({ field: 'customerId', message: 'Identifiant client invalide.' });
-  }
-  const rawLines = body['lines'];
+function parseBillingLineInputs(rawLines: unknown, issues: ValidationIssue[]): LineInput[] {
   const lines: LineInput[] = [];
   let totalHtCents = 0;
   if (!Array.isArray(rawLines) || rawLines.length === 0 || rawLines.length > MAX_QUOTE_LINES) {
@@ -1090,6 +1068,40 @@ function parseComposeInvoiceBody(body: Record<string, unknown>): {
   if (totalHtCents > MAX_QUOTE_HT_CENTS) {
     issues.push({ field: 'lines', message: 'Montant total HT de la facture hors limite.' });
   }
+  return lines;
+}
+
+/**
+ * B1 — POST /invoices (facture DIRECTE sans devis signé) : mêmes contraintes de forme que les
+ * lignes de devis (500 caractères, TVA du référentiel, 100 lignes max, plafond HT), remise de
+ * ligne et remise globale B3 comprises. La substance (client du tenant, urgence B2C A3bis,
+ * garde-fou pro étranger B6, TVA suggérée) reste l'autorité du use case ComposeStandaloneInvoice.
+ */
+function parseComposeInvoiceBody(body: Record<string, unknown>): {
+  customerId: string;
+  lines: LineInput[];
+  globalDiscount?: Discount | null;
+  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+  urgentOnSiteRepair?: boolean;
+  chantierId?: string;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!COMPOSE_INVOICE_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const customerId = body['customerId'];
+  if (
+    typeof customerId !== 'string' ||
+    customerId.length === 0 ||
+    customerId.length > 240 ||
+    customerId !== customerId.trim() ||
+    hasControlCharacter(customerId)
+  ) {
+    issues.push({ field: 'customerId', message: 'Identifiant client invalide.' });
+  }
+  const lines = parseBillingLineInputs(body['lines'], issues);
   let globalDiscount: Discount | null | undefined;
   if (body['globalDiscount'] !== undefined) {
     globalDiscount = parseDiscountField(body['globalDiscount'], 'globalDiscount', issues);
@@ -4033,6 +4045,27 @@ function parseCompleteInterventionBody(body: Record<string, unknown>) {
  * Forme seulement : la substance (bornes, doublons de `kind`, CAS) reste l'autorité du use case
  * `UpdateCompanyInterventionSettings`.
  */
+/** ERRATUM 6 — corps commun du retrait de photo (DELETE historique et POST `retirer`). */
+function parseWorksitePhotoRemovalBody(body: Record<string, unknown>): { resolutionNote?: string } {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (field !== 'resolutionNote')
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+  }
+  if (
+    'resolutionNote' in body &&
+    (typeof body['resolutionNote'] !== 'string' ||
+      (body['resolutionNote'] as string).trim().length === 0 ||
+      (body['resolutionNote'] as string).length > 2000)
+  ) {
+    issues.push({ field: 'resolutionNote', message: 'Note de résolution invalide.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return typeof body['resolutionNote'] === 'string'
+    ? { resolutionNote: body['resolutionNote'] }
+    : {};
+}
+
 function parseInterventionSettingsBody(body: Record<string, unknown>) {
   const issues: ValidationIssue[] = [];
   const allowed = new Set(['reportTitle', 'checklistTemplates', 'expectedRevision']);
@@ -4145,28 +4178,37 @@ export class ChantiersController {
   async photoViewUrl(@Param('photoId') photoId: string) {
     return unwrap(await this.backend.worksitePhotoViewUrl(photoId));
   }
-  /** ERRATUM 6 — `resolutionNote` optionnelle : la note de résolution d'un échec de synchro
-   * est portée par CE geste (elle prend la place de la photo retirée, avant le sign en file). */
+  /**
+   * ERRATUM 6 — `resolutionNote` optionnelle : la note de résolution d'un échec de synchro
+   * est portée par CE geste (elle prend la place de la photo retirée, avant le sign en file).
+   *
+   * [Revue adversariale 28/07 — finding 8] Un corps sur DELETE est légal mais FRAGILE : proxies,
+   * CDN et certains clients HTTP le dépouillent, et le use case ne peut pas distinguer un corps
+   * perdu d'une suppression simple — la photo partirait SANS sa note. Le geste canonique de la
+   * file FIFO offline (PR-17) est donc `POST photos/:id/retirer` ci-dessous ; ce DELETE reste
+   * pour la suppression simple et par compatibilité des clients déjà déployés.
+   */
   @Delete('photos/:photoId')
   async deletePhoto(@Param('photoId') photoId: string, @Body() body?: unknown) {
     if (body === undefined || body === null) return unwrap(await this.backend.deleteWorksitePhoto(photoId));
     assertJsonObjectBody(body);
-    const unknownField = Object.keys(body).find((field) => field !== 'resolutionNote');
-    if (unknownField !== undefined)
-      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
-    if (
-      'resolutionNote' in body &&
-      (typeof body.resolutionNote !== 'string' ||
-        body.resolutionNote.trim().length === 0 ||
-        body.resolutionNote.length > 2000)
-    ) {
-      throwValidationIssues([{ field: 'resolutionNote', message: 'Note de résolution invalide.' }]);
-    }
     return unwrap(
-      await this.backend.deleteWorksitePhoto(photoId, {
-        ...(typeof body.resolutionNote === 'string' ? { resolutionNote: body.resolutionNote } : {}),
-      }),
+      await this.backend.deleteWorksitePhoto(photoId, parseWorksitePhotoRemovalBody(body)),
     );
+  }
+  /**
+   * ERRATUM 6 — geste ROBUSTE de retrait tracé : le corps voyage sur un POST, donc la note de
+   * résolution ne peut plus être silencieusement dépouillée en route. `resolutionNote` REQUISE :
+   * un retrait sans trace passe par le DELETE, jamais par un corps perdu qui se ferait passer
+   * pour lui.
+   */
+  @Post('photos/:photoId/retirer')
+  async removePhoto(@Param('photoId') photoId: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseWorksitePhotoRemovalBody(body);
+    if (parsed.resolutionNote === undefined)
+      throwValidationIssues([{ field: 'resolutionNote', message: 'Note de résolution requise.' }]);
+    return unwrap(await this.backend.deleteWorksitePhoto(photoId, parsed));
   }
   // ── PR-15 — fiches de passage du site (Bloc C) ──
   @Get(':id/interventions')
@@ -4614,21 +4656,34 @@ export class InterventionsController {
   @Post(':id/invoice-draft')
   async invoiceDraft(@Param('id') id: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
+    const issues: ValidationIssue[] = [];
     const allowed = new Set(['lines', 'urgentOnSiteRepair', 'context']);
-    const unknownField = Object.keys(body).find((field) => !allowed.has(field));
-    if (unknownField !== undefined)
-      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
-    if ('lines' in body && !Array.isArray(body.lines))
-      throwValidationIssues([{ field: 'lines', message: 'Lignes invalides.' }]);
+    for (const field of Object.keys(body)) {
+      if (!allowed.has(field)) issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+    // [finding 8] Les lignes sont PARSÉES comme partout ailleurs en facturation (libellé, TVA
+    // du référentiel, plafond HT, remise B3) — jamais un cast direct en LineInput[].
+    const lines = 'lines' in body ? parseBillingLineInputs(body.lines, issues) : undefined;
     if ('urgentOnSiteRepair' in body && typeof body.urgentOnSiteRepair !== 'boolean')
-      throwValidationIssues([{ field: 'urgentOnSiteRepair', message: 'Champ invalide.' }]);
+      issues.push({ field: 'urgentOnSiteRepair', message: 'Booléen attendu.' });
+    if ('context' in body && !isJsonRecord(body.context))
+      issues.push({ field: 'context', message: 'Contexte objet requis.' });
+    if (isJsonRecord(body.context)) {
+      for (const field of Object.keys(body.context)) {
+        if (!CREATE_QUOTE_CONTEXT_FIELDS.has(field))
+          issues.push({ field: 'context', message: `Champ non autorisé : ${field}.` });
+        else if (typeof body.context[field] !== 'boolean')
+          issues.push({ field: `context.${field}`, message: 'Booléen attendu.' });
+      }
+    }
+    if (issues.length > 0) throwValidationIssues(issues);
     return unwrap(
       await this.backend.prepareInterventionInvoiceDraft(id, {
-        ...(Array.isArray(body.lines) ? { lines: body.lines as LineInput[] } : {}),
+        ...(lines !== undefined ? { lines } : {}),
         ...(typeof body.urgentOnSiteRepair === 'boolean'
           ? { urgentOnSiteRepair: body.urgentOnSiteRepair }
           : {}),
-        ...(typeof body.context === 'object' && body.context !== null
+        ...(isJsonRecord(body.context)
           ? { context: body.context as { housingOlderThan2y?: boolean; energyRenovation?: boolean } }
           : {}),
       }),

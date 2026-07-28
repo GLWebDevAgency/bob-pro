@@ -5,7 +5,7 @@ import { type ChantierRepository } from '../ports/repositories';
 import { type EquipmentRepository } from '../equipment/equipment-repository';
 import { type InterventionRepository } from '../intervention/intervention-repository';
 import {
-  INTERVENTION_SIGNED_LOCKED_MESSAGE,
+  interventionFieldTraceRefusal,
   INTERVENTION_PHOTO_PHASES,
   type InterventionPhotoPhase,
 } from '../../domain/intervention/intervention';
@@ -109,7 +109,7 @@ export class UploadWorksitePhoto {
         return err(appDomain({
           code: 'VALIDATION',
           field: 'interventionId',
-          message: INTERVENTION_SIGNED_LOCKED_MESSAGE,
+          message: interventionFieldTraceRefusal(intervention.status),
         }));
     }
 

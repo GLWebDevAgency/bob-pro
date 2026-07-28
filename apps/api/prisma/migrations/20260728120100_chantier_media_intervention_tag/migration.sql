@@ -10,9 +10,12 @@
 --   1. une trace taguée vise une fiche du MÊME SITE et du MÊME TENANT (la FK composite tient le
 --      tenant, le trigger tient la cohérence de SITE que la FK ne peut pas exprimer) ;
 --   2. VERROU POST-SIGNATURE §3.4 en défense en profondeur : une fiche `signed` n'accepte plus
---      AUCUNE trace — ni insertion, ni modification, ni RETRAIT (trigger BEFORE DELETE dédié sur
---      les photos). La séquence ERRATUM 6 (retrait de photo → note automatique de résolution,
---      AVANT le sign) reste pleinement acceptée : la fiche est alors `completed`, jamais `signed`.
+--      AUCUNE trace — ni insertion, ni modification, ni DÉ-TAGGAGE, ni RETRAIT (triggers BEFORE
+--      DELETE dédiés sur les photos ET les notes). [Revue adversariale 28/07 — finding 7] la
+--      branche UPDATE compare AUSSI `OLD."interventionId"` : un `SET "interventionId" = NULL`
+--      sur une trace de fiche signée sortait sinon par la porte « writer N-1 » sans contrôle.
+--      La séquence ERRATUM 6 (retrait de photo → note automatique de résolution, AVANT le sign)
+--      reste pleinement acceptée : la fiche est alors `completed`, jamais `signed`.
 --
 -- Index PARTIELS (companyId, interventionId, createdAt) WHERE interventionId IS NOT NULL — la
 -- fiche de passage ne balaie jamais les traces non taguées. [Amélioration 8] CREATE INDEX
@@ -85,7 +88,21 @@ AS $$
 DECLARE
   intervention_chantier TEXT;
   intervention_status TEXT;
+  previous_status TEXT;
 BEGIN
+  -- §3.4 — une trace DÉJÀ taguée à une fiche signée ne se détache pas non plus : sans ce test,
+  -- `UPDATE … SET "interventionId" = NULL` sortait par la branche writer N-1 ci-dessous et
+  -- retirait la trace d'une preuve signée. OLD n'existe qu'en UPDATE (jamais en INSERT).
+  IF TG_OP = 'UPDATE' AND OLD."interventionId" IS NOT NULL THEN
+    SELECT i."status" INTO previous_status
+      FROM "interventions" i
+     WHERE i."id" = OLD."interventionId"
+       AND i."companyId" = OLD."companyId";
+    IF previous_status = 'signed' THEN
+      RAISE EXCEPTION 'INTERVENTION_SIGNED_LOCKED'
+        USING ERRCODE = '23514', CONSTRAINT = 'intervention_scope_coherence';
+    END IF;
+  END IF;
   IF NEW."interventionId" IS NULL THEN
     -- Forme N-1 (writer sans la colonne) : traverse intacte, jamais un blocage de rolling.
     RETURN NEW;
@@ -152,9 +169,17 @@ BEFORE DELETE ON "chantier_photos"
 FOR EACH ROW
 EXECUTE FUNCTION enforce_intervention_signed_trace_retention();
 
+-- Les NOTES sont des traces au même titre que les photos : le journal d'une fiche signée ne se
+-- vide pas davantage qu'il ne s'enrichit (la promesse écrite de l'en-tête vaut pour les deux).
+DROP TRIGGER IF EXISTS intervention_signed_trace_retention ON "chantier_notes";
+CREATE TRIGGER intervention_signed_trace_retention
+BEFORE DELETE ON "chantier_notes"
+FOR EACH ROW
+EXECUTE FUNCTION enforce_intervention_signed_trace_retention();
+
 COMMENT ON FUNCTION enforce_intervention_scope_coherence() IS
-  'PR-15 : une note/photo taguée fiche vise une fiche du MÊME site et du MÊME tenant, et jamais une fiche signée (verrou §3.4) ; forme N-1 (interventionId NULL) inchangée.';
+  'PR-15 : une note/photo taguée fiche vise une fiche du MÊME site et du MÊME tenant, jamais une fiche signée (verrou §3.4), et ne se DÉTACHE pas d''une fiche signée (branche UPDATE sur OLD) ; forme N-1 (interventionId NULL) inchangée.';
 COMMENT ON FUNCTION enforce_intervention_signed_trace_retention() IS
-  'PR-15 : une photo de fiche SIGNÉE ne se retire plus (la séquence erratum 6 vit avant la signature).';
+  'PR-15 : une note/photo de fiche SIGNÉE ne se retire plus (la séquence erratum 6 vit avant la signature).';
 
 COMMIT;

@@ -5,6 +5,7 @@ import { Customer } from '../../domain/customer/customer';
 import { Equipment } from '../../domain/equipment/equipment';
 import {
   Intervention,
+  INTERVENTION_CANCELLED_NO_TRACE_MESSAGE,
   INTERVENTION_SIGNED_LOCKED_MESSAGE,
   type InterventionProps,
 } from '../../domain/intervention/intervention';
@@ -17,7 +18,7 @@ import { UploadWorksitePhoto } from '../chantier/upload-worksite-photo';
 import { DeleteWorksitePhoto } from '../chantier/delete-worksite-photo';
 import { CHANTIER_CLOSED_INTERVENTION_MESSAGE, CreateIntervention } from './create-intervention';
 import { StartIntervention } from './start-intervention';
-import { CompleteIntervention } from './complete-intervention';
+import { CompleteIntervention, FINISHED_AT_IN_FUTURE_MESSAGE } from './complete-intervention';
 import { CancelIntervention } from './cancel-intervention';
 import { UpdateIntervention } from './update-intervention';
 import { SignIntervention } from './sign-intervention';
@@ -832,5 +833,137 @@ describe('ERRATUM 6 — retrait de photo → note de résolution ACCEPTÉE, PUIS
       resolutionNote: { text: 'Photo retirée', authorLabel: 'Fly Services' },
     });
     expect(r).toMatchObject({ ok: false, error: { kind: 'dependency' } });
+  });
+});
+
+describe('[finding 9] DEUX BORNES manquantes — date de fin future, trace sur fiche annulée', () => {
+  it('(a) `finishedAt` dans le futur : REFUS actionnable, la fiche reste `in_progress`', async () => {
+    const env = makeEnv();
+    seed(env, { status: 'in_progress', startedAt: '2026-08-04T09:00:00.000Z' });
+    const r = await new CompleteIntervention({
+      interventions: env.interventionRepo,
+      uow: env.uow,
+      clock: env.clock, // 2026-08-04T10:00:00.000Z
+    }).execute({
+      companyId: COMPANY,
+      interventionId: UUID,
+      expectedRevision: 1,
+      finishedAt: '2026-08-05T10:00:00.000Z',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(JSON.stringify(r.error)).toContain(FINISHED_AT_IN_FUTURE_MESSAGE);
+    expect(env.interventions.get(UUID)!.status).toBe('in_progress');
+  });
+
+  it('(a) avance d’horloge appareil TOLÉRÉE : le rejeu hors-ligne n’est jamais puni', async () => {
+    const env = makeEnv();
+    seed(env, { status: 'in_progress', startedAt: '2026-08-04T09:00:00.000Z' });
+    const r = await new CompleteIntervention({
+      interventions: env.interventionRepo,
+      uow: env.uow,
+      clock: env.clock,
+    }).execute({
+      companyId: COMPANY,
+      interventionId: UUID,
+      expectedRevision: 1,
+      // +2 min sur l'horloge serveur : sous la tolérance documentée.
+      finishedAt: '2026-08-04T10:02:00.000Z',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.finishedAt).toBe('2026-08-04T10:02:00.000Z');
+  });
+
+  it('(b) fiche ANNULÉE : retrait + note de résolution refusés comme AddChantierNote les refuse', async () => {
+    const env = makeEnv();
+    seed(env, { status: 'cancelled' });
+    env.photos.set('photo-annulee', {
+      id: 'photo-annulee',
+      companyId: COMPANY,
+      chantierId: SITE,
+      filename: 'avant.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 3,
+      storageKey: 'key-annulee',
+      createdAt: '2026-08-04T09:10:00.000Z',
+      interventionId: UUID,
+      phase: 'before',
+    });
+    const removed = await new DeleteWorksitePhoto({
+      media: env.media,
+      storage: env.storage,
+      interventions: env.interventionRepo,
+      notes: env.noteRepo,
+      ids: env.ids,
+      clock: env.clock,
+    }).execute({
+      companyId: COMPANY,
+      id: 'photo-annulee',
+      resolutionNote: { text: 'Photo retirée', authorLabel: 'Fly Services' },
+    });
+    expect(removed.ok).toBe(false);
+    if (removed.ok) return;
+    expect(JSON.stringify(removed.error)).toContain(INTERVENTION_CANCELLED_NO_TRACE_MESSAGE);
+    // Ni octets, ni métadonnée, ni note : le refus est ENTIER.
+    expect(env.photos.has('photo-annulee')).toBe(true);
+    expect(env.removedBytes).toEqual([]);
+    expect(env.notes).toHaveLength(0);
+
+    // MÊME règle et MÊME message par l'autre chemin (deux chemins, une seule règle).
+    const note = await new AddChantierNote({
+      chantiers: env.chantierRepo,
+      notes: env.noteRepo,
+      ids: env.ids,
+      clock: env.clock,
+      interventions: env.interventionRepo,
+    }).execute({
+      companyId: COMPANY,
+      chantierId: SITE,
+      text: 'Photo retirée',
+      authorLabel: 'Fly Services',
+      interventionId: UUID,
+    });
+    expect(note.ok).toBe(false);
+    if (note.ok) return;
+    expect(JSON.stringify(note.error)).toContain(INTERVENTION_CANCELLED_NO_TRACE_MESSAGE);
+  });
+
+  it('(b) fiche SIGNÉE : le message de verrou de preuve reste celui-là, inchangé', async () => {
+    const env = makeEnv();
+    seed(env, {
+      status: 'signed',
+      startedAt: '2026-08-04T09:00:00.000Z',
+      finishedAt: '2026-08-04T09:40:00.000Z',
+      signature: {
+        signerName: 'M. Responsable',
+        method: 'onsite_draw',
+        sha256: SHA,
+        capturedAt: '2026-08-04T09:45:00.000Z',
+      },
+    });
+    env.photos.set('photo-signee', {
+      id: 'photo-signee',
+      companyId: COMPANY,
+      chantierId: SITE,
+      filename: 'avant.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 3,
+      storageKey: 'key-signee',
+      createdAt: '2026-08-04T09:10:00.000Z',
+      interventionId: UUID,
+      phase: 'before',
+    });
+    const removed = await new DeleteWorksitePhoto({
+      media: env.media,
+      storage: env.storage,
+      interventions: env.interventionRepo,
+      notes: env.noteRepo,
+      ids: env.ids,
+      clock: env.clock,
+    }).execute({ companyId: COMPANY, id: 'photo-signee' });
+    expect(removed.ok).toBe(false);
+    if (removed.ok) return;
+    expect(JSON.stringify(removed.error)).toContain(INTERVENTION_SIGNED_LOCKED_MESSAGE);
   });
 });

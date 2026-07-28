@@ -1571,6 +1571,15 @@ export interface BobClient {
   ): Promise<Result<{ activeContractLabels: string[] }, AppError>>;
   worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
   deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>>;
+  /**
+   * ERRATUM 6 — retrait TRACÉ d'une photo (« 1 photo n'a pas pu être jointe ») : geste
+   * canonique de la file FIFO offline, porté par un POST — un corps de DELETE peut être
+   * dépouillé par un proxy et la note serait perdue en silence.
+   */
+  removeWorksitePhoto?(
+    photoId: string,
+    input: { resolutionNote: string },
+  ): Promise<Result<void, AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   /** Crée une fiche client — même use case pour l'UI (C12) et l'outil agent creer_client (C40). */
   createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;

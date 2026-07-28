@@ -213,6 +213,22 @@ export interface InterventionPatch {
 export const INTERVENTION_SIGNED_LOCKED_MESSAGE =
   'Fiche signée — verrouillée : plus aucune modification (doctrine de la preuve, comme un devis signé).';
 
+/** Message UNIQUE du refus de trace sur une fiche ANNULÉE (le passage n'a pas eu lieu). */
+export const INTERVENTION_CANCELLED_NO_TRACE_MESSAGE =
+  'Fiche annulée : plus aucune trace ne s’y ajoute — reprends sur la fiche du passage réel.';
+
+/**
+ * [Revue adversariale 28/07 — finding 9b] Message UNIQUE du refus de trace de terrain, DÉRIVÉ
+ * de l'état réel : signée → verrou de preuve, annulée → passage sans objet. Tous les chemins
+ * médias (note, photo, retrait + note de résolution) appellent CE message : deux chemins ne
+ * peuvent plus donner deux règles ni deux explications pour la même trace.
+ */
+export function interventionFieldTraceRefusal(status: InterventionStatus): string {
+  return status === 'cancelled'
+    ? INTERVENTION_CANCELLED_NO_TRACE_MESSAGE
+    : INTERVENTION_SIGNED_LOCKED_MESSAGE;
+}
+
 /**
  * Agrégat Intervention — fiche de passage générique tous métiers (§3.1) : site + client +
  * type libre + checklist LIBRE + photos avant/après + signature + PDF au titre paramétrable.

@@ -4,7 +4,7 @@ import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ChantierRepository, type ChantierNoteRepository } from '../ports/repositories';
 import { type EquipmentRepository } from '../equipment/equipment-repository';
 import { type InterventionRepository } from '../intervention/intervention-repository';
-import { INTERVENTION_SIGNED_LOCKED_MESSAGE } from '../../domain/intervention/intervention';
+import { interventionFieldTraceRefusal } from '../../domain/intervention/intervention';
 import { ChantierNote } from '../../domain/chantier/chantier-note';
 
 export interface AddChantierNoteInput {
@@ -95,7 +95,7 @@ export class AddChantierNote {
           appDomain({
             code: 'VALIDATION',
             field: 'interventionId',
-            message: INTERVENTION_SIGNED_LOCKED_MESSAGE,
+            message: interventionFieldTraceRefusal(intervention.status),
           }),
         );
     }

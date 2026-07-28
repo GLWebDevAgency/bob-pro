@@ -410,6 +410,97 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     });
   });
 
+  it('[finding 7] fiche signée : ni DÉ-TAGGAGE d’une trace, ni retrait d’une NOTE', async () => {
+    const id = randomUUID();
+    const repoA = new PrismaInterventionRepository(workerA);
+    const photoId = randomUUID();
+    const noteId = randomUUID();
+    await workerA.withTenant(companyA, async () => {
+      await repoA.create(intervention(id, companyA, chantierA, customerA, completedProps));
+      await workerA.client().chantierPhoto.create({
+        data: {
+          id: photoId,
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'avant.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: id,
+          phase: 'before',
+        },
+      });
+      await workerA.client().chantierNote.create({
+        data: {
+          id: noteId,
+          companyId: companyA,
+          chantierId: chantierA,
+          text: 'Trace du passage',
+          authorLabel: 'Certification',
+          interventionId: id,
+        },
+      });
+      const loaded = await repoA.findById(companyA, id);
+      loaded!.sign({
+        signerName: 'M. Responsable',
+        method: 'onsite_draw',
+        sha256: 'c'.repeat(64),
+        capturedAt: '2026-08-04T10:00:00.000Z',
+      });
+      await repoA.save(loaded!);
+
+      // Dé-taggage : la trace SORTIRAIT de la preuve signée sans jamais être supprimée.
+      await expect(
+        workerA.client().$executeRaw`
+          UPDATE "chantier_photos" SET "interventionId" = NULL, "phase" = NULL
+           WHERE "id" = ${photoId} AND "companyId" = ${companyA}
+        `,
+      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+      await expect(
+        workerA.client().$executeRaw`
+          UPDATE "chantier_notes" SET "interventionId" = NULL
+           WHERE "id" = ${noteId} AND "companyId" = ${companyA}
+        `,
+      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+      // Retrait d'une NOTE de fiche signée : refusé comme celui d'une photo.
+      await expect(
+        workerA.client().chantierNote.deleteMany({ where: { id: noteId, companyId: companyA } }),
+      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+
+      // Les traces sont TOUJOURS là, toujours rattachées à la fiche signée.
+      const photo = await workerA.client().chantierPhoto.findFirst({ where: { id: photoId } });
+      const note = await workerA.client().chantierNote.findFirst({ where: { id: noteId } });
+      expect(photo?.interventionId).toBe(id);
+      expect(note?.interventionId).toBe(id);
+    });
+  });
+
+  it('[finding 7] fiche NON signée : dé-taggage et retrait de note restent possibles', async () => {
+    const id = randomUUID();
+    const repoA = new PrismaInterventionRepository(workerA);
+    const noteId = randomUUID();
+    await workerA.withTenant(companyA, async () => {
+      await repoA.create(intervention(id, companyA, chantierA, customerA, completedProps));
+      await workerA.client().chantierNote.create({
+        data: {
+          id: noteId,
+          companyId: companyA,
+          chantierId: chantierA,
+          text: 'Note du passage',
+          authorLabel: 'Certification',
+          interventionId: id,
+        },
+      });
+      await workerA.client().$executeRaw`
+        UPDATE "chantier_notes" SET "interventionId" = NULL
+         WHERE "id" = ${noteId} AND "companyId" = ${companyA}
+      `;
+      const note = await workerA.client().chantierNote.findFirst({ where: { id: noteId } });
+      expect(note?.interventionId).toBeNull();
+      await workerA.client().chantierNote.deleteMany({ where: { id: noteId, companyId: companyA } });
+    });
+  });
+
   it('writer N-1 : notes ET photos SANS interventionId/phase traversent intactes', async () => {
     await workerA.withTenant(companyA, async () => {
       const noteId = randomUUID();

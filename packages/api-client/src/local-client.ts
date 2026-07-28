@@ -3387,6 +3387,30 @@ export class LocalBobClient implements BobClient {
     }).execute({ companyId: this.companyId, id: photoId });
   }
 
+  async removeWorksitePhoto(
+    photoId: string,
+    input: { resolutionNote: string },
+  ): Promise<Result<void, AppError>> {
+    const company = await this.companies.findById(this.companyId);
+    // Le mode local/démo n'a pas de fiches de passage (PR-17) : une photo n'y est jamais
+    // taguée, donc le port `interventions` n'est pas requis — le use case reste fail-closed
+    // s'il rencontrait malgré tout une photo taguée.
+    return new DeleteWorksitePhoto({
+      media: this.worksiteMedia,
+      storage: this.worksitePhotoBytes,
+      notes: this.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      id: photoId,
+      resolutionNote: {
+        text: input.resolutionNote,
+        authorLabel: company?.name ?? 'Bob Pro',
+      },
+    });
+  }
+
   // Écritures billing : barrière this.ready (le seed démo doit être ENTIÈREMENT posé avant
   // toute écriture utilisateur — sinon la numérotation sans-trou se mélange, cf. tests).
   // Les variantes *Internal (sans barrière, clock injectable) servent le seed lui-même.
