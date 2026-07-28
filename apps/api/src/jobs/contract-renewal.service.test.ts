@@ -4,6 +4,7 @@ import {
   MaintenanceContract,
   addDays,
   clampedAnniversary,
+  formatDateOnlyFr,
   type Company,
   type NotificationPort,
   type InvoiceSnapshot,
@@ -217,6 +218,31 @@ describe('ContractRenewalService — cron 6 h (alerte INTERNE, jamais un envoi c
     ]);
     // J-90 : rien (fenêtre fermée) — le run reste silencieux, aucun job de plus.
     expect(await service.runForCompany(COMPANY, '2026-07-14')).toEqual({ queued: 0, deduplicated: 0 });
+  });
+
+  /**
+   * Doctrine « papa vocal » : l'artisan ne lit pas du AAAA-MM-JJ. Toutes les autres surfaces
+   * (fiche, voix, écrans) disent une date française ; le rappel INTERNE ne peut pas être la
+   * seule à parler machine — c'est là que le pro décide d'appeler son client.
+   */
+  it('les rappels INTERNES disent une date FRANÇAISE, jamais du AAAA-MM-JJ', async () => {
+    const { service, delivery, notifier } = await makeService({
+      contracts: [contract({ id: 'c-dates-fr' })],
+      invoices: [coveringInvoice('inv-n', 'c-dates-fr', ANNIVERSARY, CURRENT_PERIOD_END_INCLUSIVE)],
+    });
+    expect(await service.runForCompany(COMPANY)).toEqual({ queued: 2, deduplicated: 0 });
+    expect((await delivery.runForCompany(COMPANY)).sent).toBe(2);
+    const bodies = (notifier.send as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => (call[0] as { body: string }).body,
+    );
+    expect(bodies).toHaveLength(2);
+    const renewal = bodies.find((body) => body.includes('se reconduit tacitement'));
+    const annual = bodies.find((body) => body.includes('facturée'));
+    expect(renewal).toBeDefined();
+    expect(annual).toBeDefined();
+    expect(renewal).toContain(formatDateOnlyFr(NEXT_ANNIVERSARY));
+    expect(annual).toContain(formatDateOnlyFr(NEXT_ANNIVERSARY));
+    for (const body of bodies) expect(body).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('non-tacite : « arrive à échéance », jamais « se reconduit »', async () => {

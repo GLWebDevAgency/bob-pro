@@ -4,6 +4,7 @@ import {
   SystemClock,
   deriveAnnualBillingDue,
   deriveRenewalAlerts,
+  formatDateOnlyFr,
   type ContractScheduleData,
   type MaintenanceContract,
 } from '@bob/core';
@@ -147,9 +148,12 @@ export class ContractRenewalService {
                 ? `Contrat ${contract.label} — se reconduit dans ${alert.daysUntil} jours`
                 : `Contrat ${contract.label} — arrive à échéance dans ${alert.daysUntil} jours`,
               body: [
+                // Date FRANÇAISE (formatDateOnlyFr, @bob/core) comme sur toutes les autres
+                // surfaces : l'artisan ne lit pas du AAAA-MM-JJ, et ce rappel est justement
+                // là où il décide d'appeler son client.
                 alert.tacit
-                  ? `Le contrat « ${contract.label} » se reconduit tacitement le ${alert.anniversary} (dans ${alert.daysUntil} jours).`
-                  : `Le contrat « ${contract.label} » arrive à échéance le ${alert.anniversary} (dans ${alert.daysUntil} jours) — sans reconduction tacite, il faudra le renouveler ou le laisser s'éteindre.`,
+                  ? `Le contrat « ${contract.label} » se reconduit tacitement le ${formatDateOnlyFr(alert.anniversary)} (dans ${alert.daysUntil} jours).`
+                  : `Le contrat « ${contract.label} » arrive à échéance le ${formatDateOnlyFr(alert.anniversary)} (dans ${alert.daysUntil} jours) — sans reconduction tacite, il faudra le renouveler ou le laisser s'éteindre.`,
                 '',
                 `Préavis prévu au contrat : ${noticeDays} jours. C'est le moment d'appeler le client si quelque chose doit bouger (prix, périmètre, résiliation).`,
                 '',
@@ -178,7 +182,7 @@ export class ContractRenewalService {
               to: email,
               subject: `Contrat ${contract.label} — facture annuelle à émettre`,
               body: [
-                `La période du ${due.period.start} n'est pas encore facturée pour le contrat « ${contract.label} ».`,
+                `La période du ${formatDateOnlyFr(due.period.start)} n'est pas encore facturée pour le contrat « ${contract.label} ».`,
                 due.cancelledCoveringNumber !== null
                   ? `La facture ${due.cancelledCoveringNumber} qui la couvrait a été annulée : la période est à re-facturer.`
                   : '',
