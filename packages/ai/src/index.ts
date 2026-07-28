@@ -24,6 +24,7 @@ export * from './agent/autonomy';
 export * from './agent/confirmation';
 export * from './agent/action-diff';
 export * from './agent/bob-agent';
+export * from './agent/mission-understanding/quote-creation';
 export {
   type CompanyMemoryPort,
   type RememberSupplierInput,
