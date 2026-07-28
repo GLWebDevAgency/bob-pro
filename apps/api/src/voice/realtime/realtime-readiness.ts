@@ -69,6 +69,14 @@ export interface AuditedBobLiveRuntimeReadinessOptions {
 }
 
 /**
+ * Part du TTL succès acoustique au-delà de laquelle un hit de cache déclenche une re-sonde en
+ * arrière-plan. Protection production : après un long idle (TTL 15 min), le premier appel qui
+ * touche encore le cache le fait rechauffer sans attendre — aucun client ne paie la sonde
+ * TTS+Whisper en ligne (~12,4 s mesurés sur le Whisper staging CPU-only).
+ */
+export const ACOUSTIC_CACHE_REFRESH_AGE_RATIO = 0.8;
+
+/**
  * Sonde opérationnelle bornée de la chaîne auditée.
  *
  * Le cache très court absorbe une rafale d'admissions sans transformer Whisper en dépendance
@@ -176,14 +184,38 @@ export class AuditedBobLiveRuntimeReadiness implements BobLiveRuntimeReadinessPo
    */
   private async acousticReady(): Promise<boolean> {
     const now = this.now();
-    if (this.acousticCached !== null && this.acousticCached.expiresAt > now) {
-      return this.acousticCached.healthy;
+    const cached = this.acousticCached;
+    if (cached !== null && cached.expiresAt > now) {
+      if (cached.healthy) this.refreshAcousticCacheBeforeExpiry(cached.expiresAt, now);
+      return cached.healthy;
     }
     if (this.acousticInFlight !== null) return this.acousticInFlight;
-    const probe = this.runAcousticProbe();
-    this.acousticInFlight = probe;
-    try {
-      const healthy = await probe;
+    return this.startAcousticProbe();
+  }
+
+  /**
+   * Re-sonde NON bloquante d'un cache succès vieillissant (au-delà de
+   * ACOUSTIC_CACHE_REFRESH_AGE_RATIO du TTL). Jamais concurrente : elle occupe le slot
+   * acousticInFlight partagé. Le hit courant est servi immédiatement ; le résultat de la re-sonde
+   * remplace le cache par la vérité la plus fraîche, y compris un échec (fail-closed). Un cache
+   * échec n'est jamais rechauffé ici : sa courte expiration repasse par le chemin borné normal.
+   */
+  private refreshAcousticCacheBeforeExpiry(expiresAt: number, now: number): void {
+    if (this.acousticInFlight !== null) return;
+    const ageMs = this.acousticSuccessTtlMs - (expiresAt - now);
+    const refreshAgeMs = Math.round(this.acousticSuccessTtlMs * ACOUSTIC_CACHE_REFRESH_AGE_RATIO);
+    if (ageMs < refreshAgeMs) return;
+    void this.startAcousticProbe();
+  }
+
+  /**
+   * Démarre la sonde acoustique, publie son résultat dans le cache et libère le slot en vol.
+   * La promesse rendue n'est jamais rejetée (runAcousticProbe capture tout) : un appelant qui
+   * cesse de l'attendre — attente bornée d'une réservation, re-chauffage — ne la tue pas et le
+   * cache est chauffé quoi qu'il arrive.
+   */
+  private startAcousticProbe(): Promise<boolean> {
+    const probe = this.runAcousticProbe().then((healthy) => {
       this.acousticCached = {
         expiresAt: this.now() + (
           healthy ? this.acousticSuccessTtlMs : this.acousticFailureTtlMs
@@ -191,9 +223,14 @@ export class AuditedBobLiveRuntimeReadiness implements BobLiveRuntimeReadinessPo
         healthy,
       };
       return healthy;
-    } finally {
-      if (this.acousticInFlight === probe) this.acousticInFlight = null;
-    }
+    });
+    this.acousticInFlight = probe;
+    void probe
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.acousticInFlight === probe) this.acousticInFlight = null;
+      });
+    return probe;
   }
 
   private async runAcousticProbe(): Promise<boolean> {
@@ -218,27 +255,104 @@ export class AuditedBobLiveRuntimeReadiness implements BobLiveRuntimeReadinessPo
   }
 }
 
-function unavailableAdmission(): RealtimeAdmissionResult {
-  return { allowed: false, denial: 'unavailable', retryAt: null };
+function unavailableAdmission(retryAt: string | null = null): RealtimeAdmissionResult {
+  return { allowed: false, denial: 'unavailable', retryAt };
+}
+
+/**
+ * Budget d'attente de readiness.check() pendant une réservation.
+ *
+ * Invariant (course sonde acoustique / budget client) : le bootstrap mobile abandonne à
+ * 12 000 ms (REALTIME_BOOTSTRAP_TIMEOUT_MS côté HttpBobClient) alors que la sonde acoustique
+ * complète coûte ~12,4 s mesurés sur le Whisper staging CPU-only (budget serveur : 45 s).
+ * Payer la sonde en ligne pendant reserve() fait donc abandonner le client, qui pose sa fence
+ * d'annulation durable pendant que la réservation aboutit côté serveur — un 409 active_lease
+ * que personne ne reçoit. Ce budget court garantit budget client ≫ attente de readiness :
+ * au-delà, refus indisponible fail-closed immédiat et la sonde reste EN VOL chauffer le cache.
+ */
+export const RESERVE_READINESS_WAIT_BUDGET_MS = 2_500;
+
+/**
+ * Horizon retryAt court renvoyé quand le budget d'attente expire : le temps que la sonde en vol
+ * se termine, un retry client repart cache chaud sans jamais re-payer la sonde en ligne.
+ */
+export const RESERVE_READINESS_RETRY_AFTER_MS = 5_000;
+
+export interface GateRealtimeAdmissionOnBobLiveReadinessOptions {
+  /** Injectable pour les tests ; défaut RESERVE_READINESS_WAIT_BUDGET_MS. */
+  readonly reserveReadinessWaitBudgetMs?: number;
+  /** Injectable pour les tests ; défaut RESERVE_READINESS_RETRY_AFTER_MS. */
+  readonly reserveReadinessRetryAfterMs?: number;
+  readonly now?: () => number;
+}
+
+type ReadinessWithinBudget =
+  | { readonly onTime: true; readonly status: BobLiveRuntimeReadiness }
+  | { readonly onTime: false };
+
+/**
+ * Attend le check au plus budgetMs. La sonde appartient au module readiness : on cesse de
+ * l'attendre sans jamais l'annuler — elle reste en vol et chauffe le cache acoustique. Un rejet
+ * du check pendant ou après la course reste observé par les handlers posés ici (aucun rejet
+ * non géré) et se propage à l'appelant uniquement s'il survient dans le budget.
+ */
+async function readinessWithinBudget(
+  check: Promise<BobLiveRuntimeReadiness>,
+  budgetMs: number,
+): Promise<ReadinessWithinBudget> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<ReadinessWithinBudget>((resolve) => {
+    timer = setTimeout(() => resolve({ onTime: false }), budgetMs);
+  });
+  try {
+    return await Promise.race([
+      check.then((status) => ({ onTime: true as const, status })),
+      budget,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
  * Ferme uniquement les nouvelles réservations lorsque la chaîne audio auditée n'est pas prête.
  * Toutes les mutations de session existante et le reaper restent délégués : une panne Whisper
  * ne doit jamais empêcher le drain ni prolonger un bail provider.
+ *
+ * Une réservation ne paie JAMAIS la sonde acoustique en ligne : au-delà du budget court,
+ * refus fail-closed avec le retryAt de la forme d'indisponibilité déjà servie par la route
+ * (denial `unavailable` → appUnavailable('bob-live-admission', Retry-After) côté service).
  */
 export function gateRealtimeAdmissionOnBobLiveReadiness(
   admission: RealtimeAdmissionPort,
   readiness: BobLiveRuntimeReadinessPort,
+  options: GateRealtimeAdmissionOnBobLiveReadinessOptions = {},
 ): RealtimeAdmissionPort {
+  const waitBudgetMs = options.reserveReadinessWaitBudgetMs ?? RESERVE_READINESS_WAIT_BUDGET_MS;
+  const retryAfterMs = options.reserveReadinessRetryAfterMs ?? RESERVE_READINESS_RETRY_AFTER_MS;
+  const now = options.now ?? Date.now;
+  if (
+    !Number.isSafeInteger(waitBudgetMs)
+    || waitBudgetMs < 1
+    || !Number.isSafeInteger(retryAfterMs)
+    || retryAfterMs < 1
+  ) {
+    throw new Error('bob_live_readiness_gate_invalid_options');
+  }
   return {
     reserve: async (input) => {
+      let outcome: ReadinessWithinBudget;
       try {
-        const status = await readiness.check();
-        if (!status.ready) return unavailableAdmission();
+        outcome = await readinessWithinBudget(readiness.check(), waitBudgetMs);
       } catch {
         return unavailableAdmission();
       }
+      if (!outcome.onTime) {
+        // Fail-closed absolu : sans statut ready observé dans le budget, aucune réservation.
+        // La sonde laissée en vol chauffe le cache pour que le retry parte cache chaud.
+        return unavailableAdmission(new Date(now() + retryAfterMs).toISOString());
+      }
+      if (!outcome.status.ready) return unavailableAdmission();
       return admission.reserve(input);
     },
     bindProvider: (input) => admission.bindProvider(input),

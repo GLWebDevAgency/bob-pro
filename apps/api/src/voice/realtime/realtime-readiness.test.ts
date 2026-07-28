@@ -186,6 +186,149 @@ describe('Bob Live runtime readiness', () => {
     expect(reserve).not.toHaveBeenCalled();
   });
 
+  it('borne l’attente de readiness : budget dépassé → indisponible avec retryAt, sans réservation', async () => {
+    const reserve = vi.fn();
+    const admission = admissionStub({ reserve });
+    const neverSettles = { check: () => new Promise<never>(() => undefined) };
+    const gated = gateRealtimeAdmissionOnBobLiveReadiness(admission, neverSettles, {
+      reserveReadinessWaitBudgetMs: 5,
+      reserveReadinessRetryAfterMs: 5_000,
+      now: () => 1_000,
+    });
+
+    await expect(gated.reserve({} as never)).resolves.toEqual({
+      allowed: false,
+      denial: 'unavailable',
+      retryAt: new Date(6_000).toISOString(),
+    });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('refuse des options de gate non bornées', () => {
+    const admission = admissionStub();
+    const readiness = {
+      check: async () => ({
+        ready: true as const,
+        mode: 'audited' as const,
+        speechAudit: 'ready' as const,
+      }),
+    };
+    expect(() => gateRealtimeAdmissionOnBobLiveReadiness(admission, readiness, {
+      reserveReadinessWaitBudgetMs: 0,
+    })).toThrow('bob_live_readiness_gate_invalid_options');
+    expect(() => gateRealtimeAdmissionOnBobLiveReadiness(admission, readiness, {
+      reserveReadinessRetryAfterMs: 0,
+    })).toThrow('bob_live_readiness_gate_invalid_options');
+  });
+
+  it('laisse la sonde abandonnée en vol chauffer le cache : le retry réserve sans re-sonder', async () => {
+    let resolveProve: ((value: { healthy: boolean }) => void) | undefined;
+    const prove = vi.fn(() => new Promise<{ healthy: boolean }>((resolve) => {
+      resolveProve = resolve;
+    }));
+    const readiness = new AuditedBobLiveRuntimeReadiness(
+      { health: async () => ({ healthy: true }) },
+      { prove },
+    );
+    const allowed = { allowed: false as const, denial: 'user_minute' as const, retryAt: null };
+    const reserve = vi.fn(async () => allowed);
+    const gated = gateRealtimeAdmissionOnBobLiveReadiness(admissionStub({ reserve }), readiness, {
+      reserveReadinessWaitBudgetMs: 5,
+      reserveReadinessRetryAfterMs: 5_000,
+    });
+
+    const denied = await gated.reserve({} as never);
+    expect(denied).toMatchObject({ allowed: false, denial: 'unavailable' });
+    expect((denied as { retryAt: string | null }).retryAt).toBeTypeOf('string');
+    expect(reserve).not.toHaveBeenCalled();
+    expect(prove).toHaveBeenCalledOnce();
+
+    // L'abandon de l'attente n'a pas tué la sonde : elle se termine et chauffe le cache.
+    resolveProve?.({ healthy: true });
+    await readiness.check();
+
+    await expect(gated.reserve({} as never)).resolves.toBe(allowed);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(prove).toHaveBeenCalledOnce();
+  });
+
+  it('réserve immédiatement sur cache chaud sans nouvelle sonde acoustique', async () => {
+    const prove = vi.fn(async () => ({ healthy: true }));
+    const readiness = new AuditedBobLiveRuntimeReadiness(
+      { health: async () => ({ healthy: true }) },
+      { prove },
+    );
+    await readiness.check();
+    const allowed = { allowed: false as const, denial: 'user_minute' as const, retryAt: null };
+    const reserve = vi.fn(async () => allowed);
+    const gated = gateRealtimeAdmissionOnBobLiveReadiness(admissionStub({ reserve }), readiness);
+
+    await expect(gated.reserve({} as never)).resolves.toBe(allowed);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(prove).toHaveBeenCalledOnce();
+  });
+
+  it('rechauffe en arrière-plan un cache acoustique vieillissant, une seule fois, sans bloquer', async () => {
+    let clock = 0;
+    const resolvers: Array<(value: { healthy: boolean }) => void> = [];
+    const prove = vi.fn(() => new Promise<{ healthy: boolean }>((resolve) => {
+      resolvers.push(resolve);
+    }));
+    const readiness = new AuditedBobLiveRuntimeReadiness(
+      { health: async () => ({ healthy: true }) },
+      { prove },
+      { successTtlMs: 0, acousticSuccessTtlMs: 100, now: () => clock },
+    );
+
+    const first = readiness.check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolvers[0]?.({ healthy: true });
+    await expect(first).resolves.toMatchObject({ ready: true });
+    expect(prove).toHaveBeenCalledTimes(1);
+
+    clock = 79; // âge < 80 % du TTL : aucun re-chauffage
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    expect(prove).toHaveBeenCalledTimes(1);
+
+    clock = 80; // seuil atteint : re-sonde en arrière-plan, le hit reste servi immédiatement
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    expect(prove).toHaveBeenCalledTimes(2);
+
+    // pendant que la re-sonde est en vol : jamais de re-chauffage concurrent
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    expect(prove).toHaveBeenCalledTimes(2);
+
+    resolvers[1]?.({ healthy: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    clock = 150; // au-delà de l'expiration d'origine (100) mais dans le TTL renouvelé (180)
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    expect(prove).toHaveBeenCalledTimes(2);
+  });
+
+  it('un re-chauffage en échec remplace le cache par la vérité fraîche et ferme (fail-closed)', async () => {
+    let clock = 0;
+    const results = [{ healthy: true }, { healthy: false }];
+    const prove = vi.fn(async () => results.shift() ?? { healthy: false });
+    const readiness = new AuditedBobLiveRuntimeReadiness(
+      { health: async () => ({ healthy: true }) },
+      { prove },
+      { successTtlMs: 0, acousticSuccessTtlMs: 100, now: () => clock },
+    );
+
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    clock = 90;
+    await expect(readiness.check()).resolves.toMatchObject({ ready: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(prove).toHaveBeenCalledTimes(2);
+
+    await expect(readiness.check()).resolves.toEqual({
+      ready: false,
+      mode: 'audited',
+      speechAudit: 'unavailable',
+    });
+  });
+
   it('délègue une réservation saine et ne bloque jamais le drain existant', async () => {
     const allowed = { allowed: false as const, denial: 'user_minute' as const, retryAt: null };
     const reserve = vi.fn(async () => allowed);
