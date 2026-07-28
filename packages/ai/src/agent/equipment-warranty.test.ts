@@ -33,6 +33,21 @@ describe('extractSpokenWarranty', () => {
     expect(extractSpokenWarranty('garantie 2027-03-12').date).toBe('2027-03-12');
   });
 
+  it('[re-revue] durée + échéance ENSEMBLE : la durée dite n’avale jamais la date qui suit', () => {
+    // Jour dit après la durée — le patron réel du terrain.
+    expect(extractSpokenWarranty('garantie 2 ans jusqu’au 12 mars 2027').date).toBe('2027-03-12');
+    // Mois-année après la durée → fin de mois (norme fondateur préservée).
+    expect(extractSpokenWarranty('sous garantie 24 mois jusqu’en mars 2027').date).toBe('2027-03-31');
+    // Numériques après la durée.
+    expect(extractSpokenWarranty('garantie 1 an jusqu’au 12/03/2027').date).toBe('2027-03-12');
+    expect(extractSpokenWarranty('garantie 2 ans 2027-03-12').date).toBe('2027-03-12');
+    // Un nombre QUELCONQUE interposé (sans unité de durée) n'est JAMAIS traversé : la mention
+    // reste signalée honnêtement, aucune date inventée.
+    const contract = extractSpokenWarranty('garantie contrat 4500123 mars 2027');
+    expect(contract.date).toBeNull();
+    expect(contract.mentioned).toBe(true);
+  });
+
   it('mention ILLISIBLE : signalée (mentioned) avec le segment dit — jamais une date inventée', () => {
     expect(extractSpokenWarranty('garantie constructeur deux ans')).toEqual({
       date: null,
