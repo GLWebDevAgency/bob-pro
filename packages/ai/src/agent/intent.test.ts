@@ -599,6 +599,22 @@ describe('detectIntent — parc d’équipements (PR-11) : intents dédiés SANS
     expect(detectIntent('Montre l’historique de la fontaine du chantier Bastille')).toBe('historique_equipement');
   });
 
+  it('[re-revue] l’historique d’une PERSONNE (civilité abrégée ou prénom+nom nu) n’est JAMAIS un équipement', () => {
+    // « M. » : le point abrégé cassait l'exclusion (`m\.` + \b ne matche jamais devant une espace).
+    expect(detectIntent("L'historique de M. Dupont")).not.toBe('historique_equipement');
+    expect(detectIntent("L'historique de Mme Robert")).not.toBe('historique_equipement');
+    expect(detectIntent("L'historique de M Dupont")).not.toBe('historique_equipement');
+    // Prénom+nom NU après « de » : quelqu'un — l'historique client a son propre chemin.
+    expect(detectIntent("L'historique de Jean Martin")).not.toBe('historique_equipement');
+    expect(detectIntent("Montre-moi l'historique de Jean Martin")).not.toBe('historique_equipement');
+    // Les machines gardent leur chemin : l'article (« de la », « de l' ») dit l'objet.
+    expect(detectIntent("L'historique de la clim")).toBe('historique_equipement');
+    expect(detectIntent("L'historique de la fontaine de l'accueil")).toBe('historique_equipement');
+    expect(detectIntent("L'historique de l'adoucisseur")).toBe('historique_equipement');
+    // Jeton d'équipement explicite ⇒ la phrase reste un geste parc même sans article.
+    expect(detectIntent("L'historique de cette machine")).toBe('historique_equipement');
+  });
+
   it('négation ⇒ rien (jamais une mutation sur une intention niée)', () => {
     expect(detectIntent('Ne retire pas la fontaine du parc')).not.toBe('retirer_equipement');
     expect(detectIntent("N'ajoute pas d'équipement chez Carrefour")).not.toBe('ajouter_equipement');

@@ -118,10 +118,15 @@ export function detectIntent(message: string): BobIntent {
   // Historique d'une machine : « l'historique de la fontaine de l'accueil » — la résolution du
   // NOM se fait contre le parc réel dans le handler ; les historiques d'autres objets restent
   // à leurs intents (client, facture…). [Revue train n°2] l'historique DU chantier/site
-  // lui-même (« l'historique du chantier Durand ») et celui d'une PERSONNE désignée par sa
-  // civilité (« l'historique de Mme Girard ») ne sont JAMAIS des équipements — mais une
-  // machine SCOPÉE à son site (« l'historique de la clim du site Bastille ») en reste un :
-  // l'exclusion ne porte que sur l'objet qui suit IMMÉDIATEMENT « historique de/du ».
+  // lui-même (« l'historique du chantier Durand ») et celui d'une PERSONNE ne sont JAMAIS des
+  // équipements — mais une machine SCOPÉE à son site (« l'historique de la clim du site
+  // Bastille ») en reste un : l'exclusion ne porte que sur l'objet qui suit IMMÉDIATEMENT
+  // « historique de/du ». [Re-revue] deux formes de personne : la CIVILITÉ (« M. Dupont » —
+  // le \b se pose sur le nom de civilité, le point reste optionnel : `m\.` suivi de \b ne
+  // matchait jamais devant une espace) et le prénom+nom NU (« Jean Martin ») — en français,
+  // une machine se dit avec son article (« de la clim », « du compresseur », « de
+  // l'ascenseur ») : deux mots nus après « de » désignent quelqu'un, sauf jeton d'équipement
+  // explicite dans la phrase.
   if (
     /\bhistoriques?\b/.test(normalizedMessage) &&
     !/\b(clients?|factures?|devis|paiements?|reglements?|relances?|comptes?|depenses?|documents?)\b/.test(
@@ -130,9 +135,13 @@ export function detectIntent(message: string): BobIntent {
     !/\bhistoriques?\s+(?:complet\s+)?(?:du|des|de\s+la|de\s+l\W{0,3}|de)\s*(?:chantiers?|sites?)\b/.test(
       normalizedMessage,
     ) &&
-    !/\bhistoriques?\s+(?:complet\s+)?(?:du|des|de)\s+(?:m\.|mr|mme|mlle|monsieur|madame|mademoiselle)\b/.test(
+    !/\bhistoriques?\s+(?:complet\s+)?(?:du|des|de)\s+(?:monsieur|madame|mademoiselle|mlle|mme|mr|m)\b\.?/.test(
       normalizedMessage,
-    )
+    ) &&
+    (/\b(equipements?|machines?|parc)\b/.test(normalizedMessage) ||
+      !/\bhistoriques?\s+(?:complet\s+)?de\s+(?!(?:la|le|les|l\W|un|une|des|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|votre|nos|vos|leur|leurs|ce|cet|cette|ces|chaque)\b)[a-z]{2,}\s+[a-z]{2,}\b/.test(
+        normalizedMessage,
+      ))
   )
     return 'historique_equipement';
   // Lecture du parc : « le parc du site Bastille », « les équipements de Carrefour ».
