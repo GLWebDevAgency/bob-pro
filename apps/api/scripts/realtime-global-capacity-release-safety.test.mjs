@@ -101,11 +101,14 @@ test('la configuration live est tout-ou-rien et possède une version monotone', 
 test('la fermeture et l’activation sérialisent singleton puis projection sans cycle de verrous', () => {
   const closeExisting = releaseHelper.slice(
     releaseHelper.indexOf('close_existing()'),
+    releaseHelper.indexOf('activate_existing()'),
+  );
+  const activation = releaseHelper.slice(
+    releaseHelper.indexOf('activate_existing()'),
     releaseHelper.indexOf('configure()'),
   );
-  const configure = releaseHelper.slice(releaseHelper.indexOf('configure()'));
   assert.doesNotMatch(
-    `${closeExisting}\n${configure}`,
+    `${closeExisting}\n${activation}`,
     /LOCK TABLE public\.realtime_session_leases/u,
     'Le rollout ne doit jamais verrouiller leases avant le singleton utilisé par le trigger.',
   );
@@ -117,14 +120,16 @@ test('la fermeture et l’activation sérialisent singleton puis projection sans
     ).length,
     2,
   );
-  assert.doesNotMatch(`${closeExisting}\n${configure}`, /FROM public\.realtime_session_leases/u);
-  assert.match(configure, /state_row\."usedSessions" > selected_global_max/u);
+  assert.doesNotMatch(`${closeExisting}\n${activation}`, /FROM public\.realtime_session_leases/u);
+  assert.match(activation, /state_row\."usedSessions" > selected_global_max/u);
   assert.equal((releaseHelper.match(/SET LOCAL statement_timeout = '5s';/gu) ?? []).length, 2);
   assert.equal((releaseHelper.match(/SET LOCAL lock_timeout = '2s';/gu) ?? []).length, 2);
   assert.match(releaseHelper, /close-existing\) close_existing/u);
+  assert.match(releaseHelper, /activate-existing\) activate_existing/u);
+  assert.match(releaseHelper, /configure\(\)[\s\S]*?ensure_role[\s\S]*?activate_existing/u);
 });
 
-test('la release ferme d’abord, certifie en lecture seule, puis active en dernier', () => {
+test('la release ferme au predeploy puis ne rouvre qu’après le certificat final', () => {
   assert.match(release, /APP_DATABASE_ROLE:\?APP_DATABASE_ROLE runtime role name is required/u);
   for (const marker of [
     'realtime-capacity-release.sh ensure',
@@ -133,18 +138,58 @@ test('la release ferme d’abord, certifie en lecture seule, puis active en dern
   ])
     assert.match(release, new RegExp(marker, 'u'));
 
-  const provision = release.lastIndexOf('realtime-capacity-release.sh provision');
-  const forcedClosed = release.indexOf(
+  const postdeployStart = release.indexOf('if [ "$BOB_RELEASE_PHASE" = postdeploy ]');
+  const postdeployEnd = release.indexOf('\n  exit 0\nfi', postdeployStart);
+  const postdeploy = release.slice(postdeployStart, postdeployEnd);
+  const firstReceipt = postdeploy.indexOf('release-phase-receipt.mjs verify');
+  const metadata = postdeploy.indexOf('certify_realtime_global_capacity_release_metadata');
+  const secondReceipt = postdeploy.lastIndexOf('release-phase-receipt.mjs verify');
+  const mistralRetire = postdeploy.indexOf(
+    'manage-mistral-conversation-key-version.mjs retire',
+    secondReceipt,
+  );
+  const retire = postdeploy.indexOf('manage-agent-mission-fingerprint-key-versions.mjs retire');
+  const finalConfigure = postdeploy.indexOf(
+    'realtime-capacity-release.sh activate-existing',
+    retire,
+  );
+  const success = postdeploy.indexOf('Bob Pro API postdeploy release checks passed');
+  assert.ok(
+    firstReceipt >= 0 &&
+      metadata > firstReceipt &&
+      secondReceipt > metadata &&
+      mistralRetire > secondReceipt &&
+      retire > mistralRetire &&
+      finalConfigure > retire &&
+      success > finalConfigure,
+  );
+  assert.doesNotMatch(postdeploy.slice(finalConfigure), /pnpm |psql |node /u);
+
+  const predeployStart = release.indexOf("pnpm --filter '@bob/api...' run build", postdeployEnd);
+  const predeploy = release.slice(predeployStart);
+  const provision = predeploy.indexOf('realtime-capacity-release.sh provision');
+  const forcedClosed = predeploy.indexOf(
     'BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false',
     provision,
   );
-  const metadata = release.lastIndexOf('certify_realtime_global_capacity_release_metadata');
-  const rlsProbe = release.lastIndexOf('-f apps/api/prisma/rls-cert.sql');
-  const finalConfigure = release.lastIndexOf('realtime-capacity-release.sh configure');
-  const success = release.lastIndexOf('Bob Pro API release checks passed');
-  assert.ok(provision >= 0 && forcedClosed > provision && metadata > forcedClosed);
-  assert.ok(rlsProbe > metadata && finalConfigure > rlsProbe && success > finalConfigure);
-  assert.doesNotMatch(release.slice(finalConfigure), /pnpm |psql |node /u);
+  const predeployMetadata = predeploy.indexOf(
+    'certify_realtime_global_capacity_release_metadata',
+    forcedClosed,
+  );
+  const mutatingCertificates = predeploy.indexOf(
+    'run_nonproduction_mutating_certifications',
+    predeployMetadata,
+  );
+  const finalClose = predeploy.lastIndexOf('BOB_LIVE_ENABLED=false OPENAI_REALTIME_ENABLED=false');
+  const receiptWrite = predeploy.indexOf('release-phase-receipt.mjs write', finalClose);
+  assert.ok(
+    provision >= 0 &&
+      forcedClosed > provision &&
+      predeployMetadata > forcedClosed &&
+      mutatingCertificates > predeployMetadata &&
+      finalClose > mutatingCertificates &&
+      receiptWrite > finalClose,
+  );
 
   assert.match(metadataCert, /^BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;$/mu);
   assert.match(metadataCert, /^ROLLBACK;$/mu);
@@ -205,11 +250,11 @@ test('la CI comporte une autorité active éphémère puis la certification N/N+
   const certificate = isolatedCapacityJob.indexOf('RUN_POSTGRES_REALTIME_CAPACITY_CERT');
   const teardown = isolatedCapacityJob.indexOf('Close isolated Bob Live capacity');
   assert.ok(
-    buckets >= 0
-      && objects > buckets
-      && foreignKey > objects
-      && release > foreignKey
-      && certificate > release
-      && teardown > certificate,
+    buckets >= 0 &&
+      objects > buckets &&
+      foreignKey > objects &&
+      release > foreignKey &&
+      certificate > release &&
+      teardown > certificate,
   );
 });

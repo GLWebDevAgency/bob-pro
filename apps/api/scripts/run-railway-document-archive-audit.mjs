@@ -902,7 +902,12 @@ async function mutateDeploymentOnce(config, deploymentId, mutationName, graphqlD
 
 async function cleanupDeploymentBestEffort(config, deploymentId, status, graphqlDependencies) {
   if (CLEANUP_NOT_NEEDED_STATUSES.has(status)) return;
-  const cancelFirst = new Set(['INITIALIZING', 'BUILDING', 'QUEUED', 'WAITING']).has(status);
+  // Railway peut accepter deploymentStop sur un one-shot déjà marqué SUCCESS sans arrêter
+  // l'instance encore RUNNING. deploymentCancel est l'opération qui converge réellement dans ce
+  // cas ; le cleanup durable vérifiera ensuite deploymentStopped + l'absence d'instance active.
+  const cancelFirst = new Set(['INITIALIZING', 'BUILDING', 'QUEUED', 'WAITING', 'SUCCESS']).has(
+    status,
+  );
   const mutations = cancelFirst ? ['cancel', 'stop'] : ['stop', 'cancel'];
   for (const mutationName of mutations) {
     try {

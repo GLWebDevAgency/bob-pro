@@ -248,7 +248,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env RELEASE_ENVIRONMENT=staging \
+            env RELEASE_ENVIRONMENT=staging BOB_RELEASE_EXPECTED_ENV=staging \
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -340,7 +340,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env RELEASE_ENVIRONMENT=staging \
+            env RELEASE_ENVIRONMENT=staging BOB_RELEASE_EXPECTED_ENV=staging \
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -582,7 +582,7 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env RELEASE_ENVIRONMENT=staging \
+            env RELEASE_ENVIRONMENT=staging BOB_RELEASE_EXPECTED_ENV=staging \
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \

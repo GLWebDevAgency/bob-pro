@@ -71,12 +71,25 @@ Seuls les builds **production** pointent la prod. Preview, dev local et simulate
    `capabilities.realtimeAdmissionCancellationFence`. Exécuter ensuite via `railway run` :
    ```sh
    BOB_RELEASE_PHASE=predeploy \
+   BOB_RELEASE_EXPECTED_ENV=<development|staging|production> \
+   BOB_RELEASE_SHA=<sha-git-40-caracteres> \
+   BOB_RELEASE_RUN_ID=<entier-positif-du-run> \
+   BOB_RELEASE_RUN_ATTEMPT=<entier-positif> \
    REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=<true|false> \
    sh apps/api/scripts/release.sh
    ```
    → préflights (lignée, audience archive), fermeture des admissions, drain `closed|0` obligatoire
    au premier cutover/reprise partielle, **migrations sous l'ANCIEN binaire**, rôles, RLS,
-   révocations PostgREST et certifications PostgreSQL. Exit 0 exigé ; la capacité reste fermée.
+   révocations PostgREST et certifications PostgreSQL. En staging, les certificats avec fixtures
+   s'exécutent une seule fois, séquentiellement ; en production ils sont interdits et remplacés par
+   les preuves structurelles. Après cleanup et fermeture finale, le script écrit un reçu non-PII
+   lié au SHA, au run, à l'environnement, à la base, aux digests et à l’allowlist de configuration
+   opérationnelle non secrète. Les keyrings ne contribuent que par leur inventaire de versions :
+   aucune clé, aucun token, secret ou hash de secret n’entre dans l’artefact. Une cible attendue
+   différente de `CABINET_RELEASE_ENV` échoue avant mutation. Exit 0 exigé ; la capacité reste
+   fermée. Une liaison privée éphémère détecte en parallèle une rotation concurrente des secrets
+   scalaires usage/control ; `.dockerignore` et `.railwayignore` l’excluent du contexte de build,
+   et seul le reçu public exact est uploadé dans GitHub.
 2. Déployer la révision (`railway up` depuis un clone propre au commit, ou pipeline GitHub).
 3. Prouver une seule réplique, puis `/health/ready` avec `ready:true`, le SHA complet et
    l'environnement attendus, ainsi que `realtimeAdmissionCancellationFence:v1`. Le nouveau
@@ -86,15 +99,37 @@ Seuls les builds **production** pointent la prod. Preview, dev local et simulate
    continue de refuser toute réservation tant que `postdeploy` n'a pas appliqué les bindings N et
    passé cette autorité à `active`. `/health` seul ne prouve RIEN : il répond même sur un binaire
    incompatible.
-4. Exécuter immédiatement
-   `BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh` après ces preuves. Ce chemin
-   referme d'abord l'admission, recertifie le schéma et les ACL sous le nouveau binaire, puis
-   constitue l'unique autorité de réouverture de Bob Live.
-5. Activations éventuelles (V2 : par SHA complet certifié, IRRÉVERSIBLES, jamais avant le fix
-   des consommateurs — cf. runbooks `docs/runbooks/`).
-6. Après une activation V2, rejouer le même `postdeploy` comme recertification post-activation :
-   il exige une bijection stricte des migrations, n'exécute jamais `prisma migrate deploy`, ferme
-   avant toute mutation puis ne rouvre qu'en dernier geste.
+4. Exécuter l'**audit archive one-shot** isolé, lié au SHA et à son deployment id. Conserver son
+   enveloppe non-PII et exiger son état terminal stable ; tout échec ou cleanup incomplet interdit
+   la suite. Bob Live reste fermé pendant tout l'audit.
+5. Revalider mono-réplique, SHA, environnement et capacités après l’audit, puis exécuter les
+   **activations** monotones Archive V2, Settlement V2 et Outbox V2 via
+   `activate-release-protocols-v2.sh`. Cet opérateur prouve d’abord que `DATABASE_URL` et
+   `DIRECT_URL` visent la même base writable, revérifie le reçu et conserve un seul snapshot Railway
+   de base/configuration pour les trois mutations. Elles sont irréversibles et ne précèdent jamais
+   le fix des consommateurs (cf. runbooks `docs/runbooks/`). Rejouer exactement la même preuve de
+   révision, y compris `railway-x-real-ip`, après ces activations et immédiatement avant le
+   finaliseur.
+6. Exécuter une seule fois, et seulement après les activations :
+   ```sh
+   BOB_RELEASE_PHASE=postdeploy \
+   BOB_RELEASE_EXPECTED_ENV=<development|staging|production> \
+   BOB_RELEASE_SHA=<meme-sha-git-40-caracteres> \
+   BOB_RELEASE_RUN_ID=<meme-entier-positif-du-run> \
+   BOB_RELEASE_RUN_ATTEMPT=<meme-entier-positif> \
+   sh apps/api/scripts/release.sh
+   ```
+   Ce finaliseur vérifie deux fois le reçu `predeploy`, exige la bijection stricte des migrations,
+   les trois protocoles V2 terminaux et les certificats structurels/ACL. En staging seulement, il
+   rejoue la seed/cert RLS active et les certificats Archive/Settlement V2 si ce SHA vient de les
+   activer ; le cleanup est obligatoire. Il n'exécute ni migration, ni replay `rls.sql`, ni
+   provisioning, ni suite métier large. Les retraits N-1 puis `activate-existing` — sans DDL —
+   constituent ses derniers gestes mutables. Toute erreur antérieure laisse la capacité fermée.
+
+Il n'existe **aucun postdeploy intermédiaire** entre readiness et audit : rouvrir puis refermer
+créait une fenêtre inutile et rejouait deux fois environ 18 minutes de certifications Supabase.
+Le reçu n'est pas une autorité inter-run : un autre SHA, run, environnement, cluster ou digest est
+refusé.
 
 **Le conteneur ne migre JAMAIS** (`CMD node dist/main.js`) : déployer sans l'étape 1 = binaire
 neuf sur schéma ancien = prod cassée (vécu le 25/07, ~40 min).

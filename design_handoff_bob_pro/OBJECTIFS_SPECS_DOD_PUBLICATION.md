@@ -45,16 +45,16 @@ présente dans le code, non branchée ou non prouvée sur le chemin réel n'est 
 
 ## 2. Résultats attendus, dans l'ordre
 
-| ID | Résultat | Mesure de réussite |
-| --- | --- | --- |
-| O1 | Vérité Git retrouvée | `main` contient tous les lots retenus, compile depuis un checkout propre et devient l'unique base des nouvelles branches. |
-| O2 | Facturation conforme et complète | Le lot Factur-X / PDF-A-3 / TVA / BT-23 est verticalement branché, testé et certifié sans identifiant fiscal inventé. |
-| O3 | GPT Realtime est le chemin vocal de publication | Une session utilise OpenAI de l'entrée audio à la sortie audio, sans clé ni service Mistral implicite. |
-| O4 | Bob accompagne une mission continue | Navigation, changement d'écran, contexte, choix structurés, diff et confirmation restent corrélés jusqu'à réussite, abandon explicite ou erreur récupérable. |
-| O5 | Voice Trace rend la qualité pilotable | Chaque tour produit une trace corrélée ; p50/p95, interruptions, erreurs et dégradations sont observables sans audio ni secret dans les logs. |
-| O6 | Zéro donnée fabriquée en production | Écrans, API, calculs et réponses Bob utilisent la base du tenant ; absence et erreur sont affichées honnêtement. |
-| O7 | Release reproductible | Le commit publié passe build, tests, migrations, boot avec l'environnement cible, smoke tests et QA sur appareils réels. |
-| O8 | Facturation électronique légalement opérante | Une PA réelle est intégrée derrière un port, les flux sortants/entrants/statuts/e-reporting sont réconciliés et aucune promesse 2026 ne repose sur un stub. |
+| ID  | Résultat                                        | Mesure de réussite                                                                                                                                           |
+| --- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| O1  | Vérité Git retrouvée                            | `main` contient tous les lots retenus, compile depuis un checkout propre et devient l'unique base des nouvelles branches.                                    |
+| O2  | Facturation conforme et complète                | Le lot Factur-X / PDF-A-3 / TVA / BT-23 est verticalement branché, testé et certifié sans identifiant fiscal inventé.                                        |
+| O3  | GPT Realtime est le chemin vocal de publication | Une session utilise OpenAI de l'entrée audio à la sortie audio, sans clé ni service Mistral implicite.                                                       |
+| O4  | Bob accompagne une mission continue             | Navigation, changement d'écran, contexte, choix structurés, diff et confirmation restent corrélés jusqu'à réussite, abandon explicite ou erreur récupérable. |
+| O5  | Voice Trace rend la qualité pilotable           | Chaque tour produit une trace corrélée ; p50/p95, interruptions, erreurs et dégradations sont observables sans audio ni secret dans les logs.                |
+| O6  | Zéro donnée fabriquée en production             | Écrans, API, calculs et réponses Bob utilisent la base du tenant ; absence et erreur sont affichées honnêtement.                                             |
+| O7  | Release reproductible                           | Le commit publié passe build, tests, migrations, boot avec l'environnement cible, smoke tests et QA sur appareils réels.                                     |
+| O8  | Facturation électronique légalement opérante    | Une PA réelle est intégrée derrière un port, les flux sortants/entrants/statuts/e-reporting sont réconciliés et aucune promesse 2026 ne repose sur un stub.  |
 
 ## 3. Périmètre du train
 
@@ -142,13 +142,13 @@ Chaque tour corrèle au minimum : session, mission, tenant pseudonymisé, tour, 
 horodatages capture/VAD/connexion/premier token/premier audio/fin, appels d'outils, interruption,
 repli, erreur et cause normalisée.
 
-| Indicateur device réel | Cible p50 | Cible p95 | Règle |
-| --- | ---: | ---: | --- |
-| Fin de parole → premier audio Bob | ≤ 900 ms | ≤ 1 800 ms | mesuré sur réseau réaliste, hors warm-up identifié |
-| Parole utilisateur → silence Bob | ≤ 250 ms | ≤ 500 ms | arrêt audio réellement observé, pas seulement ACK logique |
-| Exécution fantôme | 0 | 0 | bloque la release |
-| Confirmation perdue ou rejouée deux fois | 0 | 0 | bloque la release |
-| Faux succès après perte réseau | 0 | 0 | bloque la release |
+| Indicateur device réel                   | Cible p50 |  Cible p95 | Règle                                                     |
+| ---------------------------------------- | --------: | ---------: | --------------------------------------------------------- |
+| Fin de parole → premier audio Bob        |  ≤ 900 ms | ≤ 1 800 ms | mesuré sur réseau réaliste, hors warm-up identifié        |
+| Parole utilisateur → silence Bob         |  ≤ 250 ms |   ≤ 500 ms | arrêt audio réellement observé, pas seulement ACK logique |
+| Exécution fantôme                        |         0 |          0 | bloque la release                                         |
+| Confirmation perdue ou rejouée deux fois |         0 |          0 | bloque la release                                         |
+| Faux succès après perte réseau           |         0 |          0 | bloque la release                                         |
 
 Une cible de latence non atteinte ne peut pas être transformée en succès documentaire : la mesure,
 le device, le réseau, le commit et la distribution doivent accompagner le verdict.
@@ -254,6 +254,9 @@ l'intégration.
 - [ ] Le schéma cible est migré avant le writer ; le code N-1 reste compatible pendant la fenêtre.
 - [ ] L'artefact exact boote localement avec la forme complète de l'environnement de production.
 - [ ] `/health/ready` prouve commit, mode de données réel et dépendances obligatoires.
+- [ ] Chaque one-shot Railway démarré est réconcilié avant toute activation irréversible :
+      annulation/arrêt corrélé au SHA, puis deux observations sans instance active, que le scanner
+      ait réussi, refusé ou été interrompu.
 - [ ] Cold onboarding, données réelles, devis, facture, document et Bob Live passent sur appareils.
 - [ ] CGU/confidentialité/support, crash reporting, alertes et runbook sont actifs.
 - [ ] Zéro P0/P1 ouvert ; les limites restantes sont écrites et non présentées comme fonctionnelles.
@@ -295,8 +298,9 @@ l'intégration.
       d’attestation ; sa baseline, son rapport privé et son SHA d’activation sont cohérents, le
       déclencheur `storage.objects` et le verrou audit/cutover sont certifiés sur PostgreSQL réel.
 - [ ] Le bucket runtime est identique au bucket audité ; sous les verrous d’activation, zéro
-      orphelin Storage et zéro référence SQL sans objet. Les ACL Supabase `anon/authenticated/
-      service_role`, RLS forcée des tables privées et allowlist RPC sont certifiées sur PostgreSQL.
+      orphelin Storage et zéro référence SQL sans objet. Les ACL Supabase
+      `anon/authenticated/service_role`, RLS forcée des tables privées et allowlist RPC sont
+      certifiées sur PostgreSQL.
 
 ## 7. Registre de preuve
 
@@ -304,16 +308,16 @@ Chaque objectif passe par quatre états seulement : `specified`, `implemented`, 
 `released`. Le passage d'état exige un lien vers un commit et une preuve ; le pourcentage estimé ne
 remplace jamais ce registre.
 
-| Objectif | État au 2026-07-28 | Prochaine preuve attendue |
-| --- | --- | --- |
-| O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
-| O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md` | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre |
-| O3 — GPT Realtime | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral |
-| O4 — mission continue | certified sur staging pour M1-B — recovery `30334601843`, vraie mission WebRTC + ACK contexte/RLS `30335132334`, retour OFF et Bob Live restauré ; fusionné dans `main@9a17ee85`, endpoints production toujours fermés | M1-C scénario devis E2E voix/tap sur données réelles, puis QA device |
-| O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
-| O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
-| O7 — release reproductible | implemented partiellement — M1-B certifié staging avec `132/132` migrations, CI du merge `30335772148`, recovery `30334601843`, certification `30335132334`, retour OFF et fusion `main@9a17ee85` ; release générale encore bloquée par le one-shot Bubblewrap Railway | micro-PR archive Railway : preuve terminale bornée, inventaire vide/B2C exact-SHA, cleanup sans résidu ; aucune production |
-| O8 — Plateforme Agréée réelle | specified | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié |
+| Objectif                      | État au 2026-07-28                                                                                                                                                                                                     | Prochaine preuve attendue                                                                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O1 — vérité Git               | specified                                                                                                                                                                                                              | branche de sauvegarde + graphe rebasé + `main` poussé                                                                                              |
+| O2 — Factur-X/TVA             | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md`                         | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre |
+| O3 — GPT Realtime             | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé                           | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral                |
+| O4 — mission continue         | certified sur staging pour M1-B — recovery `30334601843`, vraie mission WebRTC + ACK contexte/RLS `30335132334`, retour OFF et Bob Live restauré ; fusionné dans `main@9a17ee85`, endpoints production toujours fermés | M1-C scénario devis E2E voix/tap sur données réelles, puis QA device                                                                               |
+| O5 — Voice Trace              | implemented partiellement                                                                                                                                                                                              | corrélation E2E + dashboard p50/p95 + tests de confidentialité                                                                                     |
+| O6 — données réelles          | implemented partiellement                                                                                                                                                                                              | garde d'artefact + certification écran/API tenant vierge et peuplé                                                                                 |
+| O7 — release reproductible    | implemented — preuves historiques M1-B/archive/release staging `30351623978` et CI `main@83ef4afe` vertes ; accélération locale verte, revue adversariale GO, CI/mesure staging encore dues                            | PR unique : CI complète puis staging exact-SHA ≤ 35 min, merge et nettoyage ; aucune production                                                    |
+| O8 — Plateforme Agréée réelle | specified                                                                                                                                                                                                              | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié                                                                                     |
 
 ## 8. Changement de cap
 

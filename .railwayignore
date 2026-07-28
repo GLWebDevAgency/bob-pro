@@ -3,6 +3,8 @@
 .git
 .turbo
 .agent-sync
+.release-evidence
+.release-evidence-private
 node_modules
 **/node_modules
 **/dist

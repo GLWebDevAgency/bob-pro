@@ -1192,7 +1192,7 @@ test('SUCCESS sans marqueur échoue après une grâce terminale de soixante seco
   const outputPath = await temporaryOutput(t);
   const runtime = fakeRuntime();
   let cleanupStartedAt = -1;
-  const slowCleanup = cleanupStep('stop');
+  const slowCleanup = cleanupStep('cancel');
   slowCleanup.before = () => {
     cleanupStartedAt = runtime.elapsed();
     runtime.advance(30_000);
@@ -1247,7 +1247,7 @@ test('la deadline absolue borne aussi les lectures GraphQL après SUCCESS', asyn
     deploymentStep('SUCCESS'),
     firstSlowLogsStep,
     ...Array.from({ length: 3 }, () => [deploymentStep('SUCCESS'), logsStep([])]).flat(),
-    cleanupStep('stop'),
+    cleanupStep('cancel'),
   ]);
 
   await assert.rejects(
@@ -1322,7 +1322,7 @@ test('refuse un marqueur disparu ou modifié pendant la confirmation', async (t)
         ...successSteps({ successfulObservations: 1 }),
         deploymentStep('SUCCESS'),
         secondObservation,
-        cleanupStep('stop'),
+        cleanupStep('cancel'),
       ]);
 
       await assert.rejects(
@@ -1436,14 +1436,14 @@ test('FAILED et CRASHED conservent un refus métier non-PII et le distinguent du
   }
 });
 
-test('un refus observé pendant SUCCESS est persisté puis le processus vivant est stoppé', async (t) => {
+test('un refus observé pendant SUCCESS est persisté puis le processus vivant est annulé', async (t) => {
   const outputPath = await temporaryOutput(t);
   const refusal = refusalFixture();
   const fetchImpl = scriptedFetch([
     ...beforeDeploymentSteps(),
     deploymentStep('SUCCESS'),
     logsStep([{ message: marker(refusal) }]),
-    cleanupStep('stop'),
+    cleanupStep('cancel'),
   ]);
   await assert.rejects(
     runRailwayDocumentArchiveAudit({
@@ -1833,19 +1833,19 @@ test('le contrat image/config impose Node épinglé, rôle non-root et sandbox l
   );
   assert.match(
     workflow,
-    /id: archive_audit\n\s+if: \$\{\{ success\(\) && !cancelled\(\) \}\}\n\s+timeout-minutes: 100[\s\S]*if: \$\{\{ always\(\) && \(steps\.archive_audit\.outcome == 'failure' \|\| steps\.archive_audit\.outcome == 'cancelled'\) \}\}\n\s+timeout-minutes: 4[\s\S]*--cleanup-only/u,
+    /id: archive_audit\n\s+if: \$\{\{ success\(\) && !cancelled\(\) \}\}\n\s+timeout-minutes: 100[\s\S]*Reconcile the Railway archive audit deployment[\s\S]*if: \$\{\{ always\(\) && steps\.archive_audit\.outcome != 'skipped' \}\}\n\s+timeout-minutes: 4[\s\S]*--cleanup-only/u,
   );
   assert.match(
     workflow,
     /Preserve the non-PII archive audit envelope\n\s+if: always\(\)\n\s+timeout-minutes: 10/u,
   );
   assert.ok(
-    workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-document-archive-v2.sh'),
+    workflow.indexOf('--cleanup-only') < workflow.indexOf('activate-release-protocols-v2.sh'),
     'durable archive cleanup must run before any irreversible activation',
   );
   assert.match(
     workflow,
-    /Retire the previous Mistral key[^\n]*\n\s+if: \$\{\{ success\(\) && steps\.archive_audit\.outcome == 'success' \}\}\n\s+timeout-minutes: 60/u,
+    /Activate archive\/settlement\/outbox v2 and finalize the certified release\n\s+if: \$\{\{ success\(\) && steps\.archive_audit\.outcome == 'success' \}\}\n\s+timeout-minutes: 60[\s\S]*?certify_exact_revision before-activation[\s\S]*?activate-release-protocols-v2\.sh[\s\S]*?certify_exact_revision before-postdeploy[\s\S]*?env BOB_RELEASE_PHASE=postdeploy/u,
   );
 });
 

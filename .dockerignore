@@ -1,5 +1,7 @@
 .git
 .agent-sync
+.release-evidence
+.release-evidence-private
 .turbo
 node_modules
 **/node_modules
