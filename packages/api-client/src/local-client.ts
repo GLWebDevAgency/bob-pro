@@ -29,6 +29,8 @@ import {
   RetireEquipment,
   ReactivateEquipment,
   ReopenChantier,
+  UpdateCompanyInterventionSettings,
+  effectiveInterventionSettings,
   deriveEquipmentHistory,
   SendQuote,
   SignQuote,
@@ -233,6 +235,7 @@ import {
   InMemoryChantierNoteRepository,
   InMemoryWorksiteMediaStorage,
   InMemoryEquipmentRepository,
+  InMemoryCompanyInterventionSettingsRepository,
   InMemoryDocumentStorage,
   InMemoryAccountingEntryRepository,
   InMemoryChartOfAccountsRepository,
@@ -328,6 +331,8 @@ import type {
   PurchaseOrderMutationView,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
+  InterventionSettingsView,
+  InterventionSettingsWriteInput,
 } from './client';
 import { documentAnalysisSummaryView, documentExtractionSummaryView } from './document-codecs';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
@@ -572,6 +577,7 @@ export class LocalBobClient implements BobClient {
   };
   private readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
   private readonly equipments = new InMemoryEquipmentRepository();
+  private readonly interventionSettings = new InMemoryCompanyInterventionSettingsRepository();
   private readonly worksitePhotoBytes = new InMemoryDocumentStorage();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
@@ -3339,6 +3345,23 @@ export class LocalBobClient implements BobClient {
       })),
     });
     return ok({ equipment: equipment.toProps(), entries });
+  }
+
+  // ── PR-16 §3.2/§4.5 — réglages de fiche : MÊME use case @bob/core que le serveur. ──
+
+  async getInterventionSettings(): Promise<Result<InterventionSettingsView, AppError>> {
+    const stored = await this.interventionSettings.find(this.companyId);
+    return ok(effectiveInterventionSettings(this.companyId, stored));
+  }
+
+  async updateInterventionSettings(
+    input: InterventionSettingsWriteInput,
+  ): Promise<Result<InterventionSettingsView, AppError>> {
+    const r = await new UpdateCompanyInterventionSettings({
+      interventionSettings: this.interventionSettings,
+    }).execute({ companyId: this.companyId, ...input });
+    if (!r.ok) return r;
+    return ok(effectiveInterventionSettings(this.companyId, r.value));
   }
 
   async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {

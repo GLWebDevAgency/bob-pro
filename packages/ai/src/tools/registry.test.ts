@@ -928,6 +928,49 @@ describe('vague Encaisser (PR-01/02/05/06) — capacités optionnelles, profils 
     // Le destinataire (PII) ne traverse jamais la projection publique du runtime.
     expect(t.projectPublicResult?.(run.value)).toEqual({ deliveryStatus: 'queued' });
   });
+
+  it('regler_fiche_passage : parité §3.2 — capacité optionnelle, plancher de confirmation', async () => {
+    const written: unknown[] = [];
+    // Hôte legacy sans la capacité : l'outil n'existe pas (jamais une promesse creuse).
+    expect(tool(baseActions, 'regler_fiche_passage')).toBeUndefined();
+    expect(tool(baseActions, 'reglages_fiche_passage')).toBeUndefined();
+
+    const actions: BobActions = {
+      ...baseActions,
+      getInterventionSettings: async () =>
+        ok({
+          effectiveReportTitle: 'Fiche de passage',
+          reportTitle: null,
+          templatedKinds: [],
+          revision: 0,
+        }),
+      updateInterventionSettings: async (input) => {
+        written.push(input);
+        return ok({
+          effectiveReportTitle: input.reportTitle ?? 'Fiche de passage',
+          reportTitle: input.reportTitle ?? null,
+          templatedKinds: Object.keys(input.checklistTemplates ?? {}),
+          revision: 1,
+        });
+      },
+    };
+    const read = tool(actions, 'reglages_fiche_passage')!;
+    expect(read.mutating).toBe(false);
+    expect(requiresConfirmation(read, 'confirm_all')).toBe(false);
+
+    const write = tool(actions, 'regler_fiche_passage')!;
+    // Le titre devient l'identité d'un document de preuve sortant : jamais en silence.
+    expect(isSafetyFloor(write)).toBe(true);
+    expect(write.parse({}).ok).toBe(false);
+    expect(write.parse({ reportTitle: 42 }).ok).toBe(false);
+    expect(write.parse({ checklistTemplates: { 'Visite': 'Détartrage' } }).ok).toBe(false);
+    const parsed = write.parse({ reportTitle: 'Certificat sanitaire' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await write.run(parsed.value);
+    expect(run.ok).toBe(true);
+    expect(written).toEqual([{ reportTitle: 'Certificat sanitaire' }]);
+  });
 });
 
 

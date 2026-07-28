@@ -81,6 +81,8 @@ import type {
   MaintenanceContractClientView,
   CreateContractClientInput,
   UpdateContractClientInput,
+  InterventionSettingsView,
+  InterventionSettingsWriteInput,
   QuoteView,
   InvoiceView,
   PaymentView,
@@ -3426,6 +3428,13 @@ export class HttpBobClient implements BobClient {
       'GET',
       `/equipments/${encodeURIComponent(equipmentId)}/history`,
     );
+  }
+  // ── PR-16 — réglages de fiche de passage (titre du PDF, templates de checklist) ──
+  getInterventionSettings() {
+    return this.req<InterventionSettingsView>('GET', '/interventions/settings');
+  }
+  updateInterventionSettings(input: InterventionSettingsWriteInput) {
+    return this.req<InterventionSettingsView>('PUT', '/interventions/settings', input);
   }
   reopenChantier(chantierId: string) {
     return this.req<{ changed: boolean }>(

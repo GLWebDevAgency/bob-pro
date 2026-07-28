@@ -1170,6 +1170,26 @@ export interface UpdateContractClientInput {
   equipmentIds?: readonly string[];
 }
 
+/**
+ * PR-16 §3.2/§4.5 — réglages de fiche de passage d'une société. `effectiveReportTitle` porte
+ * TOUJOURS une identité imprimable (défaut produit « Fiche de passage » quand rien n'est posé) ;
+ * `revision` vaut 0 tant qu'aucun réglage n'existe — c'est la révision à renvoyer en écriture.
+ */
+export interface InterventionSettingsView {
+  companyId: string;
+  reportTitle: string | null;
+  effectiveReportTitle: string;
+  checklistTemplates: Record<string, string[]>;
+  revision: number;
+}
+
+/** Écriture partielle : champ absent = inchangé ; `reportTitle: null` = retour au défaut. */
+export interface InterventionSettingsWriteInput {
+  reportTitle?: string | null;
+  checklistTemplates?: Record<string, string[]>;
+  expectedRevision?: number;
+}
+
 export interface BobClient {
   readonly companyId: string;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
@@ -1501,6 +1521,13 @@ export interface BobClient {
   getEquipmentHistory?(
     equipmentId: string,
   ): Promise<Result<EquipmentHistoryView, AppError>>;
+  // ── PR-16 §3.2/§4.5 — réglages de fiche de passage PARAMÉTRABLES (titre du PDF, templates
+  // de checklist par `kind`) : MÊME use case que la voix. OPTIONNELLES (compat transports
+  // existants) — HttpBobClient et LocalBobClient les implémentent tous les deux. ──
+  getInterventionSettings?(): Promise<Result<InterventionSettingsView, AppError>>;
+  updateInterventionSettings?(
+    input: InterventionSettingsWriteInput,
+  ): Promise<Result<InterventionSettingsView, AppError>>;
   /** [Revue A12] — réponse au refus actionnable « site clôturé — rouvre-le » (idempotent). */
   reopenChantier?(chantierId: string): Promise<Result<{ changed: boolean }, AppError>>;
   // ── PR-12b/12c — contrats de maintenance (Bloc B) : MÊMES use cases que la voix.

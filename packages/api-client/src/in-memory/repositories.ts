@@ -29,6 +29,8 @@ import type {
   ChartOfAccountsRepository,
   ChantierRepository,
   ChantierNoteRepository,
+  CompanyInterventionSettings,
+  CompanyInterventionSettingsRepository,
   EquipmentRepository,
   WorksiteMediaItem,
   WorksiteMediaStorage,
@@ -419,6 +421,29 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
       .filter((e) => e.companyId === companyId)
       .map((e) => Equipment.rehydrate(e.toProps()))
       .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
+  }
+}
+
+/**
+ * PR-16 §3.2 — réglages de fiche de passage (titre du PDF paramétrable, templates de checklist).
+ * Double mémoire STRICT du repo Prisma : le mode local/démo écrit et relit exactement ce que le
+ * runtime live persiste, pour que la parité écran↔voix↔serveur reste vérifiable hors ligne.
+ */
+export class InMemoryCompanyInterventionSettingsRepository
+  implements CompanyInterventionSettingsRepository
+{
+  private readonly map = new Map<string, CompanyInterventionSettings>();
+  async find(companyId: string): Promise<CompanyInterventionSettings | null> {
+    const settings = this.map.get(companyId);
+    return settings === undefined
+      ? null
+      : { ...settings, checklistTemplates: { ...settings.checklistTemplates } };
+  }
+  async save(settings: CompanyInterventionSettings): Promise<void> {
+    this.map.set(settings.companyId, {
+      ...settings,
+      checklistTemplates: { ...settings.checklistTemplates },
+    });
   }
 }
 

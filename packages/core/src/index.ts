@@ -216,6 +216,7 @@ export * from './application/intervention/sign-intervention';
 export * from './application/intervention/generate-intervention-report';
 export * from './application/intervention/send-intervention-report';
 export * from './application/intervention/prepare-intervention-invoice-draft';
+export * from './application/intervention/update-company-intervention-settings';
 export * from './application/intervention/derive-intervention-billing';
 export * from './application/ports/worksite-media';
 export * from './application/company/autofill-company';

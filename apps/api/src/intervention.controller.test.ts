@@ -810,6 +810,75 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
     expect(urgent.ok).toBe(true);
   });
 
+  it('réglages ÉCRIVABLES : le titre choisi devient l’identité du PDF ET du sujet d’e-mail', async () => {
+    const env = await completedIntervention();
+    const controller = new InterventionsController(env.service);
+
+    // Lecture initiale : défaut produit, révision 0 (rien n'a encore été posé).
+    const initial = await env.run(() => controller.settings());
+    expect(initial).toMatchObject({
+      reportTitle: null,
+      effectiveReportTitle: 'Fiche de passage',
+      revision: 0,
+    });
+
+    const saved = await env.run(() =>
+      controller.updateSettings({
+        reportTitle: 'Certificat sanitaire',
+        checklistTemplates: { 'Visite d’entretien': ['Détartrage', 'Contrôle de pression'] },
+        expectedRevision: 0,
+      }),
+    );
+    expect(saved).toMatchObject({ reportTitle: 'Certificat sanitaire', revision: 1 });
+
+    // Le titre traverse jusqu'à l'ARCHIVE : nom de fichier, texte du PDF, sujet de l'e-mail.
+    const generated = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    expect(generated.value.filename).toMatch(/^certificat-sanitaire-\d{4}-\d{2}-\d{2}\.pdf$/);
+    const archived = await env.run(() =>
+      env.p.documents.findById(env.companyId, generated.value.documentId),
+    );
+    const bytes = await env.storage.get(env.companyId, archived!.toProps().storageKey);
+    const text = await pdfVisibleText(bytes!.bytes);
+    expect(text).toContain('Certificat sanitaire');
+
+    const sent = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+    expect(sent.ok).toBe(true);
+    expect(env.enqueued[0]!.notification.subject).toContain('Certificat sanitaire');
+
+    // Le template de checklist est proposé à la création d'un passage du même type.
+    const created = await env.run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-ratp',
+        kind: 'visite d’entretien',
+      }),
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const fiche = await env.run(() => env.service.getIntervention(created.value.id));
+    expect(fiche.ok).toBe(true);
+    if (!fiche.ok) return;
+    expect(fiche.value.checklist.map((item) => item.label)).toEqual([
+      'Détartrage',
+      'Contrôle de pression',
+    ]);
+  });
+
+  it('réglages : CAS honoré à la frontière et champ inconnu refusé (400)', async () => {
+    const env = await completedIntervention();
+    const controller = new InterventionsController(env.service);
+    await env.run(() => controller.updateSettings({ reportTitle: 'Certificat', expectedRevision: 0 }));
+    await expect(
+      env.run(() => controller.updateSettings({ reportTitle: 'Autre', expectedRevision: 0 })),
+    ).rejects.toThrow();
+    await expect(env.run(() => controller.updateSettings({ bidon: true }))).rejects.toThrow();
+    const still = await env.run(() => controller.settings());
+    expect(still).toMatchObject({ reportTitle: 'Certificat', revision: 1 });
+  });
+
   it('renderer indisponible : indisponibilité honnête, jamais un PDF de secours', async () => {
     const env = makeService({ withRenderer: false });
     const companyId = await seedTenant(env.p);

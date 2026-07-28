@@ -48,6 +48,8 @@ import {
   type CompleteInterventionActionInput,
   type SendInterventionReportActionOutput,
   type PrepareInterventionInvoiceActionOutput,
+  type InterventionSettingsActionInput,
+  type InterventionSettingsActionOutput,
   type RetireEquipmentActionInput,
   type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
@@ -1940,6 +1942,70 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => prepareInterventionInvoiceAction(input),
     };
     tools.push(facturerIntervention as AnyTool);
+  }
+
+  // —— PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : parité stricte avec l'écran. ——
+  const readInterventionSettingsAction = actions.getInterventionSettings?.bind(actions);
+  if (readInterventionSettingsAction) {
+    const reglagesFichePassage: Tool<Record<string, never>, InterventionSettingsActionOutput> = {
+      name: 'reglages_fiche_passage',
+      description:
+        'Lit les réglages de la fiche de passage (titre du PDF, modèles de checklist par type) — lecture pure.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: () => readInterventionSettingsAction(),
+    };
+    tools.push(reglagesFichePassage as AnyTool);
+  }
+
+  const writeInterventionSettingsAction = actions.updateInterventionSettings?.bind(actions);
+  if (writeInterventionSettingsAction) {
+    const reglerFichePassage: Tool<
+      InterventionSettingsActionInput,
+      InterventionSettingsActionOutput
+    > = {
+      name: 'regler_fiche_passage',
+      description:
+        'Change le titre de la fiche de passage (« appelle ma fiche Certificat sanitaire ») ou ses modèles de checklist — même use case UpdateCompanyInterventionSettings que l’écran Réglages.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Le titre devient l'identité d'un document de preuve sortant : jamais en silence.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<InterventionSettingsActionInput, AppError> => {
+        const r = raw as { reportTitle?: unknown; checklistTemplates?: unknown };
+        const parsed: InterventionSettingsActionInput = {};
+        if (r?.reportTitle !== undefined) {
+          if (r.reportTitle !== null && typeof r.reportTitle !== 'string')
+            return err(appValidation('reportTitle', 'Titre de fiche invalide.'));
+          parsed.reportTitle = r.reportTitle as string | null;
+        }
+        if (r?.checklistTemplates !== undefined) {
+          if (
+            typeof r.checklistTemplates !== 'object' ||
+            r.checklistTemplates === null ||
+            Array.isArray(r.checklistTemplates)
+          )
+            return err(appValidation('checklistTemplates', 'Modèles de checklist invalides.'));
+          const templates: Record<string, string[]> = {};
+          for (const [kind, labels] of Object.entries(r.checklistTemplates)) {
+            if (!Array.isArray(labels) || labels.some((label) => typeof label !== 'string'))
+              return err(appValidation('checklistTemplates', 'Liste de points invalide.'));
+            templates[kind] = labels as string[];
+          }
+          parsed.checklistTemplates = templates;
+        }
+        if (parsed.reportTitle === undefined && parsed.checklistTemplates === undefined)
+          return err(appValidation('settings', 'Rien à modifier dans les réglages de fiche.'));
+        return ok(parsed);
+      },
+      run: (input) => writeInterventionSettingsAction(input),
+    };
+    tools.push(reglerFichePassage as AnyTool);
   }
 
   return tools;

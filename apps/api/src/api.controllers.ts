@@ -4028,6 +4028,54 @@ function parseCompleteInterventionBody(body: Record<string, unknown>) {
   };
 }
 
+/**
+ * PR-16 §3.2/§4.5 — réglages de fiche (titre du PDF + templates de checklist par `kind`).
+ * Forme seulement : la substance (bornes, doublons de `kind`, CAS) reste l'autorité du use case
+ * `UpdateCompanyInterventionSettings`.
+ */
+function parseInterventionSettingsBody(body: Record<string, unknown>) {
+  const issues: ValidationIssue[] = [];
+  const allowed = new Set(['reportTitle', 'checklistTemplates', 'expectedRevision']);
+  for (const field of Object.keys(body)) {
+    if (!allowed.has(field)) issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+  }
+  const expectedRevision = body['expectedRevision'];
+  if (
+    expectedRevision !== undefined &&
+    (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0)
+  ) {
+    issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+  }
+  const rawTitle = body['reportTitle'];
+  if (
+    'reportTitle' in body &&
+    rawTitle !== null &&
+    (typeof rawTitle !== 'string' || rawTitle.length > 200)
+  ) {
+    issues.push({ field: 'reportTitle', message: 'Titre de fiche invalide.' });
+  }
+  const rawTemplates = body['checklistTemplates'];
+  if ('checklistTemplates' in body && !isJsonRecord(rawTemplates)) {
+    issues.push({ field: 'checklistTemplates', message: 'Modèles de checklist invalides.' });
+  }
+  const templates: Record<string, string[]> = {};
+  if (isJsonRecord(rawTemplates)) {
+    for (const [kind, labels] of Object.entries(rawTemplates)) {
+      if (!Array.isArray(labels) || labels.some((label) => typeof label !== 'string')) {
+        issues.push({ field: `checklistTemplates.${kind}`, message: 'Liste de points invalide.' });
+        continue;
+      }
+      templates[kind] = labels as string[];
+    }
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    ...('reportTitle' in body ? { reportTitle: rawTitle as string | null } : {}),
+    ...('checklistTemplates' in body ? { checklistTemplates: templates } : {}),
+    ...(expectedRevision !== undefined ? { expectedRevision: expectedRevision as number } : {}),
+  };
+}
+
 function parseSignInterventionBody(body: Record<string, unknown>) {
   const issues: ValidationIssue[] = [];
   const allowed = new Set(['expectedRevision', 'signerName', 'proofDataUrl', 'capturedAtDevice']);
@@ -4450,6 +4498,18 @@ export class MaintenanceContractsController {
 @Controller('interventions')
 export class InterventionsController {
   constructor(private readonly backend: BackendService) {}
+  // ── PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES (titre du PDF + templates checklist).
+  // DÉCLARÉS AVANT `:id` : sans cela, Nest router ferait matcher `/interventions/settings`
+  // sur la route paramétrée et le geste serait injoignable. ──
+  @Get('settings')
+  async settings() {
+    return unwrap(await this.backend.getInterventionSettings());
+  }
+  @Put('settings')
+  async updateSettings(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.updateInterventionSettings(parseInterventionSettingsBody(body)));
+  }
   @Get(':id')
   async get(@Param('id') id: string) {
     return unwrap(await this.backend.getIntervention(id));

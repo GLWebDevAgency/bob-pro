@@ -189,6 +189,10 @@ import {
   GenerateInterventionReport,
   SendInterventionReport,
   PrepareInterventionInvoiceDraft,
+  UpdateCompanyInterventionSettings,
+  effectiveInterventionSettings,
+  type CompanyInterventionSettings,
+  type UpdateCompanyInterventionSettingsInput,
   UpdateEquipment,
   RetireEquipment,
   ReactivateEquipment,
@@ -4414,6 +4418,33 @@ export class BackendService {
           totalTtcCents: r.value.totals.ttc,
         });
       },
+      // PR-16 §3.2/§4.5 — réglages de fiche : MÊME use case que l'écran Réglages ; la révision
+      // (CAS) est résolue ICI, jamais devinée par l'agent (aucune vue optimiste à la voix).
+      getInterventionSettings: async () => {
+        const r = await this.getInterventionSettings();
+        if (!r.ok) return r;
+        return ok({
+          effectiveReportTitle: r.value.effectiveReportTitle,
+          reportTitle: r.value.reportTitle,
+          templatedKinds: Object.keys(r.value.checklistTemplates),
+          revision: r.value.revision,
+        });
+      },
+      updateInterventionSettings: async (input) => {
+        const current = await this.getInterventionSettings();
+        if (!current.ok) return current;
+        const r = await this.updateInterventionSettings({
+          ...input,
+          expectedRevision: current.value.revision,
+        });
+        if (!r.ok) return r;
+        return ok({
+          effectiveReportTitle: r.value.effectiveReportTitle,
+          reportTitle: r.value.reportTitle,
+          templatedKinds: Object.keys(r.value.checklistTemplates),
+          revision: r.value.revision,
+        });
+      },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
       // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
       // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :
@@ -6731,6 +6762,42 @@ export class BackendService {
         id: input.interventionId,
       });
     return r;
+  }
+
+  // ── PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES par société (titre + templates) ──
+
+  /**
+   * Réglages EFFECTIFS (défaut produit compris) — jamais un titre vide : sans réglage posé,
+   * `effectiveReportTitle` vaut « Fiche de passage » et `revision` vaut 0 (première écriture).
+   */
+  async getInterventionSettings(): Promise<
+    Result<CompanyInterventionSettings & { effectiveReportTitle: string }, AppError>
+  > {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const stored = await this.p.interventionSettings.find(companyId);
+    return ok(effectiveInterventionSettings(companyId, stored));
+  }
+
+  /** Écriture des réglages — CAS explicite : deux appareils ne s'écrasent jamais en silence. */
+  async updateInterventionSettings(
+    input: Omit<UpdateCompanyInterventionSettingsInput, 'companyId'>,
+  ): Promise<Result<CompanyInterventionSettings & { effectiveReportTitle: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const r = await new UpdateCompanyInterventionSettings({
+      interventionSettings: this.p.interventionSettings,
+    }).execute({ companyId, ...input });
+    if (!r.ok) return r;
+    this.logger.audit('intervention.settings_updated', {
+      companyId,
+      revision: r.value.revision,
+      titled: r.value.reportTitle !== null,
+      templates: Object.keys(r.value.checklistTemplates).length,
+    });
+    return ok(effectiveInterventionSettings(companyId, r.value));
   }
 
   // ── PR-16 — fiche de passage PDF : rendue PUIS ARCHIVÉE IMMUABLE, envoi confirmé, CTA facturer ──

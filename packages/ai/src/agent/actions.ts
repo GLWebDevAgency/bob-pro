@@ -795,6 +795,28 @@ export interface PrepareContractAnnualInvoiceActionOutput {
 }
 
 /**
+ * PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : le titre du PDF (« Certificat sanitaire »)
+ * et les modèles de checklist par type de passage. La révision (CAS) est résolue par l'hôte —
+ * le geste vocal n'a pas de vue optimiste, il ne devine jamais un numéro de révision.
+ */
+export interface InterventionSettingsActionInput {
+  /** Absent = inchangé ; `null` ou vide = retour au défaut produit (« Fiche de passage »). */
+  reportTitle?: string | null;
+  /** Absent = inchangé ; fourni = remplacement complet des modèles par type de passage. */
+  checklistTemplates?: Record<string, string[]>;
+}
+
+export interface InterventionSettingsActionOutput {
+  /** Titre RÉELLEMENT imprimé sur la fiche (défaut produit compris) — jamais vide. */
+  effectiveReportTitle: string;
+  /** Titre propre à la société, `null` quand c'est le défaut produit qui s'applique. */
+  reportTitle: string | null;
+  /** Types de passage disposant d'un modèle de checklist. */
+  templatedKinds: string[];
+  revision: number;
+}
+
+/**
  * Surface d'actions de Bob — implémentée par l'app via le BobClient (donc le domaine/use cases).
  * INVARIANT DE PARITÉ : chaque action faisable à la main dans l'UI a ici sa méthode, et les deux
  * passent par le MÊME use case. Bob ne peut donc rien faire que l'utilisateur ne puisse faire, et
@@ -1069,4 +1091,12 @@ export interface BobActions {
   prepareInterventionInvoice?(
     input: InterventionActionInput,
   ): Promise<Result<PrepareInterventionInvoiceActionOutput, AppError>>;
+  /** PR-16 §3.2 — « comment s'appelle ma fiche de passage ? » : lecture pure des réglages. */
+  getInterventionSettings?(): Promise<Result<InterventionSettingsActionOutput, AppError>>;
+  /** PR-16 §3.2/§4.5 — « appelle ma fiche Certificat sanitaire » : MÊME use case
+   * UpdateCompanyInterventionSettings que l'écran Réglages (parité humain↔Bob). L'hôte résout
+   * la révision courante (CAS) — le geste vocal n'a pas de vue optimiste. */
+  updateInterventionSettings?(
+    input: InterventionSettingsActionInput,
+  ): Promise<Result<InterventionSettingsActionOutput, AppError>>;
 }
