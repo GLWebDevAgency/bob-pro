@@ -4,7 +4,7 @@ import {
   veilleMentionsLegales,
   messageVeilleMentions,
 } from './veille-mentions-legales';
-import { parisDateOnly } from '../../shared-kernel/time';
+import { parisDateOnly, isValidDateOnly } from '../../shared-kernel/time';
 import {
   CIBS_TVA_ENTREE_EN_VIGUEUR,
   CIBS_TOLERANCE_REFERENCES_CGI,
@@ -77,6 +77,41 @@ describe('veille des mentions légales — l’alarme datée du bloc mentions', 
     it('les alertes sortent triées par échéance, la plus proche d’abord', () => {
       const dates = veilleMentionsLegales(CIBS_TOLERANCE_REFERENCES_CGI).map((a) => a.echeance.echeance);
       expect(dates).toEqual([...dates].sort());
+    });
+  });
+
+  // ————————————————————————————————————————————————————————————————————————————————————————————
+  // FAIL-CLOSED. Une DateOnly malformée rendait NaN, le filtre `joursRestants <= preavisJours` est
+  // faux pour NaN, et l'échéance DISPARAISSAIT du résultat sans erreur ni trace : une veille légale
+  // qui se tait sur une entrée douteuse est le contraire exact de sa raison d'être.
+  // ————————————————————————————————————————————————————————————————————————————————————————————
+  describe('dates douteuses — rejet explicite, jamais un silence', () => {
+    it.each(['', 'invalide', '2027-13-45', '2026-2-3', '2026-02-30', '20260728', 'null'])(
+      'rejette la date d’évaluation « %s » au lieu de renvoyer une veille vide',
+      (asOf) => {
+        expect(() => veilleMentionsLegales(asOf)).toThrow(/n'est pas une date valide/u);
+        expect(() => veilleMentionsLegales(asOf)).toThrow(TypeError);
+      },
+    );
+
+    it('le message d’erreur dit POURQUOI on rejette — sinon quelqu’un « corrigera » en repassant fail-open', () => {
+      expect(() => veilleMentionsLegales('2027-13-45')).toThrow(/alarme se tairait/u);
+      expect(() => veilleMentionsLegales('2027-13-45')).toThrow(/rejet est VOLONTAIRE/u);
+      expect(() => veilleMentionsLegales('2027-13-45')).toThrow(/2027-13-45/u);
+    });
+
+    it('une date valide mais inhabituelle reste acceptée (bissextile, fin d’année)', () => {
+      expect(() => veilleMentionsLegales('2028-02-29')).not.toThrow();
+      expect(() => veilleMentionsLegales('2026-12-31')).not.toThrow();
+    });
+
+    it('AUCUNE échéance ne peut disparaître silencieusement : toutes les dates du registre sont valides', () => {
+      for (const e of ECHEANCES_MENTIONS_LEGALES) {
+        expect(isValidDateOnly(e.echeance)).toBe(true);
+        expect(isValidDateOnly(e.verifieLe)).toBe(true);
+      }
+      // La preuve par le résultat : à une date postérieure à tout, les DEUX échéances sonnent.
+      expect(veilleMentionsLegales('2030-01-01')).toHaveLength(ECHEANCES_MENTIONS_LEGALES.length);
     });
   });
 

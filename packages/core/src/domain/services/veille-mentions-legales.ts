@@ -1,4 +1,4 @@
-import { type DateOnly } from '../../shared-kernel/time';
+import { type DateOnly, isValidDateOnly } from '../../shared-kernel/time';
 import { CIBS_TVA_ENTREE_EN_VIGUEUR, CIBS_TOLERANCE_REFERENCES_CGI } from './build-mentions';
 
 /**
@@ -120,6 +120,25 @@ export const ECHEANCES_MENTIONS_LEGALES: readonly EcheanceMentionLegale[] = [
 
 const MS_PER_DAY = 86_400_000;
 
+/**
+ * FAIL-CLOSED. Une DateOnly illisible faisait renvoyer NaN à `daysBetween` : le filtre
+ * `joursRestants <= preavisJours` est FAUX pour NaN, donc l'échéance disparaissait du résultat sans
+ * erreur ni trace — une veille légale qui se tait sur une entrée douteuse est exactement le
+ * contraire de sa raison d'être. On rejette bruyamment, plutôt que d'éteindre l'alarme en silence.
+ */
+function jourCertain(role: string, valeur: DateOnly): DateOnly {
+  if (!isValidDateOnly(valeur)) {
+    throw new TypeError(
+      `Veille mentions légales : ${role} n'est pas une date valide (reçu « ${valeur} »). `
+      + 'Attendu « AAAA-MM-JJ » calendairement possible. Ce rejet est VOLONTAIRE : une date '
+      + 'illisible ferait disparaître l\'échéance du résultat sans erreur, et l\'alarme se tairait '
+      + 'précisément le jour où elle devrait sonner.',
+    );
+  }
+  return valeur;
+}
+
+/** Écart en jours entre deux DateOnly DÉJÀ validées par `jourCertain`. */
 function daysBetween(from: DateOnly, to: DateOnly): number {
   return Math.round((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / MS_PER_DAY);
 }
@@ -130,8 +149,15 @@ function daysBetween(from: DateOnly, to: DateOnly): number {
  * Fonction pure : la date est un paramètre, jamais l'horloge.
  */
 export function veilleMentionsLegales(asOf: DateOnly): readonly AlerteVeilleMentions[] {
+  const jour = jourCertain('la date d’évaluation (asOf)', asOf);
   return ECHEANCES_MENTIONS_LEGALES
-    .map((echeance) => ({ echeance, joursRestants: daysBetween(asOf, echeance.echeance) }))
+    .map((echeance) => ({
+      echeance,
+      joursRestants: daysBetween(
+        jour,
+        jourCertain(`l’échéance « ${echeance.id} »`, echeance.echeance),
+      ),
+    }))
     .filter(({ echeance, joursRestants }) => joursRestants <= echeance.preavisJours)
     .map(({ echeance, joursRestants }): AlerteVeilleMentions => ({
       echeance,
