@@ -34,6 +34,10 @@ import {
   type EquipmentHistoryActionOutput,
   type PrepareContractAnnualInvoiceActionInput,
   type PrepareContractAnnualInvoiceActionOutput,
+  type CreateMaintenanceContractActionInput,
+  type ActivateContractActionInput,
+  type TerminateContractActionInput,
+  type ContractLifecycleActionOutput,
   type RetireEquipmentActionInput,
   type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
@@ -1624,6 +1628,169 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => prepareAnnualAction(input),
     };
     tools.push(preparerFactureAnnuelle as AnyTool);
+  }
+
+  // —— §2.7 — GESTES de cycle de vie du contrat À LA VOIX : MÊMES use cases que la fiche
+  //    (CreateMaintenanceContract / ActivateContract / TerminateContract). Chacun est une
+  //    mutation : plancher de confirmation (safetyFloor) — jamais un contrat créé, activé ou
+  //    résilié en silence, même en autonomie 'auto'. ——
+  const createContractAction = actions.createMaintenanceContract?.bind(actions);
+  if (createContractAction) {
+    const creerContrat: Tool<CreateMaintenanceContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'creer_contrat_maintenance',
+      description:
+        'Crée le BROUILLON d’un contrat de maintenance (« fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an ») — même use case CreateMaintenanceContract que le wizard : client professionnel exigé (refus Chatel restitué tel quel), site ouvert, équipements du même site. L’activation reste un geste distinct.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<CreateMaintenanceContractActionInput, AppError> => {
+        const r = raw as {
+          customerId?: unknown;
+          label?: unknown;
+          chantierId?: unknown;
+          anniversaryDate?: unknown;
+          visitsPerYear?: unknown;
+          tacitRenewal?: unknown;
+          lines?: unknown;
+          equipmentIds?: unknown;
+        };
+        if (typeof r?.customerId !== 'string' || r.customerId.trim().length === 0)
+          return err(appValidation('customerId', 'Client du contrat manquant.'));
+        if (typeof r?.label !== 'string' || r.label.trim().length === 0 || r.label.length > 200)
+          return err(appValidation('label', 'Libellé de contrat manquant (200 caractères maximum).'));
+        if (typeof r?.anniversaryDate !== 'string' || !isValidDateOnly(r.anniversaryDate))
+          return err(appValidation('anniversaryDate', 'Date de démarrage attendue (AAAA-MM-JJ).'));
+        if (
+          r.chantierId !== undefined &&
+          r.chantierId !== null &&
+          (typeof r.chantierId !== 'string' || r.chantierId.trim().length === 0)
+        )
+          return err(appValidation('chantierId', 'Site du contrat invalide.'));
+        if (
+          r.visitsPerYear !== undefined &&
+          (typeof r.visitsPerYear !== 'number' ||
+            !Number.isSafeInteger(r.visitsPerYear) ||
+            r.visitsPerYear < 0 ||
+            r.visitsPerYear > 52)
+        )
+          return err(appValidation('visitsPerYear', 'Nombre de passages par an invalide (0 à 52).'));
+        if (r.tacitRenewal !== undefined && typeof r.tacitRenewal !== 'boolean')
+          return err(appValidation('tacitRenewal', 'Reconduction tacite invalide.'));
+        const lines: CreateMaintenanceContractActionInput['lines'] = [];
+        if (r.lines !== undefined) {
+          if (!Array.isArray(r.lines) || r.lines.length === 0 || r.lines.length > 100)
+            return err(appValidation('lines', 'Lignes du contrat invalides (1 à 100).'));
+          for (const [index, rawLine] of r.lines.entries()) {
+            const line = rawLine as {
+              label?: unknown;
+              quantity?: unknown;
+              unitPriceHtCents?: unknown;
+              vatRate?: unknown;
+            };
+            if (typeof line?.label !== 'string' || line.label.trim().length === 0 || line.label.length > 200)
+              return err(appValidation(`lines.${index}.label`, 'Libellé de ligne manquant.'));
+            if (typeof line?.quantity !== 'number' || !(line.quantity > 0))
+              return err(appValidation(`lines.${index}.quantity`, 'Quantité invalide.'));
+            if (
+              typeof line?.unitPriceHtCents !== 'number' ||
+              !Number.isSafeInteger(line.unitPriceHtCents) ||
+              line.unitPriceHtCents < 0
+            )
+              return err(appValidation(`lines.${index}.unitPriceHtCents`, 'Prix unitaire HT invalide.'));
+            if (typeof line?.vatRate !== 'number' || !isVatRate(line.vatRate))
+              return err(appValidation(`lines.${index}.vatRate`, 'Taux de TVA invalide.'));
+            (lines as { label: string; quantity: number; unitPriceHtCents: number; vatRate: number }[]).push({
+              label: line.label.trim(),
+              quantity: line.quantity,
+              unitPriceHtCents: line.unitPriceHtCents,
+              vatRate: line.vatRate,
+            });
+          }
+        }
+        const equipmentIds: string[] = [];
+        if (r.equipmentIds !== undefined) {
+          if (!Array.isArray(r.equipmentIds) || r.equipmentIds.length > 100)
+            return err(appValidation('equipmentIds', 'Équipements couverts invalides.'));
+          for (const [index, id] of r.equipmentIds.entries()) {
+            if (typeof id !== 'string' || id.trim().length === 0)
+              return err(appValidation(`equipmentIds.${index}`, 'Équipement couvert invalide.'));
+            equipmentIds.push(id.trim());
+          }
+        }
+        return ok({
+          customerId: r.customerId.trim(),
+          label: r.label.trim(),
+          anniversaryDate: r.anniversaryDate,
+          ...(typeof r.chantierId === 'string' ? { chantierId: r.chantierId.trim() } : {}),
+          ...(typeof r.visitsPerYear === 'number' ? { visitsPerYear: r.visitsPerYear } : {}),
+          ...(typeof r.tacitRenewal === 'boolean' ? { tacitRenewal: r.tacitRenewal } : {}),
+          ...(lines.length > 0 ? { lines } : {}),
+          ...(equipmentIds.length > 0 ? { equipmentIds } : {}),
+        });
+      },
+      run: (input) => createContractAction(input),
+    };
+    tools.push(creerContrat as AnyTool);
+  }
+
+  const activateContractAction = actions.activateMaintenanceContract?.bind(actions);
+  if (activateContractAction) {
+    const activerContrat: Tool<ActivateContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'activer_contrat',
+      description:
+        'Active un contrat de maintenance en brouillon (« active le contrat Bastille ») — même use case ActivateContract que la fiche : le client professionnel est revalidé et la date anniversaire figée. Geste DISTINCT de la création.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<ActivateContractActionInput, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ contractId: r.contractId });
+      },
+      run: (input) => activateContractAction(input),
+    };
+    tools.push(activerContrat as AnyTool);
+  }
+
+  const terminateContractAction = actions.terminateMaintenanceContract?.bind(actions);
+  if (terminateContractAction) {
+    const resilierContrat: Tool<TerminateContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'resilier_contrat',
+      description:
+        'Résilie un contrat de maintenance actif (« le client résilie au 1er juin ») — même use case TerminateContract que la fiche : le préavis est AFFICHÉ, jamais bloquant ; sans date dite, le domaine retient le prochain anniversaire calculé. Le motif est porté en trace.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<TerminateContractActionInput, AppError> => {
+        const r = raw as { contractId?: unknown; effectiveDate?: unknown; note?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        if (typeof r?.note !== 'string' || r.note.trim().length === 0 || r.note.length > 2000)
+          return err(appValidation('note', 'Motif de résiliation requis (trace de la décision).'));
+        if (hasAsciiControlCharacter(r.note))
+          return err(appValidation('note', 'Motif invalide (caractères de contrôle interdits).'));
+        if (
+          r.effectiveDate !== undefined &&
+          r.effectiveDate !== null &&
+          (typeof r.effectiveDate !== 'string' || !isValidDateOnly(r.effectiveDate))
+        )
+          return err(appValidation('effectiveDate', 'Date d’effet attendue (AAAA-MM-JJ).'));
+        return ok({
+          contractId: r.contractId,
+          note: r.note.trim(),
+          ...(typeof r.effectiveDate === 'string' ? { effectiveDate: r.effectiveDate } : {}),
+        });
+      },
+      run: (input) => terminateContractAction(input),
+    };
+    tools.push(resilierContrat as AnyTool);
   }
 
   return tools;

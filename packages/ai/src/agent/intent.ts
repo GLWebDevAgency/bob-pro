@@ -28,6 +28,9 @@ export type BobIntent =
   | 'preparer_facture_annuelle' // « prépare la facture annuelle du contrat Bastille » — brouillon en un tap (PR-12c)
   | 'statut_contrat' // « le contrat Carrefour, ça en est où ? » — statut parlé dérivé (PR-12c)
   | 'contrats_a_renouveler' // « quels contrats à renouveler ? » — alertes J-60/J-30 dérivées (PR-12c)
+  | 'creer_contrat_maintenance' // « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » — CreateMaintenanceContract (§2.7)
+  | 'activer_contrat' // « active le contrat Bastille » — ActivateContract, geste distinct de la création (§2.7)
+  | 'resilier_contrat' // « le client résilie au 1er juin » — TerminateContract, préavis expliqué jamais bloquant (§2.7)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -106,6 +109,69 @@ export function detectIntent(message: string): BobIntent {
     /^\s*(aide|aide[- ]moi|de l.{0,3}aide|help|au secours)\s*[!?.…]*\s*$/.test(normalizedMessage)
   )
     return 'aide';
+  // PR-12c — GESTES DE CYCLE DE VIE D'UN CONTRAT (§2.7 : creer/activer/resilier) : AVANT le
+  // parc d'équipements (« crée … chez Carrefour » y collisionne) et AVANT la famille facture.
+  // Toute la famille « facture annuelle » est EXCLUE d'emblée : elle appartient à
+  // preparer_facture_annuelle. La résolution du client/contrat par NOM PARLÉ se fait ensuite
+  // contre les données réelles dans le handler (patron resolveSpokenContract).
+  const annualInvoiceAsked = /\bfactures? annuelles?\b/.test(normalizedMessage);
+  const contractPaperwork =
+    /\b(devis|factures?|bons? de commande|bc\b|documents?|tickets?|recus?|justificatifs?|notes?|depenses?)\b/.test(
+      normalizedMessage,
+    );
+  // Résiliation : « le client résilie au 1er juin », « résilie le contrat Bastille ». Le mot
+  // « contrat » n'est PAS exigé — en gestion de maintenance « résilier » ne désigne rien
+  // d'autre ; l'abonnement Bob lui-même est explicitement EXCLU (jamais un acte vocal sur le
+  // compte, SPEC décision 10). Négation ⇒ rien.
+  if (
+    !annualInvoiceAsked &&
+    /\bresili(?:e|es|er|ent|ee|ees|ation|ations)\b/.test(normalizedMessage) &&
+    !/\b(abonnement|abonnements|essai|souscription|formule)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\bresili/.test(normalizedMessage) &&
+    !/\bresili\w*\b.{0,30}\bpas\b/.test(normalizedMessage)
+  )
+    return 'resilier_contrat';
+  if (!annualInvoiceAsked && !contractPaperwork && /\bcontrats?\b/.test(normalizedMessage)) {
+    // Un verbe de CRÉATION présent désambiguïse « ça démarre au 1er octobre » (fait de la
+    // consigne de création) d'un « démarre le contrat » (activation) : seul le lexique
+    // d'activation NON équivoque (« active », « en service ») prime sur la création.
+    const contractCreationVerb =
+      /\b(cree|crees|creer|creation|nouveau|nouvelle|fais|faites|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|prepares|preparer|enregistre|enregistrer|mets en place|ouvre|ouvrir|signe|signer)\b/.test(
+        normalizedMessage,
+      );
+    const explicitActivation =
+      /\b(active|actives|activer|activation|rends actif|passe en actif)\b/.test(normalizedMessage) ||
+      // « mets le contrat Bastille en service » : le verbe et le complément peuvent être séparés
+      // par la cible — un « en service » SANS verbe reste une question d'état (statut_contrat).
+      /\b(mets|met|mettre|passe|passer|remets|remettre)\b[^.!?]{0,40}\ben service\b/.test(
+        normalizedMessage,
+      );
+    const softStart = /\b(demarre|demarres|demarrer|demarrage|lance|lances|lancer)\b/.test(
+      normalizedMessage,
+    );
+    // Activation : « active le contrat Bastille », « démarre le contrat », « mets le contrat
+    // en service ». Négation ⇒ rien.
+    if (
+      (explicitActivation || (softStart && !contractCreationVerb)) &&
+      !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(active|activer|demarre|demarrer|lance|lancer)\b/.test(
+        normalizedMessage,
+      ) &&
+      !/\b(active|activer|demarre|demarrer|lance|lancer)\b.{0,30}\bpas\b/.test(normalizedMessage)
+    )
+      return 'activer_contrat';
+    // Création : « fais-moi le contrat fontaines RATP, 1 200 € par an », « crée le contrat
+    // RATP CAP Bastille, 2 visites par an », « nouveau contrat de maintenance ». Négation ⇒ rien.
+    if (
+      contractCreationVerb &&
+      !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(cree|creer|fais|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|preparer|enregistre|enregistrer|ouvre|ouvrir)\b/.test(
+        normalizedMessage,
+      ) &&
+      !/\b(cree|creer|fais|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|preparer|enregistre|enregistrer|ouvre|ouvrir)\b.{0,30}\bpas\b/.test(
+        normalizedMessage,
+      )
+    )
+      return 'creer_contrat_maintenance';
+  }
   // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
   // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
   // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement
@@ -201,8 +267,9 @@ export function detectIntent(message: string): BobIntent {
   )
     return 'contrats_a_renouveler';
   // Statut parlé d'un contrat : « le contrat Carrefour, ça en est où ? », « statut du contrat
-  // Bastille », « parle-moi du contrat RATP » — lecture pure ; les gestes de création/
-  // résiliation (non couverts à la voix en V1) ne matchent pas (verbes exclus).
+  // Bastille », « parle-moi du contrat RATP » — lecture pure ; les GESTES (création,
+  // activation, résiliation — §2.7, détectés plus haut) ne retombent jamais ici : leurs verbes
+  // sont exclus, la lecture ne capture donc pas une mutation.
   if (
     /\bcontrats?\b/.test(normalizedMessage) &&
     /\b(statuts?|etats?|ou en est|en est ou|ca en est|parle[- ]?moi|dis[- ]?moi|montre|resume|couvert|couverte|facture|facturee)\b/.test(

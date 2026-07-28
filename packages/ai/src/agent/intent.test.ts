@@ -622,3 +622,54 @@ describe('detectIntent — parc d’équipements (PR-11) : intents dédiés SANS
     expect(detectIntent("N'ajoute pas d'équipement chez Carrefour")).not.toBe('ajouter_equipement');
   });
 });
+
+describe('PR-12c §2.7 — gestes de cycle de vie d’un CONTRAT à la voix', () => {
+  it('création : « fais-moi le contrat … », « crée le contrat … » (mot « contrat » requis)', () => {
+    expect(
+      detectIntent('Fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an, ça démarre au 1er octobre, 2 passages'),
+    ).toBe('creer_contrat_maintenance');
+    expect(detectIntent('Crée le contrat RATP CAP Bastille, 2 visites par an')).toBe(
+      'creer_contrat_maintenance',
+    );
+    expect(detectIntent('Établis un nouveau contrat de maintenance pour Carrefour')).toBe(
+      'creer_contrat_maintenance',
+    );
+  });
+
+  it('activation : « active le contrat », « démarre le contrat » — mais « ça démarre au 1er octobre » reste une CRÉATION', () => {
+    expect(detectIntent('Active le contrat Bastille')).toBe('activer_contrat');
+    expect(detectIntent('Démarre le contrat fontaines')).toBe('activer_contrat');
+    expect(detectIntent('Mets le contrat Bastille en service')).toBe('activer_contrat');
+    // Le fait « ça démarre au … » appartient à la consigne de CRÉATION : il ne doit jamais la
+    // faire basculer en activation (le contrat n'existe pas encore).
+    expect(detectIntent('Fais-moi le contrat vitrines Carrefour, ça démarre au 1er octobre')).toBe(
+      'creer_contrat_maintenance',
+    );
+  });
+
+  it('résiliation : « le client résilie au 1er juin » — sans exiger le mot « contrat »', () => {
+    expect(detectIntent('Le client résilie au 1er juin')).toBe('resilier_contrat');
+    expect(detectIntent('Résilie le contrat Bastille au 30 juin')).toBe('resilier_contrat');
+    // L'abonnement Bob n'est JAMAIS résilié à la voix (aucun acte vocal sur le compte).
+    expect(detectIntent('Je veux résilier mon abonnement')).not.toBe('resilier_contrat');
+  });
+
+  it('ne détourne NI la lecture des contrats NI la facture annuelle NI le parc', () => {
+    expect(detectIntent('Le contrat Carrefour, ça en est où ?')).toBe('statut_contrat');
+    expect(detectIntent('Quels contrats à renouveler ?')).toBe('contrats_a_renouveler');
+    expect(detectIntent('Prépare la facture annuelle du contrat Bastille')).toBe(
+      'preparer_facture_annuelle',
+    );
+    expect(detectIntent('Fais la facture annuelle du contrat Carrefour')).toBe(
+      'preparer_facture_annuelle',
+    );
+    expect(detectIntent('Ajoute la clim du local serveur chez Carrefour')).toBe('ajouter_equipement');
+    expect(detectIntent('Fais un devis pour Martin')).toBe('nouveau_devis');
+  });
+
+  it('négation ⇒ rien (jamais une mutation de contrat sur une intention niée)', () => {
+    expect(detectIntent('Ne crée pas le contrat fontaines RATP')).not.toBe('creer_contrat_maintenance');
+    expect(detectIntent("N'active pas le contrat Bastille")).not.toBe('activer_contrat');
+    expect(detectIntent('Ne résilie pas le contrat Bastille')).not.toBe('resilier_contrat');
+  });
+});

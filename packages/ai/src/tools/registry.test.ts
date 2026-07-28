@@ -929,3 +929,111 @@ describe('vague Encaisser (PR-01/02/05/06) — capacités optionnelles, profils 
     expect(t.projectPublicResult?.(run.value)).toEqual({ deliveryStatus: 'queued' });
   });
 });
+
+
+describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / résilier)', () => {
+  const lifecycleActions: BobActions = {
+    ...baseActions,
+    createMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'draft' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: null,
+      }),
+    activateMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'active' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: null,
+      }),
+    terminateMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'terminated' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: '2027-10-01',
+      }),
+  };
+
+  it('absents de l’hôte legacy, exposés dès que l’hôte fournit les MÊMES use cases que l’écran', () => {
+    const legacy = buildBobTools(baseActions).map((t) => t.name);
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      expect(legacy).not.toContain(name);
+    }
+    const names = buildBobTools(lifecycleActions).map((t) => t.name);
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      expect(names).toContain(name);
+    }
+  });
+
+  it('les trois gestes sont au PLANCHER de sécurité : confirmés même en autonomie « auto »', () => {
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      const t = tool(lifecycleActions, name)!;
+      expect(t.mutating).toBe(true);
+      expect(t.outbound).toBe(false);
+      expect(isSafetyFloor(t)).toBe(true);
+      expect(requiresConfirmation(t, 'auto')).toBe(true);
+      expect(riskTierOf(t)).toBe('reversible');
+    }
+  });
+
+  it('creer_contrat_maintenance : arguments strictement validés (anti-hallucination)', () => {
+    const t = tool(lifecycleActions, 'creer_contrat_maintenance')!;
+    expect(t.parse({ label: 'X', anniversaryDate: '2026-10-01' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: '', anniversaryDate: '2026-10-01' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: 'X', anniversaryDate: '01/10/2026' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: 'X', anniversaryDate: '2026-02-31' }).ok).toBe(false);
+    expect(
+      t.parse({ customerId: 'c', label: 'X', anniversaryDate: '2026-10-01', visitsPerYear: 99 }).ok,
+    ).toBe(false);
+    expect(
+      t.parse({
+        customerId: 'c',
+        label: 'X',
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'L', quantity: 1, unitPriceHtCents: 120_000, vatRate: 7 }],
+      }).ok,
+    ).toBe(false);
+    const parsed = t.parse({
+      customerId: 'cus-1',
+      label: 'Fontaines RATP',
+      chantierId: 'site-1',
+      anniversaryDate: '2026-10-01',
+      visitsPerYear: 2,
+      tacitRenewal: false,
+      lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      equipmentIds: ['eq-1'],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toEqual({
+      customerId: 'cus-1',
+      label: 'Fontaines RATP',
+      chantierId: 'site-1',
+      anniversaryDate: '2026-10-01',
+      visitsPerYear: 2,
+      tacitRenewal: false,
+      lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      equipmentIds: ['eq-1'],
+    });
+  });
+
+  it('resilier_contrat : le MOTIF est exigé (trace légale) et la date d’effet reste optionnelle', () => {
+    const t = tool(lifecycleActions, 'resilier_contrat')!;
+    expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', note: '   ' }).ok).toBe(false);
+    // Caractère de CONTRÔLE dans le motif : refusé ici comme par le domaine.
+    expect(t.parse({ contractId: 'c-1', note: 'motif\u0007' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', note: 'motif', effectiveDate: 'le 1er juin' }).ok).toBe(false);
+    const parsed = t.parse({ contractId: 'c-1', note: ' le client déménage ' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // Sans date dite, aucune date n’est envoyée : le domaine calcule le prochain anniversaire.
+    expect(parsed.value).toEqual({ contractId: 'c-1', note: 'le client déménage' });
+  });
+});

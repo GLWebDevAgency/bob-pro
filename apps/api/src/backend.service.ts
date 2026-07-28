@@ -203,6 +203,7 @@ import {
   deriveAnnualBillingDue,
   deriveRenewalAlerts,
   type CreateMaintenanceContractInput,
+  type ContractLineInput,
   type UpdateMaintenanceContractInput,
   type MaintenanceContractProps,
   type ContractInvoiceProjection,
@@ -311,6 +312,7 @@ import {
   // B1/B2/B4 — parité de la confirmation HTTP : mêmes refus honnêtes et mêmes intents que
   // BobAgent.confirm local pour les outils de facturation terrain.
   FACTURATION_TERRAIN_TOOLS,
+  CONTRACT_LIFECYCLE_TOOLS,
   intentForTool,
   redactPII,
   accountingJournalLabel,
@@ -4187,6 +4189,8 @@ export class BackendService {
             chantierNom: view.chantierNom,
             tacitRenewal: view.contract.tacitRenewal,
             noticeDays: view.contract.noticeDays,
+            // §2.7 — l'anniversaire est DIT à l'activation vocale (ce que le geste fige).
+            anniversaryDate: view.contract.anniversaryDate,
             annualTotalHtCents: view.annualTotals.ht,
             currentPeriod: view.currentPeriod,
             currentPeriodCoveredBy: view.currentPeriodCoveredBy,
@@ -4214,6 +4218,70 @@ export class BackendService {
           totalTtcCents: r.value.totals.ttc,
           contractTotalTtcCents: r.value.contractTotals.ttc,
           vatDivergence: r.value.vatDivergence,
+        });
+      },
+      // §2.7 — GESTES de cycle de vie du contrat À LA VOIX : MÊMES use cases que l'API et la
+      // fiche (CreateMaintenanceContract / ActivateContract / TerminateContract — parité
+      // humain↔Bob). La RÉVISION courante est résolue ici : le geste vocal n'a pas de vue
+      // optimiste ; les refus du domaine (Chatel b2c, site clôturé, transition interdite)
+      // remontent tels quels et sont restitués verbatim par l'agent.
+      createMaintenanceContract: async (input) => {
+        const created = await this.createMaintenanceContract({
+          customerId: input.customerId,
+          label: input.label,
+          anniversaryDate: input.anniversaryDate,
+          ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
+          ...(input.visitsPerYear !== undefined ? { visitsPerYear: input.visitsPerYear } : {}),
+          ...(input.tacitRenewal !== undefined ? { tacitRenewal: input.tacitRenewal } : {}),
+          ...(input.lines !== undefined
+            ? { lines: input.lines.map((line) => ({ ...line, vatRate: line.vatRate as ContractLineInput['vatRate'] })) }
+            : {}),
+          ...(input.equipmentIds !== undefined ? { equipmentIds: input.equipmentIds } : {}),
+        });
+        if (!created.ok) return created;
+        const contract = await this.p.maintenanceContracts.findById(this.companyId(), created.value.id);
+        if (!contract) return err(appNotFound('maintenance_contract', created.value.id));
+        const props = contract.toProps();
+        return ok({
+          contractId: props.id,
+          label: props.label,
+          status: props.status,
+          anniversaryDate: props.anniversaryDate,
+          terminationEffectiveDate: props.terminationEffectiveDate,
+        });
+      },
+      activateMaintenanceContract: async (input) => {
+        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
+        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
+        const r = await this.activateMaintenanceContract({
+          contractId: input.contractId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        return ok({
+          contractId: r.value.id,
+          label: r.value.label,
+          status: r.value.status,
+          anniversaryDate: r.value.anniversaryDate,
+          terminationEffectiveDate: r.value.terminationEffectiveDate,
+        });
+      },
+      terminateMaintenanceContract: async (input) => {
+        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
+        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
+        const r = await this.terminateMaintenanceContract({
+          contractId: input.contractId,
+          expectedRevision: current.revision,
+          note: input.note,
+          ...(input.effectiveDate !== undefined ? { effectiveDate: input.effectiveDate } : {}),
+        });
+        if (!r.ok) return r;
+        return ok({
+          contractId: r.value.id,
+          label: r.value.label,
+          status: r.value.status,
+          anniversaryDate: r.value.anniversaryDate,
+          terminationEffectiveDate: r.value.terminationEffectiveDate,
         });
       },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
@@ -5345,7 +5413,10 @@ export class BackendService {
         // `domain:CODE message` (describeError) : le message est extrait, verbatim.
         const domainMessage =
           planned.length === 1
-          && FACTURATION_TERRAIN_TOOLS.has(planned[0]!.tool)
+          && (FACTURATION_TERRAIN_TOOLS.has(planned[0]!.tool)
+            // PR-12c §2.7 — gestes de contrat : même restitution HONNÊTE (LegalHint Chatel,
+            // site clôturé, transition interdite) — jamais un code technique brut.
+            || CONTRACT_LIFECYCLE_TOOLS.has(planned[0]!.tool))
           && typeof blocked.reason === 'string'
             ? (/^domain:[A-Z_]*\s+([\s\S]+)$/.exec(blocked.reason)?.[1] ?? null)
             : null;

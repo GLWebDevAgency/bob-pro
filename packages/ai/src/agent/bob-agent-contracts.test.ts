@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { ok } from '@bob/core';
+import { CONTRACT_B2C_REFUSED_MESSAGE, err, ok } from '@bob/core';
 import { BobAgent } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import {
   type AgentContract,
+  type BillableCustomer,
   type BobActions,
   type PrepareContractAnnualInvoiceActionInput,
 } from './actions';
@@ -33,6 +34,7 @@ function contractOf(over: Partial<AgentContract> & Pick<AgentContract, 'id' | 'l
     renewalAlert: { palier: 'j30', anniversary: '2026-10-12', daysUntil: 22, tacit: true },
     expiredSince: null,
     terminatedCoverageUntil: null,
+    anniversaryDate: '2025-10-12',
     ...over,
   };
 }
@@ -302,6 +304,373 @@ describe('capacité hôte absente — fail-closed honnête', () => {
       runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-contracts' } },
     });
     const r = await agent.ask('Statut du contrat Bastille ?');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+});
+
+/**
+ * §2.7 — PARITÉ VOCALE DES GESTES DE CONTRAT (création / activation / résiliation) : mêmes use
+ * cases que la fiche, consigne composite lue en UNE passe, question ciblée sur le SEUL manque,
+ * UNE confirmation groupée qui RÉCITE, refus du domaine restitués VERBATIM, et AMBIGUÏTÉS
+ * (clients ou contrats aux noms inclusifs) résolues par des followUps porteurs d'ID qui
+ * CONVERGENT au tour suivant — jamais une boucle, jamais un id récité dans la carte.
+ */
+
+const RATP: BillableCustomer = { id: 'cus-ratp', name: 'RATP', type: 'b2g' };
+const RATP_CAP: BillableCustomer = { id: 'cus-ratp-cap', name: 'RATP CAP', type: 'b2g' };
+const GIRARD: BillableCustomer = { id: 'cus-girard', name: 'Girard', type: 'b2c' };
+
+const BASTILLE_SITE = { id: 'site-bastille', nom: 'Bastille', status: 'open' as const };
+
+function lifecycleAgent(over: Partial<BobActions> = {}, contracts: AgentContract[] = []): BobAgent {
+  return new BobAgent({
+    router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+    actions: {
+      ...baseActions,
+      listMaintenanceContracts: async () => ok(contracts),
+      listBillableCustomers: async () => ok([RATP, GIRARD]),
+      createMaintenanceContract: async () =>
+        ok({
+          contractId: 'contract-new',
+          label: 'Fontaines RATP',
+          status: 'draft' as const,
+          anniversaryDate: '2026-10-01',
+          terminationEffectiveDate: null,
+        }),
+      activateMaintenanceContract: async () =>
+        ok({
+          contractId: 'contract-bastille',
+          label: 'Entretien fontaines Bastille',
+          status: 'active' as const,
+          anniversaryDate: '2025-10-12',
+          terminationEffectiveDate: null,
+        }),
+      terminateMaintenanceContract: async () =>
+        ok({
+          contractId: 'contract-bastille',
+          label: 'Entretien fontaines Bastille',
+          status: 'terminated' as const,
+          anniversaryDate: '2025-10-12',
+          terminationEffectiveDate: '2027-06-01',
+        }),
+      ...over,
+    },
+    runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-contracts' } },
+  });
+}
+
+describe('creer_contrat_maintenance — consigne composite désordonnée lue en UNE passe (§2.7)', () => {
+  it('« fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an, ça démarre au 1er octobre, 2 passages » : UNE confirmation groupée qui récite tout', async () => {
+    const created: unknown[] = [];
+    const agent = lifecycleAgent({
+      listFilingDestinations: async () => ok({ chantiers: [BASTILLE_SITE], dossiers: [] }),
+      listEquipments: async () =>
+        ok([
+          { id: 'eq-1', label: 'Fontaine quai A', kind: null, status: 'active', chantierId: 'site-bastille', chantierNom: 'Bastille' },
+          { id: 'eq-2', label: 'Fontaine quai B', kind: null, status: 'active', chantierId: 'site-bastille', chantierNom: 'Bastille' },
+          { id: 'eq-3', label: 'Fontaine hall', kind: null, status: 'active', chantierId: 'site-bastille', chantierNom: 'Bastille' },
+        ]),
+      createMaintenanceContract: async (input) => {
+        created.push(input);
+        return ok({
+          contractId: 'contract-new',
+          label: input.label,
+          status: 'draft' as const,
+          anniversaryDate: input.anniversaryDate,
+          terminationEffectiveDate: null,
+        });
+      },
+    });
+    const r = await agent.ask(
+      'Fais-moi le contrat « Fontaines RATP » pour RATP sur le site Bastille, 3 fontaines, 1 200 € par an, ça démarre au 1er octobre, 2 passages',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('creer_contrat_maintenance');
+    // Mutation → confirmation OBLIGATOIRE : rien n'est créé avant le geste.
+    expect(r.value.kind).toBe('proposed');
+    expect(created).toEqual([]);
+    expect(r.value.pending?.tool).toBe('creer_contrat_maintenance');
+    // Le montant à MILLIERS est lu entier (1 200 €, jamais 200 € : la troncature silencieuse
+    // ferait naître un contrat au sixième de son prix).
+    expect(r.value.pending?.args).toMatchObject({
+      customerId: 'cus-ratp',
+      label: 'Fontaines RATP',
+      chantierId: 'site-bastille',
+      anniversaryDate: '2026-10-01',
+      visitsPerYear: 2,
+      lines: [{ label: 'Fontaines RATP', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      equipmentIds: ['eq-1', 'eq-2', 'eq-3'],
+    });
+    // La confirmation RÉCITE ce qui va être créé, et dit que l'activation reste un geste distinct.
+    expect(r.value.card.body).toContain('Fontaines RATP');
+    expect(r.value.card.body).toContain('RATP');
+    expect(r.value.card.body).toContain('Bastille');
+    expect(r.value.card.body).toContain('01/10/2026');
+    expect(r.value.card.body).toContain('BROUILLON');
+    expect(r.value.card.body).toContain('second geste');
+  });
+
+  it('AMBIGUÏTÉ client (noms INCLUSIFS « RATP » / « RATP CAP ») → question à followUps par ID, qui CONVERGE au tour suivant', async () => {
+    const created: unknown[] = [];
+    const agent = lifecycleAgent({
+      listBillableCustomers: async () => ok([RATP, RATP_CAP]),
+      createMaintenanceContract: async (input) => {
+        created.push(input);
+        return ok({
+          contractId: 'contract-new',
+          label: input.label,
+          status: 'draft' as const,
+          anniversaryDate: input.anniversaryDate,
+          terminationEffectiveDate: null,
+        });
+      },
+    });
+    const first = await agent.ask(
+      'Fais-moi le contrat « Fontaines RATP CAP » pour RATP CAP à 1 200 € par an, à partir du 01/10/2026',
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    // Vraie ambiguïté → QUESTION (jamais un client deviné), options réelles, rien de créé.
+    expect(first.value.kind).toBe('answer');
+    expect(created).toEqual([]);
+    expect(first.value.ask?.[0]?.options.map((option) => option.value).sort()).toEqual(
+      ['cus-ratp', 'cus-ratp-cap'].sort(),
+    );
+    const followUp = first.value.ask?.[0]?.options.find(
+      (option) => option.value === 'cus-ratp-cap',
+    )?.followUp;
+    expect(followUp).toBeDefined();
+    // Le followUp porte l'ID ET REDIT tous les faits énoncés : le tour suivant propose direct.
+    const second = await agent.ask(followUp!);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.kind).toBe('proposed');
+    expect(second.value.pending?.args).toMatchObject({
+      customerId: 'cus-ratp-cap',
+      label: 'Fontaines RATP CAP',
+      anniversaryDate: '2026-10-01',
+      lines: [{ unitPriceHtCents: 120_000 }],
+    });
+  });
+
+  it('client PARTICULIER : le refus du domaine (loi Chatel) est dit VERBATIM, rien n’est créé', async () => {
+    const created: unknown[] = [];
+    const agent = lifecycleAgent({
+      createMaintenanceContract: async (input) => {
+        created.push(input);
+        return ok({
+          contractId: 'x',
+          label: input.label,
+          status: 'draft' as const,
+          anniversaryDate: input.anniversaryDate,
+          terminationEffectiveDate: null,
+        });
+      },
+    });
+    const r = await agent.ask(
+      'Crée le contrat « Entretien chaudière » pour Girard à 300 € par an, à partir du 01/10/2026',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(created).toEqual([]);
+    expect(r.value.card.body).toContain(CONTRACT_B2C_REFUSED_MESSAGE);
+    expect(r.value.card.body).toContain('Rien n’a été créé');
+  });
+
+  it('question ciblée sur le SEUL manque (le montant annuel) — les faits déjà dits ne sont jamais redemandés', async () => {
+    const agent = lifecycleAgent();
+    const r = await agent.ask('Crée le contrat « Entretien vitrines » pour RATP à partir du 01/10/2026');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toContain('Combien par an');
+    // La relance REDIT le libellé, le client et la date — un seul manque est demandé.
+    expect(r.value.card.body).toContain('Entretien vitrines');
+    expect(r.value.card.body).toContain('cus-ratp');
+    expect(r.value.card.body).toContain('01/10/2026');
+  });
+
+  it('refus du domaine à l’exécution (site clôturé) restitué VERBATIM — jamais un code brut', async () => {
+    const agent = lifecycleAgent({
+      createMaintenanceContract: async () =>
+        err({
+          kind: 'domain',
+          error: { code: 'VALIDATION', field: 'chantierId', message: 'Ce site est clôturé — rouvre-le pour y rattacher un contrat.' },
+        }),
+    });
+    // Le plancher de sécurité impose la confirmation MÊME en autonomie « auto » : le refus se
+    // constate donc au geste confirmé — et il est restitué verbatim, pas en code brut.
+    const proposed = await agent.ask(
+      'Crée le contrat « Entretien vitrines » pour RATP à 900 € par an, à partir du 01/10/2026',
+      { autonomy: 'auto' },
+    );
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    const r = await agent.confirm(proposed.value.pending!);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.intent).toBe('creer_contrat_maintenance');
+    expect(r.value.card.body).toContain('Ce site est clôturé — rouvre-le');
+  });
+
+  it('capacité hôte absente : réponse honnête, jamais une erreur brute', async () => {
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: baseActions,
+      runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-contracts' } },
+    });
+    const r = await agent.ask('Crée le contrat « Entretien vitrines » pour RATP à 900 € par an');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.card.body).toContain('Rien n’a été créé');
+  });
+});
+
+describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expliqué jamais bloquant', () => {
+  const DRAFT_A = contractOf({
+    id: 'contract-fontaines',
+    label: 'Entretien fontaines',
+    status: 'draft',
+    customerName: 'RATP',
+    anniversaryDate: '2026-10-12',
+    renewalAlert: null,
+  });
+  const DRAFT_B = contractOf({
+    id: 'contract-fontaines-quai',
+    label: 'Entretien fontaines quai',
+    status: 'draft',
+    customerName: 'RATP',
+    anniversaryDate: '2026-11-01',
+    renewalAlert: null,
+  });
+
+  it('« active le contrat » (un seul brouillon) : confirmation qui DIT ce que l’activation fige', async () => {
+    const activated: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        activateMaintenanceContract: async (input) => {
+          activated.push(input);
+          return ok({
+            contractId: input.contractId,
+            label: 'Entretien fontaines',
+            status: 'active' as const,
+            anniversaryDate: '2026-10-12',
+            terminationEffectiveDate: null,
+          });
+        },
+      },
+      [DRAFT_A, BASTILLE_DUE],
+    );
+    const r = await agent.ask('Active le contrat');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('activer_contrat');
+    expect(r.value.kind).toBe('proposed');
+    expect(activated).toEqual([]);
+    expect(r.value.pending?.args).toEqual({ contractId: 'contract-fontaines' });
+    expect(r.value.card.body).toContain('12/10/2026');
+    expect(r.value.card.body).toContain('figée');
+  });
+
+  it('AMBIGUÏTÉ (deux brouillons aux noms INCLUSIFS) → question à followUps par ID, qui CONVERGE', async () => {
+    const agent = lifecycleAgent({}, [DRAFT_A, DRAFT_B]);
+    const first = await agent.ask('Active le contrat fontaines');
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.kind).toBe('answer');
+    expect(first.value.ask?.[0]?.options.map((option) => option.value).sort()).toEqual(
+      ['contract-fontaines', 'contract-fontaines-quai'].sort(),
+    );
+    const followUp = first.value.ask?.[0]?.options.find(
+      (option) => option.value === 'contract-fontaines-quai',
+    )?.followUp;
+    expect(followUp).toBeDefined();
+    const second = await agent.ask(followUp!);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.kind).toBe('proposed');
+    expect(second.value.pending?.args).toEqual({ contractId: 'contract-fontaines-quai' });
+  });
+
+  it('« Le client résilie au 1er juin » : date d’effet lue, motif = la phrase dite, préavis DIT', async () => {
+    const terminated: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        terminateMaintenanceContract: async (input) => {
+          terminated.push(input);
+          return ok({
+            contractId: input.contractId,
+            label: 'Entretien fontaines Bastille',
+            status: 'terminated' as const,
+            anniversaryDate: '2025-10-12',
+            terminationEffectiveDate: '2027-06-01',
+          });
+        },
+      },
+      [BASTILLE_DUE],
+    );
+    const r = await agent.ask('Le client résilie au 1er juin');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('resilier_contrat');
+    expect(r.value.kind).toBe('proposed');
+    expect(terminated).toEqual([]);
+    expect(r.value.pending?.args).toMatchObject({
+      contractId: 'contract-bastille',
+      effectiveDate: '2027-06-01',
+    });
+    // Le motif TRACE la décision : ce que le pro a dit, jamais un motif inventé à sa place.
+    expect((r.value.pending?.args as { note: string }).note).toContain('résilie');
+    // Préavis AFFICHÉ, jamais bloquant (pédagogie légale au point de décision).
+    expect(r.value.card.body).toContain('Préavis contractuel : 30 jours');
+    expect(r.value.card.body).toContain('jamais bloquant');
+    expect(r.value.card.body).toContain('01/06/2027');
+  });
+
+  it('sans date dite : la date d’effet reste celle que le DOMAINE calcule, et elle est RÉCITÉE après le geste', async () => {
+    const terminated: { effectiveDate?: string | null }[] = [];
+    const agent = lifecycleAgent(
+      {
+        terminateMaintenanceContract: async (input) => {
+          terminated.push(input);
+          return ok({
+            contractId: input.contractId,
+            label: 'Entretien fontaines Bastille',
+            status: 'terminated' as const,
+            anniversaryDate: '2025-10-12',
+            terminationEffectiveDate: '2027-06-01',
+          });
+        },
+      },
+      [BASTILLE_DUE],
+    );
+    const proposed = await agent.ask('Résilie le contrat Bastille — motif : le client déménage');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    // Aucune date dite ⇒ aucune date envoyée : le domaine calcule le prochain anniversaire.
+    expect(proposed.value.pending?.args).toEqual({
+      contractId: 'contract-bastille',
+      note: 'le client déménage',
+    });
+    expect(proposed.value.card.body).toContain('prochaine échéance');
+    const r = await agent.confirm(proposed.value.pending!);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('done');
+    expect(terminated).toEqual([{ contractId: 'contract-bastille', note: 'le client déménage' }]);
+  });
+
+  it('aucun contrat actif : refus honnête, rien n’est modifié', async () => {
+    const agent = lifecycleAgent({}, [DRAFT_A]);
+    const r = await agent.ask('Résilie le contrat');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe('answer');

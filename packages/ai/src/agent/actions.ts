@@ -666,6 +666,55 @@ export interface AgentContract {
   /** [P14] non-tacite échu depuis cette date — « à renouveler ou résilier ». */
   expiredSince: string | null;
   terminatedCoverageUntil: string | null;
+  /** §2.7 — date anniversaire du contrat : DITE à l'activation (« l'anniversaire sera figé au
+   * … ») pour que le geste vocal montre ce qu'il fige, exactement comme la fiche. */
+  anniversaryDate: string;
+}
+
+/**
+ * Outil `creer_contrat_maintenance` (§2.7) : MÊME use case CreateMaintenanceContract (@bob/core)
+ * que le wizard de la fiche — client PROUVÉ b2b/b2g (le refus Chatel du domaine est restitué
+ * VERBATIM, jamais reformulé), site `open` s'il est lié, équipements du MÊME site fail-closed.
+ * L'activation reste un SECOND geste confirmé — jamais fusionnée ici.
+ */
+export interface CreateMaintenanceContractActionInput {
+  /** Client RÉSOLU contre la liste réelle par l'agent — jamais un id inventé ni récité. */
+  customerId: string;
+  label: string;
+  /** Site RÉSOLU (resolveSpokenChantier) ; absent/null = contrat sans site. */
+  chantierId?: string | null;
+  anniversaryDate: string;
+  visitsPerYear?: number;
+  tacitRenewal?: boolean;
+  /** Ligne(s) du contrat — le montant ANNUEL dit devient la ligne unique (catalogue libre). */
+  lines?: readonly { label: string; quantity: number; unitPriceHtCents: number; vatRate: number }[];
+  /** Équipements du parc RÉEL résolus par nom parlé, tous du site du contrat. */
+  equipmentIds?: readonly string[];
+}
+
+/** Outils `activer_contrat` / `resilier_contrat` (§2.7) : MÊMES use cases ActivateContract et
+ * TerminateContract que la fiche — l'hôte résout la révision courante côté serveur (le geste
+ * vocal n'a pas de vue optimiste). Le préavis est AFFICHÉ, jamais bloquant. */
+export interface ActivateContractActionInput {
+  contractId: string;
+}
+
+export interface TerminateContractActionInput {
+  contractId: string;
+  /** Absente/null → le use case retient le PROCHAIN anniversaire calculé (jamais un floor). */
+  effectiveDate?: string | null;
+  /** Trace légale de la décision — exigée par le domaine. */
+  note: string;
+}
+
+/** Retour COMMUN des gestes de cycle de vie : les faits que Bob RÉCITE après le geste (jamais
+ * recalculés — la date d'effet réelle vient du domaine, y compris quand elle n'a pas été dite). */
+export interface ContractLifecycleActionOutput {
+  contractId: string;
+  label: string;
+  status: 'draft' | 'active' | 'terminated';
+  anniversaryDate: string;
+  terminationEffectiveDate: string | null;
 }
 
 export interface PrepareContractAnnualInvoiceActionInput {
@@ -917,4 +966,21 @@ export interface BobActions {
   prepareContractAnnualInvoice?(
     input: PrepareContractAnnualInvoiceActionInput,
   ): Promise<Result<PrepareContractAnnualInvoiceActionOutput, AppError>>;
+  /** §2.7 — « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » : MÊME use case
+   * CreateMaintenanceContract que le wizard (parité humain↔Bob). Les refus du domaine (Chatel
+   * b2c, site clôturé, équipement d'un autre site) sont restitués VERBATIM. */
+  createMaintenanceContract?(
+    input: CreateMaintenanceContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** §2.7 — « active le contrat Bastille » : MÊME use case ActivateContract que la fiche
+   * (revalide b2b/b2g sur la fiche RELUE, fige l'anniversaire). Geste DISTINCT de la création. */
+  activateMaintenanceContract?(
+    input: ActivateContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** §2.7 — « le client résilie au 1er juin » : MÊME use case TerminateContract que la fiche —
+   * préavis AFFICHÉ jamais bloquant, date d'effet par défaut = prochain anniversaire CALCULÉ
+   * par le domaine (jamais par Bob), motif porté en trace. */
+  terminateMaintenanceContract?(
+    input: TerminateContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
 }

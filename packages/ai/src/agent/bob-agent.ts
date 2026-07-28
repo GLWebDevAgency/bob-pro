@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, CONTRACT_B2C_REFUSED_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -27,6 +27,11 @@ import {
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
 import { extractSpokenWarranty } from './equipment-warranty';
+import {
+  extractSpokenContractFacts,
+  extractSpokenStartDate,
+  extractSpokenTerminationNote,
+} from './contract-command';
 import {
   type AgentAskPayload,
   type AgentCapability,
@@ -1012,6 +1017,20 @@ const CONTRACT_GESTURE_WORDS: ReadonlySet<string> = new Set([
   'salut', 'stp', 'plait', 'cest', 'est', 'elle', 'elles', 'nous', 'vous', 'mon', 'mes', 'ton',
   'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'tout', 'tous', 'toute', 'toutes', 'aussi',
   'alors', 'donc', 'bien', 'voila', 'quand', 'comment', 'combien',
+  // §2.7 — vocabulaire des GESTES de cycle de vie (création/activation/résiliation) et des
+  // FAITS dictés autour (date d'effet, montant, périodicité, motif) : « le client résilie au
+  // 1er juin » ne doit cibler AUCUN contrat par « résilie » ni par « juin » — sinon le seul
+  // contrat actif deviendrait « introuvable » alors que rien n'a été nommé.
+  'resilie', 'resilies', 'resilier', 'resiliee', 'resiliees', 'resiliation', 'resiliations',
+  'arrete', 'arreter', 'arretes', 'stoppe', 'stopper', 'active', 'actives', 'activer', 'actif',
+  'activation', 'demarre', 'demarres', 'demarrer', 'demarrage', 'lance', 'lances', 'lancer',
+  'service', 'motif', 'motifs', 'raison', 'raisons', 'preavis', 'effet', 'date', 'dates',
+  'partir', 'visite', 'visites', 'passage', 'passages', 'machine', 'machines', 'equipement',
+  'equipements', 'par', 'ans', 'annee', 'annees', 'euro', 'euros', 'eur', 'ttc', 'hors', 'taxe',
+  'tva', 'nouveau', 'nouvelle', 'fais', 'faites', 'faire', 'etablis', 'etablir', 'monte',
+  'monter', 'enregistre', 'enregistrer', 'ouvre', 'ouvrir', 'signe', 'signer', 'mets', 'mettre',
+  'place', 'ajoute', 'ajouter', 'oui', 'non', 'janvier', 'fevrier', 'mars', 'avril', 'mai',
+  'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre',
 ]);
 
 /**
@@ -1034,12 +1053,21 @@ function resolveSpokenContract<
   const conversationTokens = new Set(
     normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
   );
-  const saidTokens = [...conversationTokens].filter((word) => !CONTRACT_GESTURE_WORDS.has(word));
-  const byId = input.contracts.filter(
+  // Un jeton commençant par un CHIFFRE n'est jamais un nom de contrat (« 1er juin », « 1200 »,
+  // « 2026 ») : sans ce filtre, une date dite ferait passer un contrat existant pour introuvable.
+  const saidTokens = [...conversationTokens].filter(
+    (word) => !CONTRACT_GESTURE_WORDS.has(word) && !/^\d/.test(word),
+  );
+  // Ids EMBOÎTÉS (« contract-fontaines » est un préfixe de jetons de
+  // « contract-fontaines-quai ») : le PLUS LONG l'emporte — sans ce départage, le followUp d'une
+  // question d'ambiguïté rematcherait les deux contrats et la question reboucherait à l’infini.
+  const idMatches = input.contracts.filter(
     (contract) =>
       normalized(contract.id).length >= 3 &&
       containsExactTokens(normalizedConversation, normalized(contract.id)),
   );
+  const longestId = idMatches.reduce((max, contract) => Math.max(max, contract.id.length), 0);
+  const byId = idMatches.filter((contract) => contract.id.length === longestId);
   const byLabel = input.contracts.filter((contract) => {
     const tokens = destinationNameTokens(contract.label).filter(
       (word) => !CONTRACT_GESTURE_WORDS.has(word),
@@ -1072,6 +1100,39 @@ function resolveSpokenContract<
       .some((word) => conversationTokens.has(word) && !CONTRACT_GESTURE_WORDS.has(word)),
   );
   return { byId, strong, loose, saidTokens };
+}
+
+/**
+ * PR-12c §2.7 — résolution du CLIENT d'un contrat dicté (« fais-moi le contrat fontaines
+ * RATP ») contre les clients RÉELS du tenant — patron resolveSpokenContract : `byId` (porté par
+ * les followUps des questions) PRIME et converge (à ids emboîtés, le PLUS LONG gagne : « cus-ratp »
+ * est un préfixe de jetons de « cus-ratp-cap ») ; sinon tous les mots significatifs du nom
+ * doivent avoir été dits. Deux clients aux noms INCLUSIFS (« RATP » / « RATP CAP ») restent une
+ * VRAIE ambiguïté : question posée avec des followUps par ID — jamais un client deviné.
+ */
+function resolveSpokenContractCustomer(input: {
+  conversation: string;
+  customers: readonly BillableCustomer[];
+}): { byId: BillableCustomer[]; matched: BillableCustomer[]; saidTokens: string[] } {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  const saidTokens = [...conversationTokens].filter(
+    (word) => !CONTRACT_GESTURE_WORDS.has(word) && !/^\d/.test(word),
+  );
+  const idMatches = input.customers.filter(
+    (customer) =>
+      normalized(customer.id).length >= 3 &&
+      containsExactTokens(normalizedConversation, normalized(customer.id)),
+  );
+  const longest = idMatches.reduce((max, customer) => Math.max(max, customer.id.length), 0);
+  const byId = idMatches.filter((customer) => customer.id.length === longest);
+  const matched = input.customers.filter((customer) => {
+    const words = significantNameWords(normalized(customer.name));
+    return words.length > 0 && words.every((word) => conversationTokens.has(word));
+  });
+  return { byId, matched, saidTokens };
 }
 
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
@@ -1375,6 +1436,16 @@ export const FACTURATION_TERRAIN_TOOLS: ReadonlySet<string> = new Set([
   'marquer_facture_transmise',
 ]);
 
+/** PR-12c §2.7 — gestes de CYCLE DE VIE d'un contrat dont les refus du domaine se restituent
+ * VERBATIM à la proposition ET à la confirmation (l'état a pu changer entre les deux : client
+ * passé b2c, site clôturé, contrat déjà activé). Exporté : l'hôte HTTP (/ai/confirm, runtime
+ * journalisé) applique la MÊME restitution — une seule vérité écran/voix. */
+export const CONTRACT_LIFECYCLE_TOOLS: ReadonlySet<string> = new Set([
+  'creer_contrat_maintenance',
+  'activer_contrat',
+  'resilier_contrat',
+]);
+
 /** % par défaut de la « Situation n°1 » (repli acompte pro, décision fondateur 25/07) — même
  * valeur que ADVANCE_FALLBACK_DEFAULT_PERCENT du Sheet mobile. Une PROPOSITION : le montant
  * reste le choix de l'artisan (la commande canonique passe par facturer_situation, modifiable). */
@@ -1539,6 +1610,9 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'preparer_facture_annuelle') return 'preparer_facture_annuelle';
   if (tool === 'statut_contrat') return 'statut_contrat';
   if (tool === 'contrats_a_renouveler') return 'contrats_a_renouveler';
+  if (tool === 'creer_contrat_maintenance') return 'creer_contrat_maintenance';
+  if (tool === 'activer_contrat') return 'activer_contrat';
+  if (tool === 'resilier_contrat') return 'resilier_contrat';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -4349,6 +4423,575 @@ export class BobAgent {
         card: {
           title: 'Brouillon prêt ✓',
           body: `${dueLabel} — le brouillon est prêt.${divergence} Rien n’est émis ni envoyé : l’émission reste ton geste.`,
+        },
+      });
+    }
+
+    if (intent === 'activer_contrat' || intent === 'resilier_contrat') {
+      // §2.7 — ACTIVER / RÉSILIER À LA VOIX : MÊMES use cases ActivateContract/TerminateContract
+      // que la fiche. Résolution du contrat par NOM PARLÉ (jamais un id récité à l'humain),
+      // questions à followUps par ID qui CONVERGENT, UNE confirmation groupée (safetyFloor) qui
+      // récite le geste, refus du domaine restitués VERBATIM. Le préavis est DIT, jamais bloquant.
+      const listContracts = this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+      const tool = this.tool(intent === 'activer_contrat' ? 'activer_contrat' : 'resilier_contrat');
+      if (!listContracts || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: intent === 'activer_contrat' ? 'Activation indisponible' : 'Résiliation indisponible',
+            body: `Je ne peux pas ${intent === 'activer_contrat' ? 'activer' : 'résilier'} un contrat depuis cet appareil. Rien n’a été modifié — passe par la fiche du contrat.`,
+          },
+        });
+      }
+      const contractsResult = await listContracts();
+      if (!contractsResult.ok) return err(contractsResult.error);
+      // Le geste ne vit que depuis l'état qui l'autorise (machine §2.4) : un brouillon s'active,
+      // un contrat actif se résilie — le reste n'entre jamais dans le pool ciblable.
+      const pool = contractsResult.value.filter((contract) =>
+        intent === 'activer_contrat' ? contract.status === 'draft' : contract.status === 'active',
+      );
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const resolution = resolveSpokenContract({ conversation, contracts: pool });
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const effectiveDate =
+        intent === 'resilier_contrat' ? extractSpokenStartDate(message, today) : null;
+      const spokenNote =
+        intent === 'resilier_contrat' ? extractSpokenTerminationNote(message) : null;
+      const commandOf = (contract: { id: string }): string =>
+        intent === 'activer_contrat'
+          ? `Active le contrat ${contract.id}`
+          : `Résilie le contrat ${contract.id}${effectiveDate ? ` au ${frDate(effectiveDate)}` : ''}${
+              spokenNote ? ` — motif : ${spokenNote}` : ''
+            }`;
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : resolution.strong.length === 0 && resolution.loose.length === 1
+              ? resolution.loose[0]!
+              : resolution.strong.length === 0 &&
+                  resolution.loose.length === 0 &&
+                  resolution.saidTokens.length === 0 &&
+                  pool.length === 1
+                ? pool[0]!
+                : null;
+      if (target === null) {
+        if (pool.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les contrats réels'],
+            card: {
+              title: intent === 'activer_contrat' ? 'Aucun contrat à activer' : 'Aucun contrat actif',
+              body:
+                intent === 'activer_contrat'
+                  ? 'Aucun contrat en brouillon à activer. Rien n’a été modifié — crée d’abord le contrat (« fais-moi le contrat … »).'
+                  : 'Aucun contrat actif à résilier. Rien n’a été modifié.',
+            },
+          });
+        }
+        // Nom dit mais introuvable → refus HONNÊTE ; sinon vraie ambiguïté → question ciblée
+        // dont les followUps portent l'ID (le tour suivant résout par byId, jamais de boucle).
+        const named =
+          resolution.saidTokens.length > 0 &&
+          resolution.strong.length === 0 &&
+          resolution.loose.length === 0;
+        const options = (
+          resolution.strong.length > 1
+            ? resolution.strong
+            : resolution.loose.length > 1
+              ? resolution.loose
+              : pool
+        ).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named
+            ? ['Vérifier le contrat contre les données réelles']
+            : ['Lever l’ambiguïté du contrat'],
+          card: named
+            ? {
+                title: 'Contrat introuvable',
+                body: `Je ne trouve aucun contrat ${intent === 'activer_contrat' ? 'en brouillon' : 'actif'} correspondant à « ${resolution.saidTokens.join(' ')} ». Rien n’a été modifié — choisis dans la liste :`,
+              }
+            : {
+                title: 'Quel contrat ?',
+                body:
+                  intent === 'activer_contrat'
+                    ? 'Quel contrat veux-tu activer ?'
+                    : 'Quel contrat veux-tu résilier ?',
+              },
+          choices: options.map((contract) => ({
+            label: `${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''}`,
+            value: commandOf(contract),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.contrat`,
+              question: intent === 'activer_contrat' ? 'Quel contrat activer ?' : 'Quel contrat résilier ?',
+              header: 'Contrat',
+              items: options.map((contract) => ({
+                value: contract.id,
+                label: contract.label,
+                description: contract.customerName ?? '',
+                followUp: commandOf(contract),
+              })),
+            }),
+          ],
+        });
+      }
+
+      const who = target.customerName ? ` (${target.customerName})` : '';
+      if (intent === 'activer_contrat') {
+        const args = { contractId: target.id };
+        const parsed = tool.parse(args);
+        if (!parsed.ok) return err(parsed.error);
+        const label = `Activer le contrat « ${target.label} »${who}`;
+        // Ce que l'activation FIGE est dit AVANT le geste (parité avec la fiche) : la date
+        // anniversaire cesse d'être modifiable, la couverture et les échéances démarrent.
+        const frozen = ` La date anniversaire du ${frDate(target.anniversaryDate)} sera figée : la couverture et les échéances démarrent.`;
+        if (requiresConfirmation(tool, autonomy)) {
+          return ok({
+            kind: 'proposed',
+            intent,
+            model,
+            plan: ['Résoudre le contrat', 'Dire ce que l’activation fige', 'Attendre ta confirmation'],
+            card: { title: 'Activation à confirmer', body: `${label}.${frozen} Je confirme ?` },
+            pending: { tool: tool.name, args, label },
+            spokenPrompt: buildSpokenConfirmation(`${label} —${frozen}`),
+          });
+        }
+        const run = await tool.run(parsed.value);
+        if (!run.ok) {
+          const guard = domainGuardCard(run.error);
+          if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+          return err(run.error);
+        }
+        const activated = run.value as { anniversaryDate?: unknown };
+        const anniversary =
+          typeof activated?.anniversaryDate === 'string' ? activated.anniversaryDate : target.anniversaryDate;
+        return ok({
+          kind: 'done',
+          intent,
+          model,
+          plan: ['Activer le contrat'],
+          card: {
+            title: 'Contrat activé ✓',
+            body: `${label} — c’est fait. Anniversaire figé au ${frDate(anniversary)}.`,
+          },
+        });
+      }
+
+      // resilier_contrat — le motif est la TRACE de la décision : ce que le pro a dit en tient
+      // lieu ; sans phrase exploitable, Bob demande le motif plutôt que d'en inventer un.
+      if (spokenNote === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Demander le seul manque : le motif'],
+          card: {
+            title: 'Pourquoi cette résiliation ?',
+            body: `Le motif reste en trace de la décision sur « ${target.label} »${who}. Redis-moi « Résilie le contrat ${target.id}${effectiveDate ? ` au ${frDate(effectiveDate)}` : ''} — motif : … ». Rien n’a été modifié.`,
+          },
+        });
+      }
+      const args = {
+        contractId: target.id,
+        note: spokenNote,
+        ...(effectiveDate !== null ? { effectiveDate } : {}),
+      };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      // Sans date dite, la date d'effet est celle que le DOMAINE calcule (prochain anniversaire) :
+      // Bob l'annonce comme telle et la RÉCITE après le geste — il ne la recalcule jamais.
+      const when = effectiveDate !== null ? `au ${frDate(effectiveDate)}` : 'à la prochaine échéance du contrat';
+      const label = `Résilier le contrat « ${target.label} »${who} ${when}`;
+      const notice = ` Préavis contractuel : ${target.noticeDays} jours — affiché, jamais bloquant : une résiliation subie est actée et tracée.`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Expliquer le préavis', 'Attendre ta confirmation'],
+          card: {
+            title: 'Résiliation à confirmer',
+            body: `${label}. Motif : ${spokenNote}.${notice} La couverture restante reste due jusqu’à la date d’effet. Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(`${label} — motif : ${spokenNote}.${notice}`),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      const terminated = run.value as { terminationEffectiveDate?: unknown };
+      const decided =
+        typeof terminated?.terminationEffectiveDate === 'string'
+          ? ` Couvert jusqu’au ${frDate(addDaysOnly(terminated.terminationEffectiveDate, -1))}.`
+          : '';
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Résilier le contrat'],
+        card: {
+          title: 'Contrat résilié ✓',
+          body: `${label} — c’est fait, motif tracé.${decided}${notice}`,
+        },
+      });
+    }
+
+    if (intent === 'creer_contrat_maintenance') {
+      // §2.7 — CRÉER UN CONTRAT À LA VOIX : consigne composite désordonnée acceptée. Bob lit en
+      // UNE passe le libellé, le client, le montant annuel, la périodicité, le site et les
+      // équipements dits ; il pose une question ciblée sur le SEUL manque (le followUp REDIT
+      // tout : aucun fait énoncé n'est redemandé) ; UNE confirmation groupée RÉCITE ce qui va
+      // être créé avant la SEULE mutation (CreateMaintenanceContract). L'activation reste un
+      // second geste distinct — jamais fusionnée ici.
+      const listCustomers = this.deps.actions.listBillableCustomers?.bind(this.deps.actions);
+      const createTool = this.tool('creer_contrat_maintenance');
+      if (!listCustomers || !createTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Création de contrat',
+            body: 'Je ne peux pas créer de contrat de maintenance depuis cet appareil. Rien n’a été créé — passe par la fiche client.',
+          },
+        });
+      }
+      const customersResult = await listCustomers();
+      if (!customersResult.ok) return err(customersResult.error);
+      const customers = customersResult.value;
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const facts = extractSpokenContractFacts(message, today);
+
+      const customerResolution = resolveSpokenContractCustomer({ conversation, customers });
+      const customer =
+        customerResolution.byId.length === 1
+          ? customerResolution.byId[0]!
+          : customerResolution.matched.length === 1
+            ? customerResolution.matched[0]!
+            : null;
+      // La commande CANONIQUE : chaque followUp la REDIT en entier — le client y est porté par
+      // son ID (résolu par byId au tour suivant : la question ne reboucle jamais), le libellé
+      // guillemeté (relu tel quel), les montants et la date en forme non ambiguë.
+      const restate = (over: { customerId?: string; label?: string | null } = {}): string => {
+        const label = over.label !== undefined ? over.label : facts.label;
+        const customerId = over.customerId ?? customer?.id ?? null;
+        return (
+          `Crée le contrat${label ? ` « ${label} »` : ''}` +
+          (customerId ? ` pour le client ${customerId}` : '') +
+          (facts.annualAmountCents !== null ? ` à ${facts.annualAmountCents / 100} € par an` : '') +
+          (facts.visitsPerYear !== null ? `, ${facts.visitsPerYear} visites par an` : '') +
+          (facts.tacitRenewal === false ? ', sans reconduction tacite' : '') +
+          (facts.startDate !== null ? `, à partir du ${frDate(facts.startDate)}` : '')
+        );
+      };
+
+      if (customer === null) {
+        if (customers.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les clients réels'],
+            card: {
+              title: 'Aucun client',
+              body: 'Je ne vois aucun client dans ton fichier — rien n’a été créé. Crée d’abord le client, puis redis-moi le contrat.',
+            },
+          });
+        }
+        const named = customerResolution.saidTokens.length > 0 && customerResolution.matched.length === 0;
+        const options = (
+          customerResolution.matched.length > 1 ? customerResolution.matched : customers
+        ).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named
+            ? ['Vérifier le client contre le fichier réel']
+            : ['Extraire les faits énoncés', 'Demander le seul manque : le client'],
+          card: named
+            ? {
+                title: 'Client introuvable',
+                body: `Je ne trouve aucun client correspondant à « ${customerResolution.saidTokens.join(' ')} ». Rien n’a été créé — choisis dans ton fichier :`,
+              }
+            : {
+                title: 'Pour quel client ?',
+                body: `Pour quel client j’établis ${facts.label ? `le contrat « ${facts.label} »` : 'ce contrat'} ?`,
+              },
+          choices: options.map((candidate) => ({
+            label: candidate.name,
+            value: restate({ customerId: candidate.id }),
+          })),
+          ask: [
+            askToPick({
+              id: 'creer_contrat_maintenance.client',
+              question: 'Pour quel client ce contrat ?',
+              header: 'Client',
+              items: options.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.name,
+                followUp: restate({ customerId: candidate.id }),
+              })),
+            }),
+          ],
+        });
+      }
+      if (customer.type === 'b2c') {
+        // Pédagogie légale AU POINT DE DÉCISION : le message du DOMAINE (LegalHint Chatel) est
+        // dit VERBATIM — même substance qu'à l'écran, jamais reformulée — et rien n'est créé.
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier le client', 'Expliquer la règle Chatel'],
+          card: {
+            title: 'Contrat impossible avec un particulier',
+            body: `${customer.name} est un particulier. ${CONTRACT_B2C_REFUSED_MESSAGE} Rien n’a été créé.`,
+          },
+        });
+      }
+
+      // SITE dicté (« ils ont 3 machines à Bastille », « sur le site Bastille ») — même
+      // résolution que les pièces : le marqueur scope, l'inclusion de nom départage, un site
+      // NOMMÉ mais introuvable n'est jamais remplacé en silence. Capacité optionnelle.
+      let site: { id: string; nom: string } | null = null;
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      if (listDestinations) {
+        const destinations = await listDestinations();
+        if (destinations.ok) {
+          const siteResolution = resolveSpokenChantier({
+            conversation,
+            currentTurn: `${message} ${reference ?? ''}`,
+            chantiers: destinations.value.chantiers,
+            customerName: customer.name,
+          });
+          if (!siteResolution.declined && siteResolution.matched.length === 1) {
+            site = siteResolution.matched[0]!;
+          } else if (!siteResolution.declined && siteResolution.matched.length > 1) {
+            const options = siteResolution.matched.slice(0, 4);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Lever l’ambiguïté du site'],
+              card: { title: 'Quel site ?', body: 'Plusieurs sites correspondent pour ce contrat — lequel ?' },
+              choices: options.map((chantier) => ({
+                label: chantier.nom,
+                value: `${restate()}, sur le site ${chantier.nom}`,
+              })),
+              ask: [
+                askToPick({
+                  id: 'creer_contrat_maintenance.site',
+                  question: 'Sur quel site porte ce contrat ?',
+                  header: 'Site',
+                  items: options.map((chantier) => ({
+                    value: chantier.id,
+                    label: chantier.nom,
+                    followUp: `${restate()}, sur le site ${chantier.nom}`,
+                  })),
+                }),
+              ],
+            });
+          } else if (!siteResolution.declined && siteResolution.explicit) {
+            const options = destinations.value.chantiers.slice(0, 3);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier le site contre la liste réelle'],
+              card: {
+                title: 'Site introuvable',
+                body: `Je ne trouve aucun site ouvert correspondant à « ${siteResolution.saidName ?? 'ce site'} ». Rien n’a été créé — choisis un site ouvert, ou continue sans site.`,
+              },
+              choices: [
+                ...options.map((chantier) => ({
+                  label: `Site ${chantier.nom}`,
+                  value: `${restate()}, sur le site ${chantier.nom}`,
+                })),
+                { label: 'Continuer sans site', value: `${restate()} — sans site` },
+              ],
+              ask: [
+                askToPick({
+                  id: 'creer_contrat_maintenance.site_introuvable',
+                  question: 'Sur quel site porte ce contrat ?',
+                  header: 'Site',
+                  items: [
+                    ...options.map((chantier) => ({
+                      value: chantier.id,
+                      label: chantier.nom,
+                      followUp: `${restate()}, sur le site ${chantier.nom}`,
+                    })),
+                    {
+                      value: 'sans-site',
+                      label: 'Sans site',
+                      description: 'Le contrat couvrira le client, sans rattachement de site.',
+                      followUp: `${restate()} — sans site`,
+                    },
+                  ],
+                }),
+              ],
+            });
+          }
+        }
+      }
+
+      // Questions ciblées sur les SEULS manques REQUIS par le domaine — dans l'ordre où elles se
+      // disent naturellement ; chaque followUp redit tout ce qui a déjà été énoncé.
+      if (!facts.label) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : le libellé'],
+          card: {
+            title: 'Comment s’appelle ce contrat ?',
+            body: `Donne-moi son nom (ex. « Entretien fontaines ») : redis-moi « ${restate({ label: '{nom}' })} ».`,
+          },
+        });
+      }
+      if (facts.annualAmountCents === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : le montant annuel'],
+          card: {
+            title: 'Combien par an ?',
+            body: `Le contrat « ${facts.label} » de ${customer.name} vaut combien par an ? Redis-moi « ${restate()} à {montant} € par an ».`,
+          },
+        });
+      }
+      if (facts.startDate === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : la date de démarrage'],
+          card: {
+            title: 'Il démarre quand ?',
+            body: `La date de démarrage devient la date anniversaire du contrat (elle rythme les échéances). Redis-moi « ${restate()}, à partir du {JJ/MM/AAAA} ».`,
+          },
+        });
+      }
+
+      // Équipements dits (« 3 fontaines ») résolus contre le parc RÉEL du site — jamais un
+      // équipement inventé ; l'écart entre ce qui est dit et ce que le parc porte est DIT
+      // honnêtement à la confirmation, jamais corrigé en silence.
+      let coveredEquipments: { id: string; label: string }[] = [];
+      const listEquipments = this.deps.actions.listEquipments?.bind(this.deps.actions);
+      if (site !== null && listEquipments) {
+        const equipmentsResult = await listEquipments();
+        if (equipmentsResult.ok) {
+          const stem = (word: string): string => word.replace(/s$/, '');
+          const spoken = new Set(
+            normalized(conversation)
+              .split(/[^a-z0-9]+/)
+              .filter((word) => word.length >= 3)
+              .map(stem),
+          );
+          coveredEquipments = equipmentsResult.value
+            .filter(
+              (equipment) =>
+                equipment.chantierId === site!.id &&
+                equipment.status === 'active' &&
+                destinationNameTokens(equipment.label).some(
+                  (word) => !EQUIPMENT_GESTURE_WORDS.has(word) && spoken.has(stem(word)),
+                ),
+            )
+            .map((equipment) => ({ id: equipment.id, label: equipment.label }));
+        }
+      }
+
+      const args = {
+        customerId: customer.id,
+        label: facts.label,
+        anniversaryDate: facts.startDate,
+        ...(site !== null ? { chantierId: site.id } : {}),
+        ...(facts.visitsPerYear !== null ? { visitsPerYear: facts.visitsPerYear } : {}),
+        ...(facts.tacitRenewal === false ? { tacitRenewal: false } : {}),
+        // Le montant ANNUEL dit devient la ligne unique du contrat — TVA au taux normal comme
+        // le wizard ; elle sera de toute façon re-jugée au jour du brouillon annuel (§2.6).
+        lines: [
+          { label: facts.label, quantity: 1, unitPriceHtCents: facts.annualAmountCents, vatRate: 20 },
+        ],
+        ...(coveredEquipments.length > 0
+          ? { equipmentIds: coveredEquipments.map((equipment) => equipment.id) }
+          : {}),
+      };
+      const parsed = createTool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const summary =
+        `Créer le contrat « ${facts.label} » pour ${customer.name}` +
+        (site !== null ? ` sur le site ${site.nom}` : '') +
+        ` · ${formatEUR(facts.annualAmountCents)} HT par an` +
+        (facts.visitsPerYear !== null ? ` · ${facts.visitsPerYear} passage(s) par an` : '') +
+        ` · démarrage le ${frDate(facts.startDate)}` +
+        (facts.tacitRenewal === false ? ' · sans reconduction tacite' : '') +
+        (coveredEquipments.length > 0
+          ? ` · couvre ${coveredEquipments.map((equipment) => equipment.label).join(', ')}`
+          : '');
+      // Un écart entre le nombre d'équipements ANNONCÉ et ce que le parc réel porte est DIT —
+      // jamais rattrapé par un équipement inventé, jamais tu.
+      const equipmentGap =
+        facts.equipmentCount !== null && facts.equipmentCount !== coveredEquipments.length
+          ? site === null
+            ? ` Tu as parlé de ${facts.equipmentCount} machine(s) : sans site rattaché, je ne peux en couvrir aucune — ajoute-les depuis la fiche.`
+            : ` Tu as parlé de ${facts.equipmentCount} machine(s) et j’en retrouve ${coveredEquipments.length} au parc du site ${site.nom} — complète depuis la fiche si besoin.`
+          : '';
+      const draftNote =
+        ' Il naîtra en BROUILLON : l’activation reste un second geste, que tu confirmeras.';
+      if (requiresConfirmation(createTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Extraire les faits énoncés', 'Résoudre client, site et équipements', 'Attendre ta confirmation'],
+          card: { title: 'Contrat à confirmer', body: `${summary}.${equipmentGap}${draftNote} Je confirme ?` },
+          pending: { tool: createTool.name, args, label: summary },
+          spokenPrompt: buildSpokenConfirmation(`${summary}.${equipmentGap}${draftNote}`),
+        });
+      }
+      const run = await createTool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Créer le contrat de maintenance'],
+        card: {
+          title: 'Contrat créé ✓',
+          body: `${summary} — c’est fait.${equipmentGap}${draftNote}`,
         },
       });
     }
@@ -7744,6 +8387,21 @@ export class BobAgent {
       // PR-11 — parc d'équipements : l'état a pu changer entre la proposition et la
       // confirmation (site clôturé, révision bougée à deux appareils) — le refus du DOMAINE
       // est restitué verbatim (« Ce site est clôturé — rouvre-le… »), jamais un code brut.
+      if (CONTRACT_LIFECYCLE_TOOLS.has(pending.tool)) {
+        // PR-12c §2.7 — gestes de contrat : l'état a pu changer entre la proposition et la
+        // confirmation (client passé b2c, site clôturé, contrat déjà activé/résilié) — le refus
+        // du DOMAINE est restitué VERBATIM (LegalHint Chatel compris), jamais un code brut.
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Restituer le refus du domaine'],
+            card: guard,
+          });
+        }
+      }
       if (pending.tool === 'ajouter_equipement' || pending.tool === 'retirer_equipement') {
         const guard = domainGuardCard(run.error);
         if (guard) {
