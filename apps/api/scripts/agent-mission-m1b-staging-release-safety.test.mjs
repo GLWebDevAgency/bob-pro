@@ -271,6 +271,34 @@ test('chaque mutation DB est précédée de la preuve du Supabase staging éping
   assert.match(workflow, /id: off_predeploy[\s\S]*?steps\.remove_override\.outcome == 'success'/u);
 });
 
+test('la réconciliation Prisma staging est unique, épinglée et précède tout release.sh', () => {
+  assert.equal(
+    occurrences(
+      workflow,
+      /node apps\/api\/scripts\/agent-mission-m1b-staging-migration-reconcile\.mjs/gu,
+    ),
+    1,
+  );
+  const databasePin = workflow.indexOf(
+    'node apps/api/scripts/agent-mission-m1b-staging-database.mjs',
+  );
+  const reconciliation = workflow.indexOf(
+    'node apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs',
+  );
+  const flagPreflight = workflow.indexOf(
+    'node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight',
+  );
+  const firstRelease = workflow.indexOf('sh apps/api/scripts/release.sh');
+  assert.ok(databasePin >= 0);
+  assert.ok(reconciliation > databasePin);
+  assert.ok(flagPreflight > reconciliation);
+  assert.ok(firstRelease > reconciliation);
+  assert.match(
+    workflow,
+    /agent-mission-m1b-staging-database\.mjs[\s\S]*?agent-mission-m1b-staging-migration-reconcile\.mjs[\s\S]*?agent-mission-m1b-staging-flag\.mjs bootstrap-preflight/u,
+  );
+});
+
 test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict binaire', () => {
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs negative/gu), 2);
   assert.equal(occurrences(workflow, /agent-mission-m1b-staging-smoke\.mjs positive/gu), 1);

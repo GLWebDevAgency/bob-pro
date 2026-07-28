@@ -201,6 +201,9 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
       - name: Preflight and deploy the private Whisper auditor at the exact SHA
         id: deploy_whisper

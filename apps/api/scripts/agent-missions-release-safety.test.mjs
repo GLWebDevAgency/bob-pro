@@ -898,6 +898,10 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   assert.match(agentMissionJob, /image: postgres:17/u);
   assert.match(agentMissionJob, /AGENT_MISSION_CERT_SUPER_URL:/u);
   assert.match(agentMissionJob, /AGENT_MISSION_CERT_DEPLOYER_BOOTSTRAP_URL:/u);
+  assert.match(
+    agentMissionJob,
+    /RUN_AGENT_MISSION_M1B_MIGRATION_RECONCILIATION_CERT: 'true'[\s\S]*?agent-mission-m1b-staging-migration-reconcile\.postgres\.test\.mjs[\s\S]*?certify-agent-missions-local\.sh/u,
+  );
   assert.match(agentMissionJob, /run: sh apps\/api\/scripts\/certify-agent-missions-local\.sh/u);
   assert.match(localCertificate, /CREATE ROLE bob_deployer[\s\S]*?NOSUPERUSER/u);
   assert.match(localCertificate, /SET createrole_self_grant = 'set'/u);

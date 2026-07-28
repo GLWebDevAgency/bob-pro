@@ -78,6 +78,12 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      - name: Certify the staging-only Prisma name reconciliation on real PostgreSQL
+        env:
+          RUN_AGENT_MISSION_M1B_MIGRATION_RECONCILIATION_CERT: 'true'
+        run: >-
+          node --test
+          apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.postgres.test.mjs
       - name: Certify AgentMission with a non-superuser deployer
         run: sh apps/api/scripts/certify-agent-missions-local.sh
 

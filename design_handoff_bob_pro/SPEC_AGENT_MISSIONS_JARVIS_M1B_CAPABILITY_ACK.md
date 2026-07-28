@@ -608,6 +608,11 @@ absentes ; seule `migration_name` change selon la table de correspondance revue.
 de cardinalité, checksum, état ou identité annule la transaction. La preuve post-opération exige
 les onze nouveaux noms, les mêmes checksums et l'absence des anciens noms. Production ne reçoit
 aucune réconciliation : elle applique directement la lignée finale dans l'ordre canonique.
+L'opérateur idempotent
+`apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs` est appelé exactement une fois
+par le workflow staging, après la preuve d'identité initiale et avant le préflight du flag comme
+avant tout `release.sh`. Il revalide l'identité dans sa propre transaction afin de fermer la
+fenêtre TOCTOU ; un état déjà réconcilié est un succès explicite, tout état mixte échoue fermé.
 
 La négociation WebRTC OFF finale n'est exigée que si un deployment du binaire M1-B a réellement
 été acquitté `SUCCESS` par Railway — un identifiant créé ne vaut pas cet ACK — ou si le bloc
