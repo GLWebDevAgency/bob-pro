@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   authenticateM1BStagingAccount,
+  describeM1BOperationFailure,
   parseM1BStagingSmokeEnvironment,
   preflightM1BStagingAccount,
   runM1BNegativeStagingSmoke,
@@ -657,6 +658,60 @@ test('refuse Mistral et repolle uniquement la disparition transitoire de la leas
   const pending = fakeDependencies({ finalEvidencePending: 2 });
   await runM1BPositiveStagingSmoke(environment(), pending.dependencies);
   assert.equal(pending.state().finalEvidenceAttempts, 3);
+});
+
+test('la doctrine échec visible sérialise seulement les champs structurés bornés', () => {
+  assert.equal(
+    describeM1BOperationFailure({ kind: 'dependency', port: 'api', cause: 'http_503' }),
+    'kind="dependency" port="api" cause="http_503"',
+  );
+  assert.equal(
+    describeM1BOperationFailure({
+      kind: 'unavailable',
+      service: 'bob-live-admission',
+      retryAfterSeconds: 5,
+      retryAt: '2026-07-28T01:08:31.000Z',
+    }),
+    'kind="unavailable" service="bob-live-admission" retryAt="2026-07-28T01:08:31.000Z" retryAfterSeconds=5',
+  );
+  assert.equal(describeM1BOperationFailure(undefined), 'error=unstructured');
+  assert.equal(describeM1BOperationFailure('boom'), 'error=unstructured');
+  assert.equal(
+    describeM1BOperationFailure({ issues: [{ field: 'x', message: 'y' }] }),
+    'error=unstructured',
+  );
+  const oversized = describeM1BOperationFailure({ kind: 'a'.repeat(500) });
+  assert.ok(oversized.length <= 140, 'oversized structured values must stay bounded');
+});
+
+test('un échec d’opération imprime la cause structurée sur stderr avant le fail', async () => {
+  const fake = fakeDependencies({
+    deleteError: {
+      kind: 'conflict',
+      entity: 'quote_draft',
+      reason: 'stale_revision',
+    },
+  });
+  const stderrLines = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    stderrLines.push(String(chunk));
+    return true;
+  };
+  try {
+    await assert.rejects(
+      runM1BPositiveStagingSmoke(environment(), fake.dependencies),
+      /deleteQuoteDraft failed/u,
+    );
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  const line = stderrLines.find((entry) => entry.includes('deleteQuoteDraft failed'));
+  assert.equal(
+    line,
+    'agent-mission-m1b-staging-smoke:deleteQuoteDraft failed'
+      + ' kind="conflict" reason="stale_revision" entity="quote_draft"\n',
+  );
 });
 
 test('une suppression CAS en échec ne masque pas le cleanup du peer et de la capability', async () => {

@@ -216,8 +216,49 @@ export async function authenticateM1BStagingAccount(
   });
 }
 
+const OPERATION_ERROR_FIELDS = Object.freeze([
+  'kind',
+  'port',
+  'cause',
+  'service',
+  'reason',
+  'entity',
+  'retryAt',
+  'retryAfterSeconds',
+]);
+const OPERATION_ERROR_VALUE_MAX_LENGTH = 120;
+
+/**
+ * Doctrine « échec VISIBLE » : sérialise les seuls champs scalaires bornés de l'AppError
+ * structurée (kind, port, cause, retryAt…) — jamais de payload libre ni d'identité.
+ */
+export function describeM1BOperationFailure(error) {
+  const structured = record(error);
+  if (structured === null) return 'error=unstructured';
+  const parts = [];
+  for (const field of OPERATION_ERROR_FIELDS) {
+    const value = structured[field];
+    if (typeof value === 'string' && value.length > 0) {
+      const bounded = value.length > OPERATION_ERROR_VALUE_MAX_LENGTH
+        ? `${value.slice(0, OPERATION_ERROR_VALUE_MAX_LENGTH)}…`
+        : value;
+      parts.push(`${field}=${JSON.stringify(bounded)}`);
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      parts.push(`${field}=${value}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(' ') : 'error=unstructured';
+}
+
 function expectSuccess(result, operation) {
   if (record(result) === null || result.ok !== true || !Object.hasOwn(result, 'value')) {
+    // Publier la cause structurée sur stderr AVANT le fail au lieu de l'avaler : un smoke qui
+    // échoue doit dire pourquoi (kind, port, cause, retryAt…) comme toute certification.
+    process.stderr.write(
+      `agent-mission-m1b-staging-smoke:${operation} failed ${
+        describeM1BOperationFailure(record(result)?.error)
+      }\n`,
+    );
     fail(`${operation} failed`);
   }
   return result.value;
