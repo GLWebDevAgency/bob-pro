@@ -214,6 +214,8 @@ const INVOICE_ISSUE_FIELDS = new Set([
   'purchaseOrderOverride',
 ]);
 const SERVICE_PERIOD_FIELDS = new Set(['start', 'end']);
+/** §6.5 — PUT /invoices/:id/service-period : période éditable d'un BROUILLON de contrat. */
+const INVOICE_SERVICE_PERIOD_FIELDS = new Set(['expectedRevision', 'servicePeriod']);
 const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
   'expectedRevision',
   'showRibOnInvoices',
@@ -3116,6 +3118,55 @@ export class InvoicesController {
       type: 'application/xml',
       disposition: `attachment; filename="factur-x-${id}.xml"`,
     });
+  }
+  /** Écrans §6.5 : période de service d'une facture de CONTRAT — « éditable en brouillon,
+   * figée à l'émission » (le remède que la garde d'émission indique : « modifie le brouillon,
+   * jamais l'émission »). Bornes HUMAINES inclusives, début ET fin requis. */
+  @Put(':id/service-period')
+  async updateServicePeriod(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find(
+      (field) => !INVOICE_SERVICE_PERIOD_FIELDS.has(field),
+    );
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    const issues: ValidationIssue[] = [];
+    const expectedRevision =
+      typeof (body as Record<string, unknown>).expectedRevision === 'number'
+        ? ((body as Record<string, unknown>).expectedRevision as number)
+        : NaN;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)
+      issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+    const rawPeriod = (body as Record<string, unknown>).servicePeriod;
+    let servicePeriod: { start: string; end: string } | null = null;
+    if (rawPeriod === null || typeof rawPeriod !== 'object' || Array.isArray(rawPeriod)) {
+      issues.push({
+        field: 'servicePeriod',
+        message: 'Période de service invalide ({ start: AAAA-MM-JJ, end: AAAA-MM-JJ }).',
+      });
+    } else {
+      const nested = rawPeriod as Record<string, unknown>;
+      const unknownNested = Object.keys(nested).find((field) => !SERVICE_PERIOD_FIELDS.has(field));
+      const start = typeof nested.start === 'string' ? nested.start : '';
+      const end = typeof nested.end === 'string' ? nested.end : '';
+      if (unknownNested !== undefined || !isValidDateOnly(start) || !isValidDateOnly(end)) {
+        issues.push({
+          field: 'servicePeriod',
+          message: 'Période de service invalide ({ start: AAAA-MM-JJ, end: AAAA-MM-JJ }).',
+        });
+      } else {
+        servicePeriod = { start, end };
+      }
+    }
+    if (issues.length > 0 || servicePeriod === null) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.updateInvoiceServicePeriod({
+        invoiceId: id,
+        expectedRevision,
+        servicePeriod: servicePeriod!,
+      }),
+    );
   }
   /** B8 : attache (ou remplace) le bon de commande d'une facture BROUILLON — le numéro
    * d'engagement doit être posé AVANT émission (il figure sur la pièce légale figée). */

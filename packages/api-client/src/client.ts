@@ -25,6 +25,7 @@ import type {
   AnnualBillingDue,
   RenewalAlert,
   PrepareAnnualInvoiceDraftOutput,
+  UpdateInvoiceServicePeriodOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -267,6 +268,14 @@ export interface AttachQuotePurchaseOrderClientInput {
 export interface DetachQuotePurchaseOrderClientInput {
   quoteId: string;
   expectedRevision: number;
+}
+
+/** §6.5 — PUT /invoices/:id/service-period : période d'une facture de CONTRAT, brouillon
+ * uniquement (figée à l'émission par la garde + le trigger SQL). Bornes HUMAINES inclusives. */
+export interface UpdateInvoiceServicePeriodClientInput {
+  invoiceId: string;
+  expectedRevision: number;
+  servicePeriod: { start: string; end: string };
 }
 
 /** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
@@ -1524,6 +1533,11 @@ export interface BobClient {
   prepareContractAnnualInvoice?(
     contractId: string,
   ): Promise<Result<PrepareAnnualInvoiceDraftOutput, AppError>>;
+  /** §6.5 — période de service d'une facture de CONTRAT : « éditable en brouillon, figée à
+   * l'émission » (le remède indiqué par la garde d'émission). Bornes HUMAINES inclusives. */
+  updateInvoiceServicePeriod?(
+    input: UpdateInvoiceServicePeriodClientInput,
+  ): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>>;
   /** [Amélioration 4] — couverture contractuelle dite AVANT la confirmation de retrait. */
   equipmentContractCoverage?(
     equipmentId: string,

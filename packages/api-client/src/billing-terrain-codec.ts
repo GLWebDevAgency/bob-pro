@@ -101,11 +101,13 @@ export function normalizeBillingTerrainCarrier<
     transmission?: unknown;
     transmissionGuide?: unknown;
     emailDeliveredAt?: unknown;
+    maintenanceContractId?: unknown;
+    servicePeriod?: unknown;
   },
 >(
   view: T,
 ):
-  | (Omit<T, 'transmissionGuide' | 'emailDeliveredAt'> & {
+  | (Omit<T, 'transmissionGuide' | 'emailDeliveredAt' | 'maintenanceContractId' | 'servicePeriod'> & {
       situationOrder: number | null;
       situationDeductionCents: number;
       globalDiscount: Discount | null;
@@ -114,8 +116,33 @@ export function normalizeBillingTerrainCarrier<
       transmission: InvoiceTransmissionStatus | null;
       transmissionGuide?: TransmissionGuide;
       emailDeliveredAt?: string | null;
+      maintenanceContractId?: string | null;
+      servicePeriod?: { start: string; end: string | null } | null;
     })
   | null {
+  // PR-12b (écrans §6.5) — contrat facturé + période de service portée par la pièce : faits
+  // ADDITIFS fail-closed. ABSENT reste absent (serveur antérieur — la pièce n'est jamais
+  // « comptée hors contrat » par invention) ; présent mais difforme = rupture de contrat.
+  let maintenanceContractId: string | null | undefined;
+  if (view.maintenanceContractId !== undefined) {
+    if (view.maintenanceContractId !== null && typeof view.maintenanceContractId !== 'string')
+      return null;
+    maintenanceContractId = view.maintenanceContractId;
+  }
+  let servicePeriod: { start: string; end: string | null } | null | undefined;
+  if (view.servicePeriod !== undefined) {
+    if (view.servicePeriod === null) {
+      servicePeriod = null;
+    } else {
+      const period = record(view.servicePeriod);
+      if (period === null) return null;
+      const start = period.start;
+      const end = period.end === undefined || period.end === null ? null : period.end;
+      if (typeof start !== 'string' || !DATE_ONLY.test(start)) return null;
+      if (end !== null && (typeof end !== 'string' || !DATE_ONLY.test(end))) return null;
+      servicePeriod = { start, end: end as string | null };
+    }
+  }
   // PR-02 — livraison EMAIL constatée : fait ADDITIF fail-closed. ABSENT reste absent (un
   // serveur antérieur ne transporte pas le fait — on n'invente jamais « pas envoyée ») ;
   // présent mais difforme = rupture de contrat.
@@ -163,7 +190,13 @@ export function normalizeBillingTerrainCarrier<
   if (view.transmissionGuide !== undefined && view.transmissionGuide !== null) {
     transmissionGuide = decodeTransmissionGuide(view.transmissionGuide) ?? undefined;
   }
-  const { transmissionGuide: _dropped, emailDeliveredAt: _droppedDelivery, ...rest } = view;
+  const {
+    transmissionGuide: _dropped,
+    emailDeliveredAt: _droppedDelivery,
+    maintenanceContractId: _droppedContract,
+    servicePeriod: _droppedPeriod,
+    ...rest
+  } = view;
   return {
     ...rest,
     situationOrder,
@@ -174,5 +207,7 @@ export function normalizeBillingTerrainCarrier<
     transmission,
     ...(transmissionGuide !== undefined ? { transmissionGuide } : {}),
     ...(emailDeliveredAt !== undefined ? { emailDeliveredAt } : {}),
+    ...(maintenanceContractId !== undefined ? { maintenanceContractId } : {}),
+    ...(servicePeriod !== undefined ? { servicePeriod } : {}),
   };
 }

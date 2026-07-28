@@ -44,6 +44,8 @@ import {
   AttachPurchaseOrderToQuote,
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
+  UpdateInvoiceServicePeriod,
+  type UpdateInvoiceServicePeriodOutput,
   ListInvoiceableQuotes,
   requiresFrenchOperationCategoryAtIssuance,
   UpdateQuoteLine,
@@ -322,6 +324,7 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
   PurchaseOrderMutationView,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
@@ -1110,6 +1113,10 @@ export class LocalBobClient implements BobClient {
         )?.createdAt ?? null,
       // PR-08 : parité serveur — site de rattachement (null = pièce hors site).
       chantierId: i.chantierId,
+      // PR-12b : parité serveur — contrat facturé + période de service portée par la pièce
+      // (écrans §6.5 : le brouillon annuel MONTRE le contrat et sa période).
+      maintenanceContractId: i.maintenanceContractId,
+      servicePeriod: i.servicePeriod,
     };
   }
 
@@ -3877,6 +3884,18 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<PurchaseOrderMutationView, AppError>> {
     await this.ready;
     return new AttachPurchaseOrderToInvoice({
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  /** §6.5 — PUT /invoices/:id/service-period (miroir local) : période d'une facture de
+   * CONTRAT, brouillon uniquement — même use case core que l'API (parité stricte). */
+  async updateInvoiceServicePeriod(
+    input: UpdateInvoiceServicePeriodClientInput,
+  ): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>> {
+    await this.ready;
+    return new UpdateInvoiceServicePeriod({
       invoices: this.invoices,
       clock: this.clock,
     }).execute({ companyId: this.companyId, ...input });

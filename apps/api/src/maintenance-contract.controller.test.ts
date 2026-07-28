@@ -176,6 +176,67 @@ describe('contrats de maintenance — service (PR-12b)', () => {
     );
   });
 
+  it('[écrans §6.5] la période du brouillon annuel est ÉDITABLE (bloc Contrat de la facture) — et refusée hors contrat', async () => {
+    const { service, p, audit } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'b2g');
+    await seedSiteWithEquipment(p, companyId);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines 2026',
+        chantierId: 'site-bastille',
+        anniversaryDate: '2025-10-12',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 40_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('create');
+    await run(() =>
+      service.activateMaintenanceContract({ contractId: created.value.id, expectedRevision: 1 }),
+    );
+    const prepared = await run(() => service.prepareContractAnnualInvoice(created.value.id));
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    // Édition en BROUILLON : le geste que la garde d'émission indique (« modifie le
+    // brouillon, jamais l'émission ») existe et écrit les colonnes AUTORITÉ.
+    const updated = await run(() =>
+      service.updateInvoiceServicePeriod({
+        invoiceId: prepared.value.invoiceId,
+        expectedRevision: 1,
+        servicePeriod: { start: '2025-11-01', end: '2026-10-31' },
+      }),
+    );
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.value.servicePeriod).toEqual({ start: '2025-11-01', end: '2026-10-31' });
+    const stored = await p.invoices.findById(prepared.value.invoiceId);
+    expect(stored!.servicePeriod).toEqual({ start: '2025-11-01', end: '2026-10-31' });
+    expect(audit).toHaveBeenCalledWith(
+      'invoice.service_period_updated',
+      expect.objectContaining({ invoiceId: prepared.value.invoiceId }),
+    );
+
+    // Une facture SANS contrat garde son comportement historique (période A7 à l'émission).
+    const standalone = await run(() =>
+      service.composeStandaloneInvoice({
+        customerId: 'cus-ratp',
+        lines: [{ label: 'Dépannage', category: 'labor', qty: 1, unitPriceHT: 20_000, vatRate: 20 }],
+      }),
+    );
+    if (!standalone.ok) throw new Error('compose');
+    const refused = await run(() =>
+      service.updateInvoiceServicePeriod({
+        invoiceId: standalone.value.invoiceId,
+        expectedRevision: 1,
+        servicePeriod: { start: '2025-11-01', end: '2026-10-31' },
+      }),
+    );
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(JSON.stringify(refused.error)).toContain('n’est pas liée à un contrat');
+  });
+
   it('[direction 5] client b2c : refus Chatel à la création (parité écran/voix)', async () => {
     const { service, p } = makeService();
     const companyId = await seedTenant(p);

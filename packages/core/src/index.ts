@@ -136,6 +136,7 @@ export * from './application/billing/delete-draft-invoice';
 export * from './application/billing/update-quote-line';
 export * from './application/billing/remove-quote-line';
 export * from './application/billing/attach-purchase-order';
+export * from './application/billing/update-invoice-service-period';
 export * from './application/billing/list-invoiceable-quotes';
 export * from './application/billing/company-billing-settings';
 export * from './application/public-access/create-quote-signature-token';

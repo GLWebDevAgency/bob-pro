@@ -126,6 +126,8 @@ import {
   AttachPurchaseOrderToQuote,
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
+  UpdateInvoiceServicePeriod,
+  type UpdateInvoiceServicePeriodOutput,
   ListInvoiceableQuotes,
   requiresFrenchOperationCategoryAtIssuance,
   // B2 — avancement PROPOSÉ d'une situation (consultatif, jamais imposé) : règle PURE du
@@ -2222,6 +2224,30 @@ export class BackendService {
     if (r.ok)
       this.logger.audit('quote.purchase_order_detached', {
         quoteId: input.quoteId,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
+  /** Écrans §6.5 — période de service d'une facture de CONTRAT « éditable en brouillon » :
+   * le geste que la garde d'émission promet (« modifie le brouillon, jamais l'émission »).
+   * Même patron transactionnel que le bon de commande (lockById + CAS révision). */
+  async updateInvoiceServicePeriod(input: {
+    invoiceId: string;
+    expectedRevision: number;
+    servicePeriod: { start: string; end: string };
+  }): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>> {
+    const r = await new UpdateInvoiceServicePeriod({
+      invoices: {
+        findById: (id) => this.p.invoices.lockById(id),
+        save: (i) => this.p.invoices.save(i),
+      },
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('invoice.service_period_updated', {
+        invoiceId: input.invoiceId,
+        servicePeriod: r.value.servicePeriod,
         revision: r.value.revision,
       });
     return r;

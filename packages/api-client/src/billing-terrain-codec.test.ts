@@ -121,4 +121,42 @@ describe('normalizeBillingTerrainCarrier — vue facture', () => {
     expect(view).not.toBeNull();
     expect(view).not.toHaveProperty('transmissionGuide');
   });
+
+  it('PR-12b (§6.5) — contrat + période : ABSENTS restent absents (fail-closed), présents valides conservés', () => {
+    const silent = normalizeBillingTerrainCarrier({ ...base });
+    expect(silent).not.toHaveProperty('maintenanceContractId');
+    expect(silent).not.toHaveProperty('servicePeriod');
+    const carried = normalizeBillingTerrainCarrier({
+      ...base,
+      maintenanceContractId: 'contract-fontaines',
+      servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+    });
+    expect(carried).toMatchObject({
+      maintenanceContractId: 'contract-fontaines',
+      servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+    });
+    const nulls = normalizeBillingTerrainCarrier({
+      ...base,
+      maintenanceContractId: null,
+      servicePeriod: null,
+    });
+    expect(nulls).toMatchObject({ maintenanceContractId: null, servicePeriod: null });
+    // Fin ponctuelle absente/nulle acceptée (forme A7 historique d'une pièce hors contrat).
+    const openEnd = normalizeBillingTerrainCarrier({
+      ...base,
+      servicePeriod: { start: '2026-06-01', end: null },
+    });
+    expect(openEnd).toMatchObject({ servicePeriod: { start: '2026-06-01', end: null } });
+  });
+
+  it('PR-12b (§6.5) — contrat/période DIFFORMES : échec FERMÉ (jamais une couverture castée)', () => {
+    expect(normalizeBillingTerrainCarrier({ ...base, maintenanceContractId: 42 })).toBeNull();
+    expect(normalizeBillingTerrainCarrier({ ...base, servicePeriod: 'octobre' })).toBeNull();
+    expect(
+      normalizeBillingTerrainCarrier({ ...base, servicePeriod: { start: '12/10/2025', end: null } }),
+    ).toBeNull();
+    expect(
+      normalizeBillingTerrainCarrier({ ...base, servicePeriod: { start: '2025-10-12', end: 42 } }),
+    ).toBeNull();
+  });
 });

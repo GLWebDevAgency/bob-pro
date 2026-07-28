@@ -784,6 +784,54 @@ export class Invoice extends AggregateRoot<string> {
     return ok(undefined);
   }
 
+  /**
+   * PR-12b/écrans §6.5 : la PÉRIODE DE SERVICE d'une facture de CONTRAT est portée par le
+   * brouillon (autorité de la garde d'émission, annexe erratum n° 2) et « éditable en
+   * brouillon, figée à l'émission ». BROUILLON uniquement ; réservée aux pièces de contrat
+   * (les autres renseignent leur période A7 à l'émission — comportement historique inchangé) ;
+   * début ET fin requis (une couverture sans fin serait indéfinissable), bornes HUMAINES
+   * inclusives comme à la composition. Idempotente si identique.
+   */
+  updateContractServicePeriod(period: { start: DateOnly; end: DateOnly }, at: Instant): DomainResult<void> {
+    if (this.kind === 'credit_note')
+      return err({
+        code: 'VALIDATION',
+        field: 'servicePeriod',
+        message: 'La période d’un avoir est figée depuis la facture source.',
+      });
+    if (this._status !== 'draft')
+      return err({
+        code: 'VALIDATION',
+        field: 'status',
+        message: 'La période de service se modifie avant émission — cette facture est déjà émise.',
+      });
+    if (this._maintenanceContractId === null)
+      return err({
+        code: 'VALIDATION',
+        field: 'servicePeriod',
+        message:
+          'Cette facture n’est pas liée à un contrat : sa période de prestation se renseigne à l’émission.',
+      });
+    if (!isValidDateOnly(period.start) || !isValidDateOnly(period.end))
+      return err({
+        code: 'VALIDATION',
+        field: 'servicePeriod',
+        message: 'Période de service du contrat invalide (AAAA-MM-JJ requis).',
+      });
+    if (period.end < period.start)
+      return err({
+        code: 'VALIDATION',
+        field: 'servicePeriod',
+        message: 'La fin de la période de service précède son début.',
+      });
+    if (this._servicePeriod?.start === period.start && this._servicePeriod?.end === period.end)
+      return ok(undefined);
+    this._servicePeriod = { start: period.start, end: period.end };
+    this._revision += 1;
+    this.record({ type: 'InvoiceContractServicePeriodUpdated', occurredAt: at, version: 1 });
+    return ok(undefined);
+  }
+
   addLine(line: QuoteLine): DomainResult<void> {
     if (this._status !== 'draft')
       return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'draft' });

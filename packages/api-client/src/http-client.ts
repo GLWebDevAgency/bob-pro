@@ -22,6 +22,7 @@ import type {
   RetireEquipmentOutput,
   MaintenanceContractProps,
   PrepareAnnualInvoiceDraftOutput,
+  UpdateInvoiceServicePeriodOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -164,6 +165,7 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
   PurchaseOrderMutationView,
   CustomerContactView,
   CustomerContactWriteInput,
@@ -3485,6 +3487,14 @@ export class HttpBobClient implements BobClient {
     return this.req<{ activeContractLabels: string[] }>(
       'GET',
       `/equipments/${encodeURIComponent(equipmentId)}/contract-coverage`,
+    );
+  }
+  /** §6.5 — période de service d'une facture de CONTRAT, éditable en BROUILLON. */
+  updateInvoiceServicePeriod(input: UpdateInvoiceServicePeriodClientInput) {
+    return this.req<UpdateInvoiceServicePeriodOutput>(
+      'PUT',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/service-period`,
+      { expectedRevision: input.expectedRevision, servicePeriod: input.servicePeriod },
     );
   }
   worksitePhotoViewUrl(photoId: string) {

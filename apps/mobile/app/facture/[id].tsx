@@ -7,12 +7,12 @@
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Pressable, Share, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, Share, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, formatDateOnlyFr, normalizeVoiceText, parisDateOnly, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, StatusBadge, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, SectionHeader, Sheet, Skeleton, SkeletonCard, SkeletonHeader, StatusBadge, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
 import { dueLineForInvoice } from '../../src/components/customer-terms.logic';
 import {
@@ -25,9 +25,11 @@ import {
   useInvoiceAccountingPreview,
   useInvoicePaymentLink,
   useInvoices,
+  useMaintenanceContract,
   useNotificationsFeed,
   useQuotes,
   useRecordInvoiceTransmission,
+  useUpdateInvoiceServicePeriod,
   appErrorMessage,
 } from '../../src/data/hooks';
 import {
@@ -67,7 +69,7 @@ const PO_REVERSIBLE = { mutating: true, outbound: false, riskTier: 'reversible' 
 
 export default function FactureDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors, semantic } = useTheme();
+  const { personality, colors, semantic, controls } = useTheme();
   const router = useRouter();
   const client = useBobClient();
   const invoice = useInvoice(id);
@@ -114,6 +116,48 @@ export default function FactureDetail() {
   const [poError, setPoError] = useState<string | null>(null);
   const poEditable =
     invoice.data?.status === 'draft' && invoice.data?.kind !== 'credit_note';
+  // ── Écrans §6.5 : bloc « Contrat : {label} · Période : … » — le brouillon annuel MONTRE le
+  //    contrat et la période qu'il porte ; la période est éditable en BROUILLON (le remède que
+  //    la garde d'émission indique), figée à l'émission (mention visible). ──
+  const invoiceContractId = invoice.data?.maintenanceContractId ?? null;
+  // Label du contrat : lecture fail-soft (capacité optionnelle du transport) — sans elle, le
+  // bloc affiche la période seule, jamais un label inventé.
+  const contractView = useMaintenanceContract(
+    invoiceContractId ?? '',
+    invoiceContractId !== null && client.getMaintenanceContract !== undefined,
+  );
+  const updatePeriod = useUpdateInvoiceServicePeriod();
+  const [periodDraft, setPeriodDraft] = useState<{ start: string; end: string } | null>(null);
+  const [periodError, setPeriodError] = useState<string | null>(null);
+  const periodEditable = invoiceContractId !== null && poEditable;
+  const openPeriodSheet = (): void => {
+    setPeriodError(null);
+    setPeriodDraft({
+      start: invoice.data?.servicePeriod?.start ?? '',
+      end: invoice.data?.servicePeriod?.end ?? '',
+    });
+  };
+  const submitPeriod = async (): Promise<void> => {
+    if (periodDraft === null) return;
+    const start = periodDraft.start.trim();
+    const end = periodDraft.end.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      setPeriodError(t('contrat.dateInvalid', { personality }));
+      return;
+    }
+    setPeriodError(null);
+    try {
+      await updatePeriod.mutateAsync({
+        invoiceId: id,
+        expectedRevision: invoice.data?.revision ?? 1,
+        servicePeriod: { start, end },
+      });
+      setPeriodDraft(null);
+    } catch (error) {
+      // Refus du DOMAINE (fin < début, déjà émise…) restitués verbatim — actionnables.
+      setPeriodError(appErrorMessage(error));
+    }
+  };
   const openPoSheet = (): void => {
     setPoError(null);
     setPoSheetOpen(true);
@@ -684,6 +728,68 @@ export default function FactureDetail() {
             </View>
           </Card>
         ) : null}
+        {invoiceContractId !== null ? (
+          // Écrans §6.5 : « Contrat : {label} · Période : … » — bloc info du brouillon annuel,
+          // période éditable en BROUILLON, figée à l'émission (trigger étendu). Les refus
+          // d'émission (« période déjà facturée par {n°} », « facture de contrat sans
+          // période ») s'affichent tels quels par le canal d'erreur existant.
+          <Card>
+            <SectionHeader title={t('facture.contractBlockTitle', { personality })} />
+            <Pressable
+              accessibilityRole={contractView.data ? 'button' : 'text'}
+              accessibilityLabel={t('facture.contractLabel', {
+                personality,
+                params: { label: contractView.data?.contract.label ?? '…' },
+              })}
+              disabled={!contractView.data}
+              onPress={() => router.push(`/contrat/${invoiceContractId}`)}
+              style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+            >
+              {contractView.data ? (
+                <Text style={[font('sub', 700), { color: colors.ink800 }]}>
+                  {t('facture.contractLabel', {
+                    personality,
+                    params: { label: contractView.data.contract.label },
+                  })}
+                </Text>
+              ) : null}
+              {inv.servicePeriod?.start != null && inv.servicePeriod.end != null ? (
+                <Text
+                  style={[
+                    font('sub', 600),
+                    { color: colors.ink800, marginTop: contractView.data ? 4 : 0, fontVariant: ['tabular-nums'] },
+                  ]}
+                >
+                  {t('facture.contractPeriod', {
+                    personality,
+                    params: {
+                      start: formatDateOnlyFr(inv.servicePeriod.start),
+                      end: formatDateOnlyFr(inv.servicePeriod.end),
+                    },
+                  })}
+                </Text>
+              ) : (
+                <Text style={[font('sub', 700), { color: semantic.warning, marginTop: 4 }]}>
+                  {t('facture.contractPeriodMissing', { personality })}
+                </Text>
+              )}
+            </Pressable>
+            {periodEditable ? (
+              <Button
+                title={t('facture.contractPeriodEditCta', { personality })}
+                variant="secondary"
+                size="compact"
+                radius={11}
+                style={{ alignSelf: 'flex-start', marginTop: 10 }}
+                onPress={openPeriodSheet}
+              />
+            ) : inv.servicePeriod != null ? (
+              <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 6 }]}>
+                {t('facture.contractPeriodFrozen', { personality })}
+              </Text>
+            ) : null}
+          </Card>
+        ) : null}
         {/* B8 : section « Bon de commande » — éditable sur BROUILLON (hors avoir), lecture
             seule dès l'émission (mention « figé à l'émission » visible). */}
         {poEditable || inv.purchaseOrder != null ? (
@@ -752,6 +858,63 @@ export default function FactureDetail() {
       onInputChange={() => setPoError(null)}
       onSubmit={(input) => void submitPurchaseOrder(input)}
     />
+    <Sheet
+      visible={periodDraft !== null}
+      onClose={() => {
+        if (!updatePeriod.isPending) setPeriodDraft(null);
+      }}
+      accessibilityLabel={t('facture.contractPeriodSheetTitle', { personality })}
+    >
+      <Text style={[font('section'), { color: colors.ink800, marginBottom: 10 }]}>
+        {t('facture.contractPeriodSheetTitle', { personality })}
+      </Text>
+      <View style={{ gap: 8 }}>
+        {(
+          [
+            { key: 'start' as const, labelKey: 'facture.contractPeriodStartField' as const },
+            { key: 'end' as const, labelKey: 'facture.contractPeriodEndField' as const },
+          ]
+        ).map((field) => (
+          <TextInput
+            key={field.key}
+            value={periodDraft?.[field.key] ?? ''}
+            onChangeText={(value) => {
+              setPeriodError(null);
+              setPeriodDraft((current) =>
+                current === null ? current : { ...current, [field.key]: value },
+              );
+            }}
+            placeholder={t(field.labelKey, { personality })}
+            placeholderTextColor={colors.slate400}
+            accessibilityLabel={t(field.labelKey, { personality })}
+            autoCapitalize="none"
+            style={[
+              font('body'),
+              {
+                minHeight: 44,
+                borderWidth: 1,
+                borderColor: controls.cardBorder,
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                color: colors.ink800,
+                backgroundColor: colors.surface,
+                fontVariant: ['tabular-nums'],
+              },
+            ]}
+          />
+        ))}
+        {periodError ? (
+          <Text accessibilityLiveRegion="polite" style={[font('sub', 500), { color: semantic.danger }]}>
+            {periodError}
+          </Text>
+        ) : null}
+        <Button
+          title={t('facture.contractPeriodSaveCta', { personality })}
+          loading={updatePeriod.isPending}
+          onPress={() => void submitPeriod()}
+        />
+      </View>
+    </Sheet>
     </>
   );
 }

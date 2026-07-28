@@ -4118,6 +4118,60 @@ const legacyFr = {
     pro: 'La facture sera déclarée transmise à la date du jour. Cette déclaration reste corrigeable.',
     direct: 'Déclarée partie aujourd’hui. Corrigeable.',
   },
+  // PR-12b (écrans §6.5) — bloc « Contrat » du brouillon annuel : la pièce MONTRE le contrat
+  // qu'elle facture et la période qu'elle porte ; période éditable en BROUILLON, figée à
+  // l'émission (garde + trigger SQL). Bornes HUMAINES inclusives, jamais une borne exclusive
+  // qui « ment d'un jour ».
+  'facture.contractBlockTitle': {
+    pote: 'Contrat',
+    pro: 'Contrat de maintenance',
+    direct: 'Contrat',
+  },
+  'facture.contractLabel': {
+    pote: 'Contrat : {label}',
+    pro: 'Contrat : {label}',
+    direct: 'Contrat : {label}',
+  },
+  'facture.contractPeriod': {
+    pote: 'Période : {start} → {end}',
+    pro: 'Période : {start} → {end}',
+    direct: 'Période : {start} → {end}',
+  },
+  'facture.contractPeriodMissing': {
+    pote: 'Période non renseignée — il la faut avant d’émettre.',
+    pro: 'Période de service non renseignée — requise avant émission.',
+    direct: 'Période manquante (requise avant émission).',
+  },
+  'facture.contractPeriodEditCta': {
+    pote: 'Modifier la période',
+    pro: 'Modifier la période',
+    direct: 'Modifier',
+  },
+  'facture.contractPeriodFrozen': {
+    pote: 'Figée à l’émission.',
+    pro: 'Période figée à l’émission.',
+    direct: 'Figée à l’émission.',
+  },
+  'facture.contractPeriodSheetTitle': {
+    pote: 'Période de service',
+    pro: 'Période de service du contrat',
+    direct: 'Période de service',
+  },
+  'facture.contractPeriodStartField': {
+    pote: 'Début (AAAA-MM-JJ)',
+    pro: 'Début de période (AAAA-MM-JJ)',
+    direct: 'Début (AAAA-MM-JJ)',
+  },
+  'facture.contractPeriodEndField': {
+    pote: 'Fin incluse (AAAA-MM-JJ)',
+    pro: 'Fin de période incluse (AAAA-MM-JJ)',
+    direct: 'Fin incluse (AAAA-MM-JJ)',
+  },
+  'facture.contractPeriodSaveCta': {
+    pote: 'Enregistrer',
+    pro: 'Enregistrer la période',
+    direct: 'Enregistrer',
+  },
   // PR-06 — historique des relances de la pièce (filtre du fil serveur, statut honnête).
   'facture.relanceHistoryTitle': {
     pote: 'Relances',

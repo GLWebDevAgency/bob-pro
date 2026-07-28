@@ -42,6 +42,7 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
   CreateContractClientInput,
 } from '@bob/api-client';
 import type { AppError } from '@bob/core';
@@ -1827,6 +1828,26 @@ export function useAttachInvoicePurchaseOrder() {
     mutationFn: async (input: AttachInvoicePurchaseOrderClientInput) => {
       if (!client.attachInvoicePurchaseOrder) throw purchaseOrderUnavailable();
       const r = await client.attachInvoicePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
+    },
+  });
+}
+
+/** Écrans §6.5 — PUT /invoices/:id/service-period : période d'une facture de CONTRAT,
+ * « éditable en brouillon, figée à l'émission » (le remède indiqué par la garde d'émission). */
+export function useUpdateInvoiceServicePeriod() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateInvoiceServicePeriodClientInput) => {
+      if (!client.updateInvoiceServicePeriod)
+        throw { kind: 'unavailable', service: 'invoices' } satisfies AppError;
+      const r = await client.updateInvoiceServicePeriod(input);
       if (!r.ok) throw r.error;
       return r.value;
     },
