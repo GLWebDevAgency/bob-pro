@@ -10,6 +10,12 @@ export interface WorksiteMediaItem {
   /** PR-11 (Bloc A) — équipement du site visé par la photo (tag ADDITIF) : absent/null =
    * photo du site. Cohérence équipement↔site prouvée par UploadWorksitePhoto (fail-closed). */
   equipmentId?: string | null;
+  /** PR-15 (Bloc C) — fiche de passage visée par la photo (tag ADDITIF) : absent/null =
+   * photo du site hors passage. Cohérence fiche↔site prouvée au use case (fail-closed) ;
+   * une fiche SIGNÉE n'accepte plus aucune photo (§3.4 — verrou re-vérifié par trigger). */
+  interventionId?: string | null;
+  /** PR-15 — phase avant/après du passage : n'a de sens QUE taguée à une fiche. */
+  phase?: 'before' | 'after' | null;
 }
 
 /**

@@ -200,6 +200,7 @@ function chantierNoteFromRow(row: {
   authorLabel: string;
   createdAt: Date;
   equipmentId: string | null;
+  interventionId: string | null;
 }): ChantierNote {
   return ChantierNote.rehydrate({
     id: row.id,
@@ -210,6 +211,8 @@ function chantierNoteFromRow(row: {
     createdAt: row.createdAt.toISOString(),
     // PR-11 — tag équipement additif (null = note du site, lignes historiques comprises).
     equipmentId: row.equipmentId,
+    // PR-15 — tag fiche de passage additif (null = note du site hors passage).
+    interventionId: row.interventionId,
   } satisfies ChantierNoteProps);
 }
 
@@ -230,6 +233,8 @@ export class PrismaChantierNoteRepository implements ChantierNoteRepository {
         // PR-11 — le tag équipement (prouvé par le use case) atteint la base ; le trigger
         // equipment_scope_coherence re-vérifie la cohérence de site en défense en profondeur.
         equipmentId: value.equipmentId ?? null,
+        // PR-15 — tag fiche de passage (erratum 6 : note de résolution AVANT la signature).
+        interventionId: value.interventionId ?? null,
       },
     });
   }

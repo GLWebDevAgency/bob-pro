@@ -14,6 +14,10 @@ export interface ChantierNoteProps {
    * note du site. La cohérence équipement↔site est PROUVÉE par le use case (fail-closed),
    * puis re-vérifiée par le trigger SQL — les notes historiques restent non taguées. */
   equipmentId?: string | null;
+  /** PR-15 (Bloc C) — fiche de passage visée par la note (tag ADDITIF) : `null`/absent =
+   * note du site hors passage. Une fiche SIGNÉE n'accepte plus aucune note ; la note
+   * automatique de résolution d'un échec photo (erratum 6) est acceptée AVANT la signature. */
+  interventionId?: string | null;
 }
 
 /**
@@ -33,12 +37,17 @@ export class ChantierNote {
     if (!authorLabel)
       return err({ code: 'VALIDATION', field: 'authorLabel', message: 'Auteur requis.' });
     const equipmentId = props.equipmentId?.trim() || null;
-    return ok(new ChantierNote({ ...props, text, authorLabel, equipmentId }));
+    const interventionId = props.interventionId?.trim() || null;
+    return ok(new ChantierNote({ ...props, text, authorLabel, equipmentId, interventionId }));
   }
 
   static rehydrate(props: ChantierNoteProps): ChantierNote {
-    // Compat ascendante PR-11 : les notes antérieures au tag équipement restent non taguées.
-    return new ChantierNote({ ...props, equipmentId: props.equipmentId ?? null });
+    // Compat ascendante PR-11/PR-15 : les notes antérieures aux tags restent non taguées.
+    return new ChantierNote({
+      ...props,
+      equipmentId: props.equipmentId ?? null,
+      interventionId: props.interventionId ?? null,
+    });
   }
 
   get id(): string {
@@ -62,6 +71,10 @@ export class ChantierNote {
   /** PR-11 — équipement visé (null = note du site). */
   get equipmentId(): string | null {
     return this.p.equipmentId ?? null;
+  }
+  /** PR-15 — fiche de passage visée (null = note du site hors passage). */
+  get interventionId(): string | null {
+    return this.p.interventionId ?? null;
   }
 
   toProps(): ChantierNoteProps {

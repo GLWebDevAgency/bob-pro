@@ -180,6 +180,12 @@ import {
   buildQuoteDuplicationInput,
   type DuplicateQuoteOutput,
   CreateEquipment,
+  CreateIntervention,
+  StartIntervention,
+  CompleteIntervention,
+  CancelIntervention,
+  UpdateIntervention,
+  SignIntervention,
   UpdateEquipment,
   RetireEquipment,
   ReactivateEquipment,
@@ -212,6 +218,10 @@ import {
   type AnnualBillingDue,
   type RenewalAlert,
   type PrepareAnnualInvoiceDraftOutput,
+  type CreateInterventionInput,
+  type InterventionPatch,
+  type ChecklistItem,
+  type InterventionProps,
   type Scenario,
   type Horizon,
   type CashflowProjection,
@@ -1222,6 +1232,11 @@ export class BackendService {
       quote: this.p.quotes,
       expense: this.p.expenses,
       chantier: this.p.chantiers,
+      // PR-16 — le parc est tenant-scopé par contrat de port : l'id du tenant courant est
+      // celui du contexte RLS ouvert par runWithTenant, jamais un paramètre déclaratif.
+      equipment: {
+        findById: async (id: string) => this.p.equipments.findById(this.companyId(), id),
+      },
     });
     return {
       exists: (input) => this.p.runWithTenant(input.companyId, () => targets.exists(input)),
@@ -2156,7 +2171,10 @@ export class BackendService {
   async deleteDraftInvoice(invoiceId: string) {
     if (!(await this.ownedInvoice(invoiceId)))
       return { ok: false as const, error: appNotFound('invoice', invoiceId) };
-    const r = await new DeleteDraftInvoice({ invoices: this.p.invoices, uow: this.p }).execute({
+    const r = await new DeleteDraftInvoice({
+      invoices: this.p.invoices,
+      uow: this.p,
+    }).execute({
       invoiceId,
     });
     if (r.ok) this.logger.audit('invoice.draft_deleted', { invoiceId });
@@ -4284,6 +4302,72 @@ export class BackendService {
           terminationEffectiveDate: r.value.terminationEffectiveDate,
         });
       },
+      // PR-15/16 (parité papa vocal §3.7) — fiche de passage : les adapters délèguent aux MÊMES
+      // use cases que les endpoints (Start/Complete/Send/PrepareInvoice) ; la révision courante
+      // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.
+      listInterventions: async () => {
+        const companyId = this.companyId();
+        const [interventions, chantiers, customers] = await Promise.all([
+          this.p.interventions.listByCompany(companyId),
+          this.p.chantiers.listByCompany(companyId),
+          this.p.customers.listByCompany(companyId),
+        ]);
+        const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+        const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+        return ok(
+          interventions.map((intervention) => {
+            const props = intervention.toProps();
+            return {
+              id: props.id,
+              kind: props.kind,
+              status: props.status,
+              chantierId: props.chantierId,
+              chantierNom: chantierNames.get(props.chantierId) ?? props.chantierId,
+              customerNom: customerNames.get(props.customerId) ?? props.customerId,
+              plannedAt: props.plannedAt,
+              contractId: props.contractId,
+              reportDocumentId: props.reportDocumentId,
+              billedInvoiceId: props.billedInvoiceId,
+              revision: props.revision,
+            };
+          }),
+        );
+      },
+      startIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.startIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
+      completeIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.completeIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+          ...(input.summary !== undefined && input.summary !== null ? { summary: input.summary } : {}),
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
       // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
       // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :
@@ -6069,7 +6153,7 @@ export class BackendService {
 
   async addChantierNote(
     chantierId: string,
-    input: { text: string; equipmentId?: string | null },
+    input: { text: string; equipmentId?: string | null; interventionId?: string | null },
   ): Promise<Result<{ id: string }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -6082,6 +6166,8 @@ export class BackendService {
       clock: this.clock,
       // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant persistance.
       equipments: this.p.equipments,
+      // PR-15 — le tag fiche est PROUVÉ (même site, fiche encore ouverte aux traces).
+      interventions: this.p.interventions,
     }).execute({
       companyId: this.companyId(),
       chantierId,
@@ -6090,6 +6176,7 @@ export class BackendService {
       // multi-utilisateur (cabinet, salariés) sans migration ni changement de contrat.
       authorLabel: company.name,
       ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      ...(input.interventionId !== undefined ? { interventionId: input.interventionId } : {}),
     });
     if (r.ok) this.logger.audit('chantier.note.added', { companyId: this.companyId(), chantierId });
     return r;
@@ -6434,6 +6521,172 @@ export class BackendService {
     return ok({ activeContractLabels: labels });
   }
 
+  // ── PR-15 — fiche de passage (Bloc C, C3) : gate module IDENTIQUE au parc/notes/photos ──
+
+  /** Fiches d'un site — la liste du terrain (« qu'est-ce qu'on a fait ici ? »). */
+  async listChantierInterventions(
+    chantierId: string,
+  ): Promise<Result<InterventionProps[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const chantier = await this.p.chantiers.findById(chantierId);
+    if (!chantier || chantier.companyId !== this.companyId())
+      return { ok: false, error: appNotFound('chantier', chantierId) };
+    const list = await this.p.interventions.listByChantier(this.companyId(), chantierId);
+    return ok(list.map((intervention) => intervention.toProps()));
+  }
+
+  async getIntervention(interventionId: string): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const intervention = await this.p.interventions.findById(this.companyId(), interventionId);
+    if (!intervention || intervention.companyId !== this.companyId())
+      return { ok: false, error: appNotFound('intervention', interventionId) };
+    return ok(intervention.toProps());
+  }
+
+  /** `id` optionnel = id CLIENT (offline-first §3.6, uuid v4 strict) ; absent, le serveur génère. */
+  async createIntervention(
+    chantierId: string,
+    input: Omit<CreateInterventionInput, 'companyId' | 'chantierId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CreateIntervention({
+      interventions: this.p.interventions,
+      chantiers: this.p.chantiers,
+      customers: this.p.customers,
+      ids: this.ids,
+      clock: this.clock,
+      equipments: this.p.equipments,
+      interventionSettings: this.p.interventionSettings,
+    }).execute({ companyId: this.companyId(), chantierId, ...input });
+    if (r.ok)
+      this.logger.audit('intervention.created', {
+        companyId: this.companyId(),
+        chantierId,
+        id: r.value.id,
+      });
+    return r;
+  }
+
+  async startIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    startedAt?: string;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new StartIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.started', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async completeIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    finishedAt?: string;
+    checklist?: ChecklistItem[];
+    summary?: string | null;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CompleteIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.completed', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async cancelIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CancelIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.cancelled', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async updateIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    patch: InterventionPatch;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new UpdateIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      equipments: this.p.equipments,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.updated', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  /**
+   * §3.5 — signature de la fiche : le tracé du pad arrive en `proofDataUrl`, le serveur en
+   * calcule le SHA-256 (patron signQuote, R4 — le client ne fournit JAMAIS le hash) et ne
+   * stocke pas le dataURL. Après ce geste, la fiche est VERROUILLÉE (§3.4).
+   */
+  async signIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    signerName: string;
+    proofDataUrl: string;
+    /** Heure du GESTE déclarée par l'appareil (capture hors-ligne) — jamais `capturedAt`. */
+    capturedAtDevice?: string;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new SignIntervention({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      interventionId: input.interventionId,
+      expectedRevision: input.expectedRevision,
+      signerName: input.signerName,
+      proofSha256: sha256Hex(input.proofDataUrl),
+      ...(input.capturedAtDevice !== undefined ? { capturedAtDevice: input.capturedAtDevice } : {}),
+    });
+    if (r.ok)
+      // Jamais le tracé ni le nom du signataire dans les journaux techniques.
+      this.logger.audit('intervention.signed', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
   /** [Revue A12] — réponse au refus actionnable « site clôturé » : rouvrir le site. */
   async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
@@ -6456,7 +6709,14 @@ export class BackendService {
 
   async uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
+    input: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      equipmentId?: string | null;
+      interventionId?: string | null;
+      phase?: 'before' | 'after' | null;
+    },
   ): Promise<Result<WorksiteMediaItem, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -6481,6 +6741,8 @@ export class BackendService {
       clock: this.clock,
       // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant tout octet stocké.
       equipments: this.p.equipments,
+      // PR-15 — la fiche est PROUVÉE (même site) et encore OUVERTE aux traces (avant `signed`).
+      interventions: this.p.interventions,
     }).execute({
       companyId: this.companyId(),
       chantierId,
@@ -6488,6 +6750,8 @@ export class BackendService {
       contentType: input.mimeType,
       filename: input.filename,
       ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      ...(input.interventionId !== undefined ? { interventionId: input.interventionId } : {}),
+      ...(input.phase !== undefined ? { phase: input.phase } : {}),
     });
     if (r.ok)
       this.logger.audit('chantier.photo.uploaded', {
@@ -6520,13 +6784,34 @@ export class BackendService {
     return ok({ url, expiresInSeconds: ttlSeconds });
   }
 
-  async deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>> {
+  /**
+   * ERRATUM 6 (annexe re-revue 27/07) — `resolutionNote` : quand une photo de fiche est retirée
+   * après un échec définitif de synchronisation, la note automatique de résolution est portée
+   * par CE geste (elle prend la PLACE de l'entrée photo retirée, AVANT le `sign` resté en file).
+   */
+  async deleteWorksitePhoto(
+    photoId: string,
+    input?: { resolutionNote?: string },
+  ): Promise<Result<void, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     const r = await new DeleteWorksitePhoto({
       media: this.p.worksiteMedia,
       storage: this.documentStorage,
-    }).execute({ companyId: this.companyId(), id: photoId });
+      // PR-15 — le verrou post-signature est PROUVÉ avant de toucher une photo de fiche.
+      interventions: this.p.interventions,
+      notes: this.p.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      id: photoId,
+      ...(input?.resolutionNote !== undefined
+        ? { resolutionNote: { text: input.resolutionNote, authorLabel: company.name } }
+        : {}),
+    });
     if (r.ok)
       this.logger.audit('chantier.photo.deleted', { companyId: this.companyId(), id: photoId });
     return r;

@@ -11,6 +11,8 @@ import type {
   EquipmentContractCoveragePort,
   MaintenanceContractRepository,
   ContractInvoicesReadPort,
+  InterventionRepository,
+  CompanyInterventionSettingsRepository,
   CustomerContactRepository,
   ChartOfAccountsRepository,
   CompanyRepository,
@@ -145,6 +147,10 @@ export interface Persistence {
   contractInvoices: ContractInvoicesReadPort;
   /** [Amélioration 4] — couverture contractuelle réelle d'un équipement (avertissement retrait). */
   equipmentContractCoverage: EquipmentContractCoveragePort;
+  /** PR-15 — fiches de passage (annulation logique, jamais de DELETE runtime). */
+  interventions: InterventionRepository;
+  /** PR-15/16 — réglages de fiche par société (titre de PDF paramétrable, templates). */
+  interventionSettings: CompanyInterventionSettingsRepository;
   worksiteMedia: WorksiteMediaStorage;
   expenseCreationRequests: ExpenseCreationRequestStore;
   quoteCreationRequests: QuoteCreationRequestStore;

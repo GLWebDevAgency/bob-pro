@@ -10,12 +10,16 @@ import {
   ChantierNote,
   Equipment,
   MaintenanceContract,
+  Intervention,
   type ChantierNoteRepository,
   type EquipmentRepository,
   type EquipmentContractCoveragePort,
   type MaintenanceContractRepository,
   type ContractInvoicesReadPort,
   type ContractInvoiceProjection,
+  type InterventionRepository,
+  type CompanyInterventionSettings,
+  type CompanyInterventionSettingsRepository,
   type WorksiteMediaItem,
   type WorksiteMediaStorage,
   Company,
@@ -1868,6 +1872,86 @@ export class InMemoryEquipmentContractCoverage implements EquipmentContractCover
         (contract) => contract.status === 'active' && contract.equipmentIds.includes(equipmentId),
       )
       .map((contract) => contract.label);
+  }
+}
+
+/** PR-15 — adapter de test uniquement ; le runtime live injecte PrismaInterventionRepository. */
+export class InMemoryInterventionRepository implements InterventionRepository {
+  private map = new Map<string, Intervention>();
+  /** Création STRICTE : une collision d'id (client offline) n'écrase JAMAIS une fiche. */
+  async create(intervention: Intervention): Promise<{ outcome: 'created' | 'id_collision' }> {
+    if (this.map.has(intervention.id)) return { outcome: 'id_collision' };
+    this.map.set(intervention.id, Intervention.rehydrate(intervention.toProps()));
+    return { outcome: 'created' };
+  }
+  async save(intervention: Intervention): Promise<void> {
+    this.map.set(intervention.id, Intervention.rehydrate(intervention.toProps()));
+  }
+  async findById(companyId: string, id: string): Promise<Intervention | null> {
+    const intervention = this.map.get(id);
+    return intervention && intervention.companyId === companyId
+      ? Intervention.rehydrate(intervention.toProps())
+      : null;
+  }
+  async lockById(companyId: string, id: string): Promise<Intervention | null> {
+    return this.findById(companyId, id);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<Intervention[]> {
+    return [...this.map.values()]
+      .filter((i) => i.companyId === companyId && i.chantierId === chantierId)
+      .map((i) => Intervention.rehydrate(i.toProps()))
+      .sort((a, b) => (b.plannedAt ?? '').localeCompare(a.plannedAt ?? '') || a.id.localeCompare(b.id));
+  }
+  async listByCompany(companyId: string): Promise<Intervention[]> {
+    return [...this.map.values()]
+      .filter((i) => i.companyId === companyId)
+      .map((i) => Intervention.rehydrate(i.toProps()))
+      .sort((a, b) => (b.plannedAt ?? '').localeCompare(a.plannedAt ?? '') || a.id.localeCompare(b.id));
+  }
+  /** PR-16 — détache les fiches liées au brouillon supprimé (rallumage par l'état réel). */
+  async detachByInvoice(companyId: string, invoiceId: string): Promise<void> {
+    for (const intervention of this.map.values()) {
+      if (intervention.companyId === companyId && intervention.billedInvoiceId === invoiceId) {
+        intervention.detachBilledInvoice();
+      }
+    }
+  }
+
+  snapshot(): Map<string, Intervention> {
+    return new Map(
+      [...this.map].map(([id, intervention]) => [id, Intervention.rehydrate(intervention.toProps())]),
+    );
+  }
+
+  restore(snapshot: Map<string, Intervention>): void {
+    this.map = new Map(
+      [...snapshot].map(([id, intervention]) => [id, Intervention.rehydrate(intervention.toProps())]),
+    );
+  }
+}
+
+/** PR-15/16 — réglages de fiche par société (titre de PDF paramétrable, templates checklist). */
+export class InMemoryCompanyInterventionSettingsRepository
+  implements CompanyInterventionSettingsRepository
+{
+  private map = new Map<string, CompanyInterventionSettings>();
+  async find(companyId: string): Promise<CompanyInterventionSettings | null> {
+    const settings = this.map.get(companyId);
+    return settings === undefined ? null : { ...settings, checklistTemplates: { ...settings.checklistTemplates } };
+  }
+  async save(settings: CompanyInterventionSettings): Promise<void> {
+    this.map.set(settings.companyId, {
+      ...settings,
+      checklistTemplates: { ...settings.checklistTemplates },
+    });
+  }
+
+  snapshot(): Map<string, CompanyInterventionSettings> {
+    return new Map([...this.map].map(([id, s]) => [id, { ...s, checklistTemplates: { ...s.checklistTemplates } }]));
+  }
+
+  restore(snapshot: Map<string, CompanyInterventionSettings>): void {
+    this.map = new Map([...snapshot].map(([id, s]) => [id, { ...s, checklistTemplates: { ...s.checklistTemplates } }]));
   }
 }
 

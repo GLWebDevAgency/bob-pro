@@ -3,6 +3,12 @@ import { type AppError, appDomain, appNotFound } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ChantierRepository } from '../ports/repositories';
 import { type EquipmentRepository } from '../equipment/equipment-repository';
+import { type InterventionRepository } from '../intervention/intervention-repository';
+import {
+  INTERVENTION_SIGNED_LOCKED_MESSAGE,
+  INTERVENTION_PHOTO_PHASES,
+  type InterventionPhotoPhase,
+} from '../../domain/intervention/intervention';
 import { type WorksiteMediaStorage, type WorksiteMediaItem } from '../ports/worksite-media';
 import { type DocumentStoragePort } from '../ports/document-storage';
 
@@ -16,6 +22,10 @@ export interface UploadWorksitePhotoInput {
   filename: string;
   /** PR-11 — équipement du site visé par la photo (tag additif) : absent/null = photo du site. */
   equipmentId?: string | null;
+  /** PR-15 — fiche de passage visée (tag additif) : absent/null = photo hors passage. */
+  interventionId?: string | null;
+  /** PR-15 — phase avant/après : exige `interventionId` (fail-closed). */
+  phase?: InterventionPhotoPhase | null;
 }
 
 export interface UploadWorksitePhotoDeps {
@@ -26,6 +36,8 @@ export interface UploadWorksitePhotoDeps {
   clock: ClockPort;
   /** PR-11 — REQUIS dès qu'un `equipmentId` est fourni (fail-closed, patron chantierTargets). */
   equipments?: EquipmentRepository;
+  /** PR-15 — REQUIS dès qu'un `interventionId` est fourni (fail-closed, même patron). */
+  interventions?: InterventionRepository;
 }
 
 /**
@@ -63,6 +75,44 @@ export class UploadWorksitePhoto {
         }));
     }
 
+    // PR-15 — photo de PASSAGE : fiche prouvée dans le tenant, sur le MÊME site, et encore
+    // OUVERTE aux traces (avant `signed` — machine §3.3/§3.4 : une fiche signée est
+    // verrouillée, une annulée n'accumule plus rien). La phase avant/après exige la fiche.
+    const interventionId = input.interventionId?.trim() || null;
+    const phase = input.phase ?? null;
+    if (phase !== null && !INTERVENTION_PHOTO_PHASES.includes(phase))
+      return err(appDomain({ code: 'VALIDATION', field: 'phase', message: 'Phase de photo invalide (before | after).' }));
+    if (phase !== null && interventionId === null)
+      return err(appDomain({
+        code: 'VALIDATION',
+        field: 'phase',
+        message: 'La phase avant/après exige la fiche de passage visée.',
+      }));
+    if (interventionId !== null) {
+      if (!this.deps.interventions) {
+        return err({
+          kind: 'dependency',
+          port: 'InterventionRepository',
+          cause: 'interventionId fourni sans port de vérification (interventions) : tag refusé.',
+        });
+      }
+      const intervention = await this.deps.interventions.findById(input.companyId, interventionId);
+      if (!intervention || intervention.companyId !== input.companyId)
+        return err(appNotFound('intervention', interventionId));
+      if (intervention.chantierId !== input.chantierId)
+        return err(appDomain({
+          code: 'VALIDATION',
+          field: 'interventionId',
+          message: 'Cette fiche de passage appartient à un autre site.',
+        }));
+      if (!intervention.acceptsFieldTraces())
+        return err(appDomain({
+          code: 'VALIDATION',
+          field: 'interventionId',
+          message: INTERVENTION_SIGNED_LOCKED_MESSAGE,
+        }));
+    }
+
     if (!input.contentType.startsWith('image/'))
       return err(appDomain({ code: 'VALIDATION', field: 'contentType', message: 'Seules les images sont acceptées.' }));
     if (input.bytes.byteLength === 0 || input.bytes.byteLength > MAX_PHOTO_BYTES)
@@ -88,6 +138,8 @@ export class UploadWorksitePhoto {
       storageKey,
       createdAt: this.deps.clock.now(),
       equipmentId,
+      interventionId,
+      phase: interventionId === null ? null : phase,
     };
     await this.deps.media.save(item);
     return ok(item);

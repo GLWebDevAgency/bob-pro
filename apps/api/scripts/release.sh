@@ -643,6 +643,9 @@ REVOKE DELETE ON TABLE public.equipments FROM :"app_role";
 -- maintenance_contracts garde DELETE : le trigger BEFORE DELETE draft-only (amélioration 1)
 -- borne le geste aux brouillons — le grant seul ne suffit jamais.
 REVOKE UPDATE ON TABLE public.maintenance_contract_equipments FROM :"app_role";
+-- PR-15 : une fiche de passage s'ANNULE (statut cancelled), elle ne se supprime jamais — la
+-- preuve du passage (checklist, photos, signature) doit survivre à toute erreur applicative.
+REVOKE DELETE ON TABLE public.interventions FROM :"app_role";
 -- Rail global monotone de l'archive : lecture runtime seulement, activation via DIRECT_URL.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
   public.document_archive_protocol_state
@@ -2647,6 +2650,8 @@ run_nonproduction_mutating_certifications() {
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/equipments.postgres.test.ts
   RUN_POSTGRES_MAINTENANCE_CONTRACT_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/maintenance-contracts.postgres.test.ts
+  RUN_POSTGRES_INTERVENTION_CERT=true \
+    pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/interventions.postgres.test.ts
   RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
     pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-draft-slots.postgres.test.ts
   RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \

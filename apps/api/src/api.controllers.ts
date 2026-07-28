@@ -3637,31 +3637,62 @@ function parseEquipmentIdField(
   return value;
 }
 
+/** PR-15 — hygiène de forme d'un id de fiche de passage (la SUBSTANCE — fiche du même site,
+ * encore ouverte aux traces — reste l'autorité du use case, fail-closed). */
+function parseInterventionIdField(
+  body: Record<string, unknown>,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!('interventionId' in body)) return undefined;
+  const value = body['interventionId'];
+  if (value === null) return null;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 200 ||
+    value !== value.trim() ||
+    hasControlCharacter(value)
+  ) {
+    issues.push({ field: 'interventionId', message: 'Identifiant de fiche invalide.' });
+    return undefined;
+  }
+  return value;
+}
+
+const CHANTIER_NOTE_FIELDS = new Set(['text', 'equipmentId', 'interventionId']);
+
 function parseChantierNoteBody(body: Record<string, unknown>): {
   text: string;
   equipmentId?: string | null;
+  interventionId?: string | null;
 } {
   const issues: ValidationIssue[] = [];
-  const unknownField = Object.keys(body).find((field) => field !== 'text' && field !== 'equipmentId');
+  const unknownField = Object.keys(body).find((field) => !CHANTIER_NOTE_FIELDS.has(field));
   if (unknownField !== undefined)
     throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
   if (typeof body.text !== 'string' || body.text.trim().length === 0)
     throwValidationIssues([{ field: 'text', message: 'Texte de note requis.' }]);
   const equipmentId = parseEquipmentIdField(body, issues);
+  const interventionId = parseInterventionIdField(body, issues);
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     text: body.text as string,
     ...(equipmentId !== undefined ? { equipmentId } : {}),
+    ...(interventionId !== undefined ? { interventionId } : {}),
   };
 }
 
-const WORKSITE_PHOTO_FIELDS = new Set(['contentBase64', 'mimeType', 'filename', 'equipmentId']);
+const WORKSITE_PHOTO_FIELDS = new Set([
+  'contentBase64', 'mimeType', 'filename', 'equipmentId', 'interventionId', 'phase',
+]);
 
 function parseWorksitePhotoBody(body: Record<string, unknown>): {
   contentBase64: string;
   mimeType: string;
   filename: string;
   equipmentId?: string | null;
+  interventionId?: string | null;
+  phase?: 'before' | 'after' | null;
 } {
   const issues: ValidationIssue[] = [];
   const unknownField = Object.keys(body).find((field) => !WORKSITE_PHOTO_FIELDS.has(field));
@@ -3678,12 +3709,22 @@ function parseWorksitePhotoBody(body: Record<string, unknown>): {
     throwValidationIssues([{ field: 'body', message: 'Photo invalide.' }]);
   }
   const equipmentId = parseEquipmentIdField(body, issues);
+  const interventionId = parseInterventionIdField(body, issues);
+  let phase: 'before' | 'after' | null | undefined;
+  if ('phase' in body) {
+    const value = body['phase'];
+    if (value === null) phase = null;
+    else if (value === 'before' || value === 'after') phase = value;
+    else issues.push({ field: 'phase', message: 'Phase de photo invalide (before | after).' });
+  }
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     contentBase64: body.contentBase64 as string,
     mimeType: body.mimeType as string,
     filename: body.filename as string,
     ...(equipmentId !== undefined ? { equipmentId } : {}),
+    ...(interventionId !== undefined ? { interventionId } : {}),
+    ...(phase !== undefined ? { phase } : {}),
   };
 }
 
@@ -3828,6 +3869,199 @@ function parseExpectedRevisionBody(body: Record<string, unknown>): { expectedRev
   return { expectedRevision: body.expectedRevision as number };
 }
 
+// ── PR-15 — frontière HTTP de la fiche de passage (Bloc C) ──
+
+const CREATE_INTERVENTION_FIELDS = new Set([
+  'id', 'customerId', 'equipmentId', 'kind', 'plannedAt', 'technicianLabel', 'checklist',
+]);
+
+/** Instant ISO-8601 (le domaine revalide) — jamais une date « à peu près ». */
+function parseInstantField(
+  body: Record<string, unknown>,
+  field: string,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!(field in body)) return undefined;
+  const value = body[field];
+  if (value === null) return null;
+  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
+    issues.push({ field, message: 'Horodatage invalide (ISO-8601 attendu).' });
+    return undefined;
+  }
+  return value;
+}
+
+/** Checklist LIBRE : forme validée ici, substance (bornes, doublons) par le domaine. */
+function parseChecklistField(
+  body: Record<string, unknown>,
+  issues: ValidationIssue[],
+): { label: string; done: boolean; note?: string }[] | undefined {
+  if (!('checklist' in body)) return undefined;
+  const value = body['checklist'];
+  if (!Array.isArray(value)) {
+    issues.push({ field: 'checklist', message: 'Checklist invalide (tableau attendu).' });
+    return undefined;
+  }
+  const items: { label: string; done: boolean; note?: string }[] = [];
+  for (const raw of value) {
+    if (
+      typeof raw !== 'object' ||
+      raw === null ||
+      typeof (raw as Record<string, unknown>).label !== 'string' ||
+      typeof (raw as Record<string, unknown>).done !== 'boolean'
+    ) {
+      issues.push({ field: 'checklist', message: 'Item de checklist invalide.' });
+      return undefined;
+    }
+    const item = raw as { label: string; done: boolean; note?: unknown };
+    if (item.note !== undefined && typeof item.note !== 'string') {
+      issues.push({ field: 'checklist', message: 'Note d’item invalide.' });
+      return undefined;
+    }
+    items.push({
+      label: item.label,
+      done: item.done,
+      ...(typeof item.note === 'string' ? { note: item.note } : {}),
+    });
+  }
+  return items;
+}
+
+function parseCreateInterventionBody(body: Record<string, unknown>) {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!CREATE_INTERVENTION_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const customerId = body['customerId'];
+  if (typeof customerId !== 'string' || customerId.trim().length === 0 || customerId.length > 200) {
+    issues.push({ field: 'customerId', message: 'Client du passage requis.' });
+  }
+  const kind = body['kind'];
+  if (
+    typeof kind !== 'string' ||
+    kind.trim().length === 0 ||
+    kind.length > 200 ||
+    hasControlCharacter(kind)
+  ) {
+    issues.push({ field: 'kind', message: 'Type de passage requis (libellé libre).' });
+  }
+  // Id GÉNÉRÉ CÔTÉ CLIENT (offline-first) : forme seulement — le use case impose l'uuid v4.
+  let id: string | undefined;
+  if ('id' in body) {
+    const value = body['id'];
+    if (typeof value !== 'string' || value.length === 0 || value.length > 200) {
+      issues.push({ field: 'id', message: 'Identifiant de fiche invalide.' });
+    } else {
+      id = value;
+    }
+  }
+  const equipmentId = parseEquipmentIdField(body, issues);
+  const plannedAt = parseInstantField(body, 'plannedAt', issues);
+  const technicianLabel = parseEquipmentFreeField(body, 'technicianLabel', 200, issues);
+  const checklist = parseChecklistField(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    ...(id !== undefined ? { id } : {}),
+    customerId: customerId as string,
+    kind: kind as string,
+    ...(equipmentId !== undefined ? { equipmentId } : {}),
+    ...(plannedAt !== undefined ? { plannedAt } : {}),
+    ...(technicianLabel !== undefined ? { technicianLabel } : {}),
+    ...(checklist !== undefined ? { checklist } : {}),
+  };
+}
+
+const INTERVENTION_PATCH_FIELDS = new Set([
+  'kind', 'technicianLabel', 'equipmentId', 'checklist', 'summary',
+]);
+
+function parseUpdateInterventionBody(body: Record<string, unknown>) {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (field !== 'expectedRevision' && !INTERVENTION_PATCH_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const expectedRevision = body['expectedRevision'];
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+  }
+  const kind = parseEquipmentFreeField(body, 'kind', 200, issues);
+  const technicianLabel = parseEquipmentFreeField(body, 'technicianLabel', 200, issues);
+  const summary = parseEquipmentFreeField(body, 'summary', 2000, issues, true);
+  const equipmentId = parseEquipmentIdField(body, issues);
+  const checklist = parseChecklistField(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    expectedRevision: expectedRevision as number,
+    patch: {
+      ...(typeof kind === 'string' ? { kind } : {}),
+      ...(technicianLabel !== undefined ? { technicianLabel } : {}),
+      ...(summary !== undefined ? { summary } : {}),
+      ...(equipmentId !== undefined ? { equipmentId } : {}),
+      ...(checklist !== undefined ? { checklist } : {}),
+    },
+  };
+}
+
+function parseCompleteInterventionBody(body: Record<string, unknown>) {
+  const issues: ValidationIssue[] = [];
+  const allowed = new Set(['expectedRevision', 'finishedAt', 'checklist', 'summary']);
+  for (const field of Object.keys(body)) {
+    if (!allowed.has(field)) issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+  }
+  const expectedRevision = body['expectedRevision'];
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+  }
+  const finishedAt = parseInstantField(body, 'finishedAt', issues);
+  const summary = parseEquipmentFreeField(body, 'summary', 2000, issues, true);
+  const checklist = parseChecklistField(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    expectedRevision: expectedRevision as number,
+    ...(finishedAt !== undefined && finishedAt !== null ? { finishedAt } : {}),
+    ...(summary !== undefined ? { summary } : {}),
+    ...(checklist !== undefined ? { checklist } : {}),
+  };
+}
+
+function parseSignInterventionBody(body: Record<string, unknown>) {
+  const issues: ValidationIssue[] = [];
+  const allowed = new Set(['expectedRevision', 'signerName', 'proofDataUrl', 'capturedAtDevice']);
+  for (const field of Object.keys(body)) {
+    if (!allowed.has(field)) issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+  }
+  const expectedRevision = body['expectedRevision'];
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+  }
+  const signerName = body['signerName'];
+  if (
+    typeof signerName !== 'string' ||
+    signerName.trim().length < 2 ||
+    signerName.length > 120 ||
+    hasControlCharacter(signerName)
+  ) {
+    issues.push({ field: 'signerName', message: 'Nom du signataire requis.' });
+  }
+  // Le TRACÉ brut : le serveur en calcule le sha256 (le client ne fournit JAMAIS le hash).
+  const proofDataUrl = body['proofDataUrl'];
+  if (typeof proofDataUrl !== 'string' || proofDataUrl.length === 0 || proofDataUrl.length > 2_000_000) {
+    issues.push({ field: 'proofDataUrl', message: 'Tracé de signature requis.' });
+  }
+  const capturedAtDevice = parseInstantField(body, 'capturedAtDevice', issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    expectedRevision: expectedRevision as number,
+    signerName: signerName as string,
+    proofDataUrl: proofDataUrl as string,
+    ...(capturedAtDevice !== undefined && capturedAtDevice !== null ? { capturedAtDevice } : {}),
+  };
+}
+
 @Controller('chantiers')
 export class ChantiersController {
   constructor(private readonly backend: BackendService) {}
@@ -3863,9 +4097,38 @@ export class ChantiersController {
   async photoViewUrl(@Param('photoId') photoId: string) {
     return unwrap(await this.backend.worksitePhotoViewUrl(photoId));
   }
+  /** ERRATUM 6 — `resolutionNote` optionnelle : la note de résolution d'un échec de synchro
+   * est portée par CE geste (elle prend la place de la photo retirée, avant le sign en file). */
   @Delete('photos/:photoId')
-  async deletePhoto(@Param('photoId') photoId: string) {
-    return unwrap(await this.backend.deleteWorksitePhoto(photoId));
+  async deletePhoto(@Param('photoId') photoId: string, @Body() body?: unknown) {
+    if (body === undefined || body === null) return unwrap(await this.backend.deleteWorksitePhoto(photoId));
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => field !== 'resolutionNote');
+    if (unknownField !== undefined)
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    if (
+      'resolutionNote' in body &&
+      (typeof body.resolutionNote !== 'string' ||
+        body.resolutionNote.trim().length === 0 ||
+        body.resolutionNote.length > 2000)
+    ) {
+      throwValidationIssues([{ field: 'resolutionNote', message: 'Note de résolution invalide.' }]);
+    }
+    return unwrap(
+      await this.backend.deleteWorksitePhoto(photoId, {
+        ...(typeof body.resolutionNote === 'string' ? { resolutionNote: body.resolutionNote } : {}),
+      }),
+    );
+  }
+  // ── PR-15 — fiches de passage du site (Bloc C) ──
+  @Get(':id/interventions')
+  async listInterventions(@Param('id') id: string) {
+    return unwrap(await this.backend.listChantierInterventions(id));
+  }
+  @Post(':id/interventions')
+  async createIntervention(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createIntervention(id, parseCreateInterventionBody(body)));
   }
   // ── PR-11 — parc d'équipements du site (Bloc A) ──
   @Get(':id/equipments')
@@ -4180,6 +4443,80 @@ export class MaintenanceContractsController {
   @Post(':id/annual-invoice')
   async prepareAnnualInvoice(@Param('id') id: string) {
     return unwrap(await this.backend.prepareContractAnnualInvoice(id));
+  }
+}
+
+/** PR-15 — mutations/lectures d'une fiche de passage PAR id (le site est porté par la fiche). */
+@Controller('interventions')
+export class InterventionsController {
+  constructor(private readonly backend: BackendService) {}
+  @Get(':id')
+  async get(@Param('id') id: string) {
+    return unwrap(await this.backend.getIntervention(id));
+  }
+  @Post(':id/start')
+  async start(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const allowed = new Set(['expectedRevision', 'startedAt']);
+    const unknownField = Object.keys(body).find((field) => !allowed.has(field));
+    if (unknownField !== undefined)
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    const issues: ValidationIssue[] = [];
+    if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 1)
+      issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+    const startedAt = parseInstantField(body, 'startedAt', issues);
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.startIntervention({
+        interventionId: id,
+        expectedRevision: body.expectedRevision as number,
+        ...(startedAt !== undefined && startedAt !== null ? { startedAt } : {}),
+      }),
+    );
+  }
+  @Post(':id/complete')
+  async complete(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.completeIntervention({
+        interventionId: id,
+        ...parseCompleteInterventionBody(body),
+      }),
+    );
+  }
+  /** Signature sur place — le tracé arrive brut, le SHA-256 est calculé SERVEUR (patron R4). */
+  @Post(':id/sign')
+  async sign(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.signIntervention({
+        interventionId: id,
+        ...parseSignInterventionBody(body),
+      }),
+    );
+  }
+  @Post(':id/cancel')
+  async cancel(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseExpectedRevisionBody(body);
+    return unwrap(
+      await this.backend.cancelIntervention({
+        interventionId: id,
+        expectedRevision: parsed.expectedRevision,
+      }),
+    );
+  }
+  @Put(':id')
+  async update(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseUpdateInterventionBody(body);
+    return unwrap(
+      await this.backend.updateIntervention({
+        interventionId: id,
+        expectedRevision: parsed.expectedRevision,
+        patch: parsed.patch,
+      }),
+    );
   }
 }
 

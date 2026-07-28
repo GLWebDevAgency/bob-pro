@@ -55,6 +55,8 @@ DECLARE
     'maintenance_contracts',
     'maintenance_contract_lines',
     'maintenance_contract_equipments',
+    'interventions',
+    'company_intervention_settings',
     'subscriptions',
     'fiscal_profiles',
     'document_counters',
@@ -413,6 +415,16 @@ CREATE POLICY tenant_isolation ON maintenance_contract_lines
 
 DROP POLICY IF EXISTS tenant_isolation ON maintenance_contract_equipments;
 CREATE POLICY tenant_isolation ON maintenance_contract_equipments
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON interventions;
+CREATE POLICY tenant_isolation ON interventions
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON company_intervention_settings;
+CREATE POLICY tenant_isolation ON company_intervention_settings
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
