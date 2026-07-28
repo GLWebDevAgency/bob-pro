@@ -1,24 +1,56 @@
 import { describe, expect, it } from 'vitest';
 import { extractSpokenContractFacts, extractSpokenContractLabel } from './contract-command';
+import { inspectContractLabel } from './contract-label-guard';
 
 /**
  * §2.7 — TEST D'INVARIANT SUR CORPUS COMBINATOIRE.
  *
- * POURQUOI CE TEST EXISTE : trois revues successives ont trouvé la MÊME pathologie sous trois
- * formes différentes (un montant qui reste collé au libellé, puis une date, puis le nom du
- * client). À chaque fois la correction ajoutait un motif de plus à une liste de nettoyeurs, et à
- * chaque fois la revue suivante trouvait la forme parlée que la liste ne couvrait pas. Le libellé
- * est persisté comme libellé du contrat ET de sa LIGNE UNIQUE, donc repris comme LIGNE de la
- * facture annuelle : il s'IMPRIME sur une pièce légale archivée immuable. La confirmation vocale
- * ne protège de rien — elle récite le libellé fautif, le pro entend sa propre phrase et valide.
+ * POURQUOI CE TEST EXISTE : quatre revues successives ont trouvé la MÊME pathologie sous quatre
+ * formes différentes (un montant collé au libellé, puis une date, puis le nom du client, puis les
+ * formes parlées qu'aucune des trois listes précédentes ne couvrait). Le libellé est persisté
+ * comme libellé du contrat ET de sa LIGNE UNIQUE, donc repris comme LIGNE de la facture
+ * annuelle : il s'IMPRIME sur une pièce légale archivée immuable. La confirmation vocale ne
+ * protège de rien — elle récite le libellé fautif, le pro entend sa propre phrase et valide.
  *
- * CE QUE CE TEST GARANTIT : on ne vérifie plus des exemples, on vérifie des INVARIANTS sur le
- * PRODUIT CARTÉSIEN de toutes les manières de dire chaque fait. Une forme parlée ajoutée demain à
- * l'une des dimensions est immédiatement croisée avec toutes les autres — la classe de bug ne
- * peut plus se réintroduire par un angle mort d'énumération.
+ * CE QUE CE TEST GARANTIT : on ne vérifie pas des exemples, on vérifie des INVARIANTS sur le
+ * PRODUIT CARTÉSIEN de toutes les manières de dire chaque fait, ET de toutes les POSITIONS où
+ * elles peuvent être dites — avant le libellé comme après. Une forme parlée ajoutée demain à
+ * l'une des dimensions est immédiatement croisée avec toutes les autres.
+ *
+ * CE QUE CE TEST NE PRÉTEND PLUS ÊTRE — et c'est le point de la quatrième revue : un corpus, si
+ * large soit-il, reste une ÉNUMÉRATION. Il ne peut pas prouver qu'aucune forme parlée n'échappe
+ * à l'extraction, parce que les formes parlées ne sont pas énumérables. C'est pourquoi la sûreté
+ * de la pièce ne repose PAS sur ce test : elle repose sur la garde fail-closed
+ * (`contract-label-guard.ts`), qui refuse tout libellé PORTANT LA TRACE d'un fait, y compris
+ * celles que l'extraction n'a pas comprises. Ce corpus mesure autre chose : le NOMBRE DE
+ * QUESTIONS que Bob devra poser. Chaque forme qu'il couvre est une question en moins ; chaque
+ * forme qu'il rate est une question de plus — jamais une pièce fausse.
+ *
+ * INDÉPENDANCE DES DÉTECTEURS — troisième exigence de la revue : un test qui énumère les mêmes
+ * jetons que le code ne teste que sa propre copie du code. Les détecteurs ci-dessous ne
+ * connaissent AUCUN lexique de l'extracteur. Ils viennent de deux sources distinctes :
+ *   · la FUITE — les jetons injectés par le générateur de corpus (donc connus indépendamment du
+ *     code testé) ne doivent pas réapparaître dans le libellé lu ;
+ *   · la PROPRIÉTÉ STRUCTURELLE — « aucun chiffre suivi d'un mot court commençant par e/€ »,
+ *     « aucun nombre écrit comme une somme » : des formes, pas des listes de mots.
  *
  * Le corpus se génère en TypeScript, sans dépendance de fuzzing : il est DÉTERMINISTE, donc un
  * échec est reproductible à l'identique et la revue peut relire la phrase fautive.
+ *
+ * CE QUE CE CORPUS NE COUVRE PAS (honnêtement) :
+ *   · les montants en TOUTES LETTRES (« deux mille euros ») : ils sont DÉLIBÉRÉMENT illisibles —
+ *     ils bornent le libellé mais la valeur reste une question ; leur non-lecture est vérifiée
+ *     dans `contract-command.test.ts`, pas ici ;
+ *   · les repères de calendrier sans valeur (« à la rentrée », « en janvier ») : ils bornent le
+ *     libellé sans produire de date ; même raison ;
+ *   · les cadences que l'ADJECTIF SEUL porte (« contrat trimestriel ») : elles ne sont ni lues ni
+ *     coupées, parce que « Entretien trimestriel » est un NOM de contrat parfaitement légitime —
+ *     la garde les questionne, l'extracteur ne les tranche pas ;
+ *   · les fautes de dictée, les mots collés, les répétitions et les auto-corrections (« le
+ *     contrat euh non le contrat… ») ;
+ *   · les langues autres que le français ;
+ *   · plus généralement : toute forme parlée que personne n'a encore imaginée. C'est précisément
+ *     ce trou-là que la garde fail-closed couvre, et qu'aucun corpus ne fermera jamais.
  */
 
 const TODAY = '2026-09-20';
@@ -36,27 +68,26 @@ const GESTURES: readonly string[] = [
  * Libellés que le pro dicte VRAIMENT : avec des chiffres, des prépositions, des traits d'union,
  * des noms propres. Ce sont eux qui interdisent de « nettoyer » à la hache — sur-couper est une
  * faute aussi grave que sous-couper, elle mutile le nom d'un contrat sur une facture.
- * `impliedCount` : le nombre d'équipements que le LIBELLÉ lui-même corrobore (« Entretien 12
- * ascenseurs » nomme bien 12 objets du parc) lorsqu'aucun cadre de parc n'est dit par ailleurs.
  */
-interface BusinessLabel {
-  readonly said: string;
-  readonly impliedCount: number | null;
-}
-const LABELS: readonly BusinessLabel[] = [
-  { said: 'Entretien vitrines', impliedCount: null },
-  { said: 'Entretien 12 ascenseurs', impliedCount: 12 },
-  { said: 'Porte-à-faux quai 3', impliedCount: null },
-  { said: 'Nettoyage à sec hall B', impliedCount: null },
-  { said: 'Maintenance Eurotunnel Nord', impliedCount: null },
-  { said: 'Dépannage fontaines Europe 2', impliedCount: null },
+const LABELS: readonly string[] = [
+  'Entretien vitrines',
+  'Entretien 12 ascenseurs',
+  'Porte-à-faux quai 3',
+  'Nettoyage à sec hall B',
+  'Maintenance Eurotunnel Nord',
+  'Dépannage fontaines Europe 2',
+  // DÉSIGNATION de bâtiment en dernière position : la règle de queue pendante, lue sans égard à
+  // la casse, amputait « Entretien hall A » en « Entretien hall » — un nom MUTILÉ, ni vide ni
+  // moignon, que rien en aval ne signalait et qui s'imprimait tel quel sur la facture annuelle.
+  'Entretien hall A',
 ];
 
 // ── Dimension 3 : CLIENT ────────────────────────────────────────────────────────────────────
 /**
  * « Carrefour » est aussi un nom COMMUN : c'est le piège qui interdit de traiter un nom propre
- * comme un simple mot rare. « pour RATP » (sans le mot « client ») est la forme qui a échappé à
- * la quatrième revue — elle n'est reconnaissable que parce que RATP est un client du fichier.
+ * comme un simple mot rare. « pour RATP » (sans le mot « client ») n'est reconnaissable que
+ * parce que RATP est un client du fichier ; « pour le compte de » et « au nom de » le sont par
+ * la tournure seule, même quand le bénéficiaire est introuvable au fichier.
  */
 interface SpokenCustomer {
   readonly name: string;
@@ -67,6 +98,8 @@ const CUSTOMERS: readonly SpokenCustomer[] = [
   { name: 'RATP', said: 'pour RATP' },
   { name: 'Carrefour', said: 'chez Carrefour' },
   { name: 'Vinci Immobilier', said: 'pour la société Vinci Immobilier' },
+  { name: 'RATP', said: 'pour le compte de RATP' },
+  { name: 'Carrefour', said: 'au nom de Carrefour' },
 ];
 
 /** Le fichier client RÉEL du tenant — ce que l'hôte donne au lecteur pur. */
@@ -86,6 +119,11 @@ const AMOUNTS: readonly SpokenAmount[] = [
   { said: 'à 1 200,50 € par an', cents: 120_050 },
   { said: `à 1${NBSP}200 € par an`, cents: 120_000 },
   { said: `à 1${NNBSP}200 € par an`, cents: 120_000 },
+  // Séparateur de milliers par POINT : la forme qui faisait naître le contrat au SIXIÈME de son
+  // prix (« 1.200 € » lu 200 €), et dont le fragment « 1. » restait imprimé sur la ligne.
+  { said: 'à 1.200 € par an', cents: 120_000 },
+  // Forme ABRÉGÉE : le millier est dans le marqueur, pas dans les chiffres.
+  { said: 'à 12 k€ par an', cents: 1_200_000 },
   // Argot : la SOMME reste illisible (Bob demandera le montant) mais elle a bien été ÉNONCÉE —
   // elle ne doit donc jamais finir imprimée comme nom de la ligne de facture.
   { said: '400 balles par an', cents: null },
@@ -114,6 +152,10 @@ const PERIODICITIES: readonly SpokenPeriodicity[] = [
   { said: '4 passages', visits: 4 },
   { said: 'tous les 6 mois', visits: 2 },
   { said: 'une fois par trimestre', visits: 4 },
+  // Cadences NON CHIFFRÉES — les trois formes que la quatrième revue a listées.
+  { said: 'un passage par mois', visits: 12 },
+  { said: 'visite bimestrielle', visits: 6 },
+  { said: 'deux interventions annuelles', visits: 2 },
   { said: '', visits: null },
 ];
 
@@ -139,14 +181,33 @@ const ORDERS: readonly (readonly number[])[] = [
 /** Avec virgules (dictée ponctuée) ET sans (dictée d'une traite, le cas où les bugs se cachent). */
 const SEPARATORS: readonly string[] = [', ', ' '];
 
+/**
+ * ── Dimension 8 : POSITION ──────────────────────────────────────────────────────────────────
+ * L'ANGLE MORT STRUCTUREL de la quatrième revue : jusqu'ici le corpus disait TOUJOURS le libellé
+ * d'abord et les faits ensuite. Or un pro dit tout aussi naturellement « Pour RATP, crée le
+ * contrat Entretien vitrines » ou « À 1 200 € par an, fais-moi le contrat Entretien vitrines ».
+ * Un fait dit AVANT le libellé n'était donc JAMAIS testé — ni sa lecture, ni son absence du nom.
+ *  · `apres`   : tous les faits après le libellé (l'ancien corpus, conservé) ;
+ *  · `avant`   : tous les faits AVANT l'amorce de geste ;
+ *  · `encadre` : le premier fait avant, les autres après — le nom du contrat est ENCADRÉ.
+ */
+type Position = 'apres' | 'avant' | 'encadre';
+const POSITIONS: readonly Position[] = ['apres', 'avant', 'encadre'];
+
 interface CorpusEntry {
   readonly phrase: string;
-  readonly label: BusinessLabel;
+  readonly label: string;
+  readonly position: Position;
   readonly customer: SpokenCustomer;
   readonly amount: SpokenAmount;
   readonly date: SpokenDate;
   readonly periodicity: SpokenPeriodicity;
   readonly equipment: SpokenEquipment;
+}
+
+/** Une phrase qui commence par un fait ne commence pas par une majuscule de geste. */
+function lowerFirst(value: string): string {
+  return value.charAt(0).toLowerCase() + value.slice(1);
 }
 
 function buildCorpus(): CorpusEntry[] {
@@ -162,6 +223,9 @@ function buildCorpus(): CorpusEntry[] {
                 const order = ORDERS[index % ORDERS.length] ?? [];
                 const separator =
                   SEPARATORS[Math.floor(index / ORDERS.length) % SEPARATORS.length] ?? ' ';
+                const position =
+                  POSITIONS[Math.floor(index / (ORDERS.length * SEPARATORS.length)) % POSITIONS.length] ??
+                  'apres';
                 index += 1;
                 const said = [
                   customer.said,
@@ -170,12 +234,18 @@ function buildCorpus(): CorpusEntry[] {
                   periodicity.said,
                   equipment.said,
                 ];
-                const tail = order
-                  .map((position) => said[position] ?? '')
+                const facts = order
+                  .map((slot) => said[slot] ?? '')
                   .filter((segment) => segment.length > 0);
+                const cut =
+                  position === 'apres' ? 0 : position === 'avant' ? facts.length : Math.min(1, facts.length);
+                const before = facts.slice(0, cut);
+                const after = facts.slice(cut);
+                const head = before.length === 0 ? `${gesture} ${label}` : lowerFirst(`${gesture} ${label}`);
                 corpus.push({
-                  phrase: [`${gesture} ${label.said}`, ...tail].join(separator),
+                  phrase: [...before, head, ...after].join(separator),
                   label,
+                  position,
                   customer,
                   amount,
                   date,
@@ -194,7 +264,7 @@ function buildCorpus(): CorpusEntry[] {
 
 const CORPUS = buildCorpus();
 
-// ── Détecteurs d'invariants ─────────────────────────────────────────────────────────────────
+// ── Détecteurs d'invariants — AUCUN lexique emprunté au code testé ───────────────────────────
 
 const fold = (value: string): string =>
   value
@@ -202,11 +272,36 @@ const fold = (value: string): string =>
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase();
 
-const MONEY_MARKER = /€|\beuros?\b|\beur\b|\bballes?\b|\bboules?\b|\bkeuros?\b/i;
-const DATE_MARKER =
-  /\d{1,2}\/\d{1,2}\/\d{4}|\d{4}-\d{2}-\d{2}|\b(?:janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\b|\ba partir\b|\ba compter\b|\bdes le\b|\bca demarre\b|\b1er\b/i;
-const PERIODICITY_MARKER =
-  /\bvisites?\b|\bpassages?\b|\binterventions?\b|\btous les\b|\bfois par\b|\bpar an\b|\bpar trimestre\b|\bpar semestre\b/i;
+/**
+ * Mots-outils du FRANÇAIS — grammaire, pas lexique d'extracteur. Ils appartiennent à toutes les
+ * phrases et ne prouvent aucune fuite : « Nettoyage à sec hall B » contient légitimement « à ».
+ * Aucun pronom ni aucun verbe n'y figure : « ils ont 3 machines » qui fuirait dans un nom de
+ * contrat DOIT être vu.
+ */
+const MOTS_OUTILS: ReadonlySet<string> = new Set([
+  'a', 'au', 'aux', 'de', 'du', 'des', 'd', 'l', 'le', 'la', 'les', 'un', 'une',
+  'et', 'ou', 'en', 'sur', 'par', 'pour', 'chez', 'avec', 'sans', 'dans',
+]);
+
+/** Jetons SIGNIFICATIFS d'un fragment dicté — la seule « connaissance » du test est le corpus. */
+function jetons(said: string): string[] {
+  return fold(said)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0 && !MOTS_OUTILS.has(token));
+}
+
+/**
+ * PROPRIÉTÉS STRUCTURELLES — formulées comme des FORMES, jamais comme des listes de mots, pour
+ * ne pas retester la copie du lexique du code :
+ *  · `CHIFFRE_PUIS_MOT_MONETAIRE` : « aucun chiffre suivi d'un mot court commençant par € ou e »
+ *    — elle attrape €, euro, euros, eur, k€, keuros sans les nommer ;
+ *  · `SYMBOLE_MONETAIRE` : aucun symbole de devise, où qu'il soit ;
+ *  · `NOMBRE_ECRIT_COMME_UNE_SOMME` : un groupe de chiffres séparé par un point, une virgule ou
+ *    une espace d'un groupe de 2 ou 3 chiffres — c'est la FORME d'une somme, pas son lexique.
+ */
+const CHIFFRE_PUIS_MOT_MONETAIRE = /\d[\s\u00a0\u202f]*(?:k[\s\u00a0\u202f]*)?(?:€|e\p{L}{0,3}\b)/iu;
+const SYMBOLE_MONETAIRE = /[€$£]/u;
+const NOMBRE_ECRIT_COMME_UNE_SOMME = /\d[.,\s\u00a0\u202f]\d{2,3}\b/u;
 
 interface Failure {
   readonly invariant: string;
@@ -214,7 +309,6 @@ interface Failure {
   readonly observed: string;
 }
 
-/** Les SEPT invariants du libellé, plus la restitution exacte et le comptage d'équipements. */
 function checkEntry(entry: CorpusEntry): Failure[] {
   const failures: Failure[] = [];
   const facts = extractSpokenContractFacts(entry.phrase, TODAY, {
@@ -225,48 +319,61 @@ function checkEntry(entry: CorpusEntry): Failure[] {
     failures.push({ invariant, phrase: entry.phrase, observed });
   };
 
-  // (6) — un libellé métier a été dicté : il ne peut pas revenir vide.
+  // (1) — un libellé métier a été dicté : il ne peut pas revenir vide.
   if (label === null || label.trim().length === 0) {
-    fail('6 · libellé non vide quand un libellé métier est dicté', String(label));
+    fail('1 · libellé non vide quand un libellé métier est dicté', String(label));
     return failures;
   }
-  const folded = fold(label);
-  // Ce qui reste du libellé une fois le libellé MÉTIER retiré : tout résidu est une pollution.
-  const residue = folded.replace(fold(entry.label.said), ' ');
 
-  // (1) — aucun chiffre d'un montant dit (les chiffres du libellé métier, eux, sont légitimes).
-  if (/\d/.test(residue)) fail('1 · aucun chiffre de montant dans le libellé', label);
-  // (2) — aucun symbole ni mot monétaire, argot compris.
-  if (MONEY_MARKER.test(folded)) fail('2 · aucun symbole ni mot monétaire', label);
-  // (3) — aucune date ni marqueur de date.
-  if (DATE_MARKER.test(folded)) fail('3 · aucune date ni marqueur de date', label);
-  // (4) — le nom du client dit n'appartient pas au libellé.
-  for (const token of fold(entry.customer.name).split(/[^\p{L}\p{N}]+/u)) {
-    if (token.length >= 2 && folded.includes(token)) {
-      fail(`4 · le nom du client (« ${entry.customer.name} ») hors du libellé`, label);
-      break;
-    }
+  // (2) — FUITE : aucun jeton d'un fait INJECTÉ ne réapparaît dans le libellé lu, sauf s'il
+  //       appartient déjà au libellé métier (« 12 » est légitime dans « Entretien 12 ascenseurs »).
+  //       Ce détecteur ne connaît que ce que le GÉNÉRATEUR a dit — source indépendante du code.
+  const duMetier = new Set(jetons(entry.label));
+  const duLabelLu = new Set(jetons(label));
+  const fuites = [
+    entry.customer.said,
+    entry.amount.said,
+    entry.date.said,
+    entry.periodicity.said,
+    entry.equipment.said,
+  ]
+    .flatMap(jetons)
+    .filter((token) => !duMetier.has(token) && duLabelLu.has(token));
+  if (fuites.length > 0) {
+    fail(`2 · fuite d’un fait dit dans le libellé (« ${[...new Set(fuites)].join(', ')} »)`, label);
   }
-  // (5) — la cadence dite n'appartient pas au libellé.
-  if (PERIODICITY_MARKER.test(folded)) fail('5 · aucune périodicité dans le libellé', label);
-  // (6 bis) — le libellé métier est restitué MOT POUR MOT : ni sur-coupe, ni sous-coupe.
-  if (label !== entry.label.said) {
-    fail(`6 bis · restitution exacte (attendu « ${entry.label.said} »)`, label);
+
+  // (3) — PROPRIÉTÉS : aucune trace de somme, quelle qu'en soit l'écriture.
+  if (CHIFFRE_PUIS_MOT_MONETAIRE.test(label)) fail('3a · chiffre collé à un mot monétaire', label);
+  if (SYMBOLE_MONETAIRE.test(label)) fail('3b · symbole monétaire dans le libellé', label);
+  if (NOMBRE_ECRIT_COMME_UNE_SOMME.test(label)) fail('3c · nombre écrit comme une somme', label);
+
+  // (4) — RESTITUTION EXACTE : ni sur-coupe (un nom mutilé s'imprimerait tel quel), ni
+  //       sous-coupe. C'est l'invariant le plus fort : il subsume les précédents et les rend
+  //       lisibles quand il tombe.
+  if (label !== entry.label) {
+    fail(`4 · restitution exacte (attendu « ${entry.label} »)`, label);
   }
-  // (7) — stabilité par relecture : la forme canonique que Bob REDIT à chaque followUp doit se
-  // relire à l'identique, sinon le libellé se reconstruirait autrement d'un tour à l'autre.
+
+  // (5) — STABILITÉ PAR RELECTURE : la forme canonique que Bob REDIT à chaque followUp doit se
+  //       relire à l'identique, sinon le libellé se reconstruirait autrement d'un tour à l'autre.
   const reread = extractSpokenContractLabel(
     `Crée le contrat « ${label} » pour le client cus-x à 15000 € par an, à partir du 01/10/2026`,
     { customerNames: CUSTOMER_FILE },
   );
-  if (reread !== label) fail(`7 · stable par relecture (relu « ${String(reread)} »)`, label);
+  if (reread !== label) fail(`5 · stable par relecture (relu « ${String(reread)} »)`, label);
 
-  // Faits voisins : ils prouvent que la découpe n'a pas été obtenue en abîmant la lecture.
+  // (6) — LA GARDE NE COÛTE PAS UNE QUESTION INUTILE : un libellé métier correctement dicté doit
+  //       traverser la garde SANS refus. C'est le contrepoids honnête de la garde fail-closed —
+  //       elle a le droit d'être large, pas celui de rendre le geste vocal impraticable.
+  const verdict = inspectContractLabel(label, { customerNames: CUSTOMER_FILE });
+  if (!verdict.accepted) {
+    fail(`6 · la garde refuse un libellé métier légitime (${verdict.blocking.join(', ')})`, label);
+  }
+
+  // ── Faits voisins : ils prouvent que la découpe n'a pas été obtenue en abîmant la lecture ──
   if (facts.annualAmountCents !== entry.amount.cents) {
-    fail(
-      `montant lu (attendu ${String(entry.amount.cents)})`,
-      String(facts.annualAmountCents),
-    );
+    fail(`montant lu (attendu ${String(entry.amount.cents)})`, String(facts.annualAmountCents));
   }
   if (facts.startDate !== entry.date.date) {
     fail(`date de démarrage lue (attendu ${String(entry.date.date)})`, String(facts.startDate));
@@ -277,14 +384,12 @@ function checkEntry(entry: CorpusEntry): Failure[] {
       String(facts.visitsPerYear),
     );
   }
-  // equipmentCount : un CADRE de parc dit prime ; sinon seul le libellé peut corroborer ;
-  // à défaut, aucun fait — jamais un nombre faux au point de décision d'une mutation.
-  const expectedCount = entry.equipment.count ?? entry.label.impliedCount;
-  if (facts.equipmentCount !== expectedCount) {
-    fail(
-      `équipements comptés (attendu ${String(expectedCount)})`,
-      String(facts.equipmentCount),
-    );
+  // equipmentCount : SEUL un cadre de parc explicite compte désormais. La corroboration par le
+  // LIBELLÉ a été supprimée parce qu'elle était TAUTOLOGIQUE — le libellé est lui-même lu de la
+  // phrase, il ne prouve donc rien de plus qu'elle, et « entretien 4 saisons » s'auto-corroborait
+  // en 4 ÉQUIPEMENTS que Bob récitait au point de décision d'une mutation.
+  if (facts.equipmentCount !== entry.equipment.count) {
+    fail(`équipements comptés (attendu ${String(entry.equipment.count)})`, String(facts.equipmentCount));
   }
   return failures;
 }
@@ -302,7 +407,7 @@ function report(failures: readonly Failure[]): string {
 }
 
 describe('libellé de contrat — invariants sur corpus combinatoire (§2.7)', () => {
-  it('le corpus croise TOUTES les manières de dire chaque fait', () => {
+  it('le corpus croise TOUTES les manières de dire chaque fait, et toutes les POSITIONS', () => {
     expect(CORPUS.length).toBe(
       GESTURES.length *
         LABELS.length *
@@ -317,6 +422,16 @@ describe('libellé de contrat — invariants sur corpus combinatoire (§2.7)', (
     // Les deux styles de dictée sont représentés : ponctuée ET d'une traite (sans virgule).
     expect(CORPUS.some((entry) => entry.phrase.includes(','))).toBe(true);
     expect(CORPUS.some((entry) => !entry.phrase.includes(','))).toBe(true);
+    // Les TROIS positions sont réellement produites — sans quoi l'angle mort resterait ouvert.
+    for (const position of POSITIONS) {
+      const sample = CORPUS.filter((entry) => entry.position === position);
+      expect(sample.length, `position « ${position} » absente du corpus`).toBeGreaterThan(0);
+    }
+    // …et un fait est bien dit AVANT le geste dans la position « avant ».
+    const avant = CORPUS.find(
+      (entry) => entry.position === 'avant' && entry.customer.said.length > 0,
+    );
+    expect(avant?.phrase.indexOf('ontrat')).toBeGreaterThan(0);
   });
 
   it(
@@ -328,6 +443,6 @@ describe('libellé de contrat — invariants sur corpus combinatoire (§2.7)', (
         `${failures.length} violation(s) d’invariant sur ${CORPUS.length} phrases du corpus`,
       ).toBe('');
     },
-    60_000,
+    120_000,
   );
 });

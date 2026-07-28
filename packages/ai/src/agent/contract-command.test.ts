@@ -288,14 +288,29 @@ describe('extractSpokenEquipmentCount — corroboré, sinon null (jamais un nomb
     ).toBe(3);
   });
 
-  it('le LIBELLÉ dit corrobore la reprise (« contrat fontaines RATP, 3 fontaines »)', () => {
+  /**
+   * Le libellé ne peut pas SE corroborer : il est lui-même lu de la phrase, il n'apporte donc
+   * aucune preuve que la phrase ne contenait pas déjà. « Crée le contrat entretien 4 saisons »
+   * s'auto-corroborait ainsi en 4 ÉQUIPEMENTS, que Bob récitait au point de décision d'une
+   * mutation. Seul le PARC RÉEL — qui vient de l'hôte, pas de la phrase — corrobore un comptage.
+   */
+  it('le libellé dit ne se corrobore PAS lui-même (la tautologie ne compte aucun équipement)', () => {
     expect(
       extractSpokenContractFacts('Fais-moi le contrat fontaines RATP, 3 fontaines', TODAY)
         .equipmentCount,
+    ).toBeNull();
+    expect(
+      extractSpokenContractFacts('Crée le contrat entretien 4 saisons', TODAY).equipmentCount,
+    ).toBeNull();
+    // …mais le parc RÉEL, lui, corrobore la même phrase : la preuve vient d'ailleurs que d'elle.
+    expect(
+      extractSpokenContractFacts('Fais-moi le contrat fontaines RATP, 3 fontaines', TODAY, {
+        parkVocabulary: ['Fontaine quai A', 'Fontaine hall'],
+      }).equipmentCount,
     ).toBe(3);
   });
 
-  it('un CADRE dit prime sur une simple reprise du libellé — c’est la preuve la plus forte', () => {
+  it('un CADRE dit prime sur tout le reste — c’est la preuve la plus forte', () => {
     expect(
       extractSpokenContractFacts(
         'Crée le contrat entretien 12 ascenseurs, ils ont 3 machines, 900 € par an',
@@ -323,11 +338,15 @@ describe('extractSpokenContractFacts — lecture en UNE passe de la consigne com
     );
     expect(facts).toEqual({
       label: 'Fontaines RATP',
+      // Le libellé était GUILLEMETÉ : le pro l'a NOMMÉ, la garde le prendra tel quel.
+      labelProvenance: 'nomme',
       annualAmountCents: 120_000,
       visitsPerYear: 2,
       tacitRenewal: null,
       startDate: '2026-10-01',
-      equipmentCount: 3,
+      // « 3 fontaines » n'est corroboré ni par un cadre de parc, ni par le parc réel (absent
+      // ici) : aucun comptage n'est énoncé plutôt qu'un comptage tiré du libellé lui-même.
+      equipmentCount: null,
     });
   });
 
@@ -336,6 +355,36 @@ describe('extractSpokenContractFacts — lecture en UNE passe de la consigne com
       extractSpokenContractFacts('Crée le contrat « X » sans reconduction tacite', TODAY).tacitRenewal,
     ).toBe(false);
     expect(extractSpokenContractFacts('Crée le contrat « X »', TODAY).tacitRenewal).toBeNull();
+  });
+
+  /**
+   * LE FAIT INERTE — la reconduction tacite était le SEUL fait encore lu par un simple `test()` :
+   * elle produisait une donnée sans dire OÙ elle avait été dite, donc sans jamais borner le
+   * libellé. La clause restait collée au nom, et « Entretien vitrines sans reconduction tacite »
+   * s'imprimait tel quel sur la LIGNE de la facture annuelle. La classe de bug que trois revues
+   * avaient corrigée (montant inerte, date inerte, charnière client inerte) s'était donc
+   * reformée à la sixième lecture, faute d'empan.
+   *
+   * Elle ne peut plus : `locateSpokenTacitRenewal` rend un EMPAN et cet empan entre dans
+   * `factSpans`, exactement comme ceux du montant, de la date et de la cadence — c'est-à-dire
+   * sans qu'aucune liste parallèle de « nettoyeurs » ait à redeviner sa position.
+   */
+  it('LA CLAUSE BORNE LE LIBELLÉ : la reconduction dite n’entre jamais dans le nom du contrat', () => {
+    const cas: readonly { readonly dit: string; readonly tacite: boolean | null }[] = [
+      { dit: 'Crée le contrat entretien vitrines sans reconduction tacite', tacite: false },
+      { dit: 'Crée le contrat entretien vitrines sans renouvellement tacite', tacite: false },
+      { dit: 'Crée le contrat entretien vitrines pas de reconduction tacite', tacite: false },
+      { dit: 'Crée le contrat entretien vitrines non tacite', tacite: false },
+      { dit: 'Crée le contrat entretien vitrines sans tacite reconduction', tacite: false },
+      // Clause ÉVOQUÉE sans être tranchée : l'empan borne quand même — une clause n'est pas un
+      // nom —, mais aucune valeur n'en est tirée (jamais une reconduction supposée).
+      { dit: 'Crée le contrat entretien vitrines avec reconduction tacite', tacite: null },
+    ];
+    for (const { dit, tacite } of cas) {
+      const facts = extractSpokenContractFacts(dit, TODAY);
+      expect(facts.label, `libellé pollué par la clause : « ${dit} »`).toBe('Entretien vitrines');
+      expect(facts.tacitRenewal, dit).toBe(tacite);
+    }
   });
 
   /**

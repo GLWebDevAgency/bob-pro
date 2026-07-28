@@ -14,7 +14,14 @@ import { isValidDateOnly } from '@bob/core';
  * faits commencent : toute forme parlée qu'un lecteur apprend à comprendre borne AUSSITÔT le
  * libellé, sans qu'on ait à y penser. C'est la réponse structurelle à trois revues successives
  * qui ont trouvé la même pathologie sous trois formes différentes (montant inerte, date inerte,
- * charnière client inerte) : la classe de bug ne peut plus se reformer, faute de seconde liste.
+ * charnière client inerte).
+ *
+ * LA CLASSE DE BUG S'EST POURTANT REFORMÉE UNE SIXIÈME FOIS, et il faut le dire ici : la
+ * reconduction tacite restait lue par un simple `test()`, donc SANS EMPAN — elle produisait un
+ * fait sans dire où il avait été dit, et la clause restait collée au nom du contrat. L'invariant
+ * est donc rendu explicite : TOUT fait rendu par `extractSpokenContractFacts` a un lecteur qui
+ * rend son empan, et cet empan entre dans `factSpans` (voir la note qui y est portée). Un fait
+ * sans empan est un fait INERTE : il ne borne rien, donc il pollue.
  */
 
 /** Empan d'un fait REPÉRÉ : sa valeur (null si dite mais illisible) et sa position d'origine. */
@@ -50,8 +57,16 @@ const MONTH_ALTERNATION = FRENCH_MONTHS.join('|');
  * rien — en silence. Les deux formes vivent donc côte à côte, chacune à sa place.
  */
 const THOUSAND_GAP_CHARS = '\\s\\u00a0\\u202f';
-/** La même chose EN classe, pour les usages hors classe (alternance, remplacement global). */
-const THOUSAND_GAP = `[${THOUSAND_GAP_CHARS}]`;
+
+/**
+ * Séparateurs de MILLIERS admis, POINT COMPRIS : « 1.200 € » est la façon dont un clavier FR
+ * (et bien des dictées) écrit mille deux cents. Sans le point, le lecteur repartait au chiffre
+ * suivant et lisait « 200 € » — le contrat naissait au SIXIÈME de son prix, et la confirmation
+ * récitait ce sixième sans que rien ne le signale. Le point est donc lu comme un millier quand
+ * il est suivi d'EXACTEMENT trois chiffres, et comme une décimale sinon (« 1200.50 »).
+ */
+const THOUSAND_SEP_CHARS = `.${THOUSAND_GAP_CHARS}`;
+const THOUSAND_SEP = `[${THOUSAND_SEP_CHARS}]`;
 
 const NON_ASCII = /[^\p{ASCII}]/gu;
 
@@ -99,28 +114,71 @@ function nameTokens(name: string): string[] {
 // MONTANT
 // ────────────────────────────────────────────────────────────────────────────────────────────
 
-const EURO_AMOUNT = new RegExp(
-  `(\\d{1,3}(?:${THOUSAND_GAP}\\d{3})+|\\d+)(?:[.,](\\d{1,2}))?\\s*(?:€|euros?\\b|eur\\b)`,
+/** Chiffres d'une somme : groupe de milliers (espace OU point) puis décimales optionnelles. */
+const AMOUNT_DIGITS = `(\\d{1,3}(?:${THOUSAND_SEP}\\d{3})+|\\d+)(?:[.,](\\d{1,2}))?`;
+/** Marqueur monétaire écrit — le symbole, le mot, l'abréviation ISO. */
+const EURO_MARK = '(?:€|euros?\\b|eur\\b)';
+
+const EURO_AMOUNT = new RegExp(`${AMOUNT_DIGITS}\\s*${EURO_MARK}`, 'i');
+/** Forme ABRÉGÉE (« 12 k€ », « 1,5 keuros ») : le millier est DANS le marqueur, pas dans les
+ *  chiffres. Elle est cherchée AVANT la forme simple, qui ne la reconnaîtrait pas du tout. */
+const KILO_EURO_AMOUNT = new RegExp(`${AMOUNT_DIGITS}\\s*k\\s*${EURO_MARK}`, 'i');
+
+/**
+ * Nombres EN TOUTES LETTRES suivis d'un marqueur monétaire (« deux mille euros », « cinq cents
+ * euros »). Bob REFUSE DÉLIBÉRÉMENT de les LIRE : convertir « quatre-vingt-dix mille » à la main
+ * multiplie les façons de se tromper d'un ordre de grandeur sur le prix d'un contrat annuel. Mais
+ * la somme a bien été ÉNONCÉE : son EMPAN est rendu, elle ne peut donc pas rester collée au
+ * libellé, et le montant redevient une QUESTION que Bob pose (« Combien par an ? »).
+ *
+ * La répétition est BORNÉE (six mots-nombres au plus) : une répétition libre d'une alternation de
+ * littéraux se relit en temps exponentiel quand le suffixe échoue, et une dictée n'est pas une
+ * entrée de confiance.
+ */
+const SPOKEN_NUMBER_WORD =
+  '(?:zero|une?|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingts?|trente|quarante|cinquante|soixante|cents?|mille|millions?|milliards?)';
+const LETTERS_AMOUNT = new RegExp(
+  `\\b${SPOKEN_NUMBER_WORD}(?:[\\s-]+${SPOKEN_NUMBER_WORD}){0,6}\\s*(?:k\\s*)?${EURO_MARK}`,
   'i',
 );
 
+function readEuroCents(match: RegExpExecArray, thousandFold: boolean): number | null {
+  const digits = match[1];
+  if (digits === undefined) return null;
+  const units = Number(digits.replace(new RegExp(THOUSAND_SEP, 'g'), ''));
+  const fraction = match[2] === undefined ? 0 : Number(`0.${match[2]}`);
+  const euros = thousandFold ? (units + fraction) * 1000 : units + fraction;
+  const cents = Math.round(euros * 100);
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
 /**
- * Montant en euros dit — le séparateur de MILLIERS est LU (« 1 200 € » vaut 1 200 €, jamais
- * 200 € : la troncature silencieuse ferait naître un contrat à un sixième de son prix).
- * Décimales optionnelles (« 1 200,50 € »). L'EMPAN est rendu même quand la valeur est illisible
- * (« 0 € ») : une somme a bien été ÉNONCÉE là, elle n'appartient donc pas au libellé.
+ * Montant en euros dit — le séparateur de MILLIERS est LU, espace comme point (« 1 200 € » et
+ * « 1.200 € » valent tous deux 1 200 €, jamais 200 € : la troncature silencieuse ferait naître un
+ * contrat à un sixième de son prix). Décimales optionnelles (« 1 200,50 € »), forme abrégée
+ * comprise (« 12 k€ » = 12 000 €). L'EMPAN est rendu même quand la valeur est illisible : une
+ * somme a bien été ÉNONCÉE là, elle n'appartient donc pas au libellé.
  */
 export function locateSpokenEuroAmount(text: string): SpokenSpan<number | null> | null {
-  const match = EURO_AMOUNT.exec(foldAccentsAligned(text));
-  if (match?.[1] === undefined) return null;
-  const units = Number(match[1].replace(new RegExp(THOUSAND_GAP, 'g'), ''));
-  const decimals = match[2] === undefined ? 0 : Number(match[2].padEnd(2, '0'));
-  const cents = Math.round(units * 100) + decimals;
+  const folded = foldAccentsAligned(text);
+  const kilo = KILO_EURO_AMOUNT.exec(folded);
+  const plain = EURO_AMOUNT.exec(folded);
+  // L'abrégé prime à position égale ou antérieure : « 12 k€ » n'est jamais « 12 € ».
+  const match = kilo !== null && (plain === null || kilo.index <= plain.index) ? kilo : plain;
+  if (match === null) return null;
   return {
-    value: Number.isSafeInteger(cents) && cents > 0 ? cents : null,
+    value: readEuroCents(match, match === kilo),
     start: match.index,
     end: match.index + match[0].length,
   };
+}
+
+/** Somme dite EN TOUTES LETTRES : jamais lue, toujours BORNANTE (charnière du libellé). */
+function locateSpokenLetteredAmount(folded: string): SpokenSpan<null> | null {
+  const match = LETTERS_AMOUNT.exec(folded);
+  return match === null
+    ? null
+    : { value: null, start: match.index, end: match.index + match[0].length };
 }
 
 /** Montant ANNUEL HT dit, en centimes ; null si rien de lisible (jamais un montant inventé). */
@@ -256,6 +314,46 @@ export function extractSpokenStartDate(text: string, today: string | null): stri
   return locateSpokenStartDate(text, today)?.value ?? null;
 }
 
+/**
+ * REPÈRES DE CALENDRIER sans amorce d'effet — « en janvier », « à la rentrée », « le 1er du mois
+ * prochain », « le trimestre prochain », « en 2027 ». Aucune valeur n'en est tirée : « la
+ * rentrée » n'a pas de date, et supposer le 1er septembre écrirait une date anniversaire que
+ * personne n'a dite. Ils sont pourtant BORNANTS — ce sont des compléments de temps, pas des noms
+ * de contrat — et comme la date de démarrage est REQUISE, Bob la demande ensuite : le repère
+ * dicté ne se perd donc pas, il devient une question.
+ *
+ * DÉLIBÉRÉMENT ABSENT : le nom de mois NU (« Entretien mars »). Le couper laverait un libellé
+ * douteux en libellé propre — « Entretien mars » deviendrait « Entretien », accepté en silence,
+ * alors que la garde (`contract-label-guard.ts`) le refuse et fait NOMMER le contrat. Une
+ * préposition (« en mars », « fin mars ») prouve au contraire le complément de temps : là, couper
+ * est sûr. Sur-couper n'est pas plus prudent que sous-couper — c'est mutiler un nom en silence.
+ */
+const CALENDAR_HINGES: readonly RegExp[] = [
+  new RegExp(
+    `\\b(?:en|courant|debut|fin|mi|d[eu]|jusqu['’]en|avant|apres)[\\s-]+(?:${MONTH_ALTERNATION})\\b`,
+    'iu',
+  ),
+  new RegExp(`\\b(?:au|du)\\s+mois\\s+d(?:e|['’])\\s*(?:${MONTH_ALTERNATION})\\b`, 'iu'),
+  /\b(?:le\s+)?(?:\d{1,2}\s*(?:er|eme)?\s+)?d[ue]\s+mois\s+(?:prochain|suivant|d['’]\s*apres)\b/iu,
+  /\b(?:le|la|l['’]\s*)?\s*(?:mois|semaine|annee|trimestre|semestre)\s+(?:prochaine?|suivante?|d['’]\s*apres)\b/iu,
+  /\b(?:a|pour|des|vers|apres)\s+(?:la|l['’]\s*)?\s*rentree\b|\bla\s+rentree\b/iu,
+  /\b(?:au|du|des\s+le|en|ce[t]?)\s+(?:printemps|ete|automne|hiver)\b/iu,
+  /\b(?:en\s+)?(?:fin|debut|mi)\s+d(?:e|['’])\s*annee\b/iu,
+  new RegExp(`\\b(?:en|pour|des|vers|jusqu['’]en)\\s+${PLAUSIBLE_YEAR}\\b`, 'iu'),
+];
+
+function locateSpokenCalendarHinge(folded: string): SpokenSpan<null> | null {
+  let earliest: SpokenSpan<null> | null = null;
+  for (const pattern of CALENDAR_HINGES) {
+    const match = pattern.exec(folded);
+    if (match === null) continue;
+    if (earliest === null || match.index < earliest.start) {
+      earliest = { value: null, start: match.index, end: match.index + match[0].length };
+    }
+  }
+  return earliest;
+}
+
 // ────────────────────────────────────────────────────────────────────────────────────────────
 // PÉRIODICITÉ
 // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -273,12 +371,49 @@ const SPOKEN_SMALL_NUMBERS: ReadonlyMap<string, number> = new Map([
   ['un', 1], ['une', 1], ['deux', 2], ['trois', 3], ['quatre', 4], ['cinq', 5], ['six', 6],
 ]);
 
+/**
+ * ADJECTIFS de cadence, et ce qu'ils valent PAR AN. « bimensuel » (deux fois par mois) et
+ * « bimestriel » (tous les deux mois) sont confondus par la moitié des locuteurs : « bimensuel »
+ * reste donc DÉLIBÉRÉMENT illisible (`null`) — il borne le libellé sans jamais inscrire une
+ * cadence qu'on aurait devinée à pile ou face sur un engagement contractuel.
+ */
+const CADENCE_ADJECTIVE_PER_YEAR: ReadonlyMap<string, number | null> = new Map([
+  ['hebdomadaire', 52],
+  ['mensuel', 12],
+  ['bimestriel', 6],
+  ['quadrimestriel', 3],
+  ['trimestriel', 4],
+  ['semestriel', 2],
+  ['annuel', 1],
+  ['bimensuel', null],
+  ['journalier', null],
+  ['quotidien', null],
+]);
+
+/** Les NOMS d'un passage. « entretien » et « maintenance » en sont volontairement absents : ce
+ *  sont les mots par lesquels le métier NOMME ses contrats (« Entretien annuel »), les couper
+ *  mutilerait le nom au lieu de lire une cadence. La garde, elle, les questionne. */
+const VISIT_NOUN = '(?:visites?|passages?|interventions?)';
+const COUNT_WORD = '(\\d{1,2}|une?|deux|trois|quatre|cinq|six)';
+const CADENCE_ADJECTIVE =
+  '(hebdomadaire|mensuel|bimensuel|bimestriel|quadrimestriel|trimestriel|semestriel|annuel|journalier|quotidien)';
+
 const VISITS_COUNTED = /\b(\d{1,2})\s*(?:visites?|passages?|interventions?)\b/i;
 const TIMES_PER_UNIT =
   /\b(\d{1,2}|une?|deux|trois|quatre|cinq|six)\s+fois\s+par\s+(an|ans|annees?|mois|trimestres?|semestres?|semaines?)\b/i;
 const EVERY_N_UNITS =
   /\btous\s+les\s+(\d{1,2})\s*(mois|semaines?|ans?|annees?|trimestres?|semestres?)\b/i;
 const EVERY_UNIT = /\btous\s+les\s+(mois|ans|trimestres|semestres|semaines)\b/i;
+/** Cadence NON CHIFFRÉE par un « N fois » : « un passage par mois », « 2 visites par trimestre ». */
+const VISITS_PER_UNIT = new RegExp(
+  `\\b${COUNT_WORD}\\s+${VISIT_NOUN}\\s+par\\s+(an|ans|annees?|mois|trimestres?|semestres?|semaines?)\\b`,
+  'i',
+);
+/** Cadence portée par l'ADJECTIF : « visite bimestrielle », « deux interventions annuelles ». */
+const VISITS_ADJECTIVE = new RegExp(
+  `\\b(?:${COUNT_WORD}\\s+)?${VISIT_NOUN}\\s+${CADENCE_ADJECTIVE}(?:le)?s?\\b`,
+  'i',
+);
 
 const inYearRange = (count: number): number | null =>
   Number.isInteger(count) && count >= 0 && count <= 52 ? count : null;
@@ -321,14 +456,86 @@ export function locateSpokenPeriodicity(text: string): SpokenSpan<number | null>
     push(every, PERIOD_PER_YEAR.get(every[1].toLowerCase()) ?? null);
   }
 
+  const perUnit = VISITS_PER_UNIT.exec(folded);
+  if (perUnit?.[2] !== undefined) {
+    const count = SPOKEN_SMALL_NUMBERS.get((perUnit[1] ?? '').toLowerCase()) ?? Number(perUnit[1]);
+    const factor = PERIOD_PER_YEAR.get(perUnit[2].toLowerCase());
+    push(perUnit, factor === undefined ? null : inYearRange(count * factor));
+  }
+
+  const adjective = VISITS_ADJECTIVE.exec(folded);
+  if (adjective?.[2] !== undefined) {
+    const count =
+      adjective[1] === undefined
+        ? 1
+        : (SPOKEN_SMALL_NUMBERS.get(adjective[1].toLowerCase()) ?? Number(adjective[1]));
+    const factor = CADENCE_ADJECTIVE_PER_YEAR.get(adjective[2].toLowerCase()) ?? null;
+    push(adjective, factor === null ? null : inYearRange(count * factor));
+  }
+
   if (candidates.length === 0) return null;
-  // La charnière la plus PRÉCOCE gagne ; à position égale, la lecture qui porte une valeur.
-  return candidates.reduce((best, candidate) =>
-    candidate.start < best.start ||
-    (candidate.start === best.start && best.value === null && candidate.value !== null)
-      ? candidate
-      : best,
+  // La charnière la plus PRÉCOCE gagne. À position égale, la lecture la PLUS LONGUE prime : elle
+  // a consommé davantage de ce qui a été dit, donc elle en a lu plus. « 2 visites par mois » vaut
+  // 24 par an, jamais 2 — la lecture courte s'arrêtait au comptage et perdait l'unité, ce qui
+  // divisait la cadence contractuelle par douze en silence. À empan égal, la lecture qui porte
+  // une valeur l'emporte sur celle qui n'en porte pas.
+  return candidates.reduce((best, candidate) => {
+    if (candidate.start !== best.start) return candidate.start < best.start ? candidate : best;
+    if (candidate.end !== best.end) return candidate.end > best.end ? candidate : best;
+    return best.value === null && candidate.value !== null ? candidate : best;
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// RECONDUCTION TACITE
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * MENTION de la clause de reconduction, quelle que soit sa polarité. Elle BORNE le libellé même
+ * quand elle ne se laisse pas trancher : « Crée le contrat entretien vitrines avec reconduction
+ * tacite » ne nomme pas un contrat « Entretien vitrines avec reconduction tacite ».
+ */
+const TACIT_CLAUSE =
+  /\b(?:sans\s+|avec\s+|pas\s+de\s+|non\s+|ni\s+)?(?:(?:reconduction|renouvellement)\s+tacite|tacite\s+reconduction|tacitement\s+reconduit\p{L}*)\b/iu;
+
+/** REFUS explicite — la seule forme dont on TIRE une valeur (`false`), jamais une supposition. */
+const TACIT_REFUSED =
+  /\b(?:sans|pas\s+de|ni\s+de)\s+(?:(?:reconduction|renouvellement)\s+tacite|tacite\s+reconduction)\b|\bnon\s+tacite\b/iu;
+
+/**
+ * Reconduction tacite dite — VALEUR et EMPAN. Elle était, jusqu'ici, le SEUL fait lu par un
+ * simple `test()` : elle produisait une donnée sans dire OÙ elle avait été dite, donc sans
+ * jamais borner le libellé. « Crée le contrat entretien vitrines sans reconduction tacite »
+ * faisait ainsi naître un contrat NOMMÉ « Entretien vitrines sans reconduction tacite » — une
+ * clause imprimée comme nom sur la ligne de la facture annuelle. La classe de bug s'était
+ * reformée à la sixième lecture, faute d'empan : elle ne peut plus, `factSpans` la porte.
+ *
+ * `value` vaut `false` quand la reconduction est REFUSÉE, `null` quand la clause est seulement
+ * ÉVOQUÉE — même doctrine que les autres lecteurs : l'empan est rendu dans les deux cas, la
+ * valeur seulement quand elle est certaine.
+ */
+export function locateSpokenTacitRenewal(text: string): SpokenSpan<boolean | null> | null {
+  const folded = foldAccentsAligned(text);
+  const refused = TACIT_REFUSED.exec(folded);
+  const clause = TACIT_CLAUSE.exec(folded);
+  const matches = [refused, clause].filter((match): match is RegExpExecArray => match !== null);
+  if (matches.length === 0) return null;
+  // La charnière la plus PRÉCOCE gagne ; à position égale, la lecture la plus LONGUE prime —
+  // elle a consommé davantage de ce qui a été dit, donc elle en a lu plus.
+  const best = matches.reduce((chosen, match) =>
+    match.index !== chosen.index
+      ? match.index < chosen.index
+        ? match
+        : chosen
+      : match[0].length > chosen[0].length
+        ? match
+        : chosen,
   );
+  return {
+    value: refused === null ? null : false,
+    start: best.index,
+    end: best.index + best[0].length,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -409,15 +616,20 @@ function scanEquipmentCandidates(
 
 /**
  * Nombre d'ÉQUIPEMENTS annoncé — RÈGLE POSITIVE : un nombre ne compte des équipements que s'il
- * QUALIFIE UN OBJET DU PARC, prouvé par l'une des trois corroborations suivantes, du plus fort
- * au plus faible :
+ * QUALIFIE UN OBJET DU PARC, prouvé par l'une des DEUX corroborations suivantes :
  *   1. un CADRE de parc encadre le nombre (« ils ont 3 machines », « 12 ascenseurs à entretenir ») ;
- *   2. le nom compté appartient au VOCABULAIRE RÉEL du parc du site (`parkVocabulary`) ;
- *   3. le nom compté est REPRIS du libellé dicté (« contrat fontaines RATP, 3 fontaines »).
+ *   2. le nom compté appartient au VOCABULAIRE RÉEL du parc du site (`parkVocabulary`).
  * Aucune corroboration ⇒ `null`. C'est l'inverse exact de l'ancienne garde énumérative, qui
  * comptait par DÉFAUT sauf liste noire d'unités et d'argot : là, tout nom commun inconnu passait.
  * Ici le doute ne produit AUCUN fait — la doctrine interdit d'énoncer un fait inventé au point de
  * décision d'une mutation (« Tu as parlé de 400 machine(s) »).
+ *
+ * TROISIÈME CORROBORATION SUPPRIMÉE — le libellé DICTÉ corroborait « la reprise du libellé »
+ * (« contrat fontaines RATP, 3 fontaines »). C'était une TAUTOLOGIE : le libellé est lui-même
+ * lu de la phrase, il ne prouve donc rien de plus qu'elle. « Crée le contrat entretien 4
+ * saisons » s'auto-corroborait ainsi en 4 ÉQUIPEMENTS, que Bob récitait au point de décision
+ * d'une mutation (« Tu as parlé de 4 machine(s) »). Seul le PARC RÉEL, qui vient de l'hôte et
+ * pas de la phrase, peut corroborer un comptage.
  *
  * Un nombre qui appartient déjà à un autre fait lu (montant, date, cadence) n'est jamais
  * candidat : « 2 visites » ne fait pas 2 équipements, « 1 200 € » n'en fait pas 200.
@@ -425,7 +637,6 @@ function scanEquipmentCandidates(
 export function extractSpokenEquipmentCount(
   message: string,
   options: {
-    readonly label?: string | null;
     readonly parkVocabulary?: readonly string[];
     readonly today?: string | null;
   } = {},
@@ -442,7 +653,6 @@ export function extractSpokenEquipmentCount(
   for (const entry of options.parkVocabulary ?? []) {
     for (const token of nameTokens(entry)) vocabulary.add(stem(token));
   }
-  for (const token of nameTokens(options.label ?? '')) vocabulary.add(stem(token));
   const corroborated = candidates.find((candidate) =>
     vocabulary.has(stem(foldAccentsAligned(candidate.noun).toLowerCase())),
   );
@@ -461,6 +671,28 @@ const ATTRIBUTION_ROLE =
 /** Attribution par le LIEU : « sur le site », « sur le chantier », « à l'agence ». */
 const ATTRIBUTION_PLACE =
   /\b(?:sur|dans|a|au|aux|pour)\s+(?:l[ea]\s+|les\s+|l['’]\s*|ce\s+)?(?:sites?|chantiers?|agences?|etablissements?)\b/iu;
+
+/**
+ * Attribution DÉLÉGUÉE — les tournures standard par lesquelles un pro dit pour QUI il travaille :
+ * « pour le compte de RATP », « au nom de Carrefour », « de la part du syndic ». Elles n'ont
+ * besoin d'AUCUN nom connu : la tournure elle-même dit que ce qui suit attribue le contrat, elle
+ * borne donc le libellé même quand le bénéficiaire est introuvable au fichier.
+ */
+const ATTRIBUTION_DELEGATED =
+  /\b(?:pour\s+le\s+compte\s+d(?:e|u|['’])|au\s+nom\s+d(?:e|u|['’])|de\s+la\s+part\s+d(?:e|u|['’])|au\s+profit\s+d(?:e|u|['’])|aupres\s+d(?:e|u|['’]))/iu;
+
+/** Attribution par la FORME SOCIALE : « pour la SARL Dupont », « chez la SAS Martin ». */
+const ATTRIBUTION_LEGAL_FORM =
+  /\b(?:pour|chez|de|du|au|aux|a)\s+(?:l[ea]\s+|les\s+|l['’]\s*)?(?:sarl|sas|sasu|eurl|sci|scop|gie|ste|societe|snc|selarl|earl|scm|sem|scs|sca)\b/iu;
+
+/**
+ * Attribution par la CIVILITÉ : « pour M. Dupont », « chez Mme Girard ». La fin de la civilité
+ * se prouve par « aucune lettre ne suit », JAMAIS par `\b` : « M. » se termine par un point, et
+ * un point suivi d'une espace n'est pas une frontière de mot — la charnière restait inerte, et
+ * « pour M » finissait imprimé comme nom du contrat sur la facture annuelle.
+ */
+const ATTRIBUTION_CIVILITY =
+  /\b(?:pour|chez|de|du|au|aux|a)\s+(?:m\.|mr\.?|mme|mlle|monsieur|madame|mademoiselle)(?!\p{L})/iu;
 
 /**
  * Attribution par le NOM PROPRE déjà résolu : « pour RATP », « chez Carrefour ». C'est la forme
@@ -500,8 +732,34 @@ const LABEL_LEADING =
 
 /** Charnière laissée PENDANTE par une coupe (« … 12 ascenseurs à | 15 000 € ») — un libellé
  *  ne se termine jamais sur une préposition orpheline ni sur un tiret de liaison. */
-const LABEL_DANGLING_TAIL =
-  /[\s\-–—:,;]+(?:a|au|aux|de|du|des|d|pour|et|en|sur|par|chez|avec|un|une|le|la|les|leur|leurs|il|ils)?[\s\-–—:,;]*$/i;
+const DANGLING_WORD =
+  /[\s\-–—:,;]+(?:au|aux|de|du|des|pour|et|en|sur|par|chez|avec|un|une|le|la|les|leur|leurs|il|ils)[\s\-–—:,;]*$/i;
+
+/**
+ * Mot-outil d'UNE SEULE LETTRE laissé pendant (« … 12 ascenseurs à | 15 000 € ») — reconnu en
+ * MINUSCULE seulement.
+ *
+ * POURQUOI LA CASSE COMPTE ICI : « Entretien hall A », « Dépannage bloc D », « Contrat tour L »
+ * sont des noms que le métier dicte tous les jours — la lettre finale DÉSIGNE un bâtiment, elle
+ * ne pend pas. Lue sans égard à la casse, la règle amputait « Entretien hall A » en « Entretien
+ * hall » : un nom MUTILÉ, ni vide ni moignon, que rien en aval ne pouvait plus signaler et qui
+ * s'imprimait tel quel sur la ligne de la facture annuelle. Sur-couper n'est pas plus prudent
+ * que sous-couper.
+ */
+const DANGLING_LETTER = /[\s\-–—:,;]+[adl][\s\-–—:,;]*$/;
+
+/** Ponctuation de liaison seule (espace, tiret, deux-points) laissée par une coupe. */
+const DANGLING_PUNCTUATION = /[\s\-–—:,;]+$/;
+
+/** Longueur de la queue pendante — la plus LONGUE des trois lectures, jamais la première venue. */
+function danglingTailLength(segment: string): number {
+  let longest = 0;
+  for (const pattern of [DANGLING_WORD, DANGLING_LETTER, DANGLING_PUNCTUATION]) {
+    const hit = pattern.exec(segment);
+    if (hit !== null && hit[0].length > longest) longest = hit[0].length;
+  }
+  return longest;
+}
 
 /** Ponctuation FORTE : elle clôt le segment utile aussi sûrement qu'un fait. */
 const LABEL_BREAK = /[,;.!?()«»]/;
@@ -511,17 +769,33 @@ const MAX_LABEL_LENGTH = 80;
 const CONTRACT_ANCHOR = /\bcontrats?\b/i;
 const QUOTED_LABEL = /\bcontrats?\s+«\s*([^»]{2,80})\s*»/i;
 
-/** Empans de TOUS les faits lisibles du texte — la matière première de la découpe. */
+/**
+ * Empans de TOUS les faits lisibles du texte — la matière première de la découpe.
+ *
+ * INVARIANT DE CONCEPTION : tout fait rendu par `extractSpokenContractFacts` a son lecteur ICI.
+ * Un fait lu SANS empan est un fait INERTE : il ne borne pas le libellé, donc il reste collé au
+ * nom du contrat et s'imprime sur la ligne de la facture annuelle. C'est la pathologie que
+ * quatre revues ont trouvée sous quatre formes (montant, date, charnière client) et qui s'est
+ * REFORMÉE en sixième lecture sur la reconduction tacite, seul fait encore lu par un simple
+ * `test()`. La règle est donc structurelle : un lecteur de fait rend un empan, et cet empan
+ * entre dans cette liste — sans quoi le fait n'a pas le droit d'exister.
+ */
 function factSpans(folded: string, today: string | null): { start: number; end: number }[] {
   const spans: { start: number; end: number }[] = [];
   const amount = locateSpokenEuroAmount(folded);
   if (amount) spans.push({ start: amount.start, end: amount.end });
+  const lettered = locateSpokenLetteredAmount(folded);
+  if (lettered) spans.push({ start: lettered.start, end: lettered.end });
   const rate = locateSpokenUnitRate(folded);
   if (rate) spans.push({ start: rate.start, end: rate.end });
   const date = locateSpokenStartDate(folded, today);
   if (date) spans.push({ start: date.start, end: date.end });
+  const calendar = locateSpokenCalendarHinge(folded);
+  if (calendar) spans.push({ start: calendar.start, end: calendar.end });
   const periodicity = locateSpokenPeriodicity(folded);
   if (periodicity) spans.push({ start: periodicity.start, end: periodicity.end });
+  const tacit = locateSpokenTacitRenewal(folded);
+  if (tacit) spans.push({ start: tacit.start, end: tacit.end });
   return spans;
 }
 
@@ -540,13 +814,18 @@ function usefulSegmentEnd(body: string, options: SpokenContractOptions): number 
   consider(LABEL_BREAK.exec(body)?.index);
   consider(ATTRIBUTION_ROLE.exec(body)?.index);
   consider(ATTRIBUTION_PLACE.exec(body)?.index);
+  consider(ATTRIBUTION_DELEGATED.exec(body)?.index);
+  consider(ATTRIBUTION_LEGAL_FORM.exec(body)?.index);
+  consider(ATTRIBUTION_CIVILITY.exec(body)?.index);
   consider(locateNamedAttribution(body, options.customerNames ?? []));
+  // COMPTAGE D'ÉQUIPEMENTS — SEUL le cadre de parc borne (« ils ont 3 machines », « 12
+  // ascenseurs à entretenir »). La corroboration par le VOCABULAIRE du parc, elle, est
+  // délibérément NON bornante : « Entretien 12 ascenseurs » est un nom de contrat que le corpus
+  // exige de restituer À L'IDENTIQUE, et couper sur le seul fait que le parc porte des
+  // ascenseurs le MUTILERAIT en « Entretien ». Sur-couper n'est pas plus prudent que
+  // sous-couper — c'est amputer un nom en silence, et rien en aval ne peut plus le signaler.
   for (const candidate of scanEquipmentCandidates(body, claimed)) {
     if (candidate.framed) consider(candidate.hingeStart);
-  }
-  if (end > MAX_LABEL_LENGTH) {
-    const cut = body.slice(0, MAX_LABEL_LENGTH + 1).lastIndexOf(' ');
-    end = cut > 0 ? cut : MAX_LABEL_LENGTH;
   }
   return end;
 }
@@ -558,37 +837,81 @@ function finishLabel(segment: string): string | null {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+/**
+ * ORDRE DES OPÉRATIONS — les charnières sont cherchées sur le segment ENTIER, AVANT que les mots
+ * de geste ne soient retirés. L'ordre inverse était un bug PROUVÉ : `LABEL_LEADING` consommait la
+ * préposition « pour » comme un mot de geste, si bien qu'aucune charnière d'attribution ne
+ * pouvait plus la reconnaître ensuite — TOUTES étaient inertes. « Crée le contrat pour Carrefour »
+ * nommait donc le contrat « Carrefour », et « … de maintenance pour le client RATP » l'appelait
+ * « Client RATP » : le nom du client s'imprimait sur la LIGNE de la facture annuelle.
+ *
+ * Quand la charnière tombe au tout début, il ne reste RIEN : c'est la bonne réponse — aucun nom
+ * n'a été dicté, seulement un client. Bob POSE alors la question au lieu d'inventer un nom.
+ */
 function buildLabel(segment: string, options: SpokenContractOptions): string | null {
   const folded = foldAccentsAligned(segment);
-  const lead = LABEL_LEADING.exec(folded)?.[0].length ?? 0;
-  const body = folded.slice(lead);
-  const end = usefulSegmentEnd(body, options);
-  const dangling = LABEL_DANGLING_TAIL.exec(body.slice(0, end))?.[0].length ?? 0;
-  return finishLabel(segment.slice(lead, lead + Math.max(0, end - dangling)));
+  const end = usefulSegmentEnd(folded, options);
+  const lead = LABEL_LEADING.exec(folded.slice(0, end))?.[0].length ?? 0;
+  let stop = end;
+  if (stop - lead > MAX_LABEL_LENGTH) {
+    const cut = folded.slice(lead, lead + MAX_LABEL_LENGTH + 1).lastIndexOf(' ');
+    stop = lead + (cut > 0 ? cut : MAX_LABEL_LENGTH);
+  }
+  const dangling = danglingTailLength(folded.slice(lead, stop));
+  return finishLabel(segment.slice(lead, Math.max(lead, stop - dangling)));
 }
 
 /**
- * Libellé dit : le SEGMENT UTILE qui suit le mot « contrat », borné par la première charnière
- * factuelle. La forme canonique des followUps guillemette le libellé — elle est lue en priorité,
- * ce qui fait CONVERGER les tours suivants ; elle repasse par la MÊME découpe, ce qui garantit
- * qu'un libellé propre relu ne bouge plus (f(f(x)) = f(x)).
+ * PROVENANCE du libellé — elle décide de la sévérité de la GARDE (`contract-label-guard.ts`),
+ * jamais l'appelant au petit bonheur :
+ *  · `'nomme'`   : le pro a NOMMÉ le contrat entre guillemets (forme canonique des followUps).
+ *    Ce nom est pris VERBATIM : le recouper mutilerait un nom délibérément écrit.
+ *  · `'extrait'` : Bob a DÉDUIT le nom d'un segment de phrase — il a donc pu se tromper.
+ *  · `null`      : aucun libellé n'a été dit.
+ */
+export interface SpokenContractLabel {
+  readonly label: string | null;
+  readonly provenance: 'nomme' | 'extrait' | null;
+}
+
+/**
+ * Libellé dit AVEC sa provenance. La forme canonique des followUps guillemette le libellé : elle
+ * est lue en priorité et rendue TELLE QUELLE, ce qui fait CONVERGER les tours suivants et garantit
+ * qu'un nom relu ne bouge plus (f(f(x)) = f(x)) — y compris quand il contient une tournure que la
+ * découpe aurait prise pour une charnière (« Entretien à partir de la cour »).
+ *
+ * Hors guillemets, le libellé est le SEGMENT UTILE qui suit le mot « contrat », borné par la
+ * première charnière factuelle.
  *
  * IMPACT LÉGAL : ce libellé est persisté comme libellé du contrat ET de sa LIGNE UNIQUE, donc
  * repris tel quel comme LIGNE de la facture annuelle — il s'IMPRIME sur une pièce légale. Un
  * fait dicté (montant, date, cadence, client) qui y resterait collé serait facturé ; la
  * confirmation groupée ne protège de rien puisqu'elle récite le libellé fautif : le pro n'entend
- * que sa propre phrase et valide.
+ * que sa propre phrase et valide. C'est pourquoi une GARDE indépendante inspecte ce libellé avant
+ * toute proposition de mutation, et transforme le doute en QUESTION.
  */
+export function locateSpokenContractLabel(
+  message: string,
+  options: SpokenContractOptions = {},
+): SpokenContractLabel {
+  const quoted = QUOTED_LABEL.exec(message);
+  if (quoted?.[1] !== undefined) {
+    const named = finishLabel(quoted[1]);
+    return { label: named, provenance: named === null ? null : 'nomme' };
+  }
+  const anchor = CONTRACT_ANCHOR.exec(message);
+  if (anchor === null) return { label: null, provenance: null };
+  const rest = message.slice(anchor.index + anchor[0].length);
+  const built = buildLabel(rest.replace(/^\s+/, ''), options);
+  return { label: built, provenance: built === null ? null : 'extrait' };
+}
+
+/** Libellé dit, sans sa provenance — lecture de confort pour les appels qui n'en ont pas besoin. */
 export function extractSpokenContractLabel(
   message: string,
   options: SpokenContractOptions = {},
 ): string | null {
-  const quoted = QUOTED_LABEL.exec(message);
-  if (quoted?.[1] !== undefined) return buildLabel(quoted[1], options);
-  const anchor = CONTRACT_ANCHOR.exec(message);
-  if (anchor === null) return null;
-  const rest = message.slice(anchor.index + anchor[0].length);
-  return buildLabel(rest.replace(/^\s+/, ''), options);
+  return locateSpokenContractLabel(message, options).label;
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────────
@@ -605,6 +928,8 @@ export function sanitizeSpokenNote(text: string): string {
 export interface SpokenContractFacts {
   /** Libellé LIBRE du contrat (« Fontaines RATP ») — jamais un lexique métier codé. */
   label: string | null;
+  /** D'où vient ce libellé : NOMMÉ entre guillemets, ou DÉDUIT d'un segment de phrase. */
+  labelProvenance: 'nomme' | 'extrait' | null;
   /** Montant ANNUEL HT dit, en centimes (« 1 200 € par an ») — la ligne unique du contrat. */
   annualAmountCents: number | null;
   /** Périodicité dite (« 2 passages », « tous les 6 mois ») — jamais un défaut inventé ici. */
@@ -618,24 +943,22 @@ export interface SpokenContractFacts {
   equipmentCount: number | null;
 }
 
-const TACIT_REFUSED =
-  /\bsans\s+(?:reconduction|renouvellement)\s+tacite\b|\bnon\s+tacite\b|\bpas\s+de\s+(?:reconduction|renouvellement)\s+tacite\b/i;
-
 /** Lecture en UNE passe de tous les faits énoncés (aucune question tant qu'il ne manque rien). */
 export function extractSpokenContractFacts(
   message: string,
   today: string | null,
   options: SpokenContractOptions = {},
 ): SpokenContractFacts {
-  const label = extractSpokenContractLabel(message, options);
+  const spoken = locateSpokenContractLabel(message, options);
+  const label = spoken.label;
   return {
     label,
+    labelProvenance: spoken.provenance,
     annualAmountCents: extractSpokenEuroCents(message),
     visitsPerYear: locateSpokenPeriodicity(message)?.value ?? null,
-    tacitRenewal: TACIT_REFUSED.test(foldAccentsAligned(message)) ? false : null,
+    tacitRenewal: locateSpokenTacitRenewal(message)?.value ?? null,
     startDate: extractSpokenStartDate(message, today),
     equipmentCount: extractSpokenEquipmentCount(message, {
-      label,
       today,
       ...(options.parkVocabulary !== undefined ? { parkVocabulary: options.parkVocabulary } : {}),
     }),
