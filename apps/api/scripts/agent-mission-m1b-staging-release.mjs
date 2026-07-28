@@ -154,14 +154,14 @@ SET LOCAL statement_timeout = '10s';
 SET LOCAL lock_timeout = '3s';
 SELECT pg_catalog.jsonb_build_object(
   'conversationFloors', (
-    SELECT pg_catalog.coalesce(
+    SELECT coalesce(
       pg_catalog.jsonb_agg(pg_catalog.to_jsonb(floor) ORDER BY floor."keySpace"),
       '[]'::jsonb
     )
       FROM public.realtime_mistral_conversation_key_version_floors AS floor
   ),
   'conversationBindings', (
-    SELECT pg_catalog.coalesce(
+    SELECT coalesce(
       pg_catalog.jsonb_agg(
         pg_catalog.to_jsonb(binding)
         ORDER BY binding."keySpace", binding."keyVersion"
@@ -171,14 +171,14 @@ SELECT pg_catalog.jsonb_build_object(
       FROM public.realtime_mistral_conversation_key_bindings AS binding
   ),
   'identityFloors', (
-    SELECT pg_catalog.coalesce(
+    SELECT coalesce(
       pg_catalog.jsonb_agg(pg_catalog.to_jsonb(floor) ORDER BY floor."keySpace"),
       '[]'::jsonb
     )
       FROM public.realtime_mistral_conversation_identity_key_version_floors AS floor
   ),
   'identityBindings', (
-    SELECT pg_catalog.coalesce(
+    SELECT coalesce(
       pg_catalog.jsonb_agg(
         pg_catalog.to_jsonb(binding)
         ORDER BY binding."keySpace", binding."keyVersion"
@@ -265,6 +265,7 @@ function securePsql(
     input,
     variables = [],
     file,
+    label = file ?? 'inline-sql',
   },
   environment,
   dependencies = {},
@@ -286,14 +287,20 @@ function securePsql(
       encoding: 'utf8',
     })),
   );
-  if (result.status !== 0) fail('PostgreSQL gate failed');
+  if (result.status !== 0) {
+    const failureKind =
+      result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
+        ? 'timeout'
+        : 'nonzero-exit';
+    fail(`PostgreSQL gate ${label} failed (${failureKind})`);
+  }
   return String(result.stdout ?? '').trim();
 }
 
 async function assertStrictMigrationState(config, dependencies = {}) {
   const output = securePsql(
     config.directUrl,
-    { input: APPLIED_MIGRATIONS_SQL },
+    { input: APPLIED_MIGRATIONS_SQL, label: 'migration-inventory' },
     config.environment,
     dependencies,
   );
@@ -326,7 +333,7 @@ async function assertStrictMigrationState(config, dependencies = {}) {
 function closeCapacity(config, dependencies = {}) {
   securePsql(
     config.directUrl,
-    { input: CLOSE_CAPACITY_SQL },
+    { input: CLOSE_CAPACITY_SQL, label: 'capacity-close' },
     config.environment,
     dependencies,
   );
@@ -342,7 +349,7 @@ async function closeAndDrainCapacity(config, dependencies = {}) {
   while (true) {
     const state = securePsql(
       config.directUrl,
-      { input: CAPACITY_STATE_SQL },
+      { input: CAPACITY_STATE_SQL, label: 'capacity-drain-state' },
       config.environment,
       dependencies,
     );
@@ -379,7 +386,7 @@ function runKeyManager(mode, config, dependencies = {}) {
 function readReleaseFlag(config, dependencies = {}) {
   const raw = securePsql(
     config.directUrl,
-    { input: RELEASE_FLAG_SQL },
+    { input: RELEASE_FLAG_SQL, label: 'release-flag-snapshot' },
     config.environment,
     dependencies,
   );
@@ -399,6 +406,7 @@ function certifyAgentMissionAcl(config, dependencies = {}) {
     config.runtimeUrl,
     {
       file: 'apps/api/prisma/agent-missions-release-cert.sql',
+      label: 'agent-mission-acl',
       variables: [['app_role', config.appRole]],
     },
     config.environment,
@@ -409,6 +417,7 @@ function certifyAgentMissionAcl(config, dependencies = {}) {
     config.runtimeUrl,
     {
       file: 'apps/api/prisma/agent-mission-realtime-release-cert.sql',
+      label: 'agent-mission-realtime-acl',
       variables: [
         ['app_role', config.appRole],
         ['release_env', 'staging'],
@@ -426,6 +435,7 @@ function certifyCapacityAuthority(config, dependencies = {}) {
     config.directUrl,
     {
       file: 'apps/api/prisma/realtime-global-capacity-release-cert.sql',
+      label: 'realtime-capacity-authority',
       variables: [['app_role', config.appRole]],
     },
     config.environment,
@@ -436,7 +446,10 @@ function certifyCapacityAuthority(config, dependencies = {}) {
 function foreignAuthoritySnapshot(config, dependencies = {}) {
   const snapshot = securePsql(
     config.directUrl,
-    { input: FOREIGN_AUTHORITY_SNAPSHOT_SQL },
+    {
+      input: FOREIGN_AUTHORITY_SNAPSHOT_SQL,
+      label: 'foreign-authority-snapshot',
+    },
     config.environment,
     dependencies,
   );
@@ -491,6 +504,7 @@ function configureCapacity(config, dependencies = {}) {
     config.directUrl,
     {
       input: CONFIGURE_CAPACITY_SQL,
+      label: 'capacity-configure',
       variables: [
         ['provider', provider],
         ['model', model],

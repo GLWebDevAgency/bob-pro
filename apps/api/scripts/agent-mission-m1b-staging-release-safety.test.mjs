@@ -397,6 +397,16 @@ test('le lane M1-B ne mute aucun protocole étranger et ne masque aucun échec',
 test('le gate ciblé ne traverse aucun mutateur étranger ni réparation globale', () => {
   assert.doesNotMatch(
     targetedReleaseSource,
+    /pg_catalog\.coalesce/u,
+    'COALESCE est une expression SQL et ne peut pas être qualifiée par un schéma',
+  );
+  assert.match(
+    targetedReleaseSource,
+    /label: 'foreign-authority-snapshot'/u,
+    'une panne staging doit identifier sa sous-preuve sans exposer stderr',
+  );
+  assert.doesNotMatch(
+    targetedReleaseSource,
     /release\.sh|prisma migrate deploy|rls\.sql|runtime-grants|certify-mistral|manage-mistral|manage-bob-live-native/u,
   );
   assert.match(

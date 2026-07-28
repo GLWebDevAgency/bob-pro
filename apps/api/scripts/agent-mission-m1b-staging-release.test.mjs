@@ -197,7 +197,50 @@ test('borne chaque connexion PostgreSQL et le key manager natif', async () => {
     assert.equal(options.killSignal, 'SIGKILL');
     assert.equal(options.env.PGCONNECT_TIMEOUT, '10');
   }
+  for (const { args } of psqlCalls) {
+    const assignments = args.filter(
+      (value, index) =>
+        index > 0
+        && args[index - 1] === '-v'
+        && value !== 'ON_ERROR_STOP=1',
+    );
+    assert.equal(
+      assignments.length,
+      new Set(assignments).size,
+      'une variable psql ne doit être injectée qu’une fois',
+    );
+  }
   assert.equal(managerCalls[0].options.timeout, 75_000);
   assert.equal(managerCalls[0].options.killSignal, 'SIGKILL');
   assert.equal(managerCalls[0].options.env.PGCONNECT_TIMEOUT, '10');
+});
+
+test('un échec PostgreSQL expose la sous-preuve bornée sans journaliser stderr', async () => {
+  await assert.rejects(
+    runM1BStagingRelease(
+      'predeploy',
+      environment(),
+      {
+        certifyDatabase() {},
+        async assertStrictMigrationState() {
+          return { appliedCount: 87, pendingCount: 0 };
+        },
+        spawnSync() {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: 'secret-value-that-must-not-be-logged',
+          };
+        },
+      },
+    ),
+    (error) => {
+      assert.match(
+        error.message,
+        /PostgreSQL gate foreign-authority-snapshot failed \(nonzero-exit\)/u,
+      );
+      assert.doesNotMatch(error.message, /secret-value-that-must-not-be-logged/u);
+      return true;
+    },
+  );
 });
