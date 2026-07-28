@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   AuditedBobLiveRuntimeReadiness,
+  DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS,
   gateRealtimeAdmissionOnBobLiveReadiness,
   NonAuditedBobLiveRuntimeReadiness,
+  RESERVE_READINESS_RETRY_AFTER_MS,
+  RESERVE_READINESS_WAIT_BUDGET_MS,
 } from './realtime-readiness';
 import type { RealtimeAdmissionPort } from './realtime-admission';
 
@@ -200,6 +203,32 @@ describe('Bob Live runtime readiness', () => {
       allowed: false,
       denial: 'unavailable',
       retryAt: new Date(6_000).toISOString(),
+    });
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('aligne le Retry-After par défaut sur le pire budget de sonde restant', () => {
+    // Un client qui honore Retry-After exactement doit atterrir APRÈS la borne serveur de la
+    // sonde en vol (verdict publié au cache), jamais dessus — même sur le matériel le plus lent.
+    expect(RESERVE_READINESS_RETRY_AFTER_MS).toBe(
+      DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS - RESERVE_READINESS_WAIT_BUDGET_MS,
+    );
+    expect(RESERVE_READINESS_RETRY_AFTER_MS).toBeGreaterThan(0);
+  });
+
+  it('sans option injectée, le refus budget dépassé renvoie le Retry-After aligné sonde', async () => {
+    const reserve = vi.fn();
+    const admission = admissionStub({ reserve });
+    const neverSettles = { check: () => new Promise<never>(() => undefined) };
+    const gated = gateRealtimeAdmissionOnBobLiveReadiness(admission, neverSettles, {
+      reserveReadinessWaitBudgetMs: 5,
+      now: () => 1_000,
+    });
+
+    await expect(gated.reserve({} as never)).resolves.toEqual({
+      allowed: false,
+      denial: 'unavailable',
+      retryAt: new Date(1_000 + RESERVE_READINESS_RETRY_AFTER_MS).toISOString(),
     });
     expect(reserve).not.toHaveBeenCalled();
   });

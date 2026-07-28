@@ -77,6 +77,13 @@ export interface AuditedBobLiveRuntimeReadinessOptions {
 export const ACOUSTIC_CACHE_REFRESH_AGE_RATIO = 0.8;
 
 /**
+ * Budget serveur maximal d'une sonde acoustique TTS+Whisper (~12,4 s mesurés sur le Whisper
+ * staging CPU-only ; la borne absorbe le matériel le plus lent). Sert aussi d'ancre au
+ * Retry-After des refus fail-closed : voir RESERVE_READINESS_RETRY_AFTER_MS.
+ */
+export const DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS = 45_000;
+
+/**
  * Sonde opérationnelle bornée de la chaîne auditée.
  *
  * Le cache très court absorbe une rafale d'admissions sans transformer Whisper en dépendance
@@ -112,7 +119,7 @@ export class AuditedBobLiveRuntimeReadiness implements BobLiveRuntimeReadinessPo
     this.probeTimeoutMs = options.probeTimeoutMs ?? 2_000;
     this.acousticSuccessTtlMs = options.acousticSuccessTtlMs ?? 15 * 60_000;
     this.acousticFailureTtlMs = options.acousticFailureTtlMs ?? 15_000;
-    this.acousticProbeTimeoutMs = options.acousticProbeTimeoutMs ?? 45_000;
+    this.acousticProbeTimeoutMs = options.acousticProbeTimeoutMs ?? DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS;
     this.now = options.now ?? Date.now;
     if (
       !Number.isSafeInteger(this.successTtlMs)
@@ -273,10 +280,18 @@ function unavailableAdmission(retryAt: string | null = null): RealtimeAdmissionR
 export const RESERVE_READINESS_WAIT_BUDGET_MS = 2_500;
 
 /**
- * Horizon retryAt court renvoyé quand le budget d'attente expire : le temps que la sonde en vol
- * se termine, un retry client repart cache chaud sans jamais re-payer la sonde en ligne.
+ * Horizon retryAt renvoyé quand le budget d'attente expire, aligné sur le PIRE budget de sonde
+ * restant : la sonde qui nous bloque a démarré au plus tard à l'entrée de check(), donc au moment
+ * du refus (budget d'attente écoulé) il lui reste au plus
+ * DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS − RESERVE_READINESS_WAIT_BUDGET_MS avant de publier son
+ * verdict dans le cache (succès TTL 15 min, ou échec fail-closed). Un client qui honore
+ * Retry-After exactement atterrit donc toujours sur un verdict publié — jamais sur la sonde
+ * encore en vol, même sur le Whisper staging CPU-only (~12,4 s mesurés, borne 45 s). Un client
+ * qui retente plus tôt essuie simplement un nouveau refus fail-closed borné (2,5 s), sans
+ * empoisonner de fence : le mobile régénère un sessionHandle frais à chaque tentative.
  */
-export const RESERVE_READINESS_RETRY_AFTER_MS = 5_000;
+export const RESERVE_READINESS_RETRY_AFTER_MS =
+  DEFAULT_ACOUSTIC_PROBE_TIMEOUT_MS - RESERVE_READINESS_WAIT_BUDGET_MS;
 
 export interface GateRealtimeAdmissionOnBobLiveReadinessOptions {
   /** Injectable pour les tests ; défaut RESERVE_READINESS_WAIT_BUDGET_MS. */
@@ -349,7 +364,8 @@ export function gateRealtimeAdmissionOnBobLiveReadiness(
       }
       if (!outcome.onTime) {
         // Fail-closed absolu : sans statut ready observé dans le budget, aucune réservation.
-        // La sonde laissée en vol chauffe le cache pour que le retry parte cache chaud.
+        // La sonde laissée en vol chauffe le cache ; le Retry-After aligné sur son pire budget
+        // restant garantit qu'un retry qui l'honore atterrit sur un verdict publié, cache chaud.
         return unavailableAdmission(new Date(now() + retryAfterMs).toISOString());
       }
       if (!outcome.status.ready) return unavailableAdmission();
