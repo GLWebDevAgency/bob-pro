@@ -65,6 +65,13 @@ test('le gate est strictement staging et borne le drain', () => {
     ).drainTimeoutSeconds,
     60,
   );
+  assert.equal(
+    parseM1BStagingReleaseEnvironment(
+      'restore-capacity',
+      environment(),
+    ).phase,
+    'restore-capacity',
+  );
   assert.throws(
     () => parseM1BStagingReleaseEnvironment(
       'predeploy',
@@ -78,6 +85,10 @@ test('le gate est strictement staging et borne le drain', () => {
       environment({ BOB_LIVE_DRAIN_TIMEOUT_SECONDS: '29' }),
     ),
     /outside its allowed range/u,
+  );
+  assert.throws(
+    () => parseM1BStagingReleaseEnvironment('unknown', environment()),
+    /phase must be predeploy, postdeploy or restore-capacity/u,
   );
 });
 
@@ -129,6 +140,129 @@ test('postdeploy retire puis ne rouvre qu’après toutes les preuves', async ()
     'capacity:configured',
   ]);
   assert.equal(result.capacity, 'active');
+});
+
+test('la restauration de capacité active est un no-op sans toucher au keyspace', async () => {
+  const events = [];
+  const result = await runM1BStagingRelease(
+    'restore-capacity',
+    environment(),
+    {
+      certifyDatabase() {
+        events.push('database');
+      },
+      async assertStrictMigrationState() {
+        events.push('migrations');
+        return { appliedCount: 87, pendingCount: 0 };
+      },
+      readCapacityState() {
+        events.push('capacity:state');
+        return { mode: 'active', usedSessions: 3 };
+      },
+      certifyActiveCapacity() {
+        events.push('capacity:active-configuration');
+      },
+      configureCapacity() {
+        events.push('capacity:configured');
+        return 'active';
+      },
+      runKeyManager() {
+        events.push('keys:forbidden');
+      },
+      foreignAuthoritySnapshot() {
+        events.push('foreign-snapshot:forbidden');
+        return 'stable';
+      },
+    },
+  );
+
+  assert.deepEqual(events, [
+    'database',
+    'migrations',
+    'capacity:state',
+    'capacity:active-configuration',
+  ]);
+  assert.equal(result.capacity, 'active');
+});
+
+test('la restauration attend une capacité fermée puis la rouvre sans key manager', async () => {
+  const events = [];
+  const result = await runM1BStagingRelease(
+    'restore-capacity',
+    environment(),
+    {
+      certifyDatabase() {
+        events.push('database');
+      },
+      async assertStrictMigrationState() {
+        events.push('migrations');
+        return { appliedCount: 87, pendingCount: 0 };
+      },
+      certifyCapacityAuthority() {
+        events.push('capacity:acl');
+      },
+      readCapacityState() {
+        events.push('capacity:state:closed-with-leases');
+        return { mode: 'closed', usedSessions: 2 };
+      },
+      async waitForClosedCapacity(_config, _dependencies, initialState) {
+        events.push(`capacity:drained:${initialState.usedSessions}`);
+      },
+      configureCapacity() {
+        events.push('capacity:configured');
+        return 'active';
+      },
+      runKeyManager() {
+        events.push('keys:forbidden');
+      },
+    },
+  );
+
+  assert.deepEqual(events, [
+    'database',
+    'migrations',
+    'capacity:state:closed-with-leases',
+    'capacity:drained:2',
+    'capacity:acl',
+    'capacity:configured',
+  ]);
+  assert.equal(result.capacity, 'active');
+});
+
+test('la restauration respecte une configuration Bob Live désactivée', async () => {
+  const events = [];
+  const result = await runM1BStagingRelease(
+    'restore-capacity',
+    environment({ BOB_LIVE_ENABLED: 'false' }),
+    {
+      certifyDatabase() {
+        events.push('database');
+      },
+      async assertStrictMigrationState() {
+        events.push('migrations');
+        return { appliedCount: 87, pendingCount: 0 };
+      },
+      readCapacityState() {
+        events.push('capacity:state:active');
+        return { mode: 'active', usedSessions: 1 };
+      },
+      async closeAndDrainCapacity() {
+        events.push('capacity:closed-drained');
+      },
+      certifyCapacityAuthority() {
+        events.push('capacity:acl');
+      },
+    },
+  );
+
+  assert.deepEqual(events, [
+    'database',
+    'migrations',
+    'capacity:state:active',
+    'capacity:closed-drained',
+    'capacity:acl',
+  ]);
+  assert.equal(result.capacity, 'closed');
 });
 
 test('un drift étranger ou une fermeture incomplète échoue fermé avant configure', async () => {

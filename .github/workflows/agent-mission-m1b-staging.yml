@@ -577,7 +577,7 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs off
       - name: Prove untouched keyspace when activation never became owned
-        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outputs.removed != 'true' }}
+        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outcome == 'success' && steps.remove_variables.outputs.removed != 'true' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
@@ -585,6 +585,20 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs bootstrap
+      - name: Restore global Bob Live capacity independently after cleanup attempts
+        id: restore_capacity
+        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
       - name: Final independent OFF data cleanliness proof
         id: final_off_data
         if: ${{ always() && steps.pin_database.outcome == 'success' }}

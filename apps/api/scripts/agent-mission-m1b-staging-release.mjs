@@ -65,6 +65,47 @@ SELECT pg_catalog.format('%s|%s', mode, "usedSessions")
  WHERE id = 1;
 `;
 
+const ACTIVE_CAPACITY_CONFIGURATION_SQL = `
+SET LOCAL statement_timeout = '5s';
+SET LOCAL lock_timeout = '2s';
+SET LOCAL ROLE bob_realtime_capacity;
+SELECT pg_catalog.set_config('bob.realtime.capacity_provider', :'provider', TRUE);
+SELECT pg_catalog.set_config('bob.realtime.capacity_model', :'model', TRUE);
+SELECT pg_catalog.set_config('bob.realtime.capacity_global_max', :'global_max', TRUE);
+SELECT pg_catalog.set_config('bob.realtime.capacity_provider_max', :'provider_max', TRUE);
+SELECT pg_catalog.set_config('bob.realtime.capacity_config_version', :'config_version', TRUE);
+DO $certify_active_realtime_capacity$
+DECLARE
+  selected_provider TEXT := pg_catalog.current_setting('bob.realtime.capacity_provider');
+  selected_model TEXT := pg_catalog.current_setting('bob.realtime.capacity_model');
+  selected_global_max INTEGER :=
+    pg_catalog.current_setting('bob.realtime.capacity_global_max')::INTEGER;
+  selected_provider_max INTEGER :=
+    pg_catalog.current_setting('bob.realtime.capacity_provider_max')::INTEGER;
+  selected_version INTEGER :=
+    pg_catalog.current_setting('bob.realtime.capacity_config_version')::INTEGER;
+  state_row public.realtime_global_capacity%ROWTYPE;
+BEGIN
+  SELECT *
+    INTO STRICT state_row
+    FROM public.realtime_global_capacity
+   WHERE id = 1;
+  IF state_row.mode <> 'active'
+     OR state_row."providerId" IS DISTINCT FROM selected_provider
+     OR state_row."providerModel" IS DISTINCT FROM selected_model
+     OR state_row."globalMaxSessions" IS DISTINCT FROM selected_global_max
+     OR state_row."providerMaxSessions" IS DISTINCT FROM selected_provider_max
+     OR state_row."configVersion" IS DISTINCT FROM selected_version
+     OR state_row."retryAfterSeconds" <> 10
+     OR state_row."activatedAt" IS NULL
+     OR state_row."usedSessions" < 0
+     OR state_row."usedSessions" > selected_global_max THEN
+    RAISE EXCEPTION 'M1-B staging active capacity configuration drift';
+  END IF;
+END;
+$certify_active_realtime_capacity$;
+`;
+
 const CONFIGURE_CAPACITY_SQL = `
 SET LOCAL statement_timeout = '5s';
 SET LOCAL lock_timeout = '2s';
@@ -232,8 +273,12 @@ export function parseM1BStagingReleaseEnvironment(
   phase,
   environment = process.env,
 ) {
-  if (phase !== 'predeploy' && phase !== 'postdeploy') {
-    fail('phase must be predeploy or postdeploy');
+  if (
+    phase !== 'predeploy'
+    && phase !== 'postdeploy'
+    && phase !== 'restore-capacity'
+  ) {
+    fail('phase must be predeploy, postdeploy or restore-capacity');
   }
   if (required(environment, 'CABINET_RELEASE_ENV', 16) !== 'staging') {
     fail('this targeted release gate is staging-only');
@@ -339,27 +384,47 @@ function closeCapacity(config, dependencies = {}) {
   );
 }
 
-async function closeAndDrainCapacity(config, dependencies = {}) {
-  closeCapacity(config, dependencies);
+function readCapacityState(config, dependencies = {}) {
+  const raw = securePsql(
+    config.directUrl,
+    { input: CAPACITY_STATE_SQL, label: 'capacity-state' },
+    config.environment,
+    dependencies,
+  );
+  const match = /^(active|closed)\|([0-9]{1,10})$/u.exec(raw);
+  if (match === null) fail('realtime capacity returned an invalid state');
+  const usedSessions = Number(match[2]);
+  if (!Number.isSafeInteger(usedSessions)) {
+    fail('realtime capacity returned an invalid state');
+  }
+  return Object.freeze({ mode: match[1], usedSessions });
+}
+
+async function waitForClosedCapacity(config, dependencies = {}, initialState) {
   const now = dependencies.now ?? (() => Date.now());
   const sleep =
     dependencies.sleep
     ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const deadline = now() + config.drainTimeoutSeconds * 1_000;
+  let state = initialState;
   while (true) {
-    const state = securePsql(
-      config.directUrl,
-      { input: CAPACITY_STATE_SQL, label: 'capacity-drain-state' },
-      config.environment,
+    state ??= (dependencies.readCapacityState ?? readCapacityState)(
+      config,
       dependencies,
     );
-    if (state === 'closed|0') return;
-    if (!/^closed\|[1-9][0-9]{0,9}$/u.test(state)) {
+    if (state.mode !== 'closed') {
       fail('realtime capacity returned an invalid drain state');
     }
+    if (state.usedSessions === 0) return;
     if (now() >= deadline) fail('realtime capacity did not drain before the deadline');
     await sleep(5_000);
+    state = undefined;
   }
+}
+
+async function closeAndDrainCapacity(config, dependencies = {}) {
+  closeCapacity(config, dependencies);
+  await waitForClosedCapacity(config, dependencies);
 }
 
 function runKeyManager(mode, config, dependencies = {}) {
@@ -467,14 +532,20 @@ function foreignAuthoritySnapshot(config, dependencies = {}) {
   return snapshot;
 }
 
-function configureCapacity(config, dependencies = {}) {
+function isBobLiveEnabled(config) {
   const liveEnabled =
     config.environment.BOB_LIVE_ENABLED
     ?? config.environment.OPENAI_REALTIME_ENABLED
     ?? 'false';
-  if (liveEnabled !== 'true') {
-    if (liveEnabled !== 'false') fail('Bob Live enablement is invalid');
-    return 'closed';
+  if (liveEnabled !== 'true' && liveEnabled !== 'false') {
+    fail('Bob Live enablement is invalid');
+  }
+  return liveEnabled === 'true';
+}
+
+function capacityConfiguration(config) {
+  if (!isBobLiveEnabled(config)) {
+    return Object.freeze({ enabled: false });
   }
   const provider = config.environment.BOB_LIVE_PROVIDER ?? 'openai';
   if (provider !== 'openai') fail('M1-B staging requires the OpenAI Bob Live provider');
@@ -500,23 +571,94 @@ function configureCapacity(config, dependencies = {}) {
     1,
     2_147_483_647,
   );
+  return Object.freeze({
+    enabled: true,
+    provider,
+    model,
+    globalMax,
+    providerMax,
+    configVersion,
+  });
+}
+
+function capacityVariables(configuration) {
+  return [
+    ['provider', configuration.provider],
+    ['model', configuration.model],
+    ['global_max', String(configuration.globalMax)],
+    ['provider_max', String(configuration.providerMax)],
+    ['config_version', String(configuration.configVersion)],
+  ];
+}
+
+function configureCapacity(config, dependencies = {}, configuration) {
+  const selected = configuration ?? capacityConfiguration(config);
+  if (!selected.enabled) return 'closed';
   securePsql(
     config.directUrl,
     {
       input: CONFIGURE_CAPACITY_SQL,
       label: 'capacity-configure',
-      variables: [
-        ['provider', provider],
-        ['model', model],
-        ['global_max', String(globalMax)],
-        ['provider_max', String(providerMax)],
-        ['config_version', String(configVersion)],
-      ],
+      variables: capacityVariables(selected),
     },
     config.environment,
     dependencies,
   );
   return 'active';
+}
+
+function certifyActiveCapacity(config, configuration, dependencies = {}) {
+  securePsql(
+    config.directUrl,
+    {
+      input: ACTIVE_CAPACITY_CONFIGURATION_SQL,
+      label: 'capacity-active-configuration',
+      variables: capacityVariables(configuration),
+    },
+    config.environment,
+    dependencies,
+  );
+}
+
+async function restoreCapacity(config, dependencies = {}) {
+  const configuration = capacityConfiguration(config);
+  const state = (dependencies.readCapacityState ?? readCapacityState)(
+    config,
+    dependencies,
+  );
+
+  if (state.mode === 'active') {
+    if (configuration.enabled) {
+      (dependencies.certifyActiveCapacity ?? certifyActiveCapacity)(
+        config,
+        configuration,
+        dependencies,
+      );
+      return 'active';
+    }
+    await (
+      dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity
+    )(config, dependencies);
+    (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(
+      config,
+      dependencies,
+    );
+    return 'closed';
+  }
+
+  await (
+    dependencies.waitForClosedCapacity ?? waitForClosedCapacity
+  )(config, dependencies, state);
+  (dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority)(
+    config,
+    dependencies,
+  );
+  if (!configuration.enabled) return 'closed';
+  return (dependencies.configureCapacity ?? configureCapacity)(
+    config,
+    dependencies,
+    configuration,
+  );
 }
 
 export async function runM1BStagingRelease(
@@ -531,6 +673,18 @@ export async function runM1BStagingRelease(
   const migrations = await (
     dependencies.assertStrictMigrationState ?? assertStrictMigrationState
   )(config, dependencies);
+  if (phase === 'restore-capacity') {
+    const capacity = await (
+      dependencies.restoreCapacity ?? restoreCapacity
+    )(config, dependencies);
+    return Object.freeze({
+      phase,
+      passed: true,
+      capacity,
+      appliedMigrations: migrations.appliedCount,
+      pendingMigrations: migrations.pendingCount,
+    });
+  }
   const snapshot =
     (dependencies.foreignAuthoritySnapshot ?? foreignAuthoritySnapshot)(
       config,

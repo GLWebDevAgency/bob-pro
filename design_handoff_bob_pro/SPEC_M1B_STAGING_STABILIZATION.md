@@ -1,7 +1,7 @@
 # SPEC — Stabilisation et accélération de la certification M1-B staging
 
 **Date :** 2026-07-28
-**Statut :** `specified`
+**Statut :** `implemented`
 **Objectifs servis :** O4 — mission continue ; O7 — release reproductible
 **Autorité parente :** `OBJECTIFS_SPECS_DOD_PUBLICATION.md`
 **Contrat raffiné :** `SPEC_AGENT_MISSIONS_JARVIS_M1B_CAPABILITY_ACK.md`, §8.1
@@ -108,6 +108,12 @@ Une seule PR courte rend la certification M1-B :
 - Le job de cleanup reste autonome, `always()`, `cancel-in-progress=false` et fail-closed. Il
   revalide toujours la base et l'ownership durable, ferme et nettoie l'état possédé et ne dépend
   jamais d'un output/cache pour exercer son autorité.
+- Après toute tentative de cleanup dont la suppression du bloc Railway M1-B est prouvée, une voie
+  indépendante et limitée à la capacité globale remet Bob Live dans l'état configuré. Elle est
+  sans effet si la capacité est déjà active **et** que sa configuration exacte est certifiée,
+  attend un éventuel drain puis le certificat fermé avant réouverture, ne déploie aucun binaire
+  et ne lit ni ne mute le keyspace AgentMission. Si l'ownership du bloc Railway reste indéterminé,
+  elle ne rouvre rien et le cleanup échoue fermé.
 - Les trois déploiements publient le même SHA exact. La réutilisation d'un artefact ou digest n'est
   admise que si Railway permet de le rattacher et de le vérifier explicitement ; sinon chaque
   déploiement reconstruit le même checkout exact.
@@ -132,6 +138,10 @@ Une seule PR courte rend la certification M1-B :
       rejouable sous le même `run_id` avec un nouvel `run_attempt`.
 - [ ] Le certificat read-only de capacité passe après chaque drain et avant le writer ; tous les
       sous-processus DB ont une deadline dure testée.
+- [ ] Une panne injectée après fermeture de capacité, avant ou pendant le cleanup M1-B, déclenche
+      la restauration indépendante : capacité déjà active = certificat de configuration exact +
+      no-op ; capacité fermée = drain + certificat fermé + réouverture ; aucun key manager et
+      aucun déploiement API.
 - [ ] Les tests ciblés, typecheck/build concernés et tests de release safety sont verts.
 - [ ] Le SHA exact passe la vraie certification Supabase/Railway staging puis rend global OFF,
       zéro override possédé, zéro lease et zéro mission/brouillon.

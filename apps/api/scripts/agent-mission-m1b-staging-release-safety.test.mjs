@@ -22,6 +22,10 @@ const targetedReleaseSource = readFileSync(
   resolve(repositoryRoot, 'apps/api/scripts/agent-mission-m1b-staging-release.mjs'),
   'utf8',
 );
+const capacityAuthorityCertificate = readFileSync(
+  resolve(repositoryRoot, 'apps/api/prisma/realtime-global-capacity-release-cert.sql'),
+  'utf8',
+);
 const fingerprintManagerSource = readFileSync(
   resolve(
     repositoryRoot,
@@ -134,8 +138,15 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
     3,
   );
   assert.equal(
+    occurrences(
+      workflow,
+      /agent-mission-m1b-staging-release\.mjs restore-capacity/gu,
+    ),
+    1,
+  );
+  assert.equal(
     occurrences(workflow, /env CABINET_RELEASE_ENV=staging/gu),
-    6,
+    7,
   );
   assert.doesNotMatch(workflow, /BOB_RELEASE_PHASE/u);
   assert.doesNotMatch(workflow, /apps\/api\/scripts\/release\.sh/u);
@@ -266,6 +277,76 @@ test('activation, override et cleanup sont bornés par ownership et preuve HMAC 
     workflow,
     /manage-agent-mission-fingerprint-key-versions\.mjs\s+(?:stage|retire)/u,
   );
+});
+
+test('le cleanup restaure toujours la capacité après une désactivation Railway prouvée', () => {
+  const restoreStep = workflowStep('restore_capacity');
+  assert.match(
+    restoreStep,
+    /if: \$\{\{ always\(\) && steps\.pin_database\.outcome == 'success' && steps\.remove_override\.outcome == 'success' && steps\.remove_variables\.outcome == 'success' \}\}/u,
+  );
+  assert.match(
+    restoreStep,
+    /agent-mission-m1b-staging-database\.mjs[\s\S]*?agent-mission-m1b-staging-release\.mjs restore-capacity/u,
+  );
+  assert.doesNotMatch(
+    restoreStep,
+    /railway up|manage-agent-mission-fingerprint-key-versions|agent-mission-m1b-staging-key-state/u,
+  );
+
+  const completeOff = workflow.indexOf('Complete OFF postdeploy and writer fence');
+  const untouchedKeyspace = workflow.indexOf(
+    'Prove untouched keyspace when activation never became owned',
+  );
+  const restore = workflow.indexOf(
+    'Restore global Bob Live capacity independently after cleanup attempts',
+  );
+  const finalProof = workflow.indexOf('Final independent OFF data cleanliness proof');
+  assert.ok(restore > completeOff);
+  assert.ok(restore > untouchedKeyspace);
+  assert.ok(finalProof > restore);
+});
+
+test('la restauration distingue le certificat actif du certificat fermé avant mutation', () => {
+  assert.match(
+    capacityAuthorityCertificate,
+    /capacity_row\.mode <> 'closed'/u,
+    'le certificat historique reste volontairement fermé avant toute mutation',
+  );
+  assert.match(
+    targetedReleaseSource,
+    /const ACTIVE_CAPACITY_CONFIGURATION_SQL = `[\s\S]*?state_row\.mode <> 'active'[\s\S]*?state_row\."providerId" IS DISTINCT FROM selected_provider[\s\S]*?state_row\."configVersion" IS DISTINCT FROM selected_version/u,
+  );
+
+  const restoreStart = targetedReleaseSource.indexOf(
+    'async function restoreCapacity(',
+  );
+  const restoreEnd = targetedReleaseSource.indexOf(
+    '\nexport async function runM1BStagingRelease(',
+    restoreStart,
+  );
+  const restoreSource = targetedReleaseSource.slice(restoreStart, restoreEnd);
+  const activeBranch = restoreSource.indexOf("if (state.mode === 'active')");
+  const activeCertificate = restoreSource.indexOf(
+    'dependencies.certifyActiveCapacity ?? certifyActiveCapacity',
+    activeBranch,
+  );
+  const activeReturn = restoreSource.indexOf("return 'active'", activeCertificate);
+  const closeAndDrain = restoreSource.indexOf(
+    'dependencies.closeAndDrainCapacity ?? closeAndDrainCapacity',
+    activeReturn,
+  );
+  const closedCertificate = restoreSource.indexOf(
+    'dependencies.certifyCapacityAuthority ?? certifyCapacityAuthority',
+    closeAndDrain,
+  );
+  const configure = restoreSource.lastIndexOf(
+    'dependencies.configureCapacity ?? configureCapacity',
+  );
+  assert.ok(activeBranch >= 0);
+  assert.ok(activeCertificate > activeBranch && activeReturn > activeCertificate);
+  assert.ok(closeAndDrain > activeReturn && closedCertificate > closeAndDrain);
+  assert.ok(configure > closedCertificate);
 });
 
 test('staging est réconcilié avant la recertification stricte puis exige le flag canonique', () => {
