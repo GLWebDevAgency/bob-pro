@@ -180,9 +180,20 @@ export function detectIntent(message: string): BobIntent {
   // PR-15/16 — FICHE DE PASSAGE : AVANT le parc (« chez », « site » y collisionnent), AVANT
   // envoyer_facture/facture_directe (« envoie », « facture » y collisionnent). Le NOM de la
   // fiche est résolu contre les passages RÉELS dans le handler — jamais un id deviné.
+  // [Revue adversariale 28/07 — finding 5] ANNONCE de fin du passage dans le tour COURANT.
+  // Une consigne composite (« j'ai fini …, et envoie la fiche ») est d'abord une COMPLÉTION :
+  // la fiche n'existe pas avant elle, l'envoi ne peut pas aboutir, et partir à l'envoi laissait
+  // le passage `in_progress` pour toujours — le scénario §8 finissait en impasse. Ce n'est PAS
+  // le simple adjectif : « envoie la fiche du passage terminé hier » DÉCRIT une fiche, il ne
+  // termine rien — l'envoi garde alors son intent.
+  const annonceFinDePassage =
+    /\b(?:j.{0,3}ai (?:fini|termine)|on a (?:fini|termine)|c.{0,3}est (?:fini|termine)|(?:le passage|l.{0,3}intervention|la visite|le depannage|le chantier) est (?:fini|termine)e?s?|termine (?:le passage|ce passage|l.{0,3}intervention|cette intervention|la visite)|cloture le passage)\b/.test(
+      normalizedMessage,
+    );
   // Envoi de la fiche (sortant) : le mot fiche/passage/rapport EST requis — « envoie la
   // facture » reste un envoi de facture. Négation ⇒ rien.
   if (
+    !annonceFinDePassage &&
     /\b(envoie|envoyer|envoies|transmets|transmettre|adresse|adresser|expedie|expedier)\b/.test(
       normalizedMessage,
     ) &&
@@ -218,7 +229,10 @@ export function detectIntent(message: string): BobIntent {
     /\b(termine|terminee?s?|terminer|fini|finie?s?|finir|cloture le passage|j.{0,3}ai fini|c.{0,3}est fini|c.{0,3}est termine)\b/.test(
       normalizedMessage,
     ) &&
-    (/\b(interventions?|passages?|chantier|site|chez)\b/.test(normalizedMessage) ||
+    // [finding 5] L'ANNONCE de fin suffit à elle seule : sans cette branche, une consigne
+    // écartée de l'envoi (« envoie la fiche, j'ai fini ») ne serait plus captée par PERSONNE.
+    (annonceFinDePassage ||
+      /\b(interventions?|passages?|chantier|site|chez)\b/.test(normalizedMessage) ||
       /^\s*(c.{0,3}est (fini|termine)|j.{0,3}ai fini|termine)\b/.test(normalizedMessage)) &&
     !/\b(devis|factures?|mois|cloture comptable|exercice|tva)\b/.test(normalizedMessage) &&
     !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(termine|terminer|fini|finir)\b/.test(

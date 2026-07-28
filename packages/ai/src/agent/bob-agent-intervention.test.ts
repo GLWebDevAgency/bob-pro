@@ -432,6 +432,93 @@ describe('ENCHAÎNEMENT COMPOSITE §3.7 — « j’ai fini chez RATP… envoie l
     expect(sent).toEqual([{ interventionId: 'itv-ratp-encours' }]);
   });
 
+  /**
+   * [Revue adversariale 28/07 — finding 5] `envoyer_fiche_passage` était testé AVANT
+   * `terminer_intervention` : toute consigne portant « fini/terminé » ET « envoie … fiche »
+   * partait à l'ENVOI — or la fiche n'est ni terminée ni générée, l'envoi ne peut pas aboutir,
+   * et la complétion n'avait JAMAIS lieu. Le scénario de sortie de vague §8 finissait donc en
+   * impasse : le passage restait `in_progress`, rien n'était écrit, rien n'était envoyé.
+   *
+   * [finding 4] La même consigne prouve que le résumé écrit sur la pièce de preuve ne contient
+   * PAS la consigne suivante.
+   */
+  it('§8 BOUT EN BOUT : « j’ai fini … note-le … et envoie la fiche » termine PUIS envoie (jamais l’impasse)', async () => {
+    const completed: CompleteInterventionActionInput[] = [];
+    const sent: InterventionActionInput[] = [];
+    let etat: AgentIntervention[] = INTERVENTIONS;
+    const agent = makeAgent({
+      listInterventions: async () => ok(etat),
+      completeIntervention: async (input) => {
+        completed.push(input);
+        etat = etat.map((intervention) =>
+          intervention.id === input.interventionId
+            ? { ...intervention, status: 'completed' as const, revision: intervention.revision + 1 }
+            : intervention,
+        );
+        return ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite d’entretien',
+          chantierNom: 'RATP Bastille',
+        });
+      },
+      sendInterventionReport: async (input) => {
+        sent.push(input);
+        return ok({
+          interventionId: input.interventionId,
+          recipient: 'compta@ratp.example',
+          deliveryStatus: 'queued',
+        });
+      },
+    });
+
+    const consigne =
+      'J’ai fini chez RATP Bastille, note-le : détartrage complet, plus aucun dépôt, et envoie la fiche au client';
+
+    // 1. La MUTATION passe d'abord : une consigne composite ne part jamais à l'envoi d'une
+    //    fiche qui n'existe pas encore.
+    expect(detectIntent(consigne)).toBe('terminer_intervention');
+    const fin = await agent.ask(consigne);
+    expect(fin.ok).toBe(true);
+    if (!fin.ok) return;
+    expect(fin.value.kind).toBe('proposed');
+    expect(fin.value.pending?.tool).toBe('terminer_intervention');
+    expect(fin.value.pending?.args).toMatchObject({ interventionId: 'itv-ratp-encours' });
+
+    // [finding 4] Le résumé est le SEGMENT UTILE : ni la consigne suivante, ni le site.
+    const summary = (fin.value.pending?.args as { summary?: string }).summary;
+    expect(summary).toBe('détartrage complet, plus aucun dépôt');
+
+    // Bob ANNONCE l'envoi sans le fusionner : le sortant garde SA confirmation.
+    expect(fin.value.card?.body).toContain('fiche');
+    expect(sent).toHaveLength(0);
+
+    const confirme = await agent.confirm(fin.value.pending!);
+    expect(confirme.ok).toBe(true);
+    expect(completed).toEqual([
+      { interventionId: 'itv-ratp-encours', summary: 'détartrage complet, plus aucun dépôt' },
+    ]);
+    // Rien n'est parti dans le même geste.
+    expect(sent).toHaveLength(0);
+
+    // 2. L'envoi annoncé aboutit — la fiche est terminée, l'impasse n'existe plus.
+    const envoi = await agent.ask('Envoie la fiche de passage de RATP Bastille');
+    expect(envoi.ok).toBe(true);
+    if (!envoi.ok) return;
+    expect(envoi.value.kind).toBe('proposed');
+    const parti = await agent.confirm(envoi.value.pending!);
+    expect(parti.ok).toBe(true);
+    expect(sent).toEqual([{ interventionId: 'itv-ratp-encours' }]);
+  });
+
+  it('un envoi SEUL reste un envoi (la discrimination ne vole pas le geste sortant)', () => {
+    expect(detectIntent('Envoie la fiche de passage des Docks Rouen')).toBe('envoyer_fiche_passage');
+    // « du passage terminé » DÉCRIT la fiche, il ne demande pas de terminer quoi que ce soit.
+    expect(detectIntent('Envoie la fiche du passage terminé hier chez RATP')).toBe(
+      'envoyer_fiche_passage',
+    );
+  });
+
   it('hôte sans capacité fiche : Bob le DIT, rien n’est modifié (jamais un échec muet)', async () => {
     // Capacité ABSENTE (clé retirée, jamais `undefined` explicite — exactOptionalPropertyTypes).
     const { listInterventions: _absente, ...sansFiches } = baseActions;

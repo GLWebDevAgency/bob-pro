@@ -5813,6 +5813,13 @@ export class BobAgent {
       const signAsked =
         intent === 'terminer_intervention' &&
         /\b(fais(?:-| )?(?:le |la )?signer|faire signer|signature)\b/i.test(message);
+      // [Revue adversariale 28/07 — finding 5] Même chorégraphie pour « …, et envoie la fiche » :
+      // on TERMINE d'abord (la fiche n'existe pas avant), et Bob ANNONCE l'envoi — sortant, il
+      // gardera SA propre confirmation. Jamais deux gestes fusionnés dans une seule réponse.
+      const sendAsked =
+        intent === 'terminer_intervention' &&
+        /\b(envoie|envoies|envoyer|transmets|transmettre|adresse|adresser)\b/i.test(message) &&
+        /\b(fiche|rapport|compte rendu)\b/i.test(message);
       const label =
         intent === 'commencer_intervention'
           ? `Démarrer le passage « ${target.kind} » sur le site ${target.chantierNom}`
@@ -5840,7 +5847,7 @@ export class BobAgent {
                 ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti. Je confirme ?`
                 : intent === 'facturer_intervention'
                   ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé. Je confirme ?`
-                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''} Je confirme ?`,
+                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''}${sendAsked ? ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.' : ''} Je confirme ?`,
           },
           pending: { tool: tool.name, args, label },
           spokenPrompt: buildSpokenConfirmation(label),
