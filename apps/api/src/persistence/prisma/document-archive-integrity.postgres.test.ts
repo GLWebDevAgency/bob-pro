@@ -11,6 +11,11 @@ import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT === 'true';
 const WORKER_COUNT = 8;
+const ARCHIVE_TEARDOWN_LOCK_TIMEOUT = '5s';
+const ARCHIVE_TEARDOWN_STATEMENT_TIMEOUT = '25s';
+const ARCHIVE_TEARDOWN_MAX_WAIT_MS = 5_000;
+const ARCHIVE_TEARDOWN_TRANSACTION_TIMEOUT_MS = 30_000;
+const ARCHIVE_TEARDOWN_HOOK_TIMEOUT_MS = 40_000;
 
 function passesLuhn(value: string): boolean {
   let sum = 0;
@@ -403,64 +408,83 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           // mêmes verrous ordonnés que le cutover, triggers réactivés avant COMMIT, zéro erreur
           // avalée. Supprimer seulement l'attestation laisserait une base invalide et rendrait la
           // certification suivante dépendante de l'ordre des tests.
-          await admin.$transaction(async (tx) => {
-            await tx.$executeRawUnsafe('LOCK TABLE public.documents IN ACCESS EXCLUSIVE MODE');
-            await tx.$executeRawUnsafe(
-              'LOCK TABLE public.document_versions IN ACCESS EXCLUSIVE MODE',
-            );
-            await tx.$executeRawUnsafe(
-              'LOCK TABLE public.document_invoice_pdf_attestations IN ACCESS EXCLUSIVE MODE',
-            );
-            await tx.$executeRawUnsafe('LOCK TABLE storage.objects IN ACCESS EXCLUSIVE MODE');
-            await tx.$executeRawUnsafe(
-              'ALTER TABLE public.document_versions DISABLE TRIGGER ' +
-                'document_versions_generated_legal_archive_representation_v2',
-            );
-            await tx.$executeRawUnsafe(
-              'ALTER TABLE public.document_invoice_pdf_attestations DISABLE TRIGGER ' +
-                'document_invoice_pdf_attestations_immutable',
-            );
-            await tx.documentArchiveJobArtifact.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.documentArchiveJob.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.documentInvoicePdfAttestation.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.storedDocument.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            // Supabase protège storage.objects contre les DELETE SQL directs
-            // (storage.protect_delete) : l'échappatoire officielle est opt-in et
-            // LOCALE à la transaction — nettoyage de fixtures de certification.
-            await tx.$executeRaw`SET LOCAL storage.allow_delete_query = 'true'`;
-            await tx.$executeRaw`
-              DELETE FROM storage.objects
-               WHERE name = ${legalDocumentStorageKey}
-            `;
-            await tx.invoice.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.quote.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.customer.deleteMany({
-              where: { companyId: { in: [companyA, companyB] } },
-            });
-            await tx.company.deleteMany({
-              where: { id: { in: [companyA, companyB] } },
-            });
-            await tx.$executeRawUnsafe(
-              'ALTER TABLE public.document_invoice_pdf_attestations ENABLE TRIGGER ' +
-                'document_invoice_pdf_attestations_immutable',
-            );
-            await tx.$executeRawUnsafe(
-              'ALTER TABLE public.document_versions ENABLE TRIGGER ' +
-                'document_versions_generated_legal_archive_representation_v2',
-            );
-          });
+          await admin.$transaction(
+            async (tx) => {
+              // Une certification Supabase distante dépasse légitimement les 5 secondes
+              // implicites d'une transaction interactive Prisma. Les trois délais restent
+              // explicites et fail-closed : acquisition des verrous, requête et transaction.
+              await tx.$executeRaw`
+                SELECT set_config('lock_timeout', ${ARCHIVE_TEARDOWN_LOCK_TIMEOUT}, true)
+              `;
+              await tx.$executeRaw`
+                SELECT set_config(
+                  'statement_timeout',
+                  ${ARCHIVE_TEARDOWN_STATEMENT_TIMEOUT},
+                  true
+                )
+              `;
+              await tx.$executeRawUnsafe('LOCK TABLE public.documents IN ACCESS EXCLUSIVE MODE');
+              await tx.$executeRawUnsafe(
+                'LOCK TABLE public.document_versions IN ACCESS EXCLUSIVE MODE',
+              );
+              await tx.$executeRawUnsafe(
+                'LOCK TABLE public.document_invoice_pdf_attestations IN ACCESS EXCLUSIVE MODE',
+              );
+              await tx.$executeRawUnsafe('LOCK TABLE storage.objects IN ACCESS EXCLUSIVE MODE');
+              await tx.$executeRawUnsafe(
+                'ALTER TABLE public.document_versions DISABLE TRIGGER ' +
+                  'document_versions_generated_legal_archive_representation_v2',
+              );
+              await tx.$executeRawUnsafe(
+                'ALTER TABLE public.document_invoice_pdf_attestations DISABLE TRIGGER ' +
+                  'document_invoice_pdf_attestations_immutable',
+              );
+              await tx.documentArchiveJobArtifact.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.documentArchiveJob.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.documentInvoicePdfAttestation.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.storedDocument.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              // Supabase protège storage.objects contre les DELETE SQL directs
+              // (storage.protect_delete) : l'échappatoire officielle est opt-in et
+              // LOCALE à la transaction — nettoyage de fixtures de certification.
+              await tx.$executeRaw`SET LOCAL storage.allow_delete_query = 'true'`;
+              await tx.$executeRaw`
+                DELETE FROM storage.objects
+                 WHERE name = ${legalDocumentStorageKey}
+              `;
+              await tx.invoice.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.quote.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.customer.deleteMany({
+                where: { companyId: { in: [companyA, companyB] } },
+              });
+              await tx.company.deleteMany({
+                where: { id: { in: [companyA, companyB] } },
+              });
+              await tx.$executeRawUnsafe(
+                'ALTER TABLE public.document_invoice_pdf_attestations ENABLE TRIGGER ' +
+                  'document_invoice_pdf_attestations_immutable',
+              );
+              await tx.$executeRawUnsafe(
+                'ALTER TABLE public.document_versions ENABLE TRIGGER ' +
+                  'document_versions_generated_legal_archive_representation_v2',
+              );
+            },
+            {
+              maxWait: ARCHIVE_TEARDOWN_MAX_WAIT_MS,
+              timeout: ARCHIVE_TEARDOWN_TRANSACTION_TIMEOUT_MS,
+            },
+          );
         }
       } finally {
         await Promise.allSettled([
@@ -468,7 +492,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           ...(admin ? [admin.$disconnect()] : []),
         ]);
       }
-    });
+    }, ARCHIVE_TEARDOWN_HOOK_TIMEOUT_MS);
 
     it('certifie migration, contraintes profondes, FORCE RLS et absence de DELETE runtime', async () => {
       const [posture] = await workers[0]!.$queryRaw<
