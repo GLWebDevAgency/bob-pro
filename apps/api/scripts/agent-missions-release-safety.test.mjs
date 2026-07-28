@@ -464,6 +464,11 @@ test('la production ne peut jamais atteindre les fixtures de certification', () 
   const postactivationEnd = release.indexOf('\n}\n\ncommand -v pnpm', postactivationStart);
   const postactivationBody = release.slice(postactivationStart, postactivationEnd);
   assert.match(postactivationBody, /rls-cert-cabinet-seed\.sql[\s\S]*?rls-cert\.sql/u);
+  assert.match(
+    postactivationBody,
+    /release_sha="\$\{BOB_RELEASE_SHA-\$\{GITHUB_SHA-\}\}"[\s\S]*?-v release_sha="\$release_sha"/u,
+  );
+  assert.doesNotMatch(postactivationBody, /-v release_sha="\$BOB_RELEASE_SHA"/u);
   assert.equal(
     (postactivationBody.match(/pnpm --filter @bob\/api exec vitest run/gu) ?? []).length,
     2,

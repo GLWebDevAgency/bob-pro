@@ -2673,6 +2673,10 @@ run_nonproduction_postactivation_certifications() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  # Même autorité que le reçu de phase : Railway injecte BOB_RELEASE_SHA, GitHub Actions
+  # fournit GITHUB_SHA. Une valeur BOB_RELEASE_SHA explicitement vide reste invalide au
+  # preflight et ne doit pas être remplacée silencieusement.
+  release_sha="${BOB_RELEASE_SHA-${GITHUB_SHA-}}"
 
   # L'activation Outbox remplace la policy tenant : rejouer le certificat runtime sur staging
   # prouve la branche V2/no-trigger avec les mêmes fixtures bornées puis les retire.
@@ -2682,7 +2686,7 @@ run_nonproduction_postactivation_certifications() {
 
   archive_activated_now="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
-      -v release_sha="$BOB_RELEASE_SHA" <<'SQL'
+      -v release_sha="$release_sha" <<'SQL'
 SELECT CASE WHEN EXISTS (
   SELECT 1
     FROM public.document_archive_protocol_state AS state
@@ -2700,7 +2704,7 @@ SQL
 
   settlement_activated_now="$(
     psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 \
-      -v release_sha="$BOB_RELEASE_SHA" <<'SQL'
+      -v release_sha="$release_sha" <<'SQL'
 SELECT CASE WHEN EXISTS (
   SELECT 1
     FROM public.invoice_settlement_protocol_state AS state
