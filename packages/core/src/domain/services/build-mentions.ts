@@ -61,6 +61,57 @@ export const MENTION_FRANCHISE_BASE = 'TVA non applicable, article 293 B du CGI'
  */
 export const MENTION_OPTION_DEBITS = "Option pour le paiement de la taxe d'après les débits";
 
+/** Une rédaction de la mention de franchise, avec sa date d'effet et le texte qui la fonde. */
+interface RedactionFranchise {
+  /** Date à partir de laquelle cette rédaction s'applique (comparaison lexicographique DateOnly). */
+  readonly aPartirDu: DateOnly;
+  readonly mention: string;
+  /** Le texte qui la prescrit. Une rédaction sans source n'entre PAS dans cette table. */
+  readonly source: string;
+}
+
+/**
+ * Rédactions SOURCÉES de la mention de franchise, par date d'effet croissante. Une seule
+ * aujourd'hui, et c'est le fait juridique lui-même : la rédaction post-bascule CIBS relèvera d'un
+ * DÉCRET NON PARU au 28/07/2026 (l'obligation de l'art. 293 E, II est déclassée au rang
+ * réglementaire par la table de concordance du JO n° 0298 du 20/12/2025) — donc INCONNUE, donc
+ * absente de cette table. Bob n'imprime que ce qui y figure : c'est structurellement impossible
+ * d'émettre une rédaction présumée.
+ *
+ * LE JOUR OÙ LE DÉCRET PARAÎT, le geste tient en une ligne de DONNÉE, pas en une modification de
+ * logique : ajouter { aPartirDu: <date d'effet du décret>, mention: <verbatim du décret>,
+ * source: <référence du décret> }. C'est très exactement le geste que réclame l'alarme de veille
+ * (`veille-mentions-legales.ts`), et l'ajouter est ce qui la fait taire légitimement.
+ */
+const REDACTIONS_FRANCHISE: readonly RedactionFranchise[] = [
+  {
+    // Rédaction en vigueur depuis toujours du point de vue de Bob : aucune pièce du dépôt n'est
+    // antérieure, et l'art. 293 E, II est le droit applicable à toute date servie aujourd'hui.
+    aPartirDu: '0001-01-01',
+    mention: MENTION_FRANCHISE_BASE,
+    source: 'art. 293 E, II du CGI ; BOFiP BOI-TVA-DECLA-40-10-20, I-B § 50',
+  },
+];
+
+/**
+ * Rédaction de la mention de franchise applicable à la date de la pièce — la plus récente dont la
+ * date d'effet est atteinte. Le paramètre `asOf` de buildMentions est LU ICI, et nulle part
+ * ailleurs : c'est le seul point du bloc mentions où une date peut changer une chaîne, et il ne
+ * peut choisir qu'entre des rédactions SOURCÉES, jamais en inventer une.
+ *
+ * Passé CIBS_TOLERANCE_REFERENCES_CGI, la dernière rédaction connue serait tout de même renvoyée :
+ * la mention de franchise est OBLIGATOIRE, et n'en imprimer aucune serait pire qu'en imprimer une
+ * périmée. Ce trou-là n'est délibérément pas comblé par du code — aucun code ne peut inventer la
+ * rédaction manquante — mais par l'alarme, qui sonne 180 jours avant cette date (échéance
+ * `cibs-fin-tolerance-references-cgi`) pour qu'il ne soit jamais atteint.
+ */
+export function mentionFranchiseAu(asOf: DateOnly): string {
+  const applicables = REDACTIONS_FRANCHISE.filter((r) => r.aPartirDu <= asOf);
+  const retenue = applicables[applicables.length - 1] ?? REDACTIONS_FRANCHISE[0];
+  // La table n'est jamais vide (invariant figé par test) ; le repli protège d'une régression.
+  return retenue?.mention ?? MENTION_FRANCHISE_BASE;
+}
+
 const NATURE_LABEL: Record<OperationNature, string> = {
   biens: 'Livraison de biens',
   services: 'Prestation de services',
@@ -92,11 +143,14 @@ export interface BuildMentionsInput {
   customer: Customer;
   kind: 'quote' | 'invoice';
   /**
-   * Date de référence de la pièce (jour ouvré courant au point d'appel). Conservée comme point
-   * d'accroche des règles DATÉES : aucune mention n'en dépend aujourd'hui — la bascule CIBS est
-   * délibérément non automatique, cf. le bloc franchise et CIBS_TVA_ENTREE_EN_VIGUEUR.
+   * Date de référence de la pièce (jour métier Paris au point d'appel). LUE, et à un seul endroit :
+   * `mentionFranchiseAu` y choisit la rédaction de la mention de franchise parmi les rédactions
+   * SOURCÉES en table. Aujourd'hui il n'y en a qu'une, donc la mention est la même à toute date —
+   * c'est un fait de droit (la rédaction post-CIBS relève d'un décret non paru), pas un paramètre
+   * mort : le jour où une deuxième rédaction entre en table, cette date décide laquelle s'imprime.
+   * Aucune autre mention ne dépend d'une date, et aucune bascule n'est présumée.
    */
-  asOf: string;
+  asOf: DateOnly;
   validUntilDays?: number;
   /**
    * Option pour le paiement de la TVA d'après les DÉBITS, réellement exercée par l'entreprise
@@ -248,11 +302,15 @@ export function buildMentions(input: BuildMentionsInput): string[] {
     //     norme ne l'impose à ce jour — et cette page est antérieure au report.
     // Les mentions sont FIGÉES à l'émission (Invoice.legalMentions) : une pièce émise avec une
     // rédaction présumée resterait fausse pour toujours. Tant que le décret n'est pas publié,
-    // Bob n'imprime que la rédaction dont la base légale est certaine.
-    // POINT DE VEILLE DATÉ : à la parution du décret portant la partie réglementaire TVA du CIBS
-    // — et au plus tard avant CIBS_TOLERANCE_REFERENCES_CGI — remplacer MENTION_FRANCHISE_BASE
-    // par la rédaction que ce décret impose. Pas avant, et jamais les deux mentions à la fois.
-    m.push(MENTION_FRANCHISE_BASE);
+    // Bob n'imprime que la rédaction dont la base légale est certaine — ce que garantit
+    // mentionFranchiseAu, qui ne sait choisir qu'entre des rédactions SOURCÉES (une seule à ce
+    // jour, quelle que soit la date : d'où la stabilité de la mention, ci-dessous).
+    // LA VEILLE N'EST PAS QU'UN COMMENTAIRE : l'échéance est ARMÉE dans veille-mentions-legales.ts
+    // (test-sentinelle sur l'horloge réelle + signal au démarrage de l'API). Elle sonnera 90 jours
+    // avant CIBS_TVA_ENTREE_EN_VIGUEUR et 180 jours avant CIBS_TOLERANCE_REFERENCES_CGI, avec le
+    // geste à faire : ajouter la rédaction du décret à REDACTIONS_FRANCHISE. Pas avant, et jamais
+    // les deux rédactions à la fois.
+    m.push(mentionFranchiseAu(input.asOf));
   }
   // A4 — la FRANCHISE EN BASE PRIME sur l'autoliquidation : le sous-traitant en franchise
   // facture sous l'art. 293 B CGI (mention ci-dessus), il n'est pas concerné par le dispositif

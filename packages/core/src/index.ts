@@ -22,6 +22,7 @@ export * from './domain/customer/score';
 export * from './domain/services/compute-totals';
 export * from './domain/services/suggest-vat-rate';
 export * from './domain/services/build-mentions';
+export * from './domain/services/veille-mentions-legales';
 export * from './domain/services/propose-situation';
 export * from './domain/services/quote-billing-engagement';
 export * from './domain/services/retenue-garantie';

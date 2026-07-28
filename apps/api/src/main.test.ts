@@ -1,6 +1,11 @@
 import type { IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { usesDefaultJsonBodyParser, usesLargeJsonBodyParser } from './main';
+import { CIBS_TVA_ENTREE_EN_VIGUEUR } from '@bob/core';
+import {
+  usesDefaultJsonBodyParser,
+  usesLargeJsonBodyParser,
+  veilleMentionsLegalesAuDemarrage,
+} from './main';
 
 function request(method: string, url: string, contentType = 'application/json'): IncomingMessage {
   return {
@@ -72,5 +77,21 @@ describe('API JSON ingress policy', () => {
     const nonJson = request('POST', '/documents/upload', 'application/octet-stream');
     expect(usesLargeJsonBodyParser(nonJson)).toBe(false);
     expect(usesDefaultJsonBodyParser(nonJson)).toBe(false);
+  });
+});
+
+// Second canal de l'alarme datée du bloc mentions (@bob/core, veille-mentions-legales.ts) : le
+// test-sentinelle casse la CI, celui-ci couvre l'instance déployée qui tourne des mois sans qu'une
+// PR repasse. Un signal muet serait un signal inexistant : on prouve les deux états.
+describe('veille des mentions légales au démarrage', () => {
+  it('hors préavis : silence — le démarrage ne journalise rien', () => {
+    expect(veilleMentionsLegalesAuDemarrage('2026-07-28')).toBeNull();
+  });
+
+  it('échéance atteinte : message explicite, avec le geste à faire et les sources', () => {
+    const message = veilleMentionsLegalesAuDemarrage(CIBS_TVA_ENTREE_EN_VIGUEUR);
+    expect(message).toContain('le décret de formulation CIBS doit être vérifié et la mention mise à jour');
+    expect(message).toContain('Ordonnance n° 2026-671 du 27/07/2026');
+    expect(message).toContain('cibs-decret-formulation-franchise');
   });
 });

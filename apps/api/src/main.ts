@@ -3,6 +3,12 @@ import type { IncomingMessage } from 'node:http';
 import type { Server as HttpServer } from 'node:http';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import {
+  type DateOnly,
+  messageVeilleMentions,
+  parisDateOnly,
+  veilleMentionsLegales,
+} from '@bob/core';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { buildCorsOptions } from './config/cors';
@@ -58,6 +64,21 @@ export function usesDefaultJsonBodyParser(request: IncomingMessage): boolean {
   return isJsonContentType(request) && !usesLargeJsonBodyParser(request);
 }
 
+/**
+ * Veille des mentions légales au DÉMARRAGE — second canal de l'alarme datée du bloc mentions
+ * (@bob/core, `veille-mentions-legales.ts`). Le canal principal est le test-sentinelle, qui casse
+ * la CI ; celui-ci couvre le cas qu'un test ne couvre pas : une instance déployée qui tourne des
+ * mois sans qu'une PR repasse, et qui franchit l'échéance en production.
+ *
+ * Ne renvoie QU'UN MESSAGE : aucune mention n'est calculée, changée ni imprimée ici — le démarrage
+ * de l'API ne doit jamais dépendre d'une échéance légale, et une échéance ne doit jamais faire
+ * tomber le service. Exportée pour être testable sans booter Nest.
+ */
+export function veilleMentionsLegalesAuDemarrage(today: DateOnly): string | null {
+  const alertes = veilleMentionsLegales(today);
+  return alertes.length > 0 ? messageVeilleMentions(alertes) : null;
+}
+
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -88,12 +109,14 @@ async function bootstrap(): Promise<void> {
     await app.close().catch(() => undefined);
     throw error;
   }
-  app
-    .get(AppLogger)
-    .log(
-      `Bob Pro API -> http://localhost:${env.PORT} (data=postgresql, auth=jwt, claude=${!!env.ANTHROPIC_API_KEY}, glm=${!!env.GLM_API_KEY})`,
-      'Bootstrap',
-    );
+  const logger = app.get(AppLogger);
+  logger.log(
+    `Bob Pro API -> http://localhost:${env.PORT} (data=postgresql, auth=jwt, claude=${!!env.ANTHROPIC_API_KEY}, glm=${!!env.GLM_API_KEY})`,
+    'Bootstrap',
+  );
+  // Jour métier Paris : la même source de vérité que les pièces émises.
+  const veille = veilleMentionsLegalesAuDemarrage(parisDateOnly());
+  if (veille !== null) logger.warn(veille, 'VeilleMentionsLegales');
 }
 
 if (require.main === module) void bootstrap();
