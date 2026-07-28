@@ -19,27 +19,8 @@ SELECT CASE WHEN EXISTS (
 SQL
 }
 
-if [ "$(index_is_invalid notification_jobs_due_deliverable_idx)" = "true" ]; then
-  PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
-    psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-      -c 'DROP INDEX CONCURRENTLY IF EXISTS "notification_jobs_due_deliverable_idx"'
-fi
-PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
-  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-    -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "notification_jobs_due_deliverable_idx" ON "notification_jobs" ("companyId", "nextAttemptAt", "createdAt") WHERE status IN ('"'"'pending'"'"', '"'"'failed'"'"') AND payload IS NOT NULL'
-
-if [ "$(index_is_invalid notification_jobs_recent_idx)" = "true" ]; then
-  PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
-    psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-      -c 'DROP INDEX CONCURRENTLY IF EXISTS "notification_jobs_recent_idx"'
-fi
-PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
-  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
-    -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "notification_jobs_recent_idx" ON "notification_jobs" ("companyId", "createdAt" DESC)'
-
-psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/notification-outbox-v2-activate.sql
-
-verified="$(psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+activation_is_verified() {
+  psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
 SELECT CASE WHEN
   NOT EXISTS (
     SELECT 1 FROM pg_trigger
@@ -68,9 +49,59 @@ SELECT CASE WHEN
   ) LIKE '%notification_outbox_version%'
 THEN 'true' ELSE 'false' END;
 SQL
-)"
+}
 
-if [ "$verified" != "true" ]; then
+cutover_shape() {
+  psql "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT format(
+  '%s|%s',
+  CASE WHEN EXISTS (
+    SELECT 1 FROM pg_trigger
+     WHERE tgrelid = 'notification_jobs'::regclass
+       AND tgname = 'notification_jobs_cutover_spool_v2'
+       AND NOT tgisinternal
+  ) THEN 'trigger' ELSE 'no-trigger' END,
+  CASE WHEN EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'notification_jobs'
+       AND column_name = 'cutoverResumeAt'
+  ) THEN 'column' ELSE 'no-column' END
+);
+SQL
+}
+
+if [ "$(activation_is_verified)" = "true" ]; then
+  echo "Notification outbox v2 already activated and certified"
+  exit 0
+fi
+
+if [ "$(cutover_shape)" != "trigger|column" ]; then
+  echo "notification outbox v2 has neither a certified active shape nor a complete expand shape" >&2
+  exit 1
+fi
+
+if [ "$(index_is_invalid notification_jobs_due_deliverable_idx)" = "true" ]; then
+  PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
+    psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+      -c 'DROP INDEX CONCURRENTLY IF EXISTS "notification_jobs_due_deliverable_idx"'
+fi
+PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "notification_jobs_due_deliverable_idx" ON "notification_jobs" ("companyId", "nextAttemptAt", "createdAt") WHERE status IN ('"'"'pending'"'"', '"'"'failed'"'"') AND payload IS NOT NULL'
+
+if [ "$(index_is_invalid notification_jobs_recent_idx)" = "true" ]; then
+  PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
+    psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+      -c 'DROP INDEX CONCURRENTLY IF EXISTS "notification_jobs_recent_idx"'
+fi
+PGOPTIONS='-c lock_timeout=5s -c statement_timeout=300s' \
+  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+    -c 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "notification_jobs_recent_idx" ON "notification_jobs" ("companyId", "createdAt" DESC)'
+
+psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/notification-outbox-v2-activate.sql
+
+if [ "$(activation_is_verified)" != "true" ]; then
   echo "notification outbox v2 activation certification failed" >&2
   exit 1
 fi

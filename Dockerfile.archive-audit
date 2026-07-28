@@ -67,73 +67,27 @@ if touch "$outer_probe" 2>/dev/null; then
   exit 70
 fi
 
-smoke_directory="$(mktemp -d /work/bwrap-smoke.XXXXXX)"
-cleanup_smoke_directory() {
-  rm -rf "$smoke_directory"
+runtime_probe_directory="$(mktemp -d /work/archive-runtime-probe.XXXXXX)"
+cleanup_runtime_probe() {
+  rm -rf "$runtime_probe_directory"
 }
 cleanup_archive_entrypoint_on_exit() {
   original_status=$?
   trap - EXIT HUP INT TERM
-  preserve_exit_status_after_cleanup "$original_status" cleanup_smoke_directory
+  preserve_exit_status_after_cleanup "$original_status" cleanup_runtime_probe
 }
 trap cleanup_archive_entrypoint_on_exit EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-touch "$smoke_directory/outer-workdir-writable"
-
-# Ce test exécute réellement bubblewrap dans le même environnement que les validateurs : réseau
-# absent, environnement nettoyé, racine en lecture seule et seul répertoire de travail inscriptible.
-env BOB_ARCHIVE_SANDBOX_SMOKE_SECRET=must-not-cross \
-  /usr/bin/bwrap \
-    --unshare-user \
-    --unshare-pid \
-    --unshare-net \
-    --unshare-ipc \
-    --unshare-uts \
-    --die-with-parent \
-    --new-session \
-    --ro-bind / / \
-    --proc /proc \
-    --dev /dev \
-    --tmpfs /tmp \
-    --bind "$smoke_directory" "$smoke_directory" \
-    --chdir "$smoke_directory" \
-    --clearenv \
-    --setenv PATH /usr/local/bin:/usr/bin:/bin \
-    --setenv HOME "$smoke_directory" \
-    --setenv TMPDIR "$smoke_directory" \
-    --setenv LANG C.UTF-8 \
-    --setenv LC_ALL C.UTF-8 \
-    -- \
-    /usr/local/bin/node -e '
-      const fs = require("node:fs");
-      const os = require("node:os");
-      const forbidden = [
-        "BOB_ARCHIVE_SANDBOX_SMOKE_SECRET",
-        "DATABASE_URL",
-        "DIRECT_URL",
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "RAILWAY_TOKEN",
-      ];
-      if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(71);
-      const exposedNetwork = Object.entries(os.networkInterfaces()).some(
-        ([name, addresses]) => name !== "lo" && Array.isArray(addresses) && addresses.length > 0,
-      );
-      if (exposedNetwork) process.exit(72);
-      const writable = `${process.env.HOME}/inner-workdir-writable`;
-      fs.writeFileSync(writable, "ok", { mode: 0o600 });
-      fs.unlinkSync(writable);
-      try {
-        fs.writeFileSync("/bob-archive-sandbox-rootfs-probe", "forbidden");
-        process.exit(73);
-      } catch (error) {
-        if (!["EACCES", "EPERM", "EROFS"].includes(error?.code)) process.exit(74);
-      }
-    '
-
-cleanup_smoke_directory
+touch "$runtime_probe_directory/workdir-writable"
+cleanup_runtime_probe
 trap - EXIT HUP INT TERM
+
+# Railway interdit les namespaces non privilégiés. Le smoke Bubblewrap reste obligatoire, mais il
+# est exécuté paresseusement par le validateur juste avant la première paire Factur-X. Un inventaire
+# vide/B2C n'exécute aucun binaire tiers ; une paire professionnelle reste fail-closed si le sandbox
+# n'est pas disponible.
 cd /repo
 exec sh apps/api/scripts/run-document-archive-audit-job.sh
 SCRIPT

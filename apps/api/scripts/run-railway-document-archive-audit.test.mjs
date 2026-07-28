@@ -9,6 +9,7 @@ import test from 'node:test';
 import {
   ArchiveAuditBusinessRefusalError,
   ArchiveAuditCancellationError,
+  ArchiveAuditTerminalEvidenceError,
   cleanupRailwayDocumentArchiveAuditDeployments,
   extractArchiveAuditEvidence,
   runRailwayDocumentArchiveAudit,
@@ -316,10 +317,18 @@ function baseEnvironment(outputPath, overrides = {}) {
 function fakeRuntime() {
   let milliseconds = 0;
   const sleeps = [];
+  const requestTimeouts = [];
   let output = '';
   return {
+    advance: (duration) => {
+      milliseconds += duration;
+    },
+    elapsed: () => milliseconds,
     now: () => milliseconds,
-    requestTimeoutSignal: () => undefined,
+    requestTimeoutSignal: (duration) => {
+      requestTimeouts.push(duration);
+      return undefined;
+    },
     sleep: async (duration) => {
       sleeps.push(duration);
       milliseconds += duration;
@@ -330,6 +339,7 @@ function fakeRuntime() {
         return true;
       },
     },
+    requestTimeouts,
     sleeps,
     output: () => output,
   };
@@ -1155,17 +1165,182 @@ test('réconcilie tous les nouveaux déploiements du commit sans toucher aux dé
   fetchImpl.assertDone();
 });
 
-test('SUCCESS exige deux observations espacées de dix secondes', async (t) => {
+test('SUCCESS relit en dix secondes un marqueur retardé malgré un polling nominal de soixante', async (t) => {
   const outputPath = await temporaryOutput(t);
-  const fetchImpl = scriptedFetch(successSteps());
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    deploymentStep('SUCCESS'),
+    logsStep([]),
+    deploymentStep('SUCCESS'),
+    logsStep(),
+    deploymentStep('SUCCESS'),
+    logsStep(),
+  ]);
   const runtime = fakeRuntime();
   await runRailwayDocumentArchiveAudit({
-    environment: baseEnvironment(outputPath),
+    environment: baseEnvironment(outputPath, {
+      DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '60',
+    }),
     fetchImpl,
     ...runtime,
   });
-  assert.deepEqual(runtime.sleeps, [10_000]);
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000]);
   fetchImpl.assertDone();
+});
+
+test('SUCCESS sans marqueur échoue après une grâce terminale de soixante secondes', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const runtime = fakeRuntime();
+  let cleanupStartedAt = -1;
+  const slowCleanup = cleanupStep('stop');
+  slowCleanup.before = () => {
+    cleanupStartedAt = runtime.elapsed();
+    runtime.advance(30_000);
+  };
+  slowCleanup.throw = Object.assign(new Error('cleanup request timed out'), {
+    name: 'TimeoutError',
+  });
+  const successWithoutEvidence = Array.from({ length: 6 }, () => [
+    deploymentStep('SUCCESS'),
+    logsStep([]),
+  ]).flat();
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    ...successWithoutEvidence,
+    slowCleanup,
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath, {
+        DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '120',
+      }),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.ok(error instanceof ArchiveAuditTerminalEvidenceError);
+      assert.equal(error.code, 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING');
+      assert.match(error.message, /without valid evidence within 60 seconds/u);
+      return true;
+    },
+  );
+
+  assert.deepEqual(
+    runtime.sleeps,
+    Array.from({ length: 6 }, () => 10_000),
+  );
+  assert.equal(cleanupStartedAt, 60_000);
+  assert.equal(runtime.elapsed(), 90_000);
+  assert.equal(runtime.requestTimeouts.at(-1), 30_000);
+  await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
+  fetchImpl.assertDone();
+});
+
+test('la deadline absolue borne aussi les lectures GraphQL après SUCCESS', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const runtime = fakeRuntime();
+  const firstSlowLogsStep = logsStep([]);
+  firstSlowLogsStep.before = () => runtime.advance(25_000);
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    deploymentStep('SUCCESS'),
+    firstSlowLogsStep,
+    ...Array.from({ length: 3 }, () => [deploymentStep('SUCCESS'), logsStep([])]).flat(),
+    cleanupStep('stop'),
+  ]);
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath, {
+        DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '120',
+      }),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => error?.code === 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING',
+  );
+
+  assert.equal(runtime.elapsed(), 60_000);
+  assert.deepEqual(runtime.sleeps, [10_000, 10_000, 10_000, 5_000]);
+  assert.deepEqual(
+    runtime.requestTimeouts.slice(-9, -1),
+    [30_000, 30_000, 25_000, 25_000, 15_000, 15_000, 5_000, 5_000],
+  );
+  assert.equal(runtime.requestTimeouts.at(-1), 30_000);
+  fetchImpl.assertDone();
+});
+
+test('accepte le même marqueur confirmé après la grâce sans marqueur', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const runtime = fakeRuntime();
+  const firstMarker = logsStep();
+  firstMarker.before = () => runtime.advance(5_000);
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    ...Array.from({ length: 5 }, () => [deploymentStep('SUCCESS'), logsStep([])]).flat(),
+    deploymentStep('SUCCESS'),
+    firstMarker,
+    deploymentStep('SUCCESS'),
+    logsStep(),
+  ]);
+
+  await runRailwayDocumentArchiveAudit({
+    environment: baseEnvironment(outputPath, {
+      DOCUMENT_ARCHIVE_AUDIT_TIMEOUT_SECONDS: '120',
+    }),
+    fetchImpl,
+    ...runtime,
+  });
+
+  assert.deepEqual(
+    runtime.sleeps,
+    Array.from({ length: 6 }, () => 10_000),
+  );
+  assert.equal(runtime.elapsed(), 65_000);
+  assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), evidenceFixture());
+  fetchImpl.assertDone();
+});
+
+test('refuse un marqueur disparu ou modifié pendant la confirmation', async (t) => {
+  const cases = [
+    ['disparu', logsStep([])],
+    [
+      'modifié',
+      logsStep([
+        {
+          message: marker(evidenceFixture({ reportSha256: DIGEST_C })),
+        },
+      ]),
+    ],
+  ];
+
+  for (const [label, secondObservation] of cases) {
+    await t.test(label, async (subtest) => {
+      const outputPath = await temporaryOutput(subtest, `${label}.json`);
+      const fetchImpl = scriptedFetch([
+        ...successSteps({ successfulObservations: 1 }),
+        deploymentStep('SUCCESS'),
+        secondObservation,
+        cleanupStep('stop'),
+      ]);
+
+      await assert.rejects(
+        runRailwayDocumentArchiveAudit({
+          environment: baseEnvironment(outputPath),
+          fetchImpl,
+          ...fakeRuntime(),
+        }),
+        (error) => {
+          assert.ok(error instanceof ArchiveAuditTerminalEvidenceError);
+          assert.equal(error.code, 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_UNSTABLE');
+          return true;
+        },
+      );
+      await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
+      fetchImpl.assertDone();
+    });
+  }
 });
 
 test('un crash post-marqueur prêt reste un crash et ne produit aucune preuve CI', async (t) => {
@@ -1173,7 +1348,6 @@ test('un crash post-marqueur prêt reste un crash et ne produit aucune preuve CI
   const fetchImpl = scriptedFetch([
     ...successSteps({ successfulObservations: 1 }),
     deploymentStep('CRASHED'),
-    logsStep(),
   ]);
   await assert.rejects(
     runRailwayDocumentArchiveAudit({
@@ -1181,9 +1355,45 @@ test('un crash post-marqueur prêt reste un crash et ne produit aucune preuve CI
       fetchImpl,
       ...fakeRuntime(),
     }),
-    /CRASHED without a valid refusal/u,
+    /ended as CRASHED after SUCCESS/u,
   );
   await assert.rejects(readFile(outputPath), (error) => error?.code === 'ENOENT');
+  fetchImpl.assertDone();
+});
+
+test('préserve un refus métier apparu pendant le drain SUCCESS puis CRASHED', async (t) => {
+  const outputPath = await temporaryOutput(t);
+  const refusal = refusalFixture();
+  const fetchImpl = scriptedFetch([
+    ...beforeDeploymentSteps(),
+    deploymentStep('SUCCESS'),
+    logsStep([]),
+    deploymentStep('CRASHED'),
+    logsStep([{ message: marker(refusal) }]),
+  ]);
+  const runtime = fakeRuntime();
+
+  await assert.rejects(
+    runRailwayDocumentArchiveAudit({
+      environment: baseEnvironment(outputPath),
+      fetchImpl,
+      ...runtime,
+    }),
+    (error) => {
+      assert.ok(error instanceof ArchiveAuditBusinessRefusalError);
+      assert.deepEqual(error.issueCodes, refusal.issueCodes);
+      return true;
+    },
+  );
+
+  assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), refusal);
+  assert.deepEqual(JSON.parse(runtime.output()), {
+    deploymentId: DEPLOYMENT_ID,
+    status: 'CRASHED',
+    outcome: 'REFUSED',
+    issueCodes: refusal.issueCodes,
+    evidencePath: resolve(outputPath),
+  });
   fetchImpl.assertDone();
 });
 
@@ -1541,17 +1751,49 @@ test('le catalogue non-PII couvre exactement tous les codes métier émis par le
   assert.deepEqual(allowedCodes, emittedCodes);
 });
 
-test('le contrat image/config impose Node épinglé, rôle non-root et smoke bubblewrap réel', async () => {
+test('le contrat image/config impose Node épinglé, rôle non-root et sandbox lazy fail-closed', async () => {
   const dockerfile = await readFile(join(REPOSITORY_ROOT, 'Dockerfile.archive-audit'), 'utf8');
+  const auditMain = await readFile(
+    join(REPOSITORY_ROOT, 'apps/api/src/document-archive-audit.main.ts'),
+    'utf8',
+  );
   assert.match(dockerfile, /FROM node:22\.18\.0-slim AS base/u);
   assert.match(dockerfile, /USER bob-archive-audit:bob-archive-audit/u);
   assert.match(dockerfile, /id -u[^\n]+10001/u);
-  assert.match(dockerfile, /\/usr\/bin\/bwrap/u);
-  assert.match(dockerfile, /--unshare-net/u);
-  assert.match(dockerfile, /--clearenv/u);
-  assert.match(dockerfile, /--ro-bind \/ \/ /u);
-  assert.match(dockerfile, /inner-workdir-writable/u);
-  assert.match(dockerfile, /BOB_ARCHIVE_SANDBOX_SMOKE_SECRET/u);
+  assert.match(dockerfile, /DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX="\/usr\/bin\/bwrap"/u);
+  assert.match(dockerfile, /exec sh apps\/api\/scripts\/run-document-archive-audit-job\.sh/u);
+  const entrypoint = dockerfile.match(
+    /bob-archive-audit-entrypoint <<'SCRIPT'\n([\s\S]*?)\nSCRIPT/u,
+  )?.[1];
+  assert.ok(entrypoint, 'the archive entrypoint must remain statically inspectable');
+  assert.doesNotMatch(entrypoint, /(?:^|\n)\s*(?:env\s+)?\/usr\/bin\/bwrap\b/u);
+  assert.doesNotMatch(entrypoint, /BOB_ARCHIVE_SANDBOX_SMOKE_SECRET/u);
+  assert.match(auditMain, /buildValidatorSandboxSmokeInvocation/u);
+  assert.match(auditMain, /--unshare-net/u);
+  assert.match(auditMain, /--clearenv/u);
+  assert.match(auditMain, /'--ro-bind',\s*'\/',\s*'\/'/u);
+  assert.match(auditMain, /inner-workdir-writable/u);
+  assert.match(auditMain, /BOB_ARCHIVE_SANDBOX_SMOKE_SECRET/u);
+  const sandboxImplementation = auditMain.slice(
+    auditMain.indexOf('export function buildValidatorSandboxArguments'),
+    auditMain.indexOf('export function buildArchiveAuditSafeEnvelope'),
+  );
+  assert.doesNotMatch(sandboxImplementation, /\/usr\/bin\/env|\|\| true/u);
+  assert.match(sandboxImplementation, /validatorSandboxPath !== VALIDATOR_SANDBOX_EXECUTABLE/u);
+  const validateImplementation = sandboxImplementation.slice(
+    sandboxImplementation.indexOf('async validate(input:'),
+  );
+  const readinessIndex = validateImplementation.indexOf('await this.ensureSandboxReady()');
+  const jarIndex = validateImplementation.indexOf('await this.verifyMustangJar()');
+  const workDirectoryIndex = validateImplementation.indexOf('await mkdtemp(');
+  const firstExecutionIndex = validateImplementation.indexOf('this.executeSandboxed(');
+  assert.ok(readinessIndex >= 0, 'the professional validator must call the readiness gate');
+  assert.ok(readinessIndex < jarIndex, 'sandbox readiness must precede validator artifact access');
+  assert.ok(
+    readinessIndex < workDirectoryIndex,
+    'sandbox readiness must precede invoice temp files',
+  );
+  assert.ok(readinessIndex < firstExecutionIndex, 'sandbox readiness must precede every validator');
 
   const railwayConfig = JSON.parse(
     await readFile(join(REPOSITORY_ROOT, 'railway.archive-audit.json'), 'utf8'),

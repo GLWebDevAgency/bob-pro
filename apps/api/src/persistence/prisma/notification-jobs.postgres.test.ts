@@ -300,6 +300,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Notification outbox — certification Postg
         env: { ...process.env, DIRECT_URL: upgradeUrl.toString() },
         stdio: 'pipe',
       });
+      // Le workflow de release rappelle l'opérateur après un cutover déjà acquis. La deuxième
+      // exécution doit certifier l'état terminal sans tenter de relire la colonne expand supprimée.
+      execFileSync('sh', [resolve(process.cwd(), 'scripts/activate-notification-outbox-v2.sh')], {
+        env: { ...process.env, DIRECT_URL: upgradeUrl.toString() },
+        stdio: 'pipe',
+      });
 
       upgrade = new PrismaClient({ datasourceUrl: upgradeUrl.toString() });
       const [legacy, invalid, safe, cutover] = await Promise.all([
@@ -388,6 +394,44 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Notification outbox — certification Postg
       expect(stillQuarantined.nextAttemptAt.getUTCFullYear()).toBe(9999);
       expect(nMinusOneResumed).toMatchObject({ status: 'pending', lastError: null });
       expect(nMinusOneResumed.nextAttemptAt.getUTCFullYear()).not.toBe(9999);
+
+      // Un état mixte ne doit surtout pas être « réparé » silencieusement. On retire un index et
+      // réintroduit seulement la colonne expand : l'opérateur refuse avant toute DDL, donc l'index
+      // reste absent et la colonne reste présente pour un diagnostic explicite.
+      execFileSync('psql', [
+        upgradeUrl.toString(),
+        '-X',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        'DROP INDEX "notification_jobs_recent_idx"; ALTER TABLE "notification_jobs" ADD COLUMN "cutoverResumeAt" TIMESTAMP(3);',
+      ], { stdio: 'pipe' });
+      expect(() => execFileSync(
+        'sh',
+        [resolve(process.cwd(), 'scripts/activate-notification-outbox-v2.sh')],
+        {
+          env: { ...process.env, DIRECT_URL: upgradeUrl.toString() },
+          stdio: 'pipe',
+        },
+      )).toThrow();
+      const rejectedMixedShape = execFileSync('psql', [
+        upgradeUrl.toString(),
+        '-X',
+        '-qAt',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        `SELECT format(
+          '%s|%s',
+          (SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'notification_jobs'
+              AND column_name = 'cutoverResumeAt'),
+          (SELECT count(*) FROM pg_class
+            WHERE relkind = 'i' AND relname = 'notification_jobs_recent_idx')
+        );`,
+      ], { encoding: 'utf8' }).trim();
+      expect(rejectedMixedShape).toBe('1|0');
     } finally {
       await upgrade?.$disconnect();
       await admin.$executeRawUnsafe(
