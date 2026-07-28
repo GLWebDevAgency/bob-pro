@@ -134,12 +134,20 @@ interface SemanticContextEnvelope {
     readonly visibleEntityAliases: readonly string[];
   } | null;
   readonly mission: {
-    readonly kind: string;
-    readonly phase: string;
+    readonly kind: 'quote_creation';
+    readonly phase:
+      | 'awaiting_draft_decision'
+      | 'awaiting_draft_discard_confirmation'
+      | 'awaiting_quote_screen'
+      | 'awaiting_customer'
+      | 'awaiting_customer_choice'
+      | 'awaiting_lines';
     readonly revision: number;
-    readonly acceptedFacts: Readonly<Record<string, unknown>>;
-    readonly unresolvedFacts: readonly string[];
-    readonly pendingDecisionKind: string | null;
+    readonly customer:
+      | { readonly status: 'missing' }
+      | { readonly status: 'resolved'; readonly entityAlias: string }
+      | { readonly status: 'choice_required'; readonly choiceAliases: readonly string[] };
+    readonly pendingDecisionKind: 'existing_draft' | 'confirm_draft_discard' | 'customer' | null;
   } | null;
   readonly vocabulary: {
     readonly businessActivityLabels: readonly string[];
@@ -159,36 +167,23 @@ Contraintes :
 
 ### 3.4 Cadre sémantique candidat
 
-La sortie du modèle est une suite bornée d'opérations typées, pas un objet métier final :
+La sortie du modèle est une union fermée propre à la mission, jamais un objet métier final ni un
+couple générique `slot/value`. M1-C introduit exactement :
 
 ```ts
-type SemanticFactOperation =
-  | { readonly kind: 'set_entity_reference'; readonly slot: string; readonly spokenValue: string }
-  | {
-      readonly kind: 'set_money';
-      readonly slot: string;
-      readonly amount: string;
-      readonly currency: string;
-    }
-  | {
-      readonly kind: 'set_quantity';
-      readonly slot: string;
-      readonly value: string;
-      readonly unit: string | null;
-    }
-  | { readonly kind: 'set_temporal_expression'; readonly slot: string; readonly expression: string }
-  | {
-      readonly kind: 'select_presented_choice';
-      readonly decisionKind: string;
-      readonly ordinal: number;
-    }
-  | { readonly kind: 'clear_fact'; readonly slot: string }
-  | { readonly kind: 'correct_fact'; readonly slot: string; readonly replacement: unknown };
+type QuoteCreationSemanticCommandV1 =
+  | { readonly kind: 'start_quote_creation'; readonly customerReference: string | null }
+  | { readonly kind: 'set_customer_reference'; readonly customerReference: string }
+  | { readonly kind: 'select_presented_customer'; readonly ordinal: 1 | 2 | 3 | 4 | 5 }
+  | { readonly kind: 'unrelated' };
 ```
 
-Chaque mission définit sa propre allowlist d'opérations, ses slots et ses parseurs. Une opération
-inconnue ou un slot hors phase est rejeté. Les chaînes brutes restent dans la mémoire du tour ;
-seuls les faits normalisés et validés peuvent être persistés.
+M2 ajoutera une nouvelle version dont chaque fait (ligne, argent, quantité, unité, date) sera lui
+aussi un membre explicite avec son type concret. Aucune mission n'accepte `Record<string,
+unknown>`, `slot: string` ou `replacement: unknown` à sa frontière.
+
+Une opération inconnue ou hors phase est rejetée. Les chaînes brutes restent dans la mémoire du
+tour ; seuls les faits normalisés et validés peuvent être persistés.
 
 Une phrase peut fournir plusieurs faits et plusieurs intentions ordonnées. Le planificateur les
 regroupe dans une proposition unique lorsqu'elles appartiennent au même geste, ou crée plusieurs
@@ -324,8 +319,8 @@ M1-C implémente le cadre minimal `quote_creation.customer` :
 - correction/changement de client avant les lignes ;
 - recherche réelle 0/1/N et transition voix/tap commune.
 
-Le module d'extraction est déjà placé dans l'espace `mission-understanding` et son contrat est
-extensible par versions. Il ne doit pas ajouter une regex client temporaire.
+Le module d'extraction vit dans l'espace `mission-understanding` et son contrat est extensible par
+versions. Il ne doit pas ajouter une regex client temporaire.
 
 ### M2 et après
 

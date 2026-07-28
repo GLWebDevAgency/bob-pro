@@ -39,26 +39,30 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
 4. Cadre sémantique M1-C typé, sans regex de production, capable d'extraire une référence client
    de « crée un devis pour Camping les Pins », d'un tour complémentaire ou un ordinal du choix
    courant. Les arguments LLM passent un parseur exact avant toute recherche.
-5. Transition pure partagée qui applique `select_customer + next_step` au payload durable.
-6. `AdvanceQuoteAgentMission` avec idempotence, CAS et transaction unique
+5. Résolution client tenantée avant la navigation lorsqu'une référence est donnée dans le tour
+   initial. Seul le résultat réel 0/exact/choix/trop nombreux est staged dans la mission ; la
+   requête et le transcript disparaissent à la fin du tour.
+6. Transition pure partagée qui applique `select_customer + next_step` au payload durable.
+7. `AdvanceQuoteAgentMission` avec idempotence, CAS et transaction unique
    brouillon + mission + événement.
-7. Endpoint tactile exact `POST /agent-missions/:missionId/decisions`.
-8. Orchestrateur Realtime mission-aware :
-   - démarre/reprend la mission après une navigation canonique « nouveau devis » ;
-   - consomme une requête client seulement en phase `awaiting_customer` ;
+8. Endpoint tactile exact `POST /agent-missions/:missionId/decisions`.
+9. Orchestrateur Realtime mission-aware :
+   - démarre/reprend la mission avant de rendre la navigation « nouveau devis » ;
+   - résout une référence client du tour initial et stage le résultat avant cette navigation ;
+   - consomme ensuite une requête client en phase `awaiting_customer` ;
    - consomme un ordinal ou un nom seulement dans le jeu courant en
      `awaiting_customer_choice` ;
    - délègue au BobAgent historique lorsqu'aucune transition M1-C n'est applicable.
-9. Autorité Realtime formée uniquement depuis la lease admise côté serveur :
-   `subjectHashCandidates + principalBindingHash + capabilityHash`; aucun secret client ni
-   release flag request-time ne décide après admission.
-10. Vue mobile enrichie des choix dont les libellés sont relus en base. Un client supprimé devient
-   indisponible, sans ancien nom affiché.
-11. Handle capability transféré à un unique `AgentMissionProvider`, sans double ownership.
-12. Synchronisation mission + brouillon après `turn_settled`, foreground et action tactile.
-13. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
+10. Autorité Realtime formée uniquement depuis la lease admise côté serveur :
+    `subjectHashCandidates + principalBindingHash + capabilityHash`; aucun secret client ni
+    release flag request-time ne décide après admission.
+11. Vue mobile enrichie des choix dont les libellés sont relus en base. Un client supprimé devient
+    indisponible, sans ancien nom affiché.
+12. Handle capability transféré à un unique `AgentMissionProvider`, sans double ownership.
+13. Synchronisation mission + brouillon après `turn_settled`, foreground et action tactile.
+14. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
     d'une capability Live disparue au kill.
-14. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
+15. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
 
 ### Non inclus
 
@@ -78,6 +82,10 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
   relue dans la requête courante.
 - La requête client est bornée, transitoire, absente de la mission, des événements, logs,
   métriques et traces.
+- Une référence du tour initial est résolue sous tenant avant de rendre la navigation. La mission
+  conserve seulement `none | too_many | exact(customerId) | choices(choiceId→customerId)`.
+- Cette résolution staged est distincte de `decision` : elle peut survivre à une décision
+  `existing_draft` sans écraser l'une ou l'autre.
 - Aucun repository in-memory, fixture ou client fictif n'est importable depuis le chemin
   production.
 
@@ -88,6 +96,31 @@ L'ordre de verrouillage reste :
 ```text
 Company SHARE → owner/kind → mission → quote_draft_slot → customer
 ```
+
+La résolution initiale et la sélection sont deux frontières :
+
+1. avant navigation, une transaction écrit seulement la résolution tenantée dans la mission et son
+   événement `customer_resolution_staged` ; elle ne modifie jamais le brouillon. L'événement
+   conserve seulement le résultat et le nombre observé borné à six, jamais les IDs ni la requête ;
+2. après l'ACK écran, un `AdvanceQuoteAgentMission` idempotent consomme la résolution staged dans
+   une transaction distincte et reprenable :
+   - `exact` → sélection atomique automatique ;
+   - `choices` → relecture des clients encore disponibles, puis décision courante avec hash calculé
+     sur la nouvelle révision ;
+   - `none | too_many` → phase `awaiting_customer`, question ciblée ;
+   - aucune résolution → phase `awaiting_customer`.
+
+Une panne entre ACK et consommation laisse la résolution staged intacte : la reprise rejoue la
+consommation avec le même `commandId`. Une résolution `exact` dont le client a disparu devient
+`customer_not_found`. Un jeu `choices` devenu vide suit la même règle ; un jeu encore non vide
+reste une suggestion explicite, même s'il ne contient plus qu'un client.
+
+Si l'utilisateur choisit de reprendre un brouillon existant :
+
+- un brouillon ayant déjà un client gagne explicitement et consomme le staged sans modifier son
+  client ;
+- un brouillon sans client conserve le staged ;
+- le parcours « abandonner » puis confirmer conserve toujours le staged pour le nouveau brouillon.
 
 La sélection réussie réalise dans une seule transaction PostgreSQL :
 
@@ -103,6 +136,11 @@ La sélection réussie réalise dans une seule transaction PostgreSQL :
 
 Toute erreur annule les trois writes. Un replay exact n'écrit rien ; un même `commandId` avec un
 autre payload échoue. Une décision ou un écran périmé échoue sans « meilleure estimation ».
+
+Le champ `stagedCustomerResolution` est additif sur le wire : absent est lu comme `null`. La
+migration autorisant ce champ est expand-only, suivie d'une validation séparée. Le flag M1-C reste
+OFF pendant le déploiement et n'est activé qu'après drainage des pods N-1 ; un writer N-1 sous les
+contraintes finales reste certifié.
 
 ### 3.3 Parité voix/toucher
 
@@ -134,16 +172,14 @@ autre payload échoue. Une décision ou un écran périmé échoue sans « meill
 
 ```ts
 interface CustomerCandidateSearchPort {
-  search(input: {
-    companyId: string;
-    query: string;
-    limit: 6;
-  }): Promise<readonly {
-    customerId: string;
-    canonicalName: string;
-    matchKind: 'exact' | 'fuzzy';
-    score: number;
-  }[]>;
+  search(input: { companyId: string; query: string; limit: 6 }): Promise<
+    readonly {
+      customerId: string;
+      canonicalName: string;
+      matchKind: 'exact' | 'fuzzy';
+      score: number;
+    }[]
+  >;
 }
 ```
 
@@ -205,6 +241,9 @@ choix vides.
       navigation sûre `/devis/new`.
 - [ ] Dire « crée un devis pour Camping les Pins » conserve la référence client dans le même tour,
       puis applique la politique DB 0/1/N sans redemander quel client.
+- [ ] Une décision de brouillon existant et la résolution client staged coexistent sans écrasement ;
+      « supprimer et recommencer » conserve la résolution, « reprendre » suit la règle explicite
+      de cohérence client.
 - [ ] Un appel d'outil sémantique avec clé inconnue, ordinal hors bornes ou référence vide est
       refusé sans recherche, mission, brouillon ni événement.
 - [ ] Aucun tour client n'est consommé avant l'ACK contexte + brouillon exact.

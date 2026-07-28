@@ -139,6 +139,7 @@ d'une session déjà ouverte. Un client N-1 qui ne l'annonce pas garde le parcou
 | Mission | `AgentMission` | jusqu'au terminal/TTL | le contournement d'un use case |
 | Brouillon devis | `QuoteDraftSlot` CAS | durable | une émission/acceptation finale |
 | Décision | état typé dans la mission | jusqu'à consommation/invalidation | un identifiant absent du jeu réel |
+| Résolution staged | résultat tenanté sans texte dans la mission | ACK écran puis consommation | une mutation avant l'ACK |
 | Événement | `AgentMissionEvent` append-only | rétention audit | une réécriture de l'état courant |
 | Parole LLM | sortie non autoritaire | éphémère | identifiant, montant, libellé ou succès |
 
@@ -210,7 +211,25 @@ interface QuoteCreationMissionPayloadV1 {
     readonly contentRevision: number;
   } | null;
   readonly decision: QuoteMissionDecisionV1 | null;
+  /**
+   * Optionnel sur le wire pour garder lisibles les lignes M1-A/M1-B et les writers N-1.
+   * Les nouveaux writers émettent toujours la clé avec null ou une résolution réelle.
+   */
+  readonly stagedCustomerResolution?: QuoteMissionStagedCustomerResolutionV1 | null;
 }
+
+type QuoteMissionStagedCustomerResolutionV1 =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'too_many' }
+  | { readonly kind: 'exact'; readonly customerId: string }
+  | {
+      readonly kind: 'choices';
+      readonly decisionId: string;
+      readonly candidates: readonly {
+        readonly choiceId: string;
+        readonly customerId: string;
+      }[];
+    };
 
 type QuoteMissionDecisionV1 =
   | {
@@ -255,6 +274,9 @@ Contraintes :
 
 - au plus cinq candidats client, dans un ordre déterministe ;
 - aucun nom, email, téléphone, adresse, transcript ou texte LLM dans le payload mission ;
+- `stagedCustomerResolution` ne contient que le résultat d'une recherche tenantée réelle ; elle
+  peut coexister avec une décision de brouillon afin que « devis pour Camping les Pins » ne perde
+  pas son client pendant la résolution d'un brouillon existant ;
 - tous les UUID et digests sont canoniques ; les clés inconnues sont rejetées ;
 - `decision === null` hors phase de décision ; le type de décision doit correspondre à la phase ;
 - `draft` référence le slot exact observé, sans dupliquer son contenu ;
@@ -264,6 +286,14 @@ Contraintes :
   du brouillon lorsqu'il s'agit d'une décision de brouillon, puis `choiceId` et action ou
   `customerId` ; un ancien « le deuxième » ou « reprendre » ne peut jamais viser une nouvelle
   liste ni un brouillon remplacé.
+- une résolution staged `choices` n'acquiert son `choiceSetRevision` et son hash qu'au moment où
+  elle devient la décision active après l'ACK écran ; elle ne peut donc pas être rejouée contre une
+  autre révision ;
+- reprendre un brouillon significatif qui possède déjà un client consomme la résolution staged :
+  le choix explicite de reprise conserve le client autoritaire du brouillon, qu'il corresponde ou
+  non au résultat staged ; si le brouillon n'a aucun client, la résolution reste staged ;
+- demander puis confirmer la suppression du brouillon conserve la résolution staged pour le
+  nouveau brouillon.
 
 Formats d'identifiants normatifs :
 
@@ -361,6 +391,7 @@ draft_resume_selected
 draft_discard_requested
 draft_discard_cancelled
 draft_discard_confirmed
+customer_resolution_staged
 screen_acknowledged
 customer_not_found
 customer_choice_presented
@@ -373,6 +404,12 @@ mission_expired
 `data` est une union discriminée exacte et bornée. Elle ne conserve que des identifiants,
 catégories de résultat, nombres de candidats et digests. Elle exclut systématiquement requête
 client brute, noms, emails, texte d'écran, transcript, audio, prompt et réponse du modèle.
+
+`customer_resolution_staged.data` vaut exactement
+`{ kind, result: none|too_many|exact|choices, observedCandidateCount }`.
+`observedCandidateCount` est borné à `0..6` ; `6` signifie « six ou davantage » parce que la
+recherche s'arrête volontairement au sixième résultat. Aucun ID client ni choix n'est dupliqué dans
+l'événement. Le payload mission reste l'unique état courant de la résolution.
 
 `mission_started.data.startOutcome` vaut exactement `no_slot`, `empty_slot_adopted` ou
 `draft_conflict`. La création d'une mission avec brouillon significatif n'émet donc pas un second
@@ -414,7 +451,12 @@ bornée et non accessible aux rôles Data API.
 | `awaiting_draft_decision` | abandonner | choix courant | `awaiting_draft_discard_confirmation` | aucune suppression |
 | `awaiting_draft_discard_confirmation` | garder | choix courant | `awaiting_draft_decision` | renouvelle un jeu de choix |
 | `awaiting_draft_discard_confirmation` | confirmer | identité + révisions slot exactes | `awaiting_quote_screen` | remplace le payload **in place** par CAS `N → N+1`, jamais DELETE/CREATE |
-| `awaiting_quote_screen` | ACK écran | contexte appliqué + draft exact | `awaiting_customer` ou `awaiting_lines` | lie le contexte réel |
+| `awaiting_draft_decision`, `awaiting_draft_discard_confirmation` ou `awaiting_quote_screen` | résolution client initiale | recherche tenantée 0/1/N | inchangé | remplace seulement la résolution staged, ne touche pas au brouillon |
+| `awaiting_quote_screen` | ACK écran | contexte appliqué + draft exact | `awaiting_customer` ou `awaiting_lines` | lie le contexte réel ; conserve la résolution staged uniquement si le brouillon n'a aucun client |
+| `awaiting_customer` + staged | consommation `none` | résolution courante | inchangé | vide le staged, journalise `customer_not_found` |
+| `awaiting_customer` + staged | consommation `too_many` | résolution courante | inchangé | vide le staged, journalise `customer_not_found(result=too_many)` |
+| `awaiting_customer` + staged | consommation `exact` | client encore réel | `awaiting_lines` | vide le staged, sélectionne + avance le draft |
+| `awaiting_customer` + staged | consommation `choices` | au moins un client encore réel | `awaiting_customer_choice` | vide le staged, persiste les IDs encore disponibles et scelle le jeu courant |
 | `awaiting_customer` | requête, 0 match | résolution réelle | inchangé | journalise `customer_not_found`, demande de préciser |
 | `awaiting_customer` | 1 exact unique | client encore réel | `awaiting_lines` | sélectionne + avance le draft |
 | `awaiting_customer` | 1 fuzzy ou N | candidats réels | `awaiting_customer_choice` | persiste IDs/choiceIds ordonnés |
