@@ -32,6 +32,7 @@ const INTERVENTIONS: AgentIntervention[] = [
     contractId: null,
     reportDocumentId: null,
     billedInvoiceId: null,
+    billedInvoiceStatus: null,
     revision: 1,
   },
   {
@@ -45,6 +46,7 @@ const INTERVENTIONS: AgentIntervention[] = [
     contractId: null,
     reportDocumentId: null,
     billedInvoiceId: null,
+    billedInvoiceStatus: null,
     revision: 1,
   },
   {
@@ -58,6 +60,7 @@ const INTERVENTIONS: AgentIntervention[] = [
     contractId: null,
     reportDocumentId: null,
     billedInvoiceId: null,
+    billedInvoiceStatus: null,
     revision: 2,
   },
   {
@@ -71,6 +74,7 @@ const INTERVENTIONS: AgentIntervention[] = [
     contractId: null,
     reportDocumentId: null,
     billedInvoiceId: null,
+    billedInvoiceStatus: null,
     revision: 3,
   },
   {
@@ -85,6 +89,7 @@ const INTERVENTIONS: AgentIntervention[] = [
     contractId: 'contract-1',
     reportDocumentId: 'doc-1',
     billedInvoiceId: null,
+    billedInvoiceStatus: null,
     revision: 4,
   },
 ];
@@ -312,6 +317,53 @@ describe('facturer_intervention — brouillon pré-rempli, jamais une émission'
     if (!confirmed.ok) return;
     expect(drafted).toEqual([{ interventionId: 'itv-ratp-terminee' }]);
     expect(confirmed.value.card?.body).toContain('brouillon de facture');
+  });
+
+  it('facture ANNULÉE (avoir) : le geste se RALLUME à la voix comme au doigt (parité)', async () => {
+    const drafted: InterventionActionInput[] = [];
+    const agent = makeAgent({
+      listInterventions: async () =>
+        ok(
+          INTERVENTIONS.map((intervention) =>
+            intervention.id === 'itv-ratp-terminee'
+              ? { ...intervention, billedInvoiceId: 'inv-annulee', billedInvoiceStatus: 'cancelled' }
+              : intervention,
+          ),
+        ),
+      prepareInterventionInvoice: async (input) => {
+        drafted.push(input);
+        return ok({ interventionId: input.interventionId, invoiceId: 'inv-2', totalTtcCents: 24000 });
+      },
+    });
+    const r = await agent.ask('Facture cette intervention des Docks Rouen');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Jamais « Aucun passage à facturer » : l'extinction se fait par l'état RÉEL de la pièce.
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.card?.body).not.toContain('Aucun passage');
+    const confirmed = await agent.confirm(r.value.pending!);
+    expect(confirmed.ok).toBe(true);
+    expect(drafted).toEqual([{ interventionId: 'itv-ratp-terminee' }]);
+  });
+
+  it('facture VIVANTE : le passage reste hors périmètre (aucune double facturation)', async () => {
+    const agent = makeAgent({
+      listInterventions: async () =>
+        ok(
+          INTERVENTIONS.map((intervention) =>
+            intervention.id === 'itv-ratp-terminee'
+              ? { ...intervention, billedInvoiceId: 'inv-vivante', billedInvoiceStatus: 'draft' }
+              : intervention,
+          ),
+        ),
+      prepareInterventionInvoice: async (input) =>
+        ok({ interventionId: input.interventionId, invoiceId: 'x', totalTtcCents: 0 }),
+    });
+    const r = await agent.ask('Facture cette intervention des Docks Rouen');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card?.title).toBe('Aucun passage concerné');
   });
 
   it('une VISITE CONTRACTUELLE ne se facture jamais à part (discriminant contractId)', async () => {

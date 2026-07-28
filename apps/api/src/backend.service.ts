@@ -4323,13 +4323,17 @@ export class BackendService {
       // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.
       listInterventions: async () => {
         const companyId = this.companyId();
-        const [interventions, chantiers, customers] = await Promise.all([
+        const [interventions, chantiers, customers, invoices] = await Promise.all([
           this.p.interventions.listByCompany(companyId),
           this.p.chantiers.listByCompany(companyId),
           this.p.customers.listByCompany(companyId),
+          this.p.invoices.listByCompany(companyId),
         ]);
         const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
         const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+        // Statut RÉEL de la pièce liée : une facture ANNULÉE ne couvre plus le passage — la
+        // voix doit voir exactement ce que voit le use case (parité humain↔Bob).
+        const invoiceStatuses = new Map(invoices.map((invoice) => [invoice.id, invoice.status]));
         return ok(
           interventions.map((intervention) => {
             const props = intervention.toProps();
@@ -4344,6 +4348,10 @@ export class BackendService {
               contractId: props.contractId,
               reportDocumentId: props.reportDocumentId,
               billedInvoiceId: props.billedInvoiceId,
+              billedInvoiceStatus:
+                props.billedInvoiceId === null
+                  ? null
+                  : (invoiceStatuses.get(props.billedInvoiceId) ?? null),
               revision: props.revision,
             };
           }),

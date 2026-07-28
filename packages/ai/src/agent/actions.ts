@@ -649,6 +649,15 @@ export interface AgentIntervention {
   reportDocumentId: string | null;
   /** Facture liée par « Facturer ce passage » — null = passage encore à facturer. */
   billedInvoiceId: string | null;
+  /**
+   * [Revue adversariale 28/07 — finding 4] Statut RÉEL de la pièce liée — `null` quand aucune
+   * pièce n'est liée OU que la pièce est introuvable dans le tenant. Le droit de facturer
+   * s'éteint par l'ÉTAT RÉEL, jamais par la simple présence du lien : une facture `cancelled`
+   * (avoir) RALLUME le geste, exactement comme le use case et `deriveInterventionBillingDue`.
+   * Sans ce fait transporté, Bob répondait « Aucun passage à facturer » — une affirmation
+   * FAUSSE — là où le doigt pouvait encore le faire.
+   */
+  billedInvoiceStatus: string | null;
   revision: number;
 }
 

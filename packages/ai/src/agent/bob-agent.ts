@@ -5621,11 +5621,15 @@ export class BobAgent {
         if (intent === 'faire_signer_intervention') return intervention.status === 'completed';
         if (intent === 'envoyer_fiche_passage')
           return intervention.status === 'completed' || intervention.status === 'signed';
-        // facturer_intervention : hors contrat (direction 6) et pas déjà facturé.
+        // facturer_intervention : hors contrat (direction 6) et pas déjà couvert par une pièce
+        // VIVANTE. L'extinction se fait par l'ÉTAT RÉEL : une facture annulée (avoir) ou une
+        // pièce introuvable rallument le droit — MÊME règle que PrepareInterventionInvoiceDraft.
         return (
           (intervention.status === 'completed' || intervention.status === 'signed') &&
           intervention.contractId === null &&
-          intervention.billedInvoiceId === null
+          (intervention.billedInvoiceId === null ||
+            intervention.billedInvoiceStatus === null ||
+            intervention.billedInvoiceStatus === 'cancelled')
         );
       });
 
