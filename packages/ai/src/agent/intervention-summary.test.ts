@@ -196,3 +196,58 @@ describe('§3.7 — extraction du résumé de passage par CONSTRUCTION (finding 
     expect(resume === null || resume.length <= 300).toBe(true);
   });
 });
+
+/**
+ * [Vérification finale 29/07 — FAUX POSITIF D'AMORCE] « note » est d'abord un NOM COMMUN. Pris
+ * pour une amorce, il ouvrait un segment sur un OBJET et un fragment MUTILÉ partait sur la fiche
+ * que le client SIGNE (« la note de frais est dans la boîte à gants » → « de frais est dans la
+ * boîte à gants »). Une amorce NUE n'est donc retenue que si la dictée la PONCTUE (« note : »,
+ * « résumé, ») ou la PRONOMINALISE (« note-le », « note bien ») ; précédée d'un déterminant,
+ * c'est l'objet, jamais le geste.
+ */
+describe('§3.7 — « note » NOM COMMUN n’ouvre plus de résumé (faux positif d’amorce)', () => {
+  const OBJETS: readonly { phrase: string; mutile: string }[] = [
+    {
+      phrase: 'c’est terminé, la note de frais est dans la boîte à gants',
+      mutile: 'de frais est dans la boîte à gants',
+    },
+    { phrase: 'j’ai laissé une note au client, envoie la fiche', mutile: 'au client' },
+    {
+      phrase: 'prends note du numéro de série 4589, envoie la fiche',
+      mutile: 'du numéro de série 4589',
+    },
+    { phrase: 'j’ai pris note de sa remarque sur le bruit', mutile: 'de sa remarque sur le bruit' },
+  ];
+
+  it('les quatre formes relevées n’écrivent RIEN sur la pièce de preuve', () => {
+    const echecs = OBJETS.flatMap(({ phrase, mutile }) => {
+      const resume = extractInterventionSummary(phrase, {
+        siteNames: ['Carrefour Bastille'],
+        customerNames: ['RATP CAP'],
+      });
+      if (resume === null) return [];
+      return [`« ${phrase} » → « ${resume} » (fragment mutilé attendu absent : « ${mutile} »)`];
+    });
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+
+  it('NON-RÉGRESSION : les amorces légitimes écrivent toujours le segment utile', () => {
+    const legitimes: readonly [string, string][] = [
+      ['c’est terminé, note-le : joint refait', 'joint refait'],
+      ['c’est terminé, note-la : joint refait', 'joint refait'],
+      ['j’ai fini, note bien : la vanne reste dure', 'la vanne reste dure'],
+      ['note bien la vanne reste dure', 'la vanne reste dure'],
+      ['notes : détartrage complet', 'détartrage complet'],
+      ['note, filtre changé', 'filtre changé'],
+      ['note - filtre changé', 'filtre changé'],
+      ['résumé : contrôle annuel effectué', 'contrôle annuel effectué'],
+      ['avec le résumé : la pompe repart', 'la pompe repart'],
+      ['prends note : le client signale un bruit', 'le client signale un bruit'],
+    ];
+    const echecs = legitimes.flatMap(([phrase, attendu]) => {
+      const resume = extractInterventionSummary(phrase, { siteNames: ['Docks Rouen'] });
+      return resume === attendu ? [] : [`« ${phrase} » → « ${resume ?? '∅'} » ≠ « ${attendu} »`];
+    });
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+});

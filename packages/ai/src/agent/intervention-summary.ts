@@ -58,10 +58,36 @@ function fold(value: string): string {
 
 /**
  * AMORCES du résumé dicté. Les formes longues passent AVANT les courtes : « note-le : » ne doit
- * jamais être coupé après « note » (le résumé commencerait par « le : »).
+ * jamais être coupé après « note » (le résumé commencerait par « le : »). Le SÉPARATEUR est
+ * capturé (groupe 2) : c'est lui qui distingue le geste de dictée du simple mot de la phrase.
  */
 const AMORCE_RESUME =
-  /\b(?:note[sz]?[- ](?:le|la|ca|cela|bien)|note[sz]?|resume|resumes)\b\s*[:,–—-]*\s*/;
+  /\b(note[sz]?[- ](?:le|la|ca|cela|bien)|note[sz]?|resumes?)\b[ \t]*([:,–—-]+)?[ \t]*/g;
+
+/** Amorce PRONOMINALISÉE (« note-le », « notez bien ») : la dictée désigne déjà son geste. */
+const AMORCE_PRONOMINALE = /^note[sz]?[- ](?:le|la|ca|cela|bien)$/;
+
+/**
+ * [Revue de vérification 29/07 — faux positif d'amorce] « note » est d'abord un NOM COMMUN.
+ * Précédé d'un DÉTERMINANT (« la note de frais », « une note au client »), il désigne un OBJET —
+ * jamais un geste de dictée. La règle ne vaut que pour « note » : « avec LE RÉSUMÉ : … » est,
+ * lui, une amorce parfaitement légitime.
+ */
+const DETERMINANT_AVANT_NOTE =
+  /\b(?:un|une|le|la|les|de|du|des|ma|ta|sa|mes|tes|ses|nos|vos|notre|votre|leur|leurs|ce|cet|cette|ces|aucune|quelques?|petite|grande|meme|autre)\s+$/;
+
+/**
+ * Une amorce NUE (« note », « résumé ») n'ouvre un résumé que si la dictée la PONCTUE — sinon
+ * ce n'est qu'un mot de la phrase, et le segment ouvert derrière lui écrivait un fragment
+ * MUTILÉ sur la pièce de preuve (« prends note du numéro de série 4589 » → « du numéro de
+ * série 4589 »). Le silence est honnête ; un fragment mutilé sur une fiche signée ne l'est pas.
+ */
+function amorceOuvreUnResume(folded: string, match: RegExpExecArray): boolean {
+  const mot = match[1] ?? '';
+  if (AMORCE_PRONOMINALE.test(mot)) return true;
+  if ((match[2] ?? '').length === 0) return false;
+  return !(mot.startsWith('note') && DETERMINANT_AVANT_NOTE.test(folded.slice(0, match.index)));
+}
 
 /** Coordinations de la dictée — c'est là que la consigne suivante commence, quand elle commence. */
 const COORDINATION = /\s*[,;]\s*|\s+(?:et|puis|ensuite|apres|donc|alors|enfin)\s+/g;
@@ -139,8 +165,21 @@ export function extractInterventionSummary(
   hinges: InterventionSummaryHinges = {},
 ): string | null {
   const folded = fold(message);
-  const amorce = AMORCE_RESUME.exec(folded);
-  if (!amorce || amorce.index === undefined) return null;
+  // La PREMIÈRE amorce qui ouvre réellement un résumé — une occurrence écartée (« la note de
+  // frais ») ne condamne pas la dictée : Bob continue de chercher le geste plus loin.
+  AMORCE_RESUME.lastIndex = 0;
+  let amorce: RegExpExecArray | null = null;
+  for (
+    let candidate = AMORCE_RESUME.exec(folded);
+    candidate !== null;
+    candidate = AMORCE_RESUME.exec(folded)
+  ) {
+    if (amorceOuvreUnResume(folded, candidate)) {
+      amorce = candidate;
+      break;
+    }
+  }
+  if (!amorce) return null;
 
   const debut = amorce.index + amorce[0].length;
   // Le résumé ne franchit pas la fin de phrase : au-delà, la dictée parle d'autre chose.
