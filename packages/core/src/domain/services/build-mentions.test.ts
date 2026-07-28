@@ -268,7 +268,32 @@ describe('buildMentions', () => {
       expect(m.some((s) => s.includes('débits'))).toBe(false);
     });
 
-    it('autoliquidation BTP + option débits : régimes distincts (redevable ≠ exigibilité), les deux mentions coexistent', () => {
+    // CHOIX DE PRODUIT DOCUMENTÉ — PAS UNE RÈGLE SOURCÉE. Tout le reste de ce fichier fige des
+    // règles adossées à un texte cité ; ce test-ci fige une décision, et le dit.
+    //
+    // Ce que les textes disent SÉPARÉMENT (chacun vérifié, aucun ne parle de l'autre) :
+    //  • art. 283, 2 nonies du CGI + art. 242 nonies A, I-13° de l'annexe II : la mention
+    //    « Autoliquidation » est due parce que la taxe est acquittée par le PRENEUR ;
+    //  • art. 242 nonies A, I-11° bis de l'annexe II : la mention d'option est due « lorsque le
+    //    prestataire a opté pour le paiement de la taxe d'après les débits » — la condition porte
+    //    sur le seul fait que l'entreprise A OPTÉ, sans exclure aucune opération.
+    // Ce qu'AUCUN texte ni aucune doctrine trouvés ne dit (recherche du 28/07/2026, Légifrance +
+    // BOFiP) : si les deux mentions peuvent, doivent ou ne peuvent pas coexister sur une même
+    // pièce. La question n'est pas tranchée en droit publié.
+    //
+    // Décision de Bob, faute de texte : imprimer ce que chaque texte impose séparément, sans
+    // INVENTER une préséance que personne n'a posée. Sens de la prudence : omettre une mention
+    // obligatoire est sanctionné (art. 1737, II du CGI), tandis qu'imprimer une mention exacte
+    // sur l'émetteur ne l'est pas.
+    //
+    // À NE PAS CONFONDRE avec la préséance de la franchise, testée juste au-dessus : celle-là est
+    // juridiquement certaine et non un choix — le franchisé n'est pas redevable de la taxe
+    // (art. 293 B ; BOI-TVA-DECLA-10-10-20), il ne peut donc pas avoir opté pour le paiement de
+    // CETTE taxe d'après les débits. Ici, l'entreprise est bien redevable : elle collecte la TVA
+    // sur ses autres clients, l'option existe réellement chez elle.
+    //
+    // Si une doctrine paraît sur ce point, c'est CE test qu'il faut rouvrir en premier.
+    it('autoliquidation BTP + option débits : CHOIX DE PRODUIT (aucun texte publié ne tranche la coexistence) — Bob s’en tient à la lettre de chaque texte', () => {
       const m = mentions({
         customer: customer({ type: 'b2b', siren: '552081317', isSubcontractingBtp: true }),
         vatOnDebitsOption: true,

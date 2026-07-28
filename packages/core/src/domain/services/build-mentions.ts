@@ -269,9 +269,18 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   // I-11° bis de l'annexe II au CGI), donc omise du devis — même traitement que les autres
   // mentions de ce même article portées ici (nature de l'opération, rabais/remises/ristournes).
   // Imprimée UNIQUEMENT si l'entreprise a déclaré avoir exercé l'option (cf. vatOnDebitsOption :
-  // aucun champ ne la porte encore, donc rien ne s'imprime aujourd'hui). La franchise en base
-  // prime, comme au-dessus : elle ne collecte pas la TVA, l'exigibilité — et donc l'option —
-  // est sans objet ; jamais deux mentions fiscales concurrentes sur la même pièce.
+  // aucun champ ne la porte encore, donc rien ne s'imprime aujourd'hui).
+  // DEUX ARBITRAGES DE NATURE DIFFÉRENTE, à ne pas confondre :
+  //  • franchise en base : préséance JURIDIQUEMENT CERTAINE, d'où le gate ci-dessous — le
+  //    franchisé n'est pas redevable de la taxe (art. 293 B ; BOI-TVA-DECLA-10-10-20), il ne peut
+  //    donc pas avoir opté pour le paiement de CETTE taxe d'après les débits. L'option est sans
+  //    objet, la mention serait fausse ;
+  //  • autoliquidation BTP : AUCUNE préséance n'est appliquée, et c'est un CHOIX DE PRODUIT
+  //    documenté, pas une règle citée — aucun texte publié ne tranche la coexistence des deux
+  //    mentions (vérifié le 28/07/2026). Là, l'entreprise EST redevable (elle collecte la TVA sur
+  //    ses autres clients) et le 11° bis conditionne la mention au seul fait d'avoir opté. Bob
+  //    imprime donc ce que chaque texte impose séparément plutôt que d'inventer une préséance.
+  //    Le raisonnement complet et la source de l'arbitrage vivent dans le test qui le fige.
   if (kind === 'invoice' && input.vatOnDebitsOption === true && !company.isVatFranchise()) {
     m.push(MENTION_OPTION_DEBITS);
   }
