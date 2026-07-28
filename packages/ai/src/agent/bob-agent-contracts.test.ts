@@ -599,7 +599,12 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(second.value.pending?.args).toEqual({ contractId: 'contract-fontaines-quai' });
   });
 
-  it('« Le client résilie au 1er juin » : date d’effet lue, motif = la phrase dite, préavis DIT', async () => {
+  /**
+   * TRACE LÉGALE — la phrase CANONIQUE §2.7 dit QUAND, jamais POURQUOI. Le domaine exige un
+   * motif : Bob le DEMANDE (chemin 1) plutôt que d'inscrire l'ordre reçu en motivation de la
+   * rupture, puis mute une fois le motif énoncé (chemin 2). Les deux chemins sont testés.
+   */
+  it('chemin 1 — « Le client résilie au 1er juin » : la date est LUE, le motif est DEMANDÉ, rien n’est muté', async () => {
     const terminated: unknown[] = [];
     const agent = lifecycleAgent(
       {
@@ -620,14 +625,51 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.intent).toBe('resilier_contrat');
+    // Ni mutation, ni confirmation : une question ciblée sur le SEUL manque.
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.pending).toBeUndefined();
+    expect(terminated).toEqual([]);
+    expect(r.value.card.title).toContain('Pourquoi cette résiliation');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    // Le contrat est déjà RÉSOLU et la date déjà LUE — aucun fait énoncé n'est redemandé : la
+    // redite proposée les reporte tous, seul le motif reste à dire.
+    expect(r.value.card.body).toContain('Entretien fontaines Bastille');
+    expect(r.value.card.body).toContain('Résilie le contrat contract-bastille au 01/06/2027');
+    expect(r.value.card.body).toContain('motif');
+  });
+
+  it('chemin 2 — le motif énoncé fait la trace : date lue conservée, préavis DIT, mutation proposée', async () => {
+    const terminated: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        terminateMaintenanceContract: async (input) => {
+          terminated.push(input);
+          return ok({
+            contractId: input.contractId,
+            label: 'Entretien fontaines Bastille',
+            status: 'terminated' as const,
+            anniversaryDate: '2025-10-12',
+            terminationEffectiveDate: '2027-06-01',
+          });
+        },
+      },
+      [BASTILLE_DUE],
+    );
+    const r = await agent.ask(
+      'Résilie le contrat contract-bastille au 01/06/2027 — motif : le client déménage',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('resilier_contrat');
     expect(r.value.kind).toBe('proposed');
     expect(terminated).toEqual([]);
-    expect(r.value.pending?.args).toMatchObject({
+    expect(r.value.pending?.args).toEqual({
       contractId: 'contract-bastille',
+      note: 'le client déménage',
       effectiveDate: '2027-06-01',
     });
-    // Le motif TRACE la décision : ce que le pro a dit, jamais un motif inventé à sa place.
-    expect((r.value.pending?.args as { note: string }).note).toContain('résilie');
+    // La trace est le MOTIF énoncé, jamais la phrase de commande.
+    expect((r.value.pending?.args as { note: string }).note).not.toContain('Résilie');
     // Préavis AFFICHÉ, jamais bloquant (pédagogie légale au point de décision).
     expect(r.value.card.body).toContain('Préavis contractuel : 30 jours');
     expect(r.value.card.body).toContain('jamais bloquant');

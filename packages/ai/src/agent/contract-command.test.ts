@@ -168,24 +168,53 @@ describe('extractSpokenContractFacts — lecture en UNE passe de la consigne com
   });
 });
 
-describe('extractSpokenTerminationNote — la phrase du pro EST la trace de la décision', () => {
-  it('un motif explicite prime', () => {
+/**
+ * TRACE LÉGALE — le motif motive une décision qui ROMPT un engagement contractuel. Il n'est
+ * donc retenu que s'il est RÉELLEMENT ÉNONCÉ : une phrase de COMMANDE n'est pas une
+ * motivation, et Bob ne la maquille jamais en trace. Sans motif dit, `null` — l'agent pose la
+ * question ciblée (branche « Pourquoi cette résiliation ? »), il n'invente rien.
+ */
+describe('extractSpokenTerminationNote — seul un motif ÉNONCÉ fait la trace', () => {
+  it('un motif énoncé derrière son marqueur est lu tel quel', () => {
     expect(extractSpokenTerminationNote('Résilie le contrat — motif : le client déménage')).toBe(
       'le client déménage',
     );
     expect(extractSpokenTerminationNote('Résilie le contrat parce que le site ferme')).toBe(
       'le site ferme',
     );
+    expect(extractSpokenTerminationNote('Résilie le contrat car le client ne paie plus')).toBe(
+      'le client ne paie plus',
+    );
+    expect(extractSpokenTerminationNote('Résilie le contrat — raison : marché perdu')).toBe(
+      'marché perdu',
+    );
+    // Marqueur ACCENTUÉ : il ne se dicte jamais sans son accent.
+    expect(extractSpokenTerminationNote('Résilie le contrat à cause du chantier arrêté')).toBe(
+      'chantier arrêté',
+    );
   });
 
-  it('sans motif explicite : la phrase dite fait la trace (jamais un motif inventé)', () => {
-    expect(extractSpokenTerminationNote('Le client résilie au 1er juin')).toBe(
-      'Le client résilie au 1er juin',
-    );
+  it('AUCUN motif dit ⇒ null : la phrase de COMMANDE ne devient jamais la trace légale', () => {
+    // Contre-preuve du finding : « Résilie le contrat Bastille » s'inscrivait tel quel en
+    // terminationNote — l'ordre donné tenait lieu de motivation de la rupture.
+    expect(extractSpokenTerminationNote('Résilie le contrat Bastille')).toBeNull();
+    // Phrase CANONIQUE §2.7 — elle dit la date d'effet, pas le pourquoi : Bob demandera.
+    expect(extractSpokenTerminationNote('Le client résilie au 1er juin')).toBeNull();
+    // Le followUp que Bob REDIT sans motif ne doit pas non plus s'auto-tracer.
+    expect(
+      extractSpokenTerminationNote('Résilie le contrat contract-bastille au 01/06/2027'),
+    ).toBeNull();
+  });
+
+  it('un nom de client contenant « car » n’est jamais pris pour un motif', () => {
+    expect(extractSpokenTerminationNote('Résilie le contrat Carrefour Bastille')).toBeNull();
   });
 
   it('les caractères de CONTRÔLE sont neutralisés (le domaine les refuse)', () => {
     expect(sanitizeSpokenNote('le client\u0000 déménage')).toBe('le client déménage');
+    expect(extractSpokenTerminationNote('Résilie — motif : le client\u0000 déménage')).toBe(
+      'le client déménage',
+    );
     expect(extractSpokenTerminationNote('a')).toBeNull();
   });
 });

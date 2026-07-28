@@ -220,15 +220,38 @@ export function extractSpokenContractFacts(
 }
 
 /**
- * Motif de RÉSILIATION dit — trace légale de la décision (le domaine l'exige). Un motif
- * explicite (« motif : … », « parce que … ») prime ; sinon la PHRASE DITE fait la trace : ce
- * que le pro a énoncé EST la décision, jamais un motif inventé à sa place.
+ * MARQUEURS derrière lesquels un motif est réellement ÉNONCÉ, par ordre de priorité : la forme
+ * canonique (« motif : … ») que les followUps de Bob redisent vient en tête — c'est elle qui
+ * fait CONVERGER les tours. Évalués sur la copie désaccentuée alignée (« à cause de »).
+ */
+const TERMINATION_NOTE_MARKERS: readonly RegExp[] = [
+  /\b(?:motifs?|raisons?)\s*:\s*/i,
+  /\b(?:parce\s+qu(?:e|’|')\s*|car\s+|puisqu(?:e|’|')\s*|a\s+cause\s+d[eu]\s+)/i,
+];
+
+/**
+ * Motif de RÉSILIATION dit — TRACE LÉGALE d'une décision qui ROMPT un engagement contractuel
+ * (le domaine l'exige). Il n'est retenu que s'il est RÉELLEMENT ÉNONCÉ, derrière l'un des
+ * marqueurs ci-dessus. Sans motif dit : `null`, et l'agent POSE la question ciblée.
+ *
+ * Une phrase de COMMANDE n'est pas une motivation : inscrire « Résilie le contrat Bastille »
+ * en terminationNote reviendrait à faire passer l'ORDRE pour le POURQUOI — la trace mentirait
+ * sur ce que le pro a réellement motivé, et personne ne s'en apercevrait puisque la
+ * confirmation ne fait que lui relire sa propre phrase.
  */
 export function extractSpokenTerminationNote(message: string): string | null {
-  const explicit =
-    /\bmotifs?\s*:\s*([^.;!?]{2,200})/i.exec(message)?.[1] ??
-    /\b(?:parce\s+qu(?:e|’|')\s*|car\s+|raisons?\s*:\s*)([^.;!?]{2,200})/i.exec(message)?.[1] ??
-    null;
-  const note = sanitizeSpokenNote(explicit ?? message).slice(0, 200).trim();
+  const folded = foldAccentsAligned(message);
+  let start: number | null = null;
+  for (const marker of TERMINATION_NOTE_MARKERS) {
+    const hit = marker.exec(folded);
+    if (hit !== null) {
+      start = hit.index + hit[0].length;
+      break;
+    }
+  }
+  if (start === null) return null;
+  const spoken = /^[^.;!?]{2,200}/.exec(message.slice(start))?.[0];
+  if (spoken === undefined) return null;
+  const note = sanitizeSpokenNote(spoken).trim();
   return note.length >= 2 ? note : null;
 }

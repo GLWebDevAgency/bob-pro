@@ -200,7 +200,23 @@ describe('voix ↔ serveur — gestes de contrat de bout en bout (§2.7)', () =>
     const afterActivation = await p.maintenanceContracts.findById(companyId, created.value.id);
     expect(afterActivation!.status).toBe('active');
 
-    const proposedTermination = await run(() => agent.ask('Le client résilie au 1er décembre'));
+    // La phrase canonique dit QUAND, jamais POURQUOI : le motif est la TRACE LÉGALE de la
+    // rupture, Bob le DEMANDE plutôt que d'inscrire l'ordre reçu en motivation.
+    const askedForNote = await run(() => agent.ask('Le client résilie au 1er décembre'));
+    expect(askedForNote.ok).toBe(true);
+    if (!askedForNote.ok) throw new Error('question du motif');
+    expect(askedForNote.value.kind).toBe('answer');
+    expect(askedForNote.value.pending).toBeUndefined();
+    expect(askedForNote.value.card.title).toContain('Pourquoi cette résiliation');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.status).toBe(
+      'active',
+    );
+
+    const proposedTermination = await run(() =>
+      agent.ask(
+        `Résilie le contrat ${created.value.id} au 01/12/2026 — motif : le client déménage`,
+      ),
+    );
     expect(proposedTermination.ok).toBe(true);
     if (!proposedTermination.ok || !proposedTermination.value.pending) throw new Error('proposition');
     // Le préavis est DIT au point de décision — jamais bloquant.
@@ -213,8 +229,8 @@ describe('voix ↔ serveur — gestes de contrat de bout en bout (§2.7)', () =>
     expect(afterTermination.status).toBe('terminated');
     const finalProps = afterTermination.toProps();
     expect(finalProps.terminationEffectiveDate).toBe('2026-12-01');
-    // La phrase du pro fait la TRACE de la décision — jamais un motif inventé à sa place.
-    expect(finalProps.terminationNote).toContain('résilie');
+    // Seul le MOTIF ÉNONCÉ fait la trace — jamais la phrase de commande.
+    expect(finalProps.terminationNote).toBe('le client déménage');
   });
 
   it('client PARTICULIER : le refus Chatel du DOMAINE traverse la voix VERBATIM, rien n’est créé', async () => {
