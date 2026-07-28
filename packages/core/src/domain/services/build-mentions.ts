@@ -2,7 +2,7 @@ import { type Company } from '../company/company';
 import { type Customer } from '../customer/customer';
 import { type LineCategory } from '../billing/shared/line-item';
 import { type VatRate } from '../billing/shared/vat-rate';
-import { type DateOnly } from '../../shared-kernel/time';
+import { isValidDateOnly, type DateOnly } from '../../shared-kernel/time';
 import { formatEUR } from '../../format/money';
 
 export type OperationNature = 'biens' | 'services' | 'mixte';
@@ -216,6 +216,16 @@ export const REDACTIONS_FRANCHISE: readonly RedactionFranchise[] = [
  * `cibs-fin-tolerance-references-cgi`) pour qu'il ne soit jamais atteint.
  */
 export function mentionFranchiseAu(asOf: DateOnly): string {
+  // FAIL-CLOSED : `asOf` est la SEULE date qui puisse changer une chaîne imprimée sur une pièce.
+  // La sélection compare des DateOnly comme des chaînes ('2027-01-01' <= 'garbage' est vrai) :
+  // le jour où le décret paraît et où une seconde rédaction entre en table, une date malformée
+  // choisirait la plus récente et imprimerait la rédaction CIBS en silence. Refuser ici coûte
+  // une exception visible ; se taire coûterait une facture fausse, archivée immuable.
+  if (!isValidDateOnly(asOf)) {
+    throw new TypeError(
+      `mentionFranchiseAu : date d'évaluation invalide « ${asOf} » (format attendu AAAA-MM-JJ).`,
+    );
+  }
   const applicables = REDACTIONS_FRANCHISE.filter((r) => r.aPartirDu <= asOf);
   const retenue = applicables[applicables.length - 1] ?? REDACTIONS_FRANCHISE[0];
   // La table est non vide et ordonnée — deux invariants figés par le corpus. Le repli sur la

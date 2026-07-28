@@ -597,6 +597,20 @@ describe('sonde du corpus — références au CGI réellement imprimées', () =>
     expect(imprimees.size).toBe(4);
   });
 
+  it('EXHAUSTIVITÉ — aucune ligne citant le CGI n’échappe à l’extracteur de la sonde', () => {
+    // Sans cette garde, l'égalité ci-dessus reste vraie pour une référence écrite autrement
+    // (« articles 261 D et 261 E du CGI », « CGI, art. 297 A », « art. 267, II-2° CGI »,
+    // « du code général des impôts ») : la sonde capterait une chaîne vide et l'inventaire
+    // omettrait silencieusement l'article au 30/06/2028 — précisément ce qu'il doit empêcher.
+    const echappees = corpus.flatMap((cas) =>
+      cas.lignes.filter(
+        (ligne) =>
+          /\bCGI\b|code général des impôts/u.test(ligne) && referencesCgi(ligne).length === 0,
+      ),
+    );
+    expect([...new Set(echappees)]).toEqual([]);
+  });
+
   it('les quatre références sont bien celles attendues, et chacune est atteignable par une pièce réelle', () => {
     for (const article of ['293 B', '283-2 nonies', '279-0 bis', '278-0 bis A']) {
       const cas = corpus.find((c) => c.lignes.some((l) => referencesCgi(l).includes(article)));
