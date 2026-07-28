@@ -83,6 +83,34 @@ test('api-artifact tourne exactement une fois par SHA : sur chaque push, et côt
   assert.match(job, /http:\/\/127\.0\.0\.1:3000\/health/u);
 });
 
+test('veille des mentions légales : préavis NON bloquant sur chaque PR, avant le reste du job', () => {
+  // Ce verrou protège les deux moitiés du régime d'alarme, et elles sont indissociables.
+  // 1. Le canal existe et vit dans `verify` (chaque PR + chaque push de main) : sans ce step, le
+  //    préavis n'aurait plus AUCUN canal et l'échéance reviendrait à un commentaire que personne
+  //    ne relit le jour venu.
+  const job = slice(ci, '\n  verify:\n', '\n  agent-missions-postgres-certification:\n');
+  const step = slice(
+    job,
+    '- name: Veille des mentions légales (préavis non bloquant, échéance bloquante)',
+    '- run: pnpm typecheck',
+  );
+  assert.match(step, /pnpm exec turbo run build --filter @bob\/core/u);
+  assert.match(step, /node apps\/api\/scripts\/veille-mentions-legales-ci\.mjs/u);
+  // 2. Le step est placé AVANT typecheck/test : l'avertissement doit sortir même quand la PR est
+  //    rouge par ailleurs, et un blocage doit échouer vite.
+  assert.ok(
+    job.indexOf('veille-mentions-legales-ci.mjs') < job.indexOf('- run: pnpm typecheck'),
+    'la veille doit précéder typecheck : une alarme qui n’apparaît que sur une PR verte est ratable',
+  );
+  // 3. Aucun `continue-on-error` dans tout le workflow : c'est le seul moyen de défaire l'étage 2
+  //    (échéance atteinte = CI rouge) sans toucher au code de sortie du rapporteur.
+  assert.equal(
+    occurrences(ci, 'continue-on-error'),
+    0,
+    'un continue-on-error rendrait l’étage bloquant décoratif — y compris pour la veille légale',
+  );
+});
+
 test('bob-live-native ne double plus les branches : push borné à main, la PR porte la preuve', () => {
   const onBlock = slice(bobLiveNative, '\non:\n', '\nconcurrency:\n');
   assert.match(
@@ -213,10 +241,17 @@ test('aucun job n’a disparu d’aucun des deux workflows', () => {
 
 test('ce garde fait partie des suites API agrégées', () => {
   for (const aggregate of ['test', 'test:release-flags']) {
-    assert.equal(
-      occurrences(packageJson.scripts[aggregate], 'scripts/ci-cost-guardrails.test.mjs'),
-      1,
-      `${aggregate} doit exécuter ce garde à chaque run CI`,
-    );
+    for (const garde of [
+      'scripts/ci-cost-guardrails.test.mjs',
+      // Le rapporteur de la veille légale : ses règles de rendu (préavis → sortie 0, échéance
+      // atteinte → sortie 1) doivent être vérifiées partout où ce garde-ci l'est.
+      'scripts/veille-mentions-legales-ci.test.mjs',
+    ]) {
+      assert.equal(
+        occurrences(packageJson.scripts[aggregate], garde),
+        1,
+        `${aggregate} doit exécuter ${garde} à chaque run CI`,
+      );
+    }
   }
 });

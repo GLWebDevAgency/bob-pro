@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { CIBS_TVA_ENTREE_EN_VIGUEUR } from '@bob/core';
 import {
+  journaliserVeilleMentionsLegales,
   usesDefaultJsonBodyParser,
   usesLargeJsonBodyParser,
   veilleMentionsLegalesAuDemarrage,
@@ -80,12 +81,19 @@ describe('API JSON ingress policy', () => {
   });
 });
 
-// Second canal de l'alarme datée du bloc mentions (@bob/core, veille-mentions-legales.ts) : le
-// test-sentinelle casse la CI, celui-ci couvre l'instance déployée qui tourne des mois sans qu'une
-// PR repasse. Un signal muet serait un signal inexistant : on prouve les deux états.
+// Troisième canal du régime d'alarme du bloc mentions (@bob/core, veille-mentions-legales.ts) :
+// le rapporteur de CI porte l'étage 1 (préavis, non bloquant), le test-sentinelle porte l'étage 2
+// (échéance atteinte, CI rouge), et celui-ci couvre l'instance déployée qui tourne des mois sans
+// qu'une PR repasse. Un signal muet serait un signal inexistant : on prouve chaque état.
 describe('veille des mentions légales au démarrage', () => {
   it('hors préavis : silence — le démarrage ne journalise rien', () => {
     expect(veilleMentionsLegalesAuDemarrage('2026-07-28')).toBeNull();
+  });
+
+  it('préavis en cours : le démarrage AVERTIT — mais rien ici n’empêche l’API de servir', () => {
+    const message = veilleMentionsLegalesAuDemarrage('2026-10-03');
+    expect(message).toContain('ÉTAGE 1, PRÉAVIS (non bloquant)');
+    expect(message).toContain('cibs-decret-formulation-franchise');
   });
 
   it('échéance atteinte : message explicite, avec le geste à faire et les sources', () => {
@@ -93,5 +101,47 @@ describe('veille des mentions légales au démarrage', () => {
     expect(message).toContain('le décret de formulation CIBS doit être vérifié et la mention mise à jour');
     expect(message).toContain('Ordonnance n° 2026-671 du 27/07/2026');
     expect(message).toContain('cibs-decret-formulation-franchise');
+  });
+
+  describe('journalisation au boot — bruyante, jamais fatale', () => {
+    const journal = () => {
+      const warns: string[] = [];
+      const errors: string[] = [];
+      return {
+        warns,
+        errors,
+        logger: {
+          warn: (message: string) => void warns.push(message),
+          error: (message: string) => void errors.push(message),
+        },
+      };
+    };
+
+    it('rien à signaler : aucun log — un log répété à chaque boot finit par être ignoré', () => {
+      const { logger, warns, errors } = journal();
+      journaliserVeilleMentionsLegales(logger, '2026-07-28');
+      expect(warns).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+
+    it('échéance atteinte : un warn qui porte le geste — le service, lui, continue de servir', () => {
+      const { logger, warns, errors } = journal();
+      journaliserVeilleMentionsLegales(logger, CIBS_TVA_ENTREE_EN_VIGUEUR);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('ÉTAGE 2, BLOQUANT');
+      expect(errors).toEqual([]);
+    });
+
+    it('veille inévaluable : ERROR bruyante, et surtout AUCUNE exception — une API ne tombe pas pour une veille', () => {
+      const { logger, warns, errors } = journal();
+      // La date ne peut pas être invalide en production (parisDateOnly), mais le domaine est
+      // fail-closed : si un jour il lève, le boot doit hurler sans mourir.
+      expect(() => journaliserVeilleMentionsLegales(logger, '2027-13-45')).not.toThrow();
+      expect(warns).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('inévaluable au démarrage');
+      expect(errors[0]).toContain('DÉFAUT à corriger');
+      expect(errors[0]).toContain('2027-13-45');
+    });
   });
 });

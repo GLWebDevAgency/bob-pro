@@ -47,6 +47,21 @@ jobs:
         env:
           MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: node apps/api/scripts/assert-migration-lineage.mjs
+      # Régime d'alarme des mentions légales, DEUX ÉTAGES (packages/core/.../veille-mentions-legales.ts).
+      # Étage 1 — préavis : annotation GitHub + résumé de run, et SORTIE 0. `verify` tourne sur
+      # chaque PR et chaque push de main : c'est le seul canal que tout changement traverse, et il
+      # rend le préavis impossible à rater sans mettre le dépôt au rouge pendant 90 jours — une
+      # alarme permanente finit toujours désactivée par le premier qui en a besoin.
+      # Étage 2 — échéance atteinte : sortie 1, la CI casse (le test-sentinelle de `pnpm test` la
+      # casse aussi, plus loin : deux canaux indépendants pour le seul étage qui bloque).
+      # Placé AVANT typecheck exprès : l'avertissement doit sortir même sur une PR déjà rouge, et un
+      # blocage doit échouer en 30 secondes plutôt qu'après la suite complète.
+      # Coût : le build @bob/core passe par turbo, donc `pnpm typecheck` et `pnpm build` le
+      # retrouvent en cache — le chemin critique n'est pas rallongé.
+      - name: Veille des mentions légales (préavis non bloquant, échéance bloquante)
+        run: |
+          pnpm exec turbo run build --filter @bob/core
+          node apps/api/scripts/veille-mentions-legales-ci.mjs
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @bob/core test:cabinet:coverage

@@ -7,6 +7,7 @@ import {
   type DateOnly,
   messageVeilleMentions,
   parisDateOnly,
+  sonne,
   veilleMentionsLegales,
 } from '@bob/core';
 import helmet from 'helmet';
@@ -65,18 +66,53 @@ export function usesDefaultJsonBodyParser(request: IncomingMessage): boolean {
 }
 
 /**
- * Veille des mentions légales au DÉMARRAGE — second canal de l'alarme datée du bloc mentions
- * (@bob/core, `veille-mentions-legales.ts`). Le canal principal est le test-sentinelle, qui casse
- * la CI ; celui-ci couvre le cas qu'un test ne couvre pas : une instance déployée qui tourne des
- * mois sans qu'une PR repasse, et qui franchit l'échéance en production.
+ * Veille des mentions légales au DÉMARRAGE — troisième canal du régime d'alarme du bloc mentions
+ * (@bob/core, `veille-mentions-legales.ts`). Les deux autres vivent en CI : le rapporteur du job
+ * `verify` (étage 1, préavis non bloquant) et le test-sentinelle (étage 2, échéance atteinte, qui
+ * casse la CI). Celui-ci couvre le cas qu'aucun des deux ne couvre : une instance déployée qui
+ * tourne des mois sans qu'une PR repasse, et qui franchit l'échéance en production.
+ *
+ * NE JOURNALISE QUE CE QUI SONNE (`sonne` : préavis ou échéance atteinte). Une échéance APAISÉE —
+ * vérifiée récemment, régime `information` — n'a rien à dire à chaque redémarrage : sa trace vit
+ * dans le résumé de CI, là où elle se relit. Un log répété qu'on apprend à ignorer est le premier
+ * pas vers l'alarme qu'on désactive.
  *
  * Ne renvoie QU'UN MESSAGE : aucune mention n'est calculée, changée ni imprimée ici — le démarrage
  * de l'API ne doit jamais dépendre d'une échéance légale, et une échéance ne doit jamais faire
  * tomber le service. Exportée pour être testable sans booter Nest.
  */
 export function veilleMentionsLegalesAuDemarrage(today: DateOnly): string | null {
-  const alertes = veilleMentionsLegales(today);
+  const alertes = veilleMentionsLegales(today).filter(sonne);
   return alertes.length > 0 ? messageVeilleMentions(alertes) : null;
+}
+
+/** Le strict minimum attendu du logger — juste assez pour tester le canal sans booter Nest. */
+export interface JournalDeVeille {
+  warn(message: string, context?: string): void;
+  error(message: string, trace?: string, context?: string): void;
+}
+
+/**
+ * Émission du signal de veille au démarrage. Deux exigences opposées se rencontrent ici, et le
+ * partage est volontaire :
+ *  • le domaine est FAIL-CLOSED — une date illisible lève, plutôt que d'éteindre l'alarme en
+ *    silence (c'est tout l'objet du rejet explicite dans `veille-mentions-legales.ts`) ;
+ *  • un service en production ne tombe pas pour un défaut de veille. On journalise donc à `error`
+ *    — bruyant, jamais muet — et on laisse l'API servir. La CI reste le seul endroit qui bloque.
+ */
+export function journaliserVeilleMentionsLegales(logger: JournalDeVeille, today: DateOnly): void {
+  try {
+    const veille = veilleMentionsLegalesAuDemarrage(today);
+    if (veille !== null) logger.warn(veille, 'VeilleMentionsLegales');
+  } catch (error) {
+    logger.error(
+      'Veille des mentions légales inévaluable au démarrage — c’est un DÉFAUT à corriger, pas un '
+      + 'état normal : l’alarme datée du bloc mentions ne protège plus rien tant qu’il dure. '
+      + `Cause : ${error instanceof Error ? error.message : String(error)}`,
+      error instanceof Error ? error.stack : undefined,
+      'VeilleMentionsLegales',
+    );
+  }
 }
 
 async function bootstrap(): Promise<void> {
@@ -115,8 +151,7 @@ async function bootstrap(): Promise<void> {
     'Bootstrap',
   );
   // Jour métier Paris : la même source de vérité que les pièces émises.
-  const veille = veilleMentionsLegalesAuDemarrage(parisDateOnly());
-  if (veille !== null) logger.warn(veille, 'VeilleMentionsLegales');
+  journaliserVeilleMentionsLegales(logger, parisDateOnly());
 }
 
 if (require.main === module) void bootstrap();
