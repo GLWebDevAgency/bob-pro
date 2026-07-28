@@ -19,6 +19,9 @@ const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_INTERVENTION_CERT === 'true';
  *    post-signature en base (insertion ET retrait refusés sur une fiche `signed`) ;
  *  • ERRATUM 6 : sur une fiche `completed`, la note de résolution est ACCEPTÉE côté serveur,
  *    puis le passage à `signed` réussit — la séquence terrain n'est jamais bloquée ;
+ *  • [finding 6] trigger intervention_photo_phase_coherence : la phase avant/après suit la
+ *    MACHINE À ÉTATS (« avant » jamais après la complétion, « après » jamais avant le
+ *    démarrage), en insertion comme en re-étiquetage, la photo SANS phase restant acceptée ;
  *  • writer N-1 : la forme de ligne SANS interventionId/phase traverse intacte (notes ET photos).
  * Doctrine certs (leçon 28/07) : AUCUN .catch avaleur dans l'afterAll (échec VISIBLE),
  * SIREN aléatoires DÉDIÉS à la suite, sociétés jamais clôturées (DELETE direct légitime).
@@ -113,6 +116,25 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     startedAt: '2026-08-04T07:04:00.000Z',
     finishedAt: '2026-08-04T08:12:00.000Z',
   };
+
+  /** Passage EN COURS : l'état dans lequel la séquence terrain §3.6 enfile ses photos. */
+  const inProgressProps = {
+    status: 'in_progress' as const,
+    startedAt: '2026-08-04T07:04:00.000Z',
+  };
+
+  /**
+   * [finding 6] Séquence terrain §3.6 rejouée à l'endroit : les photos s'enfilent PENDANT le
+   * passage, la complétion vient APRÈS elles (file FIFO photos → complete → sign). Les fixtures
+   * qui inséraient une photo « avant » sur une fiche déjà `completed` décrivaient une séquence
+   * que le terrain ne produit jamais — et que la base refuse désormais.
+   */
+  async function completeAfterPhotos(repo: PrismaInterventionRepository, id: string): Promise<void> {
+    const loaded = await repo.findById(companyA, id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.complete('2026-08-04T08:12:00.000Z').ok).toBe(true);
+    await repo.save(loaded!);
+  }
 
   beforeAll(async () => {
     if (!runtimeUrl || !directUrl) {
@@ -312,12 +334,110 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     });
   });
 
+  /**
+   * [Revue adversariale 28/07 — finding 6] La phase est une AFFIRMATION DATÉE sur une pièce de
+   * preuve : la base la re-vérifie contre la machine à états, comme elle re-vérifie le verrou
+   * §3.4. Chaque refus est prouvé dans SA transaction (un refus de trigger avorte la sienne).
+   */
+  it('[finding 6] la phase suit la MACHINE À ÉTATS : « avant » jamais après la fin, « après » jamais avant le début', async () => {
+    const planifiee = randomUUID();
+    const terminee = randomUUID();
+    const repoA = new PrismaInterventionRepository(workerA);
+    await workerA.withTenant(companyA, async () => {
+      await repoA.create(intervention(planifiee, companyA, chantierA, customerA));
+      await repoA.create(intervention(terminee, companyA, chantierA, customerA, completedProps));
+    });
+
+    // « après » sur une fiche encore planifiée : il n'y a aucun travail à montrer.
+    await expect(
+      workerA.withTenant(companyA, () =>
+        workerA.client().chantierPhoto.create({
+          data: {
+            id: randomUUID(),
+            companyId: companyA,
+            chantierId: chantierA,
+            filename: 'apres.jpg',
+            mimeType: 'image/jpeg',
+            byteSize: 3,
+            storageKey: `cert/${randomUUID()}`,
+            interventionId: planifiee,
+            phase: 'after',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/INTERVENTION_PHASE_AFTER_BEFORE_START/);
+
+    // « avant » après la complétion : l'état initial n'existe plus, la photo l'affirmerait.
+    await expect(
+      workerA.withTenant(companyA, () =>
+        workerA.client().chantierPhoto.create({
+          data: {
+            id: randomUUID(),
+            companyId: companyA,
+            chantierId: chantierA,
+            filename: 'avant.jpg',
+            mimeType: 'image/jpeg',
+            byteSize: 3,
+            storageKey: `cert/${randomUUID()}`,
+            interventionId: terminee,
+            phase: 'before',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/);
+
+    // Le RE-ÉTIQUETAGE d'une photo légitime passe par la même règle (branche UPDATE).
+    const photoId = randomUUID();
+    await workerA.withTenant(companyA, async () => {
+      await workerA.client().chantierPhoto.create({
+        data: {
+          id: photoId,
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'apres.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: terminee,
+          // « après » sur une fiche terminée : la séquence terrain, acceptée.
+          phase: 'after',
+        },
+      });
+    });
+    await expect(
+      workerA.withTenant(
+        companyA,
+        () => workerA.client().$executeRaw`
+          UPDATE "chantier_photos" SET "phase" = 'before'
+           WHERE "id" = ${photoId} AND "companyId" = ${companyA}
+        `,
+      ),
+    ).rejects.toThrow(/INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/);
+
+    // Et la MÊME photo SANS phase reste acceptée : le refus ne perd aucune preuve.
+    await workerA.withTenant(companyA, async () => {
+      await workerA.client().chantierPhoto.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'oubliee.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: terminee,
+        },
+      });
+    });
+  });
+
   it('ERRATUM 6 : note de résolution acceptée sur `completed`, PUIS le sign passe', async () => {
     const id = randomUUID();
     const repoA = new PrismaInterventionRepository(workerA);
     const photoId = randomUUID();
     await workerA.withTenant(companyA, async () => {
-      await repoA.create(intervention(id, companyA, chantierA, customerA, completedProps));
+      // Photo enfilée PENDANT le passage (§3.6), complétion ensuite — l'ordre du terrain.
+      await repoA.create(intervention(id, companyA, chantierA, customerA, inProgressProps));
       // La photo en échec est retirée…
       await workerA.client().chantierPhoto.create({
         data: {
@@ -332,6 +452,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
           phase: 'before',
         },
       });
+      await completeAfterPhotos(repoA, id);
       await workerA.client().chantierPhoto.deleteMany({ where: { id: photoId, companyId: companyA } });
       // … et la note de résolution prend sa PLACE, AVANT la signature : ACCEPTÉE.
       await workerA.client().chantierNote.create({
@@ -364,7 +485,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     const repoA = new PrismaInterventionRepository(workerA);
     const photoId = randomUUID();
     await workerA.withTenant(companyA, async () => {
-      await repoA.create(intervention(id, companyA, chantierA, customerA, completedProps));
+      await repoA.create(intervention(id, companyA, chantierA, customerA, inProgressProps));
       await workerA.client().chantierPhoto.create({
         data: {
           id: photoId,
@@ -378,6 +499,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
           phase: 'before',
         },
       });
+      await completeAfterPhotos(repoA, id);
       const loaded = await repoA.findById(companyA, id);
       loaded!.sign({
         signerName: 'M. Responsable',
@@ -426,7 +548,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     const photoId = randomUUID();
     const noteId = randomUUID();
     await workerA.withTenant(companyA, async () => {
-      await repoA.create(intervention(id, companyA, chantierA, customerA, completedProps));
+      await repoA.create(intervention(id, companyA, chantierA, customerA, inProgressProps));
       await workerA.client().chantierPhoto.create({
         data: {
           id: photoId,
@@ -450,6 +572,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
           interventionId: id,
         },
       });
+      await completeAfterPhotos(repoA, id);
       const loaded = await repoA.findById(companyA, id);
       loaded!.sign({
         signerName: 'M. Responsable',

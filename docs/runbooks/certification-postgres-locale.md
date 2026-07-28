@@ -108,7 +108,8 @@ de repli ci-dessus.
 `RUN_POSTGRES_INTERVENTION_CERT=true … interventions.postgres.test.ts` (fiche de passage :
 RLS FORCE, FK composites anti-IDOR, anti-drift du CHECK depuis `INTERVENTION_TRANSITIONS`,
 demi-états, collision de PK inter-tenant, ERRATUM 6, verrou post-signature en insertion, en
-DÉ-TAGGAGE et en retrait, writer N-1 notes + photos, réglages isolés par tenant).
+DÉ-TAGGAGE et en retrait, **phase avant/après cohérente avec la machine à états (finding 6)**,
+writer N-1 notes + photos, réglages isolés par tenant).
 
 ## 5. Arrêt et purge
 

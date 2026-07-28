@@ -7,6 +7,7 @@ import {
   Intervention,
   INTERVENTION_CANCELLED_NO_TRACE_MESSAGE,
   INTERVENTION_SIGNED_LOCKED_MESSAGE,
+  interventionPhotoPhaseRefusal,
   type InterventionProps,
 } from '../../domain/intervention/intervention';
 import { type ChantierRepository, type ChantierNoteRepository, type CustomerRepository } from '../ports/repositories';
@@ -95,6 +96,7 @@ function makeEnv() {
   const notes: ChantierNote[] = [];
   const photos = new Map<string, WorksiteMediaItem>();
   const removedBytes: string[] = [];
+  const storedKeys: string[] = [];
 
   const chantierRepo: ChantierRepository = {
     findById: async (id) => chantiers.get(id) ?? null,
@@ -181,13 +183,17 @@ function makeEnv() {
     countByCompany: async () => new Map(),
   };
   const storage: DocumentStoragePort = {
-    put: async ({ key, bytes, contentType }) => ({
-      key,
-      sizeBytes: bytes.byteLength,
-      sha256: 'f'.repeat(64),
-      contentType,
-      created: true,
-    }),
+    put: async ({ key, bytes, contentType }) => {
+      // Trace des octets RÉELLEMENT écrits : un refus doit être ENTIER (aucun orphelin).
+      storedKeys.push(key);
+      return {
+        key,
+        sizeBytes: bytes.byteLength,
+        sha256: 'f'.repeat(64),
+        contentType,
+        created: true,
+      };
+    },
     get: async () => null,
     getSignedUrl: async () => 'https://example.test/signed',
     stat: async () => null,
@@ -223,6 +229,7 @@ function makeEnv() {
     notes,
     photos,
     removedBytes,
+    storedKeys,
   };
 }
 
@@ -677,6 +684,130 @@ describe('Photos taguées (interventionId, phase) — chaîne photos existante (
       phase: 'after',
     });
     expect(r.ok).toBe(false);
+  });
+
+  /**
+   * [Revue adversariale 28/07 — finding 6] La phase avant/après est un FAIT DATÉ par la machine
+   * à états (§3.3) : rien n'imposait qu'une « avant » précède la fin du passage, ni qu'une
+   * « après » suive son démarrage. Une photo « avant » ajoutée APRÈS la complétion prétend
+   * montrer un état que le passage a déjà effacé, une « après » avant tout démarrage prétend
+   * montrer un travail qui n'a pas eu lieu : deux affirmations FABRIQUÉES sur la pièce de
+   * preuve. Le refus est ACTIONNABLE — la photo reste joignable SANS phase, rien n'est perdu.
+   */
+  it('[finding 6] photo « avant » APRÈS la complétion : REFUSÉE (aucun octet, aucune métadonnée)', async () => {
+    const env = makeEnv();
+    seed(env, {
+      status: 'completed',
+      startedAt: '2026-08-04T09:00:00.000Z',
+      finishedAt: '2026-08-04T09:40:00.000Z',
+    });
+    const r = await new UploadWorksitePhoto({
+      chantiers: env.chantierRepo,
+      media: env.media,
+      storage: env.storage,
+      ids: env.ids,
+      clock: env.clock,
+      interventions: env.interventionRepo,
+    }).execute({
+      companyId: COMPANY,
+      chantierId: SITE,
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([1, 2, 3]),
+      filename: 'avant.jpg',
+      interventionId: UUID,
+      phase: 'before',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(JSON.stringify(r.error)).toContain(interventionPhotoPhaseRefusal('before', 'completed'));
+    expect(env.photos.size).toBe(0);
+    expect(env.storedKeys).toHaveLength(0);
+  });
+
+  it('[finding 6] photo « après » AVANT le démarrage : REFUSÉE', async () => {
+    const env = makeEnv();
+    seed(env, { status: 'scheduled' });
+    const r = await new UploadWorksitePhoto({
+      chantiers: env.chantierRepo,
+      media: env.media,
+      storage: env.storage,
+      ids: env.ids,
+      clock: env.clock,
+      interventions: env.interventionRepo,
+    }).execute({
+      companyId: COMPANY,
+      chantierId: SITE,
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([1, 2, 3]),
+      filename: 'apres.jpg',
+      interventionId: UUID,
+      phase: 'after',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(JSON.stringify(r.error)).toContain(interventionPhotoPhaseRefusal('after', 'scheduled'));
+    expect(env.photos.size).toBe(0);
+    expect(env.storedKeys).toHaveLength(0);
+  });
+
+  it('[finding 6] la MÊME photo SANS phase reste acceptée : le refus ne perd aucune preuve', async () => {
+    const env = makeEnv();
+    seed(env, {
+      status: 'completed',
+      startedAt: '2026-08-04T09:00:00.000Z',
+      finishedAt: '2026-08-04T09:40:00.000Z',
+    });
+    const r = await new UploadWorksitePhoto({
+      chantiers: env.chantierRepo,
+      media: env.media,
+      storage: env.storage,
+      ids: env.ids,
+      clock: env.clock,
+      interventions: env.interventionRepo,
+    }).execute({
+      companyId: COMPANY,
+      chantierId: SITE,
+      contentType: 'image/jpeg',
+      bytes: new Uint8Array([1, 2, 3]),
+      filename: 'oubliee.jpg',
+      interventionId: UUID,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toMatchObject({ interventionId: UUID, phase: null });
+  });
+
+  it('[finding 6] séquence TERRAIN §3.6 (photos AVANT et APRÈS pendant le passage) : acceptée', async () => {
+    const env = makeEnv();
+    seed(env, { status: 'in_progress', startedAt: '2026-08-04T09:04:00.000Z' });
+    const upload = (filename: string, phase: 'before' | 'after') =>
+      new UploadWorksitePhoto({
+        chantiers: env.chantierRepo,
+        media: env.media,
+        storage: env.storage,
+        ids: env.ids,
+        clock: env.clock,
+        interventions: env.interventionRepo,
+      }).execute({
+        companyId: COMPANY,
+        chantierId: SITE,
+        contentType: 'image/jpeg',
+        bytes: new Uint8Array([1, 2, 3]),
+        filename,
+        interventionId: UUID,
+        phase,
+      });
+    // L'ordre de la file FIFO §3.6 est photos → complete → sign : les DEUX phases s'enfilent
+    // pendant le passage, jamais après lui. Aucun rejeu hors-ligne n'est puni.
+    expect((await upload('avant.jpg', 'before')).ok).toBe(true);
+    expect((await upload('apres.jpg', 'after')).ok).toBe(true);
+    // Et une « après » posée juste après la complétion reste légitime (le travail est fait).
+    seed(env, {
+      status: 'completed',
+      startedAt: '2026-08-04T09:04:00.000Z',
+      finishedAt: '2026-08-04T09:40:00.000Z',
+    });
+    expect((await upload('apres-2.jpg', 'after')).ok).toBe(true);
   });
 
   it('fiche d’un AUTRE site refusée (cohérence fiche↔site fail-closed)', async () => {

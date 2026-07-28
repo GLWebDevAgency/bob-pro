@@ -230,6 +230,26 @@ export function interventionFieldTraceRefusal(status: InterventionStatus): strin
 }
 
 /**
+ * [Revue adversariale 28/07 — finding 6] Message UNIQUE du refus de PHASE incohérente avec la
+ * machine à états, DÉRIVÉ de l'état réel comme `interventionFieldTraceRefusal`. La phase n'est
+ * pas une étiquette libre : c'est une AFFIRMATION datée sur une pièce de preuve (« voici l'état
+ * AVANT mon travail »). Le refus dit toujours le chemin qui ne perd rien — la photo reste
+ * joignable à la fiche SANS phase.
+ *
+ * TOTALE par construction : sur une fiche signée ou annulée, c'est le VERROU DE PREUVE qui
+ * parle — une seule règle, un seul message, jamais un second vocabulaire pour la même chose.
+ */
+export function interventionPhotoPhaseRefusal(
+  phase: InterventionPhotoPhase,
+  status: InterventionStatus,
+): string {
+  if (status === 'signed' || status === 'cancelled') return interventionFieldTraceRefusal(status);
+  return phase === 'before'
+    ? 'Le passage est déjà terminé : une photo « avant » ne s’ajoute plus après coup — elle montrerait un état que le travail a effacé. Joins-la sans phase, ou en « après ».'
+    : 'Le passage n’a pas encore démarré : une photo « après » n’aurait rien à montrer. Démarre le passage, puis prends-la — ou joins-la sans phase.';
+}
+
+/**
  * Agrégat Intervention — fiche de passage générique tous métiers (§3.1) : site + client +
  * type libre + checklist LIBRE + photos avant/après + signature + PDF au titre paramétrable.
  * Zéro framework, zéro I/O : les gardes cross-agrégat (site ouvert, équipement du même site,
@@ -402,6 +422,20 @@ export class Intervention {
    */
   acceptsFieldTraces(): boolean {
     return this.p.status !== 'signed' && this.p.status !== 'cancelled';
+  }
+
+  /**
+   * [finding 6] §3.3 — la phase avant/après est DATÉE par la machine à états, jamais déclarative :
+   *  • « avant » n'a de sens que TANT QUE le passage n'est pas terminé (après, l'état initial
+   *    n'existe plus : la photo affirmerait ce qu'elle ne peut plus montrer) ;
+   *  • « après » n'a de sens qu'une fois le passage DÉMARRÉ (avant, il n'y a pas de travail à
+   *    montrer) — et reste légitime sur une fiche `completed` : la séquence terrain §3.6
+   *    (photos, puis complete, puis sign) n'est jamais punie, dans un sens comme dans l'autre.
+   * Le verrou de preuve (`signed`) et la fiche annulée sont déjà tenus par `acceptsFieldTraces`.
+   */
+  acceptsPhotoPhase(phase: InterventionPhotoPhase): boolean {
+    if (!this.acceptsFieldTraces()) return false;
+    return phase === 'before' ? this.p.status !== 'completed' : this.p.status !== 'scheduled';
   }
 
   /** Démarrer le passage — `at` = heure RÉELLE du geste (appareil au rejeu, serveur en ligne). */

@@ -6,6 +6,7 @@ import { type EquipmentRepository } from '../equipment/equipment-repository';
 import { type InterventionRepository } from '../intervention/intervention-repository';
 import {
   interventionFieldTraceRefusal,
+  interventionPhotoPhaseRefusal,
   INTERVENTION_PHOTO_PHASES,
   type InterventionPhotoPhase,
 } from '../../domain/intervention/intervention';
@@ -110,6 +111,16 @@ export class UploadWorksitePhoto {
           code: 'VALIDATION',
           field: 'interventionId',
           message: interventionFieldTraceRefusal(intervention.status),
+        }));
+      // [Revue adversariale 28/07 — finding 6] La phase est une AFFIRMATION datée sur la pièce
+      // de preuve : elle doit être cohérente avec la machine à états (§3.3), pas seulement avec
+      // l'existence de la fiche. Le refus est ACTIONNABLE et ne perd aucune preuve : la même
+      // photo reste joignable à la fiche SANS phase.
+      if (phase !== null && !intervention.acceptsPhotoPhase(phase))
+        return err(appDomain({
+          code: 'VALIDATION',
+          field: 'phase',
+          message: interventionPhotoPhaseRefusal(phase, intervention.status),
         }));
     }
 
