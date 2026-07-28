@@ -6807,6 +6807,9 @@ export class BackendService {
       customers: this.p.customers,
       chantiers: this.p.chantiers,
       interventionSettings: this.p.interventionSettings,
+      // MÊME source d'ids déterministes que la génération : l'archive jointe est prouvée
+      // être celle de l'ÉTAT COURANT (jamais le PDF d'avant la signature).
+      documentIds: { documentId: generatedInterventionReportDocumentId },
       archive: {
         loadArchivedReportPdf: async (companyId, documentId) => {
           const document = await this.p.runWithTenant(companyId, () =>
@@ -6881,7 +6884,11 @@ export class BackendService {
       interventions: this.p.interventions,
       invoices: this.p.invoices,
       chantiers: this.p.chantiers,
+      companies: this.p.companies,
+      customers: this.p.customers,
       equipments: this.p.equipments,
+      // Le geste entier (verrou fiche → composition → rattachement) est UNE transaction.
+      uow: this.p,
       compose: {
         execute: (composeInput) =>
           this.composeStandaloneInvoice({

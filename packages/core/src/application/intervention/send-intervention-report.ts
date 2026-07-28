@@ -4,6 +4,7 @@ import { parisDateOnly } from '../../shared-kernel/time';
 import { type CompanyRepository, type CustomerRepository, type ChantierRepository } from '../ports/repositories';
 import { type Notification, type NotificationEmailAttachment } from '../ports/output';
 import { resolveExplicitRecipientEmail } from '../billing/send-invoice';
+import { type InterventionReportDocumentIds } from './generate-intervention-report';
 import {
   DEFAULT_INTERVENTION_REPORT_TITLE,
   type CompanyInterventionSettingsRepository,
@@ -16,6 +17,18 @@ import {
  * transmission PR-01). Le PDF joint est l'ORIGINAL archivé relu et vérifié (octets + sha256) —
  * une archive absente est une indisponibilité à réparer, JAMAIS une autorisation de re-rendre.
  */
+
+/**
+ * [Revue adversariale 28/07 — finding 1] Refus quand l'archive référencée n'est PAS celle de
+ * l'état COURANT de la fiche (typiquement : archive `completed` alors que le client a signé
+ * depuis). Le corps de l'e-mail est calculé sur le statut réel — joindre le PDF d'un autre
+ * état ferait AFFIRMER « elle a été signée sur place » à côté d'une pièce qui imprime « cette
+ * fiche n'a pas été signée sur place ». Une donnée fabriquée sur un document de preuve
+ * sortant est interdite : on refuse, ACTIONNABLE, plutôt que d'envoyer un mensonge.
+ */
+export const INTERVENTION_REPORT_STALE_ARCHIVE_MESSAGE =
+  'La fiche archivée ne correspond plus à l’état du passage (elle date d’avant la signature) : ' +
+  'régénère l’aperçu — il portera la signature —, puis envoie.';
 
 // ── Clé de déduplication — un envoi par VERSION d'archive (retry du même geste dédupliqué) ──
 
@@ -98,6 +111,12 @@ export interface SendInterventionReportDeps {
   chantiers: ChantierRepository;
   archive: InterventionReportArchivePort;
   outbox: InterventionReportOutboxPort;
+  /**
+   * Ids DÉTERMINISTES d'archive par ÉTAT (MÊME source que GenerateInterventionReport) : ils
+   * permettent de vérifier, sans I/O supplémentaire, que l'archive référencée est bien celle
+   * de l'état COURANT de la fiche — le corps du mail et sa pièce jointe ne peuvent plus diverger.
+   */
+  documentIds: Pick<InterventionReportDocumentIds, 'documentId'>;
   interventionSettings?: CompanyInterventionSettingsRepository;
 }
 
@@ -123,6 +142,16 @@ export class SendInterventionReport {
           'La fiche de passage n’est pas encore générée : génère l’aperçu, puis envoie.',
         ),
       );
+    // L'archive DOIT être celle de l'ÉTAT COURANT : la signature ajoutée après l'aperçu crée
+    // une NOUVELLE version (id déterministe distinct). Sans ce contrôle, le mail affirmerait
+    // « elle a été signée sur place » en joignant le PDF « non signée » — refus actionnable.
+    const currentStateDocumentId = this.deps.documentIds.documentId(
+      input.companyId,
+      intervention.id,
+      intervention.status,
+    );
+    if (intervention.reportDocumentId !== currentStateDocumentId)
+      return err(validationError('reportDocumentId', INTERVENTION_REPORT_STALE_ARCHIVE_MESSAGE));
 
     const [company, customer, chantier] = await Promise.all([
       this.deps.companies.findById(input.companyId),

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Chantier,
+  Company,
   Customer,
   Equipment,
   type InterventionReportData,
@@ -77,8 +78,17 @@ function asPrincipal<T>(principal: Principal, fn: () => Promise<T>): Promise<T> 
   return requestContext.run({ correlationId: 'test', principal }, fn);
 }
 
-async function seedTenant(p: InMemoryPersistence): Promise<string> {
-  const company = seedCompany();
+async function seedTenant(
+  p: InMemoryPersistence,
+  overrides: { vatRegime?: 'franchise' | 'reel_simpl' | 'reel_normal' } = {},
+): Promise<string> {
+  const base = seedCompany();
+  let company = base;
+  if (overrides.vatRegime !== undefined) {
+    const rebuilt = Company.of({ ...base.toProps(), vatRegime: overrides.vatRegime });
+    if (!rebuilt.ok) throw new Error('fixture société invalide');
+    company = rebuilt.value;
+  }
   await p.companies.save(company);
   await p.subscriptions.save({
     id: `sub-${company.id}`,
@@ -545,6 +555,56 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
     expect(env.enqueued[0]!.notification.body).toContain('sans signature sur place');
   });
 
+  it('archive d’AVANT la signature : l’envoi est REFUSÉ (jamais un corps qui ment sur la PJ)', async () => {
+    const env = await completedIntervention();
+    // Aperçu généré AVANT signature (latch posé sur l'état `completed`).
+    const preview = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const previewPdf = await env.run(() =>
+      env.p.documents.findById(env.companyId, preview.value.documentId),
+    );
+    const previewBytes = await env.storage.get(env.companyId, previewPdf!.toProps().storageKey);
+    const previewText = await pdfVisibleText(previewBytes!.bytes);
+    expect(previewText).toContain('client etait absent');
+
+    // Le client signe ENSUITE, sans que personne ne régénère.
+    await env.run(() =>
+      env.service.signIntervention({
+        interventionId: env.interventionId,
+        expectedRevision: 4,
+        signerName: 'M. Responsable',
+        proofDataUrl: TRACE,
+      }),
+    );
+    const stale = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(JSON.stringify(stale.error)).toContain('régénère l’aperçu');
+    expect(env.enqueued).toHaveLength(0);
+
+    // Après régénération, l'envoi passe et la PJ EST celle de l'état signé.
+    const regenerated = await env.run(() =>
+      env.service.generateInterventionReport(env.interventionId),
+    );
+    expect(regenerated.ok).toBe(true);
+    if (!regenerated.ok) return;
+    expect(regenerated.value.state).toBe('signed');
+    const sent = await env.run(() => env.service.sendInterventionReport(env.interventionId));
+    expect(sent.ok).toBe(true);
+    expect(env.enqueued).toHaveLength(1);
+    expect(env.enqueued[0]!.notification.body).toContain('signée sur place');
+    const signedPdf = await env.run(() =>
+      env.p.documents.findById(env.companyId, regenerated.value.documentId),
+    );
+    const signedBytes = await env.storage.get(env.companyId, signedPdf!.toProps().storageKey);
+    const signedText = await pdfVisibleText(signedBytes!.bytes);
+    expect(signedText).toContain('Signataire');
+    expect(signedText).not.toContain('client etait absent');
+  });
+
   it('aucun destinataire : refus ACTIONNABLE (« ajoute un contact »), rien n’est parti', async () => {
     const env = makeService();
     const companyId = await seedTenant(env.p);
@@ -611,6 +671,113 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
       env.service.prepareInterventionInvoiceDraft(env.interventionId),
     );
     expect(redrafted.ok).toBe(true);
+  });
+
+  it('franchise 293 B : le CTA passe, la ligne par défaut porte le taux IMPOSÉ (0), pas 20', async () => {
+    const env = makeService();
+    const companyId = await seedTenant(env.p, { vatRegime: 'franchise' });
+    await seedChantier(env.p, 'site-bastille', companyId);
+    await seedCustomer(env.p, 'cust-ratp', companyId);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-ratp',
+        kind: 'Visite d’entretien',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({ interventionId: created.value.id, expectedRevision: 2 }),
+    );
+    const drafted = await run(() => env.service.prepareInterventionInvoiceDraft(created.value.id));
+    expect(drafted.ok).toBe(true);
+    if (!drafted.ok) return;
+    const invoice = await run(() => env.p.invoices.findById(drafted.value.invoiceId));
+    expect(invoice!.lines[0]!.vatRate).toBe(0);
+  });
+
+  it('autoliquidation BTP : même dérivation — le geste n’est jamais structurellement mort', async () => {
+    const env = makeService();
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    const soustraitant = Customer.of({
+      id: 'cust-st',
+      companyId,
+      type: 'b2b',
+      name: 'Entreprise générale',
+      siren: '821503646',
+      address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
+      email: 'compta@eg.example',
+      isSubcontractingBtp: true,
+    });
+    if (!soustraitant.ok) throw new Error('fixture client invalide');
+    await env.p.customers.save(soustraitant.value);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', { customerId: 'cust-st', kind: 'Dépannage' }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({ interventionId: created.value.id, expectedRevision: 2 }),
+    );
+    const drafted = await run(() => env.service.prepareInterventionInvoiceDraft(created.value.id));
+    expect(drafted.ok).toBe(true);
+    if (!drafted.ok) return;
+    const invoice = await run(() => env.p.invoices.findById(drafted.value.invoiceId));
+    expect(invoice!.lines[0]!.vatRate).toBe(0);
+  });
+
+  it('double tap / écran + voix : UN SEUL brouillon, jamais d’orphelin émissible', async () => {
+    const env = await completedIntervention();
+    const [first, second] = await Promise.all([
+      env.run(() => env.service.prepareInterventionInvoiceDraft(env.interventionId)),
+      env.run(() => env.service.prepareInterventionInvoiceDraft(env.interventionId)),
+    ]);
+    const accepted = [first, second].filter((r) => r.ok);
+    const refused = [first, second].filter((r) => !r.ok);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(JSON.stringify(refused[0])).toContain('déjà');
+
+    // La fiche référence l'UNIQUE brouillon créé — aucun second brouillon n'existe.
+    const drafts = await env.run(() => env.p.invoices.listByCompany(env.companyId));
+    expect(drafts).toHaveLength(1);
+    const intervention = await env.run(() =>
+      env.p.interventions.findById(env.companyId, env.interventionId),
+    );
+    expect(intervention!.billedInvoiceId).toBe(drafts[0]!.id);
+  });
+
+  it('composition refusée : AUCUN brouillon orphelin, la fiche reste libre (rollback)', async () => {
+    const env = makeService();
+    const companyId = await seedTenant(env.p);
+    await seedChantier(env.p, 'site-bastille', companyId);
+    await seedCustomer(env.p, 'cust-part', companyId, { type: 'b2c' });
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      env.service.createIntervention('site-bastille', {
+        customerId: 'cust-part',
+        kind: 'Dépannage fontaine',
+      }),
+    );
+    if (!created.ok) throw new Error('fiche non créée');
+    await run(() =>
+      env.service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    await run(() =>
+      env.service.completeIntervention({ interventionId: created.value.id, expectedRevision: 2 }),
+    );
+    const refused = await run(() => env.service.prepareInterventionInvoiceDraft(created.value.id));
+    expect(refused.ok).toBe(false);
+    expect(await run(() => env.p.invoices.listByCompany(companyId))).toHaveLength(0);
+    const intervention = await run(() => env.p.interventions.findById(companyId, created.value.id));
+    expect(intervention!.billedInvoiceId).toBeNull();
   });
 
   it('B2C sans urgence qualifiée : la garde standalone s’applique INTÉGRALEMENT au CTA', async () => {

@@ -1,18 +1,58 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { parisDateOnly } from '../../shared-kernel/time';
-import { type LineInput } from '../../domain/billing/shared/line-item';
+import { type LineCategory, type LineInput } from '../../domain/billing/shared/line-item';
+import { type VatRate } from '../../domain/billing/shared/vat-rate';
 import { type Totals } from '../../domain/billing/shared/totals';
+import { type Company } from '../../domain/company/company';
+import { type Customer } from '../../domain/customer/customer';
+import { suggestVatRate } from '../../domain/services/suggest-vat-rate';
 import { type ComposeStandaloneInvoice } from '../billing/compose-standalone-invoice';
 import { type InvoiceRepository } from '../ports/repositories';
 import { type EquipmentRepository } from '../equipment/equipment-repository';
-import { type ChantierRepository } from '../ports/repositories';
+import {
+  type ChantierRepository,
+  type CompanyRepository,
+  type CustomerRepository,
+} from '../ports/repositories';
+import { type UnitOfWorkPort } from '../ports/services';
 import { type InterventionRepository } from './intervention-repository';
+import { TxAppError } from './intervention-mutation';
 
 /** Message UNIQUE du refus « visite contractuelle » (écran ET voix) — direction 6 :
  * `contractId` est le SEUL discriminant, la facture annuelle couvre déjà le passage. */
 export const CONTRACT_VISIT_NOT_BILLABLE_MESSAGE =
   'Visite contractuelle : ce passage est couvert par la facture annuelle du contrat — il ne se facture pas à part.';
+
+/** Catégorie de la ligne de référence du passage (main-d'œuvre) — le montant reste un choix. */
+const DEFAULT_LINE_CATEGORY: LineCategory = 'labor';
+
+/** Taux normal — proposé UNIQUEMENT quand le régime réel de la société l'autorise. */
+const STANDARD_VAT_RATE: VatRate = 20;
+
+/**
+ * [Revue adversariale 28/07 — finding 2] Taux de TVA de la ligne de référence DÉRIVÉ du régime
+ * réel via `suggestVatRate`, jamais un `20` littéral : la franchise en base (art. 293 B), la
+ * sous-traitance BTP autoliquidée et les débours (art. 267, II-2°) imposent 0 — un 20 codé en
+ * dur faisait refuser le CTA « Facturer ce passage » à 100 % pour ces tenants (micro et
+ * auto-entrepreneurs en franchise : le public majoritaire), écran ET voix.
+ * La règle fiscale n'est PAS dupliquée ici : on demande 0 au service de domaine ; s'il
+ * l'accepte, c'est qu'il l'impose ; sinon le taux normal est le bon défaut.
+ */
+export function defaultInterventionLineVatRate(
+  company: Company,
+  customer: Customer,
+  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean },
+): VatRate {
+  const zeroImposed = suggestVatRate({
+    company,
+    customer,
+    category: DEFAULT_LINE_CATEGORY,
+    requestedRate: 0,
+    ...(context !== undefined ? { context } : {}),
+  });
+  return zeroImposed.ok ? 0 : STANDARD_VAT_RATE;
+}
 
 export interface PrepareInterventionInvoiceDraftInput {
   companyId: string;
@@ -37,9 +77,21 @@ export interface PrepareInterventionInvoiceDraftDeps {
   interventions: InterventionRepository;
   invoices: Pick<InvoiceRepository, 'findById'>;
   chantiers: ChantierRepository;
+  /** Régime de TVA réel de la société — source du taux par défaut (jamais un littéral). */
+  companies: Pick<CompanyRepository, 'findById'>;
+  /** Client du passage — autoliquidation BTP et type b2b/b2c pèsent sur le taux imposé. */
+  customers: Pick<CustomerRepository, 'findById'>;
   equipments?: EquipmentRepository;
   /** Le brouillon repasse par TOUS les invariants d'émission : AUCUN chemin parallèle. */
   compose: Pick<ComposeStandaloneInvoice, 'execute'>;
+  /**
+   * [Revue adversariale 28/07 — finding 3] Le geste ENTIER (relecture du lien → composition →
+   * rattachement → save) vit dans UNE transaction, la fiche VERROUILLÉE (`lockById`) comme
+   * Start/Complete/Sign/Update. Sans lui, deux appels concurrents (deux appareils, voix + UI,
+   * double tap) créaient DEUX brouillons dont un orphelin — hors de portée de la garde « ce
+   * passage a déjà sa facture », donc émissible en plus du premier (double facturation).
+   */
+  uow: UnitOfWorkPort;
 }
 
 /**
@@ -55,11 +107,29 @@ export class PrepareInterventionInvoiceDraft {
   async execute(
     input: PrepareInterventionInvoiceDraftInput,
   ): Promise<Result<PrepareInterventionInvoiceDraftOutput, AppError>> {
-    const intervention = await this.deps.interventions.findById(input.companyId, input.interventionId);
+    try {
+      const output = await this.deps.uow.runInTransaction(() => this.prepareLocked(input));
+      return ok(output);
+    } catch (e) {
+      if (e instanceof TxAppError) return err(e.appError);
+      throw e;
+    }
+  }
+
+  /** À exécuter DANS la transaction : la fiche est verrouillée avant toute décision. */
+  private async prepareLocked(
+    input: PrepareInterventionInvoiceDraftInput,
+  ): Promise<PrepareInterventionInvoiceDraftOutput> {
+    // Verrou de ligne (SELECT … FOR UPDATE) : la garde « déjà facturé » est relue SOUS le
+    // verrou, donc le second appel concurrent la voit — jamais deux brouillons.
+    const load =
+      this.deps.interventions.lockById?.bind(this.deps.interventions) ??
+      this.deps.interventions.findById.bind(this.deps.interventions);
+    const intervention = await load(input.companyId, input.interventionId);
     if (!intervention || intervention.companyId !== input.companyId)
-      return err(appNotFound('intervention', input.interventionId));
+      throw new TxAppError(appNotFound('intervention', input.interventionId));
     if (intervention.status !== 'completed' && intervention.status !== 'signed')
-      return err(
+      throw new TxAppError(
         appDomain({
           code: 'VALIDATION',
           field: 'status',
@@ -67,7 +137,7 @@ export class PrepareInterventionInvoiceDraft {
         }),
       );
     if (intervention.contractId !== null)
-      return err(
+      throw new TxAppError(
         appDomain({
           code: 'VALIDATION',
           field: 'contractId',
@@ -80,7 +150,7 @@ export class PrepareInterventionInvoiceDraft {
     if (intervention.billedInvoiceId !== null) {
       const billed = await this.deps.invoices.findById(intervention.billedInvoiceId);
       if (billed && billed.companyId === input.companyId && billed.status !== 'cancelled') {
-        return err(
+        throw new TxAppError(
           appDomain({
             code: 'VALIDATION',
             field: 'billedInvoiceId',
@@ -113,7 +183,15 @@ export class PrepareInterventionInvoiceDraft {
       ]
         .filter((part): part is string => part !== null)
         .join(' — ');
-      lines = [{ label, category: 'labor', qty: 1, unitPriceHT: 0, vatRate: 20 }];
+
+      // Taux DÉRIVÉ du régime réel (franchise 293 B / autoliquidation / débours → 0).
+      const company = await this.deps.companies.findById(input.companyId);
+      if (!company) throw new TxAppError(appNotFound('company', input.companyId));
+      const customer = await this.deps.customers.findById(intervention.customerId);
+      if (!customer || customer.companyId !== input.companyId)
+        throw new TxAppError(appNotFound('customer', intervention.customerId));
+      const vatRate = defaultInterventionLineVatRate(company, customer, input.context);
+      lines = [{ label, category: DEFAULT_LINE_CATEGORY, qty: 1, unitPriceHT: 0, vatRate }];
     }
 
     const composed = await this.deps.compose.execute({
@@ -124,12 +202,13 @@ export class PrepareInterventionInvoiceDraft {
       ...(input.urgentOnSiteRepair !== undefined ? { urgentOnSiteRepair: input.urgentOnSiteRepair } : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
     });
-    if (!composed.ok) return composed;
+    // Rollback COMPLET : un refus de composition ne laisse jamais de brouillon non lié.
+    if (!composed.ok) throw new TxAppError(composed.error);
 
     const attached = intervention.attachBilledInvoice(composed.value.invoiceId);
-    if (!attached.ok) return err(appDomain(attached.error));
+    if (!attached.ok) throw new TxAppError(appDomain(attached.error));
     await this.deps.interventions.save(intervention);
 
-    return ok({ invoiceId: composed.value.invoiceId, totals: composed.value.totals });
+    return { invoiceId: composed.value.invoiceId, totals: composed.value.totals };
   }
 }
