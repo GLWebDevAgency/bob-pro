@@ -620,15 +620,22 @@ describe('PONT-SERVEUR v1 ⑥ — POST /invoices/:id/credit-note (avoir A6, comp
 
 describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_agee, payer_depense (parité humain↔Bob)', () => {
   beforeEach(() => {
-    // Un fournisseur doit être configuré comme en live ; ces scénarios sont entièrement
-    // déterministes et résolus par le classifieur local avant tout appel réseau.
+    // Un fournisseur doit être configuré comme en live pour traverser le même routeur, mais cette
+    // suite certifie le repli déterministe : aucune requête tierce ne doit dépendre du réseau,
+    // d'une clé sentinelle ou de la latence d'OpenAI. Le faux adapter échoue immédiatement à la
+    // frontière fetch, puis Bob reprend le classifieur local comme prévu par son contrat.
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     vi.stubEnv('GLM_API_KEY', '');
     vi.stubEnv('DEEPSEEK_API_KEY', '');
     vi.stubEnv('MISTRAL_API_KEY', '');
     vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('test: accès réseau LLM interdit'))),
+    );
   });
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 

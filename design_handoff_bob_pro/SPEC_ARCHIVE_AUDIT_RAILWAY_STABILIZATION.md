@@ -57,6 +57,8 @@ au lieu d’attendre le timeout complet.
    séparée et bornée à 60 secondes, puis exiger exactement la même enveloppe une seconde fois.
 6. Mettre le runbook et la source de vérité environnementale en accord avec le comportement réel.
 7. Certifier le chemin staging exact-SHA sur le service one-shot Railway.
+8. Rendre le harness d’intégration Bob hermétique au réseau tiers : la suite de release ne doit
+   jamais dépendre de la latence d’un fournisseur LLM pour atteindre son repli déterministe.
 
 ### Non inclus
 
@@ -84,6 +86,8 @@ au lieu d’attendre le timeout complet.
 8. **Données privées.** GitHub ne reçoit toujours que l’enveloppe non-PII allowlistée.
 9. **Aucune promesse excessive.** `O2` reste au plus `implemented` tant qu’une vraie paire
    Mustang/FNFE n’a pas été certifiée sous un sandbox compatible Railway.
+10. **Tests hermétiques.** Un test qui certifie le classifieur local interdit explicitement tout
+    réseau cloud ; une clé sentinelle ne vaut jamais isolation réseau.
 
 ## 5. Critères d’acceptation binaires
 
@@ -105,6 +109,8 @@ au lieu d’attendre le timeout complet.
       `ARCHIVE_AUDIT_TERMINAL_EVIDENCE_UNSTABLE`.
 - [x] Les statuts transitoires peuvent toujours utiliser le timeout global prévu pour un vrai scan.
 - [x] Les tests interdisent explicitement `/usr/bin/env`, `|| true` et la suppression de la sandbox.
+- [x] Les scénarios Bob déterministes du gate de release ne peuvent effectuer aucun appel réseau
+      vers un fournisseur LLM et restent stables sous charge CI.
 - [ ] L’image `Dockerfile.archive-audit` est réellement construite.
 - [ ] Le one-shot staging au SHA exact produit une enveloppe corrélée puis termine arrêté, sans
       déploiement actif résiduel.
