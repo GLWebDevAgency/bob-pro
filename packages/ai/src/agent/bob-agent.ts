@@ -5820,6 +5820,15 @@ export class BobAgent {
         intent === 'terminer_intervention' &&
         /\b(envoie|envoies|envoyer|transmets|transmettre|adresse|adresser)\b/i.test(message) &&
         /\b(fiche|rapport|compte rendu)\b/i.test(message);
+      // [Vérification finale 29/07] Branche JUMELLE : « c'est terminé, facture ce passage ». Le
+      // passage ne se facture qu'une fois terminé — on TERMINE d'abord, et Bob ANNONCE le
+      // brouillon. Il n'est jamais fusionné : la facturation garde SA propre confirmation.
+      const billAsked =
+        intent === 'terminer_intervention' &&
+        /\b(facture|factures|facturer)\b/i.test(message) &&
+        /\b(ce passage|cette intervention|cette visite|ce d[ée]pannage|le passage|la visite)\b/i.test(
+          message,
+        );
       const label =
         intent === 'commencer_intervention'
           ? `Démarrer le passage « ${target.kind} » sur le site ${target.chantierNom}`
@@ -5847,7 +5856,7 @@ export class BobAgent {
                 ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti. Je confirme ?`
                 : intent === 'facturer_intervention'
                   ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé. Je confirme ?`
-                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''}${sendAsked ? ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.' : ''} Je confirme ?`,
+                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''}${sendAsked ? ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.' : ''}${billAsked ? ' Ensuite je te propose le brouillon de facture — il aura sa PROPRE confirmation, rien n’est émis sans elle.' : ''} Je confirme ?`,
           },
           pending: { tool: tool.name, args, label },
           spokenPrompt: buildSpokenConfirmation(label),

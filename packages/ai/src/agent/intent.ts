@@ -208,7 +208,7 @@ export function detectIntent(message: string): BobIntent {
     return 'envoyer_fiche_passage';
   // Facturer un PASSAGE (« facture cette intervention », « facture ce passage ») : le mot
   // intervention/passage est REQUIS — « facture 380 € à Mme Girard » reste une facture directe.
-  if (
+  const demandeFacturationPassage =
     /\b(facture|facturer|factures)\b/.test(normalizedMessage) &&
     // Une référence DÉMONSTRATIVE au passage, jamais le simple mot « intervention » : la
     // facture directe dictée (« facture 500 € HT à Durand pour l'intervention sur site »)
@@ -220,9 +220,14 @@ export function detectIntent(message: string): BobIntent {
     !/\b(annuelle?s?|contrats?|situations?)\b/.test(normalizedMessage) &&
     !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(facture|facturer)\b|\b(facture|facturer)\b.{0,30}\bpas\b/.test(
       normalizedMessage,
-    )
-  )
-    return 'facturer_intervention';
+    );
+  // [Vérification finale 29/07] MÊME garde que l'envoi, sur la branche JUMELLE : un passage se
+  // facture depuis `completed`/`signed` — une consigne composite (« c'est terminé, facture ce
+  // passage ») est donc D'ABORD une complétion. Sans cette garde, Bob répondait « Aucun passage
+  // concerné » sur un passage bien réel, le laissait `in_progress` POUR TOUJOURS et perdait le
+  // résumé dicté dans le même geste. Ce n'est PAS l'adjectif : « facture le passage terminé
+  // hier » DÉCRIT le passage, il n'annonce aucune fin — la facturation garde alors son intent.
+  if (!annonceFinDePassage && demandeFacturationPassage) return 'facturer_intervention';
   // Terminer le passage : « c'est terminé », « j'ai fini chez RATP », « passage terminé ».
   // Les clôtures comptables (« clôture du mois ») et les devis/factures gardent leur intent.
   if (
@@ -234,7 +239,15 @@ export function detectIntent(message: string): BobIntent {
     (annonceFinDePassage ||
       /\b(interventions?|passages?|chantier|site|chez)\b/.test(normalizedMessage) ||
       /^\s*(c.{0,3}est (fini|termine)|j.{0,3}ai fini|termine)\b/.test(normalizedMessage)) &&
-    !/\b(devis|factures?|mois|cloture comptable|exercice|tva)\b/.test(normalizedMessage) &&
+    // [Vérification finale 29/07] Le mot « facture » de la consigne composite « …, facture ce
+    // passage » désigne le geste SUIVANT, jamais une pièce comptable : le laisser disqualifier
+    // la complétion renvoyait ces consignes à `unknown` (Bob ne fait RIEN) ou pire à
+    // `envoyer_facture` (un sortant sur une facture qui n'existe pas). Tout autre emploi
+    // (« j'ai fini la facture », « le devis est terminé ») garde son exclusion.
+    !(demandeFacturationPassage
+      ? /\b(devis|mois|cloture comptable|exercice|tva)\b/
+      : /\b(devis|factures?|mois|cloture comptable|exercice|tva)\b/
+    ).test(normalizedMessage) &&
     !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(termine|terminer|fini|finir)\b/.test(
       normalizedMessage,
     )
