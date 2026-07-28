@@ -610,6 +610,9 @@ jobs:
           BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
           BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
         run: |
+          # Re-certifie la readiness au SHA exact JUSTE avant le smoke : le postdeploy OFF
+          # (~18 min mesurés) dépasse le TTL acoustique 15 min, le smoke ne part jamais cache froid.
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs negative

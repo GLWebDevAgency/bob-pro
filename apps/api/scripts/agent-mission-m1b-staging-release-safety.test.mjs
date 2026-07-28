@@ -131,8 +131,8 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
   );
   assert.equal(
     occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu),
-    5,
-    'readiness at the exact SHA must follow each deploy and precede each certify smoke',
+    6,
+    'readiness at the exact SHA must follow each deploy and precede every real smoke, cleanup included',
   );
   assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
   for (const stepId of ['deploy_whisper', 'deploy_baseline', 'deploy_active', 'deploy_off']) {
@@ -322,12 +322,16 @@ test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict bi
   assert.match(workflow, /test "\$EVIDENCE_RESULT" = success/u);
 });
 
-test('chaque smoke certify repart d’une readiness re-certifiée au SHA exact, cache acoustique chaud', () => {
+test('chaque smoke réel, cleanup compris, repart d’une readiness re-certifiée au SHA exact, cache acoustique chaud', () => {
   for (const [stepName, smokeCommand] of [
     ['Prove real WebRTC negotiation remains OFF', 'agent-mission-m1b-staging-smoke.mjs negative'],
     [
       'Execute real positive WebRTC mission and runtime RLS proof',
       'agent-mission-m1b-staging-smoke.mjs positive',
+    ],
+    [
+      'Final independent OFF negotiation proof when M1-B binary was deployed',
+      'agent-mission-m1b-staging-smoke.mjs negative',
     ],
   ]) {
     const step = workflowStepByName(stepName);
