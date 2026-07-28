@@ -3,33 +3,22 @@
 > Statut : **Proposed reference set**
 > Sources web vérifiées le 2026-07-22 ; à revalider avant chaque phase
 
-## Cap de publication récent non encore présent dans ce worktree
+## Cap de publication canonique intégré
 
-Le statut `refs/agents/gpt:status.md` inspecté en lecture seule le 2026-07-23 rapporte le head produit
-provisoire `0f8777be`. Son contenu est inspectable sans checkout avec :
+Les deux autorités suivantes sont présentes dans la branche canonique et conservent le statut
+`Accepted` :
 
-```sh
-git show 0f8777be:design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md
-git show 0f8777be:docs/adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md
-```
+- [OBJECTIFS_SPECS_DOD_PUBLICATION](../../design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md) ;
+- [ADR-0004 — GPT Realtime pour la publication, Mistral V3 après V1](../adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md).
 
-Il contient notamment :
+Elles donnent la priorité à la publication stable, Factur-X, aux données réelles et à GPT
+Realtime, et diffèrent Mistral V3 ainsi que les ajouts opportunistes. Elles prévalent sur les
+anciens documents contradictoires ; ce dossier n'en recopie pas le contenu afin d'éviter deux
+sources concurrentes.
 
-- `design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md`, statut `Accepted` ;
-- `docs/adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md`, statut `Accepted` ;
-- des ADR plus récents sur la PA et l'autorité distribuée.
-
-Ils donnent la priorité à la publication stable, Factur-X, aux données réelles et à GPT Realtime,
-et diffèrent Mistral V3 ainsi que les ajouts opportunistes. Dès leur intégration à la branche
-canonique, ils doivent être ajoutés comme liens relatifs et prévalent sur les anciens documents
-contradictoires. Ce dossier n'en recopie pas le contenu pour éviter deux sources concurrentes.
-
-La décision D00 ne peut passer à `Accepted` que lorsque :
-
-1. le commit est ancêtre de la branche canonique ou son contenu y est intégré ;
-2. ces deux fichiers possèdent des liens relatifs valides depuis ce dossier ;
-3. leur statut `Accepted` et leur absence de supersession sont revérifiés ;
-4. le release owner nommé signe le périmètre UX autorisé dans `WP-0001`.
+Les dépendances d'intégration et de liens de D00 sont donc satisfaites. D00 reste néanmoins
+`Proposed` tant qu'un release owner nommé n'a pas signé dans `WP-0001` le périmètre UX autorisé et
+le rescoping explicite du feature freeze.
 
 ## Références produit internes
 

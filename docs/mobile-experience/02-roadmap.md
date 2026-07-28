@@ -11,17 +11,19 @@ Cette roadmap fixe l'ordre et les gates. Le périmètre exact des 77 exigences s
 
 ## Relation avec le train de publication
 
-Le head actif observé le 2026-07-23 contient un cap fondateur `Accepted` daté du 2026-07-21 :
-publication stable, Factur-X, données réelles et GPT Realtime passent avant tout ajout opportuniste.
-Ce document respecte ce cap selon les règles suivantes :
+Le
+[cap fondateur canonique](../../design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md),
+`Accepted` et daté du 2026-07-21, impose que publication stable, Factur-X, données réelles et GPT
+Realtime passent avant tout ajout opportuniste. Ce document respecte ce cap selon les règles
+suivantes :
 
 - la présente roadmap **prépare** le travail post-publication ;
 - elle n'autorise aucun big bang UI sur le train courant ;
 - un correctif P0 de lisibilité, accessibilité ou faux statut peut être extrait, mais seulement avec
   arbitrage explicite et preuve de non-régression ;
 - Bob Live visuel ne doit pas devancer la certification fonctionnelle GPT Realtime/Voice Trace ;
-- la vérité provider du train courant vient de l'ADR de publication accepté lorsqu'il sera intégré
-  à la branche canonique ;
+- la vérité provider du train courant vient de
+  [l'ADR de publication accepté](../adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md) ;
 - après publication, une décision fondateur ou un rescoping formel ouvre la Vague 0.
 
 ## Résultat attendu

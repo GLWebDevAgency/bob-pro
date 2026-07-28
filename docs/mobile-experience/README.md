@@ -39,12 +39,13 @@ En cas de contradiction, l'ordre suivant s'applique :
 Une proposition UX n'autorise jamais à contourner une confirmation, une révision, un ACK backend,
 une règle RLS, une politique d'entitlement ou une dégradation fail-closed.
 
-Le statut Git-agent inspecté le 2026-07-23 rapporte un head produit provisoire `0f8777be` contenant
-un cap de publication accepté. Ce commit n'est pas l'autorité canonique tant qu'il n'est pas intégré
-à la branche de référence. Il est inspectable par les commandes consignées dans
-[17 — Références](17-references.md), mais **ne peut pas lever D00/GATE-PUBLICATION**. Après intégration,
-les liens relatifs canoniques remplacent cette référence provisoire. Le présent dossier reste
-préparatoire jusqu'à cette mise à jour et à la levée explicite du feature freeze.
+Le cap de publication accepté est désormais intégré à la branche canonique via
+[OBJECTIFS_SPECS_DOD_PUBLICATION](../../design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md)
+et
+[l'ADR fournisseur de publication](../adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md).
+Cette intégration satisfait la dépendance documentaire, mais **ne lève pas à elle seule
+D00/GATE-PUBLICATION** : le présent dossier reste préparatoire jusqu'au rescoping explicite du
+feature freeze et à l'affectation des responsables exigés.
 
 ## Carte documentaire
 
@@ -87,10 +88,10 @@ responsabilité.
 |---|---|---|---|
 | 00 Baseline | QA + Product Design | À affecter | code `2515ddf3` |
 | 01 Vision | Design owner | À affecter | audit 2026-07-22 |
-| 02 Roadmap | Product owner / delivery | À affecter | cap provisoire `0f8777be` |
+| 02 Roadmap | Product owner / delivery | À affecter | cap canonique de publication |
 | 03 Motion | Design owner + Mobile | À affecter | code `2515ddf3` |
 | 04 Navigation | Mobile tech lead + Design | À affecter | code `2515ddf3` |
-| 05 Bob Live | Bob Live owner + Design | À affecter | code `2515ddf3`, cap provisoire `0f8777be` |
+| 05 Bob Live | Bob Live owner + Design | À affecter | code `2515ddf3`, cap canonique de publication |
 | 06 Écrans | Product Design | À affecter | code `2515ddf3` |
 | 07 Content | Content owner | À affecter | contrats existants au `2515ddf3` |
 | 08 Accessibilité | Accessibility reviewer | À affecter | code `2515ddf3` |

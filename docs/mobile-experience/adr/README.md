@@ -31,7 +31,7 @@ ligne sans owner nommé ne peut pas passer à `Decision-ready`.
 
 | ID | Décision / résultat attendu | Record d'autorité | Statut décision · implémentation | Owner rôle · owner nommé | Cible | WP/IDs bloqués |
 |---|---|---|---|---|---|---|
-| D00 | Cap de publication canonique intégré et freeze UX levé ; dépendance externe non encore satisfaite. | ADR/spec publication au commit provisoire `0f8777be`, à relier après intégration. | Proposed · Not started | Fondateur/release owner · **à affecter** | Avant GATE-PUBLICATION | WP-0001 et tout le programme |
+| D00 | Cap de publication canonique intégré ; rescoping du freeze UX encore à signer. | [Cap publication](../../../design_handoff_bob_pro/OBJECTIFS_SPECS_DOD_PUBLICATION.md) + [ADR-0004](../../adr/0004-gpt-realtime-publication-mistral-v3-post-v1.md). | Proposed · Not started | Fondateur/release owner · **à affecter** | Avant GATE-PUBLICATION | WP-0001 et tout le programme |
 | D01 | Runtime motion hybride ou alternative retenue. | [UX-ADR-001](UX-ADR-001-motion-runtime.md) | Proposed · Not started | Mobile tech lead · **à affecter** | Vague 0 / WP-0004 | WP-0201–0210, G04–G09, G13–G15, G21–G22 |
 | D02 | Architecture Expo Router, push/modal/sheet et stratégie tabs. | [UX-ADR-002](UX-ADR-002-navigation-surfaces.md) | Proposed · Not started | Mobile tech lead · **à affecter** | Vague 0 / WP-0004 | WP-0301–0308, G07, G10–G12, G16 |
 | D03 | Projection Bob provider-neutral et sans autorité. | [UX-ADR-003](UX-ADR-003-bob-live-visual-projection.md) | Proposed · Not started | Bob Live owner · **à affecter** | Vague 0 / WP-0004 | WP-0501–0509, V01–V14, S05, S32 |
