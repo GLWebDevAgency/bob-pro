@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DocumentFolder } from '@bob/core';
+import { DocumentFolder, Equipment } from '@bob/core';
 import { InMemoryPersistence } from './persistence.testing';
 
 function folder(id: string, name: string) {
@@ -10,6 +10,27 @@ function folder(id: string, name: string) {
     now: '2026-07-13T12:00:00.000Z',
   });
   if (!result.ok) throw new Error(`fixture dossier invalide : ${result.error.code}`);
+  return result.value;
+}
+
+function equipment(id: string, label: string) {
+  const result = Equipment.record({
+    id,
+    companyId: 'company-transaction-test',
+    chantierId: 'chantier-transaction-test',
+    label,
+    kind: null,
+    brand: null,
+    serialNumber: null,
+    location: null,
+    installedAt: null,
+    warrantyUntil: null,
+    status: 'active',
+    retiredAt: null,
+    notes: null,
+    revision: 0,
+  });
+  if (!result.ok) throw new Error(`fixture équipement invalide : ${result.error.code}`);
   return result.value;
 }
 
@@ -50,6 +71,28 @@ describe('InMemoryPersistence.runInTransaction', () => {
 
     expect(await persistence.documentFolders.findById('company-transaction-test', 'folder-rolled-back')).toBeNull();
     expect(await persistence.documentFolders.findById('company-transaction-test', 'folder-committed')).not.toBeNull();
+  });
+
+  it('[re-revue] un rollback restaure AUSSI le parc d’équipements — jamais d’état fantôme', async () => {
+    const persistence = new InMemoryPersistence();
+    await persistence.equipments.save(equipment('equipment-committed', 'Fontaine accueil'));
+
+    await expect(
+      persistence.runInTransaction(async () => {
+        await persistence.equipments.save(equipment('equipment-rolled-back', 'Clim fantôme'));
+        expect(
+          await persistence.equipments.findById('company-transaction-test', 'equipment-rolled-back'),
+        ).not.toBeNull();
+        throw new Error('rollback attendu');
+      }),
+    ).rejects.toThrow('rollback attendu');
+
+    expect(
+      await persistence.equipments.findById('company-transaction-test', 'equipment-rolled-back'),
+    ).toBeNull();
+    expect(
+      await persistence.equipments.findById('company-transaction-test', 'equipment-committed'),
+    ).not.toBeNull();
   });
 
   it('reste réentrante lorsqu’un use case ouvre une transaction dans une transaction orchestrée', async () => {
