@@ -1,12 +1,1 @@
-S2-GUIDÉ fondation affordances	1783941380	apps/mobile/src/agent/**	7200
-S2-GUIDÉ wizard devis vocal v1	1783941380	apps/mobile/app/devis/new.tsx	7200
-parseur ligne dictée	1783941380	packages/core/src/flows/voice-quote-line.ts	7200
-Pilier 2 monétisation domaine core	1783983879	packages/core/src/domain/monetization/**	28800
-Pilier 2 rétention domaine core	1783983880	packages/core/src/domain/engagement/**	28800
-Pilier 2 paywall mobile	1783983880	apps/mobile/src/monetization/**	28800
-Pilier 2 rétention mobile	1783983880	apps/mobile/src/engagement/**	28800
-Pilier 3 assets store (icon/splash)	1784022551	apps/mobile/assets/**	28800
-Pilier 2 gouvernance pression (refus vocal)	1784022551	apps/mobile/src/monetization/**	28800
-Chantier états/skeletons: socle partagé	1784025372	apps/mobile/src/components/ui-states/**	28800
-matrice flags V1 (doc)	1784501871	design_handoff_bob_pro/MATRICE_FLAGS_V1.md	3600
-test anti-drift matrice flags	1784501872	apps/api/src/flags-matrix-v1.test.ts	3600
+7200	1785279255	STAGING(bob-pro-api)	redeploiement main complet apres merge M1-B + trains P1
