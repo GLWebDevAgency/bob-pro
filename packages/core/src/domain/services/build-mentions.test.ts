@@ -7,11 +7,13 @@ import {
   MENTION_FRANCHISE_BASE,
   MENTION_OPTION_DEBITS,
   REDACTIONS_FRANCHISE,
+  REFERENCES_CGI_IMPRIMEES,
   type BuildMentionsInput,
 } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
 import { formatEUR } from '../../format/money';
+import { type DateOnly } from '../../shared-kernel/time';
 
 const baseCompany: CompanyProps = {
   id: 'c1',
@@ -481,5 +483,164 @@ describe('buildMentions — remises B3 (L441-9)', () => {
   it('devis : la mention est propre à la FACTURE (L441-9), omise sur devis', () => {
     const m = mentions({ kind: 'quote', hasPriceReductions: true });
     expect(m.some((x) => x.includes('Rabais'))).toBe(false);
+  });
+});
+
+// ——————————————————————————————————————————————————————————————————————————————————————————————
+// SONDE DU CORPUS — la liste des références CGI imprimées est-elle vraiment EXHAUSTIVE ?
+//
+// Le finding qu'elle ferme : l'échéance de fin de tolérance posait la règle générale (au-delà du
+// 30/06/2028, plus aucune référence au CGI n'est admise sur une facture) mais ne prescrivait un
+// geste que sur la mention de franchise. Quatre mentions au moins citent un article du CGI —
+// écrire la liste à la main la condamnait à devenir fausse au premier ajout de mention.
+//
+// Cette sonde déroule le corpus des pièces possibles, extrait CHAQUE « … du CGI » réellement
+// imprimé, et exige l'égalité avec REFERENCES_CGI_IMPRIMEES. Ajouter demain une mention qui cite
+// le CGI sans l'inscrire dans la table fait échouer ce test — et le geste de la veille, composé
+// depuis la table, reste donc exhaustif sans que personne ait à y penser.
+// ——————————————————————————————————————————————————————————————————————————————————————————————
+describe('sonde du corpus — références au CGI réellement imprimées', () => {
+  const mediateur = { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris — cm2c.net' };
+  const sansDecennale = (): Company => {
+    const { decennale: _decennale, ...props } = baseCompany;
+    const r = Company.of(props);
+    if (!r.ok) throw new Error('company de test invalide');
+    return r.value;
+  };
+
+  const companies: [string, Company][] = [
+    ['réel BTP + décennale', company()],
+    ['franchise en base', company({ vatRegime: 'franchise' })],
+    ['société SARL avec capital', company({ legalForm: 'SARL', capitalSocialCents: 1_000_000 })],
+    ['hors BTP', company({ trade: 'consultant' })],
+    ['BTP sans décennale', sansDecennale()],
+    ['avec médiateur conso', company({ mediateurConso: mediateur })],
+  ];
+  const customers: [string, Customer][] = [
+    ['b2c', customer()],
+    ['b2b', b2b()],
+    ['b2b sous-traitant BTP', customer({ type: 'b2b', siren: '552081317', isSubcontractingBtp: true })],
+    ['b2g', b2g()],
+  ];
+  // Chaque variante n'ajoute que des clés RÉELLEMENT présentes (exactOptionalPropertyTypes).
+  const variantes: [string, Partial<BuildMentionsInput>][] = [
+    ['nu', {}],
+    ['option débits', { vatOnDebitsOption: true }],
+    ['remises', { hasPriceReductions: true }],
+    ['taux réduits 10 + 5,5', { lineVatRates: [10, 5.5] }],
+    ['taux réduit 10 éligible', { lineVatRates: [10], reducedVatEligibility: { housingOlderThan2y: true, energyRenovation: false } }],
+    ['taux réduits non éligibles', { lineVatRates: [10, 5.5], reducedVatEligibility: { housingOlderThan2y: false, energyRenovation: false } }],
+    ['taux plein', { lineVatRates: [20, 0] }],
+    ['nature mixte + devis daté', { operationNature: 'mixte', establishedOn: '2026-06-01', validUntilDays: 30 }],
+    ['tout à la fois', {
+      vatOnDebitsOption: true,
+      hasPriceReductions: true,
+      lineVatRates: [10, 5.5, 20],
+      operationNature: 'mixte',
+      establishedOn: '2026-06-01',
+      validUntil: '2026-07-01',
+    }],
+  ];
+  // Y compris les dates charnières de la recodification : la mention imprimée ne doit dépendre
+  // d'aucune bascule automatique, et l'inventaire ne doit pas varier avec le calendrier.
+  const dates: DateOnly[] = [
+    '2026-06-01',
+    '2026-08-31',
+    '2026-09-01',
+    '2026-12-31',
+    CIBS_TVA_ENTREE_EN_VIGUEUR,
+    '2027-06-30',
+    CIBS_TOLERANCE_REFERENCES_CGI,
+    '2028-07-01',
+    '2030-01-01',
+  ];
+
+  interface Cas {
+    readonly nom: string;
+    readonly lignes: readonly string[];
+  }
+
+  const corpus: readonly Cas[] = companies.flatMap(([nomCompany, c]) =>
+    customers.flatMap(([nomCustomer, k]) =>
+      variantes.flatMap(([nomVariante, variante]) =>
+        (['invoice', 'quote'] as const).flatMap((kind) =>
+          dates.map((asOf): Cas => ({
+            nom: `${nomCompany} / ${nomCustomer} / ${nomVariante} / ${kind} / ${asOf}`,
+            lignes: buildMentions({ company: c, customer: k, kind, asOf, ...variante }),
+          })),
+        ),
+      ),
+    ),
+  );
+
+  /** Toutes les références « art. X du CGI » / « article X du CGI » d'une ligne imprimée. */
+  const referencesCgi = (ligne: string): string[] =>
+    [...ligne.matchAll(/\b(?:art\.|article)\s+([^()]+?)\s+du CGI\b/gu)].map((m) => m[1] ?? '');
+
+  it('le corpus couvre réellement la combinatoire des pièces (sinon la sonde ne prouve rien)', () => {
+    expect(corpus.length).toBe(
+      companies.length * customers.length * variantes.length * 2 * dates.length,
+    );
+    expect(corpus.length).toBeGreaterThan(3_000);
+    // Un corpus qui n'imprimerait aucune référence CGI rendrait le test vert pour rien.
+    expect(corpus.some((cas) => cas.lignes.some((l) => l.includes('du CGI')))).toBe(true);
+  });
+
+  it('EXHAUSTIVITÉ — l’ensemble des références imprimées est EXACTEMENT REFERENCES_CGI_IMPRIMEES', () => {
+    const imprimees = new Set(corpus.flatMap((cas) => cas.lignes.flatMap(referencesCgi)));
+    const inventoriees = new Set(REFERENCES_CGI_IMPRIMEES.map((r) => r.article));
+    // Si ce test échoue, ne « corrigez » pas la table à l'aveugle : une nouvelle référence
+    // imprimée doit y entrer AVEC sa correspondance CIBS (certaine et sourcée) ou avec le constat
+    // daté qu'elle est INCONNUE. C'est ce que le geste de la veille énumérera le jour de la
+    // bascule (`cibs-fin-tolerance-references-cgi`).
+    expect([...imprimees].sort()).toEqual([...inventoriees].sort());
+    expect(imprimees.size).toBe(4);
+  });
+
+  it('les quatre références sont bien celles attendues, et chacune est atteignable par une pièce réelle', () => {
+    for (const article of ['293 B', '283-2 nonies', '279-0 bis', '278-0 bis A']) {
+      const cas = corpus.find((c) => c.lignes.some((l) => referencesCgi(l).includes(article)));
+      expect(cas, `aucune pièce du corpus n’imprime « ${article} »`).toBeDefined();
+    }
+  });
+
+  it('l’inventaire ne ment jamais : concordance CERTAINE ⇒ article + source ; sinon INCONNUE datée', () => {
+    for (const reference of REFERENCES_CGI_IMPRIMEES) {
+      expect(reference.article.trim().length).toBeGreaterThan(0);
+      expect(reference.mention.trim().length).toBeGreaterThan(10);
+      if (reference.concordance.statut === 'certaine') {
+        expect(reference.concordance.article).toMatch(/L\.\s?\d/u);
+        expect(reference.concordance.source.length).toBeGreaterThan(30);
+      } else {
+        expect(reference.concordance.constatLe).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+        expect(reference.concordance.constat).toContain('jamais à déduire');
+        // Garde-fou anti-fabrication : une correspondance « inconnue » ne porte AUCUN article
+        // cible — pas même « probable ». Le type l'interdit déjà ; ce test l'interdit aussi à
+        // l'exécution, parce que c'est exactement là que la tentation se présentera.
+        expect(Object.keys(reference.concordance).sort()).toEqual(['constat', 'constatLe', 'statut']);
+        expect(reference.concordance).not.toHaveProperty('article');
+      }
+    }
+    // Une seule correspondance certaine à ce jour, et c'est un fait de droit, pas un choix.
+    expect(REFERENCES_CGI_IMPRIMEES.filter((r) => r.concordance.statut === 'certaine')).toHaveLength(1);
+  });
+
+  it('aucune pièce du corpus n’imprime déjà une référence CIBS — le décret n’est pas paru', () => {
+    for (const cas of corpus) {
+      for (const ligne of cas.lignes) {
+        expect(ligne, cas.nom).not.toContain('CIBS');
+        expect(ligne, cas.nom).not.toContain('L. 223-3');
+        expect(ligne, cas.nom).not.toContain('impositions sur les biens et services');
+      }
+    }
+  });
+
+  it('l’option pour les débits reste HORS PÉRIMÈTRE, et c’est vérifié : elle n’imprime aucune référence d’article', () => {
+    const avecOption = corpus.filter((cas) =>
+      cas.lignes.some((l) => l === MENTION_OPTION_DEBITS));
+    expect(avecOption.length).toBeGreaterThan(0);
+    expect(referencesCgi(MENTION_OPTION_DEBITS)).toEqual([]);
+    expect(MENTION_OPTION_DEBITS).not.toContain('CGI');
+    expect(REFERENCES_CGI_IMPRIMEES.some((r) => r.mention.includes('débits'))).toBe(false);
   });
 });

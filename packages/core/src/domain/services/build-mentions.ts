@@ -32,6 +32,98 @@ export const CIBS_TVA_ENTREE_EN_VIGUEUR = '2027-01-01';
 export const CIBS_TOLERANCE_REFERENCES_CGI = '2028-06-30';
 
 /**
+ * Correspondance d'une référence CGI vers le CIBS. Deux états, et deux seulement — il n'existe pas
+ * de « probable » ici : une mention est figée à l'émission, une correspondance devinée resterait
+ * fausse pour toujours sur les pièces déjà émises.
+ */
+export type ConcordanceCibs =
+  /** Relevée dans un texte officiel, qui est cité. */
+  | { readonly statut: 'certaine'; readonly article: string; readonly source: string }
+  /** Non établie à ce jour DANS CE DÉPÔT : à relever le jour venu, jamais à déduire. */
+  | { readonly statut: 'inconnue'; readonly constatLe: DateOnly; readonly constat: string };
+
+/** Une référence au CGI réellement IMPRIMÉE par buildMentions, et son sort au 30/06/2028. */
+export interface ReferenceCgiImprimee {
+  /** La référence telle qu'elle apparaît sur la pièce (« 293 B », « 283-2 nonies », …). */
+  readonly article: string;
+  /** Quelle mention la porte, et quand elle s'imprime — pour retrouver le code le jour venu. */
+  readonly mention: string;
+  readonly concordance: ConcordanceCibs;
+}
+
+/**
+ * INVENTAIRE DES RÉFÉRENCES CGI IMPRIMÉES — la liste EXHAUSTIVE des mentions de ce fichier qui
+ * citent un article du CGI, donc des mentions qui devront changer de référence au plus tard à
+ * CIBS_TOLERANCE_REFERENCES_CGI (au-delà, l'ancienne référence n'est plus admise sur une facture).
+ *
+ * POURQUOI CETTE TABLE EXISTE. L'échéance de fin de tolérance (`veille-mentions-legales.ts`) posait
+ * la règle générale mais ne prescrivait qu'un geste sur la seule mention de franchise : quatre
+ * mentions au moins sont concernées, et une veille qui n'en nomme qu'une laisse les trois autres
+ * expirer en silence. Le geste de l'alarme est désormais COMPOSÉ à partir d'ici : les deux ne
+ * peuvent plus diverger.
+ *
+ * ELLE EST VÉRIFIÉE, PAS SEULEMENT ÉCRITE : la sonde du corpus (build-mentions.test.ts) déroule
+ * toutes les configurations de pièces, extrait chaque « … du CGI » réellement imprimé, et exige
+ * l'ÉGALITÉ avec cette table. Ajouter demain une mention citant le CGI sans l'inscrire ici fait
+ * échouer la sonde — c'est le seul moyen de garantir que la liste reste exhaustive dans le temps.
+ *
+ * RÈGLE D'OR : `concordance` n'est « certaine » que si un texte officiel la porte et est cité.
+ * Sinon « inconnue », avec la date du constat. Aucune correspondance n'est déduite d'une autre,
+ * d'une page d'administration ou d'un raisonnement : elles ne sont pas toutes recodifiées au même
+ * endroit ni au même rang, et une mention fausse ne se rattrape pas.
+ */
+export const REFERENCES_CGI_IMPRIMEES: readonly ReferenceCgiImprimee[] = [
+  {
+    article: '293 B',
+    mention: 'franchise en base — « TVA non applicable, article 293 B du CGI » (REDACTIONS_FRANCHISE)',
+    concordance: {
+      statut: 'certaine',
+      article: 'CIBS art. L. 223-3',
+      source:
+        'Table de concordance officielle publiée avec le JO n° 0298 du 20/12/2025 — '
+        + '« CGI art. 293 B, I, al. 1 → L. 223-3 ». ATTENTION : l\'article de fond est connu, la '
+        + 'RÉDACTION à imprimer ne l\'est pas — l\'obligation de mention (art. 293 E, II) y est '
+        + 'portée « déclassée » au rang réglementaire et relève d\'un décret non paru au 28/07/2026.',
+    },
+  },
+  {
+    article: '283-2 nonies',
+    mention: 'autoliquidation de la TVA — sous-traitance BTP, facture d\'un assujetti non franchisé',
+    concordance: {
+      statut: 'inconnue',
+      constatLe: '2026-07-28',
+      constat:
+        'Aucune correspondance CIBS relevée dans les sources citées par ce dépôt : seule la ligne '
+        + '« 293 B, I, al. 1 → L. 223-3 » de la table de concordance du JO n° 0298 du 20/12/2025 y '
+        + 'est reproduite. À relever dans la table officielle le jour venu — jamais à déduire de la '
+        + 'correspondance d\'un autre article.',
+    },
+  },
+  {
+    article: '279-0 bis',
+    mention: 'taux réduit 10 % travaux (locaux d\'habitation achevés depuis plus de deux ans)',
+    concordance: {
+      statut: 'inconnue',
+      constatLe: '2026-07-28',
+      constat:
+        'Aucune correspondance CIBS relevée dans les sources citées par ce dépôt. À relever dans la '
+        + 'table de concordance officielle — jamais à déduire.',
+    },
+  },
+  {
+    article: '278-0 bis A',
+    mention: 'taux réduit 5,5 % — travaux de rénovation énergétique',
+    concordance: {
+      statut: 'inconnue',
+      constatLe: '2026-07-28',
+      constat:
+        'Aucune correspondance CIBS relevée dans les sources citées par ce dépôt. À relever dans la '
+        + 'table de concordance officielle — jamais à déduire.',
+    },
+  },
+];
+
+/**
  * Franchise en base — mention obligatoire, reproduite VERBATIM depuis l'art. 293 E, II du CGI :
  * la facture « doit comporter la mention correspondant à la base légale de la franchise :
  * "TVA non applicable, article 293 B du CGI" […] ». Reprise à l'identique par la doctrine
@@ -59,8 +151,9 @@ export const MENTION_FRANCHISE_BASE = 'TVA non applicable, article 293 B du CGI'
  * SON SORT AU 01/01/2027 — UN FAIT, PUIS UN RAISONNEMENT ; ce fichier ne doit jamais présenter le
  * second comme le premier :
  *  • LE FAIT, vérifiable en trois secondes juste au-dessus : la chaîne imprimée ne contient AUCUNE
- *    référence d'article. Elle ne peut donc pas devenir fausse par un changement de référence.
- *    C'est ce fait, et lui seul, qui met Bob à l'abri ici ;
+ *    référence d'article. Elle ne peut donc pas devenir fausse par un changement de référence, et
+ *    c'est à ce titre qu'elle est absente de REFERENCES_CGI_IMPRIMEES — la sonde du corpus le
+ *    vérifie sur toutes les configurations. C'est ce fait, et lui seul, qui met Bob à l'abri ici ;
  *  • LE RAISONNEMENT, À VÉRIFIER, non sourcé (constat du 28/07/2026) : le 11° bis vit dans
  *    l'annexe II au CGI, de rang RÉGLEMENTAIRE, alors que l'ordonnance 2025-1247 recodifie des
  *    dispositions LÉGISLATIVES — le texte semble donc hors de son champ. Deux réserves qui
