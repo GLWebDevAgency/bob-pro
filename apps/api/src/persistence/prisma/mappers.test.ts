@@ -655,6 +655,8 @@ describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments d
     purchaseOrderDocumentId: null,
     // PR-08 — pièce historique SANS site (null honnête, jamais rétro-rempli).
     chantierId: null as string | null,
+    // PR-12b — pièce historique SANS contrat (null honnête, jamais rétro-rempli).
+    maintenanceContractId: null as string | null,
     revision: 1,
     lines: [],
     precedingInvoices: [],

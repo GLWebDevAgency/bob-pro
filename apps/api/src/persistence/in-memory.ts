@@ -9,8 +9,13 @@ import {
   Chantier,
   ChantierNote,
   Equipment,
+  MaintenanceContract,
   type ChantierNoteRepository,
   type EquipmentRepository,
+  type EquipmentContractCoveragePort,
+  type MaintenanceContractRepository,
+  type ContractInvoicesReadPort,
+  type ContractInvoiceProjection,
   type WorksiteMediaItem,
   type WorksiteMediaStorage,
   Company,
@@ -1759,6 +1764,110 @@ export class InMemoryEquipmentRepository implements EquipmentRepository {
     this.map = new Map(
       [...snapshot].map(([id, equipment]) => [id, Equipment.rehydrate(equipment.toProps())]),
     );
+  }
+}
+
+/** PR-12b — contrats de maintenance (Bloc B) : même sémantique tenant-scopée que Postgres. */
+export class InMemoryMaintenanceContractRepository implements MaintenanceContractRepository {
+  private map = new Map<string, MaintenanceContract>();
+  async save(contract: MaintenanceContract): Promise<void> {
+    this.map.set(contract.id, MaintenanceContract.rehydrate(contract.toProps()));
+  }
+  async findById(companyId: string, id: string): Promise<MaintenanceContract | null> {
+    const contract = this.map.get(id);
+    return contract && contract.companyId === companyId
+      ? MaintenanceContract.rehydrate(contract.toProps())
+      : null;
+  }
+  async lockById(companyId: string, id: string): Promise<MaintenanceContract | null> {
+    return this.findById(companyId, id);
+  }
+  async listByCompany(companyId: string): Promise<MaintenanceContract[]> {
+    return [...this.map.values()]
+      .filter((c) => c.companyId === companyId)
+      .map((c) => MaintenanceContract.rehydrate(c.toProps()))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
+  }
+  async listByCustomer(companyId: string, customerId: string): Promise<MaintenanceContract[]> {
+    return (await this.listByCompany(companyId)).filter((c) => c.customerId === customerId);
+  }
+  async deleteById(companyId: string, id: string): Promise<void> {
+    const contract = this.map.get(id);
+    if (!contract || contract.companyId !== companyId) return;
+    // Miroir du trigger SQL BEFORE DELETE draft-only (défense en profondeur reproduite).
+    if (contract.status !== 'draft') throw new Error('maintenance_contracts_draft_only_delete');
+    this.map.delete(id);
+  }
+
+  snapshot(): Map<string, MaintenanceContract> {
+    return new Map(
+      [...this.map].map(([id, contract]) => [id, MaintenanceContract.rehydrate(contract.toProps())]),
+    );
+  }
+
+  restore(snapshot: Map<string, MaintenanceContract>): void {
+    this.map = new Map(
+      [...snapshot].map(([id, contract]) => [id, MaintenanceContract.rehydrate(contract.toProps())]),
+    );
+  }
+}
+
+/** PR-12b [annexe erratum n° 8] — projections de couverture dérivées du dépôt de factures :
+ * la lecture par société reste UNE passe sur le dépôt, groupée par contrat (même contrat
+ * que la requête Postgres sur l'index partiel). */
+export class InMemoryContractInvoicesRead implements ContractInvoicesReadPort {
+  constructor(private readonly invoices: InvoiceRepository) {}
+
+  private static projectionOf(invoice: Invoice): ContractInvoiceProjection {
+    return {
+      id: invoice.id,
+      number: invoice.number,
+      kind: invoice.kind,
+      status: invoice.status,
+      servicePeriodStart: invoice.servicePeriod?.start ?? null,
+      servicePeriodEnd: invoice.servicePeriod?.end ?? null,
+    };
+  }
+
+  async listByMaintenanceContract(
+    companyId: string,
+    contractId: string,
+  ): Promise<ContractInvoiceProjection[]> {
+    const invoices = await this.invoices.listByCompany(companyId);
+    return invoices
+      .filter((invoice) => invoice.maintenanceContractId === contractId)
+      .map((invoice) => InMemoryContractInvoicesRead.projectionOf(invoice));
+  }
+
+  async listContractInvoicesByCompany(
+    companyId: string,
+  ): Promise<Map<string, ContractInvoiceProjection[]>> {
+    const invoices = await this.invoices.listByCompany(companyId);
+    const grouped = new Map<string, ContractInvoiceProjection[]>();
+    for (const invoice of invoices) {
+      const contractId = invoice.maintenanceContractId;
+      if (contractId === null) continue;
+      const projection = InMemoryContractInvoicesRead.projectionOf(invoice);
+      const bucket = grouped.get(contractId);
+      if (bucket) bucket.push(projection);
+      else grouped.set(contractId, [projection]);
+    }
+    return grouped;
+  }
+}
+
+/** [Amélioration 4] — couverture contractuelle réelle d'un équipement (contrats ACTIFS
+ * le liant) : l'avertissement au retrait cesse d'être null, écran ET voix le disent. */
+export class InMemoryEquipmentContractCoverage implements EquipmentContractCoveragePort {
+  constructor(private readonly contracts: MaintenanceContractRepository) {}
+
+  async activeContractLabels(companyId: string, equipmentId: string): Promise<string[]> {
+    const contracts = await this.contracts.listByCompany(companyId);
+    return contracts
+      .filter(
+        (contract) => contract.status === 'active' && contract.equipmentIds.includes(equipmentId),
+      )
+      .map((contract) => contract.label);
   }
 }
 

@@ -3873,6 +3873,263 @@ export class EquipmentsController {
   async history(@Param('id') id: string) {
     return unwrap(await this.backend.getEquipmentHistory(id));
   }
+  /** PR-12b [amélioration 4] — couverture contractuelle dite AVANT la confirmation de retrait. */
+  @Get(':id/contract-coverage')
+  async contractCoverage(@Param('id') id: string) {
+    return unwrap(await this.backend.equipmentContractCoverage(id));
+  }
+}
+
+const CONTRACT_LINE_FIELDS = new Set(['catalogueItemId', 'label', 'quantity', 'unitPriceHtCents', 'vatRate']);
+const CREATE_CONTRACT_FIELDS = new Set([
+  'customerId', 'label', 'chantierId', 'anniversaryDate', 'noticeDays', 'visitsPerYear',
+  'tacitRenewal', 'importCoveredUntil', 'notes', 'lines', 'equipmentIds',
+]);
+const UPDATE_CONTRACT_FIELDS = new Set([
+  'expectedRevision', 'patch', 'lines', 'equipmentIds',
+]);
+const CONTRACT_PATCH_FIELDS = new Set([
+  'label', 'chantierId', 'anniversaryDate', 'noticeDays', 'visitsPerYear', 'tacitRenewal',
+  'importCoveredUntil', 'notes',
+]);
+
+/** Lignes de contrat — la VALIDATION MÉTIER vit dans le domaine (record) ; ici : la forme. */
+function parseContractLines(value: unknown, issues: ValidationIssue[]): {
+  catalogueItemId?: string | null;
+  label: string;
+  quantity: number;
+  unitPriceHtCents: number;
+  vatRate: number;
+}[] | undefined {
+  if (!Array.isArray(value) || value.length > 100) {
+    issues.push({ field: 'lines', message: 'Lignes de contrat invalides (100 maximum).' });
+    return undefined;
+  }
+  const lines: { catalogueItemId?: string | null; label: string; quantity: number; unitPriceHtCents: number; vatRate: number }[] = [];
+  for (const [index, raw] of value.entries()) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      issues.push({ field: `lines[${index}]`, message: 'Ligne invalide.' });
+      return undefined;
+    }
+    const line = raw as Record<string, unknown>;
+    for (const field of Object.keys(line)) {
+      if (!CONTRACT_LINE_FIELDS.has(field))
+        issues.push({ field: `lines[${index}].${field}`, message: 'Champ non autorisé.' });
+    }
+    const label = line['label'];
+    const quantity = line['quantity'];
+    const unitPriceHtCents = line['unitPriceHtCents'];
+    const vatRate = line['vatRate'];
+    const catalogueItemId = line['catalogueItemId'];
+    if (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)) {
+      issues.push({ field: `lines[${index}].label`, message: 'Libellé de ligne requis (200 caractères maximum).' });
+      return undefined;
+    }
+    if (typeof quantity !== 'number' || !Number.isFinite(quantity) || quantity <= 0) {
+      issues.push({ field: `lines[${index}].quantity`, message: 'Quantité strictement positive requise.' });
+      return undefined;
+    }
+    if (!Number.isSafeInteger(unitPriceHtCents) || (unitPriceHtCents as number) < 0) {
+      issues.push({ field: `lines[${index}].unitPriceHtCents`, message: 'Prix HT en centimes entiers requis.' });
+      return undefined;
+    }
+    if (typeof vatRate !== 'number') {
+      issues.push({ field: `lines[${index}].vatRate`, message: 'Taux de TVA requis.' });
+      return undefined;
+    }
+    if (catalogueItemId !== undefined && catalogueItemId !== null && (typeof catalogueItemId !== 'string' || catalogueItemId.length === 0)) {
+      issues.push({ field: `lines[${index}].catalogueItemId`, message: 'Référence catalogue invalide.' });
+      return undefined;
+    }
+    lines.push({
+      label,
+      quantity,
+      unitPriceHtCents: unitPriceHtCents as number,
+      vatRate,
+      ...(catalogueItemId !== undefined ? { catalogueItemId: catalogueItemId as string | null } : {}),
+    });
+  }
+  return lines;
+}
+
+function parseContractEquipmentIds(value: unknown, issues: ValidationIssue[]): string[] | undefined {
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string' || id.length === 0)) {
+    issues.push({ field: 'equipmentIds', message: 'Liste d’équipements invalide.' });
+    return undefined;
+  }
+  return value as string[];
+}
+
+function parseContractScalarFields(body: Record<string, unknown>, issues: ValidationIssue[]) {
+  const label = 'label' in body ? body['label'] : undefined;
+  if (label !== undefined && (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)))
+    issues.push({ field: 'label', message: 'Nom du contrat requis (200 caractères maximum).' });
+  const chantierId = parseEquipmentFreeField(body, 'chantierId', 200, issues);
+  const anniversaryDate = parseEquipmentDateField(body, 'anniversaryDate', issues);
+  const importCoveredUntil = parseEquipmentDateField(body, 'importCoveredUntil', issues);
+  const notes = parseEquipmentFreeField(body, 'notes', 2000, issues, true);
+  const noticeDays = 'noticeDays' in body ? body['noticeDays'] : undefined;
+  if (noticeDays !== undefined && !Number.isSafeInteger(noticeDays))
+    issues.push({ field: 'noticeDays', message: 'Préavis en jours entiers requis.' });
+  const visitsPerYear = 'visitsPerYear' in body ? body['visitsPerYear'] : undefined;
+  if (visitsPerYear !== undefined && !Number.isSafeInteger(visitsPerYear))
+    issues.push({ field: 'visitsPerYear', message: 'Nombre de passages entier requis.' });
+  const tacitRenewal = 'tacitRenewal' in body ? body['tacitRenewal'] : undefined;
+  if (tacitRenewal !== undefined && typeof tacitRenewal !== 'boolean')
+    issues.push({ field: 'tacitRenewal', message: 'Reconduction tacite : booléen requis.' });
+  return {
+    ...(typeof label === 'string' ? { label } : {}),
+    ...(chantierId !== undefined ? { chantierId } : {}),
+    ...(anniversaryDate !== undefined ? { anniversaryDate } : {}),
+    ...(importCoveredUntil !== undefined ? { importCoveredUntil } : {}),
+    ...(notes !== undefined ? { notes } : {}),
+    ...(noticeDays !== undefined ? { noticeDays: noticeDays as number } : {}),
+    ...(visitsPerYear !== undefined ? { visitsPerYear: visitsPerYear as number } : {}),
+    ...(tacitRenewal !== undefined ? { tacitRenewal: tacitRenewal as boolean } : {}),
+  };
+}
+
+/** PR-12b/12c — contrats de maintenance : MÊMES use cases que la voix (parité §2.7). */
+@Controller('contracts')
+export class MaintenanceContractsController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async list() {
+    return unwrap(await this.backend.listMaintenanceContracts());
+  }
+  @Get(':id')
+  async get(@Param('id') id: string) {
+    return unwrap(await this.backend.getMaintenanceContract(id));
+  }
+  @Post()
+  async create(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const issues: ValidationIssue[] = [];
+    for (const field of Object.keys(body)) {
+      if (!CREATE_CONTRACT_FIELDS.has(field))
+        issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+    const customerId = body['customerId'];
+    if (typeof customerId !== 'string' || customerId.length === 0)
+      issues.push({ field: 'customerId', message: 'Client requis.' });
+    const scalars = parseContractScalarFields(body, issues);
+    if (!('label' in scalars))
+      issues.push({ field: 'label', message: 'Nom du contrat requis.' });
+    if (!('anniversaryDate' in scalars) || scalars.anniversaryDate === null)
+      issues.push({ field: 'anniversaryDate', message: 'Date de début requise (AAAA-MM-JJ).' });
+    const lines = 'lines' in body ? parseContractLines(body['lines'], issues) : undefined;
+    const equipmentIds =
+      'equipmentIds' in body ? parseContractEquipmentIds(body['equipmentIds'], issues) : undefined;
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.createMaintenanceContract({
+        customerId: customerId as string,
+        label: scalars.label as string,
+        anniversaryDate: scalars.anniversaryDate as string,
+        ...(scalars.chantierId !== undefined ? { chantierId: scalars.chantierId } : {}),
+        ...(scalars.noticeDays !== undefined ? { noticeDays: scalars.noticeDays } : {}),
+        ...(scalars.visitsPerYear !== undefined ? { visitsPerYear: scalars.visitsPerYear } : {}),
+        ...(scalars.tacitRenewal !== undefined ? { tacitRenewal: scalars.tacitRenewal } : {}),
+        ...(scalars.importCoveredUntil !== undefined
+          ? { importCoveredUntil: scalars.importCoveredUntil }
+          : {}),
+        ...(scalars.notes !== undefined ? { notes: scalars.notes } : {}),
+        ...(lines !== undefined ? { lines: lines as never } : {}),
+        ...(equipmentIds !== undefined ? { equipmentIds } : {}),
+      }),
+    );
+  }
+  @Put(':id')
+  async update(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const issues: ValidationIssue[] = [];
+    for (const field of Object.keys(body)) {
+      if (!UPDATE_CONTRACT_FIELDS.has(field))
+        issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+    const expectedRevision = body['expectedRevision'];
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1)
+      issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+    let patch: Record<string, unknown> | undefined;
+    if ('patch' in body) {
+      const rawPatch = body['patch'];
+      if (rawPatch === null || typeof rawPatch !== 'object' || Array.isArray(rawPatch)) {
+        issues.push({ field: 'patch', message: 'Patch invalide.' });
+      } else {
+        const patchBody = rawPatch as Record<string, unknown>;
+        for (const field of Object.keys(patchBody)) {
+          if (!CONTRACT_PATCH_FIELDS.has(field))
+            issues.push({ field: `patch.${field}`, message: 'Champ non autorisé.' });
+        }
+        patch = parseContractScalarFields(patchBody, issues);
+      }
+    }
+    const lines = 'lines' in body ? parseContractLines(body['lines'], issues) : undefined;
+    const equipmentIds =
+      'equipmentIds' in body ? parseContractEquipmentIds(body['equipmentIds'], issues) : undefined;
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.updateMaintenanceContract({
+        contractId: id,
+        expectedRevision: expectedRevision as number,
+        ...(patch !== undefined ? { patch: patch as never } : {}),
+        ...(lines !== undefined ? { lines: lines as never } : {}),
+        ...(equipmentIds !== undefined ? { equipmentIds } : {}),
+      }),
+    );
+  }
+  @Post(':id/activate')
+  async activate(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseExpectedRevisionBody(body);
+    return unwrap(
+      await this.backend.activateMaintenanceContract({
+        contractId: id,
+        expectedRevision: parsed.expectedRevision,
+      }),
+    );
+  }
+  @Post(':id/terminate')
+  async terminate(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const issues: ValidationIssue[] = [];
+    for (const field of Object.keys(body)) {
+      if (field !== 'expectedRevision' && field !== 'effectiveDate' && field !== 'note')
+        issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+    const expectedRevision = body['expectedRevision'];
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1)
+      issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+    const note = body['note'];
+    if (typeof note !== 'string' || note.trim().length === 0)
+      issues.push({ field: 'note', message: 'Motif de résiliation requis.' });
+    const effectiveDate = parseEquipmentDateField(body, 'effectiveDate', issues);
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.terminateMaintenanceContract({
+        contractId: id,
+        expectedRevision: expectedRevision as number,
+        note: note as string,
+        ...(effectiveDate !== undefined ? { effectiveDate } : {}),
+      }),
+    );
+  }
+  @Delete(':id')
+  async deleteDraft(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseExpectedRevisionBody(body);
+    return unwrap(
+      await this.backend.deleteDraftMaintenanceContract({
+        contractId: id,
+        expectedRevision: parsed.expectedRevision,
+      }),
+    );
+  }
+  /** §2.6 — brouillon annuel en un tap (jamais émis, jamais envoyé seul). */
+  @Post(':id/annual-invoice')
+  async prepareAnnualInvoice(@Param('id') id: string) {
+    return unwrap(await this.backend.prepareContractAnnualInvoice(id));
+  }
 }
 
 @Controller('expenses')

@@ -354,6 +354,9 @@ model Company {
   chantierNotes                               ChantierNote[]
   chantierPhotos                              ChantierPhoto[]
   equipments                                  Equipment[]
+  maintenanceContracts                        MaintenanceContract[]
+  maintenanceContractLines                    MaintenanceContractLine[]
+  maintenanceContractEquipments               MaintenanceContractEquipment[]
   bankBalanceSnapshots                        BankBalanceSnapshot[]
   counters                                    DocumentCounter[]
   realtimeAdmissionEvents                     RealtimeAdmissionEvent[]
@@ -601,6 +604,7 @@ model Customer {
   quotes                   Quote[]
   invoices                 Invoice[]
   contacts                 CustomerContact[]
+  maintenanceContracts     MaintenanceContract[]
 
   @@unique([id, companyId], name: "uniq_customer_id_company", map: "uniq_customer_id_company")
   @@index([companyId])
@@ -682,6 +686,7 @@ model Chantier {
   // PR-08 — pièces du site (chantierId nullable sur quotes/invoices, patron Expense).
   quotes        Quote[]         @relation("ChantierQuotes")
   invoices      Invoice[]       @relation("ChantierInvoices")
+  maintenanceContracts MaintenanceContract[]
 
   @@unique([id, companyId], name: "uniq_chantier_id_company", map: "uniq_chantier_id_company")
   @@index([companyId, status, openedAt(sort: Desc)], map: "chantiers_company_status_opened_idx")
@@ -757,10 +762,88 @@ model Equipment {
   updatedAt     DateTime  @updatedAt @db.Timestamptz(6)
   chantierNotes ChantierNote[]
   photos        ChantierPhoto[]
+  contractLinks MaintenanceContractEquipment[]
 
   @@unique([id, companyId], name: "uniq_equipment_id_company", map: "uniq_equipment_id_company")
   @@index([companyId, chantierId, status], map: "equipments_company_chantier_status_idx")
   @@map("equipments")
+}
+
+/// PR-12b (Bloc B, C2, exigence 3) — contrat de maintenance : machine `draft | active |
+/// terminated` (la reconduction tacite est un FAIT CALCULÉ, jamais une mutation — direction 2).
+/// `anniversaryDate` = début INITIAL immuable après activation ; la période courante est
+/// ARITHMÉTIQUE (encadrement clampé, annexe erratum n° 5). La couverture de facturation est
+/// DÉRIVÉE des factures non annulées (direction 1) — AUCUNE colonne billedThrough.
+/// `importCoveredUntil` : borne EXCLUSIVE « déjà facturé hors Bob » (P13, saisie humaine
+/// inclusive convertie +1 j par le wizard — annexe erratum n° 4).
+model MaintenanceContract {
+  id                       String    @id
+  companyId                String
+  company                  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  customerId               String
+  customer                 Customer  @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  chantierId               String?
+  chantier                 Chantier? @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  label                    String
+  status                   String    @default("draft")
+  anniversaryDate          DateTime  @db.Date
+  noticeDays               Int       @default(30)
+  visitsPerYear            Int       @default(2)
+  tacitRenewal             Boolean   @default(true)
+  importCoveredUntil       DateTime? @db.Date
+  activatedAt              DateTime? @db.Timestamptz(6)
+  terminatedAt             DateTime? @db.Timestamptz(6)
+  terminationEffectiveDate DateTime? @db.Date
+  terminationNote          String?
+  notes                    String?
+  revision                 Int       @default(1)
+  createdAt                DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(6)
+  lines                    MaintenanceContractLine[]
+  equipments               MaintenanceContractEquipment[]
+  invoices                 Invoice[] @relation("MaintenanceContractInvoices")
+
+  @@unique([id, companyId], name: "uniq_maintenance_contract_id_company", map: "uniq_maintenance_contract_id_company")
+  @@index([companyId, status, anniversaryDate], map: "maintenance_contracts_company_status_anniversary_idx")
+  @@index([customerId, companyId], map: "maintenance_contracts_customer_company_idx")
+  @@map("maintenance_contracts")
+}
+
+/// Lignes du contrat — miroir du patron LineItem (centimes Int, TVA Decimal(4,2)). Le montant
+/// annuel = Σ lignes, JAMAIS stocké. `catalogueItemId` = aide de saisie sans FK (doctrine
+/// LineItem : le catalogue propose, la ligne reste autonome).
+model MaintenanceContractLine {
+  id              String              @id
+  companyId       String
+  company         Company             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contractId      String
+  contract        MaintenanceContract @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: Cascade, onUpdate: Cascade)
+  catalogueItemId String?
+  label           String
+  quantity        Decimal             @db.Decimal(12, 3)
+  unitPriceHtCents Int
+  vatRate         Decimal             @db.Decimal(4, 2)
+  position        Int
+
+  @@unique([id, companyId], name: "uniq_maintenance_contract_line_id_company", map: "uniq_maintenance_contract_line_id_company")
+  @@index([contractId, companyId], map: "maintenance_contract_lines_contract_company_idx")
+  @@map("maintenance_contract_lines")
+}
+
+/// Table de liaison contrat↔équipements (§2.2) — équipements COUVERTS par le contrat, du MÊME
+/// site (garde use case). Alimente l'avertissement honnête au retrait d'équipement
+/// (amélioration 4, EquipmentContractCoveragePort).
+model MaintenanceContractEquipment {
+  companyId   String
+  company     Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contractId  String
+  contract    MaintenanceContract  @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: Cascade, onUpdate: Cascade)
+  equipmentId String
+  equipment   Equipment            @relation(fields: [equipmentId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@id([companyId, contractId, equipmentId])
+  @@index([equipmentId, companyId], map: "maintenance_contract_equipments_equipment_company_idx")
+  @@map("maintenance_contract_equipments")
 }
 
 model Quote {
@@ -947,6 +1030,14 @@ model Invoice {
   // maintenanceContractId à la liste.
   chantierId                  String?
   chantier                    Chantier?            @relation("ChantierInvoices", fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  // PR-12b [direction 4] — contrat de maintenance facturé par cette pièce (brouillon annuel) :
+  // posé à la composition, FIGÉ post-émission (trigger redéfini depuis 20260727120000, annexe
+  // errata n° 1). NULL = pièce hors contrat, aucun backfill. La couverture d'une période se
+  // DÉRIVE de ces lignes non annulées via l'index PARTIEL invoices_contract_period_idx
+  // (companyId, maintenanceContractId, servicePeriodStart) WHERE NOT NULL — index d'expression
+  // absent du DSL (défini dans la migration, comme customers_name_trgm_idx).
+  maintenanceContractId       String?
+  maintenanceContract         MaintenanceContract? @relation("MaintenanceContractInvoices", fields: [maintenanceContractId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
   revision                    Int                  @default(1)
   lines                       LineItem[]           @relation("InvoiceLines")

@@ -8,6 +8,9 @@ import type {
   ChantierRepository,
   ChantierNoteRepository,
   EquipmentRepository,
+  EquipmentContractCoveragePort,
+  MaintenanceContractRepository,
+  ContractInvoicesReadPort,
   CustomerContactRepository,
   ChartOfAccountsRepository,
   CompanyRepository,
@@ -136,6 +139,12 @@ export interface Persistence {
   chantierNotes: ChantierNoteRepository;
   /** PR-11 — parc d'équipements par site (retrait logique, jamais de DELETE runtime). */
   equipments: EquipmentRepository;
+  /** PR-12b — contrats de maintenance (Bloc B) : DELETE réservé aux brouillons (trigger). */
+  maintenanceContracts: MaintenanceContractRepository;
+  /** PR-12b — projections de couverture des factures de contrat (lecture batchée, erratum 8). */
+  contractInvoices: ContractInvoicesReadPort;
+  /** [Amélioration 4] — couverture contractuelle réelle d'un équipement (avertissement retrait). */
+  equipmentContractCoverage: EquipmentContractCoveragePort;
   worksiteMedia: WorksiteMediaStorage;
   expenseCreationRequests: ExpenseCreationRequestStore;
   quoteCreationRequests: QuoteCreationRequestStore;

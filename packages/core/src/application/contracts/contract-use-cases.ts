@@ -191,9 +191,7 @@ export class UpdateMaintenanceContract {
   ): Promise<Result<MaintenanceContractProps, AppError>> {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1)
       return err(appDomain({ code: 'VALIDATION', field: 'expectedRevision', message: 'Révision invalide.' }));
-    const load = this.deps.contracts.lockById?.bind(this.deps.contracts)
-      ?? this.deps.contracts.findById.bind(this.deps.contracts);
-    const contract = await load(input.companyId, input.contractId);
+    const contract = await this.deps.contracts.lockById(input.companyId, input.contractId);
     if (!contract || contract.companyId !== input.companyId)
       return err(appNotFound('maintenance_contract', input.contractId));
     if (contract.revision !== input.expectedRevision)
@@ -264,9 +262,7 @@ export class ActivateContract {
   async execute(input: ActivateContractInput): Promise<Result<MaintenanceContractProps, AppError>> {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1)
       return err(appDomain({ code: 'VALIDATION', field: 'expectedRevision', message: 'Révision invalide.' }));
-    const load = this.deps.contracts.lockById?.bind(this.deps.contracts)
-      ?? this.deps.contracts.findById.bind(this.deps.contracts);
-    const contract = await load(input.companyId, input.contractId);
+    const contract = await this.deps.contracts.lockById(input.companyId, input.contractId);
     if (!contract || contract.companyId !== input.companyId)
       return err(appNotFound('maintenance_contract', input.contractId));
     if (contract.revision !== input.expectedRevision)
@@ -309,9 +305,7 @@ export class TerminateContract {
   async execute(input: TerminateContractInput): Promise<Result<MaintenanceContractProps, AppError>> {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1)
       return err(appDomain({ code: 'VALIDATION', field: 'expectedRevision', message: 'Révision invalide.' }));
-    const load = this.deps.contracts.lockById?.bind(this.deps.contracts)
-      ?? this.deps.contracts.findById.bind(this.deps.contracts);
-    const contract = await load(input.companyId, input.contractId);
+    const contract = await this.deps.contracts.lockById(input.companyId, input.contractId);
     if (!contract || contract.companyId !== input.companyId)
       return err(appNotFound('maintenance_contract', input.contractId));
     if (contract.revision !== input.expectedRevision)
@@ -345,9 +339,7 @@ export class DeleteDraftContract {
   async execute(input: DeleteDraftContractInput): Promise<Result<{ deleted: true }, AppError>> {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1)
       return err(appDomain({ code: 'VALIDATION', field: 'expectedRevision', message: 'Révision invalide.' }));
-    const load = this.deps.contracts.lockById?.bind(this.deps.contracts)
-      ?? this.deps.contracts.findById.bind(this.deps.contracts);
-    const contract = await load(input.companyId, input.contractId);
+    const contract = await this.deps.contracts.lockById(input.companyId, input.contractId);
     if (!contract || contract.companyId !== input.companyId)
       return err(appNotFound('maintenance_contract', input.contractId));
     if (contract.revision !== input.expectedRevision)

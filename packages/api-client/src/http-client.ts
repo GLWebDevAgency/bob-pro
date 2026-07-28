@@ -20,6 +20,8 @@ import type {
   EquipmentPatch,
   EquipmentProps,
   RetireEquipmentOutput,
+  MaintenanceContractProps,
+  PrepareAnnualInvoiceDraftOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -75,6 +77,9 @@ import type {
   BobClient,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
+  MaintenanceContractClientView,
+  CreateContractClientInput,
+  UpdateContractClientInput,
   QuoteView,
   InvoiceView,
   PaymentView,
@@ -3424,6 +3429,62 @@ export class HttpBobClient implements BobClient {
     return this.req<{ changed: boolean }>(
       'POST',
       `/chantiers/${encodeURIComponent(chantierId)}/reopen`,
+    );
+  }
+  // ── PR-12b/12c — contrats de maintenance (mêmes endpoints que la voix, parité stricte) ──
+  listMaintenanceContracts() {
+    return this.req<MaintenanceContractClientView[]>('GET', '/contracts');
+  }
+  getMaintenanceContract(contractId: string) {
+    return this.req<MaintenanceContractClientView>(
+      'GET',
+      `/contracts/${encodeURIComponent(contractId)}`,
+    );
+  }
+  createMaintenanceContract(input: CreateContractClientInput) {
+    return this.req<{ id: string }>('POST', '/contracts', input);
+  }
+  updateMaintenanceContract(contractId: string, input: UpdateContractClientInput) {
+    return this.req<MaintenanceContractProps>(
+      'PUT',
+      `/contracts/${encodeURIComponent(contractId)}`,
+      input,
+    );
+  }
+  activateMaintenanceContract(contractId: string, input: { expectedRevision: number }) {
+    return this.req<MaintenanceContractProps>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/activate`,
+      input,
+    );
+  }
+  terminateMaintenanceContract(
+    contractId: string,
+    input: { expectedRevision: number; note: string; effectiveDate?: string | null },
+  ) {
+    return this.req<MaintenanceContractProps>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/terminate`,
+      input,
+    );
+  }
+  deleteDraftMaintenanceContract(contractId: string, input: { expectedRevision: number }) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      `/contracts/${encodeURIComponent(contractId)}`,
+      input,
+    );
+  }
+  prepareContractAnnualInvoice(contractId: string) {
+    return this.req<PrepareAnnualInvoiceDraftOutput>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/annual-invoice`,
+    );
+  }
+  equipmentContractCoverage(equipmentId: string) {
+    return this.req<{ activeContractLabels: string[] }>(
+      'GET',
+      `/equipments/${encodeURIComponent(equipmentId)}/contract-coverage`,
     );
   }
   worksitePhotoViewUrl(photoId: string) {

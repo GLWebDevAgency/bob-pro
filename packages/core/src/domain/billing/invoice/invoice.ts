@@ -169,6 +169,11 @@ export class Invoice extends AggregateRoot<string> {
    * parent à la dérivation (la pièce d'un devis de site reste une pièce du site). Null = hors
    * site — jamais rétro-rempli. */
   private _chantierId: string | null = null;
+  /** PR-12b [direction 4] — contrat de maintenance dont cette pièce facture une période
+   * annuelle : posé à la COMPOSITION (brouillon annuel), figé post-émission (trigger SQL).
+   * Null = pièce hors contrat — jamais rétro-rempli. Quand il est présent, le brouillon
+   * PORTE sa période de service (colonnes = AUTORITÉ, annexe erratum n° 2). */
+  private _maintenanceContractId: string | null = null;
   /** Révision optimiste — incrémentée par les mutations de bon de commande. */
   private _revision = 1;
 
@@ -485,6 +490,17 @@ export class Invoice extends AggregateRoot<string> {
     urgentRepair?: UrgentRepairRequest | null;
     /** PR-08 — site de rattachement de la facture directe ; null = hors site. */
     chantierId?: string | null;
+    /**
+     * PR-12b [direction 4] — brouillon ANNUEL d'un contrat de maintenance : le brouillon
+     * PORTE contrat + période de service dès la composition (colonnes = AUTORITÉ de la
+     * garde d'émission, annexe erratum n° 2). La période est CONTRACTUELLE : début ET fin
+     * requis (une couverture sans fin serait indéfinissable), bornes HUMAINES inclusives.
+     * Absent = comportement historique inchangé au bit près.
+     */
+    contractAttachment?: {
+      maintenanceContractId: string;
+      servicePeriod: { start: DateOnly; end: DateOnly };
+    } | null;
   }): DomainResult<Invoice> {
     // PR-08 — identifiant canonique du site quand présent (même hygiène que Quote.compose).
     const rawChantierId = input.chantierId ?? null;
@@ -494,8 +510,33 @@ export class Invoice extends AggregateRoot<string> {
       if (!chantierId)
         return err({ code: 'VALIDATION', field: 'chantierId', message: 'Chantier de rattachement invalide.' });
     }
+    const attachment = input.contractAttachment ?? null;
+    let maintenanceContractId: string | null = null;
+    let contractServicePeriod: ServicePeriod | null = null;
+    if (attachment !== null) {
+      maintenanceContractId = attachment.maintenanceContractId.trim();
+      if (!maintenanceContractId)
+        return err({ code: 'VALIDATION', field: 'maintenanceContractId', message: 'Contrat de rattachement invalide.' });
+      const { start, end } = attachment.servicePeriod;
+      if (!isValidDateOnly(start) || !isValidDateOnly(end))
+        return err({
+          code: 'VALIDATION',
+          field: 'servicePeriod',
+          message: 'Période de service du contrat invalide (AAAA-MM-JJ requis).',
+        });
+      if (end < start)
+        return err({
+          code: 'VALIDATION',
+          field: 'servicePeriod',
+          message: 'La fin de la période de service précède son début.',
+        });
+      contractServicePeriod = { start, end };
+    }
     const inv = new Invoice(input.id, input.companyId, input.customerId, 'final', null, null, null);
     inv._chantierId = chantierId;
+    inv._maintenanceContractId = maintenanceContractId;
+    // La période vit AU BROUILLON (direction 4) — l'émission la refige à l'identique.
+    inv._servicePeriod = contractServicePeriod;
     if (input.urgentRepair) {
       inv._urgentRepair = { requestedAt: input.urgentRepair.requestedAt };
       // Même doctrine que Quote.compose : le fait légal qui fonde l'exception est journalisé
@@ -586,6 +627,9 @@ export class Invoice extends AggregateRoot<string> {
       : null;
     // PR-08 : l'avoir rectifie la même opération sur le MÊME site que la pièce annulée.
     creditNote._chantierId = source._chantierId;
+    // PR-12b : l'avoir rectifie la même opération du MÊME contrat (la dérivation de couverture
+    // EXCLUT les avoirs — un avoir ne « recouvre » jamais la période qu'il vient de libérer).
+    creditNote._maintenanceContractId = source._maintenanceContractId;
     return ok(creditNote);
   }
 
@@ -618,6 +662,10 @@ export class Invoice extends AggregateRoot<string> {
   /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
   get chantierId(): string | null {
     return this._chantierId;
+  }
+  /** PR-12b — contrat de maintenance facturé par cette pièce ; null = hors contrat. */
+  get maintenanceContractId(): string | null {
+    return this._maintenanceContractId;
   }
   /** A4 — régime de TVA figé à l'émission ; null = pièce émise avant le figeage (legacy). */
   get vatTreatmentAtIssuance(): VatTreatment | null {
@@ -895,9 +943,39 @@ export class Invoice extends AggregateRoot<string> {
         field: 'servicePeriod',
         message: 'La période de prestation et l’adresse d’un avoir sont figées depuis la facture source.',
       });
+    // PR-12b [annexe erratum n° 2] — facture de CONTRAT : la période de service AUTORITÉ est
+    // celle du BROUILLON (posée à la composition, direction 4). Un input d'émission est refusé
+    // sauf s'il est STRICTEMENT identique (tolérance idempotente) — sans cette règle, un appel
+    // sans input.servicePeriod ANNULERAIT (?? null) la période du brouillon : couverture jamais
+    // dérivable, priorité rallumée, double facturation possible.
+    let contractServicePeriod: ServicePeriod | null = null;
+    if (this._maintenanceContractId !== null && this.kind !== 'credit_note') {
+      const draftPeriod = this._servicePeriod;
+      if (draftPeriod === null || draftPeriod.end === null)
+        return err({
+          code: 'VALIDATION',
+          field: 'servicePeriod',
+          message:
+            'Facture de contrat sans période de service : renseigne la période avant d’émettre.',
+        });
+      const inputPeriod = args.servicePeriod ?? null;
+      if (
+        inputPeriod !== null
+        && (inputPeriod.start !== draftPeriod.start || (inputPeriod.end ?? null) !== draftPeriod.end)
+      )
+        return err({
+          code: 'VALIDATION',
+          field: 'servicePeriod',
+          message:
+            'La période de service d’une facture de contrat est portée par le brouillon : ' +
+            'modifie le brouillon, jamais l’émission.',
+        });
+      // Valeur FINALE écrite = colonnes du brouillon (les gardes du use case lisent la même).
+      contractServicePeriod = { start: draftPeriod.start, end: draftPeriod.end };
+    }
     // A7 : validation AVANT toute mutation — un rejet laisse la facture intacte (le use case
     // annule alors la transaction, aucun numéro consommé).
-    const servicePeriod = args.servicePeriod ?? null;
+    const servicePeriod = contractServicePeriod ?? args.servicePeriod ?? null;
     if (servicePeriod !== null) {
       if (!isValidDateOnly(servicePeriod.start))
         return err({ code: 'VALIDATION', field: 'servicePeriod', message: 'Date de prestation invalide (AAAA-MM-JJ requis).' });
@@ -1065,6 +1143,7 @@ export class Invoice extends AggregateRoot<string> {
       sourceInvoiceIssuedAt: this._creditNoteSource?.issuedAt ?? null,
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
       chantierId: this._chantierId,
+      maintenanceContractId: this._maintenanceContractId,
       revision: this._revision,
     };
   }
@@ -1123,6 +1202,8 @@ export class Invoice extends AggregateRoot<string> {
     inv._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
     // Compat ascendante PR-08 : snapshots antérieurs sans site (null honnête, jamais inventé).
     inv._chantierId = s.chantierId ?? null;
+    // Compat ascendante PR-12b : snapshots antérieurs sans contrat (null honnête).
+    inv._maintenanceContractId = s.maintenanceContractId ?? null;
     inv._revision = s.revision ?? 1;
     return inv;
   }
@@ -1177,6 +1258,8 @@ export interface InvoiceSnapshot {
   purchaseOrder?: PurchaseOrderRef | null;
   /** PR-08 — optionnel : site absent des snapshots antérieurs (null honnête, jamais inventé). */
   chantierId?: string | null;
+  /** PR-12b — optionnel : contrat absent des snapshots antérieurs (null honnête). */
+  maintenanceContractId?: string | null;
   revision?: number;
 }
 

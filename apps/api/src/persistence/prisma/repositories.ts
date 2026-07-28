@@ -515,6 +515,8 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       ...purchaseOrderToPersistence(s.purchaseOrder),
       // PR-08 : site de rattachement (posé à la composition ou repris du devis parent).
       chantierId: s.chantierId ?? null,
+      // PR-12b : contrat facturé (posé à la composition du brouillon annuel), figé post-émission.
+      maintenanceContractId: s.maintenanceContractId ?? null,
       revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));

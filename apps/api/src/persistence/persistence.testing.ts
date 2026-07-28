@@ -90,6 +90,9 @@ import {
   InMemoryExpenseRepository,
   InMemoryChantierRepository,
   InMemoryEquipmentRepository,
+  InMemoryMaintenanceContractRepository,
+  InMemoryContractInvoicesRead,
+  InMemoryEquipmentContractCoverage,
   InMemoryChantierNoteRepository,
   InMemoryWorksiteMediaStorage,
   InMemoryCatalogueRepository,
@@ -127,6 +130,11 @@ export class InMemoryPersistence implements Persistence {
   readonly chantiers = new InMemoryChantierRepository();
   readonly chantierNotes = new InMemoryChantierNoteRepository();
   readonly equipments = new InMemoryEquipmentRepository();
+  readonly maintenanceContracts = new InMemoryMaintenanceContractRepository();
+  readonly contractInvoices = new InMemoryContractInvoicesRead(this.invoices);
+  readonly equipmentContractCoverage = new InMemoryEquipmentContractCoverage(
+    this.maintenanceContracts,
+  );
   readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
   readonly expenseCreationRequests = new InMemoryExpenseCreationRequestStore();
   readonly quoteCreationRequests = new InMemoryQuoteCreationRequestStore();
@@ -255,6 +263,7 @@ export class InMemoryPersistence implements Persistence {
     const chantierSnapshot = this.chantiers.snapshot();
     const chantierNoteSnapshot = this.chantierNotes.snapshot();
     const equipmentSnapshot = this.equipments.snapshot();
+    const maintenanceContractSnapshot = this.maintenanceContracts.snapshot();
     const worksiteMediaSnapshot = this.worksiteMedia.snapshot();
     const accountingEntrySnapshot = this.accountingEntries.snapshot();
     const expenseCreationRequestSnapshot = this.expenseCreationRequests.snapshot();
@@ -281,6 +290,7 @@ export class InMemoryPersistence implements Persistence {
       this.chantiers.restore(chantierSnapshot);
       this.chantierNotes.restore(chantierNoteSnapshot);
       this.equipments.restore(equipmentSnapshot);
+      this.maintenanceContracts.restore(maintenanceContractSnapshot);
       this.worksiteMedia.restore(worksiteMediaSnapshot);
       this.accountingEntries.restore(accountingEntrySnapshot);
       this.expenseCreationRequests.restore(expenseCreationRequestSnapshot);

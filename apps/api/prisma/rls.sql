@@ -52,6 +52,9 @@ DECLARE
     'chantier_notes',
     'chantier_photos',
     'equipments',
+    'maintenance_contracts',
+    'maintenance_contract_lines',
+    'maintenance_contract_equipments',
     'subscriptions',
     'fiscal_profiles',
     'document_counters',
@@ -395,6 +398,21 @@ CREATE POLICY tenant_isolation ON chantier_photos
 
 DROP POLICY IF EXISTS tenant_isolation ON equipments;
 CREATE POLICY tenant_isolation ON equipments
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON maintenance_contracts;
+CREATE POLICY tenant_isolation ON maintenance_contracts
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON maintenance_contract_lines;
+CREATE POLICY tenant_isolation ON maintenance_contract_lines
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON maintenance_contract_equipments;
+CREATE POLICY tenant_isolation ON maintenance_contract_equipments
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

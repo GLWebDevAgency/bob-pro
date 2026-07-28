@@ -10,8 +10,9 @@ import { type ContractInvoiceProjection } from './derive-contract-schedule';
 export interface MaintenanceContractRepository {
   findById(companyId: string, id: string): Promise<MaintenanceContract | null>;
   /** Verrouille la ligne (SELECT … FOR UPDATE) dans la transaction courante — sérialise les
-   * émissions concurrentes de la facture annuelle (garde d'émission §2.6) et les mutations. */
-  lockById?(companyId: string, id: string): Promise<MaintenanceContract | null>;
+   * émissions concurrentes de la facture annuelle (garde d'émission §2.6) et les mutations.
+   * REQUIS (pas optionnel) : la garde IssueInvoice ne fonctionne pas sans verrou. */
+  lockById(companyId: string, id: string): Promise<MaintenanceContract | null>;
   listByCompany(companyId: string): Promise<MaintenanceContract[]>;
   listByCustomer(companyId: string, customerId: string): Promise<MaintenanceContract[]>;
   save(contract: MaintenanceContract): Promise<void>;

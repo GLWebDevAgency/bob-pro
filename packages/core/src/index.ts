@@ -201,6 +201,7 @@ export * from './application/equipment/derive-equipment-history';
 export * from './application/contracts/maintenance-contract-repository';
 export * from './application/contracts/derive-contract-schedule';
 export * from './application/contracts/contract-use-cases';
+export * from './application/contracts/prepare-annual-invoice-draft';
 export * from './application/ports/worksite-media';
 export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';

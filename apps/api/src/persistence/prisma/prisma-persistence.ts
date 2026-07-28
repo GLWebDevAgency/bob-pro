@@ -48,6 +48,11 @@ import {
   PrismaChantierNoteRepository,
 } from './catalogue-chantiers.repository';
 import { PrismaEquipmentRepository } from './equipments.repository';
+import {
+  PrismaContractInvoicesRead,
+  PrismaEquipmentContractCoverage,
+  PrismaMaintenanceContractRepository,
+} from './maintenance-contracts.repository';
 import { PrismaWorksiteMediaStorage } from './worksite-media.repository';
 import { PrismaBankBalanceSnapshotRepository } from './bank-balance-snapshots.repository';
 import { PrismaCashMovementProjection } from './cash-movements.projection';
@@ -134,6 +139,9 @@ export class PrismaPersistence implements Persistence {
   readonly chantiers: PrismaChantierRepository;
   readonly chantierNotes: PrismaChantierNoteRepository;
   readonly equipments: PrismaEquipmentRepository;
+  readonly maintenanceContracts: PrismaMaintenanceContractRepository;
+  readonly contractInvoices: PrismaContractInvoicesRead;
+  readonly equipmentContractCoverage: PrismaEquipmentContractCoverage;
   readonly worksiteMedia: PrismaWorksiteMediaStorage;
   readonly expenseCreationRequests: PrismaExpenseCreationRequestStore;
   readonly quoteCreationRequests: PrismaQuoteCreationRequestStore;
@@ -312,6 +320,9 @@ export class PrismaPersistence implements Persistence {
     this.chantiers = new PrismaChantierRepository(prisma);
     this.chantierNotes = new PrismaChantierNoteRepository(prisma);
     this.equipments = new PrismaEquipmentRepository(prisma);
+    this.maintenanceContracts = new PrismaMaintenanceContractRepository(prisma);
+    this.contractInvoices = new PrismaContractInvoicesRead(prisma);
+    this.equipmentContractCoverage = new PrismaEquipmentContractCoverage(prisma);
     this.worksiteMedia = new PrismaWorksiteMediaStorage(prisma);
     this.expenseCreationRequests = new PrismaExpenseCreationRequestStore(prisma);
     this.quoteCreationRequests = new PrismaQuoteCreationRequestStore(prisma);

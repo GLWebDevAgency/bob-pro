@@ -103,6 +103,10 @@ function makeEnv(input: {
       const contract = contractMap.get(id);
       return contract && contract.companyId === companyId ? contract : null;
     },
+    lockById: async (companyId, id) => {
+      const contract = contractMap.get(id);
+      return contract && contract.companyId === companyId ? contract : null;
+    },
     listByCompany: async (companyId) =>
       [...contractMap.values()].filter((c) => c.companyId === companyId),
     listByCustomer: async (companyId, customerId) =>

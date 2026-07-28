@@ -188,6 +188,27 @@ import {
   type EquipmentProps,
   type EquipmentHistoryEntry,
   type RetireEquipmentOutput,
+  CreateMaintenanceContract,
+  UpdateMaintenanceContract,
+  ActivateContract,
+  TerminateContract,
+  DeleteDraftContract,
+  PrepareAnnualInvoiceDraft,
+  contractAnnualTotals,
+  currentPeriod,
+  periodCoverage,
+  deriveContractLifecycleFacts,
+  deriveAnnualBillingDue,
+  deriveRenewalAlerts,
+  type CreateMaintenanceContractInput,
+  type UpdateMaintenanceContractInput,
+  type MaintenanceContractProps,
+  type ContractInvoiceProjection,
+  type ContractPeriod,
+  type ContractLifecycleFacts,
+  type AnnualBillingDue,
+  type RenewalAlert,
+  type PrepareAnnualInvoiceDraftOutput,
   type Scenario,
   type Horizon,
   type CashflowProjection,
@@ -431,6 +452,29 @@ export interface InvoiceView {
   emailDeliveredAt?: string | null;
   /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
   chantierId: string | null;
+  /** PR-12b — contrat de maintenance facturé (brouillon annuel) ; null = pièce hors contrat. */
+  maintenanceContractId: string | null;
+  /** A7/PR-12b — période de service portée par la pièce (bornes humaines, fin inclusive) ;
+   * AUTORITÉ de la garde d'émission pour une facture de contrat. Null = non renseignée. */
+  servicePeriod: { start: string; end: string | null } | null;
+}
+
+/** PR-12b — vue contrat servie au client : agrégat + FAITS DÉRIVÉS (période arithmétique,
+ * couverture par factures réelles, alerte renouvellement) — l'écran constate, ne réinterprète
+ * jamais (écrans §3.1). */
+export interface MaintenanceContractView {
+  contract: MaintenanceContractProps;
+  customerName: string | null;
+  chantierNom: string | null;
+  /** Σ lignes VIVANTE (jamais persistée). */
+  annualTotals: Totals;
+  currentPeriod: ContractPeriod | null;
+  /** Couverture de la période courante — « Facturée ✓ — F-… » ou « déclarée avant Bob ». */
+  currentPeriodCoveredBy: { by: 'invoice' | 'import'; number: string | null } | null;
+  lifecycle: ContractLifecycleFacts;
+  /** « Facture annuelle à émettre » (erratum n° 3) — null = rien à proposer aujourd'hui. */
+  billingDue: AnnualBillingDue | null;
+  renewalAlert: RenewalAlert | null;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -1266,6 +1310,9 @@ export class BackendService {
       issuedAt: i.issuedAt,
       // PR-08 : site de rattachement — null honnête (jamais inventé).
       chantierId: i.chantierId,
+      // PR-12b : contrat facturé + période de service portée par la pièce (autorité brouillon).
+      maintenanceContractId: i.maintenanceContractId,
+      servicePeriod: i.servicePeriod,
       // PR-02 : livraison EMAIL constatée (outbox) — le champ n'est TRANSPORTÉ que quand
       // l'appelant a réellement interrogé l'outbox (fail-closed : absent = inconnu, jamais
       // « pas envoyée » affirmé depuis une projection muette).
@@ -2317,6 +2364,10 @@ export class BackendService {
           clock: this.clock,
           audit: this.embargoOverrideAudit(),
           purchaseOrderAudit: this.purchaseOrderOverrideAudit(),
+          // PR-12b [direction 1] — garde d'émission des factures de CONTRAT : verrou contrat
+          // + relecture de couverture DANS la même transaction que le compteur.
+          contracts: this.p.maintenanceContracts,
+          contractInvoices: this.p.contractInvoices,
         }).execute(issueInput);
         if (!issued.ok) {
           const missingTerms =
@@ -5959,8 +6010,10 @@ export class BackendService {
     const r = await new RetireEquipment({
       equipments: this.p.equipments,
       clock: this.clock,
-      // Port contrat absent tant que le Bloc B (contrats) n'est pas livré : aucun
-      // avertissement inventé — le câblage arrivera avec MaintenanceContractEquipment.
+      // PR-12b — couverture contractuelle RÉELLE (table de liaison MaintenanceContractEquipment) :
+      // l'avertissement honnête cesse d'être null — il est aussi lisible AVANT la confirmation
+      // via GET /equipments/:id/contract-coverage (écran ET voix le disent avant le geste).
+      contractCoverage: this.p.equipmentContractCoverage,
     }).execute({ companyId: this.companyId(), ...input });
     if (r.ok)
       this.logger.audit('equipment.retired', {
@@ -6021,6 +6074,218 @@ export class BackendService {
       })),
     });
     return ok({ equipment: equipment.toProps(), entries });
+  }
+
+  // ── PR-12b — contrats de maintenance (Bloc B, C2) : mêmes use cases écran/API/voix ──
+
+  /** Vue contrat SERVIE au client : agrégat + faits DÉRIVÉS (période arithmétique, couverture
+   * par les factures réelles, alerte de renouvellement) — jamais un statut inventé. */
+  private contractView(
+    contract: MaintenanceContractProps,
+    projections: ContractInvoiceProjection[],
+    names: { customerName: string | null; chantierNom: string | null },
+    today: string,
+  ): MaintenanceContractView {
+    const schedule = {
+      status: contract.status,
+      anniversaryDate: contract.anniversaryDate,
+      tacitRenewal: contract.tacitRenewal,
+      importCoveredUntil: contract.importCoveredUntil,
+      terminationEffectiveDate: contract.terminationEffectiveDate,
+    };
+    const period = currentPeriod(schedule, today);
+    const coverage = period === null ? null : periodCoverage(schedule, period, projections);
+    return {
+      contract,
+      customerName: names.customerName,
+      chantierNom: names.chantierNom,
+      annualTotals: contractAnnualTotals(contract.lines),
+      currentPeriod: period,
+      currentPeriodCoveredBy:
+        coverage !== null && coverage.kind === 'covered'
+          ? { by: coverage.by, number: coverage.number }
+          : null,
+      lifecycle: deriveContractLifecycleFacts(schedule, today),
+      billingDue: deriveAnnualBillingDue(schedule, projections, today),
+      renewalAlert: deriveRenewalAlerts(schedule, today),
+    };
+  }
+
+  /** [Annexe erratum n° 8] — les projections de TOUS les contrats viennent d'UNE requête
+   * batchée (listContractInvoicesByCompany), jamais N lectures par contrat. */
+  async listMaintenanceContracts(): Promise<Result<MaintenanceContractView[], AppError>> {
+    const companyId = this.companyId();
+    const [contracts, projectionsByContract, customers, chantiers] = await Promise.all([
+      this.p.maintenanceContracts.listByCompany(companyId),
+      this.p.contractInvoices.listContractInvoicesByCompany(companyId),
+      this.p.customers.listByCompany(companyId),
+      this.p.chantiers.listByCompany(companyId),
+    ]);
+    const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+    const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+    const today = parisDateOnly(this.clock.now());
+    return ok(
+      contracts.map((contract) => {
+        const props = contract.toProps();
+        return this.contractView(props, projectionsByContract.get(contract.id) ?? [], {
+          customerName: customerNames.get(props.customerId) ?? null,
+          chantierNom: props.chantierId === null ? null : chantierNames.get(props.chantierId) ?? null,
+        }, today);
+      }),
+    );
+  }
+
+  async getMaintenanceContract(
+    contractId: string,
+  ): Promise<Result<MaintenanceContractView, AppError>> {
+    const companyId = this.companyId();
+    const contract = await this.p.maintenanceContracts.findById(companyId, contractId);
+    if (!contract || contract.companyId !== companyId)
+      return err(appNotFound('maintenance_contract', contractId));
+    const [projections, customer, chantier] = await Promise.all([
+      this.p.contractInvoices.listByMaintenanceContract(companyId, contractId),
+      this.p.customers.findById(contract.customerId),
+      contract.chantierId === null
+        ? Promise.resolve(null)
+        : this.p.chantiers.findById(contract.chantierId),
+    ]);
+    return ok(
+      this.contractView(contract.toProps(), projections, {
+        customerName: customer?.name ?? null,
+        chantierNom: chantier?.name ?? null,
+      }, parisDateOnly(this.clock.now())),
+    );
+  }
+
+  async createMaintenanceContract(
+    input: Omit<CreateMaintenanceContractInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const r = await new CreateMaintenanceContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      equipments: this.p.equipments,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.created', {
+        companyId: this.companyId(),
+        id: r.value.id,
+      });
+    return r;
+  }
+
+  async updateMaintenanceContract(
+    input: Omit<UpdateMaintenanceContractInput, 'companyId'>,
+  ): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new UpdateMaintenanceContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      equipments: this.p.equipments,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.updated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async activateMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+  }): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new ActivateContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.activated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async terminateMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+    effectiveDate?: string | null;
+    note: string;
+  }): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new TerminateContract({
+      contracts: this.p.maintenanceContracts,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.terminated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async deleteDraftMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+  }): Promise<Result<{ deleted: true }, AppError>> {
+    const r = await new DeleteDraftContract({ contracts: this.p.maintenanceContracts }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.draft_deleted', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  /** §2.6 — « Prépare la facture annuelle » : BROUILLON en un tap (jamais émis, jamais envoyé
+   * seul) — l'émission reste le geste séparé existant, garde transactionnelle comprise. */
+  async prepareContractAnnualInvoice(
+    contractId: string,
+  ): Promise<Result<PrepareAnnualInvoiceDraftOutput, AppError>> {
+    const r = await new PrepareAnnualInvoiceDraft({
+      contracts: this.p.maintenanceContracts,
+      contractInvoices: this.p.contractInvoices,
+      compose: new ComposeStandaloneInvoice({
+        invoices: this.p.invoices,
+        companies: this.p.companies,
+        customers: this.p.customers,
+        ids: this.ids,
+        clock: this.clock,
+        chantierTargets: this.documentLinkTargets(),
+        contracts: this.p.maintenanceContracts,
+      }),
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), contractId });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.annual_invoice_prepared', {
+        companyId: this.companyId(),
+        contractId,
+        invoiceId: r.value.invoiceId,
+      });
+    return r;
+  }
+
+  /** [Amélioration 4] — couverture contractuelle d'un équipement, dite AVANT la confirmation
+   * de retrait (ConfirmSheet et voix interrogent CE point avant le geste). */
+  async equipmentContractCoverage(
+    equipmentId: string,
+  ): Promise<Result<{ activeContractLabels: string[] }, AppError>> {
+    const companyId = this.companyId();
+    const equipment = await this.p.equipments.findById(companyId, equipmentId);
+    if (!equipment || equipment.companyId !== companyId)
+      return err(appNotFound('equipment', equipmentId));
+    const labels = await this.p.equipmentContractCoverage.activeContractLabels(
+      companyId,
+      equipmentId,
+    );
+    return ok({ activeContractLabels: labels });
   }
 
   /** [Revue A12] — réponse au refus actionnable « site clôturé » : rouvrir le site. */
