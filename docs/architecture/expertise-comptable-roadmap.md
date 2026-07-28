@@ -4,6 +4,20 @@
 > **Date** : 3 juillet 2026 · **Auteur** : audit d'expertise comptable multi-prismes (6 experts : TVA & régimes, e-facturation, recouvrement, trésorerie, obligations déclaratives, Data & IA comptable).
 > **Périmètre** : 46 propositions brutes → 34 propositions consolidées retenues (doublons inter-experts fusionnés, convergences signalées) + 1 proposition réfutée en annexe.
 
+> **AMENDEMENT LÉGAL — 28/07/2026 (revue juridique adversariale du train PR-20)** : ce rapport est
+> daté du 3 juillet 2026 et n'est pas réécrit ; les affirmations devenues fausses sont corrigées
+> sur place avec la marque *[amendé 28/07/2026]*. **Toute date « CIBS au 1/9/2026 » de ce document
+> est fausse** : le transfert des dispositions TVA dans le CIBS, fixé au 01/09/2026 par
+> l'ordonnance n° 2025-1247 du 17/12/2025, est **reporté au 01/01/2027** par l'ordonnance
+> n° 2026-671 du 27/07/2026 (JORF n° 0174 du 28/07/2026) ; la tolérance des anciennes références au
+> CGI sur les factures passe du 31/12/2027 au **30/06/2028**. La recodification reste **à droit
+> constant** : rien de ce que ce rapport dit du FOND (seuils 293 B, régime déclaratif, art. 293 F)
+> n'est modifié — seule la date de changement de référence bouge. **À ne pas confondre** avec les
+> échéances de facturation électronique (réception 01/09/2026, émission TPE-PME 01/09/2027,
+> art. 289 bis CGI ; art. 91 LF 2024 + décret 2024-266), qui ne sont **pas** touchées par ce report
+> et restent exactes partout dans ce document. Vérifié le 28/07/2026 (JORF + compte rendu du
+> conseil des ministres du 27/07/2026).
+
 ---
 
 ## 1. Résumé exécutif
@@ -27,7 +41,7 @@ Tri : impact (critique → fort → moyen), puis effort (quick-win → claim →
 | # | Titre | Expert(s) | Impact | Effort | Data requise | Référence réglementaire (corrigée) |
 |---|-------|-----------|--------|--------|--------------|-------------------------------------|
 | P01 | Relances B2C conformes (plus de 40 € ni L441-10 aux particuliers) | Recouvrement | critique | quick-win | Rien (customer.type existe) | L441-10 II C. com (pros uniquement) ; art. 1344, 1344-1, 1231-6 C. civ ; B2G : L2192-13 CCP |
-| P02 | Vigie seuils franchise 293 B (compteur CA temps réel, bascule le jour J, prorata année de création) | TVA · Tréso · Déclaratif · Data-IA (×4) | critique | claim (jauge v1 = quick-win) | Rien (Invoice, LineItem.category, vatRegime) | Art. 293 B CGI, rédaction LF 2024 (art. 82, loi 2023-1322) rétablie par loi 2025-1044 du 3/11/2025 ; seuils 2026 : 85 000/93 500 € et 37 500/41 250 € ; BOI-RES-TVA-000198 ; CIBS au 1/9/2026 (ord. 2025-1247) |
+| P02 | Vigie seuils franchise 293 B (compteur CA temps réel, bascule le jour J, prorata année de création) | TVA · Tréso · Déclaratif · Data-IA (×4) | critique | claim (jauge v1 = quick-win) | Rien (Invoice, LineItem.category, vatRegime) | Art. 293 B CGI, rédaction LF 2024 (art. 82, loi 2023-1322) rétablie par loi 2025-1044 du 3/11/2025 ; seuils 2026 : 85 000/93 500 € et 37 500/41 250 € ; BOI-RES-TVA-000198 ; CIBS au **1/1/2027** *[amendé 28/07/2026 : report par l'ord. n° 2026-671 du 27/07/2026 — le fond des seuils est inchangé, recodification à droit constant]* |
 | P03 | Provision URSSAF micro + déclaration pré-calculée sur encaissements | Tréso · Déclaratif (×2) | critique | claim | Périodicité URSSAF + option VFL (2 questions) | Art. D613-4 CSS (décret 2025-943 : 12,3/21,2/25,6/23,2 % en 2026) ; art. L613-8 CSS ; art. 151-0 CGI (VFL 1/1,7/2,2 %) ; pénalité 1,5 % PMSS ≈ 60 €/déclaration |
 | P04 | Chrono prescription par facture (« après cette date, c'est perdu ») | Recouvrement | critique | claim | Rien (dueAt, payments, customer.type) | B2C : 2 ans, L218-2 C. conso, point de départ = achèvement (Cass. 1re civ. 19/5/2021, 20-12.520 → ancrage conservateur min(émission, dueAt)) ; B2B : 5 ans, L110-4 C. com ; **B2G : déchéance quadriennale loi 68-1250** (réclamation écrite interruptive) ; art. 2240/2241/2244 C. civ |
 | P05 | Réception 2026 : parseur Factur-X/CII entrant + bouton « Refuser » conforme | E-facturation | critique | claim | N° facture fournisseur + échéance sur Expense ; flux entrant | Art. 289 bis CGI (réception 1/9/2026, tous assujettis) ; norme AFNOR XP Z12-012 (statuts 200/210/212/213) ; LF 2026 (loi 2026-103) : amende 500 € puis 1 000 €/trimestre |
@@ -73,9 +87,9 @@ Tri : impact (critique → fort → moyen), puis effort (quick-win → claim →
 
 **Solution.** Cumul automatique du CA facturé de l'année civile (HT figé `_frozenTotals`, avoirs `credit_note` déduits), ventilé ventes/services via `LineItem.category` (`supply` = biens ; attention : la fourniture-et-pose BTP = **prestation de services**), annualisé l'année de création via `dateCreation`. Jauges à 80 %/95 %, alerte « Aujourd'hui », projection de la date de franchissement au rythme constaté, simulation à la signature d'un devis. Au franchissement du seuil majoré : `suggestVatRate` cesse de forcer 0 %, `buildMentions` retire la mention 293 B, bascule guidée du `vatRegime`, checklist (n° TVA intracom, prévenir les clients), détection des factures émises à tort à 0 % après la date de dépassement (avoirs + refactures).
 
-**Construire avec l'existant.** Pur moteur de dérivation : `Invoice` (issuedAt, status, totaux figés) + `LineItem.category` (apps/api/prisma/schema.prisma), `vatRegime`/`isVatFranchise()` et `dateCreation` (⚠ champ **optionnel** — traiter le cas null) dans `packages/core/src/domain/company/company.ts`. Points d'accroche : `packages/core/src/domain/services/suggest-vat-rate.ts` (force 0 % sans contrôle), `packages/core/src/domain/services/build-mentions.ts` (bascule CIBS 2026-09-01 déjà gérée), `packages/core/src/domain/compliance/diagnostic.ts:137-144` (item statique à remplacer par le compteur réel). Rien à capter.
+**Construire avec l'existant.** Pur moteur de dérivation : `Invoice` (issuedAt, status, totaux figés) + `LineItem.category` (apps/api/prisma/schema.prisma), `vatRegime`/`isVatFranchise()` et `dateCreation` (⚠ champ **optionnel** — traiter le cas null) dans `packages/core/src/domain/company/company.ts`. Points d'accroche : `packages/core/src/domain/services/suggest-vat-rate.ts` (force 0 % sans contrôle), `packages/core/src/domain/services/build-mentions.ts` *[amendé 28/07/2026 : il n'y a plus de « bascule CIBS 2026-09-01 gérée » — c'était un défaut, retiré ; la mention de franchise est le verbatim de l'art. 293 E, II à toute date, et l'échéance est armée par `veille-mentions-legales.ts`]*, `packages/core/src/domain/compliance/diagnostic.ts:137-144` (item statique à remplacer par le compteur réel). Rien à capter.
 
-**Référence (corrigée).** Art. 293 B CGI — rédaction issue de l'art. 82 de la **LF 2024** (loi 2023-1322, transposition directive (UE) 2020/285), **rétablie** par la loi n° 2025-1044 du 3/11/2025 (abrogation du seuil unique 25 000 € de la LF 2025, jamais appliqué ; art. 25 du PLF 2026 supprimé le 20/11/2025). Seuils 2026 : 85 000 € / 93 500 € (biens, hébergement) et 37 500 € / 41 250 € (services). BOFiP : BOI-TVA-DECLA-40-10, BOI-RES-TVA-000198. Recodification CIBS au 1/9/2026 à droit constant (ord. 2025-1247 du 17/12/2025). ⚠ Veille active : la réforme des seuils est récurrente (25 000 € travaux immobiliers proposé puis rejeté fin 2025).
+**Référence (corrigée).** Art. 293 B CGI — rédaction issue de l'art. 82 de la **LF 2024** (loi 2023-1322, transposition directive (UE) 2020/285), **rétablie** par la loi n° 2025-1044 du 3/11/2025 (abrogation du seuil unique 25 000 € de la LF 2025, jamais appliqué ; art. 25 du PLF 2026 supprimé le 20/11/2025). Seuils 2026 : 85 000 € / 93 500 € (biens, hébergement) et 37 500 € / 41 250 € (services). BOFiP : BOI-TVA-DECLA-40-10, BOI-RES-TVA-000198. Recodification CIBS au **1/1/2027** à droit constant (ord. 2025-1247 du 17/12/2025, **reportée par l'ord. n° 2026-671 du 27/07/2026**, JORF n° 0174 du 28/07/2026 ; tolérance des anciennes références CGI portée au 30/06/2028) *[amendé 28/07/2026]*. ⚠ Veille active : la réforme des seuils est récurrente (25 000 € travaux immobiliers proposé puis rejeté fin 2025).
 
 #### P06 — Moteur TVA déclaratif : CA3/CA12 pré-remplies, échéancier daté, rapprochement (convergence ×4)
 
@@ -147,7 +161,7 @@ Tri : impact (critique → fort → moyen), puis effort (quick-win → claim →
 
 **Construire avec l'existant.** `company.ts:7` (VatRegime), `expense.ts:36` (vatCents OCR), `derive-diagnostic.ts` (mix clientèle). Rien à capter.
 
-**Référence.** Art. 293 F CGI (effet 1er jour du mois de déclaration, période de 2 années y compris celle de la déclaration, tacite reconduction ; reconduction de plein droit 2 ans en cas de remboursement de crédit TVA art. 271). Abrogé seulement au 1/9/2026 par la recodification CIBS, à droit constant.
+**Référence.** Art. 293 F CGI (effet 1er jour du mois de déclaration, période de 2 années y compris celle de la déclaration, tacite reconduction ; reconduction de plein droit 2 ans en cas de remboursement de crédit TVA art. 271). Abrogé seulement au **1/1/2027** par la recodification CIBS, à droit constant *[amendé 28/07/2026 : report par l'ord. n° 2026-671 du 27/07/2026]*.
 
 ### 3.2 Conformité des factures & réforme e-facturation
 
@@ -397,7 +411,7 @@ Tri : impact (critique → fort → moyen), puis effort (quick-win → claim →
 
 **Construire avec l'existant.** `export-fec.ts` (émet EcritureLet/DateLet vides, l.120-121), Payment.invoiceId (schema.prisma:309), AccountingEntry.sourceType/sourceId (:530-531).
 
-**Référence (corrigée).** LPF art. A. 47 A-1 (18 champs ; positions 14-15) ; LPF art. L. 47 A, I (remise du FEC en contrôle — l'obligation survit à la version du 1/9/2026).
+**Référence (corrigée).** LPF art. A. 47 A-1 (18 champs ; positions 14-15) ; LPF art. L. 47 A, I (remise du FEC en contrôle — l'obligation survit à la version du 1/9/2026) *[revu 28/07/2026 : NON amendé — cette date se rapporte à une version de l'article du LPF, pas à la recodification CIBS ; le lien éventuel avec l'ord. 2025-1247 (reportée au 01/01/2027 par l'ord. n° 2026-671) n'a PAS pu être vérifié. Laissé tel quel plutôt que corrigé au jugé — à revérifier sur le texte consolidé avant toute implémentation]*.
 
 #### P33 — Charge ou immobilisation ? Seuil 500 € HT **(CORRIGÉ)**
 

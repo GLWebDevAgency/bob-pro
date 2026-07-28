@@ -1,5 +1,20 @@
 # Bêta Fly Services — Feuille de route en 3 vagues
 
+> **AMENDEMENT LÉGAL — 28/07/2026 (revue juridique adversariale du train PR-20)** : la date
+> **01/09/2026** qui fondait l'urgence de PR-20 dans ce document est **FAUSSE**. Le transfert des
+> dispositions TVA dans le CIBS, fixé au 01/09/2026 par l'ordonnance n° 2025-1247 du 17/12/2025,
+> est **reporté au 01/01/2027** par l'ordonnance n° 2026-671 du 27/07/2026 (JORF n° 0174 du
+> 28/07/2026) ; la tolérance des anciennes références au CGI sur les factures passe du 31/12/2027
+> au **30/06/2028**. Il n'existe donc aucun « décret CIBS au 01/09/2026 » : la rédaction de la
+> mention post-bascule relèvera d'un décret **non paru à ce jour** (l'obligation de mention de
+> l'art. 293 E, II du CGI est déclassée au rang réglementaire par la table de concordance publiée
+> avec le JO n° 0298 du 20/12/2025), et *« TVA non applicable, article 293 B du CGI »* reste licite
+> jusqu'au 30/06/2028. À ne pas confondre avec les échéances de **facturation électronique**
+> (réception 01/09/2026, émission TPE-PME 01/09/2027, art. 289 bis CGI), qui ne sont PAS touchées
+> par ce report et restent exactes dans ce document. Les lignes concernées ci-dessous portent la
+> marque *[amendé 28/07/2026]*. Vérifié le 28/07/2026 (JORF + compte rendu du conseil des ministres
+> du 27/07/2026).
+
 > **AMENDEMENTS FONDATEUR — 26/07/2026 (validation orale du plan complet : « toutes les PR, on
 > construit tout »)** :
 >
@@ -212,9 +227,9 @@ model Intervention {
 - **PR-17 — Mobile fiche d'intervention OFFLINE** (la PR la plus risquée — spike réseau réel exigé avant merge) : persistQueryClient + outbox local du flux fiche + file photos avec reprise + états de synchro. Tests : outbox pur (rejeu idempotent, ordre, clé client), conflit de révision → échec VISIBLE jamais silencieux, reprise d'upload simulée.
 - **PR-18 — Planning minimal** : liste « À venir », « visites du jour » sur la Home, rappel push J-1, replanification tracée. Tests : dérivation du jour (fuseau Paris), dédup rappel, note automatique.
 - **PR-19 — Export ICS lecture seule** : GET `/calendar/:token.ics` (scope `calendar_feed`, filtre technicien, révocable). Tests : contenu ICS conforme (échappement), jeton révoqué → 404, zéro fuite inter-tenant.
-- **PR-20 — Jalon légal CIBS (avant le 01/09/2026)** : confirmer l'article exact au décret définitif et corriger `build-mentions.ts:141` (point unique devis+facture+sign-web) ; traiter l'option « TVA sur les débits » (:206-208) ou la documenter honnêtement. Tests : corpus mentions complet re-déroulé.
+- **PR-20 — Jalon légal CIBS** *[amendé 28/07/2026 : l'échéance « avant le 01/09/2026 » n'existe pas — cf. amendement en tête]* : **ne PAS** confirmer un article ni fabriquer une rédaction — le décret qui portera la formulation de la mention n'est pas paru, et une mention est FIGÉE à l'émission. Désamorcer la bascule automatique de `build-mentions.ts` (elle basculait en dur au 2026-09-01 vers une rédaction « CIBS » sans base légale), imprimer le verbatim de l'art. 293 E, II du CGI, traiter l'option pour les débits par sa mention littérale (art. 242 nonies A, I-11° bis de l'annexe II au CGI) et **armer la veille** des vraies échéances (01/01/2027 puis 30/06/2028) : test-sentinelle sur l'horloge réelle + signal au démarrage de l'API. Tests : corpus mentions complet re-déroulé + déclenchement de l'alarme prouvé sur dates simulées.
 
-**Séquencement indicatif** : semaine 1 = PR-08→10 + PR-14 ; semaines 1-2 = PR-11→13 ; semaines 2-4 = PR-15→17 ; semaine 4 = PR-18/19 ; PR-20 dès publication du décret. Pendant la bêta, le duo père/fils travaille sur UN compte, le fils identifié par `technicianLabel` — le vrai multi-utilisateur est en P2, assumé.
+**Séquencement indicatif** : semaine 1 = PR-08→10 + PR-14 ; semaines 1-2 = PR-11→13 ; semaines 2-4 = PR-15→17 ; semaine 4 = PR-18/19 ; PR-20 hors séquence *[amendé 28/07/2026 : traitée sans attendre le décret — ce qui attend sa publication n'est plus une PR à planifier mais la mise à jour d'une rédaction, déclenchée par l'alarme de veille]*. Pendant la bêta, le duo père/fils travaille sur UN compte, le fils identifié par `technicianLabel` — le vrai multi-utilisateur est en P2, assumé.
 
 ---
 
@@ -231,7 +246,7 @@ model Intervention {
 
 ## Jalons et garde-fous
 
-- **01/09/2026** : décret CIBS — PR-20 obligatoire avant cette date (risque de mention légale fausse sinon).
+- ~~**01/09/2026** : décret CIBS — PR-20 obligatoire avant cette date (risque de mention légale fausse sinon).~~ *[amendé 28/07/2026 — jalon FAUX, cf. amendement en tête]* → **01/01/2027** : entrée en vigueur du transfert de la TVA dans le CIBS (ord. n° 2026-671 du 27/07/2026) — puis **30/06/2028** : fin de la tolérance des anciennes références au CGI, seule date après laquelle la mention imprimée aujourd'hui deviendrait non conforme. Aucune action calendaire à planifier ici : les deux échéances sont **armées dans le code** (`packages/core/src/domain/services/veille-mentions-legales.ts`) — la CI échoue 90 j avant la première et 180 j avant la seconde, avec le geste à faire et les sources.
 - **Sept. 2026 / sept. 2027** : échéances facturation électronique — décision connecteur PA à instruire pendant P1 pour ne pas subir le calendrier.
 - **Gouvernance** : cap V1/feature freeze — chaque PR de ce plan passe par l'accord commun Claude+GPT puis le GO fondateur ; PR → staging validé → prod ; builds EAS uniquement sur GO explicite (1 build par train complet).
 - **Critères de succès bêta (mesurables)** : taux d'encaissement Fly Services > 80 % à 60 j d'émission ; zéro facture « émise jamais transmise » > 7 j ; 100 % des passages avec fiche signée synchronisée ; les 8 entités RATP saisies avec canal + conditions + BC exigé ; contrats saisis avec alertes de renouvellement actives.

@@ -256,7 +256,7 @@ stateDiagram-v2
 - **`PrepareAnnualInvoiceDraft`** — patron proposition :
   1. gardes : contrat `active` ; ≥ 1 ligne ; `deriveAnnualBillingDue` vraie (refus actionnable sinon : « Période {start}→{end} déjà couverte par {number} » — avec le numéro réel, actionnable) ;
   2. délègue à **`ComposeStandaloneInvoice` ÉTENDU ADDITIVEMENT** (direction 4 — vérifié : le code actuel n'accepte ni période ni site ni contrat) : input optionnel `contractAttachment?: { maintenanceContractId, servicePeriod: {start, end}, chantierId? }` persisté AU BROUILLON. Comportement existant inchangé au bit près quand absent (snapshot tests). Client b2b/b2g garanti par le contrat — la garde B2C existante n'est jamais rencontrée NI contournée ;
-  3. brouillon : lignes du contrat (catégorie `'subscription'`), TVA repassée par `suggestVatRate` AU JOUR DU BROUILLON (**[Amélioration 2]** : changement de régime société — franchise 293 B ↔ réel, bascule CIBS — entre création du contrat et facturation → refus actionnable de `suggestVatRate` couvert par test, écart Σ contrat vs facture affiché honnêtement à l'écran) ;
+  3. brouillon : lignes du contrat (catégorie `'subscription'`), TVA repassée par `suggestVatRate` AU JOUR DU BROUILLON (**[Amélioration 2]** : changement de régime société — franchise 293 B ↔ réel *[amendé 28/07/2026 : « bascule CIBS » retiré — recodification à DROIT CONSTANT, elle ne change aucun taux ; report au 01/01/2027, ord. n° 2026-671 du 27/07/2026]* — entre création du contrat et facturation → refus actionnable de `suggestVatRate` couvert par test, écart Σ contrat vs facture affiché honnêtement à l'écran) ;
   4. BROUILLON en un tap — jamais émis, jamais envoyé seul. Le brouillon reste éditable ; sa période l'est aussi tant que `draft` (refigée par la garde d'émission).
 - **[Direction 1] Garde d'émission fail-closed DANS `IssueInvoice`** (remplace `RecordContractPeriodBilled`, supprimé) : étape additive dans la transaction existante, ordre global des verrous ÉTENDU — Company SHARE → Invoice UPDATE → Quote UPDATE (si devis parent) → **MaintenanceContract UPDATE (`lockById`)** → compteur. Si `invoice.maintenanceContractId ≠ null` :
   a. `servicePeriodStart/End` ABSENTS → refus actionnable « Facture de contrat sans période de service : renseigne la période avant d'émettre » (direction 4 — jamais une couverture indéfinissable) ;
@@ -501,8 +501,16 @@ flowchart TD
       PR21 --> PR22 --> PR24
       PR23[PR-23 Microsoft — DIFFÉRÉE : si un bêta utilise Outlook]
     end
-    PR20[PR-20 jalon CIBS avant 01/09/2026 — indépendant]
+    PR20[PR-20 jalon CIBS — indépendant, sans échéance calendaire]
 ```
+
+> *[amendé 28/07/2026]* Le nœud PR-20 portait « avant 01/09/2026 » : cette échéance est **fausse**.
+> Le transfert de la TVA dans le CIBS est reporté au **01/01/2027** (ord. n° 2026-671 du 27/07/2026,
+> JORF n° 0174 du 28/07/2026) et la tolérance des anciennes références au CGI court jusqu'au
+> **30/06/2028** ; la rédaction de la mention post-bascule relèvera d'un décret **non paru**, donc
+> rien n'est à planifier ni à présumer. Les deux échéances sont armées dans le code
+> (`veille-mentions-legales.ts` : test-sentinelle + signal au démarrage), pas dans un calendrier.
+> Sans effet sur ce plan P1 : PR-20 était déjà hors chemin critique. Vérifié le 28/07/2026.
 
 Chaque PR : Vitest par invariant + `tsc -p tsconfig.json` complet + cert release SQL staging pour toute migration + audit consommateurs pour tout changement sémantique. Cap V1 : accord Claude+GPT puis GO fondateur PAR PR ; 1 build EAS par train complet sur GO explicite.
 

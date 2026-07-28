@@ -2,6 +2,21 @@
 
 > **Base auditée** : monorepo Bob Pro, branche `main` (dceaf6e4), 26 juillet 2026. Méthode : lecture exclusive du code réel — schéma Prisma (`apps/api/prisma/schema.prisma`), domaine et use cases (`packages/core/src`), API NestJS (`apps/api/src`), écrans mobile (`apps/mobile/app`). Jamais les README ni les docs.
 
+> **AMENDEMENT LÉGAL — 28/07/2026 (revue juridique adversariale du train PR-20)** : cet audit a été
+> écrit le 26/07/2026 et daté comme tel ; il n'est pas réécrit. Une de ses affirmations est
+> néanmoins devenue **fausse** et les lignes concernées sont corrigées sur place avec la marque
+> *[amendé 28/07/2026]*. La « dette CIBS avant le 01/09/2026 » n'existe pas : le transfert de la TVA
+> dans le CIBS, fixé au 01/09/2026 par l'ordonnance n° 2025-1247 du 17/12/2025, est **reporté au
+> 01/01/2027** par l'ordonnance n° 2026-671 du 27/07/2026 (JORF n° 0174 du 28/07/2026), et la
+> tolérance des anciennes références au CGI passe du 31/12/2027 au **30/06/2028**. Surtout, l'audit
+> décrivait comme un acquis une « bascule CIBS au 01/09/2026 » présente dans `build-mentions.ts` :
+> c'était un **défaut**, pas une preuve — cette bascule imprimait au 1er septembre une rédaction
+> sans base légale, sur une date depuis reportée. Elle a été retirée ; la rédaction post-bascule
+> relèvera d'un décret **non paru** et n'est ni connue ni fabriquée. Les échéances de facturation
+> électronique (réception 01/09/2026, art. 289 bis CGI) ne sont **pas** touchées par ce report et
+> restent exactes dans ce document. Vérifié le 28/07/2026 (JORF + compte rendu du conseil des
+> ministres du 27/07/2026).
+
 ## Le client, en réel
 
 Fly Services (SASU 820 195 857) : maintenance de fontaines à eau et froid professionnel, B2B/B2G récurrent, deux techniciens (père en Île-de-France, fils à Rouen), ~22 factures / 18 devis sur 8 mois. Ce qui structure son quotidien :
@@ -34,7 +49,7 @@ Le socle facturation/conformité de Bob Pro est déjà au-dessus de Henrri pour 
 | 12 | Relances automatiques + MED L441-10 + 40 € | 🟡 | Moteur J+3/J+10/J+20/MED réel (cron 6 h, Brevo, MED jamais auto) ; cadence non paramétrable, facture ni jointe ni liée dans l'email | S | Faible |
 | 13 | Tableau de bord encaissement (DSO, MRR/ARR) | 🟡 | Facturé vs encaissé + DSO + balance âgée (derive-business-review.ts:78-123) ; ni % encaissé explicite ni MRR (aucun modèle contrat) | S (+ contrats) | Faible |
 | 14 | Envoi effectif des documents (« émise jamais envoyée ») | 🟡 | Outbox + Brevo + envoi devis réels (backend.service.ts:1384-1479) ; AUCUN kind d'envoi de FACTURE, badge unique « Émise » (invoice-badge.logic.ts:20-27) | M | Moyen |
-| 15 | Exports (PDF mentions, FEC, CSV comptable) | 🟡 | Mentions sourcées figées + FEC A47 A-1 en ISO 8859-15 (export-fec.ts:49-330) ; CSV factures/règlements inexistant ; dette CIBS avant le 01/09/2026 | S | Faible (jalon légal) |
+| 15 | Exports (PDF mentions, FEC, CSV comptable) | 🟡 | Mentions sourcées figées + FEC A47 A-1 en ISO 8859-15 (export-fec.ts:49-330) ; CSV factures/règlements inexistant ; *[amendé 28/07/2026]* pas de « dette CIBS avant le 01/09/2026 » — échéances réelles 01/01/2027 puis 30/06/2028, veille armée dans le code | S | Faible (veille armée) |
 | 16 | Multi-utilisateurs léger (père/fils) | ❌ | `registerCompany` = société déterministe `company-<userId>` (backend.service.ts:8535-8623), aucun rattachement possible ; pattern Cabinet complet transposable (schema:2199-2317) | L | Élevé |
 
 *Effort : S = 1 PR courte · M = quelques PR · L = chantier multi-PR avec conception préalable.*
@@ -291,17 +306,17 @@ Le socle facturation/conformité de Bob Pro est déjà au-dessus de Henrri pour 
 ## Exigence 15 — Exports (PDF mentions légales, FEC, CSV comptable) — 🟡
 
 **Preuves (code réel)**
-- Mentions légales réellement complètes et sourcées (forme/capital R123-238, « EI » R526-27, TVA intracom, SIREN client B2B/B2G réforme, médiateur conso, rabais L441-9, franchise 293 B avec bascule CIBS au 01/09/2026, autoliquidation BTP, taux réduits certifiés, escompte/pénalités BCE+10 & 40 €, régime B2G BCE+8, décennale L243-2 — build-mentions.ts:85-222), FIGÉES à l'émission (`Invoice.legalMentions`, trigger — issue-invoice.ts:564 ; schema:809), dessinées verbatim sur facture ET devis (pdf-renderer.ts:1150-1170).
+- Mentions légales réellement complètes et sourcées (forme/capital R123-238, « EI » R526-27, TVA intracom, SIREN client B2B/B2G réforme, médiateur conso, rabais L441-9, franchise 293 B — *[amendé 28/07/2026 : la « bascule CIBS au 01/09/2026 » qui figurait ici n'était pas un acquis mais un DÉFAUT — rédaction sans base légale sur une date depuis reportée ; elle a été retirée, la mention est désormais le verbatim de l'art. 293 E, II à toute date]* —, autoliquidation BTP, taux réduits certifiés, escompte/pénalités BCE+10 & 40 €, régime B2G BCE+8, décennale L243-2 — build-mentions.ts), FIGÉES à l'émission (`Invoice.legalMentions`, trigger — issue-invoice.ts:564 ; schema:809), dessinées verbatim sur facture ET devis (pdf-renderer.ts:1150-1170).
 - FEC conforme art. A47 A-1 LPF : 18 colonnes, nommage SIRENFECAAAAMMJJ.txt + descriptif, auxiliaires E7 (export-fec.ts:49-330), **encodage ISO 8859-15** (latin9.ts — un FEC UTF-8 peut être rejeté), endpoints + gating Pro+ honnête, partage natif vers le comptable (comptabilite.tsx:106-171 ; share-fec.ts).
 - Grand livre auto-alimenté (émission, encaissement, achats) + balance, compte de résultat, bilan, SIG, dossier de clôture texte partagé.
 
-**Ce qui manque précisément** : 1) CSV factures/règlements INEXISTANT (aucun toCsv/text/csv dans le repo) — l'expert-comptable qui ne veut pas du FEC n'a rien, alors que GET /payments et listInvoices servent déjà le JSON ; 2) deux dettes documentées dans build-mentions : l'article CIBS exact « à confirmer sur le décret définitif » (:141) et l'option « TVA sur les débits » (:206-208) ; 3) dossier de clôture en texte brut (pas un PDF).
+**Ce qui manque précisément** : 1) CSV factures/règlements INEXISTANT (aucun toCsv/text/csv dans le repo) — l'expert-comptable qui ne veut pas du FEC n'a rien, alors que GET /payments et listInvoices servent déjà le JSON ; 2) *[amendé 28/07/2026 — les deux dettes de `build-mentions` sont soldées]* l'article CIBS n'est plus « à confirmer sur le décret définitif » : le décret qui portera la rédaction n'est **pas paru**, la bascule automatique est retirée et l'échéance est armée par une veille testée (test-sentinelle + signal au démarrage) au lieu d'être présumée ; l'option pour les débits est traitée par sa mention littérale (art. 242 nonies A, I-11° bis de l'annexe II au CGI) derrière un point d'extension explicite, aucun champ du domaine ne la portant encore ; 3) dossier de clôture en texte brut (pas un PDF).
 
 **Brique proche à étendre** : use case pur `export-sales-csv.ts` calqué sur `export-fec.ts` (même gabarit deps/period) + pattern `share-text.ts` ; `build-mentions.ts` est LE point unique pour les dettes ; `pdf-renderer` sait déjà tout dessiner pour un dossier PDF.
 
 **Version minimale généralisable** : un export « Pour mon comptable » à deux fichiers génériques — `factures.csv` (numéro, date, client, HT/TVA/TTC/netToPay, statut, échéance) et `reglements.csv` (date, facture, montant, moyen) — période sélectionnable comme le FEC, partagé par la même feuille native. Le FEC reste l'export probant ; le CSV est le confort quotidien.
 
-**Effort S · Risque faible** techniquement (échapper séparateurs, BOM UTF-8 pour Excel FR, montants en euros virgule) — mais la dette CIBS est un **risque légal calendaire** : veille à planifier AVANT le 01/09/2026.
+**Effort S · Risque faible** techniquement (échapper séparateurs, BOM UTF-8 pour Excel FR, montants en euros virgule). *[amendé 28/07/2026]* Il n'y a plus de « veille à planifier avant le 01/09/2026 » : cette date est fausse (report au 01/01/2027, ord. n° 2026-671 du 27/07/2026) et une veille planifiée dans un document n'est pas une veille. Les deux échéances réelles — 01/01/2027 (entrée en vigueur) et 30/06/2028 (fin de tolérance des références CGI, seule date après laquelle la mention actuelle deviendrait non conforme) — sont **armées dans le code** : `packages/core/src/domain/services/veille-mentions-legales.ts` fait échouer la CI 90 j puis 180 j avant, avec le geste à faire et les sources.
 
 ---
 
