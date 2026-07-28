@@ -32,13 +32,23 @@ export interface NotificationJob {
    *  `invoice-transmission-reminder` : rappel INTERNE de dépôt portail/Chorus J+2 (PR-03) —
    *  un seul rappel par facture (clé stable), annulé à la livraison si le dépôt est déclaré.
    *  `quote-relance-reminder` : rappel INTERNE de relance devis J+15/J+30 (PR-05) — dédupliqué
-   *  PAR PALIER, annulé à la livraison si le devis a quitté sent/viewed (extinction réelle). */
+   *  PAR PALIER, annulé à la livraison si le devis a quitté sent/viewed (extinction réelle).
+   *  `contract-renewal-reminder` : alerte INTERNE de renouvellement de contrat J-60/J-30
+   *  (PR-13) — dédupliquée par (anniversaire calculé, palier) : la fenêtre revit chaque
+   *  année ; annulée à la livraison si le contrat est résilié (extinction réelle). JAMAIS un
+   *  envoi client.
+   *  `contract-annual-invoice-reminder` : rappel INTERNE « facture annuelle à émettre »
+   *  (PR-13) — dédupliqué par (contrat, début de période) ; annulé à la livraison si la
+   *  période n'est plus due (facture émise entre-temps, contrat résilié). JAMAIS un envoi
+   *  client. */
   kind:
     | 'quote-signature'
     | 'quote-relance-reminder'
     | 'invoice-relance'
     | 'invoice-delivery'
     | 'invoice-transmission-reminder'
+    | 'contract-renewal-reminder'
+    | 'contract-annual-invoice-reminder'
     | 'weekly-digest'
     | 'retractation-acknowledgment'
     | 'embargo-scheduled-payment';

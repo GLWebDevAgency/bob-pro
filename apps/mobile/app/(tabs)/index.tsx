@@ -145,7 +145,25 @@ interface ContractInvoicePriority {
   /** Facture ANNULÉE qui couvrait — copy honnête « F-… annulée : à re-facturer ». */
   readonly cancelledCoveringNumber: string | null;
 }
-type DisplayPriority = TodayPriority | DraftQuotePriority | ContractInvoicePriority;
+/**
+ * PR-13 — renouvellement J-60/J-30 (rappel INTERNE, jamais un envoi client) : carte dérivée
+ * du fait serveur `renewalAlert` (deriveRenewalAlerts — UN palier, le plus récent). Éteinte
+ * si résilié (le fait devient null tout seul). Tacite : « se reconduit » ; non-tacite :
+ * « arrive à échéance ».
+ */
+interface ContractRenewalPriority {
+  readonly kind: 'contrat_renouvellement';
+  readonly id: string;
+  readonly contractId: string;
+  readonly label: string;
+  readonly daysUntil: number;
+  readonly tacit: boolean;
+}
+type DisplayPriority =
+  | TodayPriority
+  | DraftQuotePriority
+  | ContractInvoicePriority
+  | ContractRenewalPriority;
 
 /** Sobriété (fondateur 2026-07-17) : jamais pendant que la personne travaille dessus — un
  * brouillon tout juste enregistré ne remonte qu'après ~1 h, ou dès la réouverture de l'app. */
@@ -650,6 +668,34 @@ function TodayPriorityCard({
         />
       );
     }
+    case 'contrat_renouvellement':
+      // PR-13 — rappel (warning) SANS checkbox : le renouvellement est un fait calendaire
+      // dérivé, pas une tâche cochable ; extinction par l'état réel (résilié → disparaît).
+      return (
+        <PriorityCard
+          status="brouillon"
+          title={t(
+            priority.tacit ? 'today.prioRenewalTacitTitle' : 'today.prioRenewalNonTacitTitle',
+            { personality, params: { days: String(priority.daysUntil), label: priority.label } },
+          )}
+          subtitle={t('contrat.noticeLegal', { personality })}
+          badge={
+            <StatusBadge
+              label={t('today.prioRenewalBadge', { personality }).toUpperCase()}
+              variant="warning"
+            />
+          }
+          cta={
+            <Button
+              title={t('today.ctaSeeContract', { personality })}
+              variant="secondary"
+              size="compact"
+              radius={11}
+              onPress={() => router.push(`/contrat/${priority.contractId}`)}
+            />
+          }
+        />
+      );
     case 'devis_brouillon': {
       // Rappel local (jamais côté serveur) : jamais de checkbox — puce warning, CTA Continuer +
       // corbeille. Suppression TOUJOURS derrière une ConfirmSheet, même depuis cette carte
@@ -812,11 +858,24 @@ export default function Aujourdhui() {
         cancelledCoveringNumber: due.cancelledCoveringNumber,
       };
     });
+  // PR-13 — renouvellement J-60/J-30 (interne) : dérivé du fait serveur `renewalAlert` —
+  // UN palier (le plus récent), éteint si résilié. Rappel calendaire, après l'actionnable.
+  const renewalPriorities: ContractRenewalPriority[] = (contracts.data ?? [])
+    .filter((view) => view.contract.status === 'active' && view.renewalAlert !== null)
+    .map((view) => ({
+      kind: 'contrat_renouvellement' as const,
+      id: `contrat-renouvellement-${view.contract.id}`,
+      contractId: view.contract.id,
+      label: view.contract.label,
+      daysUntil: view.renewalAlert!.daysUntil,
+      tacit: view.renewalAlert!.tacit,
+    }));
   // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
   // urgence (relance en retard, facture finale à émettre).
   const allPriorities: DisplayPriority[] = [
     ...today.priorities,
     ...contractPriorities,
+    ...renewalPriorities,
     ...(draftPriority ? [draftPriority] : []),
   ];
 

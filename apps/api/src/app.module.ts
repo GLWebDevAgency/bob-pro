@@ -20,6 +20,7 @@ import { createApiThrottlerOptions } from './notifications/push-revocation-throt
 import { RelanceService } from './jobs/relance.service';
 import { TransmissionReminderService } from './jobs/transmission-reminder.service';
 import { QuoteFollowupService } from './jobs/quote-followup.service';
+import { ContractRenewalService } from './jobs/contract-renewal.service';
 import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -135,6 +136,7 @@ import {
     RelanceService,
     TransmissionReminderService,
     QuoteFollowupService,
+    ContractRenewalService,
     DigestService,
     DocumentArchiveService,
     NotificationDeliveryService,

@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { SystemClock, type Notification, type NotificationPort } from '@bob/core';
+import {
+  SystemClock,
+  deriveAnnualBillingDue,
+  deriveRenewalAlerts,
+  parisDateOnly,
+  type Notification,
+  type NotificationPort,
+} from '@bob/core';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 import {
@@ -10,6 +17,8 @@ import {
   type NotificationJob,
 } from '../persistence/notification-jobs';
 import {
+  contractAnnualInvoiceReminderDedupeKeyParts,
+  contractRenewalReminderDedupeKeyParts,
   invoiceIdOfTransmissionReminderDedupeKey,
   quoteIdOfQuoteRelanceReminderDedupeKey,
 } from './reminder-dedupe-keys';
@@ -293,6 +302,62 @@ export class NotificationDeliveryService {
         const invoice = await this.p.invoices.findById(invoiceId);
         if (!invoice || invoice.companyId !== companyId) return 'invoice-missing';
         if (invoice.transmission?.depositedAt != null) return 'transmission-deposited';
+        return null;
+      });
+    }
+    // PR-13 — alerte de renouvellement : EXTINCTION si le contrat a été résilié entre
+    // l'enqueue et la livraison, ou si l'alerte dérivée ne correspond plus au palier de la
+    // clé (amélioration 14 : après une panne, seul le palier LE PLUS RÉCENT pertinent part).
+    if (job.kind === 'contract-renewal-reminder') {
+      const parts = contractRenewalReminderDedupeKeyParts(job.dedupeKey);
+      if (parts === null) return 'dedupe-key-unrecognized';
+      return this.p.runWithTenant(companyId, async () => {
+        const contract = await this.p.maintenanceContracts.findById(companyId, parts.contractId);
+        if (!contract || contract.companyId !== companyId) return 'contract-missing';
+        if (contract.status !== 'active') return 'contract-no-longer-active';
+        const props = contract.toProps();
+        const alert = deriveRenewalAlerts(
+          {
+            status: props.status,
+            anniversaryDate: props.anniversaryDate,
+            tacitRenewal: props.tacitRenewal,
+            importCoveredUntil: props.importCoveredUntil,
+            terminationEffectiveDate: props.terminationEffectiveDate,
+          },
+          parisDateOnly(this.clock.now()),
+        );
+        if (alert === null || alert.anniversary !== parts.anniversary || alert.palier !== parts.palier)
+          return 'renewal-alert-no-longer-current';
+        return null;
+      });
+    }
+    // PR-13 — rappel « facture annuelle à émettre » : EXTINCTION si la période n'est plus
+    // due (facture émise entre-temps, importCoveredUntil, contrat résilié) — dérivation
+    // IDENTIQUE à l'écran et à la voix, lecture des factures du SEUL contrat concerné.
+    if (job.kind === 'contract-annual-invoice-reminder') {
+      const parts = contractAnnualInvoiceReminderDedupeKeyParts(job.dedupeKey);
+      if (parts === null) return 'dedupe-key-unrecognized';
+      return this.p.runWithTenant(companyId, async () => {
+        const contract = await this.p.maintenanceContracts.findById(companyId, parts.contractId);
+        if (!contract || contract.companyId !== companyId) return 'contract-missing';
+        const props = contract.toProps();
+        const projections = await this.p.contractInvoices.listByMaintenanceContract(
+          companyId,
+          parts.contractId,
+        );
+        const due = deriveAnnualBillingDue(
+          {
+            status: props.status,
+            anniversaryDate: props.anniversaryDate,
+            tacitRenewal: props.tacitRenewal,
+            importCoveredUntil: props.importCoveredUntil,
+            terminationEffectiveDate: props.terminationEffectiveDate,
+          },
+          projections,
+          parisDateOnly(this.clock.now()),
+        );
+        if (due === null || due.period.start !== parts.periodStart)
+          return 'annual-invoice-no-longer-due';
         return null;
       });
     }
