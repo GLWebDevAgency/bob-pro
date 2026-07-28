@@ -135,6 +135,16 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     // Cleanup transactionnel SANS .catch : toute dépendance oubliée fait échouer le gate au lieu
     // de fuir des sociétés dans la base commune (leçon 28/07).
     if (admin) {
+      // Le verrou §3.4 protège les traces des fiches SIGNÉES contre tout retrait — y compris
+      // celui du nettoyage. La certification lève donc explicitement la signature de SES
+      // fixtures (retour à `completed`, preuve retirée : cohérence triple respectée) avant de
+      // supprimer. Aucun contournement du trigger, aucun `.catch` avaleur.
+      await admin.$executeRaw`
+        UPDATE "interventions"
+           SET "status" = 'completed', "signatureProof" = NULL
+         WHERE "companyId" IN (${companyA}, ${companyB})
+           AND "status" = 'signed'
+      `;
       await admin.$transaction([
         admin.chantierNote.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
         admin.chantierPhoto.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }),
@@ -448,26 +458,38 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
         capturedAt: '2026-08-04T10:00:00.000Z',
       });
       await repoA.save(loaded!);
+    });
 
-      // Dé-taggage : la trace SORTIRAIT de la preuve signée sans jamais être supprimée.
-      await expect(
-        workerA.client().$executeRaw`
+    // Un SQL brut refusé AVORTE sa transaction PostgreSQL (25P02) : chaque refus est donc
+    // prouvé dans SA propre transaction, sinon le second échouerait pour la mauvaise raison.
+    // Dé-taggage : la trace SORTIRAIT de la preuve signée sans jamais être supprimée.
+    await expect(
+      workerA.withTenant(
+        companyA,
+        () => workerA.client().$executeRaw`
           UPDATE "chantier_photos" SET "interventionId" = NULL, "phase" = NULL
            WHERE "id" = ${photoId} AND "companyId" = ${companyA}
         `,
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
-      await expect(
-        workerA.client().$executeRaw`
+      ),
+    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+    await expect(
+      workerA.withTenant(
+        companyA,
+        () => workerA.client().$executeRaw`
           UPDATE "chantier_notes" SET "interventionId" = NULL
            WHERE "id" = ${noteId} AND "companyId" = ${companyA}
         `,
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
-      // Retrait d'une NOTE de fiche signée : refusé comme celui d'une photo.
-      await expect(
+      ),
+    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+    // Retrait d'une NOTE de fiche signée : refusé comme celui d'une photo.
+    await expect(
+      workerA.withTenant(companyA, () =>
         workerA.client().chantierNote.deleteMany({ where: { id: noteId, companyId: companyA } }),
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+      ),
+    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
 
-      // Les traces sont TOUJOURS là, toujours rattachées à la fiche signée.
+    // Les traces sont TOUJOURS là, toujours rattachées à la fiche signée.
+    await workerA.withTenant(companyA, async () => {
       const photo = await workerA.client().chantierPhoto.findFirst({ where: { id: photoId } });
       const note = await workerA.client().chantierNote.findFirst({ where: { id: noteId } });
       expect(photo?.interventionId).toBe(id);
