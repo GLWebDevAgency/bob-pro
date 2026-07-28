@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildArchiveAuditSafeEnvelope,
   buildExternalValidatorEnvironment,
   buildProtocolV2VerifiedReport,
   buildValidatorSandboxArguments,
+  buildValidatorSandboxSmokeInvocation,
   finalizeArchiveAuditRun,
   parseArchiveAuditRuntimeConfig,
   SupabaseArchiveAuditStorage,
+  ValidatorSandboxReadinessGate,
 } from './document-archive-audit.main';
 
 describe('finalizeArchiveAuditRun', () => {
@@ -204,6 +206,12 @@ describe('parseArchiveAuditRuntimeConfig', () => {
         DOCUMENT_ARCHIVE_AUDIT_MAX_OBJECT_BYTES: String(513 * 1024 * 1024),
       }),
     ).toThrow(/536870912/u);
+    expect(() =>
+      parseArchiveAuditRuntimeConfig({
+        ...validEnvironment(),
+        DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX: '/usr/bin/env',
+      }),
+    ).toThrow(/exactement \/usr\/bin\/bwrap/u);
   });
 
   it('ne transmet la service-role qu’au projet Supabase explicitement épinglé', () => {
@@ -249,6 +257,87 @@ describe('buildValidatorSandboxArguments', () => {
         additionalEnvironment: { DATABASE_URL: 'secret' },
       }),
     ).toThrow(/Variable non autorisée/u);
+  });
+});
+
+describe('validator sandbox readiness', () => {
+  it('construit un smoke isolé sans transmettre les secrets Bob', () => {
+    const invocation = buildValidatorSandboxSmokeInvocation({
+      repositoryRoot: '/repo',
+      workDirectory: '/tmp/audit-123',
+      validatorSandboxPath: '/usr/bin/bwrap',
+      parentEnvironment: {
+        PATH: '/trusted/bin',
+        DATABASE_URL: 'postgresql://runtime-secret',
+        DIRECT_URL: 'postgresql://authority-secret',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret',
+      },
+    });
+
+    expect(invocation.executable).toBe('/usr/bin/bwrap');
+    expect(invocation.arguments).toContain('--unshare-net');
+    expect(invocation.arguments).toContain('--unshare-pid');
+    expect(invocation.arguments).toContain('--clearenv');
+    expect(invocation.arguments).toContain('--ro-bind');
+    expect(invocation.arguments).toContain('/tmp/audit-123');
+    expect(invocation.environment).toEqual({
+      PATH: '/trusted/bin',
+      HOME: '/tmp/audit-123',
+      TMPDIR: '/tmp/audit-123',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      CI: 'true',
+      BOB_ARCHIVE_SANDBOX_SMOKE_SECRET: 'must-not-cross',
+    });
+    const smokeScript = invocation.arguments.at(-1);
+    expect(smokeScript).toContain('inner-workdir-writable');
+    expect(smokeScript).toContain('bob-archive-sandbox-rootfs-probe');
+    expect(smokeScript).toContain('BOB_ARCHIVE_SANDBOX_SMOKE_SECRET');
+  });
+
+  it('refuse tout exécutable alternatif à Bubblewrap', () => {
+    expect(() =>
+      buildValidatorSandboxSmokeInvocation({
+        repositoryRoot: '/repo',
+        workDirectory: '/tmp/audit-123',
+        validatorSandboxPath: '/usr/bin/env',
+      }),
+    ).toThrow(/exactement \/usr\/bin\/bwrap/u);
+  });
+
+  it('mutualise uniquement un smoke réussi, y compris entre appels concurrents', async () => {
+    const gate = new ValidatorSandboxReadinessGate();
+    let release: (() => void) | undefined;
+    const verify = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    const first = gate.ensure(verify);
+    const second = gate.ensure(verify);
+    await Promise.resolve();
+    expect(verify).toHaveBeenCalledOnce();
+    release?.();
+    await Promise.all([first, second]);
+    await gate.ensure(verify);
+
+    expect(verify).toHaveBeenCalledOnce();
+  });
+
+  it('ne met jamais un échec en cache comme un succès', async () => {
+    const gate = new ValidatorSandboxReadinessGate();
+    const verify = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('sandbox unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(gate.ensure(verify)).rejects.toThrow(/sandbox unavailable/u);
+    await expect(gate.ensure(verify)).resolves.toBeUndefined();
+    await expect(gate.ensure(verify)).resolves.toBeUndefined();
+
+    expect(verify).toHaveBeenCalledTimes(2);
   });
 });
 

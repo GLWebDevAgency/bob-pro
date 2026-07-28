@@ -20,6 +20,10 @@ const AMBIGUOUS_RECONCILIATION_INTERVAL_MILLISECONDS = 10_000;
 const MIN_AMBIGUOUS_RECONCILIATION_SNAPSHOTS = 7;
 const MAX_AMBIGUOUS_RECONCILIATION_SNAPSHOTS = 8;
 const REQUIRED_QUIESCENT_RECONCILIATION_SNAPSHOTS = 2;
+const TERMINAL_SUCCESS_EVIDENCE_GRACE_MILLISECONDS = 60_000;
+const TERMINAL_SUCCESS_CONFIRMATION_GRACE_MILLISECONDS = 60_000;
+const TERMINAL_SUCCESS_CONFIRMATION_POLL_MILLISECONDS = 10_000;
+const FAILURE_CLEANUP_GRACE_MILLISECONDS = 30_000;
 const EXPECTED_RAILWAY_CONFIG_FILE = '/railway.archive-audit.json';
 const EXPECTED_START_COMMAND = '/usr/local/bin/bob-archive-audit-entrypoint';
 const EXPECTED_DOCKERFILE_PATH = 'Dockerfile.archive-audit';
@@ -319,6 +323,21 @@ export class ArchiveAuditCancellationError extends Error {
   }
 }
 
+export class ArchiveAuditTerminalEvidenceError extends Error {
+  constructor(kind) {
+    const missing = kind === 'missing';
+    super(
+      missing
+        ? 'Archive audit deployment ended as SUCCESS without valid evidence within 60 seconds.'
+        : 'Archive audit evidence did not remain identical across two bounded observations.',
+    );
+    this.name = 'ArchiveAuditTerminalEvidenceError';
+    this.code = missing
+      ? 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_MISSING'
+      : 'ARCHIVE_AUDIT_TERMINAL_EVIDENCE_UNSTABLE';
+  }
+}
+
 function cancellationReason(signal) {
   if (signal?.reason instanceof ArchiveAuditCancellationError) return signal.reason;
   return new ArchiveAuditCancellationError('SIGTERM');
@@ -368,6 +387,23 @@ class RetryableGraphqlError extends Error {
     super(message);
     this.retryAfterMilliseconds = retryAfterMilliseconds;
   }
+}
+
+class GraphqlDeadlineExceededError extends Error {
+  constructor() {
+    super('Railway GraphQL exceeded its absolute request deadline.');
+    this.name = 'GraphqlDeadlineExceededError';
+  }
+}
+
+function remainingDeadlineMilliseconds(now, deadline) {
+  const observedAt = now();
+  if (!Number.isFinite(observedAt)) {
+    throw new Error('The monotonic clock returned an invalid value.');
+  }
+  const remaining = deadline - observedAt;
+  if (remaining <= 0) throw new GraphqlDeadlineExceededError();
+  return Math.max(1, Math.ceil(remaining));
 }
 
 function retryAfterMilliseconds(response) {
@@ -442,11 +478,21 @@ async function graphql(
   token,
   query,
   variables,
-  { attempts, cancellationSignal, fetchImpl, requestTimeoutSignal, sleep },
+  {
+    attempts,
+    cancellationSignal,
+    deadline = null,
+    fetchImpl,
+    now = () => performance.now(),
+    requestTimeoutSignal,
+    sleep,
+  },
 ) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       throwIfCancelled(cancellationSignal);
+      const requestTimeoutMilliseconds =
+        deadline === null ? 30_000 : Math.min(30_000, remainingDeadlineMilliseconds(now, deadline));
       const response = await fetchImpl(API_URL, {
         method: 'POST',
         headers: {
@@ -455,9 +501,13 @@ async function graphql(
         },
         body: JSON.stringify({ query, variables }),
         redirect: 'error',
-        signal: combinedRequestSignal(requestTimeoutSignal(30_000), cancellationSignal),
+        signal: combinedRequestSignal(
+          requestTimeoutSignal(requestTimeoutMilliseconds),
+          cancellationSignal,
+        ),
       });
       throwIfCancelled(cancellationSignal);
+      if (deadline !== null) remainingDeadlineMilliseconds(now, deadline);
       if (!response || typeof response.status !== 'number' || typeof response.text !== 'function') {
         throw new Error('Railway GraphQL returned an invalid HTTP response.');
       }
@@ -490,9 +540,14 @@ async function graphql(
       if (object(payload.data) === null) {
         throw new Error('Railway GraphQL returned an invalid envelope.');
       }
+      if (deadline !== null) remainingDeadlineMilliseconds(now, deadline);
       return payload.data;
     } catch (error) {
       throwIfCancelled(cancellationSignal);
+      if (error instanceof GraphqlDeadlineExceededError) throw error;
+      if (deadline !== null) {
+        remainingDeadlineMilliseconds(now, deadline);
+      }
       const retryable =
         error instanceof RetryableGraphqlError ||
         error?.name === 'AbortError' ||
@@ -508,11 +563,16 @@ async function graphql(
         throw error;
       }
       const backoffMilliseconds = Math.min(1_000 * 2 ** (attempt - 1), 5_000);
-      await sleepUntilOrCancellation(
-        sleep,
-        Math.max(backoffMilliseconds, error.retryAfterMilliseconds ?? 0),
-        cancellationSignal,
+      const requestedBackoffMilliseconds = Math.max(
+        backoffMilliseconds,
+        error.retryAfterMilliseconds ?? 0,
       );
+      const boundedBackoffMilliseconds =
+        deadline === null
+          ? requestedBackoffMilliseconds
+          : Math.min(requestedBackoffMilliseconds, remainingDeadlineMilliseconds(now, deadline));
+      await sleepUntilOrCancellation(sleep, boundedBackoffMilliseconds, cancellationSignal);
+      if (deadline !== null) remainingDeadlineMilliseconds(now, deadline);
     }
   }
   throw new Error('Railway GraphQL request exhausted its bounded attempts.');
@@ -579,8 +639,10 @@ function certifyArchiveAuditServiceInstance(value, autoDeployValue, config) {
   // dockerfilePath, attestée juste en dessous.
   if (
     serviceInstance.builder !== 'DOCKERFILE' &&
-    !(serviceInstance.builder === 'RAILPACK' &&
-      serviceInstance.dockerfilePath === EXPECTED_DOCKERFILE_PATH)
+    !(
+      serviceInstance.builder === 'RAILPACK' &&
+      serviceInstance.dockerfilePath === EXPECTED_DOCKERFILE_PATH
+    )
   ) {
     violations.push(`builder=${String(serviceInstance.builder)}`);
   }
@@ -766,7 +828,12 @@ async function readDeploymentSnapshot(config, projectId, graphqlDependencies) {
   throw new Error('Railway deployment snapshot exceeded its bounded pagination limit.');
 }
 
-async function readDeploymentEvidence(config, deploymentId, graphqlDependencies) {
+async function readDeploymentEvidence(
+  config,
+  deploymentId,
+  graphqlDependencies,
+  { attempts = 3, deadline = null } = {},
+) {
   const logsData = await graphql(
     config.token,
     `
@@ -783,7 +850,7 @@ async function readDeploymentEvidence(config, deploymentId, graphqlDependencies)
       limit: 2_000,
       filter: EVIDENCE_PREFIX,
     },
-    { ...graphqlDependencies, attempts: 3 },
+    { ...graphqlDependencies, attempts, deadline },
   );
   return extractArchiveAuditEvidence(logsData?.deploymentLogs, deploymentId, config.releaseSha);
 }
@@ -1113,6 +1180,7 @@ export async function runRailwayDocumentArchiveAudit({
   const graphqlDependencies = {
     cancellationSignal,
     fetchImpl,
+    now,
     requestTimeoutSignal,
     sleep,
   };
@@ -1216,25 +1284,53 @@ export async function runRailwayDocumentArchiveAudit({
     }
     const deadline = startedAt + config.timeoutSeconds * 1_000;
     const pollMilliseconds = config.pollSeconds * 1_000;
-    const maxPolls = Math.ceil((config.timeoutSeconds * 1_000) / pollMilliseconds) + 2;
+    const maxPolls =
+      Math.ceil(
+        (config.timeoutSeconds * 1_000) /
+          Math.min(pollMilliseconds, TERMINAL_SUCCESS_CONFIRMATION_POLL_MILLISECONDS),
+      ) + 2;
     let evidence = null;
     let evidenceAccepted = false;
     let successfulMarkerObservations = 0;
+    let terminalSuccessDeadline = null;
+    let terminalConfirmationDeadline = null;
+    let firstReadyEvidenceCanonical = null;
+
+    const terminalEvidenceError = () =>
+      new ArchiveAuditTerminalEvidenceError(
+        firstReadyEvidenceCanonical === null ? 'missing' : 'unstable',
+      );
 
     for (let poll = 0; poll < maxPolls && now() < deadline; poll += 1) {
-      const deploymentData = await graphql(
-        config.token,
-        `
-          query ArchiveAuditDeployment($id: String!) {
-            deployment(id: $id) {
-              id
-              status
+      const activeTerminalDeadline = terminalConfirmationDeadline ?? terminalSuccessDeadline;
+      let deploymentData;
+      try {
+        deploymentData = await graphql(
+          config.token,
+          `
+            query ArchiveAuditDeployment($id: String!) {
+              deployment(id: $id) {
+                id
+                status
+              }
             }
-          }
-        `,
-        { id: deploymentId },
-        { ...graphqlDependencies, attempts: 3 },
-      );
+          `,
+          { id: deploymentId },
+          {
+            ...graphqlDependencies,
+            attempts: 3,
+            deadline: activeTerminalDeadline ?? deadline,
+          },
+        );
+      } catch (error) {
+        if (error instanceof GraphqlDeadlineExceededError) {
+          if (activeTerminalDeadline !== null) throw terminalEvidenceError();
+          throw new Error(
+            'Archive audit deployment exceeded its bounded timeout without valid evidence.',
+          );
+        }
+        throw error;
+      }
       const deployment = object(deploymentData?.deployment);
       if (deployment === null || deployment.id !== deploymentId) {
         throw new Error('Railway returned another deployment or an invalid deployment envelope.');
@@ -1243,14 +1339,21 @@ export async function runRailwayDocumentArchiveAudit({
       if (typeof status !== 'string') {
         throw new Error('Railway returned a deployment without a status.');
       }
+      const statusObservedAt = now();
+      if (!Number.isFinite(statusObservedAt)) {
+        throw new Error('The monotonic clock returned an invalid value.');
+      }
       if (TERMINAL_FAILURES.has(status)) {
-        if (status === 'FAILED' || status === 'CRASHED') {
+        if ((status === 'FAILED' || status === 'CRASHED') && firstReadyEvidenceCanonical === null) {
           let refusalEvidence;
           try {
             refusalEvidence = await readDeploymentEvidence(
               config,
               deploymentId,
               graphqlDependencies,
+              {
+                deadline: terminalSuccessDeadline ?? deadline,
+              },
             );
           } catch (logError) {
             throw new Error(
@@ -1276,10 +1379,25 @@ export async function runRailwayDocumentArchiveAudit({
             throw new ArchiveAuditBusinessRefusalError(deploymentId, refusalEvidence.issueCodes);
           }
         }
+        if (terminalSuccessDeadline !== null) {
+          throw new Error(`Railway archive audit ended as ${status} after SUCCESS.`);
+        }
         throw new Error(`Archive audit deployment ended as ${status} without a valid refusal.`);
       }
       if (TERMINAL_SUCCESSES.has(status)) {
-        const observed = await readDeploymentEvidence(config, deploymentId, graphqlDependencies);
+        terminalSuccessDeadline ??= Math.min(
+          deadline,
+          statusObservedAt + TERMINAL_SUCCESS_EVIDENCE_GRACE_MILLISECONDS,
+        );
+        let observed;
+        try {
+          observed = await readDeploymentEvidence(config, deploymentId, graphqlDependencies, {
+            deadline: terminalConfirmationDeadline ?? terminalSuccessDeadline,
+          });
+        } catch (error) {
+          if (error instanceof GraphqlDeadlineExceededError) throw terminalEvidenceError();
+          throw error;
+        }
         if (observed !== null) {
           if (observed.readyForActivation === false) {
             await persistEvidenceUnlessCancelled(config.outputPath, observed, cancellationSignal);
@@ -1294,19 +1412,47 @@ export async function runRailwayDocumentArchiveAudit({
             );
             throw new ArchiveAuditBusinessRefusalError(deploymentId, observed.issueCodes);
           }
-          evidence = observed;
-          successfulMarkerObservations += 1;
+          const observedCanonical = JSON.stringify(observed);
+          if (firstReadyEvidenceCanonical === null) {
+            const firstMarkerObservedAt = now();
+            if (!Number.isFinite(firstMarkerObservedAt)) {
+              throw new Error('The monotonic clock returned an invalid value.');
+            }
+            firstReadyEvidenceCanonical = observedCanonical;
+            evidence = observed;
+            successfulMarkerObservations = 1;
+            terminalConfirmationDeadline = Math.min(
+              deadline,
+              firstMarkerObservedAt + TERMINAL_SUCCESS_CONFIRMATION_GRACE_MILLISECONDS,
+            );
+          } else {
+            if (observedCanonical !== firstReadyEvidenceCanonical) {
+              throw new ArchiveAuditTerminalEvidenceError('unstable');
+            }
+            evidence = observed;
+            successfulMarkerObservations += 1;
+          }
           // Railway exposes SUCCESS while the process can still be draining. Observe the marker
-          // twice to catch an immediate post-marker crash before accepting the one-shot result.
+          // twice and require the exact same envelope before accepting the one-shot result.
           if (successfulMarkerObservations >= 2) {
             evidenceAccepted = true;
             break;
           }
         } else {
+          if (firstReadyEvidenceCanonical !== null) {
+            throw new ArchiveAuditTerminalEvidenceError('unstable');
+          }
           evidence = null;
           successfulMarkerObservations = 0;
         }
+        const terminalPhaseDeadline = terminalConfirmationDeadline ?? terminalSuccessDeadline;
+        if (now() >= terminalPhaseDeadline) {
+          throw terminalEvidenceError();
+        }
       } else if (TRANSIENT_STATUSES.has(status)) {
+        if (terminalSuccessDeadline !== null) {
+          throw new Error('Railway archive audit status regressed after SUCCESS.');
+        }
         evidence = null;
         successfulMarkerObservations = 0;
       } else {
@@ -1316,14 +1462,19 @@ export async function runRailwayDocumentArchiveAudit({
         !(await waitForNextPoll(
           (milliseconds) => sleepUntilOrCancellation(sleep, milliseconds, cancellationSignal),
           now,
-          deadline,
-          pollMilliseconds,
+          terminalConfirmationDeadline ?? terminalSuccessDeadline ?? deadline,
+          terminalSuccessDeadline === null
+            ? pollMilliseconds
+            : TERMINAL_SUCCESS_CONFIRMATION_POLL_MILLISECONDS,
         ))
       )
         break;
     }
 
     if (!evidenceAccepted || evidence === null || !TERMINAL_SUCCESSES.has(status)) {
+      if (terminalSuccessDeadline !== null) {
+        throw terminalEvidenceError();
+      }
       throw new Error(
         'Archive audit deployment exceeded its bounded timeout without valid evidence.',
       );
@@ -1335,9 +1486,14 @@ export async function runRailwayDocumentArchiveAudit({
     return evidence;
   } catch (error) {
     if (deploymentId !== null) {
+      const cleanupStartedAt = now();
+      const cleanupDeadline = Number.isFinite(cleanupStartedAt)
+        ? cleanupStartedAt + FAILURE_CLEANUP_GRACE_MILLISECONDS
+        : 0;
       await cleanupDeploymentBestEffort(config, deploymentId, status, {
         ...graphqlDependencies,
         cancellationSignal: undefined,
+        deadline: cleanupDeadline,
       });
     }
     throw error;

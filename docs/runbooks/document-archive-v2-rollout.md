@@ -180,9 +180,10 @@ service Railway dédié utilise `Dockerfile.archive-audit` et `railway.archive-a
   silencieux du dashboard ; le runner relit tous ces réglages par GraphQL et refuse toute dérive
   **avant** de créer un déploiement ;
 - image exacte du SHA à publier, Java/Mustang/FNFE/bubblewrap intégrés au build ;
-- runtime UID/GID dédié non-root ; l’entrypoint exécute un vrai smoke bubblewrap avant tout accès
-  aux données et vérifie réseau isolé, environnement vidé, racine en lecture seule et workdir seul
-  inscriptible ;
+- runtime UID/GID dédié non-root ; l’entrypoint vérifie son identité, la racine non inscriptible et
+  son workdir avant tout accès aux données. Le smoke Bubblewrap est **lazy** : il s’exécute juste
+  avant la première paire Factur-X professionnelle, jamais pour un inventaire vide/B2C qui ne lance
+  aucun exécutable tiers ;
 - uniquement `DIRECT_URL`, `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
   `SUPABASE_STORAGE_BUCKET` et `DOCUMENT_ARCHIVE_SUPABASE_PROJECT_REF` ; aucun secret Stripe,
   OpenAI, Mistral ou mobile. L’origine HTTPS Supabase doit correspondre exactement au project ref
@@ -190,9 +191,15 @@ service Railway dédié utilise `Dockerfile.archive-audit` et `railway.archive-a
 
 Mustang 2.24.0 et le corpus FNFE-MPE 1.4.0.02 sont téléchargés **pendant le build sans secrets**,
 vérifiés par SHA-256 puis intégrés en lecture seule. Pendant le scan, chaque validateur reçoit un
-environnement sans secrets et tourne dans bubblewrap avec espace PID isolé et réseau coupé. Le
-corpus FNFE est vérifié à chaque usage, mais jamais téléchargé pendant le traitement d’un document.
-La sentinelle négative BR-FR est exercée une fois par job, pas une fois par facture.
+environnement sans secrets et tourne dans Bubblewrap avec espace PID isolé et réseau coupé. Le
+smoke vérifie cette isolation une fois avant le premier usage et n’est mémorisé qu’après succès.
+Railway refusant actuellement les namespaces non privilégiés, la première paire professionnelle y
+produit un refus P0 sans attestation ni fallback ; un inventaire vide/B2C peut être certifié parce
+qu’il n’exécute aucun validateur externe. Le support professionnel Railway reste fermé jusqu’à la
+certification du launcher Landlock + seccomp décrit dans
+`SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md`. Le corpus FNFE est vérifié à chaque usage, mais
+jamais téléchargé pendant le traitement d’un document. La sentinelle négative BR-FR est exercée une
+fois par job, pas une fois par facture.
 
 Le workflow déclenche ce service par `serviceInstanceDeployV2(serviceId, environmentId, commitSha)`.
 Le project token est borné à l’environnement ; la mutation n’est jamais rejouée si sa réponse est
@@ -207,8 +214,16 @@ Une cible encore active, disparue de la liste ou non convergée fait échouer le
 arrêtée par Railway. Le gate attend le déploiement exact et un unique marqueur final corrélé à
 `RAILWAY_DEPLOYMENT_ID` et au SHA. Un statut Railway seul ne constitue jamais une preuve.
 Le polling est espacé d’au moins dix secondes, respecte `Retry-After` dans une borne de soixante
-secondes et ne double pas les mutations. Toute sortie non acceptée tente une seule annulation ou un
-seul arrêt distant, sans masquer l’erreur d’origine. Un refus métier garde son enveloppe non-PII et
+secondes et ne double pas les mutations. Après le premier statut terminal `SUCCESS`, l’absence de
+marqueur ne peut plus consommer le timeout global : la première enveloppe doit apparaître dans une
+grâce terminale de soixante secondes. Dès `SUCCESS`, un polling terminal interne de dix secondes
+remplace la cadence nominale afin de ne pas manquer un log retardé. Si l’enveloppe apparaît, une
+phase séparée de soixante secondes au plus exige une seconde observation strictement identique.
+Disparition, dérive ou dépassement échoue techniquement. La détection d’absence reste donc bornée à
+60 secondes ; le cleanup distant
+best-effort dispose ensuite d’une unique deadline absolue de 30 secondes partagée entre `stop` et
+`cancel`. Toute sortie non acceptée tente ainsi une seule annulation ou un seul arrêt distant, sans
+masquer l’erreur d’origine. Un refus métier garde son enveloppe non-PII et
 ses codes canoniques ; un crash sans cette preuve reste une panne technique. `SIGHUP`, `SIGINT` et
 `SIGTERM` interrompent les requêtes/pollings, conservent le handler pendant le cleanup idempotent,
 retirent toute preuve locale écrite pendant la course puis ressortent avec le code Unix du signal.

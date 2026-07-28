@@ -169,6 +169,24 @@ function hybridPdf(
 }
 
 describe('auditDocumentArchivePreactivation', () => {
+  it('certifie un inventaire vide sans démarrer de validateur professionnel', async () => {
+    const audit = harness({
+      rows: [],
+      objects: new Map(),
+      inspections: new Map(),
+      apply: true,
+    });
+
+    const report = await audit.run();
+
+    expect(report.readyForActivation).toBe(true);
+    expect(report.counts.generatedLegalDocuments).toBe(0);
+    expect(report.counts.externallyValidatedProfessionalInvoices).toBe(0);
+    expect(report.counts.p0Issues).toBe(0);
+    expect(audit.validateProfessionalFacturX).not.toHaveBeenCalled();
+    expect(audit.attestations).toEqual([]);
+  });
+
   it('reste strictement en lecture seule par défaut et signale l’attestation B2C manquante', async () => {
     const pdf = stored(new TextEncoder().encode('plain-pdf'), 'application/pdf');
     const document = row({
@@ -221,6 +239,7 @@ describe('auditDocumentArchivePreactivation', () => {
         detectorVersion: 1,
       },
     ]);
+    expect(audit.validateProfessionalFacturX).not.toHaveBeenCalled();
   });
 
   it('refuse une représentation hybride et tout XML séparé pour une facture B2C', async () => {

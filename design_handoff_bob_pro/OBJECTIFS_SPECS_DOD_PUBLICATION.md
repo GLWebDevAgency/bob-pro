@@ -307,12 +307,12 @@ remplace jamais ce registre.
 | Objectif | État au 2026-07-28 | Prochaine preuve attendue |
 | --- | --- | --- |
 | O1 — vérité Git | specified | branche de sauvegarde + graphe rebasé + `main` poussé |
-| O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés | suites globales + scanner Railway sur Storage cible + train 0/1 + checkout propre |
+| O2 — Factur-X/TVA | implemented, PostgreSQL 17 et one-shot localement certifiés ; incompatibilité Bubblewrap/Railway prouvée et correction bornée `implemented` dans `SPEC_ARCHIVE_AUDIT_RAILWAY_STABILIZATION.md` | scanner Railway vide/B2C sans exécutable tiers, puis vraie paire Mustang/FNFE sous launcher Railway Landlock+seccomp + train 0/1 + checkout propre |
 | O3 — GPT Realtime | implemented partiellement — isolation fournisseur, WebRTC `sendrecv`, chaîne auditée OpenAI TTS → Whisper Bob-managed privé → renderer et readiness fail-closed testés ; runtime natif fermé | image Whisper + round-trip certifiés sur staging, puis dispatcher/ACK natifs, barge-in audité AEC et QA device sans requête Mistral |
-| O4 — mission continue | implemented partiellement — M1-A `start/get/cancel`, journal et brouillon atomiques certifiés sur CI + Supabase staging ; candidat M1-B capability + ACK écran + preuve acoustique `implemented`, endpoints production toujours fermés ; stabilisation du bootstrap ambigu `specified` dans `SPEC_M1B_STAGING_STABILIZATION.md` | CI complète et certification staging M1-B au SHA exact avec gate ciblé, reprise bornée et retour OFF, puis M1-C scénario devis E2E voix/tap |
+| O4 — mission continue | certified sur staging pour M1-B — recovery `30334601843`, vraie mission WebRTC + ACK contexte/RLS `30335132334`, retour OFF et Bob Live restauré ; fusionné dans `main@9a17ee85`, endpoints production toujours fermés | M1-C scénario devis E2E voix/tap sur données réelles, puis QA device |
 | O5 — Voice Trace | implemented partiellement | corrélation E2E + dashboard p50/p95 + tests de confidentialité |
 | O6 — données réelles | implemented partiellement | garde d'artefact + certification écran/API tenant vierge et peuplé |
-| O7 — release reproductible | implemented partiellement — M1-A certifié par CI `30192221987`, contrats natifs `30192221980`, Supabase staging au SHA runtime `6e7dfd4b` (`112/112`) et fusionné dans `main@f2e7343c` ; gate staging M1-B ciblé `specified` | une PR M1-B de stabilisation : aucune migration en attente, CI complète, smoke staging interne positif en moins de 30 min, retour du flag à OFF, puis fusion ; aucune production |
+| O7 — release reproductible | implemented partiellement — M1-B certifié staging avec `132/132` migrations, CI du merge `30335772148`, recovery `30334601843`, certification `30335132334`, retour OFF et fusion `main@9a17ee85` ; release générale encore bloquée par le one-shot Bubblewrap Railway | micro-PR archive Railway : preuve terminale bornée, inventaire vide/B2C exact-SHA, cleanup sans résidu ; aucune production |
 | O8 — Plateforme Agréée réelle | specified | gate G-PA-01 + contrat/sandbox + premier flux légal réconcilié |
 
 ## 8. Changement de cap

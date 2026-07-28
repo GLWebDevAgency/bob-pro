@@ -32,6 +32,33 @@ const SUPABASE_PROJECT_REF_PATTERN = /^[a-z0-9]{20}$/u;
 const MUSTANG_VERSION = '2.24.0';
 const MUSTANG_SHA256 = 'e4904ffa0afdce3f5836dceb927c440a05ed5d60386fdd37e17a4b2f7652edbf';
 const FNFE_VERSION = '1.4.0.02';
+const VALIDATOR_SANDBOX_EXECUTABLE = '/usr/bin/bwrap';
+const VALIDATOR_SANDBOX_SMOKE_SECRET = 'BOB_ARCHIVE_SANDBOX_SMOKE_SECRET';
+const VALIDATOR_SANDBOX_SMOKE_SCRIPT = `
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const forbidden = [
+    '${VALIDATOR_SANDBOX_SMOKE_SECRET}',
+    'DATABASE_URL',
+    'DIRECT_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'RAILWAY_TOKEN',
+  ];
+  if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(71);
+  const exposedNetwork = Object.entries(os.networkInterfaces()).some(
+    ([name, addresses]) => name !== 'lo' && Array.isArray(addresses) && addresses.length > 0,
+  );
+  if (exposedNetwork) process.exit(72);
+  const writable = process.env.HOME + '/inner-workdir-writable';
+  fs.writeFileSync(writable, 'ok', { mode: 0o600 });
+  fs.unlinkSync(writable);
+  try {
+    fs.writeFileSync('/bob-archive-sandbox-rootfs-probe', 'forbidden');
+    process.exit(73);
+  } catch (error) {
+    if (!['EACCES', 'EPERM', 'EROFS'].includes(error?.code)) process.exit(74);
+  }
+`;
 const execFileAsync = promisify(execFile);
 
 interface ArchiveAuditRuntimeConfig {
@@ -337,6 +364,12 @@ export function parseArchiveAuditRuntimeConfig(
   if (!STORAGE_BUCKET_PATTERN.test(bucket)) {
     throw new Error('SUPABASE_STORAGE_BUCKET doit être un identifiant canonique.');
   }
+  const validatorSandboxPath = resolve(required(environment, 'DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX'));
+  if (validatorSandboxPath !== VALIDATOR_SANDBOX_EXECUTABLE) {
+    throw new Error(
+      `DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX doit cibler exactement ${VALIDATOR_SANDBOX_EXECUTABLE}.`,
+    );
+  }
   return {
     directUrl: required(environment, 'DIRECT_URL'),
     databaseUrl: required(environment, 'DATABASE_URL'),
@@ -351,7 +384,7 @@ export function parseArchiveAuditRuntimeConfig(
     deploymentId,
     mustangJarPath: resolve(required(environment, 'DOCUMENT_ARCHIVE_MUSTANG_JAR')),
     fnfeBundlePath: resolve(required(environment, 'DOCUMENT_ARCHIVE_FNFE_BUNDLE')),
-    validatorSandboxPath: resolve(required(environment, 'DOCUMENT_ARCHIVE_VALIDATOR_SANDBOX')),
+    validatorSandboxPath,
   };
 }
 
@@ -1224,9 +1257,63 @@ export function buildValidatorSandboxArguments(input: {
   ];
 }
 
+export function buildValidatorSandboxSmokeInvocation(input: {
+  repositoryRoot: string;
+  workDirectory: string;
+  validatorSandboxPath: string;
+  parentEnvironment?: NodeJS.ProcessEnv;
+}): {
+  executable: string;
+  arguments: string[];
+  environment: NodeJS.ProcessEnv;
+} {
+  if (input.validatorSandboxPath !== VALIDATOR_SANDBOX_EXECUTABLE) {
+    throw new Error(
+      `Le bac à sable validateur doit cibler exactement ${VALIDATOR_SANDBOX_EXECUTABLE}.`,
+    );
+  }
+  return {
+    executable: input.validatorSandboxPath,
+    arguments: buildValidatorSandboxArguments({
+      repositoryRoot: input.repositoryRoot,
+      workDirectory: input.workDirectory,
+      command: process.execPath,
+      arguments: ['-e', VALIDATOR_SANDBOX_SMOKE_SCRIPT],
+    }),
+    environment: {
+      ...buildExternalValidatorEnvironment(
+        input.parentEnvironment ?? process.env,
+        input.workDirectory,
+      ),
+      [VALIDATOR_SANDBOX_SMOKE_SECRET]: 'must-not-cross',
+    },
+  };
+}
+
+export class ValidatorSandboxReadinessGate {
+  private verified = false;
+  private inFlight: Promise<void> | null = null;
+
+  async ensure(verify: () => Promise<void>): Promise<void> {
+    if (this.verified) return;
+    if (this.inFlight === null) {
+      this.inFlight = Promise.resolve()
+        .then(verify)
+        .then(() => {
+          this.verified = true;
+        })
+        .finally(() => {
+          this.inFlight = null;
+        });
+    }
+    await this.inFlight;
+  }
+}
+
 class PinnedFacturXExternalValidator {
   private jarVerified = false;
   private fnfeSentinelPending = true;
+  private readonly sandboxReadiness = new ValidatorSandboxReadinessGate();
   private readonly successfulValidationDigests: string[] = [];
 
   constructor(
@@ -1278,6 +1365,28 @@ class PinnedFacturXExternalValidator {
     );
   }
 
+  private ensureSandboxReady(): Promise<void> {
+    return this.sandboxReadiness.ensure(async () => {
+      const smokeWorkDirectory = await mkdtemp(resolve(tmpdir(), 'bob-archive-sandbox-readiness-'));
+      try {
+        const invocation = buildValidatorSandboxSmokeInvocation({
+          repositoryRoot: this.repositoryRoot,
+          workDirectory: smokeWorkDirectory,
+          validatorSandboxPath: this.validatorSandboxPath,
+        });
+        await execFileAsync(invocation.executable, invocation.arguments, {
+          cwd: this.repositoryRoot,
+          encoding: 'utf8',
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+          env: invocation.environment,
+        });
+      } finally {
+        await rm(smokeWorkDirectory, { recursive: true, force: true });
+      }
+    });
+  }
+
   evidenceDigest(seed = 'historical-byte-validation'): string {
     return createHash('sha256')
       .update(
@@ -1310,6 +1419,7 @@ class PinnedFacturXExternalValidator {
     ) {
       throw new Error('Les octets ont changé avant la validation externe.');
     }
+    await this.ensureSandboxReady();
     const jar = await this.verifyMustangJar();
     const workDirectory = await mkdtemp(resolve(tmpdir(), 'bob-archive-conformance-'));
     const pdfPath = resolve(workDirectory, 'invoice.pdf');
