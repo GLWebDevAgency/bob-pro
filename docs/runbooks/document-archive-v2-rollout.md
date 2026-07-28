@@ -230,13 +230,16 @@ retirent toute preuve locale écrite pendant la course puis ressortent avec le c
 Si le signal croise une réponse de création perdue et que l’hôte laisse le processus vivre, le runner
 termine d’abord la réconciliation distante non annulable, puis restitue le code du signal. Lors
 d’une [annulation GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation),
-le processus n’obtient toutefois qu’environ dix secondes : le job porte donc
-une condition `always()` et enchaîne, après l’arrêt forcé de l’étape primaire, un mode
-`--cleanup-only` indépendant. Celui-ci recherche pendant au moins 60 secondes tout déploiement actif
-du SHA, le stoppe puis exige deux confirmations d’arrêt avant de rendre la main ; aucune activation
-ne peut suivre une étape primaire échouée ou annulée. Le conteneur Railway dispose séparément d’au
-plus 30 secondes entre `SIGTERM` et `SIGKILL`, laissant au cleanup durable assez de temps pour
-observer sa terminaison même si tout ce délai de drainage est consommé. Le job est borné à six
+le processus n’obtient toutefois qu’environ dix secondes : le job porte donc une condition
+`always()` et enchaîne, après **tout** audit effectivement démarré — succès, refus, échec ou
+annulation — un mode `--cleanup-only` indépendant. Railway peut en effet accepter
+`deploymentStop` sur un one-shot déjà marqué `SUCCESS` sans retirer son instance encore `RUNNING` ;
+le runner tente donc `deploymentCancel` en premier dans cet état. Le cleanup recherche pendant au
+moins 60 secondes tout déploiement actif du SHA, l’annule ou le stoppe puis exige deux confirmations
+d’arrêt avant de rendre la main. Son échec interdit toute activation, même si la preuve d’audit était
+positive. Le conteneur Railway dispose séparément d’au plus 30 secondes entre `SIGTERM` et `SIGKILL`,
+laissant au cleanup durable assez de temps pour observer sa terminaison même si tout ce délai de
+drainage est consommé. Le job est borné à six
 heures et refuse de démarrer l’audit après trois heures écoulées ; l’étape d’audit est elle-même
 bornée à 100 minutes, le cleanup à quatre minutes, la preuve à dix minutes et l’activation à une
 heure. Le hard-timeout du job ne peut donc pas supprimer la fenêtre de cleanup une fois l’audit lancé.

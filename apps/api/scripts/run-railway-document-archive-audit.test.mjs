@@ -1833,7 +1833,7 @@ test('le contrat image/config impose Node épinglé, rôle non-root et sandbox l
   );
   assert.match(
     workflow,
-    /id: archive_audit\n\s+if: \$\{\{ success\(\) && !cancelled\(\) \}\}\n\s+timeout-minutes: 100[\s\S]*if: \$\{\{ always\(\) && \(steps\.archive_audit\.outcome == 'failure' \|\| steps\.archive_audit\.outcome == 'cancelled'\) \}\}\n\s+timeout-minutes: 4[\s\S]*--cleanup-only/u,
+    /id: archive_audit\n\s+if: \$\{\{ success\(\) && !cancelled\(\) \}\}\n\s+timeout-minutes: 100[\s\S]*Reconcile the Railway archive audit deployment[\s\S]*if: \$\{\{ always\(\) && steps\.archive_audit\.outcome != 'skipped' \}\}\n\s+timeout-minutes: 4[\s\S]*--cleanup-only/u,
   );
   assert.match(
     workflow,

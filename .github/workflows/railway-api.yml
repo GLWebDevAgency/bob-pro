@@ -394,8 +394,10 @@ jobs:
           # Railway's public API is quota-bound; the runner rejects any cadence below 10 s.
           DOCUMENT_ARCHIVE_AUDIT_POLL_SECONDS: '10'
         run: node apps/api/scripts/run-railway-document-archive-audit.mjs
-      - name: Reconcile an interrupted Railway archive audit
-        if: ${{ always() && (steps.archive_audit.outcome == 'failure' || steps.archive_audit.outcome == 'cancelled') }}
+      - name: Reconcile the Railway archive audit deployment
+        # Railway peut conserver l'instance one-shot RUNNING après un SUCCESS. Le cleanup durable
+        # est donc obligatoire pour tout audit démarré, avant toute activation irréversible.
+        if: ${{ always() && steps.archive_audit.outcome != 'skipped' }}
         timeout-minutes: 4
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
