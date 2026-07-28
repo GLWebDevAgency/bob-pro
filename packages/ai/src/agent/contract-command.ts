@@ -229,7 +229,11 @@ export function extractSpokenContractFacts(
  */
 const TERMINATION_NOTE_MARKERS: readonly RegExp[] = [
   /\b(?:motifs?|raisons?)\s*:\s*/i,
-  /\b(?:parce\s+qu(?:e|’|')\s*|car\s+|puisqu(?:e|’|')\s*|a\s+cause\s+d[eu]\s+)/i,
+  // « car » est AUSSI un nom commun (« le contrat car scolaire », « le contrat car park ») : la
+  // conjonction n'est retenue que si une PROPOSITION la suit — un déterminant ou un pronom.
+  // L'asymétrie commande la prudence : rater un marqueur coûte une question de plus, en
+  // inventer un écrit « scolaire » comme motivation légale d'une rupture de contrat.
+  /\b(?:parce\s+qu(?:e|’|')\s*|puisqu(?:e|’|')\s*|a\s+cause\s+d[eu]\s+|car\s+(?=(?:l[ae]|l[’']|les|il|ils|elle|elles|on|je|j[’']|nous|vous|ce|c[’']|ca|cela|mon|ma|mes|son|sa|ses|leur|leurs|notre|nos|votre|vos|plus|rien|personne)\b))/i,
 ];
 
 /**

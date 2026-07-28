@@ -235,8 +235,15 @@ describe('extractSpokenTerminationNote — seul un motif ÉNONCÉ fait la trace'
     ).toBeNull();
   });
 
-  it('un nom de client contenant « car » n’est jamais pris pour un motif', () => {
+  it('« car » NOM commun n’est jamais pris pour la conjonction (un motif inventé serait la trace)', () => {
     expect(extractSpokenTerminationNote('Résilie le contrat Carrefour Bastille')).toBeNull();
+    // « le contrat car scolaire » : le geste nomme un contrat de transport, il ne motive rien.
+    expect(extractSpokenTerminationNote('Résilie le contrat car scolaire')).toBeNull();
+    expect(extractSpokenTerminationNote('Résilie le contrat car scolaire Bastille')).toBeNull();
+    // La conjonction reste lue dès qu'une PROPOSITION la suit.
+    expect(extractSpokenTerminationNote('Résilie le contrat car ils ont fermé le site')).toBe(
+      'ils ont fermé le site',
+    );
   });
 
   it('les caractères de CONTRÔLE sont neutralisés (le domaine les refuse)', () => {
