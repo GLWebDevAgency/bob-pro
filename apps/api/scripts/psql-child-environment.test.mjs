@@ -5,7 +5,12 @@ import {
   statSync,
 } from 'node:fs';
 import test from 'node:test';
-import { withPsqlChildEnvironment } from './psql-child-environment.mjs';
+import {
+  boundedPsqlSpawnOptions,
+  PSQL_CONNECT_TIMEOUT_SECONDS,
+  PSQL_PROCESS_TIMEOUT_MILLISECONDS,
+  withPsqlChildEnvironment,
+} from './psql-child-environment.mjs';
 
 const CONNECTION_URL =
   'postgresql://postgres.project:secret@pooler.example.test:5432/postgres?sslmode=require';
@@ -109,4 +114,23 @@ test('supprime le fichier secret même si le processus enfant échoue', () => {
     /spawn failed/u,
   );
   assert.equal(existsSync(passwordFile), false);
+});
+
+test('impose des bornes process et connexion non surchargeables', () => {
+  const childEnvironment = { PATH: '/usr/bin', PGCONNECT_TIMEOUT: '999' };
+  const options = boundedPsqlSpawnOptions(childEnvironment, {
+    input: 'SELECT 1',
+    timeout: 999_999,
+    killSignal: 'SIGTERM',
+  });
+  assert.equal(options.input, 'SELECT 1');
+  assert.equal(options.env.PATH, '/usr/bin');
+  assert.equal(options.env.PGCONNECT_TIMEOUT, PSQL_CONNECT_TIMEOUT_SECONDS);
+  assert.equal(options.timeout, PSQL_PROCESS_TIMEOUT_MILLISECONDS);
+  assert.equal(options.killSignal, 'SIGKILL');
+  assert.equal(childEnvironment.PGCONNECT_TIMEOUT, '999');
+  assert.throws(
+    () => boundedPsqlSpawnOptions(null),
+    /require objects/u,
+  );
 });

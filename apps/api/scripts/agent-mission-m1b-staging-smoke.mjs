@@ -8,18 +8,16 @@ import {
   certifyM1BCleanEvidence,
   certifyM1BFinalEvidence,
   certifyM1BNegativeFinalEvidence,
+  certifyM1BRecoveryStateEvidence,
+  certifyM1BRecoveryTerminalEvidence,
   certifyM1BStartRecoveryEvidence,
 } from './agent-mission-m1b-staging-evidence.mjs';
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const COMPANY_ID = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/u;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const JWT_SEGMENT = /^[A-Za-z0-9_-]+$/u;
-const OPENAI_WEBRTC_DELIVERIES = new Set([
-  'openai-native-webrtc-v1',
-  'audited-signed-url-v1',
-]);
+const OPENAI_WEBRTC_DELIVERIES = new Set(['openai-native-webrtc-v1', 'audited-signed-url-v1']);
 const BOB_LIVE_AVAILABILITY_REASONS = new Set([
   'disabled',
   'not_entitled',
@@ -31,6 +29,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const PEER_TIMEOUT_MS = 20_000;
 const CONTEXT_STALE_ATTEMPTS = 10;
 const FINAL_EVIDENCE_ATTEMPTS = 12;
+const REALTIME_BOOTSTRAP_MAX_ATTEMPTS = 2;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 
 function fail(message) {
@@ -38,19 +37,17 @@ function fail(message) {
 }
 
 function record(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value
-    : null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : null;
 }
 
 function required(environment, name, { minimum = 1, maximum = 8_192 } = {}) {
   const value = environment[name];
   if (
-    typeof value !== 'string'
-    || value.length < minimum
-    || value.length > maximum
-    || value !== value.trim()
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    typeof value !== 'string' ||
+    value.length < minimum ||
+    value.length > maximum ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(value)
   ) {
     fail(`${name} is missing or invalid`);
   }
@@ -65,13 +62,13 @@ function canonicalHttpsOrigin(value, name) {
     fail(`${name} must be a valid URL`);
   }
   if (
-    parsed.protocol !== 'https:'
-    || parsed.username !== ''
-    || parsed.password !== ''
-    || parsed.pathname !== '/'
-    || parsed.search !== ''
-    || parsed.hash !== ''
-    || parsed.origin !== value
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.pathname !== '/' ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    parsed.origin !== value
   ) {
     fail(`${name} must be a credential-free HTTPS origin`);
   }
@@ -87,10 +84,7 @@ export function parseM1BStagingSmokeEnvironment(environment = process.env) {
   if (!EMAIL.test(email)) fail('BOB_M1B_STAGING_ACCOUNT_EMAIL is invalid');
   return Object.freeze({
     apiBaseUrl: canonicalHttpsOrigin(required(environment, 'API_BASE_URL'), 'API_BASE_URL'),
-    supabaseUrl: canonicalHttpsOrigin(
-      required(environment, 'SUPABASE_URL'),
-      'SUPABASE_URL',
-    ),
+    supabaseUrl: canonicalHttpsOrigin(required(environment, 'SUPABASE_URL'), 'SUPABASE_URL'),
     supabaseAnonKey: required(environment, 'BOB_M1B_STAGING_SUPABASE_ANON_KEY', {
       minimum: 16,
       maximum: 8_192,
@@ -107,10 +101,10 @@ export function parseM1BStagingSmokeEnvironment(environment = process.env) {
 
 function decodeBase64UrlJson(segment, name) {
   if (
-    typeof segment !== 'string'
-    || segment.length < 2
-    || segment.length > 16_384
-    || !JWT_SEGMENT.test(segment)
+    typeof segment !== 'string' ||
+    segment.length < 2 ||
+    segment.length > 16_384 ||
+    !JWT_SEGMENT.test(segment)
   ) {
     fail(`${name} is malformed`);
   }
@@ -125,10 +119,10 @@ function decodeBase64UrlJson(segment, name) {
 
 export function validateM1BStagingAccessToken(token, config, now = Date.now()) {
   if (
-    typeof token !== 'string'
-    || token.length < 32
-    || token.length > 16_384
-    || /[\u0000-\u0020\u007f]/u.test(token)
+    typeof token !== 'string' ||
+    token.length < 32 ||
+    token.length > 16_384 ||
+    /[\u0000-\u0020\u007f]/u.test(token)
   ) {
     fail('Supabase access token is malformed');
   }
@@ -138,11 +132,11 @@ export function validateM1BStagingAccessToken(token, config, now = Date.now()) {
   const audience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   const metadata = record(payload.app_metadata);
   if (
-    payload.sub !== config.userId
-    || !audience.includes('authenticated')
-    || metadata?.company_id !== config.companyId
-    || !Number.isSafeInteger(payload.exp)
-    || payload.exp * 1_000 <= now + 30_000
+    payload.sub !== config.userId ||
+    !audience.includes('authenticated') ||
+    metadata?.company_id !== config.companyId ||
+    !Number.isSafeInteger(payload.exp) ||
+    payload.exp * 1_000 <= now + 30_000
   ) {
     fail('Supabase JWT identity or expiry does not match the dedicated account');
   }
@@ -181,10 +175,7 @@ async function fetchWithTimeout(url, init, dependencies, operation) {
   }
 }
 
-export async function authenticateM1BStagingAccount(
-  config,
-  dependencies = {},
-) {
+export async function authenticateM1BStagingAccount(config, dependencies = {}) {
   const response = await fetchWithTimeout(
     `${config.supabaseUrl}/auth/v1/token?grant_type=password`,
     {
@@ -205,10 +196,7 @@ export async function authenticateM1BStagingAccount(
   const body = await readBoundedJson(response, 'Supabase password grant');
   const user = record(body.user);
   const metadata = record(user?.app_metadata);
-  if (
-    user?.id !== config.userId
-    || metadata?.company_id !== config.companyId
-  ) {
+  if (user?.id !== config.userId || metadata?.company_id !== config.companyId) {
     fail('Supabase password grant returned another account');
   }
   return Object.freeze({
@@ -216,52 +204,60 @@ export async function authenticateM1BStagingAccount(
   });
 }
 
-const OPERATION_ERROR_FIELDS = Object.freeze([
-  'kind',
-  'port',
-  'cause',
-  'service',
-  'reason',
-  'entity',
-  'retryAt',
-  'retryAfterSeconds',
+const OPERATION_ERROR_CLASSES = new Set([
+  'conflict',
+  'validation',
+  'forbidden',
+  'rate_limited',
+  'unavailable',
+  'dependency',
+  'not_found',
+  'domain',
 ]);
-const OPERATION_ERROR_VALUE_MAX_LENGTH = 120;
 
 /**
- * Doctrine « échec VISIBLE » : sérialise les seuls champs scalaires bornés de l'AppError
- * structurée (kind, port, cause, retryAt…) — jamais de payload libre ni d'identité.
+ * Doctrine « échec VISIBLE » : publie seulement une classe appartenant à une allowlist fermée.
+ * Aucun champ libre de l'AppError (cause, reason, entity, service, payload) ne peut atteindre stderr.
  */
 export function describeM1BOperationFailure(error) {
   const structured = record(error);
-  if (structured === null) return 'error=unstructured';
-  const parts = [];
-  for (const field of OPERATION_ERROR_FIELDS) {
-    const value = structured[field];
-    if (typeof value === 'string' && value.length > 0) {
-      const bounded = value.length > OPERATION_ERROR_VALUE_MAX_LENGTH
-        ? `${value.slice(0, OPERATION_ERROR_VALUE_MAX_LENGTH)}…`
-        : value;
-      parts.push(`${field}=${JSON.stringify(bounded)}`);
-    } else if (typeof value === 'number' && Number.isFinite(value)) {
-      parts.push(`${field}=${value}`);
-    }
-  }
-  return parts.length > 0 ? parts.join(' ') : 'error=unstructured';
+  const kind = structured?.kind;
+  const failureClass =
+    typeof kind === 'string' && OPERATION_ERROR_CLASSES.has(kind) ? kind : 'invalid_result';
+  return `class=${failureClass}`;
 }
 
 function expectSuccess(result, operation) {
   if (record(result) === null || result.ok !== true || !Object.hasOwn(result, 'value')) {
-    // Publier la cause structurée sur stderr AVANT le fail au lieu de l'avaler : un smoke qui
-    // échoue doit dire pourquoi (kind, port, cause, retryAt…) comme toute certification.
+    // Publier une classe fermée sur stderr AVANT le fail, sans recopier les champs libres du serveur.
     process.stderr.write(
-      `agent-mission-m1b-staging-smoke:${operation} failed ${
-        describeM1BOperationFailure(record(result)?.error)
-      }\n`,
+      `agent-mission-m1b-staging-smoke:${operation} failed ${describeM1BOperationFailure(
+        record(result)?.error,
+      )}\n`,
     );
     fail(`${operation} failed`);
   }
   return result.value;
+}
+
+function safeBootstrapFailureClass(result, isTimeout) {
+  if (record(result) === null || result.ok !== false || record(result.error) === null) {
+    return 'invalid_result';
+  }
+  if (isTimeout(result.error)) return 'bootstrap_timeout';
+  switch (result.error.kind) {
+    case 'conflict':
+    case 'validation':
+    case 'forbidden':
+    case 'rate_limited':
+    case 'unavailable':
+    case 'dependency':
+    case 'not_found':
+    case 'domain':
+      return result.error.kind;
+    default:
+      return 'invalid_result';
+  }
 }
 
 function expectUuid(value, operation) {
@@ -270,11 +266,7 @@ function expectUuid(value, operation) {
 }
 
 function expectPositiveInteger(value, operation, allowZero = false) {
-  if (
-    !Number.isSafeInteger(value)
-    || value < (allowZero ? 0 : 1)
-    || value > 2_147_483_647
-  ) {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1) || value > 2_147_483_647) {
     fail(`${operation} returned an invalid revision`);
   }
   return value;
@@ -283,10 +275,10 @@ function expectPositiveInteger(value, operation, allowZero = false) {
 function expectConfig(config) {
   if (record(config) === null) fail('Bob Live staging configuration response is invalid');
   if (config.available !== true) {
-    const reason = BOB_LIVE_AVAILABILITY_REASONS.has(config.availabilityReason)
+    const failureClass = BOB_LIVE_AVAILABILITY_REASONS.has(config.availabilityReason)
       ? config.availabilityReason
       : 'unknown';
-    fail(`Bob Live staging account is unavailable (reason=${reason})`);
+    fail(`Bob Live staging account is unavailable (class=${failureClass})`);
   }
   if (config.transport !== 'webrtc') {
     fail('Bob Live staging configuration uses an unsupported transport');
@@ -295,26 +287,20 @@ function expectConfig(config) {
     fail('Bob Live staging configuration uses an unsupported speech delivery');
   }
   if (
-    typeof config.configVersion !== 'string'
-    || config.configVersion.length < 1
-    || typeof config.model !== 'string'
-    || config.model.length < 1
-    || (config.voice !== 'marin' && config.voice !== 'cedar')
-    || !Number.isSafeInteger(config.maxSessionSeconds)
-    || config.maxSessionSeconds < 1
+    typeof config.configVersion !== 'string' ||
+    config.configVersion.length < 1 ||
+    typeof config.model !== 'string' ||
+    config.model.length < 1 ||
+    (config.voice !== 'marin' && config.voice !== 'cedar') ||
+    !Number.isSafeInteger(config.maxSessionSeconds) ||
+    config.maxSessionSeconds < 1
   ) {
     fail('Bob Live staging configuration contract is invalid');
   }
   return config;
 }
 
-async function readAuthenticatedApiJson(
-  config,
-  accessToken,
-  path,
-  dependencies,
-  operation,
-) {
+async function readAuthenticatedApiJson(config, accessToken, path, dependencies, operation) {
   const response = await fetchWithTimeout(
     `${config.apiBaseUrl}${path}`,
     {
@@ -333,14 +319,12 @@ async function readAuthenticatedApiJson(
  * Le workflow l'exécute avant toute étape coûteuse afin qu'un compte mal provisionné ne soit
  * découvert ni après un build, ni après un déploiement. Le résultat n'expose aucun identifiant.
  */
-export async function preflightM1BStagingAccount(
-  environment = process.env,
-  dependencies = {},
-) {
+export async function preflightM1BStagingAccount(environment = process.env, dependencies = {}) {
   const config = parseM1BStagingSmokeEnvironment(environment);
-  const authentication = typeof dependencies.authenticate === 'function'
-    ? await dependencies.authenticate(config)
-    : await authenticateM1BStagingAccount(config, dependencies);
+  const authentication =
+    typeof dependencies.authenticate === 'function'
+      ? await dependencies.authenticate(config)
+      : await authenticateM1BStagingAccount(config, dependencies);
   if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
     fail('staging authentication adapter returned no access token');
   }
@@ -359,13 +343,15 @@ export async function preflightM1BStagingAccount(
   if (company.id !== config.companyId) {
     fail('the authenticated API company does not match the dedicated account');
   }
-  const realtime = expectConfig(await readAuthenticatedApiJson(
-    config,
-    accessToken,
-    '/voice/realtime/config',
-    dependencies,
-    'Bob Live staging preflight',
-  ));
+  const realtime = expectConfig(
+    await readAuthenticatedApiJson(
+      config,
+      accessToken,
+      '/voice/realtime/config',
+      dependencies,
+      'Bob Live staging preflight',
+    ),
+  );
   return Object.freeze({
     mode: 'preflight',
     passed: true,
@@ -377,19 +363,19 @@ export async function preflightM1BStagingAccount(
 
 function expectCall(call, config, sessionHandle) {
   if (
-    record(call) === null
-    || call.transport !== 'webrtc'
-    || call.sessionHandle !== sessionHandle
-    || call.configVersion !== config.configVersion
-    || call.model !== config.model
-    || call.voice !== config.voice
-    || call.maxSessionSeconds !== config.maxSessionSeconds
-    || call.speechDelivery !== config.speechDelivery
-    || typeof call.answerSdp !== 'string'
-    || call.answerSdp.length < 64
-    || !Number.isFinite(Date.parse(call.hardExpiresAt))
-    || Date.parse(call.hardExpiresAt) <= Date.now()
-    || !Object.hasOwn(call, 'agentMissionSession')
+    record(call) === null ||
+    call.transport !== 'webrtc' ||
+    call.sessionHandle !== sessionHandle ||
+    call.configVersion !== config.configVersion ||
+    call.model !== config.model ||
+    call.voice !== config.voice ||
+    call.maxSessionSeconds !== config.maxSessionSeconds ||
+    call.speechDelivery !== config.speechDelivery ||
+    typeof call.answerSdp !== 'string' ||
+    call.answerSdp.length < 64 ||
+    !Number.isFinite(Date.parse(call.hardExpiresAt)) ||
+    Date.parse(call.hardExpiresAt) <= Date.now() ||
+    !Object.hasOwn(call, 'agentMissionSession')
   ) {
     fail('Bob Live bootstrap response does not match the requested WebRTC session');
   }
@@ -402,19 +388,82 @@ function expectCleanDraft(value, isMeaningfulQuoteDraftPayload, expectedSessionI
     return null;
   }
   if (
-    record(value) === null
-    || !Number.isSafeInteger(value.revision)
-    || value.revision < 1
-    || record(value.payload) === null
-    || record(value.payload.draft) === null
-    || typeof value.payload.draft.sessionId !== 'string'
-    || (
-      expectedSessionId !== null
-      && value.payload.draft.sessionId !== expectedSessionId
-    )
-    || isMeaningfulQuoteDraftPayload(value.payload) !== false
+    record(value) === null ||
+    !Number.isSafeInteger(value.revision) ||
+    value.revision < 1 ||
+    record(value.payload) === null ||
+    record(value.payload.draft) === null ||
+    typeof value.payload.draft.sessionId !== 'string' ||
+    (expectedSessionId !== null && value.payload.draft.sessionId !== expectedSessionId) ||
+    isMeaningfulQuoteDraftPayload(value.payload) !== false
   ) {
     fail('the quote draft is preexisting, foreign, or contains meaningful user data');
+  }
+  return value;
+}
+
+function exactJsonValue(left, right) {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => exactJsonValue(value, right[index]))
+    );
+  }
+  const leftRecord = record(left);
+  const rightRecord = record(right);
+  if (leftRecord === null || rightRecord === null) return false;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && exactJsonValue(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function expectRecoverableDraft(value, candidate, createEmptyQuoteDraftPayload) {
+  if (
+    record(value) === null ||
+    value.revision !== candidate.draftSlotRevision ||
+    value.payloadVersion !== 1 ||
+    record(value.payload) === null ||
+    value.payload.draft?.sessionId !== candidate.draftSessionId ||
+    value.payload.draft?.contentRevision !== candidate.draftContentRevision
+  ) {
+    fail('the recovery draft does not match the exact technical residue');
+  }
+  const empty = createEmptyQuoteDraftPayload(candidate.draftSessionId);
+  if (record(empty) === null || empty.ok !== true || !exactJsonValue(value.payload, empty.value)) {
+    fail('the recovery draft is not the exact empty technical payload');
+  }
+  return value;
+}
+
+function expectRecoverableMission(value, candidate) {
+  if (
+    record(value) === null ||
+    value.id !== candidate.missionId ||
+    value.kind !== 'quote_creation' ||
+    (value.status !== 'active' && value.status !== 'expired') ||
+    value.actionable !== (value.status === 'active') ||
+    value.phase !== 'awaiting_quote_screen' ||
+    value.revision !== candidate.missionRevision ||
+    value.payloadVersion !== 1 ||
+    value.currentBinding !== null ||
+    record(value.payload) === null ||
+    value.payload.schema !== 'bob.agent-mission.quote-creation' ||
+    value.payload.version !== 1 ||
+    value.payload.decision !== null ||
+    record(value.payload.draft) === null ||
+    value.payload.draft.sessionId !== candidate.draftSessionId ||
+    value.payload.draft.slotRevision !== candidate.draftSlotRevision ||
+    value.payload.draft.contentRevision !== candidate.draftContentRevision
+  ) {
+    fail('the recovery mission does not match the exact technical residue');
   }
   return value;
 }
@@ -423,22 +472,19 @@ function expectStart(start, responseLossRetry) {
   const mission = record(start?.mission);
   const draft = record(mission?.payload)?.draft;
   if (
-    (
-      start?.outcome !== 'created'
-      && !(responseLossRetry && start?.outcome === 'replayed')
-    )
-    || start?.startOutcome !== 'no_slot'
-    || mission === null
-    || mission.status !== 'active'
-    || mission.actionable !== true
-    || mission.phase !== 'awaiting_quote_screen'
-    || mission.revision !== 1
-    || mission.currentBinding !== null
-    || record(draft) === null
-    || typeof draft.sessionId !== 'string'
-    || draft.sessionId.length < 1
-    || draft.slotRevision !== 1
-    || draft.contentRevision !== 0
+    (start?.outcome !== 'created' && !(responseLossRetry && start?.outcome === 'replayed')) ||
+    start?.startOutcome !== 'no_slot' ||
+    mission === null ||
+    mission.status !== 'active' ||
+    mission.actionable !== true ||
+    mission.phase !== 'awaiting_quote_screen' ||
+    mission.revision !== 1 ||
+    mission.currentBinding !== null ||
+    record(draft) === null ||
+    typeof draft.sessionId !== 'string' ||
+    draft.sessionId.length < 1 ||
+    draft.slotRevision !== 1 ||
+    draft.contentRevision !== 0
   ) {
     fail('the dedicated account was not clean when the quote mission started');
   }
@@ -448,19 +494,15 @@ function expectStart(start, responseLossRetry) {
 
 function isExactContextStale(error) {
   return (
-    record(error) !== null
-    && error.kind === 'conflict'
-    && error.entity === 'agent_mission_screen_ack'
-    && error.reason === 'context_stale'
+    record(error) !== null &&
+    error.kind === 'conflict' &&
+    error.entity === 'agent_mission_screen_ack' &&
+    error.reason === 'context_stale'
   );
 }
 
 function isRetryableApiDependency(error) {
-  return (
-    record(error) !== null
-    && error.kind === 'dependency'
-    && error.port === 'api'
-  );
+  return record(error) !== null && error.kind === 'dependency' && error.port === 'api';
 }
 
 async function startQuoteWithResponseLossRetry(
@@ -469,8 +511,9 @@ async function startQuoteWithResponseLossRetry(
   environment,
   dependencies,
 ) {
-  const sleep = dependencies.sleep ?? ((milliseconds) =>
-    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await missionSession.startQuoteCreation({ commandId });
     if (record(result) !== null && result.ok === true) {
@@ -479,10 +522,7 @@ async function startQuoteWithResponseLossRetry(
         responseLossRetry: attempt > 1,
       };
     }
-    if (
-      record(result) === null
-      || !isRetryableApiDependency(result.error)
-    ) {
+    if (record(result) === null || !isRetryableApiDependency(result.error)) {
       fail('startQuoteCreation failed outside the response-loss retry contract');
     }
     if (attempt < 2) await sleep(150);
@@ -491,9 +531,9 @@ async function startQuoteWithResponseLossRetry(
     dependencies.certifyStartRecoveryEvidence ?? certifyM1BStartRecoveryEvidence;
   const recovered = certifyRecovery({ startCommandId: commandId }, environment);
   if (
-    recovered?.stage !== 'start-recovered'
-    || recovered.passed !== true
-    || record(recovered.mission) === null
+    recovered?.stage !== 'start-recovered' ||
+    recovered.passed !== true ||
+    record(recovered.mission) === null
   ) {
     fail('start response-loss recovery adapter did not return its exact receipt');
   }
@@ -507,21 +547,23 @@ async function startQuoteWithResponseLossRetry(
   };
 }
 
-async function acknowledgeScreenWithBoundedRetry(
-  missionSession,
-  input,
-  dependencies,
-) {
-  const sleep = dependencies.sleep ?? ((milliseconds) =>
-    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+async function acknowledgeScreenWithBoundedRetry(missionSession, input, dependencies) {
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= CONTEXT_STALE_ATTEMPTS; attempt += 1) {
     const result = await missionSession.acknowledgeQuoteScreen(input);
     if (record(result) !== null && result.ok === true) return result.value;
     if (
-      record(result) === null
-      || !isExactContextStale(result.error)
-      || attempt === CONTEXT_STALE_ATTEMPTS
+      record(result) === null ||
+      !isExactContextStale(result.error) ||
+      attempt === CONTEXT_STALE_ATTEMPTS
     ) {
+      process.stderr.write(
+        `agent-mission-m1b-staging-smoke:screen ACK failed ${describeM1BOperationFailure(
+          record(result)?.error,
+        )}\n`,
+      );
       fail('screen ACK failed outside the bounded context_stale retry contract');
     }
     await sleep(Math.min(100 * 2 ** (attempt - 1), 800));
@@ -533,44 +575,37 @@ function expectAcknowledgement(acknowledgement, expected) {
   const mission = record(acknowledgement?.mission);
   const binding = record(mission?.currentBinding);
   if (
-    acknowledgement?.outcome !== 'acknowledged'
-    || mission === null
-    || mission.id !== expected.missionId
-    || mission.status !== 'active'
-    || mission.actionable !== true
-    || mission.phase !== 'awaiting_customer'
-    || mission.revision !== 2
-    || binding === null
-    || binding.realtimeSessionId !== expected.sessionHandle
-    || binding.contextRevision !== expected.contextRevision
-    || binding.contextDigest !== expected.contextDigest
-    || binding.screenName !== SCREEN_NAME
-    || binding.screenInstanceId !== SCREEN_INSTANCE_ID
+    acknowledgement?.outcome !== 'acknowledged' ||
+    mission === null ||
+    mission.id !== expected.missionId ||
+    mission.status !== 'active' ||
+    mission.actionable !== true ||
+    mission.phase !== 'awaiting_customer' ||
+    mission.revision !== 2 ||
+    binding === null ||
+    binding.realtimeSessionId !== expected.sessionHandle ||
+    binding.contextRevision !== expected.contextRevision ||
+    binding.contextDigest !== expected.contextDigest ||
+    binding.screenName !== SCREEN_NAME ||
+    binding.screenInstanceId !== SCREEN_INSTANCE_ID
   ) {
     fail('screen ACK did not bind the exact staging screen context');
   }
   return acknowledgement;
 }
 
-function expectCancellation(
-  cancellation,
-  missionId,
-  expectedRevision,
-  responseLossRetry = false,
-) {
+function expectCancellation(cancellation, missionId, expectedRevision, responseLossRetry = false) {
   const mission = record(cancellation?.mission);
   if (
-    (
-      cancellation?.outcome !== 'cancelled'
-      && !(responseLossRetry && cancellation?.outcome === 'replayed')
-    )
-    || mission === null
-    || mission.id !== missionId
-    || mission.status !== 'cancelled'
-    || mission.actionable !== false
-    || mission.revision !== expectedRevision
-    || typeof mission.terminalAt !== 'string'
-    || !Number.isFinite(Date.parse(mission.terminalAt))
+    (cancellation?.outcome !== 'cancelled' &&
+      !(responseLossRetry && cancellation?.outcome === 'replayed')) ||
+    mission === null ||
+    mission.id !== missionId ||
+    mission.status !== 'cancelled' ||
+    mission.actionable !== false ||
+    mission.revision !== expectedRevision ||
+    typeof mission.terminalAt !== 'string' ||
+    !Number.isFinite(Date.parse(mission.terminalAt))
   ) {
     fail('quote mission cancellation was not exact');
   }
@@ -584,8 +619,9 @@ async function cancelQuoteWithResponseLossRecovery(
   environment,
   dependencies,
 ) {
-  const sleep = dependencies.sleep ?? ((milliseconds) =>
-    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await missionSession.cancelQuoteCreation(input);
     if (record(result) !== null && result.ok === true) {
@@ -594,22 +630,18 @@ async function cancelQuoteWithResponseLossRecovery(
         responseLossRetry: attempt > 1,
       };
     }
-    if (
-      record(result) === null
-      || !isRetryableApiDependency(result.error)
-    ) {
+    if (record(result) === null || !isRetryableApiDependency(result.error)) {
       fail('cancelQuoteCreation failed outside the response-loss retry contract');
     }
     if (attempt < 2) await sleep(150);
   }
   const certifyRecovery =
-    dependencies.certifyCancellationRecoveryEvidence
-    ?? certifyM1BCancellationRecoveryEvidence;
+    dependencies.certifyCancellationRecoveryEvidence ?? certifyM1BCancellationRecoveryEvidence;
   const recovered = certifyRecovery(recoveryInput, environment);
   if (
-    recovered?.stage !== 'cancellation-recovered'
-    || recovered.passed !== true
-    || record(recovered.mission) === null
+    recovered?.stage !== 'cancellation-recovered' ||
+    recovered.passed !== true ||
+    record(recovered.mission) === null
   ) {
     fail('cancellation response-loss recovery adapter did not return its exact receipt');
   }
@@ -623,17 +655,27 @@ async function cancelQuoteWithResponseLossRecovery(
 }
 
 async function importRuntimeDependencies() {
-  const [{ HttpBobClient }, { isMeaningfulQuoteDraftPayload }] = await Promise.all([
+  const [
+    { HttpBobClient, isRealtimeBootstrapTimeoutError },
+    { createEmptyQuoteDraftPayload, isMeaningfulQuoteDraftPayload },
+  ] = await Promise.all([
     import(new URL('../../../packages/api-client/dist/index.js', import.meta.url)),
     import(new URL('../../../packages/core/dist/index.js', import.meta.url)),
   ]);
   if (
-    typeof HttpBobClient !== 'function'
-    || typeof isMeaningfulQuoteDraftPayload !== 'function'
+    typeof HttpBobClient !== 'function' ||
+    typeof isRealtimeBootstrapTimeoutError !== 'function' ||
+    typeof createEmptyQuoteDraftPayload !== 'function' ||
+    typeof isMeaningfulQuoteDraftPayload !== 'function'
   ) {
     fail('built Bob runtime dependencies are unavailable');
   }
-  return { HttpBobClient, isMeaningfulQuoteDraftPayload };
+  return {
+    HttpBobClient,
+    createEmptyQuoteDraftPayload,
+    isRealtimeBootstrapTimeoutError,
+    isMeaningfulQuoteDraftPayload,
+  };
 }
 
 async function createRuntimeClient(config, accessToken, dependencies) {
@@ -655,129 +697,152 @@ async function meaningfulDraftPredicate(dependencies) {
   return (await importRuntimeDependencies()).isMeaningfulQuoteDraftPayload;
 }
 
+async function emptyDraftFactory(dependencies) {
+  if (typeof dependencies.createEmptyQuoteDraftPayload === 'function') {
+    return dependencies.createEmptyQuoteDraftPayload;
+  }
+  return (await importRuntimeDependencies()).createEmptyQuoteDraftPayload;
+}
+
+async function realtimeBootstrapTimeoutPredicate(dependencies) {
+  if (typeof dependencies.isRealtimeBootstrapTimeoutError === 'function') {
+    return dependencies.isRealtimeBootstrapTimeoutError;
+  }
+  return (await importRuntimeDependencies()).isRealtimeBootstrapTimeoutError;
+}
+
 export async function createM1BChromiumPeer(speechDelivery) {
   if (!OPENAI_WEBRTC_DELIVERIES.has(speechDelivery)) {
     fail('cannot create a peer for a non-OpenAI WebRTC delivery');
   }
-  const requireFromWeb = createRequire(
-    new URL('../../../apps/web/package.json', import.meta.url),
-  );
+  const requireFromWeb = createRequire(new URL('../../../apps/web/package.json', import.meta.url));
   const { chromium } = requireFromWeb('@playwright/test');
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   let closed = false;
   try {
-    const offerSdp = await page.evaluate(async ({ nativeDownlink, timeoutMs }) => {
-      const audio = new AudioContext();
-      const oscillator = audio.createOscillator();
-      const gain = audio.createGain();
-      const destination = audio.createMediaStreamDestination();
-      gain.gain.value = 0;
-      oscillator.connect(gain);
-      gain.connect(destination);
-      oscillator.start();
-      const track = destination.stream.getAudioTracks()[0];
-      if (!track) throw new Error('synthetic_audio_track_missing');
-      const peer = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
-      const channel = peer.createDataChannel('oai-events', { ordered: true });
-      peer.addTransceiver(track, {
-        direction: nativeDownlink ? 'sendrecv' : 'sendonly',
-        streams: [destination.stream],
-      });
-      globalThis.__bobM1BPeer = {
-        audio,
-        oscillator,
-        destination,
-        track,
-        peer,
-        channel,
-      };
-      const offer = await peer.createOffer({
-        offerToReceiveAudio: nativeDownlink,
-        offerToReceiveVideo: false,
-      });
-      await peer.setLocalDescription(offer);
-      if (peer.iceGatheringState !== 'complete') {
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(
-            () => reject(new Error('ice_gathering_timeout')),
-            timeoutMs,
-          );
-          const listener = () => {
-            if (peer.iceGatheringState !== 'complete') return;
-            clearTimeout(timeout);
-            peer.removeEventListener('icegatheringstatechange', listener);
-            resolve();
-          };
-          peer.addEventListener('icegatheringstatechange', listener);
+    const offerSdp = await page.evaluate(
+      async ({ nativeDownlink, timeoutMs }) => {
+        const audio = new AudioContext();
+        const oscillator = audio.createOscillator();
+        const gain = audio.createGain();
+        const destination = audio.createMediaStreamDestination();
+        gain.gain.value = 0;
+        oscillator.connect(gain);
+        gain.connect(destination);
+        oscillator.start();
+        const track = destination.stream.getAudioTracks()[0];
+        if (!track) throw new Error('synthetic_audio_track_missing');
+        const peer = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
+        const channel = peer.createDataChannel('oai-events', { ordered: true });
+        peer.addTransceiver(track, {
+          direction: nativeDownlink ? 'sendrecv' : 'sendonly',
+          streams: [destination.stream],
         });
-      }
-      const sdp = peer.localDescription?.sdp;
-      if (typeof sdp !== 'string' || sdp.length < 64) {
-        throw new Error('offer_sdp_missing');
-      }
-      return sdp;
-    }, {
-      nativeDownlink: speechDelivery === 'openai-native-webrtc-v1',
-      timeoutMs: PEER_TIMEOUT_MS,
-    });
+        globalThis.__bobM1BPeer = {
+          audio,
+          oscillator,
+          destination,
+          track,
+          peer,
+          channel,
+        };
+        const offer = await peer.createOffer({
+          offerToReceiveAudio: nativeDownlink,
+          offerToReceiveVideo: false,
+        });
+        await peer.setLocalDescription(offer);
+        if (peer.iceGatheringState !== 'complete') {
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('ice_gathering_timeout')), timeoutMs);
+            const listener = () => {
+              if (peer.iceGatheringState !== 'complete') return;
+              clearTimeout(timeout);
+              peer.removeEventListener('icegatheringstatechange', listener);
+              resolve();
+            };
+            peer.addEventListener('icegatheringstatechange', listener);
+          });
+        }
+        const sdp = peer.localDescription?.sdp;
+        if (typeof sdp !== 'string' || sdp.length < 64) {
+          throw new Error('offer_sdp_missing');
+        }
+        return sdp;
+      },
+      {
+        nativeDownlink: speechDelivery === 'openai-native-webrtc-v1',
+        timeoutMs: PEER_TIMEOUT_MS,
+      },
+    );
 
     return Object.freeze({
       offerSdp,
       async applyAnswer(answerSdp) {
-        await page.evaluate(async ({ answerSdp: answer, timeoutMs }) => {
-          const resources = globalThis.__bobM1BPeer;
-          if (!resources) throw new Error('peer_resources_missing');
-          const { peer, channel } = resources;
-          await peer.setRemoteDescription({ type: 'answer', sdp: answer });
-          await new Promise((resolve, reject) => {
-            if (peer.connectionState === 'connected' && channel.readyState === 'open') {
-              resolve();
-              return;
-            }
-            const timeout = setTimeout(() => {
-              reject(new Error('peer_connection_timeout'));
-            }, timeoutMs);
-            const inspect = () => {
-              if (
-                peer.connectionState === 'failed'
-                || peer.connectionState === 'closed'
-              ) {
-                clearTimeout(timeout);
-                reject(new Error('peer_connection_failed'));
+        await page.evaluate(
+          async ({ answerSdp: answer, timeoutMs }) => {
+            const resources = globalThis.__bobM1BPeer;
+            if (!resources) throw new Error('peer_resources_missing');
+            const { peer, channel } = resources;
+            await peer.setRemoteDescription({ type: 'answer', sdp: answer });
+            await new Promise((resolve, reject) => {
+              if (peer.connectionState === 'connected' && channel.readyState === 'open') {
+                resolve();
                 return;
               }
-              if (
-                peer.connectionState === 'connected'
-                && channel.readyState === 'open'
-              ) {
-                clearTimeout(timeout);
-                peer.removeEventListener('connectionstatechange', inspect);
-                channel.removeEventListener('open', inspect);
-                resolve();
-              }
-            };
-            peer.addEventListener('connectionstatechange', inspect);
-            channel.addEventListener('open', inspect);
-          });
-        }, { answerSdp, timeoutMs: PEER_TIMEOUT_MS });
+              const timeout = setTimeout(() => {
+                reject(new Error('peer_connection_timeout'));
+              }, timeoutMs);
+              const inspect = () => {
+                if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
+                  clearTimeout(timeout);
+                  reject(new Error('peer_connection_failed'));
+                  return;
+                }
+                if (peer.connectionState === 'connected' && channel.readyState === 'open') {
+                  clearTimeout(timeout);
+                  peer.removeEventListener('connectionstatechange', inspect);
+                  channel.removeEventListener('open', inspect);
+                  resolve();
+                }
+              };
+              peer.addEventListener('connectionstatechange', inspect);
+              channel.addEventListener('open', inspect);
+            });
+          },
+          { answerSdp, timeoutMs: PEER_TIMEOUT_MS },
+        );
       },
       async close() {
         if (closed) return;
         closed = true;
-        await page.evaluate(async () => {
-          const resources = globalThis.__bobM1BPeer;
-          delete globalThis.__bobM1BPeer;
-          if (!resources) return;
-          try { resources.channel.close(); } catch {}
-          try { resources.peer.close(); } catch {}
-          try { resources.oscillator.stop(); } catch {}
-          try { resources.track.stop(); } catch {}
-          for (const track of resources.destination.stream.getTracks()) {
-            try { track.stop(); } catch {}
-          }
-          try { await resources.audio.close(); } catch {}
-        }).catch(() => {});
+        await page
+          .evaluate(async () => {
+            const resources = globalThis.__bobM1BPeer;
+            delete globalThis.__bobM1BPeer;
+            if (!resources) return;
+            try {
+              resources.channel.close();
+            } catch {}
+            try {
+              resources.peer.close();
+            } catch {}
+            try {
+              resources.oscillator.stop();
+            } catch {}
+            try {
+              resources.track.stop();
+            } catch {}
+            for (const track of resources.destination.stream.getTracks()) {
+              try {
+                track.stop();
+              } catch {}
+            }
+            try {
+              await resources.audio.close();
+            } catch {}
+          })
+          .catch(() => {});
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
       },
@@ -790,26 +855,28 @@ export async function createM1BChromiumPeer(speechDelivery) {
 }
 
 async function createPeer(config, dependencies) {
-  const peer = typeof dependencies.createPeer === 'function'
-    ? await dependencies.createPeer(config.speechDelivery)
-    : await createM1BChromiumPeer(config.speechDelivery);
+  const peer =
+    typeof dependencies.createPeer === 'function'
+      ? await dependencies.createPeer(config.speechDelivery)
+      : await createM1BChromiumPeer(config.speechDelivery);
   if (
-    record(peer) === null
-    || typeof peer.offerSdp !== 'string'
-    || peer.offerSdp.length < 64
-    || typeof peer.applyAnswer !== 'function'
-    || typeof peer.close !== 'function'
+    record(peer) === null ||
+    typeof peer.offerSdp !== 'string' ||
+    peer.offerSdp.length < 64 ||
+    typeof peer.applyAnswer !== 'function' ||
+    typeof peer.close !== 'function'
   ) {
     fail('WebRTC peer harness is invalid');
   }
   return peer;
 }
 
-async function authenticateAndPrepare(environment, dependencies) {
+async function authenticateAndPrepare(environment, dependencies, { requireClean = true } = {}) {
   const config = parseM1BStagingSmokeEnvironment(environment);
-  const authentication = typeof dependencies.authenticate === 'function'
-    ? await dependencies.authenticate(config)
-    : await authenticateM1BStagingAccount(config, dependencies);
+  const authentication =
+    typeof dependencies.authenticate === 'function'
+      ? await dependencies.authenticate(config)
+      : await authenticateM1BStagingAccount(config, dependencies);
   if (record(authentication) === null || typeof authentication.accessToken !== 'string') {
     fail('staging authentication adapter returned no access token');
   }
@@ -823,15 +890,19 @@ async function authenticateAndPrepare(environment, dependencies) {
   if (record(company) === null || company.id !== config.companyId) {
     fail('the authenticated API company does not match the dedicated account');
   }
-  const certifyClean = dependencies.certifyCleanEvidence ?? certifyM1BCleanEvidence;
-  const cleanEvidence = certifyClean(environment);
-  if (cleanEvidence?.stage !== 'clean' || cleanEvidence.passed !== true) {
-    fail('clean runtime evidence adapter did not return its exact receipt');
+  if (requireClean) {
+    const certifyClean = dependencies.certifyCleanEvidence ?? certifyM1BCleanEvidence;
+    const cleanEvidence = certifyClean(environment);
+    if (cleanEvidence?.stage !== 'clean' || cleanEvidence.passed !== true) {
+      fail('clean runtime evidence adapter did not return its exact receipt');
+    }
   }
   return {
     config,
     client,
+    createEmptyQuoteDraftPayload: await emptyDraftFactory(dependencies),
     isMeaningfulQuoteDraftPayload: await meaningfulDraftPredicate(dependencies),
+    isRealtimeBootstrapTimeoutError: await realtimeBootstrapTimeoutPredicate(dependencies),
   };
 }
 
@@ -849,46 +920,31 @@ async function hangupAndClose(client, peer, sessionHandle, missionSession) {
   return hangupAccepted;
 }
 
-export async function runM1BNegativeStagingSmoke(
-  environment = process.env,
-  dependencies = {},
-) {
+export async function runM1BNegativeStagingSmoke(environment = process.env, dependencies = {}) {
   const prepared = await authenticateAndPrepare(environment, dependencies);
-  const { client, isMeaningfulQuoteDraftPayload } = prepared;
+  const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
   const draft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
   expectCleanDraft(draft, isMeaningfulQuoteDraftPayload);
   if (draft !== null) fail('the dedicated account already contains a quote draft');
-  const config = expectConfig(expectSuccess(
-    await client.realtimeVoiceConfig(),
-    'realtimeVoiceConfig',
-  ));
-  const peer = await createPeer(config, dependencies);
-  const sessionHandle = expectUuid(
-    (dependencies.randomUUID ?? nodeRandomUUID)(),
-    'randomUUID',
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig'),
   );
-  let call = null;
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+  );
+  const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
   let hangupAccepted = false;
   try {
-    call = expectCall(expectSuccess(await client.createRealtimeVoiceCall({
-      transport: 'webrtc',
-      sdp: peer.offerSdp,
-      sessionHandle,
-      configVersion: config.configVersion,
-      speechDelivery: config.speechDelivery,
-      agentMissionProtocolVersion: 1,
-    }), 'createRealtimeVoiceCall'), config, sessionHandle);
     if (call.agentMissionSession !== null) {
       fail('M1-B negotiated while the staging circuit was expected OFF');
     }
     await peer.applyAnswer(call.answerSdp);
   } finally {
-    hangupAccepted = await hangupAndClose(
-      client,
-      peer,
-      call?.sessionHandle ?? sessionHandle,
-      null,
-    );
+    hangupAccepted = await hangupAndClose(client, peer, call.sessionHandle, null);
   }
   const finalEvidence = await pollNegativeFinalEvidence(
     { sessionId: sessionHandle },
@@ -905,13 +961,16 @@ export async function runM1BNegativeStagingSmoke(
     agentMission: 'off',
     cleanup: 'complete',
     hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
   });
 }
 
 async function pollFinalEvidence(input, environment, dependencies) {
   const certify = dependencies.certifyFinalEvidence ?? certifyM1BFinalEvidence;
-  const sleep = dependencies.sleep ?? ((milliseconds) =>
-    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   let lastError;
   for (let attempt = 1; attempt <= FINAL_EVIDENCE_ATTEMPTS; attempt += 1) {
     try {
@@ -919,9 +978,9 @@ async function pollFinalEvidence(input, environment, dependencies) {
     } catch (error) {
       lastError = error;
       if (
-        !(error instanceof Error)
-        || !error.message.includes('final runtime cleanup proof did not pass exactly')
-        || attempt === FINAL_EVIDENCE_ATTEMPTS
+        !(error instanceof Error) ||
+        !error.message.includes('final runtime cleanup proof did not pass exactly') ||
+        attempt === FINAL_EVIDENCE_ATTEMPTS
       ) {
         throw error;
       }
@@ -932,10 +991,10 @@ async function pollFinalEvidence(input, environment, dependencies) {
 }
 
 async function pollNegativeFinalEvidence(input, environment, dependencies) {
-  const certify =
-    dependencies.certifyNegativeFinalEvidence ?? certifyM1BNegativeFinalEvidence;
-  const sleep = dependencies.sleep ?? ((milliseconds) =>
-    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const certify = dependencies.certifyNegativeFinalEvidence ?? certifyM1BNegativeFinalEvidence;
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   let lastError;
   for (let attempt = 1; attempt <= FINAL_EVIDENCE_ATTEMPTS; attempt += 1) {
     try {
@@ -943,9 +1002,9 @@ async function pollNegativeFinalEvidence(input, environment, dependencies) {
     } catch (error) {
       lastError = error;
       if (
-        !(error instanceof Error)
-        || !error.message.includes('negative runtime cleanup proof did not pass exactly')
-        || attempt === FINAL_EVIDENCE_ATTEMPTS
+        !(error instanceof Error) ||
+        !error.message.includes('negative runtime cleanup proof did not pass exactly') ||
+        attempt === FINAL_EVIDENCE_ATTEMPTS
       ) {
         throw error;
       }
@@ -955,49 +1014,438 @@ async function pollNegativeFinalEvidence(input, environment, dependencies) {
   throw lastError;
 }
 
-export async function runM1BPositiveStagingSmoke(
-  environment = process.env,
-  dependencies = {},
+async function reconcileFailedRealtimeBootstrap(
+  client,
+  peer,
+  sessionHandle,
+  environment,
+  dependencies,
 ) {
-  const prepared = await authenticateAndPrepare(environment, dependencies);
-  const { client, isMeaningfulQuoteDraftPayload } = prepared;
-  const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
-  if (existingDraft !== null) {
-    expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
-    fail('the dedicated account already contains a quote draft');
-  }
-  const config = expectConfig(expectSuccess(
-    await client.realtimeVoiceConfig(),
-    'realtimeVoiceConfig',
-  ));
-  const peer = await createPeer(config, dependencies);
-  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
-  const sessionHandle = expectUuid(randomUUID(), 'sessionHandle');
-  const startCommandId = expectUuid(randomUUID(), 'startCommandId');
-  const ackCommandId = expectUuid(randomUUID(), 'ackCommandId');
-  const cancelCommandId = expectUuid(randomUUID(), 'cancelCommandId');
-  let call = null;
-  let missionSession = null;
-  let ownedMission = null;
-  let primaryError = null;
-  let activeEvidence = null;
+  await peer.close().catch(() => {});
+  let hangupAccepted = false;
   try {
-    call = expectCall(expectSuccess(await client.createRealtimeVoiceCall({
+    const hangup = await client.hangupRealtimeVoiceCall(sessionHandle);
+    hangupAccepted = record(hangup) !== null && hangup.ok === true;
+  } catch {
+    // La preuve PostgreSQL ci-dessous, pas la réponse réseau, fait autorité.
+  }
+  const evidence = await pollNegativeFinalEvidence(
+    { sessionId: sessionHandle },
+    environment,
+    dependencies,
+  );
+  if (evidence?.stage !== 'negative-final' || evidence.passed !== true) {
+    fail('negative final evidence adapter did not return its exact receipt');
+  }
+  return hangupAccepted;
+}
+
+async function createRealtimeCallWithBoundedTimeoutRecovery(
+  client,
+  config,
+  environment,
+  dependencies,
+  isRealtimeBootstrapTimeoutError,
+) {
+  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+  const sessionHandles = new Set();
+  const peers = new Set();
+  let recoveredTimeout = false;
+  for (let attempt = 1; attempt <= REALTIME_BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
+    const sessionHandle = expectUuid(randomUUID(), 'sessionHandle');
+    if (sessionHandles.has(sessionHandle)) {
+      fail('realtime bootstrap retry reused its session UUID');
+    }
+    sessionHandles.add(sessionHandle);
+    const peer = await createPeer(config, dependencies);
+    if (peers.has(peer)) {
+      await peer.close().catch(() => {});
+      fail('realtime bootstrap retry reused its peer');
+    }
+    peers.add(peer);
+
+    const result = await client.createRealtimeVoiceCall({
       transport: 'webrtc',
       sdp: peer.offerSdp,
       sessionHandle,
       configVersion: config.configVersion,
       speechDelivery: config.speechDelivery,
       agentMissionProtocolVersion: 1,
-    }), 'createRealtimeVoiceCall'), config, sessionHandle);
+    });
+    if (record(result) !== null && result.ok === true && Object.hasOwn(result, 'value')) {
+      let call;
+      try {
+        call = expectCall(result.value, config, sessionHandle);
+      } catch {
+        await reconcileFailedRealtimeBootstrap(
+          client,
+          peer,
+          sessionHandle,
+          environment,
+          dependencies,
+        );
+        fail(`createRealtimeVoiceCall failed (class=invalid_result, attempt=${attempt})`);
+      }
+      return Object.freeze({
+        call,
+        peer,
+        sessionHandle,
+        attempts: attempt,
+        recoveredTimeout,
+      });
+    }
+
+    const failureClass = safeBootstrapFailureClass(result, isRealtimeBootstrapTimeoutError);
+    await reconcileFailedRealtimeBootstrap(client, peer, sessionHandle, environment, dependencies);
+    if (failureClass === 'bootstrap_timeout' && attempt < REALTIME_BOOTSTRAP_MAX_ATTEMPTS) {
+      recoveredTimeout = true;
+      continue;
+    }
+    fail(`createRealtimeVoiceCall failed (class=${failureClass}, attempt=${attempt})`);
+  }
+  fail('createRealtimeVoiceCall exhausted its bounded retry contract');
+}
+
+async function pollRecoveryState(expectedCandidate, environment, dependencies) {
+  const certify = dependencies.certifyRecoveryStateEvidence ?? certifyM1BRecoveryStateEvidence;
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let lastError;
+  for (let attempt = 1; attempt <= FINAL_EVIDENCE_ATTEMPTS; attempt += 1) {
+    try {
+      const evidence = certify(environment);
+      if (
+        evidence?.stage !== 'recovery-state' ||
+        evidence.passed !== true ||
+        evidence.state !== 'recoverable' ||
+        !exactJsonValue(evidence.candidate, expectedCandidate)
+      ) {
+        fail('recovery-state adapter did not preserve the exact technical residue');
+      }
+      return evidence;
+    } catch (error) {
+      lastError = error;
+      if (attempt === FINAL_EVIDENCE_ATTEMPTS) throw error;
+      await sleep(Math.min(250 * attempt, 1_000));
+    }
+  }
+  throw lastError;
+}
+
+async function createRecoveryRealtimeCall(client, config, candidate, environment, dependencies) {
+  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+  const sessionHandle = expectUuid(randomUUID(), 'recoverySessionHandle');
+  const peer = await createPeer(config, dependencies);
+  let result;
+  try {
+    result = await client.createRealtimeVoiceCall({
+      transport: 'webrtc',
+      sdp: peer.offerSdp,
+      sessionHandle,
+      configVersion: config.configVersion,
+      speechDelivery: config.speechDelivery,
+      agentMissionProtocolVersion: 1,
+    });
+  } catch {
+    await peer.close().catch(() => {});
+    await client.hangupRealtimeVoiceCall(sessionHandle).catch(() => {});
+    await pollRecoveryState(candidate, environment, dependencies);
+    fail('recovery WebRTC bootstrap threw before returning a structured result');
+  }
+  if (record(result) !== null && result.ok === true && Object.hasOwn(result, 'value')) {
+    try {
+      return Object.freeze({
+        call: expectCall(result.value, config, sessionHandle),
+        peer,
+        sessionHandle,
+      });
+    } catch {
+      await peer.close().catch(() => {});
+      await client.hangupRealtimeVoiceCall(sessionHandle).catch(() => {});
+      await pollRecoveryState(candidate, environment, dependencies);
+      fail('recovery WebRTC bootstrap returned an invalid result');
+    }
+  }
+  const failureClass = safeBootstrapFailureClass(
+    result,
+    await realtimeBootstrapTimeoutPredicate(dependencies),
+  );
+  await peer.close().catch(() => {});
+  await client.hangupRealtimeVoiceCall(sessionHandle).catch(() => {});
+  await pollRecoveryState(candidate, environment, dependencies);
+  fail(`recovery WebRTC bootstrap failed (class=${failureClass}, attempt=1)`);
+}
+
+function isExactExpiredMissionConflict(result) {
+  return (
+    record(result) !== null &&
+    result.ok === false &&
+    record(result.error) !== null &&
+    result.error.kind === 'conflict' &&
+    result.error.entity === 'agent_mission' &&
+    result.error.reason === 'expired'
+  );
+}
+
+async function pollRecoveryTerminalEvidence(input, environment, dependencies) {
+  const certify =
+    dependencies.certifyRecoveryTerminalEvidence ?? certifyM1BRecoveryTerminalEvidence;
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let lastError;
+  for (let attempt = 1; attempt <= FINAL_EVIDENCE_ATTEMPTS; attempt += 1) {
+    try {
+      const evidence = await certify(input, environment);
+      if (
+        evidence?.stage !== 'recovery-terminal' ||
+        evidence.passed !== true ||
+        (evidence.status !== 'cancelled' && evidence.status !== 'expired') ||
+        !Number.isSafeInteger(evidence.missionRevision)
+      ) {
+        fail('recovery terminal adapter did not return its exact receipt');
+      }
+      return evidence;
+    } catch (error) {
+      lastError = error;
+      if (
+        !(error instanceof Error) ||
+        !error.message.includes('recovery terminal proof did not pass exactly') ||
+        attempt === FINAL_EVIDENCE_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await sleep(Math.min(250 * attempt, 1_000));
+    }
+  }
+  throw lastError;
+}
+
+async function terminalizeRecoverableMission(
+  missionSession,
+  candidate,
+  cancelCommandId,
+  environment,
+  dependencies,
+) {
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let acceptedStatus = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await missionSession.cancelQuoteCreation({
+      missionId: candidate.missionId,
+      commandId: cancelCommandId,
+      expectedMissionRevision: candidate.missionRevision,
+    });
+    if (record(result) !== null && result.ok === true) {
+      expectCancellation(
+        result.value,
+        candidate.missionId,
+        candidate.missionRevision + 1,
+        attempt > 1,
+      );
+      acceptedStatus = 'cancelled';
+      break;
+    }
+    if (isExactExpiredMissionConflict(result)) {
+      acceptedStatus = 'expired';
+      break;
+    }
+    if (record(result) === null || !isRetryableApiDependency(result.error) || attempt === 2) {
+      if (record(result) !== null && isRetryableApiDependency(result.error) && attempt === 2) {
+        break;
+      }
+      process.stderr.write(
+        `agent-mission-m1b-staging-smoke:recovery cancellation failed ${describeM1BOperationFailure(
+          record(result)?.error,
+        )}\n`,
+      );
+      fail('recovery cancellation failed outside the response-loss contract');
+    }
+    await sleep(150);
+  }
+  const evidence = await pollRecoveryTerminalEvidence(
+    {
+      missionId: candidate.missionId,
+      startCommandId: candidate.startCommandId,
+      cancelCommandId,
+      draftSessionId: candidate.draftSessionId,
+      draftSlotRevision: candidate.draftSlotRevision,
+      draftContentRevision: candidate.draftContentRevision,
+    },
+    environment,
+    dependencies,
+  );
+  if (
+    evidence?.stage !== 'recovery-terminal' ||
+    evidence.passed !== true ||
+    (evidence.status !== 'cancelled' && evidence.status !== 'expired') ||
+    evidence.missionRevision !== candidate.missionRevision + 1 ||
+    (acceptedStatus !== null && evidence.status !== acceptedStatus)
+  ) {
+    fail('recovery terminal adapter did not return its exact receipt');
+  }
+  return evidence;
+}
+
+async function pollCleanEvidence(environment, dependencies) {
+  const certify = dependencies.certifyCleanEvidence ?? certifyM1BCleanEvidence;
+  const sleep =
+    dependencies.sleep ??
+    ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  let lastError;
+  for (let attempt = 1; attempt <= FINAL_EVIDENCE_ATTEMPTS; attempt += 1) {
+    try {
+      const evidence = certify(environment);
+      if (evidence?.stage !== 'clean' || evidence.passed !== true) {
+        fail('clean runtime evidence adapter did not return its exact receipt');
+      }
+      return evidence;
+    } catch (error) {
+      lastError = error;
+      if (attempt === FINAL_EVIDENCE_ATTEMPTS) throw error;
+      await sleep(Math.min(250 * attempt, 1_000));
+    }
+  }
+  throw lastError;
+}
+
+export async function runM1BRecoveryStagingSmoke(environment = process.env, dependencies = {}) {
+  const prepared = await authenticateAndPrepare(environment, dependencies, { requireClean: false });
+  const { client, createEmptyQuoteDraftPayload } = prepared;
+  const certifyRecoveryState =
+    dependencies.certifyRecoveryStateEvidence ?? certifyM1BRecoveryStateEvidence;
+  const recoveryState = certifyRecoveryState(environment);
+  if (
+    recoveryState?.stage !== 'recovery-state' ||
+    recoveryState.passed !== true ||
+    (recoveryState.state !== 'clean' && recoveryState.state !== 'recoverable')
+  ) {
+    fail('recovery-state adapter did not return its exact receipt');
+  }
+  if (recoveryState.state === 'clean') {
+    return Object.freeze({
+      mode: 'recovery',
+      passed: true,
+      outcome: 'not_needed',
+      cleanup: 'complete',
+    });
+  }
+  const candidate = recoveryState.candidate;
+  expectRecoverableDraft(
+    expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft before recovery'),
+    candidate,
+    createEmptyQuoteDraftPayload,
+  );
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig before recovery'),
+  );
+  const bootstrap = await createRecoveryRealtimeCall(
+    client,
+    config,
+    candidate,
+    environment,
+    dependencies,
+  );
+  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+  const cancelCommandId = expectUuid(randomUUID(), 'recoveryCancelCommandId');
+  let missionSession = null;
+  let primaryError = null;
+  try {
+    missionSession = bootstrap.call.agentMissionSession;
+    if (
+      record(missionSession) === null ||
+      missionSession.protocolVersion !== 1 ||
+      missionSession.realtimeSessionId !== bootstrap.sessionHandle ||
+      missionSession.disposed !== false
+    ) {
+      fail('recovery capability does not match the fresh realtime session');
+    }
+    await bootstrap.peer.applyAnswer(bootstrap.call.answerSdp);
+    const current = expectSuccess(
+      await missionSession.getCurrentQuoteCreation(),
+      'getCurrentQuoteCreation during recovery',
+    );
+    expectRecoverableMission(current?.mission, candidate);
+    await terminalizeRecoverableMission(
+      missionSession,
+      candidate,
+      cancelCommandId,
+      environment,
+      dependencies,
+    );
+    const releasedDraft = expectRecoverableDraft(
+      expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft after recovery cancellation'),
+      candidate,
+      createEmptyQuoteDraftPayload,
+    );
+    expectSuccess(
+      await client.deleteQuoteDraft(releasedDraft.revision),
+      'deleteQuoteDraft during recovery',
+    );
+  } catch (error) {
+    primaryError = error;
+  }
+  let hangupAccepted = false;
+  try {
+    hangupAccepted = await hangupAndClose(
+      client,
+      bootstrap.peer,
+      bootstrap.sessionHandle,
+      missionSession,
+    );
+  } catch {
+    // La preuve PostgreSQL `clean`, pas l'ACK réseau du hangup, fait autorité.
+  }
+  if (primaryError !== null) throw primaryError;
+  await pollCleanEvidence(environment, dependencies);
+  return Object.freeze({
+    mode: 'recovery',
+    passed: true,
+    outcome: 'recovered',
+    cleanup: 'complete',
+    hangupAccepted,
+  });
+}
+
+export async function runM1BPositiveStagingSmoke(environment = process.env, dependencies = {}) {
+  const prepared = await authenticateAndPrepare(environment, dependencies);
+  const { client, isMeaningfulQuoteDraftPayload, isRealtimeBootstrapTimeoutError } = prepared;
+  const existingDraft = expectSuccess(await client.getQuoteDraft(), 'getQuoteDraft');
+  if (existingDraft !== null) {
+    expectCleanDraft(existingDraft, isMeaningfulQuoteDraftPayload);
+    fail('the dedicated account already contains a quote draft');
+  }
+  const config = expectConfig(
+    expectSuccess(await client.realtimeVoiceConfig(), 'realtimeVoiceConfig'),
+  );
+  const randomUUID = dependencies.randomUUID ?? nodeRandomUUID;
+  const bootstrap = await createRealtimeCallWithBoundedTimeoutRecovery(
+    client,
+    config,
+    environment,
+    dependencies,
+    isRealtimeBootstrapTimeoutError,
+  );
+  const { call, peer, sessionHandle, attempts: bootstrapAttempts, recoveredTimeout } = bootstrap;
+  const startCommandId = expectUuid(randomUUID(), 'startCommandId');
+  const ackCommandId = expectUuid(randomUUID(), 'ackCommandId');
+  const cancelCommandId = expectUuid(randomUUID(), 'cancelCommandId');
+  let missionSession = null;
+  let ownedMission = null;
+  let primaryError = null;
+  let activeEvidence = null;
+  try {
     missionSession = call.agentMissionSession;
     if (record(missionSession) === null) {
       fail('M1-B did not negotiate for the dedicated staging account');
     }
     if (
-      missionSession.protocolVersion !== 1
-      || missionSession.realtimeSessionId !== sessionHandle
-      || missionSession.disposed !== false
+      missionSession.protocolVersion !== 1 ||
+      missionSession.realtimeSessionId !== sessionHandle ||
+      missionSession.disposed !== false
     ) {
       fail('M1-B capability handle does not match the realtime session');
     }
@@ -1023,15 +1471,13 @@ export async function runM1BPositiveStagingSmoke(
       start.mission.payload.draft.sessionId,
     );
     if (
-      draft.revision !== start.mission.payload.draft.slotRevision
-      || draft.payload.draft.contentRevision !==
-        start.mission.payload.draft.contentRevision
+      draft.revision !== start.mission.payload.draft.slotRevision ||
+      draft.payload.draft.contentRevision !== start.mission.payload.draft.contentRevision
     ) {
       fail('the created draft does not match the mission draft reference');
     }
-    const context = expectSuccess(await client.updateRealtimeVoiceContext(
-      sessionHandle,
-      {
+    const context = expectSuccess(
+      await client.updateRealtimeVoiceContext(sessionHandle, {
         version: 1,
         revision: 1,
         context: {
@@ -1042,27 +1488,32 @@ export async function runM1BPositiveStagingSmoke(
           entities: [],
           capabilities: ['screen.read'],
         },
-      },
-    ), 'updateRealtimeVoiceContext');
+      }),
+      'updateRealtimeVoiceContext',
+    );
     expectPositiveInteger(context.revision, 'updateRealtimeVoiceContext');
     if (
-      context.revision !== 1
-      || typeof context.contextDigest !== 'string'
-      || !/^[a-f0-9]{64}$/u.test(context.contextDigest)
+      context.revision !== 1 ||
+      typeof context.contextDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(context.contextDigest)
     ) {
       fail('the server did not acknowledge the exact context revision');
     }
     const acknowledgement = expectAcknowledgement(
-      await acknowledgeScreenWithBoundedRetry(missionSession, {
-        missionId: start.mission.id,
-        commandId: ackCommandId,
-        expectedMissionRevision: start.mission.revision,
-        contextRevision: context.revision,
-        contextDigest: context.contextDigest,
-        draftSessionId: start.mission.payload.draft.sessionId,
-        expectedDraftSlotRevision: start.mission.payload.draft.slotRevision,
-        expectedDraftContentRevision: start.mission.payload.draft.contentRevision,
-      }, dependencies),
+      await acknowledgeScreenWithBoundedRetry(
+        missionSession,
+        {
+          missionId: start.mission.id,
+          commandId: ackCommandId,
+          expectedMissionRevision: start.mission.revision,
+          contextRevision: context.revision,
+          contextDigest: context.contextDigest,
+          draftSessionId: start.mission.payload.draft.sessionId,
+          expectedDraftSlotRevision: start.mission.payload.draft.slotRevision,
+          expectedDraftContentRevision: start.mission.payload.draft.contentRevision,
+        },
+        dependencies,
+      ),
       {
         missionId: start.mission.id,
         sessionHandle,
@@ -1072,19 +1523,22 @@ export async function runM1BPositiveStagingSmoke(
     );
     ownedMission = acknowledgement.mission;
     const certifyActive = dependencies.certifyActiveEvidence ?? certifyM1BActiveEvidence;
-    activeEvidence = certifyActive({
-      missionId: acknowledgement.mission.id,
-      sessionId: sessionHandle,
-      startCommandId,
-      ackCommandId,
-      missionRevision: acknowledgement.mission.revision,
-      contextRevision: context.revision,
-      contextDigest: context.contextDigest,
-      screenInstanceId: SCREEN_INSTANCE_ID,
-      draftSessionId: start.mission.payload.draft.sessionId,
-      draftSlotRevision: start.mission.payload.draft.slotRevision,
-      draftContentRevision: start.mission.payload.draft.contentRevision,
-    }, environment);
+    activeEvidence = certifyActive(
+      {
+        missionId: acknowledgement.mission.id,
+        sessionId: sessionHandle,
+        startCommandId,
+        ackCommandId,
+        missionRevision: acknowledgement.mission.revision,
+        contextRevision: context.revision,
+        contextDigest: context.contextDigest,
+        screenInstanceId: SCREEN_INSTANCE_ID,
+        draftSessionId: start.mission.payload.draft.sessionId,
+        draftSlotRevision: start.mission.payload.draft.slotRevision,
+        draftContentRevision: start.mission.payload.draft.contentRevision,
+      },
+      environment,
+    );
   } catch (error) {
     primaryError = error;
   }
@@ -1100,10 +1554,10 @@ export async function runM1BPositiveStagingSmoke(
           'getCurrentQuoteCreation during cleanup',
         );
         if (
-          record(current) === null
-          || record(current.mission) === null
-          || current.mission.id !== ownedMission.id
-          || current.mission.status !== 'active'
+          record(current) === null ||
+          record(current.mission) === null ||
+          current.mission.id !== ownedMission.id ||
+          current.mission.status !== 'active'
         ) {
           fail('the owned mission cannot be identified safely during cleanup');
         }
@@ -1138,21 +1592,13 @@ export async function runM1BPositiveStagingSmoke(
         isMeaningfulQuoteDraftPayload,
         ownedMission.payload.draft.sessionId,
       );
-      expectSuccess(
-        await client.deleteQuoteDraft(draft.revision),
-        'deleteQuoteDraft',
-      );
+      expectSuccess(await client.deleteQuoteDraft(draft.revision), 'deleteQuoteDraft');
     }
   } catch (error) {
     cleanupError = error;
   }
 
-  const hangupAccepted = await hangupAndClose(
-    client,
-    peer,
-    call?.sessionHandle ?? sessionHandle,
-    missionSession,
-  );
+  const hangupAccepted = await hangupAndClose(client, peer, call.sessionHandle, missionSession);
 
   if (primaryError !== null || cleanupError !== null) {
     const causes = [primaryError, cleanupError].filter((error) => error !== null);
@@ -1164,14 +1610,18 @@ export async function runM1BPositiveStagingSmoke(
     fail('active runtime evidence adapter did not return its exact receipt');
   }
   if (cancellation === null) fail('the owned mission was not cancelled');
-  const finalEvidence = await pollFinalEvidence({
-    missionId: cancellation.mission.id,
-    sessionId: sessionHandle,
-    startCommandId,
-    ackCommandId,
-    cancelCommandId,
-    missionRevision: cancellation.mission.revision,
-  }, environment, dependencies);
+  const finalEvidence = await pollFinalEvidence(
+    {
+      missionId: cancellation.mission.id,
+      sessionId: sessionHandle,
+      startCommandId,
+      ackCommandId,
+      cancelCommandId,
+      missionRevision: cancellation.mission.revision,
+    },
+    environment,
+    dependencies,
+  );
   if (finalEvidence?.stage !== 'final' || finalEvidence.passed !== true) {
     fail('final runtime evidence adapter did not return its exact receipt');
   }
@@ -1182,14 +1632,12 @@ export async function runM1BPositiveStagingSmoke(
     missionStage: 'awaiting_customer',
     cleanup: 'complete',
     hangupAccepted,
+    bootstrapAttempts,
+    recoveredTimeout,
   });
 }
 
-export async function runM1BStagingSmoke(
-  command,
-  environment = process.env,
-  dependencies = {},
-) {
+export async function runM1BStagingSmoke(command, environment = process.env, dependencies = {}) {
   if (command === 'preflight') {
     return preflightM1BStagingAccount(environment, dependencies);
   }
@@ -1199,7 +1647,10 @@ export async function runM1BStagingSmoke(
   if (command === 'positive') {
     return runM1BPositiveStagingSmoke(environment, dependencies);
   }
-  fail('expected command preflight, negative or positive');
+  if (command === 'recovery') {
+    return runM1BRecoveryStagingSmoke(environment, dependencies);
+  }
+  fail('expected command preflight, negative, positive or recovery');
 }
 
 async function main() {
@@ -1207,10 +1658,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (
-  process.argv[1]
-  && import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : 'staging smoke failed'}\n`);
     process.exitCode = 1;

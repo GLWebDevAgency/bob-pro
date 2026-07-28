@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  assertM1BStagingPerformance,
   buildM1BStagingReport,
   writeM1BStagingReport,
 } from './agent-mission-m1b-staging-report.mjs';
@@ -17,7 +18,7 @@ function environment(overrides = {}) {
     BOB_M1B_WORKFLOW_RUN_ID: '123456789',
     BOB_M1B_WORKFLOW_RUN_ATTEMPT: '2',
     BOB_M1B_STARTED_AT: '2026-07-27T12:00:00.000Z',
-    BOB_M1B_FINISHED_AT: '2026-07-27T12:30:00.000Z',
+    BOB_M1B_FINISHED_AT: '2026-07-27T12:29:59.999Z',
     BOB_M1B_BASELINE_DEPLOYMENT_ID: BASELINE,
     BOB_M1B_BASELINE_DEPLOYMENT_ACKNOWLEDGED: 'true',
     BOB_M1B_ACTIVE_DEPLOYMENT_ID: ACTIVE,
@@ -57,6 +58,11 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
     },
   });
   assert.equal(report.workflowRun.actorReference, 'github-actions-run:123456789');
+  assert.deepEqual(report.performance, {
+    durationMilliseconds: 1_799_999,
+    targetDurationMilliseconds: 1_800_000,
+    targetMet: true,
+  });
   assert.deepEqual(report.cleanupMutations, {
     variablesRemoved: true,
     overrideRemoved: true,
@@ -72,6 +78,22 @@ test('rapport borné contient les preuves opérationnelles sans identité utilis
   const serialized = JSON.stringify(report);
   assert.equal(serialized.includes('m1b-staging@bob.test'), false);
   assert.equal(serialized.includes('BOB_M1B_STAGING_USER_ID'), false);
+});
+
+test('le budget inférieur à trente minutes est binaire et vérifiable après upload', () => {
+  const report = buildM1BStagingReport(environment());
+  assert.deepEqual(assertM1BStagingPerformance(report), {
+    durationMilliseconds: 1_799_999,
+    targetMet: true,
+  });
+  const atBoundary = buildM1BStagingReport(environment({
+    BOB_M1B_FINISHED_AT: '2026-07-27T12:30:00.000Z',
+  }));
+  assert.equal(atBoundary.performance.targetMet, false);
+  assert.throws(
+    () => assertM1BStagingPerformance(atBoundary),
+    /exceeded the 30 minute target/u,
+  );
 });
 
 test('conserve le run ID GitHub opaque sur vingt chiffres sans perte de précision', () => {
@@ -167,7 +189,7 @@ test('écrit uniquement dans le répertoire d’évidence dédié avec permissio
       writeFileSync: (...args) => calls.push(['write', ...args]),
     },
   );
-  assert.equal(report.schemaVersion, 4);
+  assert.equal(report.schemaVersion, 5);
   assert.equal(calls[0][0], 'mkdir');
   assert.equal(calls[1][0], 'write');
   assert.equal(calls[1][3].mode, 0o600);

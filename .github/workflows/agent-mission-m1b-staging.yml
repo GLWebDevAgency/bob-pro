@@ -6,6 +6,14 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Staging operation to execute
+        required: true
+        default: certification
+        type: choice
+        options:
+          - certification
+          - recovery
       founder_authorization_date:
         description: Founder authorization date (YYYY-MM-DD)
         required: true
@@ -28,6 +36,11 @@ on:
         type: string
   workflow_call:
     inputs:
+      mode:
+        description: Staging operation to execute
+        required: false
+        default: certification
+        type: string
       founder_authorization_date:
         description: Founder authorization date (YYYY-MM-DD)
         required: true
@@ -101,6 +114,7 @@ jobs:
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
           BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
           BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+          BOB_M1B_WORKFLOW_MODE: ${{ inputs.mode }}
         run: |
           started_at="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
           echo "release_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
@@ -140,6 +154,9 @@ jobs:
             }
           }
           if (!sha.test(process.env.GITHUB_SHA ?? '')) throw new Error('GITHUB_SHA must be exact');
+          if (!['certification', 'recovery'].includes(process.env.BOB_M1B_WORKFLOW_MODE ?? '')) {
+            throw new Error('BOB_M1B_WORKFLOW_MODE must be certification or recovery');
+          }
           for (const name of [
             'RAILWAY_PROJECT_ID',
             'RAILWAY_ENVIRONMENT_ID',
@@ -190,7 +207,7 @@ jobs:
             apps/api/scripts/psql-child-environment.test.mjs \
             apps/api/scripts/agent-mission-m1b-staging-*.test.mjs
           node apps/api/scripts/write-release-metadata.mjs "$GITHUB_SHA" staging
-      - name: Preflight Railway variables and migration-aware flag baseline
+      - name: Preflight Railway variables and strict flag baseline
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
@@ -201,12 +218,10 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            node apps/api/scripts/agent-mission-m1b-staging-migration-reconcile.mjs
-          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
-            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs bootstrap-preflight
       - name: Preflight and deploy the private Whisper auditor at the exact SHA
         id: deploy_whisper
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -223,6 +238,7 @@ jobs:
             wait-deployment "$deployment_id"
           node apps/api/scripts/agent-mission-m1b-staging-whisper.mjs preflight
       - name: Baseline OFF predeploy
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 120
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -236,14 +252,14 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs preflight
       - name: Deploy exact SHA with M1-B OFF
         id: deploy_baseline
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 60
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -259,6 +275,7 @@ jobs:
             wait-deployment "$deployment_id"
           echo "deployment_acknowledged=true" >> "$GITHUB_OUTPUT"
       - name: Prove baseline topology, readiness and postdeploy
+        if: ${{ inputs.mode == 'certification' }}
         timeout-minutes: 120
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -278,8 +295,10 @@ jobs:
           node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
       - name: Prove real WebRTC negotiation remains OFF
+        if: ${{ inputs.mode == 'certification' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
@@ -325,9 +344,8 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
       - name: Deploy exact SHA with M1-B configured
         id: deploy_active
         timeout-minutes: 60
@@ -371,7 +389,8 @@ jobs:
           echo "acoustic_readiness_ms=$acoustic_readiness_ms" >> "$GITHUB_OUTPUT"
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
           node apps/api/scripts/agent-mission-m1b-staging-railway.mjs assert-active
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
@@ -388,7 +407,26 @@ jobs:
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-flag.mjs enable
           echo "owned=true" >> "$GITHUB_OUTPUT"
+      - name: Recover only the exact technical staging residue
+        if: ${{ inputs.mode == 'recovery' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs recovery
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-flag.mjs assert-active
       - name: Execute real positive WebRTC mission and runtime RLS proof
+        if: ${{ inputs.mode == 'certification' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
@@ -467,6 +505,31 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+      - name: Recover the exact technical residue before disabling M1-B
+        id: recover_account
+        if: ${{ always() && steps.pin_database.outcome == 'success' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          BOB_M1B_STAGING_SUPABASE_ANON_KEY: ${{ secrets.BOB_M1B_STAGING_SUPABASE_ANON_KEY }}
+          BOB_M1B_STAGING_ACCOUNT_EMAIL: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_EMAIL }}
+          BOB_M1B_STAGING_ACCOUNT_PASSWORD: ${{ secrets.BOB_M1B_STAGING_ACCOUNT_PASSWORD }}
+        run: |
+          recovery_state="$(
+            railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+              node --input-type=module -e \
+                "import { certifyM1BRecoveryStateEvidence as certify } from './apps/api/scripts/agent-mission-m1b-staging-evidence.mjs'; process.stdout.write(certify(process.env).state)"
+          )"
+          case "$(printf '%s\n' "$recovery_state" | tail -n 1)" in
+            clean) ;;
+            recoverable)
+              node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
+              railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+                --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+                node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs recovery
+              ;;
+            *) echo "Unexpected bounded recovery state" >&2; exit 1 ;;
+          esac
       - name: Remove only the user override durably owned by this run
         id: remove_override
         if: ${{ always() && steps.pin_database.outcome == 'success' }}
@@ -523,9 +586,8 @@ jobs:
               sh apps/api/scripts/check-release-env.sh
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=predeploy \
-              REALTIME_CANCELLATION_FENCE_PREDECESSOR_CAPABLE=false \
-              sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs predeploy
       - name: Deploy exact SHA with M1-B OFF again
         id: deploy_off
         if: ${{ always() && steps.remove_variables.outputs.removed == 'true' }}
@@ -575,12 +637,13 @@ jobs:
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
-            env BOB_RELEASE_PHASE=postdeploy sh apps/api/scripts/release.sh
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs postdeploy
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs off
       - name: Prove untouched keyspace when activation never became owned
-        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outputs.removed != 'true' }}
+        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outcome == 'success' && steps.remove_variables.outputs.removed != 'true' }}
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BOB_M1B_STAGING_HMAC_KEYRING: ${{ secrets.BOB_M1B_STAGING_HMAC_KEYRING }}
@@ -588,6 +651,20 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-key-state.mjs bootstrap
+      - name: Restore global Bob Live capacity independently after cleanup attempts
+        id: restore_capacity
+        if: ${{ always() && steps.pin_database.outcome == 'success' && steps.remove_override.outcome == 'success' && steps.remove_variables.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              node apps/api/scripts/agent-mission-m1b-staging-release.mjs restore-capacity
       - name: Final independent OFF data cleanliness proof
         id: final_off_data
         if: ${{ always() && steps.pin_database.outcome == 'success' }}
@@ -621,7 +698,7 @@ jobs:
     needs:
       - certify
       - cleanup
-    if: ${{ always() }}
+    if: ${{ always() && inputs.mode == 'certification' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -660,13 +737,18 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 90
+      - name: Require the measured staging budget after preserving evidence
+        run: |
+          node apps/api/scripts/agent-mission-m1b-staging-report.mjs \
+            verify-performance \
+            ".release-evidence/agent-mission-m1b/${GITHUB_SHA}.json"
 
   verdict:
     needs:
       - certify
       - cleanup
       - evidence
-    if: ${{ always() }}
+    if: ${{ always() && inputs.mode == 'certification' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -679,3 +761,19 @@ jobs:
           test "$CERTIFY_RESULT" = success
           test "$CLEANUP_RESULT" = success
           test "$EVIDENCE_RESULT" = success
+
+  recovery-verdict:
+    needs:
+      - certify
+      - cleanup
+    if: ${{ always() && inputs.mode == 'recovery' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require bounded recovery and independent OFF cleanup
+        env:
+          RECOVERY_RESULT: ${{ needs.certify.result }}
+          CLEANUP_RESULT: ${{ needs.cleanup.result }}
+        run: |
+          test "$RECOVERY_RESULT" = success
+          test "$CLEANUP_RESULT" = success

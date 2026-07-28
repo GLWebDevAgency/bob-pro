@@ -1566,18 +1566,17 @@ export class RealtimeVoiceService {
     });
     if (result.ok) {
       this.metrics.bobLiveContextUpdates.inc({ outcome: 'ok' });
-      const contextVersion = realtimeAgentContextVersion(prepared.snapshot);
       this.sideband.contextChanged({
         userId: principal.userId,
         companyId: principal.companyId,
         sessionHandle,
         revision: result.revision,
-        digest: contextVersion.digest,
+        digest: prepared.digest,
       });
       // Le digest est calculé par la même autorité que le sideband. Le mobile le conserve
       // seulement comme fence de fraîcheur ; il ne tente jamais de réimplémenter la
       // canonicalisation serveur du contexte.
-      return ok({ revision: result.revision, contextDigest: contextVersion.digest });
+      return ok({ revision: result.revision, contextDigest: prepared.digest });
     }
     if (result.reason === 'stale' || result.reason === 'conflict') {
       this.metrics.bobLiveContextUpdates.inc({ outcome: result.reason });

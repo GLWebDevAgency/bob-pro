@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -7,6 +7,7 @@ const SHA = /^[0-9a-f]{40}$/u;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const JOB_RESULT = new Set(['success', 'failure', 'cancelled', 'skipped']);
+const TARGET_DURATION_MILLISECONDS = 30 * 60 * 1_000;
 
 function fail(message) {
   throw new Error(`agent-mission-m1b-staging-report:${message}`);
@@ -80,7 +81,8 @@ export function buildM1BStagingReport(environment = process.env) {
     required(environment, 'BOB_M1B_FINISHED_AT', 40),
     'finishedAt',
   );
-  if (Date.parse(finishedAt) < Date.parse(startedAt)) {
+  const durationMilliseconds = Date.parse(finishedAt) - Date.parse(startedAt);
+  if (durationMilliseconds < 0) {
     fail('finishedAt cannot precede startedAt');
   }
   const certifyResult = result(
@@ -119,7 +121,7 @@ export function buildM1BStagingReport(environment = process.env) {
     fail('baseline deployment ACK requires its exact deployment ID');
   }
   return Object.freeze({
-    schemaVersion: 4,
+    schemaVersion: 5,
     objective: 'O4.M1-B',
     environment: 'staging',
     releaseSha,
@@ -133,6 +135,11 @@ export function buildM1BStagingReport(environment = process.env) {
     },
     startedAt,
     finishedAt,
+    performance: {
+      durationMilliseconds,
+      targetDurationMilliseconds: TARGET_DURATION_MILLISECONDS,
+      targetMet: durationMilliseconds < TARGET_DURATION_MILLISECONDS,
+    },
     deployments: {
       baseline: baselineDeploymentId,
       baselineAcknowledged: baselineDeploymentAcknowledged,
@@ -196,11 +203,34 @@ export function buildM1BStagingReport(environment = process.env) {
   });
 }
 
-export function writeM1BStagingReport(
-  outputPath,
-  environment = process.env,
-  dependencies = {},
-) {
+export function assertM1BStagingPerformance(report) {
+  const performance =
+    report !== null && typeof report === 'object' && !Array.isArray(report)
+      ? report.performance
+      : null;
+  if (
+    report?.schemaVersion !== 5
+    || performance === null
+    || typeof performance !== 'object'
+    || Array.isArray(performance)
+    || !Number.isSafeInteger(performance.durationMilliseconds)
+    || performance.durationMilliseconds < 0
+    || performance.targetDurationMilliseconds !== TARGET_DURATION_MILLISECONDS
+    || performance.targetMet
+      !== (performance.durationMilliseconds < TARGET_DURATION_MILLISECONDS)
+  ) {
+    fail('performance evidence is invalid');
+  }
+  if (!performance.targetMet) {
+    fail('staging certification exceeded the 30 minute target');
+  }
+  return Object.freeze({
+    durationMilliseconds: performance.durationMilliseconds,
+    targetMet: true,
+  });
+}
+
+function assertEvidencePath(outputPath) {
   if (
     typeof outputPath !== 'string'
     || !outputPath.startsWith('.release-evidence/agent-mission-m1b/')
@@ -209,6 +239,14 @@ export function writeM1BStagingReport(
   ) {
     fail('output path must stay inside the M1-B release-evidence directory');
   }
+}
+
+export function writeM1BStagingReport(
+  outputPath,
+  environment = process.env,
+  dependencies = {},
+) {
+  assertEvidencePath(outputPath);
   const report = buildM1BStagingReport(environment);
   const absolutePath = resolve(dependencies.cwd ?? process.cwd(), outputPath);
   (dependencies.mkdirSync ?? mkdirSync)(dirname(absolutePath), {
@@ -224,6 +262,21 @@ export function writeM1BStagingReport(
 }
 
 function main() {
+  if (process.argv[2] === 'verify-performance') {
+    const outputPath = process.argv[3];
+    assertEvidencePath(outputPath);
+    let report;
+    try {
+      report = JSON.parse(readFileSync(resolve(process.cwd(), outputPath), 'utf8'));
+    } catch {
+      fail('performance evidence cannot be read');
+    }
+    const performance = assertM1BStagingPerformance(report);
+    process.stdout.write(
+      `agent-mission-m1b-staging-report:performance-ok:${performance.durationMilliseconds}\n`,
+    );
+    return;
+  }
   const report = writeM1BStagingReport(process.argv[2]);
   process.stdout.write(
     `agent-mission-m1b-staging-report:ok:${report.releaseSha}\n`,
