@@ -27,6 +27,7 @@ import {
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
 import { extractSpokenWarranty } from './equipment-warranty';
+import { extractInterventionSummary } from './intervention-summary';
 import {
   extractSpokenContractFacts,
   extractSpokenEquipmentCount,
@@ -5789,14 +5790,16 @@ export class BobAgent {
       }
 
       // Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé, note-le »)
-      // — extrait de la phrase courante, jamais réinventé au tour suivant.
-      const summaryMatch =
+      // — extrait de la phrase courante, jamais réinventé au tour suivant. [finding 4] Il part
+      // sur une PIÈCE DE PREUVE : l'extraction est bornée par les charnières factuelles DÉJÀ
+      // résolues ici (sites et clients des passages réels), jamais gloutonne jusqu'au point.
+      const summary =
         intent === 'terminer_intervention'
-          ? /\b(?:note[sz]?(?:-le| le)?\s*[:,]?\s*|resume\s*[:,]?\s*|avec le resume\s*[:,]?\s*)([^.!?]{3,300})/i.exec(
-              message,
-            )
+          ? extractInterventionSummary(message, {
+              siteNames: all.value.map((intervention) => intervention.chantierNom),
+              customerNames: all.value.map((intervention) => intervention.customerNom),
+            })
           : null;
-      const summary = summaryMatch?.[1]?.trim() ?? null;
       const args =
         intent === 'terminer_intervention' && summary !== null
           ? { interventionId: target.id, summary }
