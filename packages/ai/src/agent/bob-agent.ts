@@ -1015,6 +1015,10 @@ const CONTRACT_GESTURE_WORDS: ReadonlySet<string> = new Set([
   'chez', 'pour', 'dans', 'sur', 'avec', 'sans', 'montre', 'montrer', 'dis', 'dire', 'parle',
   'parler', 'resume', 'resumer', 'bob', 'peux', 'veux', 'voudrais', 'faut', 'merci', 'bonjour',
   'salut', 'stp', 'plait', 'cest', 'est', 'elle', 'elles', 'nous', 'vous', 'mon', 'mes', 'ton',
+  // Pronoms du GESTE : « fais-MOI le contrat fontaines RATP » (phrase canonique §2.7). Sans
+  // eux, le refus honnête récite « moi fontaines ratp » comme nom dit et paraît n'avoir rien
+  // compris — deux autres ensembles de ce fichier les neutralisent déjà, oubli isolé ici.
+  'moi', 'toi', 'lui',
   'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'tout', 'tous', 'toute', 'toutes', 'aussi',
   'alors', 'donc', 'bien', 'voila', 'quand', 'comment', 'combien',
   // §2.7 — vocabulaire des GESTES de cycle de vie (création/activation/résiliation) et des

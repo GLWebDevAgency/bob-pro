@@ -414,6 +414,24 @@ describe('creer_contrat_maintenance — consigne composite désordonnée lue en 
     expect(r.value.card.body).toContain('second geste');
   });
 
+  it('le refus HONNÊTE ne recrache jamais un pronom du geste : « fais-MOI le contrat … »', async () => {
+    // Phrase canonique §2.7. Ce que Bob RÉCITE au pro est ce qu'il a entendu de significatif ;
+    // « moi » vient de « fais-moi », c'est un mot du GESTE, jamais un nom de client. Un refus
+    // qui répond « je ne trouve aucun client « moi fontaines ratp » » a l'air de n'avoir rien
+    // compris — et le pro cesse de croire les refus suivants.
+    const agent = lifecycleAgent({ listBillableCustomers: async () => ok([GIRARD]) });
+    const r = await agent.ask(
+      'fais-moi le contrat fontaines RATP, 1 200 € par an, à partir du 01/10/2026',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('creer_contrat_maintenance');
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toContain('introuvable');
+    expect(r.value.card.body).toContain('fontaines ratp');
+    expect(r.value.card.body).not.toContain('moi');
+  });
+
   it('AMBIGUÏTÉ client (noms INCLUSIFS « RATP » / « RATP CAP ») → question à followUps par ID, qui CONVERGE au tour suivant', async () => {
     const created: unknown[] = [];
     const agent = lifecycleAgent({
