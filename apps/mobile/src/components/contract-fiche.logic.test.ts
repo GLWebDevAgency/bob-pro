@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  contractEventDay,
   contractHistoryEntries,
   contractPrimaryCta,
   frContractDate,
@@ -81,6 +82,34 @@ describe('historique honnête [revue P10] — faits stockés + reconductions ét
       'renewed',
     ]);
     expect(entries[0]!.note).toBe('Marché perdu.');
+  });
+
+  /**
+   * MÊME faille que celle corrigée sur TerminateContract (97a96840) : `.slice(0, 10)` rend le
+   * jour UTC, pas le jour MÉTIER. Entre 00 h et 02 h à Paris, l'UTC est encore la VEILLE —
+   * l'historique daterait activation et résiliation d'un jour trop tôt, et le pro lirait une
+   * date qui ne correspond ni à son geste ni à ce que le domaine a écrit.
+   */
+  it('[jour MÉTIER Paris] un fait posé à 00 h 30 n’est jamais daté de la veille', () => {
+    const entries = contractHistoryEntries({
+      contract: {
+        // 12/10/2024 22 h 30 UTC = 13 octobre 00 h 30 à Paris (CEST, UTC+2).
+        activatedAt: '2024-10-12T22:30:00.000Z',
+        // 02/11/2026 23 h 30 UTC = 3 novembre 00 h 30 à Paris (CET, UTC+1).
+        terminatedAt: '2026-11-02T23:30:00.000Z',
+        terminationNote: 'Marché perdu.',
+      },
+      renewals: [],
+    });
+    expect(entries.map((entry) => entry.at)).toEqual(['2026-11-03', '2024-10-13']);
+  });
+
+  it('contractEventDay : jour métier Paris d’un instant stocké, null si le fait n’existe pas', () => {
+    expect(contractEventDay('2026-11-02T23:30:00.000Z')).toBe('2026-11-03');
+    // Même instant lu en plein jour : aucun décalage inventé.
+    expect(contractEventDay('2026-11-02T09:00:00.000Z')).toBe('2026-11-02');
+    expect(contractEventDay(null)).toBeNull();
+    expect(contractEventDay('')).toBeNull();
   });
 
   it('brouillon jamais activé : historique vide (aucun fait inventé)', () => {

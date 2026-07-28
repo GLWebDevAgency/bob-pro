@@ -41,6 +41,7 @@ import { ScreenHeader } from '../../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
+  contractEventDay,
   contractHistoryEntries,
   frContractDate,
   inclusivePeriodOf,
@@ -140,7 +141,9 @@ export default function FicheContrat() {
             variant: 'neutral' as const,
             label: t('contrat.badgeTerminated', {
               personality,
-              params: { date: frContractDate((contract.terminatedAt ?? '').slice(0, 10)) },
+              // Jour MÉTIER Paris, jamais le jour UTC : entre 00 h et 02 h l'UTC est
+              // encore la veille et le badge daterait la résiliation d'un jour trop tôt.
+              params: { date: frContractDate(contractEventDay(contract.terminatedAt) ?? '') },
             }),
           }
         : expired !== null

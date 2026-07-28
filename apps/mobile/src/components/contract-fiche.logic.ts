@@ -11,7 +11,7 @@
  *  · l'historique mêle FAITS STOCKÉS (activatedAt, terminatedAt+motif) et reconductions
  *    DÉRIVÉES arithmétiquement, toujours suffixées « (calculé) » (revue P10).
  */
-import { addDays, type ContractPeriod, type MaintenanceContractProps } from '@bob/core';
+import { addDays, parisDateOnly, type ContractPeriod, type MaintenanceContractProps } from '@bob/core';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -47,6 +47,17 @@ export function frContractDate(dateOnly: string): string {
   return `${Number(dateOnly.slice(8, 10))} ${month} ${dateOnly.slice(0, 4)}`;
 }
 
+/**
+ * Jour MÉTIER (Europe/Paris) d'un instant stocké — `parisDateOnly` de @bob/core, la SEULE
+ * source de vérité du calendrier de l'entreprise. Jamais `.slice(0, 10)` : ce serait le jour
+ * UTC, et entre 00 h et 02 h à Paris l'UTC est encore la VEILLE — le fait s'afficherait daté
+ * d'un jour trop tôt (même faille que celle corrigée sur TerminateContract, 97a96840).
+ * Absence de fait ⇒ null : aucune date inventée.
+ */
+export function contractEventDay(at: string | null): string | null {
+  return at === null || at === '' ? null : parisDateOnly(at);
+}
+
 export interface ContractHistoryEntry {
   /** Fait STOCKÉ (activatedAt/terminatedAt) ou DÉRIVÉ (reconduction arithmétique). */
   kind: 'activated' | 'renewed' | 'terminated';
@@ -68,21 +79,18 @@ export function contractHistoryEntries(input: {
   renewals: readonly string[];
 }): ContractHistoryEntry[] {
   const entries: ContractHistoryEntry[] = [];
-  if (input.contract.activatedAt !== null) {
-    entries.push({
-      kind: 'activated',
-      at: input.contract.activatedAt.slice(0, 10),
-      computed: false,
-      note: null,
-    });
+  const activatedOn = contractEventDay(input.contract.activatedAt);
+  if (activatedOn !== null) {
+    entries.push({ kind: 'activated', at: activatedOn, computed: false, note: null });
   }
   for (const renewal of input.renewals) {
     entries.push({ kind: 'renewed', at: renewal, computed: true, note: null });
   }
-  if (input.contract.terminatedAt !== null) {
+  const terminatedOn = contractEventDay(input.contract.terminatedAt);
+  if (terminatedOn !== null) {
     entries.push({
       kind: 'terminated',
-      at: input.contract.terminatedAt.slice(0, 10),
+      at: terminatedOn,
       computed: false,
       note: input.contract.terminationNote,
     });
