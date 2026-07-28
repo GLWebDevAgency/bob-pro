@@ -27,6 +27,10 @@ import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_PUBLIC_CAPABILITY_CERT === 'true';
+// SIREN dédié à cette suite (Luhn valide). validSiret replie la séquence modulo 10 000 (NIC à
+// 4 chiffres) : chaque suite Postgres possède donc son propre SIREN afin qu'aucune collision de
+// SIRET inter-suites ne soit possible sur l'unique companies.siret de la base partagée du gate.
+const CERT_SIREN = '552100109';
 const CERT_NOW = new Date().toISOString();
 const CLOSE_NOW = new Date(Date.parse(CERT_NOW) + 1_000).toISOString();
 const clock: ClockPort = {
@@ -375,14 +379,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const quoteId = `public-lifecycle-quote-${id}`;
       const invoiceId = `public-lifecycle-invoice-${id}`;
       const companyName = `Certification ${label} ${id.slice(0, 8)}`;
-      const siret = validSiret('552100554', fixtureSequence);
+      const siret = validSiret(CERT_SIREN, fixtureSequence);
       fixtureSequence += 1;
       await admin.company.create({
         data: {
           id: companyId,
           name: companyName,
           legalForm: 'EI',
-          siren: '552100554',
+          siren: CERT_SIREN,
           siret,
           trade: 'autre',
           vatRegime: 'reel_normal',
@@ -502,23 +506,38 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     }, 30_000);
 
     afterAll(async () => {
-      if (admin && companyIds.length > 0) {
-        const where = { companyId: { in: companyIds } };
-        await admin.publicAccessToken.deleteMany({ where }).catch(() => undefined);
-        await admin.subscription.deleteMany({ where }).catch(() => undefined);
-        await admin.documentArchiveJob.deleteMany({ where }).catch(() => undefined);
-        await admin.invoice.deleteMany({ where }).catch(() => undefined);
-        await admin.quote.deleteMany({ where }).catch(() => undefined);
-        await admin.customer.deleteMany({ where }).catch(() => undefined);
-        await admin.company
-          .deleteMany({ where: { id: { in: companyIds } } })
-          .catch(() => undefined);
+      try {
+        if (admin && companyIds.length > 0) {
+          const where = { companyId: { in: companyIds } };
+          await admin.$transaction(async (tx) => {
+            // La plupart des fixtures ont été clôturées par CloseAccount : les triggers légaux
+            // interdisent alors réouverture (companies_closure_monotonicity) comme hard-delete
+            // (companies_closed_delete_fence). Réouverture technique locale des seules fixtures :
+            // neutralise ces triggers le temps du seul updateMany, puis les réactive AVANT les
+            // DELETE. Aucune erreur n'est avalée : toute future dépendance oubliée doit faire
+            // échouer le gate au lieu de fuir des sociétés dans la base partagée des suites.
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+            await tx.company.updateMany({
+              where: { id: { in: companyIds } },
+              data: { closedAt: null, closureReason: null },
+            });
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+            await tx.publicAccessToken.deleteMany({ where });
+            await tx.subscription.deleteMany({ where });
+            await tx.documentArchiveJob.deleteMany({ where });
+            await tx.invoice.deleteMany({ where });
+            await tx.quote.deleteMany({ where });
+            await tx.customer.deleteMany({ where });
+            await tx.company.deleteMany({ where: { id: { in: companyIds } } });
+          });
+        }
+      } finally {
+        await Promise.allSettled([
+          firstWorker?.$disconnect(),
+          secondWorker?.$disconnect(),
+          admin?.$disconnect(),
+        ]);
       }
-      await Promise.allSettled([
-        firstWorker?.$disconnect(),
-        secondWorker?.$disconnect(),
-        admin?.$disconnect(),
-      ]);
     });
 
     it('exécute sous un rôle runtime sans superuser/bypass RLS et FORCE RLS sur les quatre tables critiques', async () => {
