@@ -10,6 +10,7 @@ function mediaFromRow(row: {
   byteSize: number;
   storageKey: string;
   createdAt: Date;
+  equipmentId: string | null;
 }): WorksiteMediaItem {
   return {
     id: row.id,
@@ -20,6 +21,8 @@ function mediaFromRow(row: {
     byteSize: row.byteSize,
     storageKey: row.storageKey,
     createdAt: row.createdAt.toISOString(),
+    // PR-11 — tag équipement additif (null = photo du site, lignes historiques comprises).
+    equipmentId: row.equipmentId,
   };
 }
 
@@ -42,6 +45,7 @@ export class PrismaWorksiteMediaStorage implements WorksiteMediaStorage {
         byteSize: item.byteSize,
         storageKey: item.storageKey,
         createdAt: new Date(item.createdAt),
+        equipmentId: item.equipmentId ?? null,
       },
     });
   }

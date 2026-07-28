@@ -353,6 +353,7 @@ model Company {
   chantiers                                   Chantier[]
   chantierNotes                               ChantierNote[]
   chantierPhotos                              ChantierPhoto[]
+  equipments                                  Equipment[]
   bankBalanceSnapshots                        BankBalanceSnapshot[]
   counters                                    DocumentCounter[]
   realtimeAdmissionEvents                     RealtimeAdmissionEvent[]
@@ -676,6 +677,7 @@ model Chantier {
   updatedAt     DateTime        @updatedAt @db.Timestamptz(6)
   chantierNotes ChantierNote[]
   photos        ChantierPhoto[]
+  equipments    Equipment[]
   expenses      Expense[]
   // PR-08 — pièces du site (chantierId nullable sur quotes/invoices, patron Expense).
   quotes        Quote[]         @relation("ChantierQuotes")
@@ -698,6 +700,11 @@ model ChantierNote {
   text        String
   authorLabel String
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  /// PR-11 — équipement du site visé par la note (tag ADDITIF, null = note du site). Cohérence
+  /// équipement↔site prouvée au use case + trigger equipment_scope_coherence ; lignes
+  /// historiques non taguées, aucun backfill.
+  equipmentId String?
+  equipment   Equipment? @relation(fields: [equipmentId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([companyId, chantierId, createdAt(sort: Desc)], map: "chantier_notes_chantier_created_idx")
   @@map("chantier_notes")
@@ -717,9 +724,43 @@ model ChantierPhoto {
   byteSize   Int
   storageKey String   @unique
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  /// PR-11 — équipement du site visé par la photo (tag ADDITIF, null = photo du site).
+  equipmentId String?
+  equipment   Equipment? @relation(fields: [equipmentId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([companyId, chantierId, createdAt(sort: Desc)], map: "chantier_photos_chantier_created_idx")
   @@map("chantier_photos")
+}
+
+/// PR-11 (Bloc A, C1, exigence 2) — parc d'équipements d'un SITE (Chantier = site générique).
+/// Table MINIMALE : `kind` libellé LIBRE (jamais d'énum métier), certificats/garanties portés
+/// par StoredDocument lié. Cycle `active | retired` (retrait logique réversible, jamais de
+/// DELETE runtime) ; `retiredAt` = fait de retrait RÉEL, purgé à la réactivation (revue P11).
+model Equipment {
+  id            String    @id
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  chantierId    String
+  chantier      Chantier  @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  label         String
+  kind          String?
+  brand         String?
+  serialNumber  String?
+  location      String?
+  installedAt   DateTime? @db.Date
+  warrantyUntil DateTime? @db.Date
+  status        String    @default("active")
+  retiredAt     DateTime? @db.Timestamptz(6)
+  notes         String?
+  revision      Int       @default(1)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(6)
+  chantierNotes ChantierNote[]
+  photos        ChantierPhoto[]
+
+  @@unique([id, companyId], name: "uniq_equipment_id_company", map: "uniq_equipment_id_company")
+  @@index([companyId, chantierId, status], map: "equipments_company_chantier_status_idx")
+  @@map("equipments")
 }
 
 model Quote {

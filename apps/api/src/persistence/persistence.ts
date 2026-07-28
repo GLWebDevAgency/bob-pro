@@ -7,6 +7,7 @@ import type {
   CatalogueRepository,
   ChantierRepository,
   ChantierNoteRepository,
+  EquipmentRepository,
   CustomerContactRepository,
   ChartOfAccountsRepository,
   CompanyRepository,
@@ -133,6 +134,8 @@ export interface Persistence {
   catalogue: CatalogueRepository;
   chantiers: ChantierRepository;
   chantierNotes: ChantierNoteRepository;
+  /** PR-11 — parc d'équipements par site (retrait logique, jamais de DELETE runtime). */
+  equipments: EquipmentRepository;
   worksiteMedia: WorksiteMediaStorage;
   expenseCreationRequests: ExpenseCreationRequestStore;
   quoteCreationRequests: QuoteCreationRequestStore;

@@ -614,6 +614,9 @@ REVOKE DELETE, TRUNCATE ON TABLE public.document_versions FROM :"app_role";
 -- par quote_draft_slots ; révoquer DELETE ici protège définitivement le contrat signé et son
 -- archive polymorphe contre une dérive de policy ou une requête SQL directe.
 REVOKE DELETE ON TABLE public.quotes FROM :"app_role";
+-- PR-11 : le parc d'équipements ne connaît que le RETRAIT LOGIQUE (status retired + retiredAt).
+-- Aucun use case runtime ne supprime une ligne — l'historique par équipement doit survivre.
+REVOKE DELETE ON TABLE public.equipments FROM :"app_role";
 -- Rail global monotone de l'archive : lecture runtime seulement, activation via DIRECT_URL.
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
   public.document_archive_protocol_state
@@ -2520,6 +2523,8 @@ RUN_POSTGRES_DEVICE_REBIND_CERT=true \
   pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/devices.postgres.test.ts
 RUN_POSTGRES_CATALOGUE_CERT=true \
   pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/catalogue-chantiers.postgres.test.ts
+RUN_POSTGRES_EQUIPMENT_CERT=true \
+  pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/equipments.postgres.test.ts
 RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
   pnpm --filter @bob/api exec vitest run --testTimeout=30000 src/persistence/prisma/quote-draft-slots.postgres.test.ts
 RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \

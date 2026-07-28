@@ -177,6 +177,17 @@ import {
   type CreateQuoteInput,
   buildQuoteDuplicationInput,
   type DuplicateQuoteOutput,
+  CreateEquipment,
+  UpdateEquipment,
+  RetireEquipment,
+  ReactivateEquipment,
+  ReopenChantier,
+  deriveEquipmentHistory,
+  type CreateEquipmentInput,
+  type EquipmentPatch,
+  type EquipmentProps,
+  type EquipmentHistoryEntry,
+  type RetireEquipmentOutput,
   type Scenario,
   type Horizon,
   type CashflowProjection,
@@ -5794,7 +5805,7 @@ export class BackendService {
 
   async addChantierNote(
     chantierId: string,
-    input: { text: string },
+    input: { text: string; equipmentId?: string | null },
   ): Promise<Result<{ id: string }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -5805,6 +5816,8 @@ export class BackendService {
       notes: this.p.chantierNotes,
       ids: this.ids,
       clock: this.clock,
+      // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant persistance.
+      equipments: this.p.equipments,
     }).execute({
       companyId: this.companyId(),
       chantierId,
@@ -5812,8 +5825,147 @@ export class BackendService {
       // Attribution auto (produit mono-utilisateur aujourd'hui) — prêt pour un futur
       // multi-utilisateur (cabinet, salariés) sans migration ni changement de contrat.
       authorLabel: company.name,
+      ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
     });
     if (r.ok) this.logger.audit('chantier.note.added', { companyId: this.companyId(), chantierId });
+    return r;
+  }
+
+  // ── PR-11 — parc d'équipements du site (Bloc A) : gate module IDENTIQUE aux notes/photos ──
+
+  async listChantierEquipments(chantierId: string): Promise<Result<EquipmentProps[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const chantier = await this.p.chantiers.findById(chantierId);
+    if (!chantier || chantier.companyId !== this.companyId())
+      return { ok: false, error: appNotFound('chantier', chantierId) };
+    const list = await this.p.equipments.listByChantier(this.companyId(), chantierId);
+    return ok(list.map((equipment) => equipment.toProps()));
+  }
+
+  async createEquipment(
+    chantierId: string,
+    input: Omit<CreateEquipmentInput, 'companyId' | 'chantierId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CreateEquipment({
+      equipments: this.p.equipments,
+      chantiers: this.p.chantiers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), chantierId, ...input });
+    if (r.ok)
+      this.logger.audit('equipment.created', {
+        companyId: this.companyId(),
+        chantierId,
+        id: r.value.id,
+      });
+    return r;
+  }
+
+  async updateEquipment(input: {
+    equipmentId: string;
+    expectedRevision: number;
+    patch: EquipmentPatch;
+  }): Promise<Result<EquipmentProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new UpdateEquipment({ equipments: this.p.equipments }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok)
+      this.logger.audit('equipment.updated', {
+        companyId: this.companyId(),
+        id: input.equipmentId,
+      });
+    return r;
+  }
+
+  async retireEquipment(input: {
+    equipmentId: string;
+    expectedRevision: number;
+  }): Promise<Result<RetireEquipmentOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new RetireEquipment({
+      equipments: this.p.equipments,
+      clock: this.clock,
+      // Port contrat absent tant que le Bloc B (contrats) n'est pas livré : aucun
+      // avertissement inventé — le câblage arrivera avec MaintenanceContractEquipment.
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('equipment.retired', {
+        companyId: this.companyId(),
+        id: input.equipmentId,
+      });
+    return r;
+  }
+
+  async reactivateEquipment(input: {
+    equipmentId: string;
+    expectedRevision: number;
+  }): Promise<Result<EquipmentProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new ReactivateEquipment({ equipments: this.p.equipments }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok)
+      this.logger.audit('equipment.reactivated', {
+        companyId: this.companyId(),
+        id: input.equipmentId,
+      });
+    return r;
+  }
+
+  /** Historique PAR équipement — dérivation PURE (deriveEquipmentHistory) sur les traces
+   * réelles du site (notes + photos taguées) ; interventions et documents liés rejoindront la
+   * fusion avec leurs blocs (C, coffre) sans changer ce contrat. */
+  async getEquipmentHistory(equipmentId: string): Promise<
+    Result<{ equipment: EquipmentProps; entries: EquipmentHistoryEntry[] }, AppError>
+  > {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const equipment = await this.p.equipments.findById(companyId, equipmentId);
+    if (!equipment || equipment.companyId !== companyId)
+      return { ok: false, error: appNotFound('equipment', equipmentId) };
+    const [notes, photos] = await Promise.all([
+      this.p.chantierNotes.listByChantier(companyId, equipment.chantierId),
+      this.p.worksiteMedia.listByChantier(companyId, equipment.chantierId),
+    ]);
+    const entries = deriveEquipmentHistory({
+      equipmentId,
+      notes: notes.map((note) => ({
+        id: note.id,
+        text: note.text,
+        authorLabel: note.authorLabel,
+        createdAt: note.createdAt,
+        equipmentId: note.equipmentId,
+      })),
+      photos: photos.map((photo) => ({
+        id: photo.id,
+        filename: photo.filename,
+        createdAt: photo.createdAt,
+        equipmentId: photo.equipmentId ?? null,
+      })),
+    });
+    return ok({ equipment: equipment.toProps(), entries });
+  }
+
+  /** [Revue A12] — réponse au refus actionnable « site clôturé » : rouvrir le site. */
+  async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new ReopenChantier({ chantiers: this.p.chantiers }).execute({
+      companyId: this.companyId(),
+      chantierId,
+    });
+    if (r.ok && r.value.changed)
+      this.logger.audit('chantier.reopened', { companyId: this.companyId(), chantierId });
     return r;
   }
 
@@ -5826,7 +5978,7 @@ export class BackendService {
 
   async uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string },
+    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
   ): Promise<Result<WorksiteMediaItem, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -5849,12 +6001,15 @@ export class BackendService {
       storage: this.documentStorage,
       ids: this.ids,
       clock: this.clock,
+      // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant tout octet stocké.
+      equipments: this.p.equipments,
     }).execute({
       companyId: this.companyId(),
       chantierId,
       bytes,
       contentType: input.mimeType,
       filename: input.filename,
+      ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
     });
     if (r.ok)
       this.logger.audit('chantier.photo.uploaded', {

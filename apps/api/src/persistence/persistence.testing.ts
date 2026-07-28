@@ -89,6 +89,7 @@ import {
   InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
   InMemoryChantierRepository,
+  InMemoryEquipmentRepository,
   InMemoryChantierNoteRepository,
   InMemoryWorksiteMediaStorage,
   InMemoryCatalogueRepository,
@@ -125,6 +126,7 @@ export class InMemoryPersistence implements Persistence {
   readonly catalogue = new InMemoryCatalogueRepository();
   readonly chantiers = new InMemoryChantierRepository();
   readonly chantierNotes = new InMemoryChantierNoteRepository();
+  readonly equipments = new InMemoryEquipmentRepository();
   readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
   readonly expenseCreationRequests = new InMemoryExpenseCreationRequestStore();
   readonly quoteCreationRequests = new InMemoryQuoteCreationRequestStore();

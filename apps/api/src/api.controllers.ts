@@ -3564,22 +3564,55 @@ export class CatalogueController {
   }
 }
 
-function parseChantierNoteBody(body: Record<string, unknown>): { text: string } {
-  const unknownField = Object.keys(body).find((field) => field !== 'text');
+/** PR-11 — hygiène de forme d'un id d'équipement (la SUBSTANCE — équipement du même site du
+ * tenant — reste l'autorité du use case, fail-closed). */
+function parseEquipmentIdField(
+  body: Record<string, unknown>,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!('equipmentId' in body)) return undefined;
+  const value = body['equipmentId'];
+  if (value === null) return null;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 200 ||
+    value !== value.trim() ||
+    hasControlCharacter(value)
+  ) {
+    issues.push({ field: 'equipmentId', message: 'Identifiant d’équipement invalide.' });
+    return undefined;
+  }
+  return value;
+}
+
+function parseChantierNoteBody(body: Record<string, unknown>): {
+  text: string;
+  equipmentId?: string | null;
+} {
+  const issues: ValidationIssue[] = [];
+  const unknownField = Object.keys(body).find((field) => field !== 'text' && field !== 'equipmentId');
   if (unknownField !== undefined)
     throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
   if (typeof body.text !== 'string' || body.text.trim().length === 0)
     throwValidationIssues([{ field: 'text', message: 'Texte de note requis.' }]);
-  return { text: body.text as string };
+  const equipmentId = parseEquipmentIdField(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    text: body.text as string,
+    ...(equipmentId !== undefined ? { equipmentId } : {}),
+  };
 }
 
-const WORKSITE_PHOTO_FIELDS = new Set(['contentBase64', 'mimeType', 'filename']);
+const WORKSITE_PHOTO_FIELDS = new Set(['contentBase64', 'mimeType', 'filename', 'equipmentId']);
 
 function parseWorksitePhotoBody(body: Record<string, unknown>): {
   contentBase64: string;
   mimeType: string;
   filename: string;
+  equipmentId?: string | null;
 } {
+  const issues: ValidationIssue[] = [];
   const unknownField = Object.keys(body).find((field) => !WORKSITE_PHOTO_FIELDS.has(field));
   if (unknownField !== undefined)
     throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
@@ -3593,7 +3626,145 @@ function parseWorksitePhotoBody(body: Record<string, unknown>): {
   ) {
     throwValidationIssues([{ field: 'body', message: 'Photo invalide.' }]);
   }
-  return { contentBase64: body.contentBase64, mimeType: body.mimeType, filename: body.filename };
+  const equipmentId = parseEquipmentIdField(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    contentBase64: body.contentBase64 as string,
+    mimeType: body.mimeType as string,
+    filename: body.filename as string,
+    ...(equipmentId !== undefined ? { equipmentId } : {}),
+  };
+}
+
+// ── PR-11 — frontière HTTP du parc d'équipements ──
+
+const CREATE_EQUIPMENT_FIELDS = new Set([
+  'label', 'kind', 'brand', 'serialNumber', 'location', 'installedAt', 'warrantyUntil', 'notes',
+]);
+const EQUIPMENT_PATCH_FIELDS = CREATE_EQUIPMENT_FIELDS;
+
+function parseEquipmentFreeField(
+  body: Record<string, unknown>,
+  field: string,
+  maxLength: number,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!(field in body)) return undefined;
+  const value = body[field];
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > maxLength || hasControlCharacter(value)) {
+    issues.push({ field, message: `Champ invalide (${maxLength} caractères maximum).` });
+    return undefined;
+  }
+  return value;
+}
+
+function parseEquipmentDateField(
+  body: Record<string, unknown>,
+  field: string,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!(field in body)) return undefined;
+  const value = body[field];
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    issues.push({ field, message: 'Date attendue (AAAA-MM-JJ).' });
+    return undefined;
+  }
+  return value;
+}
+
+function parseEquipmentFields(body: Record<string, unknown>, issues: ValidationIssue[]) {
+  const kind = parseEquipmentFreeField(body, 'kind', 200, issues);
+  const brand = parseEquipmentFreeField(body, 'brand', 200, issues);
+  const serialNumber = parseEquipmentFreeField(body, 'serialNumber', 200, issues);
+  const location = parseEquipmentFreeField(body, 'location', 200, issues);
+  const notes = parseEquipmentFreeField(body, 'notes', 2000, issues);
+  const installedAt = parseEquipmentDateField(body, 'installedAt', issues);
+  const warrantyUntil = parseEquipmentDateField(body, 'warrantyUntil', issues);
+  return {
+    ...(kind !== undefined ? { kind } : {}),
+    ...(brand !== undefined ? { brand } : {}),
+    ...(serialNumber !== undefined ? { serialNumber } : {}),
+    ...(location !== undefined ? { location } : {}),
+    ...(notes !== undefined ? { notes } : {}),
+    ...(installedAt !== undefined ? { installedAt } : {}),
+    ...(warrantyUntil !== undefined ? { warrantyUntil } : {}),
+  };
+}
+
+function parseCreateEquipmentBody(body: Record<string, unknown>): {
+  label: string;
+  kind?: string | null;
+  brand?: string | null;
+  serialNumber?: string | null;
+  location?: string | null;
+  installedAt?: string | null;
+  warrantyUntil?: string | null;
+  notes?: string | null;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!CREATE_EQUIPMENT_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const label = body['label'];
+  if (
+    typeof label !== 'string' ||
+    label.trim().length === 0 ||
+    label.length > 200 ||
+    hasControlCharacter(label)
+  ) {
+    issues.push({ field: 'label', message: 'Nom d’équipement requis (200 caractères maximum).' });
+  }
+  const fields = parseEquipmentFields(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return { label: label as string, ...fields };
+}
+
+function parseUpdateEquipmentBody(body: Record<string, unknown>): {
+  expectedRevision: number;
+  patch: Record<string, unknown>;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (field !== 'expectedRevision' && !EQUIPMENT_PATCH_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const expectedRevision = body['expectedRevision'];
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+  }
+  const label = body['label'];
+  if (
+    label !== undefined &&
+    (typeof label !== 'string' ||
+      label.trim().length === 0 ||
+      label.length > 200 ||
+      hasControlCharacter(label))
+  ) {
+    issues.push({ field: 'label', message: 'Nom d’équipement invalide.' });
+  }
+  const fields = parseEquipmentFields(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    expectedRevision: expectedRevision as number,
+    patch: {
+      ...(typeof label === 'string' ? { label } : {}),
+      ...fields,
+    },
+  };
+}
+
+function parseExpectedRevisionBody(body: Record<string, unknown>): { expectedRevision: number } {
+  const unknownField = Object.keys(body).find((field) => field !== 'expectedRevision');
+  if (unknownField !== undefined)
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 1)
+    throwValidationIssues([{ field: 'expectedRevision', message: 'Révision invalide.' }]);
+  return { expectedRevision: body.expectedRevision as number };
 }
 
 @Controller('chantiers')
@@ -3634,6 +3805,63 @@ export class ChantiersController {
   @Delete('photos/:photoId')
   async deletePhoto(@Param('photoId') photoId: string) {
     return unwrap(await this.backend.deleteWorksitePhoto(photoId));
+  }
+  // ── PR-11 — parc d'équipements du site (Bloc A) ──
+  @Get(':id/equipments')
+  async listEquipments(@Param('id') id: string) {
+    return unwrap(await this.backend.listChantierEquipments(id));
+  }
+  @Post(':id/equipments')
+  async createEquipment(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createEquipment(id, parseCreateEquipmentBody(body)));
+  }
+  /** [Revue A12] — réponse au refus actionnable « site clôturé — rouvre-le » : la transition
+   * inverse de la clôture, idempotente. */
+  @Post(':id/reopen')
+  async reopen(@Param('id') id: string) {
+    return unwrap(await this.backend.reopenChantier(id));
+  }
+}
+
+/** PR-11 — mutations/lectures d'un équipement PAR id (le site est porté par la fiche). */
+@Controller('equipments')
+export class EquipmentsController {
+  constructor(private readonly backend: BackendService) {}
+  @Put(':id')
+  async update(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseUpdateEquipmentBody(body);
+    return unwrap(
+      await this.backend.updateEquipment({
+        equipmentId: id,
+        expectedRevision: parsed.expectedRevision,
+        patch: parsed.patch,
+      }),
+    );
+  }
+  @Post(':id/retire')
+  async retire(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseExpectedRevisionBody(body);
+    return unwrap(
+      await this.backend.retireEquipment({ equipmentId: id, expectedRevision: parsed.expectedRevision }),
+    );
+  }
+  @Post(':id/reactivate')
+  async reactivate(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseExpectedRevisionBody(body);
+    return unwrap(
+      await this.backend.reactivateEquipment({
+        equipmentId: id,
+        expectedRevision: parsed.expectedRevision,
+      }),
+    );
+  }
+  @Get(':id/history')
+  async history(@Param('id') id: string) {
+    return unwrap(await this.backend.getEquipmentHistory(id));
   }
 }
 

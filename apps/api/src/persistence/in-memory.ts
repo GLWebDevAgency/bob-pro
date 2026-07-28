@@ -8,7 +8,9 @@ import {
   Expense,
   Chantier,
   ChantierNote,
+  Equipment,
   type ChantierNoteRepository,
+  type EquipmentRepository,
   type WorksiteMediaItem,
   type WorksiteMediaStorage,
   Company,
@@ -1715,6 +1717,47 @@ export class InMemoryChantierRepository implements ChantierRepository {
   restore(snapshot: Map<string, Chantier>): void {
     this.map = new Map(
       [...snapshot].map(([id, chantier]) => [id, Chantier.rehydrate(chantier.toProps())]),
+    );
+  }
+}
+
+/** PR-11 — adapter de test uniquement ; le runtime live injecte PrismaEquipmentRepository. */
+export class InMemoryEquipmentRepository implements EquipmentRepository {
+  private map = new Map<string, Equipment>();
+  async save(equipment: Equipment): Promise<void> {
+    this.map.set(equipment.id, Equipment.rehydrate(equipment.toProps()));
+  }
+  async findById(companyId: string, id: string): Promise<Equipment | null> {
+    const equipment = this.map.get(id);
+    return equipment && equipment.companyId === companyId
+      ? Equipment.rehydrate(equipment.toProps())
+      : null;
+  }
+  async lockById(companyId: string, id: string): Promise<Equipment | null> {
+    return this.findById(companyId, id);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<Equipment[]> {
+    return [...this.map.values()]
+      .filter((e) => e.companyId === companyId && e.chantierId === chantierId)
+      .map((e) => Equipment.rehydrate(e.toProps()))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
+  }
+  async listByCompany(companyId: string): Promise<Equipment[]> {
+    return [...this.map.values()]
+      .filter((e) => e.companyId === companyId)
+      .map((e) => Equipment.rehydrate(e.toProps()))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr') || a.id.localeCompare(b.id));
+  }
+
+  snapshot(): Map<string, Equipment> {
+    return new Map(
+      [...this.map].map(([id, equipment]) => [id, Equipment.rehydrate(equipment.toProps())]),
+    );
+  }
+
+  restore(snapshot: Map<string, Equipment>): void {
+    this.map = new Map(
+      [...snapshot].map(([id, equipment]) => [id, Equipment.rehydrate(equipment.toProps())]),
     );
   }
 }
