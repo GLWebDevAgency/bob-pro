@@ -1,9 +1,9 @@
 # Conception écrans — Vague P1 « Le métier de la maintenance » — RÉVISION 2
 
-**Document de conception (aucun code). Base : main `dceaf6e4`, lecture seule du repo `/Users/limameghassene/development/Bob Pro`. Révision intégrant la revue adversariale (16 problèmes + 16 améliorations) — aligné sur la RÉVISION 2 du document domaine (période contractuelle arithmétique, couverture dérivée des factures, contrats B2B/B2G, file offline unifiée, `contractId` seul discriminant).**
+**Document de conception (aucun code). Base : main `dceaf6e4`, lecture seule du dépôt Bob Pro. Révision intégrant la revue adversariale (16 problèmes + 16 améliorations) — aligné sur la RÉVISION 2 du document domaine (période contractuelle arithmétique, couverture dérivée des factures, contrats B2B/B2G, file offline unifiée, `contractId` seul discriminant).**
 Compagnon UI des PR-08 → PR-24. Gouvernance AGENTS.md : cap V1/feature freeze — accord Claude+GPT puis GO par PR ; PR → staging validé → prod ; aucun build EAS sans GO.
 
-**Directives visuelles : les 4 documents (`01-experience-vision`, `03-motion-interaction-system`, `06-screen-by-screen-spec`, `08-accessibility-adaptive-design` sous `/Users/limameghassene/development/Bob Pro-mobile-experience-roadmap/docs/mobile-experience/`) lus intégralement ; statut « Proposed » respecté (baseline runtime `@bob/tokens.motion` tant que les ADR ne sont pas actés).**
+**Directives visuelles : les 4 documents (`01-experience-vision`, `03-motion-interaction-system`, `06-screen-by-screen-spec`, `08-accessibility-adaptive-design` sous [`docs/mobile-experience`](../../mobile-experience/README.md)) lus intégralement ; statut « Proposed » respecté (baseline runtime `@bob/tokens.motion` tant que les ADR ne sont pas actés).**
 
 ---
 
@@ -315,12 +315,12 @@ Tests : parité contraste `surfaceTint`, snapshots variantes existantes inchang�
 
 ---
 
-### Sources lues (chemins absolus)
-- `/Users/limameghassene/development/Bob Pro/docs/superpowers/plans/beta-fly-services-roadmap.md` · `docs/strategy/beta-fly-services-gap-analysis.md` · `AGENTS.md`
-- `/Users/limameghassene/development/Bob Pro/apps/api/prisma/schema.prisma` (NotificationJob:1325, servicePeriod:767-769, chantier_notes/photos) · migrations `20260714060000` + `20260719010000` (trigger `invoices_legal_traceability` — liste des champs figés vérifiée)
-- `/Users/limameghassene/development/Bob Pro/packages/core/src/application/billing/{compose-standalone-invoice.ts,issue-invoice.ts,delete-draft-invoice.ts}` (garde B2C lignes 117-125 / 246-258 ; ordre des verrous ; A7 servicePeriod à l'émission) · `domain/billing/shared/state-machines.ts` (INVOICE_TRANSITIONS issued→cancelled) · `domain/chantier/chantier.ts` (open/closed, close():63) · `application/today/derive-today-priorities.ts`
-- `/Users/limameghassene/development/Bob Pro/packages/tokens/src/index.ts` · `packages/ui/src/{theme.tsx,index.ts}` + composants · `apps/mobile/src/components/SignOnsiteSheet.tsx` · `apps/mobile/src/data/client.tsx` · `apps/api/src/jobs/relance.service.ts`
-- Directives visuelles : `/Users/limameghassene/development/Bob Pro-mobile-experience-roadmap/docs/mobile-experience/{01,03,06,08}-*.md`
+### Sources lues (chemins relatifs au dépôt)
+- `docs/superpowers/plans/beta-fly-services-roadmap.md` · `docs/strategy/beta-fly-services-gap-analysis.md` · `AGENTS.md`
+- `apps/api/prisma/schema.prisma` (NotificationJob:1325, servicePeriod:767-769, chantier_notes/photos) · migrations `20260714060000` + `20260719010000` (trigger `invoices_legal_traceability` — liste des champs figés vérifiée)
+- `packages/core/src/application/billing/{compose-standalone-invoice.ts,issue-invoice.ts,delete-draft-invoice.ts}` (garde B2C lignes 117-125 / 246-258 ; ordre des verrous ; A7 servicePeriod à l'émission) · `domain/billing/shared/state-machines.ts` (INVOICE_TRANSITIONS issued→cancelled) · `domain/chantier/chantier.ts` (open/closed, close():63) · `application/today/derive-today-priorities.ts`
+- `packages/tokens/src/index.ts` · `packages/ui/src/{theme.tsx,index.ts}` + composants · `apps/mobile/src/components/SignOnsiteSheet.tsx` · `apps/mobile/src/data/client.tsx` · `apps/api/src/jobs/relance.service.ts`
+- Directives visuelles : `docs/mobile-experience/{01,03,06,08}-*.md`
 
 ---
 
