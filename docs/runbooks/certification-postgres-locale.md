@@ -28,6 +28,8 @@ export PGBIN=/opt/homebrew/opt/postgresql@17/bin
 export PGROOT=/tmp/bobpg17
 export PGDATA="$PGROOT/data"
 
+# Garde-fou : un bloc collé SANS ses `export` ferait un `rm -rf ""` — le shell s'arrête ici.
+: "${PGROOT:?PGROOT requis}"
 rm -rf "$PGROOT" && mkdir -p "$PGDATA"
 "$PGBIN/initdb" -D "$PGDATA" -U postgres --auth=trust --encoding=UTF8 --locale=C
 cat >> "$PGDATA/postgresql.conf" <<'CONF'
