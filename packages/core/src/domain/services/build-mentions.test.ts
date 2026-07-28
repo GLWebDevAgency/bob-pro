@@ -640,13 +640,23 @@ describe('sonde du corpus — références au CGI réellement imprimées', () =>
   });
 
   it('aucune pièce du corpus n’imprime déjà une référence CIBS — le décret n’est pas paru', () => {
+    const interdits = ['CIBS', 'L. 223-3', 'impositions sur les biens et services'] as const;
+    const violations: { readonly cas: string; readonly terme: string }[] = [];
+
     for (const cas of corpus) {
       for (const ligne of cas.lignes) {
-        expect(ligne, cas.nom).not.toContain('CIBS');
-        expect(ligne, cas.nom).not.toContain('L. 223-3');
-        expect(ligne, cas.nom).not.toContain('impositions sur les biens et services');
+        for (const terme of interdits) {
+          if (ligne.includes(terme)) {
+            violations.push({ cas: cas.nom, terme });
+          }
+        }
       }
     }
+
+    // Une assertion agrégée conserve le diagnostic exact sans exécuter plusieurs dizaines de
+    // milliers de matchers Vitest. Sous la charge parallèle de la CI, ces matchers faisaient
+    // dépasser aléatoirement le timeout alors que le corpus était conforme.
+    expect(violations).toEqual([]);
   });
 
   it('l’option pour les débits reste HORS PÉRIMÈTRE, et c’est vérifié : elle n’imprime aucune référence d’article', () => {
