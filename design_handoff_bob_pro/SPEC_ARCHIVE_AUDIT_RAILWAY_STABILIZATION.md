@@ -4,7 +4,7 @@
 
 **Statut : implemented**
 
-**Incident de référence :** release staging `30331071407`, 28/07/2026
+**Incidents de référence :** releases staging `30331071407` et `30339346237`, 28/07/2026
 
 ## 1. Problème prouvé
 
@@ -27,6 +27,11 @@ poller jusqu’au timeout global de 5 400 secondes. La release reste bloquée al
 La base staging comptait zéro document légal généré lors de l’incident. Un inventaire vide n’a
 besoin d’exécuter ni Mustang ni FNFE, mais l’entrypoint l’interdit aujourd’hui avant même de le
 savoir.
+
+Le premier passage exact-SHA réparé a ensuite prouvé le one-shot d’archive, mais un certificat
+PostgreSQL historique a échoué après activation : sa fixture utilisait un `companyId` aléatoire
+avec un SIRET réel et un NIC choisi dans seulement 10 000 valeurs. Une interruption antérieure
+avait laissé une société de test orpheline ; le run suivant a heurté l’unicité de `companies.siret`.
 
 ## 2. Résultat attendu
 
@@ -59,6 +64,8 @@ au lieu d’attendre le timeout complet.
 7. Certifier le chemin staging exact-SHA sur le service one-shot Railway.
 8. Rendre le harness d’intégration Bob hermétique au réseau tiers : la suite de release ne doit
    jamais dépendre de la latence d’un fournisseur LLM pour atteindre son repli déterministe.
+9. Rendre le certificat d’émission facture rejouable après interruption : identité explicitement
+   fictive, réconciliation préalable limitée au namespace d’id de la suite, cleanup final commun.
 
 ### Non inclus
 
@@ -88,6 +95,9 @@ au lieu d’attendre le timeout complet.
    Mustang/FNFE n’a pas été certifiée sous un sandbox compatible Railway.
 10. **Tests hermétiques.** Un test qui certifie le classifieur local interdit explicitement tout
     réseau cloud ; une clé sentinelle ne vaut jamais isolation réseau.
+11. **Fixtures distantes bornées.** Une reprise ne supprime jamais par SIREN ou libellé : elle ne
+    réconcilie que le préfixe d’identifiants réservé au certificat, puis réactive les triggers avant
+    chaque suppression finale.
 
 ## 5. Critères d’acceptation binaires
 
@@ -111,6 +121,8 @@ au lieu d’attendre le timeout complet.
 - [x] Les tests interdisent explicitement `/usr/bin/env`, `|| true` et la suppression de la sandbox.
 - [x] Les scénarios Bob déterministes du gate de release ne peuvent effectuer aucun appel réseau
       vers un fournisseur LLM et restent stables sous charge CI.
+- [ ] Le certificat PostgreSQL d’émission purge une fixture interrompue puis repasse intégralement
+      sur staging sans collision ni résidu.
 - [ ] L’image `Dockerfile.archive-audit` est réellement construite.
 - [ ] Le one-shot staging au SHA exact produit une enveloppe corrélée puis termine arrêté, sans
       déploiement actif résiduel.

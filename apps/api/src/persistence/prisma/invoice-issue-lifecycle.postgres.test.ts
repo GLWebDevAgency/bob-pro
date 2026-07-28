@@ -8,11 +8,14 @@ import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT === 'true';
-// SIREN dédié à cette suite (Luhn valide, cohérent avec les tvaIntracom/rcsOrRm des fixtures).
+const CERT_COMPANY_ID_PREFIX = 'invoice-lifecycle-company-';
+// Identité explicitement non réelle, dédiée à cette suite. Le certificat écrit directement via
+// Prisma : il n'a pas à emprunter le SIREN d'une entreprise française réelle pour éprouver les
+// verrous PostgreSQL. Les tvaIntracom/rcsOrRm restent cohérents avec ce SIREN de test.
 // validSiret replie la séquence modulo 10 000 (NIC à 4 chiffres) : chaque suite Postgres possède
 // donc son propre SIREN afin qu'aucune collision de SIRET inter-suites ne soit possible sur
 // l'unique companies.siret de la base partagée du gate.
-const CERT_SIREN = '552100554';
+const CERT_SIREN = '000000000';
 const CERT_NOW = '2026-06-30T10:00:00.000Z';
 const CLOSE_NOW = '2026-06-30T10:00:01.000Z';
 const FISCAL_YEAR = 2026;
@@ -325,13 +328,46 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     let secondPersistence!: PrismaPersistence;
     let sentinel!: Fixture;
 
+    async function cleanupFixtures(ids: string[]): Promise<void> {
+      if (ids.length === 0) return;
+      // Les lignes de factures émises et la réouverture d'une société clôturée sont protégées
+      // par des triggers légaux. Le compte DIRECT_URL ne les neutralise que pour les identifiants
+      // réservés à cette suite, puis réactive explicitement tous les triggers/FK AVANT les DELETE
+      // finaux : toute future dépendance oubliée doit faire échouer le gate.
+      await admin.$transaction(async (tx) => {
+        await tx.accountingEntryLine.deleteMany({
+          where: { companyId: { in: ids } },
+        });
+        await tx.accountingEntry.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.documentArchiveJob.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        await tx.lineItem.deleteMany({
+          where: { invoice: { companyId: { in: ids } } },
+        });
+        await tx.company.updateMany({
+          where: { id: { in: ids } },
+          data: { closedAt: null, closureReason: null },
+        });
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+        await tx.invoice.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.documentCounter.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.publicAccessToken.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.subscription.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.companyBillingSettings.deleteMany({
+          where: { companyId: { in: ids } },
+        });
+        await tx.customer.deleteMany({ where: { companyId: { in: ids } } });
+        await tx.company.deleteMany({ where: { id: { in: ids } } });
+      });
+    }
+
     async function seedFixture(
       label: string,
       defaultInvoicePaymentTermsDays?: number | null,
     ): Promise<Fixture> {
       const id = randomUUID();
       const fixture: Fixture = {
-        companyId: `invoice-lifecycle-company-${id}`,
+        companyId: `${CERT_COMPANY_ID_PREFIX}${id}`,
         companyName: `Certification facture ${label} ${id.slice(0, 8)}`,
         customerId: `invoice-lifecycle-customer-${id}`,
         baselineInvoiceId: `invoice-lifecycle-baseline-${id}`,
@@ -351,10 +387,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             legalForm: 'EI',
             siren: CERT_SIREN,
             siret,
-            tvaIntracom: 'FR96552100554',
+            tvaIntracom: 'FR12000000000',
             trade: 'autre',
             vatRegime: 'reel_normal',
-            rcsOrRm: 'RCS Paris 552 100 554',
+            rcsOrRm: 'RCS Paris 000 000 000',
             addrLine1: '1 rue de la Certification',
             addrZip: '75001',
             addrCity: 'Paris',
@@ -525,42 +561,42 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       firstPersistence = new PrismaPersistence(firstWorker);
       secondPersistence = new PrismaPersistence(secondWorker);
       await Promise.all([admin.$connect(), firstWorker.$connect(), secondWorker.$connect()]);
+      // Un runner interrompu ne peut pas laisser la prochaine release en échec sur une fixture
+      // orpheline. Le namespace d'id est réservé à cette suite ; on ne cible jamais un SIREN ou
+      // un libellé susceptible d'appartenir à une vraie société.
+      const staleFixtureIds = (
+        await admin.company.findMany({
+          where: { id: { startsWith: CERT_COMPANY_ID_PREFIX } },
+          select: { id: true },
+        })
+      ).map(({ id }) => id);
+      await cleanupFixtures(staleFixtureIds);
+
+      // Reproduit une interruption APRÈS le seed mais AVANT afterAll, puis prouve la reprise par
+      // découverte du namespace — pas seulement l'appel direct du helper avec des ids déjà connus.
+      const interrupted = await seedFixture('interrupted-run-recovery');
+      const interruptedIndex = companyIds.indexOf(interrupted.companyId);
+      if (interruptedIndex < 0) throw new Error('Fixture interrupted-run absente du registre.');
+      companyIds.splice(interruptedIndex, 1);
+      const interruptedFixtureIds = (
+        await admin.company.findMany({
+          where: { id: { startsWith: CERT_COMPANY_ID_PREFIX } },
+          select: { id: true },
+        })
+      ).map(({ id }) => id);
+      await cleanupFixtures(interruptedFixtureIds);
+      const residualFixtures = await admin.company.count({
+        where: { id: { startsWith: CERT_COMPANY_ID_PREFIX } },
+      });
+      if (residualFixtures !== 0) {
+        throw new Error(`Fixture interrupted-run non purgée (${residualFixtures} société(s)).`);
+      }
       sentinel = await seedFixture('sentinel-second-tenant');
     }, 30_000);
 
     afterAll(async () => {
       try {
-        if (admin && companyIds.length > 0) {
-          // Les lignes de factures émises et la réouverture d'une société clôturée sont protégées
-          // par des triggers légaux. Le compte DIRECT_URL ne les neutralise que pour ces deux
-          // opérations sur les UUID de fixture, puis réactive explicitement tous les triggers/FK
-          // AVANT les DELETE finaux : toute future dépendance oubliée doit faire échouer le gate.
-          await admin.$transaction(async (tx) => {
-            await tx.accountingEntryLine.deleteMany({
-              where: { companyId: { in: companyIds } },
-            });
-            await tx.accountingEntry.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.documentArchiveJob.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
-            await tx.lineItem.deleteMany({
-              where: { invoice: { companyId: { in: companyIds } } },
-            });
-            await tx.company.updateMany({
-              where: { id: { in: companyIds } },
-              data: { closedAt: null, closureReason: null },
-            });
-            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
-            await tx.invoice.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.documentCounter.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.publicAccessToken.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.subscription.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.companyBillingSettings.deleteMany({
-              where: { companyId: { in: companyIds } },
-            });
-            await tx.customer.deleteMany({ where: { companyId: { in: companyIds } } });
-            await tx.company.deleteMany({ where: { id: { in: companyIds } } });
-          });
-        }
+        if (admin) await cleanupFixtures(companyIds);
       } finally {
         await Promise.allSettled([
           firstWorker?.$disconnect(),
