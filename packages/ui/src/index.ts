@@ -26,6 +26,13 @@ export * from './components/skeleton';
 export * from './components/ui-states';
 export * from './hooks/use-reduce-motion';
 export * from './components/fade-in';
+export * from './components/motion-presence';
+export {
+  diffRowPresence,
+  mergeExitingKeys,
+  resolvePresenceMotion,
+  type PresenceMotion,
+} from './components/motion-presence.logic';
 export * from './components/pressable-scale';
 export * from './components/icon-tile';
 export * from './components/delete-icon-button';

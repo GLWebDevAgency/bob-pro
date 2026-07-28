@@ -5,9 +5,19 @@
  * BobSurface marine raised ; équipement retiré → bandeau `neutral` « Retirée le {retiredAt} »
  * (fait réel) + « Réactiver » — l'historique reste intégral. Retrait via ConfirmSheet,
  * avertissement contrat du domaine restitué tel quel quand il existe (amélioration 4).
+ * [Revue n°2] badge morph `replace 280` (Actif ↔ Retirée) après ACK — reduce-motion =
+ * bascule immédiate + ANNONCE (MorphReplace, @bob/ui).
  */
 import { useMemo, useState } from 'react';
-import { Alert, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  Alert,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { t } from '@bob/i18n';
 import {
@@ -15,6 +25,7 @@ import {
   Button,
   EmptyState,
   ErrorRetry,
+  MorphReplace,
   Sheet,
   SkeletonCard,
   StatusBadge,
@@ -211,6 +222,11 @@ export default function FicheEquipement() {
         chantierId: equipment.chantierId,
         expectedRevision: equipment.revision,
       });
+      // APRÈS ACK (§2.1) : la liste joue l'exit 140 vers Retirés, le badge morphe ici —
+      // et l'ANNONCE porte le même fait (équivalence reduce-motion / lecteur d'écran).
+      AccessibilityInfo.announceForAccessibility(
+        t('equipements.retiredAnnounce', { personality, params: { label: equipment.label } }),
+      );
       // [Amélioration 4] — l'avertissement contrat du DOMAINE, restitué tel quel (info, jamais
       // un blocage) : la couverture continue jusqu'à modification du contrat.
       if (result.contractWarning) {
@@ -229,6 +245,9 @@ export default function FicheEquipement() {
         chantierId: equipment.chantierId,
         expectedRevision: equipment.revision,
       });
+      AccessibilityInfo.announceForAccessibility(
+        t('equipements.reactivatedAnnounce', { personality, params: { label: equipment.label } }),
+      );
     } catch (error) {
       Alert.alert('Oups', appErrorMessage(error));
     }
@@ -277,17 +296,21 @@ export default function FicheEquipement() {
             <>
               <BobSurface tone="marine" emphasis="raised">
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                  {retired && equipment.retiredAt ? (
-                    <StatusBadge
-                      variant="neutral"
-                      label={t('equipements.retiredBadge', {
-                        personality,
-                        params: { date: frInstant(equipment.retiredAt) },
-                      })}
-                    />
-                  ) : (
-                    <StatusBadge variant="success" label={t('equipements.activeBadge', { personality })} />
-                  )}
+                  {/* Badge morph §2.2 : Actif (success) ↔ Retirée (neutral) en `replace 280` —
+                      reduce-motion : bascule immédiate (l'annonce d'ACK porte le fait). */}
+                  <MorphReplace morphKey={retired && equipment.retiredAt ? 'retired' : 'active'}>
+                    {retired && equipment.retiredAt ? (
+                      <StatusBadge
+                        variant="neutral"
+                        label={t('equipements.retiredBadge', {
+                          personality,
+                          params: { date: frInstant(equipment.retiredAt) },
+                        })}
+                      />
+                    ) : (
+                      <StatusBadge variant="success" label={t('equipements.activeBadge', { personality })} />
+                    )}
+                  </MorphReplace>
                   {warranty ? (
                     <StatusBadge
                       variant={warranty.tone}

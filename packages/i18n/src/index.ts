@@ -1518,6 +1518,23 @@ const legacyFr = {
   },
   'equipements.reactivateCta': { pote: 'Réactiver', pro: 'Réactiver', direct: 'Réactiver' },
   'equipements.activeBadge': { pote: 'Actif', pro: 'Actif', direct: 'Actif' },
+  // [Revue n°2] annonces d'ACK (table reduce-motion = immédiat + ANNONCE, écrans §2.1) :
+  // l'information portée par le mouvement est toujours dite au lecteur d'écran.
+  'equipements.createdAnnounce': {
+    pote: '« {label} » ajouté au parc',
+    pro: 'Équipement « {label} » ajouté au parc',
+    direct: '{label} ajouté',
+  },
+  'equipements.retiredAnnounce': {
+    pote: '« {label} » retiré — déplacé vers Retirés',
+    pro: 'Équipement « {label} » retiré — déplacé vers l’onglet Retirés',
+    direct: '{label} retiré → Retirés',
+  },
+  'equipements.reactivatedAnnounce': {
+    pote: '« {label} » réactivé — de retour dans les Actifs',
+    pro: 'Équipement « {label} » réactivé — de retour dans les Actifs',
+    direct: '{label} réactivé → Actifs',
+  },
   'equipements.warrantyUntil': {
     pote: 'Garantie jusqu’au {date}',
     pro: 'Garantie jusqu’au {date}',

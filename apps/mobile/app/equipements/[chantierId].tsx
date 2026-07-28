@@ -5,9 +5,21 @@
  * RÉELLES (useChantierEquipments) — loading → skeletons, erreur → ErrorRetry sans effacer la
  * liste, site clôturé → état EXPLIQUÉ + CTA « Rouvrir le site » (jamais un bouton grisé
  * mystère). Chaque CTA passe par les MÊMES use cases que la voix (parité).
+ * Micro-interactions §2.1 [revue n°2] : insertion + highlight `enter 240` APRÈS ACK de
+ * création, sortie `exitFast 140` d'une rangée retirée (y compris retirée PAR BOB à la voix,
+ * la liste ouverte) — reduce-motion = immédiat + ANNONCE (useRowPresence, @bob/ui).
  */
-import { useMemo, useState } from 'react';
-import { Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  AccessibilityInfo,
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { t } from '@bob/i18n';
 import {
@@ -15,11 +27,13 @@ import {
   Button,
   EmptyState,
   ErrorRetry,
+  PresenceRow,
   SegmentedControl,
   Sheet,
   SkeletonRow,
   StatusBadge,
   font,
+  useRowPresence,
   useTheme,
 } from '@bob/ui';
 import { parisDateOnly, type EquipmentProps } from '@bob/core';
@@ -120,7 +134,7 @@ function EquipmentRow({
 
 export default function ParcEquipements() {
   const { chantierId } = useLocalSearchParams<{ chantierId: string }>();
-  const { personality, colors, controls } = useTheme();
+  const { personality, colors, controls, semantic } = useTheme();
   const router = useRouter();
   const scrollInsets = useBobAwareScrollInsets();
   const today = parisDateOnly();
@@ -156,6 +170,22 @@ export default function ParcEquipements() {
     }),
     [all],
   );
+  // Micro-interactions §2.1 : les rangées VIVENT (enter 240 / exitFast 140) dans la MÊME vue ;
+  // une bascule segment/recherche — et la PREMIÈRE arrivée des données (pending → ready) —
+  // change le viewKey → remplacement de contenu SANS animation (l'enter est réservé aux
+  // vraies insertions après ACK, jamais au chargement initial).
+  const presence = useRowPresence({
+    items: visible,
+    keyOf: (equipment) => equipment.id,
+    viewKey: `${equipments.isPending ? 'pending' : 'ready'}|${segment}|${query.trim().toLowerCase()}`,
+  });
+  // Rangée fraîchement créée ICI : voile d'insertion (highlight) après ACK — puis oubli.
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  useEffect(() => {
+    if (highlightId === null) return;
+    const timer = setTimeout(() => setHighlightId(null), 1600);
+    return () => clearTimeout(timer);
+  }, [highlightId]);
 
   usePublishAgentContext(
     useMemo<AgentContext>(
@@ -190,7 +220,7 @@ export default function ParcEquipements() {
     }
     setDraftError(null);
     try {
-      await create.mutateAsync({
+      const created = await create.mutateAsync({
         label,
         kind: draft.kind.trim() || null,
         brand: draft.brand.trim() || null,
@@ -201,6 +231,12 @@ export default function ParcEquipements() {
       });
       setSheetOpen(false);
       setDraft({ label: '', kind: '', brand: '', serialNumber: '', location: '', installedAt: '', warrantyUntil: '' });
+      // APRÈS ACK (§2.1) : insertion + highlight `enter 240` de la rangée réelle — et ANNONCE
+      // (équivalence d'information : reduce-motion et lecteur d'écran reçoivent le même fait).
+      setHighlightId(created.id);
+      AccessibilityInfo.announceForAccessibility(
+        t('equipements.createdAnnounce', { personality, params: { label } }),
+      );
     } catch (error) {
       setDraftError(appErrorMessage(error));
     }
@@ -295,7 +331,7 @@ export default function ParcEquipements() {
             </BobSurface>
           ) : equipments.isError ? (
             <ErrorRetry message={t('chantierFiche.dataError', { personality })} onRetry={() => void equipments.refetch()} />
-          ) : visible.length === 0 ? (
+          ) : presence.rows.length === 0 ? (
             bySegment.length === 0 && all.length === 0 ? (
               <EmptyState
                 title={t('equipements.emptyTitle', { personality })}
@@ -306,17 +342,24 @@ export default function ParcEquipements() {
             )
           ) : (
             <BobSurface tone="neutral" emphasis="raised" padding={12}>
-              {visible.map((equipment, index) => (
-                <View key={equipment.id}>
+              {presence.rows.map((row, index) => (
+                <PresenceRow
+                  key={row.key}
+                  presence={row.presence}
+                  motion={presence.motion}
+                  {...(row.key === highlightId
+                    ? { highlightColor: semantic.successBg, highlightRadius: 10 }
+                    : {})}
+                >
                   {index > 0 ? (
                     <View style={{ height: 1, backgroundColor: colors.lineSoft }} />
                   ) : null}
                   <EquipmentRow
-                    equipment={equipment}
+                    equipment={row.item}
                     today={today}
-                    onPress={() => router.push(`/equipement/${equipment.id}`)}
+                    onPress={() => router.push(`/equipement/${row.item.id}`)}
                   />
-                </View>
+                </PresenceRow>
               ))}
             </BobSurface>
           )}
