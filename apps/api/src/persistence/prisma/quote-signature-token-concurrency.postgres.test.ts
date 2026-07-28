@@ -17,6 +17,10 @@ import {
 } from './repositories';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_QUOTE_SIGNATURE_CERT === 'true';
+// SIREN dédié à cette suite (Luhn valide). validSiret replie la séquence modulo 10 000 (NIC à
+// 4 chiffres) : chaque suite Postgres possède donc son propre SIREN afin qu'aucune collision de
+// SIRET inter-suites ne soit possible sur l'unique companies.siret de la base partagée du gate.
+const CERT_SIREN = '552100117';
 const NOW = '2026-07-18T10:00:00.000Z';
 const clock: ClockPort = { now: () => NOW, today: () => '2026-07-18' };
 
@@ -179,8 +183,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           id: companyId,
           name: 'Certification R4',
           legalForm: 'EI',
-          siren: '552100554',
-          siret: validSiret('552100554', establishmentSequence),
+          siren: CERT_SIREN,
+          siret: validSiret(CERT_SIREN, establishmentSequence),
           trade: 'autre',
           vatRegime: 'reel_normal',
           addrLine1: '1 rue de la Certification',
@@ -202,17 +206,25 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     }, 30_000);
 
     afterAll(async () => {
-      if (admin) {
-        await admin.publicAccessToken.deleteMany({ where: { companyId } }).catch(() => undefined);
-        await admin.quote.deleteMany({ where: { id: { in: quoteIds } } }).catch(() => undefined);
-        await admin.customer.deleteMany({ where: { id: customerId } }).catch(() => undefined);
-        await admin.company.deleteMany({ where: { id: companyId } }).catch(() => undefined);
+      try {
+        if (admin) {
+          // Aucun CloseAccount dans cette suite : triggers et FK restent actifs pendant tout le
+          // cleanup, et aucune erreur n'est avalée — toute dépendance oubliée doit faire échouer
+          // le gate au lieu de fuir des fixtures dans la base partagée des suites.
+          await admin.$transaction(async (tx) => {
+            await tx.publicAccessToken.deleteMany({ where: { companyId } });
+            await tx.quote.deleteMany({ where: { id: { in: quoteIds } } });
+            await tx.customer.deleteMany({ where: { id: customerId } });
+            await tx.company.deleteMany({ where: { id: companyId } });
+          });
+        }
+      } finally {
+        await Promise.allSettled([
+          firstWorker?.$disconnect(),
+          secondWorker?.$disconnect(),
+          admin?.$disconnect(),
+        ]);
       }
-      await Promise.allSettled([
-        firstWorker?.$disconnect(),
-        secondWorker?.$disconnect(),
-        admin?.$disconnect(),
-      ]);
     });
 
     it('une signature gagnante bloque la rotation, qui relit signed et ne ressuscite aucun lien', async () => {

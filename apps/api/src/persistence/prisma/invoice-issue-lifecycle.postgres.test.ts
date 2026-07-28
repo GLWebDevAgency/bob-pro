@@ -8,6 +8,11 @@ import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT === 'true';
+// SIREN dédié à cette suite (Luhn valide, cohérent avec les tvaIntracom/rcsOrRm des fixtures).
+// validSiret replie la séquence modulo 10 000 (NIC à 4 chiffres) : chaque suite Postgres possède
+// donc son propre SIREN afin qu'aucune collision de SIRET inter-suites ne soit possible sur
+// l'unique companies.siret de la base partagée du gate.
+const CERT_SIREN = '552100554';
 const CERT_NOW = '2026-06-30T10:00:00.000Z';
 const CLOSE_NOW = '2026-06-30T10:00:01.000Z';
 const FISCAL_YEAR = 2026;
@@ -335,7 +340,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         subscriptionId: `invoice-lifecycle-subscription-${id}`,
       };
       const baselineLineId = `invoice-lifecycle-baseline-line-${id}`;
-      const siret = validSiret('552100554', fixtureSequence);
+      const siret = validSiret(CERT_SIREN, fixtureSequence);
       fixtureSequence += 1;
 
       await admin.$transaction(async (tx) => {
@@ -344,7 +349,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             id: fixture.companyId,
             name: fixture.companyName,
             legalForm: 'EI',
-            siren: '552100554',
+            siren: CERT_SIREN,
             siret,
             tvaIntracom: 'FR96552100554',
             trade: 'autre',
