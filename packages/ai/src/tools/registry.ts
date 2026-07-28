@@ -32,6 +32,8 @@ import {
   type CreateEquipmentActionInput,
   type EquipmentHistoryActionInput,
   type EquipmentHistoryActionOutput,
+  type PrepareContractAnnualInvoiceActionInput,
+  type PrepareContractAnnualInvoiceActionOutput,
   type RetireEquipmentActionInput,
   type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
@@ -1544,6 +1546,84 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => equipmentHistoryAction(input),
     };
     tools.push(historiqueEquipement as AnyTool);
+  }
+
+  // —— PR-12c — contrats de maintenance (Bloc B §2.7) : MÊMES use cases que l'écran. ——
+  const listContractsAction = actions.listMaintenanceContracts?.bind(actions);
+  if (listContractsAction) {
+    const statutContrat: Tool<{ contractId?: string }, unknown> = {
+      name: 'statut_contrat',
+      description:
+        'Statut RÉEL d’un contrat de maintenance (état, période courante calculée, couverture par les factures, renouvellement) — mêmes faits dérivés que la fiche. Lecture pure.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<{ contractId?: string }, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (r?.contractId !== undefined && (typeof r.contractId !== 'string' || r.contractId.length === 0))
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ ...(typeof r?.contractId === 'string' ? { contractId: r.contractId } : {}) });
+      },
+      run: async (input) => {
+        const all = await listContractsAction();
+        if (!all.ok) return all;
+        return ok(
+          input.contractId === undefined
+            ? all.value
+            : all.value.filter((contract) => contract.id === input.contractId),
+        );
+      },
+    };
+    tools.push(statutContrat as AnyTool);
+
+    const contratsARenouveler: Tool<Record<string, never>, unknown> = {
+      name: 'contrats_a_renouveler',
+      description:
+        'Contrats à renouveler (alerte J-60/J-30 dérivée, tacites ET non-tacites échus) — même dérivation deriveRenewalAlerts que la fiche et le cron. Lecture pure, alerte INTERNE.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: async () => {
+        const all = await listContractsAction();
+        if (!all.ok) return all;
+        return ok(
+          all.value.filter(
+            (contract) => contract.renewalAlert !== null || contract.expiredSince !== null,
+          ),
+        );
+      },
+    };
+    tools.push(contratsARenouveler as AnyTool);
+  }
+
+  const prepareAnnualAction = actions.prepareContractAnnualInvoice?.bind(actions);
+  if (prepareAnnualAction) {
+    const preparerFactureAnnuelle: Tool<
+      PrepareContractAnnualInvoiceActionInput,
+      PrepareContractAnnualInvoiceActionOutput
+    > = {
+      name: 'preparer_facture_annuelle',
+      description:
+        'Prépare le BROUILLON de la facture annuelle d’un contrat (« prépare la facture annuelle du contrat Bastille ») — même use case PrepareAnnualInvoiceDraft que la fiche : jamais émis, jamais envoyé seul ; période déjà couverte → refus actionnable avec le numéro.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Conception vocale §2.7 : la proposition (« je prépare le brouillon ? ») est TOUJOURS
+      // confirmée — un brouillon reste réversible (DeleteDraftInvoice), d'où le palier draft.
+      safetyFloor: true,
+      riskTier: 'draft',
+      parse: (raw): Result<PrepareContractAnnualInvoiceActionInput, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ contractId: r.contractId });
+      },
+      run: (input) => prepareAnnualAction(input),
+    };
+    tools.push(preparerFactureAnnuelle as AnyTool);
   }
 
   return tools;

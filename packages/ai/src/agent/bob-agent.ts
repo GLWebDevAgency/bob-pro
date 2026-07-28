@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -998,6 +998,82 @@ function resolveSpokenEquipment<E extends { id: string; label: string }>(input: 
   };
 }
 
+/** Mots du GESTE contrat (PR-12c) — neutralisés avant le ciblage par jetons : dans « prépare
+ * la facture annuelle du contrat Carrefour », seuls « carrefour » (label ou client) ciblent —
+ * jamais « facture », « annuelle » ni « contrat ». Même doctrine que EQUIPMENT_GESTURE_WORDS. */
+const CONTRACT_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'contrat', 'contrats', 'maintenance', 'facture', 'factures', 'annuelle', 'annuelles', 'annuel',
+  'prepare', 'preparer', 'prepares', 'fais', 'faire', 'genere', 'generer', 'cree', 'creer',
+  'lance', 'lancer', 'etablis', 'etablir', 'statut', 'statuts', 'etat', 'etats', 'moment',
+  'periode', 'periodes', 'couverte', 'couvert', 'renouveler', 'renouvellement', 'echeance',
+  'reconduit', 'reconduction', 'site', 'sites', 'chantier', 'chantiers', 'client', 'clients',
+  'chez', 'pour', 'dans', 'sur', 'avec', 'sans', 'montre', 'montrer', 'dis', 'dire', 'parle',
+  'parler', 'resume', 'resumer', 'bob', 'peux', 'veux', 'voudrais', 'faut', 'merci', 'bonjour',
+  'salut', 'stp', 'plait', 'cest', 'est', 'elle', 'elles', 'nous', 'vous', 'mon', 'mes', 'ton',
+  'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'tout', 'tous', 'toute', 'toutes', 'aussi',
+  'alors', 'donc', 'bien', 'voila', 'quand', 'comment', 'combien',
+]);
+
+/**
+ * PR-12c — résolution du CONTRAT dicté contre les données réelles (« la facture annuelle de
+ * Carrefour », « le contrat Bastille ») — patron resolveSpokenEquipment : jamais un id
+ * inventé ; `byId` (followUps des questions) prime ; `strong` = tous les jetons significatifs
+ * du LABEL dits, OU tous ceux du NOM DU CLIENT (« de Carrefour » résout le contrat du client
+ * Carrefour) ; deux contrats du même client restent une VRAIE ambiguïté — question posée,
+ * jamais un choix silencieux.
+ */
+function resolveSpokenContract<
+  C extends { id: string; label: string; customerName: string | null; chantierNom: string | null },
+>(input: { conversation: string; contracts: readonly C[] }): {
+  byId: C[];
+  strong: C[];
+  loose: C[];
+  saidTokens: string[];
+} {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  const saidTokens = [...conversationTokens].filter((word) => !CONTRACT_GESTURE_WORDS.has(word));
+  const byId = input.contracts.filter(
+    (contract) =>
+      normalized(contract.id).length >= 3 &&
+      containsExactTokens(normalizedConversation, normalized(contract.id)),
+  );
+  const byLabel = input.contracts.filter((contract) => {
+    const tokens = destinationNameTokens(contract.label).filter(
+      (word) => !CONTRACT_GESTURE_WORDS.has(word),
+    );
+    return tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  });
+  const byCustomer = input.contracts.filter((contract) => {
+    if (contract.customerName === null) return false;
+    const tokens = destinationNameTokens(contract.customerName).filter(
+      (word) => !CONTRACT_GESTURE_WORDS.has(word),
+    );
+    return tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  });
+  // Le LABEL entièrement dit prime (départage en inclusion — « Entretien fontaines » vs
+  // « Entretien fontaines 2026 ») ; sinon le CLIENT entièrement dit propose SES contrats.
+  const labelPreferred = preferMostSpecificChantiers(
+    byLabel.map((contract) => ({ id: contract.id, nom: contract.label })),
+    normalizedConversation,
+  );
+  const labelIds = new Set(labelPreferred.map((entry) => entry.id));
+  const strong =
+    byLabel.length > 0
+      ? byLabel.filter((contract) => labelIds.has(contract.id))
+      : byCustomer;
+  // « Le contrat Bastille » : AU MOINS un jeton significatif du label/client/site dit — un
+  // match UNIQUE résout (départage naturel), plusieurs restent une question, zéro un refus.
+  const loose = input.contracts.filter((contract) =>
+    [contract.label, contract.customerName ?? '', contract.chantierNom ?? '']
+      .flatMap((name) => destinationNameTokens(name))
+      .some((word) => conversationTokens.has(word) && !CONTRACT_GESTURE_WORDS.has(word)),
+  );
+  return { byId, strong, loose, saidTokens };
+}
+
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
  * m'a envoyé un bon de commande » ne doit cibler que par « ratp », jamais par « commande ». */
 const PURCHASE_ORDER_GESTURE_WORDS: ReadonlySet<string> = new Set([
@@ -1460,6 +1536,9 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'retirer_equipement') return 'retirer_equipement';
   if (tool === 'parc_du_site') return 'parc_equipements';
   if (tool === 'historique_equipement') return 'historique_equipement';
+  if (tool === 'preparer_facture_annuelle') return 'preparer_facture_annuelle';
+  if (tool === 'statut_contrat') return 'statut_contrat';
+  if (tool === 'contrats_a_renouveler') return 'contrats_a_renouveler';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -3980,6 +4059,297 @@ export class BobAgent {
         model,
         plan: ['Imputer la dépense au chantier'],
         card: { title: 'Dépense imputée ✓', body: `${label} — c’est noté.` },
+      });
+    }
+
+    if (
+      intent === 'statut_contrat' ||
+      intent === 'contrats_a_renouveler' ||
+      intent === 'preparer_facture_annuelle'
+    ) {
+      // PR-12c — contrats de maintenance À LA VOIX (parité §2.7) : les FAITS DÉRIVÉS par le
+      // serveur (période arithmétique, couverture par les factures réelles, alerte J-60/J-30)
+      // sont DITS tels quels — jamais recalculés ni inventés. Résolution du contrat par NOM
+      // PARLÉ (label OU client — patron resolveSpokenEquipment), refus honnête, questions à
+      // followUps par ID qui convergent. Confirmation à la SEULE mutation (le brouillon).
+      const listContracts = this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+      if (!listContracts) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Contrats de maintenance',
+            body: 'Je ne peux pas lire les contrats depuis cet appareil. Rien n’a été modifié — passe par la fiche client.',
+          },
+        });
+      }
+      const contractsResult = await listContracts();
+      if (!contractsResult.ok) return err(contractsResult.error);
+      const contracts = contractsResult.value;
+      const humanPeriod = (period: { start: string; end: string }): string =>
+        // Fin EXCLUSIVE domaine → la VEILLE à l'affichage (bornes incluses lisibles).
+        `${frDate(period.start)} → ${frDate(addDaysOnly(period.end, -1))}`;
+
+      if (intent === 'contrats_a_renouveler') {
+        // Tacites (J-60/J-30) ET non-tacites échus (fait `expired`) — alerte INTERNE.
+        const due = contracts.filter(
+          (contract) => contract.renewalAlert !== null || contract.expiredSince !== null,
+        );
+        if (due.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Dériver les échéances réelles'],
+            card: {
+              title: 'Renouvellements',
+              body:
+                contracts.length === 0
+                  ? 'Aucun contrat de maintenance enregistré pour l’instant.'
+                  : 'Aucun contrat à renouveler dans les 60 prochains jours — tout est calme.',
+            },
+          });
+        }
+        const lines = due
+          .slice(0, 6)
+          .map((contract) => {
+            if (contract.expiredSince !== null)
+              return `• ${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''} — échu le ${frDate(contract.expiredSince)} : à renouveler ou résilier`;
+            const alert = contract.renewalAlert!;
+            return `• ${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''} — ${
+              alert.tacit
+                ? `se reconduit dans ${alert.daysUntil} jours`
+                : `arrive à échéance dans ${alert.daysUntil} jours`
+            } (${frDate(alert.anniversary)})`;
+          })
+          .join('\n');
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Dériver les échéances réelles (J-60/J-30)'],
+          card: { title: 'Contrats à renouveler', body: lines },
+        });
+      }
+
+      // Cible CONTRAT (statut / facture annuelle) : label OU client entièrement dit.
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const resolution = resolveSpokenContract({ conversation, contracts });
+      const pool =
+        intent === 'preparer_facture_annuelle'
+          ? contracts.filter((contract) => contract.status === 'active')
+          : contracts;
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : resolution.strong.length === 0 && resolution.loose.length === 1
+              ? resolution.loose[0]!
+              : resolution.strong.length === 0 &&
+                  resolution.loose.length === 0 &&
+                  resolution.saidTokens.length === 0 &&
+                  pool.length === 1
+                ? pool[0]!
+                : null;
+
+      if (target === null) {
+        if (contracts.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les contrats réels'],
+            card: {
+              title: 'Aucun contrat',
+              body: 'Aucun contrat de maintenance enregistré pour l’instant. Rien n’a été modifié.',
+            },
+          });
+        }
+        // Nom dit mais introuvable → refus HONNÊTE ; sinon vraie ambiguïté → question ciblée
+        // (followUps par ID : le tour suivant résout par byId, la question ne reboucle jamais).
+        const named =
+          resolution.saidTokens.length > 0 &&
+          resolution.strong.length === 0 &&
+          resolution.loose.length === 0;
+        const options = (
+          resolution.strong.length > 1
+            ? resolution.strong
+            : resolution.loose.length > 1
+              ? resolution.loose
+              : pool
+        ).slice(0, 4);
+        const commandOf = (contract: { id: string }): string =>
+          intent === 'preparer_facture_annuelle'
+            ? `Prépare la facture annuelle du contrat ${contract.id}`
+            : `Statut du contrat ${contract.id}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named ? ['Vérifier le contrat contre les données réelles'] : ['Lever l’ambiguïté du contrat'],
+          card: named
+            ? {
+                title: 'Contrat introuvable',
+                body: `Je ne trouve aucun contrat correspondant à « ${resolution.saidTokens.join(' ')} ». Rien n’a été modifié — choisis dans la liste :`,
+              }
+            : {
+                title: 'Quel contrat ?',
+                body:
+                  intent === 'preparer_facture_annuelle'
+                    ? 'La facture annuelle de quel contrat veux-tu préparer ?'
+                    : 'De quel contrat veux-tu le statut ?',
+              },
+          choices: options.map((contract) => ({
+            label: `${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''}`,
+            value: commandOf(contract),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.contrat`,
+              question:
+                intent === 'preparer_facture_annuelle'
+                  ? 'Quel contrat facturer ?'
+                  : 'Quel contrat ?',
+              header: 'Contrat',
+              items: options.map((contract) => ({
+                value: contract.id,
+                label: contract.label,
+                description: contract.customerName ?? '',
+                followUp: commandOf(contract),
+              })),
+            }),
+          ],
+        });
+      }
+
+      // Statut PARLÉ — les faits dérivés, dits comme la fiche les affiche (§3.1/§3.2).
+      const statusLine =
+        target.status === 'draft'
+          ? 'Brouillon — active-le pour démarrer la couverture.'
+          : target.status === 'terminated'
+            ? `Résilié${target.terminatedCoverageUntil ? ` — couvert jusqu’au ${frDate(addDaysOnly(target.terminatedCoverageUntil, -1))}` : ''}.`
+            : target.expiredSince !== null
+              ? `Échu le ${frDate(target.expiredSince)} — à renouveler ou résilier.`
+              : 'Actif.';
+      const coverageLine =
+        target.currentPeriod === null
+          ? null
+          : `Période en cours : ${humanPeriod(target.currentPeriod)} — ${
+              target.currentPeriodCoveredBy !== null
+                ? target.currentPeriodCoveredBy.by === 'invoice'
+                  ? `facturée (${target.currentPeriodCoveredBy.number ?? 'facture émise'})`
+                  : 'déjà facturée avant Bob (déclaré à la création)'
+                : 'pas encore facturée'
+            }.`;
+      const renewalLine =
+        target.renewalAlert !== null
+          ? target.renewalAlert.tacit
+            ? `Se reconduit tacitement dans ${target.renewalAlert.daysUntil} jours (${frDate(target.renewalAlert.anniversary)}).`
+            : `Arrive à échéance dans ${target.renewalAlert.daysUntil} jours (${frDate(target.renewalAlert.anniversary)}).`
+          : null;
+
+      if (intent === 'statut_contrat') {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Dire les faits dérivés (période, couverture, échéance)'],
+          card: {
+            title: `${target.label}${target.customerName ? ` — ${target.customerName}` : ''}`,
+            body: [statusLine, coverageLine, renewalLine, `Préavis : ${target.noticeDays} jours (affiché, jamais bloquant).`]
+              .filter((line): line is string => line !== null)
+              .join('\n'),
+          },
+        });
+      }
+
+      // preparer_facture_annuelle — enchaînement composite : le STATUT est dit, puis la
+      // proposition n'arrive QUE si la dérivation est vraie (sinon réponse honnête avec le
+      // numéro couvrant — « si c'est le moment » respecté à la lettre).
+      if (target.billingDue === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Vérifier la couverture réelle'],
+          card: {
+            title: `${target.label} — rien à facturer`,
+            body: [
+              statusLine,
+              coverageLine ?? 'Aucune période facturable aujourd’hui (fenêtre −30 jours avant chaque échéance).',
+              'Rien n’a été préparé.',
+            ].join('\n'),
+          },
+        });
+      }
+      const prepareTool = this.tool('preparer_facture_annuelle');
+      if (!prepareTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Facture annuelle',
+            body: 'Je ne peux pas préparer la facture annuelle depuis cet appareil. Rien n’a été créé — passe par la fiche contrat.',
+          },
+        });
+      }
+      const dueArgs = { contractId: target.id };
+      const parsedDue = prepareTool.parse(dueArgs);
+      if (!parsedDue.ok) return err(parsedDue.error);
+      const duePeriod = humanPeriod({
+        start: target.billingDue.periodStart,
+        end: target.billingDue.periodEnd,
+      });
+      const dueLabel = `Préparer le brouillon de la facture annuelle ${target.label}${target.customerName ? ` (${target.customerName})` : ''} — période ${duePeriod}`;
+      const rebill =
+        target.billingDue.cancelledCoveringNumber !== null
+          ? ` La facture ${target.billingDue.cancelledCoveringNumber} a été annulée : la période est à re-facturer.`
+          : '';
+      if (requiresConfirmation(prepareTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Vérifier la couverture réelle', 'Attendre ta confirmation'],
+          card: {
+            title: 'Facture annuelle à préparer',
+            body: `La période ${duePeriod} n’est pas facturée.${rebill} ${dueLabel}. Rien ne sera émis ni envoyé — je prépare le brouillon ?`,
+          },
+          pending: { tool: prepareTool.name, args: dueArgs, label: dueLabel },
+          spokenPrompt: buildSpokenConfirmation(dueLabel),
+        });
+      }
+      const dueRun = await prepareTool.run(parsedDue.value);
+      if (!dueRun.ok) {
+        const guard = domainGuardCard(dueRun.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(dueRun.error);
+      }
+      const prepared = dueRun.value as { vatDivergence?: unknown; totalTtcCents?: unknown; contractTotalTtcCents?: unknown };
+      const divergence =
+        prepared.vatDivergence === true &&
+        typeof prepared.totalTtcCents === 'number' &&
+        typeof prepared.contractTotalTtcCents === 'number'
+          ? ` TVA recalculée au régime actuel : total ${formatEUR(prepared.totalTtcCents)} au lieu de ${formatEUR(prepared.contractTotalTtcCents)}.`
+          : '';
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Préparer le brouillon annuel'],
+        card: {
+          title: 'Brouillon prêt ✓',
+          body: `${dueLabel} — le brouillon est prêt.${divergence} Rien n’est émis ni envoyé : l’émission reste ton geste.`,
+        },
       });
     }
 

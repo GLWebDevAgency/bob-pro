@@ -4141,6 +4141,50 @@ export class BackendService {
           })),
         });
       },
+      // PR-12c — contrats de maintenance À LA VOIX (parité §2.7) : MÊMES vues dérivées que
+      // l'écran (listMaintenanceContracts sert la fiche, la liste ET Bob — une seule vérité),
+      // MÊME use case PrepareAnnualInvoiceDraft que POST /contracts/:id/annual-invoice.
+      listMaintenanceContracts: async () => {
+        const views = await this.listMaintenanceContracts();
+        if (!views.ok) return views;
+        return ok(
+          views.value.map((view) => ({
+            id: view.contract.id,
+            label: view.contract.label,
+            status: view.contract.status,
+            customerName: view.customerName,
+            chantierNom: view.chantierNom,
+            tacitRenewal: view.contract.tacitRenewal,
+            noticeDays: view.contract.noticeDays,
+            annualTotalHtCents: view.annualTotals.ht,
+            currentPeriod: view.currentPeriod,
+            currentPeriodCoveredBy: view.currentPeriodCoveredBy,
+            billingDue:
+              view.billingDue === null
+                ? null
+                : {
+                    periodStart: view.billingDue.period.start,
+                    periodEnd: view.billingDue.period.end,
+                    cancelledCoveringNumber: view.billingDue.cancelledCoveringNumber,
+                  },
+            renewalAlert: view.renewalAlert,
+            expiredSince: view.lifecycle.expired?.since ?? null,
+            terminatedCoverageUntil: view.lifecycle.terminatedCoverage?.until ?? null,
+          })),
+        );
+      },
+      prepareContractAnnualInvoice: async (input) => {
+        const r = await this.prepareContractAnnualInvoice(input.contractId);
+        if (!r.ok) return r;
+        return ok({
+          invoiceId: r.value.invoiceId,
+          periodStart: r.value.servicePeriod.start,
+          periodEnd: r.value.servicePeriod.end,
+          totalTtcCents: r.value.totals.ttc,
+          contractTotalTtcCents: r.value.contractTotals.ttc,
+          vatDivergence: r.value.vatDivergence,
+        });
+      },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
       // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
       // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :

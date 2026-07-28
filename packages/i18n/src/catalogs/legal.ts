@@ -210,4 +210,40 @@ export const legalFr = {
     pro: 'Bob suspend la première émission tant que ce numéro est absent, plutôt que de laisser partir une facture contestable. Saisi une fois, il est repris automatiquement sur toutes vos pièces.',
     direct: 'Bob bloque l’émission tant qu’il manque. Saisi une fois, imprimé partout.',
   },
+
+  // ── PR-12c — préavis de résiliation d'un contrat de maintenance (Bloc B §2.3) ─
+  // AFFICHÉ, jamais bloquant : la résiliation subie par l'artisan est TRACÉE, pas interdite
+  // (fail-closed sur l'intégrité des données uniquement). In-line = BÉNÉFICE (se défendre).
+  'legal.contractNotice.inline': {
+    pote: 'Préavis de {days} jours — une info pour te défendre, jamais un blocage.',
+    pro: 'Préavis de {days} jours — une information pour défendre vos intérêts, jamais un blocage.',
+    direct: 'Préavis {days} j — info, pas un blocage.',
+  },
+  'legal.contractNotice.law': {
+    pote: 'Le préavis, c’est le délai prévu AU CONTRAT avant que la résiliation prenne effet. Si ton client résilie sans le respecter, tu peux réclamer les sommes dues jusqu’à la fin du préavis — c’est un droit contractuel, pas un automatisme.',
+    pro: 'Le préavis est le délai contractuel qui court avant la prise d’effet d’une résiliation. Un client qui résilie sans le respecter reste redevable des sommes dues jusqu’au terme du préavis : c’est un droit contractuel à faire valoir.',
+    direct: 'Préavis = délai contractuel avant effet. Non respecté : les sommes restent dues jusqu’à son terme.',
+  },
+  'legal.contractNotice.why': {
+    pote: 'Bob affiche le préavis pour que tu saches ce que tu peux réclamer — mais il n’empêche JAMAIS d’acter une résiliation subie : la réalité du terrain prime, la trace te protège.',
+    pro: 'Bob affiche le préavis pour éclairer ce qui peut être réclamé, mais n’empêche jamais d’enregistrer une résiliation subie : la réalité prime, la trace vous protège.',
+    direct: 'Bob affiche, ne bloque jamais. La trace te protège.',
+  },
+
+  // ── PR-12c — TVA recalculée au jour du brouillon annuel (amélioration 2) ──────
+  'legal.contractVat.inline': {
+    pote: 'La TVA est recalculée au régime du jour — jamais un taux périmé recopié du contrat.',
+    pro: 'La TVA est recalculée selon le régime en vigueur au jour du brouillon — jamais reprise telle quelle du contrat.',
+    direct: 'TVA recalculée au jour du brouillon.',
+  },
+  'legal.contractVat.law': {
+    pote: 'La TVA d’une facture suit le régime applicable AU JOUR où tu factures : si ta société a basculé (franchise en base art. 293 B du CGI, changement de taux), le taux écrit au contrat il y a un an peut être devenu faux — et une TVA facturée à tort reste due au Trésor.',
+    pro: 'La TVA facturée suit le régime applicable au jour de la facturation : après un changement de situation (franchise en base art. 293 B CGI, évolution de taux), le taux prévu au contrat peut être devenu inexact — toute TVA facturée à tort demeure due au Trésor (art. 283-3 CGI).',
+    direct: 'La TVA suit le régime DU JOUR de facturation. TVA facturée à tort = due au Trésor (art. 283-3 CGI).',
+  },
+  'legal.contractVat.why': {
+    pote: 'Bob repasse chaque ligne par le taux légal du jour et t’affiche l’écart avec le contrat plutôt que de réécrire en silence : tu factures juste, et tu vois pourquoi.',
+    pro: 'Bob applique le taux légal du jour à chaque ligne et affiche l’écart avec le contrat plutôt que d’ajuster silencieusement : la facture est exacte et l’écart, visible.',
+    direct: 'Taux du jour appliqué, écart affiché — jamais réécrit en silence.',
+  },
 } as const satisfies Record<string, Copy>;

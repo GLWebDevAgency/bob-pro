@@ -25,6 +25,9 @@ export type BobIntent =
   | 'parc_equipements' // « montre-moi le parc du site Bastille » — lecture du parc (PR-11)
   | 'historique_equipement' // « l'historique de la fontaine de l'accueil » — historique dérivé (PR-11)
   | 'retirer_equipement' // « la vitrine froide est déposée, retire-la du parc » — retrait logique (PR-11)
+  | 'preparer_facture_annuelle' // « prépare la facture annuelle du contrat Bastille » — brouillon en un tap (PR-12c)
+  | 'statut_contrat' // « le contrat Carrefour, ça en est où ? » — statut parlé dérivé (PR-12c)
+  | 'contrats_a_renouveler' // « quels contrats à renouveler ? » — alertes J-60/J-30 dérivées (PR-12c)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -175,6 +178,42 @@ export function detectIntent(message: string): BobIntent {
     )
   )
     return 'ajouter_equipement';
+  // PR-12c — CONTRATS DE MAINTENANCE : AVANT toute la famille facture (« facture annuelle »
+  // contient « facture » : generer_facture/facture_directe/emettre_facture y collisionnent)
+  // et AVANT les gestes documentaires. La résolution du contrat par NOM se fait contre les
+  // données réelles dans le handler (patron resolveSpokenEquipment).
+  // Brouillon annuel : « prépare la facture annuelle du contrat Bastille », « fais la facture
+  // annuelle de Carrefour », « si c'est le moment prépare la facture annuelle ». Négation ⇒ rien.
+  if (
+    /\bfactures? annuelles?\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(prepare|preparer|fais|faire|genere|generer|cree|creer|lance|lancer|etablis|etablir)\b|\b(prepare|preparer|fais|faire|genere|generer|cree|creer|lance|lancer|etablis|etablir)\b.{0,40}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'preparer_facture_annuelle';
+  // Renouvellements : « quels contrats à renouveler ? », « des contrats qui expirent ? » —
+  // pluriel/liste ; un contrat NOMMÉ avec une question d'état reste statut_contrat.
+  if (
+    /\bcontrats?\b/.test(normalizedMessage) &&
+    /\b(a renouveler|renouvellements?|renouvelle[rnt]?|expirent?|arrivent? a echeance|a echeance|se reconduisent)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'contrats_a_renouveler';
+  // Statut parlé d'un contrat : « le contrat Carrefour, ça en est où ? », « statut du contrat
+  // Bastille », « parle-moi du contrat RATP » — lecture pure ; les gestes de création/
+  // résiliation (non couverts à la voix en V1) ne matchent pas (verbes exclus).
+  if (
+    /\bcontrats?\b/.test(normalizedMessage) &&
+    /\b(statuts?|etats?|ou en est|en est ou|ca en est|parle[- ]?moi|dis[- ]?moi|montre|resume|couvert|couverte|facture|facturee)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(cree|creer|crees|nouveau|nouvelle|ajoute|ajouter|resilie|resilier|active|activer|supprime|supprimer)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(bons? de commande|bc[- ]?\d)\b/.test(normalizedMessage)
+  )
+    return 'statut_contrat';
   // M3 — imputation d'une dépense EXISTANTE à un chantier (« mets la dépense Aldi sur le
   // chantier Durand », « impute la dépense gasoil au chantier Sèvres ») : AVANT la dépense
   // dictée (« mets » y collisionne), AVANT payer_depense/classer_document/voir_chantiers

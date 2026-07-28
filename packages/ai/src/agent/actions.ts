@@ -622,6 +622,57 @@ export interface EquipmentHistoryActionOutput {
 }
 
 /**
+ * PR-12c — contrat de maintenance projeté pour la voix (Bloc B §2.7) : l'agrégat + les FAITS
+ * DÉRIVÉS par le serveur (période arithmétique, couverture par factures réelles, alerte de
+ * renouvellement). Bob CONSTATE ces faits et les dit — il ne les recalcule ni ne les invente.
+ */
+export interface AgentContract {
+  id: string;
+  label: string;
+  status: 'draft' | 'active' | 'terminated';
+  customerName: string | null;
+  chantierNom: string | null;
+  tacitRenewal: boolean;
+  noticeDays: number;
+  /** Σ lignes HT vivante (centimes) — jamais persistée. */
+  annualTotalHtCents: number;
+  /** Période courante CALCULÉE (bornes EXCLUSIVES domaine) — null si résilié échu/non-tacite échu. */
+  currentPeriod: { start: string; end: string } | null;
+  /** Couverture de la période courante — « Facturée ✓ — F-… » / « déclarée avant Bob ». */
+  currentPeriodCoveredBy: { by: 'invoice' | 'import'; number: string | null } | null;
+  /** « Facture annuelle à émettre » (annexe erratum n° 3) — null : rien à proposer. */
+  billingDue: {
+    periodStart: string;
+    periodEnd: string;
+    cancelledCoveringNumber: string | null;
+  } | null;
+  renewalAlert: {
+    palier: 'j60' | 'j30';
+    anniversary: string;
+    daysUntil: number;
+    tacit: boolean;
+  } | null;
+  /** [P14] non-tacite échu depuis cette date — « à renouveler ou résilier ». */
+  expiredSince: string | null;
+  terminatedCoverageUntil: string | null;
+}
+
+export interface PrepareContractAnnualInvoiceActionInput {
+  contractId: string;
+}
+
+export interface PrepareContractAnnualInvoiceActionOutput {
+  invoiceId: string;
+  /** Période de service écrite au brouillon (bornes HUMAINES inclusives). */
+  periodStart: string;
+  periodEnd: string;
+  totalTtcCents: number;
+  contractTotalTtcCents: number;
+  /** Amélioration 2 — l'écart de TVA contrat/brouillon est DIT, jamais silencieux. */
+  vatDivergence: boolean;
+}
+
+/**
  * Surface d'actions de Bob — implémentée par l'app via le BobClient (donc le domaine/use cases).
  * INVARIANT DE PARITÉ : chaque action faisable à la main dans l'UI a ici sa méthode, et les deux
  * passent par le MÊME use case. Bob ne peut donc rien faire que l'utilisateur ne puisse faire, et
@@ -837,4 +888,14 @@ export interface BobActions {
   getEquipmentHistory?(
     input: EquipmentHistoryActionInput,
   ): Promise<Result<EquipmentHistoryActionOutput, AppError>>;
+  /** PR-12c — contrats RÉELS du tenant avec leurs FAITS DÉRIVÉS (période, couverture,
+   * renouvellement) : la matière du statut parlé, des renouvellements et de la résolution
+   * par nom (« la facture annuelle de Carrefour »). Lecture pure, jamais un contrat inventé. */
+  listMaintenanceContracts?(): Promise<Result<AgentContract[], AppError>>;
+  /** PR-12c — « prépare la facture annuelle du contrat Bastille » : MÊME use case
+   * PrepareAnnualInvoiceDraft que POST /contracts/:id/annual-invoice et la fiche (brouillon
+   * en un tap, jamais émis, jamais envoyé seul ; refus actionnables restitués verbatim). */
+  prepareContractAnnualInvoice?(
+    input: PrepareContractAnnualInvoiceActionInput,
+  ): Promise<Result<PrepareContractAnnualInvoiceActionOutput, AppError>>;
 }

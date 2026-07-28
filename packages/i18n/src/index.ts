@@ -251,6 +251,54 @@ const legacyFr = {
     pro: 'Lancer le diagnostic',
     direct: 'Diagnostic',
   },
+  // PR-12c — « facture annuelle à émettre » (Bloc B) : carte DÉRIVÉE de deriveAnnualBillingDue
+  // (période arithmétique + factures réelles). Extinction/réallumage par l'état réel UNIQUEMENT.
+  'today.prioContractInvoiceTitle': {
+    pote: 'Facture annuelle à émettre — {label}',
+    pro: 'Facture annuelle à émettre — {label}',
+    direct: 'Annuelle à émettre — {label}',
+  },
+  'today.prioContractInvoiceBadge': {
+    pote: 'Contrat',
+    pro: 'Contrat',
+    direct: 'Contrat',
+  },
+  'today.prioContractInvoiceHint': {
+    pote: 'Période {start} → {end} pas encore facturée.',
+    pro: 'Période {start} → {end} non facturée.',
+    direct: '{start} → {end} non facturée.',
+  },
+  'today.prioContractRebillHint': {
+    pote: 'La facture {number} a été annulée : la période {start} → {end} est à re-facturer.',
+    pro: 'La facture {number} a été annulée — la période {start} → {end} redevient à facturer.',
+    direct: '{number} annulée — {start} → {end} à re-facturer.',
+  },
+  'today.ctaPrepareContractDraft': {
+    pote: 'Préparer le brouillon',
+    pro: 'Préparer le brouillon',
+    direct: 'Brouillon',
+  },
+  // PR-13 — renouvellement J-60/J-30 (interne, jamais un envoi client).
+  'today.prioRenewalTacitTitle': {
+    pote: 'Se reconduit dans {days} jours — {label}',
+    pro: 'Se reconduit dans {days} jours — {label}',
+    direct: 'Reconduction J-{days} — {label}',
+  },
+  'today.prioRenewalNonTacitTitle': {
+    pote: 'Arrive à échéance dans {days} jours — {label}',
+    pro: 'Arrive à échéance dans {days} jours — {label}',
+    direct: 'Échéance J-{days} — {label}',
+  },
+  'today.prioRenewalBadge': {
+    pote: 'Renouvellement',
+    pro: 'Renouvellement',
+    direct: 'Renouv.',
+  },
+  'today.ctaSeeContract': {
+    pote: 'Voir le contrat',
+    pro: 'Voir le contrat',
+    direct: 'Voir',
+  },
   // Devis à transmettre (cas terrain fondateur 2026-07-20) : le devis est passé `sent` — son
   // numéro légal est alloué — mais le client n'a pas d'e-mail, donc rien n'est parti. La copy
   // dit CE QUI MANQUE et CE QU'ON PEUT FAIRE, sans jargon : ajouter l'adresse, ou envoyer le
@@ -1579,6 +1627,346 @@ const legacyFr = {
     pote: 'Équipement introuvable — il a peut-être été retiré d’un autre appareil.',
     pro: 'Équipement introuvable.',
     direct: 'Introuvable.',
+  },
+
+  // ── PR-12c — contrat de maintenance (Bloc B « Le métier »). Chaque fait affiché est DÉRIVÉ
+  // (période arithmétique, couverture par factures réelles) — l'écran constate, jamais il
+  // n'invente ; les reconductions calculées sont étiquetées « (calculé) ». ──
+  'contrat.eyebrow': {
+    pote: 'CONTRAT DE MAINTENANCE',
+    pro: 'CONTRAT DE MAINTENANCE',
+    direct: 'CONTRAT',
+  },
+  'contrat.badgeDraft': { pote: 'Brouillon', pro: 'Brouillon', direct: 'Brouillon' },
+  'contrat.badgeActive': { pote: 'Actif', pro: 'Actif', direct: 'Actif' },
+  'contrat.badgeTerminated': {
+    pote: 'Résilié le {date}',
+    pro: 'Résilié le {date}',
+    direct: 'Résilié {date}',
+  },
+  'contrat.badgeExpired': {
+    pote: 'Échu le {date}',
+    pro: 'Échu le {date}',
+    direct: 'Échu {date}',
+  },
+  'contrat.tacitOn': {
+    pote: 'Reconduction tacite',
+    pro: 'Reconduction tacite',
+    direct: 'Tacite',
+  },
+  'contrat.tacitOff': {
+    pote: 'Sans reconduction tacite',
+    pro: 'Sans reconduction tacite',
+    direct: 'Non tacite',
+  },
+  'contrat.clientLabel': { pote: 'Client', pro: 'Client', direct: 'Client' },
+  'contrat.siteLabel': { pote: 'Site', pro: 'Site', direct: 'Site' },
+  'contrat.totalPerYear': {
+    pote: '{amount} HT / an',
+    pro: '{amount} HT / an',
+    direct: '{amount} HT/an',
+  },
+  'contrat.visitsPerYear': {
+    pote: '{count} passage(s) / an',
+    pro: '{count} passage(s) / an',
+    direct: '{count} passage(s)/an',
+  },
+  'contrat.sectionEcheances': { pote: 'ÉCHÉANCES', pro: 'ÉCHÉANCES', direct: 'ÉCHÉANCES' },
+  'contrat.currentPeriod': {
+    pote: 'Période en cours : {start} → {end}',
+    pro: 'Période en cours : {start} → {end}',
+    direct: 'Période : {start} → {end}',
+  },
+  'contrat.coveredByInvoice': {
+    pote: 'Facturée ✓ — {number}',
+    pro: 'Facturée ✓ — {number}',
+    direct: 'Facturée — {number}',
+  },
+  'contrat.coveredByImport': {
+    pote: 'Déjà facturée avant Bob (déclaré à la création)',
+    pro: 'Facturée hors Bob (fait déclaré à la création)',
+    direct: 'Facturée hors Bob',
+  },
+  'contrat.rebillHint': {
+    pote: 'La facture {number} a été annulée : la période est à re-facturer.',
+    pro: 'La facture {number} a été annulée — la période redevient à facturer.',
+    direct: '{number} annulée — à re-facturer.',
+  },
+  'contrat.prepareCta': {
+    pote: 'Préparer la facture annuelle',
+    pro: 'Préparer la facture annuelle',
+    direct: 'Facture annuelle',
+  },
+  'contrat.prepareNote': {
+    pote: 'Bob prépare un brouillon — rien n’est envoyé.',
+    pro: 'Un brouillon est préparé — aucune pièce n’est émise ni envoyée.',
+    direct: 'Brouillon seulement — rien n’est envoyé.',
+  },
+  'contrat.nextAnniversary': {
+    pote: 'Prochain anniversaire : {date}',
+    pro: 'Prochain anniversaire : {date}',
+    direct: 'Anniversaire : {date}',
+  },
+  'contrat.noticeDays': {
+    pote: 'Préavis de résiliation : {days} jours',
+    pro: 'Préavis de résiliation : {days} jours',
+    direct: 'Préavis : {days} j',
+  },
+  'contrat.noticeLegal': {
+    pote: 'Le préavis est une information pour te défendre (délai prévu au contrat) — Bob n’empêche jamais d’acter une résiliation subie.',
+    pro: 'Le préavis est affiché pour information : il protège vos intérêts, mais Bob n’empêche jamais d’enregistrer une résiliation subie.',
+    direct: 'Préavis affiché pour info — la résiliation reste toujours possible.',
+  },
+  'contrat.sectionEquipments': {
+    pote: 'ÉQUIPEMENTS COUVERTS',
+    pro: 'ÉQUIPEMENTS COUVERTS',
+    direct: 'ÉQUIPEMENTS',
+  },
+  'contrat.equipmentsCount': {
+    pote: '{count} couvert(s)',
+    pro: '{count} équipement(s) couvert(s)',
+    direct: '{count} couvert(s)',
+  },
+  'contrat.equipmentsCountRetired': {
+    pote: '{count} couvert(s), dont {retired} retiré(s)',
+    pro: '{count} équipement(s) couvert(s), dont {retired} retiré(s)',
+    direct: '{count} couverts · {retired} retiré(s)',
+  },
+  'contrat.sectionLines': { pote: 'LIGNES', pro: 'LIGNES', direct: 'LIGNES' },
+  'contrat.totalHtYear': {
+    pote: 'Total HT / an',
+    pro: 'Total HT / an',
+    direct: 'Total HT/an',
+  },
+  'contrat.sectionHistory': { pote: 'HISTORIQUE', pro: 'HISTORIQUE', direct: 'HISTORIQUE' },
+  'contrat.historyActivated': {
+    pote: 'Activé',
+    pro: 'Contrat activé',
+    direct: 'Activé',
+  },
+  'contrat.historyRenewed': {
+    pote: 'Reconduit tacitement (calculé)',
+    pro: 'Reconduit tacitement (calculé)',
+    direct: 'Reconduit (calculé)',
+  },
+  'contrat.historyTerminated': {
+    pote: 'Résilié — {note}',
+    pro: 'Résilié — motif : {note}',
+    direct: 'Résilié — {note}',
+  },
+  'contrat.activateCta': {
+    pote: 'Activer le contrat',
+    pro: 'Activer le contrat',
+    direct: 'Activer',
+  },
+  'contrat.deleteDraftCta': {
+    pote: 'Supprimer le brouillon',
+    pro: 'Supprimer le brouillon',
+    direct: 'Supprimer',
+  },
+  'contrat.terminateCta': { pote: 'Résilier…', pro: 'Résilier…', direct: 'Résilier…' },
+  'contrat.terminateTitle': {
+    pote: 'Résilier le contrat',
+    pro: 'Résilier le contrat',
+    direct: 'Résilier',
+  },
+  'contrat.terminateDateField': {
+    pote: 'Fin de couverture (AAAA-MM-JJ)',
+    pro: 'Date d’effet — fin de couverture (AAAA-MM-JJ)',
+    direct: 'Fin de couverture (AAAA-MM-JJ)',
+  },
+  'contrat.terminateDateHint': {
+    pote: 'Laisse vide pour le prochain anniversaire ({date}).',
+    pro: 'Par défaut : prochain anniversaire calculé ({date}).',
+    direct: 'Vide = prochain anniversaire ({date}).',
+  },
+  'contrat.terminateNoteField': {
+    pote: 'Motif (obligatoire)',
+    pro: 'Motif de résiliation (obligatoire)',
+    direct: 'Motif (requis)',
+  },
+  'contrat.terminateConfirm': {
+    pote: 'Acter la résiliation',
+    pro: 'Enregistrer la résiliation',
+    direct: 'Acter',
+  },
+  'contrat.terminatedCoverage': {
+    pote: 'Résilié — couvert jusqu’au {date}',
+    pro: 'Résilié — couverture jusqu’au {date}',
+    direct: 'Couvert jusqu’au {date}',
+  },
+  'contrat.renewalTacit': {
+    pote: 'Se reconduit dans {days} jours',
+    pro: 'Se reconduit tacitement dans {days} jours',
+    direct: 'Reconduction dans {days} j',
+  },
+  'contrat.renewalNonTacit': {
+    pote: 'Arrive à échéance dans {days} jours',
+    pro: 'Arrive à échéance dans {days} jours',
+    direct: 'Échéance dans {days} j',
+  },
+  'contrat.vatDivergence': {
+    pote: 'TVA recalculée au régime actuel : total {actual} au lieu de {expected}.',
+    pro: 'TVA recalculée au régime en vigueur : total {actual} au lieu de {expected}.',
+    direct: 'TVA recalculée : {actual} (contrat : {expected}).',
+  },
+  'contrat.vatDivergenceLegal': {
+    pote: 'Ton régime de TVA a changé depuis la création du contrat (franchise 293 B du CGI ou bascule de taux) : Bob applique le taux légal du JOUR du brouillon — jamais un taux périmé recopié.',
+    pro: 'Le régime de TVA a évolué depuis la création du contrat (franchise en base art. 293 B CGI, ou changement de taux). La TVA est recalculée au régime applicable au jour du brouillon.',
+    direct: 'Régime de TVA changé depuis le contrat : taux recalculé au jour du brouillon.',
+  },
+  'contrat.seeDraftCta': {
+    pote: 'Voir le brouillon',
+    pro: 'Ouvrir le brouillon',
+    direct: 'Brouillon',
+  },
+  'contrat.notFound': {
+    pote: 'Contrat introuvable — il a peut-être été supprimé d’un autre appareil.',
+    pro: 'Contrat introuvable.',
+    direct: 'Introuvable.',
+  },
+  'contrat.dataError': {
+    pote: 'Impossible de charger le contrat — réessaie.',
+    pro: 'Le contrat n’a pas pu être chargé.',
+    direct: 'Erreur de chargement.',
+  },
+  // — Wizard de création (écrans §3.3 — la saisie « déjà facturé jusqu'au » est INCLUSIVE,
+  //   convertie +1 jour vers la borne exclusive par le wizard : annexe erratum n° 4) —
+  'contrat.newTitle': {
+    pote: 'Nouveau contrat',
+    pro: 'Nouveau contrat',
+    direct: 'Nouveau contrat',
+  },
+  'contrat.stepClient': { pote: 'Client & site', pro: 'Client & site', direct: 'Client' },
+  'contrat.stepLines': { pote: 'Lignes', pro: 'Lignes', direct: 'Lignes' },
+  'contrat.stepConditions': { pote: 'Conditions', pro: 'Conditions', direct: 'Conditions' },
+  'contrat.stepReview': { pote: 'Revue', pro: 'Revue', direct: 'Revue' },
+  'contrat.b2cFiltered': {
+    pote: 'Contrats particuliers : bientôt — la loi Chatel (art. L215-1) exige un cadre dédié. En attendant : devis signé annuel.',
+    pro: 'Les contrats avec des particuliers arrivent plus tard : la reconduction tacite exige le devoir d’information (art. L215-1 c. conso, loi Chatel). Alternative : devis signé annuel.',
+    direct: 'B2C : bientôt (loi Chatel L215-1). Alternative : devis annuel.',
+  },
+  'contrat.labelField': {
+    pote: 'Nom du contrat (ex. Entretien fontaines 2026)',
+    pro: 'Intitulé du contrat',
+    direct: 'Nom du contrat',
+  },
+  'contrat.labelRequired': {
+    pote: 'Donne un nom au contrat.',
+    pro: 'L’intitulé du contrat est requis.',
+    direct: 'Nom requis.',
+  },
+  'contrat.customerRequired': {
+    pote: 'Choisis le client du contrat.',
+    pro: 'Le client est requis.',
+    direct: 'Client requis.',
+  },
+  'contrat.anniversaryField': {
+    pote: 'Début du contrat (AAAA-MM-JJ)',
+    pro: 'Date de début (AAAA-MM-JJ)',
+    direct: 'Début (AAAA-MM-JJ)',
+  },
+  'contrat.anniversaryHint': {
+    pote: 'La vraie date de départ — même dans le passé pour un contrat migré.',
+    pro: 'Date de début réelle du contrat — une date passée est valide (contrat migré).',
+    direct: 'Date réelle — passé accepté (migration).',
+  },
+  'contrat.dateInvalid': {
+    pote: 'Les dates s’écrivent AAAA-MM-JJ (ex. 2026-10-12).',
+    pro: 'Format de date attendu : AAAA-MM-JJ.',
+    direct: 'Format : AAAA-MM-JJ.',
+  },
+  'contrat.visitsField': {
+    pote: 'Passages par an',
+    pro: 'Passages par an',
+    direct: 'Passages/an',
+  },
+  'contrat.noticeField': {
+    pote: 'Préavis (jours)',
+    pro: 'Préavis de résiliation (jours)',
+    direct: 'Préavis (j)',
+  },
+  'contrat.tacitField': {
+    pote: 'Reconduction tacite',
+    pro: 'Reconduction tacite',
+    direct: 'Tacite',
+  },
+  'contrat.migratedTitle': {
+    pote: 'Contrat migré ?',
+    pro: 'Contrat migré ?',
+    direct: 'Migration',
+  },
+  'contrat.migratedField': {
+    pote: 'Déjà facturé jusqu’au (inclus, AAAA-MM-JJ)',
+    pro: 'Déjà facturé jusqu’au (date incluse, AAAA-MM-JJ)',
+    direct: 'Facturé jusqu’au (inclus)',
+  },
+  'contrat.migratedHint': {
+    pote: 'Bob ne réclamera pas ce qui est déjà réglé hors Bob ; les visites comptent à partir d’aujourd’hui.',
+    pro: 'Bob ne redemandera jamais ce qui a déjà été facturé hors Bob ; les visites sont décomptées à partir de l’activation.',
+    direct: 'Rien de déjà facturé ne sera réclamé ; visites comptées dès aujourd’hui.',
+  },
+  'contrat.lineLabelField': { pote: 'Libellé', pro: 'Libellé', direct: 'Libellé' },
+  'contrat.lineQtyField': { pote: 'Quantité', pro: 'Quantité', direct: 'Qté' },
+  'contrat.linePriceField': {
+    pote: 'PU HT (€)',
+    pro: 'Prix unitaire HT (€)',
+    direct: 'PU HT (€)',
+  },
+  'contrat.lineVatField': { pote: 'TVA (%)', pro: 'Taux de TVA (%)', direct: 'TVA (%)' },
+  'contrat.lineInvalid': {
+    pote: 'Chaque ligne veut un libellé, une quantité et un prix valides.',
+    pro: 'Chaque ligne exige libellé, quantité positive et prix valide.',
+    direct: 'Ligne incomplète.',
+  },
+  'contrat.linesRequired': {
+    pote: 'Ajoute au moins une ligne — c’est elle qui fera la facture annuelle.',
+    pro: 'Au moins une ligne est requise (elle compose la facture annuelle).',
+    direct: 'Au moins une ligne.',
+  },
+  'contrat.addLineCta': {
+    pote: '+ Ajouter une ligne',
+    pro: '+ Ajouter une ligne',
+    direct: '+ Ligne',
+  },
+  'contrat.removeLineA11y': {
+    pote: 'Retirer la ligne {label}',
+    pro: 'Retirer la ligne {label}',
+    direct: 'Retirer {label}',
+  },
+  'contrat.reviewPeriod': {
+    pote: 'Période courante calculée : {start} → {end}',
+    pro: 'Période courante (calculée) : {start} → {end}',
+    direct: 'Période : {start} → {end}',
+  },
+  'contrat.createDraftCta': {
+    pote: 'Créer le brouillon',
+    pro: 'Créer le brouillon',
+    direct: 'Créer le brouillon',
+  },
+  'contrat.createdAnnounce': {
+    pote: 'Contrat {label} créé en brouillon.',
+    pro: 'Le contrat {label} est créé en brouillon.',
+    direct: 'Contrat {label} créé.',
+  },
+  'contrat.activateHint': {
+    pote: 'L’activation figera la date de début et le « déjà facturé jusqu’au » — c’est un geste séparé, jamais automatique.',
+    pro: 'L’activation fige la date de début et la borne migrée. C’est un geste distinct de la création.',
+    direct: 'Activation = date de début figée. Geste séparé.',
+  },
+  'contrat.nextCta': { pote: 'Continuer', pro: 'Continuer', direct: 'Continuer' },
+  'contrat.backCta': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  // — Section « Contrats » de la fiche client (écrans §6.3) —
+  'contrat.sectionClient': { pote: 'Contrats', pro: 'Contrats', direct: 'Contrats' },
+  'contrat.clientEmpty': {
+    pote: 'Aucun contrat pour ce client.',
+    pro: 'Aucun contrat de maintenance pour ce client.',
+    direct: 'Aucun contrat.',
+  },
+  'contrat.newCta': {
+    pote: '+ Nouveau contrat',
+    pro: '+ Nouveau contrat',
+    direct: '+ Contrat',
   },
 
   // ── PR-08 — picker « site/chantier » des créations de pièces (wizard devis + facture
