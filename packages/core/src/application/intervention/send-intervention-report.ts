@@ -4,7 +4,10 @@ import { parisDateOnly } from '../../shared-kernel/time';
 import { type CompanyRepository, type CustomerRepository, type ChantierRepository } from '../ports/repositories';
 import { type Notification, type NotificationEmailAttachment } from '../ports/output';
 import { resolveExplicitRecipientEmail } from '../billing/send-invoice';
-import { type InterventionReportDocumentIds } from './generate-intervention-report';
+import {
+  interventionReportTitleFromArchive,
+  type InterventionReportDocumentIds,
+} from './generate-intervention-report';
 import {
   DEFAULT_INTERVENTION_REPORT_TITLE,
   type CompanyInterventionSettingsRepository,
@@ -30,10 +33,22 @@ export const INTERVENTION_REPORT_STALE_ARCHIVE_MESSAGE =
   'La fiche archivée ne correspond plus à l’état du passage (elle date d’avant la signature) : ' +
   'régénère l’aperçu — il portera la signature —, puis envoie.';
 
-// ── Clé de déduplication — un envoi par VERSION d'archive (retry du même geste dédupliqué) ──
+// ── Clé de déduplication — un envoi par VERSION d'archive ET PAR DESTINATAIRE ──
 
-export function interventionReportDedupeKey(interventionId: string, documentSha256: string): string {
-  return `intervention:${interventionId}:report:${documentSha256}`;
+/**
+ * [Revue adversariale 28/07 — finding 3] L'intention d'envoi est « CETTE pièce à CE
+ * destinataire » : la clé porte donc le destinataire. Sans lui, envoyer la même fiche à un
+ * SECOND contact (le gardien après la compta) heurtait l'unicité outbox
+ * (companyId, kind, dedupeKey) avec une charge utile différente — une exception TECHNIQUE au
+ * lieu d'un second envoi parfaitement légitime. Le retry du MÊME geste vers le MÊME
+ * destinataire reste dédupliqué : l'adresse est canonisée (trim + minuscules) comme partout.
+ */
+export function interventionReportDedupeKey(
+  interventionId: string,
+  documentSha256: string,
+  recipientEmail: string,
+): string {
+  return `intervention:${interventionId}:report:${documentSha256}:to:${recipientEmail.trim().toLowerCase()}`;
 }
 
 // ── Copy de l'e-mail (pure, testable — la société parle, ton sobre) ──
@@ -186,7 +201,15 @@ export class SendInterventionReport {
     if (!archived.ok) return archived;
 
     const settings = (await this.deps.interventionSettings?.find(input.companyId)) ?? null;
-    const title = settings?.reportTitle?.trim() || DEFAULT_INTERVENTION_REPORT_TITLE;
+    const configuredTitle = settings?.reportTitle?.trim() || DEFAULT_INTERVENTION_REPORT_TITLE;
+    // [finding 2] UNE SEULE SOURCE DE NOM : l'ARCHIVE. Le réglage courant a pu changer depuis
+    // l'archivage (titre renommé) ; le mail ne renomme JAMAIS la pièce qu'il joint — il ne
+    // retient le libellé configuré que s'il désigne exactement la même pièce, pour en restituer
+    // la typographie humaine (accents, majuscules) que le nom de fichier a perdue.
+    const title = interventionReportTitleFromArchive(
+      archived.value.attachment.filename,
+      configuredTitle,
+    );
     // Invariant §3.4 : une fiche completed/signed porte TOUJOURS finishedAt.
     const visitAnchor = intervention.finishedAt;
     if (visitAnchor === null)
@@ -223,7 +246,7 @@ export class SendInterventionReport {
     const job = await this.deps.outbox.enqueue({
       companyId: input.companyId,
       kind: 'intervention-report',
-      dedupeKey: interventionReportDedupeKey(intervention.id, archived.value.sha256),
+      dedupeKey: interventionReportDedupeKey(intervention.id, archived.value.sha256, recipient),
       notification,
     });
 

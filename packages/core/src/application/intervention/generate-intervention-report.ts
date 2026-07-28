@@ -12,7 +12,7 @@ import { type DocumentRepository } from '../ports/document-repository';
 import { type DocumentFolderRepository } from '../ports/document-folder-repository';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type DocumentStoragePort } from '../ports/document-storage';
-import { type ClockPort } from '../ports/services';
+import { type ClockPort, type UnitOfWorkPort } from '../ports/services';
 import { StoreDocument } from '../documents/store-document';
 import { buildDocumentStorageKey } from '../documents/storage-key';
 import {
@@ -20,6 +20,7 @@ import {
   type CompanyInterventionSettingsRepository,
   type InterventionRepository,
 } from './intervention-repository';
+import { TxAppError, lockInterventionForMutation } from './intervention-mutation';
 
 /** État de fiche matérialisé par une version d'archive : `completed` puis, au plus, `signed`. */
 export type InterventionReportState = 'completed' | 'signed';
@@ -99,6 +100,13 @@ export interface GenerateInterventionReportDeps {
   documentIds: InterventionReportDocumentIds;
   hash: BytesHashPort;
   clock: ClockPort;
+  /**
+   * [Revue adversariale 28/07 — finding 1] La pose de la référence d'archive est une MUTATION
+   * de la fiche : elle exige la MÊME chorégraphie que toutes les autres (transaction, verrou
+   * de ligne, CAS de révision). Sans elle, une signature arrivée pendant le rendu — I/O longue
+   * — était écrasée au retour : une preuve perdue en silence.
+   */
+  uow: UnitOfWorkPort;
 }
 
 function slugify(value: string): string {
@@ -111,6 +119,41 @@ function slugify(value: string): string {
 }
 
 /**
+ * NOM DE FICHIER de l'archive — SOURCE UNIQUE du nom de la pièce (finding 2). Il est figé à
+ * l'archivage : le titre de société peut changer ensuite, l'archive garde le sien (A8).
+ */
+export function interventionReportFilename(input: {
+  title: string;
+  dateOnly: string;
+  state: InterventionReportState;
+}): string {
+  return `${slugify(input.title)}-${input.dateOnly}${input.state === 'signed' ? '-signee' : ''}.pdf`;
+}
+
+/** Segment de titre porté par un nom de fichier d'archive (inverse de la composition ci-dessus). */
+function archivedTitleSlug(filename: string): string {
+  const match = /^(.+)-\d{4}-\d{2}-\d{2}(?:-signee)?\.pdf$/.exec(filename.trim());
+  return match?.[1] ?? filename.trim().replace(/\.pdf$/i, '');
+}
+
+/**
+ * DÉSIGNATION de la pièce telle qu'elle s'appelle VRAIMENT — dérivée du nom de fichier ARCHIVÉ,
+ * jamais du réglage courant (finding 2 : le mail nommait la pièce autrement que la pièce).
+ * Le titre configuré n'est retenu que s'il désigne EXACTEMENT la même pièce : il ne sert alors
+ * qu'à en restituer la typographie humaine (accents, majuscules) que le slug a perdue.
+ */
+export function interventionReportTitleFromArchive(
+  archivedFilename: string,
+  configuredTitle: string,
+): string {
+  const slug = archivedTitleSlug(archivedFilename);
+  if (slugify(configuredTitle) === slug) return configuredTitle.trim();
+  const humanized = slug.replace(/-+/g, ' ').trim();
+  if (humanized.length === 0) return DEFAULT_INTERVENTION_REPORT_TITLE;
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+}
+
+/**
  * PR-16 — fiche de passage PDF : rendue PUIS ARCHIVÉE IMMUABLE (StoredDocument kind
  * `intervention_report`, origin generated, version 1 append-only — patron A8), JAMAIS
  * re-rendue pour un même état. Latch + versions : la fiche `completed` a son archive ; si le
@@ -120,6 +163,41 @@ function slugify(value: string): string {
  */
 export class GenerateInterventionReport {
   constructor(private readonly deps: GenerateInterventionReportDeps) {}
+
+  /**
+   * [finding 1] Pose de la référence d'archive : transaction + `lockById` (SELECT … FOR UPDATE)
+   * + CAS de révision, comme TOUTE mutation de fiche du train. Le rendu et l'archivage restent
+   * DEHORS (I/O longue : jamais un verrou de ligne tenu pendant un rendu PDF et un upload) —
+   * c'est précisément le CAS qui rend la fenêtre sûre : si la fiche a bougé pendant l'I/O
+   * (typiquement : le client a signé), l'écriture est REFUSÉE au lieu d'écraser la preuve.
+   * L'archive déjà écrite reste valide et immuable : la reprise la resservira par son latch,
+   * ou archivera l'état devenu courant.
+   */
+  private async attachReportUnderLock(input: {
+    companyId: string;
+    interventionId: string;
+    expectedRevision: number;
+    documentId: string;
+  }): Promise<Result<void, AppError>> {
+    try {
+      await this.deps.uow.runInTransaction(async () => {
+        const locked = await lockInterventionForMutation(this.deps.interventions, {
+          companyId: input.companyId,
+          interventionId: input.interventionId,
+          expectedRevision: input.expectedRevision,
+        });
+        // Référence déjà posée (rejeu exact) : rien à écrire, aucune révision consommée.
+        if (locked.reportDocumentId === input.documentId) return;
+        const attached = locked.attachReportDocument(input.documentId);
+        if (!attached.ok) throw new TxAppError(appDomain(attached.error));
+        await this.deps.interventions.save(locked);
+      });
+      return ok(undefined);
+    } catch (e) {
+      if (e instanceof TxAppError) return err(e.appError);
+      throw e;
+    }
+  }
 
   async execute(
     input: GenerateInterventionReportInput,
@@ -136,16 +214,24 @@ export class GenerateInterventionReport {
         }),
       );
     const state: InterventionReportState = intervention.status;
+    // Révision LUE : socle du CAS qui protège la pose de référence contre toute écriture
+    // concurrente survenue pendant le rendu (finding 1).
+    const expectedRevision = intervention.revision;
     const documentId = this.deps.documentIds.documentId(input.companyId, intervention.id, state);
 
     // LATCH A8 — l'archive de CET état existe déjà : on la sert, on ne re-rend JAMAIS.
     const existing = await this.deps.documents.findById(input.companyId, documentId);
     if (existing && existing.toProps().status === 'active') {
       if (intervention.reportDocumentId !== documentId) {
-        // Réparation d'un latch interrompu (archive écrite, référence non posée) : idempotent.
-        const attached = intervention.attachReportDocument(documentId);
-        if (!attached.ok) return err(appDomain(attached.error));
-        await this.deps.interventions.save(intervention);
+        // Réparation d'un latch interrompu (archive écrite, référence non posée) : idempotent,
+        // et sous la MÊME chorégraphie transactionnelle que toute mutation de fiche.
+        const attached = await this.attachReportUnderLock({
+          companyId: input.companyId,
+          interventionId: intervention.id,
+          expectedRevision,
+          documentId,
+        });
+        if (!attached.ok) return attached;
       }
       return ok({
         documentId,
@@ -223,7 +309,11 @@ export class GenerateInterventionReport {
 
     const sha256 = this.deps.hash.sha256HexOfBytes(bytes);
     const anchor = intervention.finishedAt ?? this.deps.clock.now();
-    const filename = `${slugify(title)}-${parisDateOnly(anchor)}${state === 'signed' ? '-signee' : ''}.pdf`;
+    const filename = interventionReportFilename({
+      title,
+      dateOnly: parisDateOnly(anchor),
+      state,
+    });
     const versionId = this.deps.documentIds.versionId(input.companyId, intervention.id, state);
     const storageKey = buildDocumentStorageKey({
       companyId: input.companyId,
@@ -259,9 +349,16 @@ export class GenerateInterventionReport {
     });
     if (!stored.ok) return stored;
 
-    const attached = intervention.attachReportDocument(documentId);
-    if (!attached.ok) return err(appDomain(attached.error));
-    await this.deps.interventions.save(intervention);
+    // L'archive est écrite (immuable) : la référence se pose sous verrou + CAS. Un conflit ici
+    // signifie que la fiche a bougé pendant le rendu — la preuve concurrente est PRÉSERVÉE, et
+    // la reprise archivera l'état devenu courant.
+    const attached = await this.attachReportUnderLock({
+      companyId: input.companyId,
+      interventionId: intervention.id,
+      expectedRevision,
+      documentId,
+    });
+    if (!attached.ok) return attached;
 
     return ok({ documentId, filename, alreadyArchived: false, state });
   }

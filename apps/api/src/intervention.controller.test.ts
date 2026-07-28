@@ -580,7 +580,11 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
     expect(sent.value).toMatchObject({ recipient: 'compta@ratp.example', deliveryStatus: 'queued' });
     expect(env.enqueued).toHaveLength(1);
     expect(env.enqueued[0]!.kind).toBe('intervention-report');
-    expect(env.enqueued[0]!.dedupeKey).toMatch(/^intervention:.+:report:[0-9a-f]{64}$/);
+    // [finding 3] La clé porte la VERSION d'archive ET le DESTINATAIRE : l'intention d'envoi
+    // est « cette pièce À CE destinataire » (un second contact n'est jamais un doublon).
+    expect(env.enqueued[0]!.dedupeKey).toMatch(
+      /^intervention:.+:report:[0-9a-f]{64}:to:compta@ratp\.example$/,
+    );
     // Le PDF ARCHIVÉ est joint, et la mention « non signée » est HONNÊTE.
     expect(env.enqueued[0]!.notification.attachments).toHaveLength(1);
     expect(env.enqueued[0]!.notification.body).toContain('sans signature sur place');

@@ -6926,6 +6926,10 @@ export class BackendService {
       },
       hash: { sha256HexOfBytes: (bytes) => documentSha256(bytes) },
       clock: this.clock,
+      // [Revue adversariale 28/07 — finding 1] La pose de la référence d'archive est une
+      // mutation de fiche : elle passe par la MÊME transaction + verrou de ligne + CAS que
+      // les autres (une signature concurrente ne peut plus être écrasée au retour du rendu).
+      uow: this.p,
     }).execute({ companyId, interventionId });
     if (r.ok)
       this.logger.audit('intervention.report_archived', {
