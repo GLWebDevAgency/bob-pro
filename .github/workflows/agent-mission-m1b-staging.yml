@@ -289,6 +289,9 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          # Re-certifie la readiness au SHA exact JUSTE avant le smoke : le cache acoustique
+          # (TTL 15 min) est chauffé après le postdeploy long, le smoke ne part jamais cache froid.
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs negative
@@ -395,6 +398,9 @@ jobs:
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-database.mjs
+          # Re-certifie la readiness au SHA exact JUSTE avant le smoke : le cache acoustique
+          # (TTL 15 min) est chauffé après le postdeploy long, le smoke ne part jamais cache froid.
+          node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs
           railway run --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_API_SERVICE_ID" \
             --environment "$RAILWAY_ENVIRONMENT_ID" --no-local -- \
             node apps/api/scripts/agent-mission-m1b-staging-smoke.mjs positive

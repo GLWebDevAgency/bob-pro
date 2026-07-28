@@ -30,6 +30,13 @@ function workflowStep(id) {
   return workflow.slice(start, end === -1 ? workflow.length : end);
 }
 
+function workflowStepByName(name) {
+  const start = workflow.indexOf(`- name: ${name}\n`);
+  assert.notEqual(start, -1, `missing workflow step ${name}`);
+  const end = workflow.indexOf('\n      - name:', start + 1);
+  return workflow.slice(start, end === -1 ? workflow.length : end);
+}
+
 test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialisé', () => {
   assert.match(workflow, /^on:\n  workflow_dispatch:/mu);
   assert.match(workflow, /^  workflow_call:/mu);
@@ -122,7 +129,11 @@ test('les trois déploiements API et le déploiement Whisper ont un ID exact', (
     occurrences(workflow, /agent-mission-m1b-staging-railway\.mjs \\\n\s+wait-deployment/gu),
     3,
   );
-  assert.equal(occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu), 3);
+  assert.equal(
+    occurrences(workflow, /agent-mission-m1b-staging-readiness\.mjs/gu),
+    5,
+    'readiness at the exact SHA must follow each deploy and precede each certify smoke',
+  );
   assert.equal(occurrences(workflow, /certify-railway-single-replica\.mjs/gu), 3);
   for (const stepId of ['deploy_whisper', 'deploy_baseline', 'deploy_active', 'deploy_off']) {
     const step = workflowStep(stepId);
@@ -309,6 +320,30 @@ test('workflow prouve les négociations réelle OFF/ON/OFF et rend un verdict bi
   assert.match(workflow, /test "\$CERTIFY_RESULT" = success/u);
   assert.match(workflow, /test "\$CLEANUP_RESULT" = success/u);
   assert.match(workflow, /test "\$EVIDENCE_RESULT" = success/u);
+});
+
+test('chaque smoke certify repart d’une readiness re-certifiée au SHA exact, cache acoustique chaud', () => {
+  for (const [stepName, smokeCommand] of [
+    ['Prove real WebRTC negotiation remains OFF', 'agent-mission-m1b-staging-smoke.mjs negative'],
+    [
+      'Execute real positive WebRTC mission and runtime RLS proof',
+      'agent-mission-m1b-staging-smoke.mjs positive',
+    ],
+  ]) {
+    const step = workflowStepByName(stepName);
+    const readiness = step.indexOf('node apps/api/scripts/agent-mission-m1b-staging-readiness.mjs');
+    const smoke = step.indexOf(smokeCommand);
+    assert.notEqual(
+      readiness,
+      -1,
+      `${stepName} must replay the exact-SHA readiness proof before its smoke`,
+    );
+    assert.notEqual(smoke, -1, `${stepName} must run ${smokeCommand}`);
+    assert.ok(
+      readiness < smoke,
+      `${stepName} must warm the acoustic cache immediately before ${smokeCommand}`,
+    );
+  }
 });
 
 test('le lane M1-B ne mute aucun protocole étranger et ne masque aucun échec', () => {
