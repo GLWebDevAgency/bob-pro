@@ -1192,7 +1192,7 @@ test('SUCCESS sans marqueur échoue après une grâce terminale de soixante seco
   const outputPath = await temporaryOutput(t);
   const runtime = fakeRuntime();
   let cleanupStartedAt = -1;
-  const slowCleanup = cleanupStep('stop');
+  const slowCleanup = cleanupStep('cancel');
   slowCleanup.before = () => {
     cleanupStartedAt = runtime.elapsed();
     runtime.advance(30_000);
@@ -1247,7 +1247,7 @@ test('la deadline absolue borne aussi les lectures GraphQL après SUCCESS', asyn
     deploymentStep('SUCCESS'),
     firstSlowLogsStep,
     ...Array.from({ length: 3 }, () => [deploymentStep('SUCCESS'), logsStep([])]).flat(),
-    cleanupStep('stop'),
+    cleanupStep('cancel'),
   ]);
 
   await assert.rejects(
@@ -1322,7 +1322,7 @@ test('refuse un marqueur disparu ou modifié pendant la confirmation', async (t)
         ...successSteps({ successfulObservations: 1 }),
         deploymentStep('SUCCESS'),
         secondObservation,
-        cleanupStep('stop'),
+        cleanupStep('cancel'),
       ]);
 
       await assert.rejects(
@@ -1436,14 +1436,14 @@ test('FAILED et CRASHED conservent un refus métier non-PII et le distinguent du
   }
 });
 
-test('un refus observé pendant SUCCESS est persisté puis le processus vivant est stoppé', async (t) => {
+test('un refus observé pendant SUCCESS est persisté puis le processus vivant est annulé', async (t) => {
   const outputPath = await temporaryOutput(t);
   const refusal = refusalFixture();
   const fetchImpl = scriptedFetch([
     ...beforeDeploymentSteps(),
     deploymentStep('SUCCESS'),
     logsStep([{ message: marker(refusal) }]),
-    cleanupStep('stop'),
+    cleanupStep('cancel'),
   ]);
   await assert.rejects(
     runRailwayDocumentArchiveAudit({
