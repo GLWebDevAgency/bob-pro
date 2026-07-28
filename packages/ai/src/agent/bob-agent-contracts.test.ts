@@ -513,6 +513,167 @@ describe('creer_contrat_maintenance — consigne composite désordonnée lue en 
     expect(r.value.card.body).toContain('01/10/2026');
   });
 
+  /**
+   * CHEMIN DÉTERMINISTE — l'autre moitié de la preuve (le chemin du MODÈLE est verrouillé dans
+   * `registry.test.ts`). Quatre revues ont conclu qu'un extracteur d'énoncés libres ne sera jamais
+   * exhaustif : « entretien trimestriel » est une cadence pour l'oreille et un NOM pour le métier,
+   * et aucune règle ne tranchera cela à coup sûr. La garde ne tranche pas non plus — elle REFUSE
+   * de trancher, et rend la main au pro. C'est ce qu'on vérifie ici : le doute devient une
+   * QUESTION, jamais une donnée, et jamais une pièce.
+   */
+  it('GARDE : un libellé DOUTEUX devient une QUESTION — rien n’est créé, aucun fait déjà dit n’est perdu', async () => {
+    const created: unknown[] = [];
+    const agent = lifecycleAgent({
+      createMaintenanceContract: async (input) => {
+        created.push(input);
+        return ok({
+          contractId: 'contract-new',
+          label: input.label,
+          status: 'draft' as const,
+          anniversaryDate: input.anniversaryDate,
+          terminationEffectiveDate: null,
+        });
+      },
+    });
+    const r = await agent.ask(
+      'Crée le contrat entretien trimestriel pour RATP à 1 200 € par an, à partir du 01/10/2026',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('creer_contrat_maintenance');
+    // Ni mutation, ni proposition : on ne propose pas une pièce dont on doute du nom.
+    expect(r.value.kind).toBe('answer');
+    expect(created).toEqual([]);
+    expect(r.value.card.title).toContain('Quel nom');
+    // Bob CITE ce qu'il a entendu et EXPLIQUE pourquoi ce nom ne peut pas s'imprimer.
+    expect(r.value.card.body).toContain('Entretien trimestriel');
+    expect(r.value.card.body).toContain('facture');
+    expect(r.value.card.body).toContain('Rien n’a été créé');
+    // AUCUN FAIT PERDU : la commande canonique redit le client, le montant et la date.
+    expect(r.value.card.body).toContain('cus-ratp');
+    expect(r.value.card.body).toContain('1200 €');
+    expect(r.value.card.body).toContain('01/10/2026');
+    // …et le nom douteux n'est JAMAIS pré-rempli dans la phrase à redire : le recopier le
+    // ferait revenir GUILLEMETÉ au tour suivant, donc lu comme « nommé par le pro » — Bob
+    // blanchirait sa propre erreur en mettant ses mots dans la bouche du pro.
+    expect(r.value.card.body).toContain('{nom}');
+    expect(r.value.card.body).not.toContain('« Entretien trimestriel » pour le client');
+  });
+
+  /**
+   * BOUT-EN-BOUT — LES FORMES DE LA SIXIÈME LECTURE. C'est par ce chemin (`BobAgent.ask`) que la
+   * revue a PROUVÉ que la garde-liste-noire proposait encore des mutations au libellé pollué :
+   * « Entretien vitrines demain », « … toutes les semaines », « … sans reconduction tacite »,
+   * « … 30% à la commande », « … Monsieur Dupont », « … au tarif ». Le test rejoue exactement ce
+   * chemin, avec une queue polluée derrière un nom métier parfaitement légitime.
+   *
+   * L'INVARIANT N'EST PAS « Bob pose une question » — les deux issues sont bonnes : soit un
+   * lecteur de fait a BORNÉ le libellé (la queue n'entre pas dans le nom, et la mutation peut
+   * être proposée), soit la garde REFUSE et Bob demande le nom. L'invariant est qu'AUCUNE
+   * proposition ne porte un libellé qui reprend un mot de la queue : ce libellé s'imprimerait
+   * sur la LIGNE de la facture annuelle, et la confirmation vocale ne protège de rien puisqu'elle
+   * récite au pro sa propre phrase.
+   */
+  it('GARDE bout-en-bout : aucune queue polluée n’atteint jamais le libellé PROPOSÉ', async () => {
+    const queues: readonly string[] = [
+      // Repères de temps — « demain » est la façon la plus COURANTE de dire une date.
+      'demain', 'après-demain', 'dans 3 mois', 'sous huit jours', 'd’ici la fin du mois',
+      'lundi prochain', 'en janvier', 'à la rentrée',
+      // Cadences au FÉMININ, que le détecteur d'hier ne connaissait pas.
+      'toutes les semaines', 'toutes les deux semaines', 'chaque mois',
+      // Clause — le seul fait qui était lu SANS empan.
+      'sans reconduction tacite', 'avec reconduction tacite',
+      // Sommes, taux, échéanciers, indexation.
+      '30% à la commande', 'TVA 20%', 'payable en 4 fois', 'indexé sur l’indice BT01',
+      'au tarif de 1 200 € par an', 'à raison d’une visite par mois',
+      // Attribution nue — aucune préposition ne précède la civilité.
+      'Monsieur Dupont', 'destiné à Monsieur Dupont',
+      // Mutilations que la découpe laisse derrière elle.
+      'effectif au 1er octobre',
+    ];
+    /** Jetons de la queue qu'un libellé propre ne peut pas porter (les mots-outils exceptés). */
+    const OUTILS = new Set(['a', 'au', 'de', 'du', 'des', 'la', 'le', 'les', 'en', 'et', 'sur', 'd', 'l']);
+    const jetons = (said: string): string[] =>
+      said
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '')
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((token) => token.length > 0 && !OUTILS.has(token));
+
+    const fuites: string[] = [];
+    for (const queue of queues) {
+      const created: unknown[] = [];
+      const agent = lifecycleAgent({
+        createMaintenanceContract: async (input) => {
+          created.push(input);
+          return ok({
+            contractId: 'contract-new',
+            label: input.label,
+            status: 'draft' as const,
+            anniversaryDate: input.anniversaryDate,
+            terminationEffectiveDate: null,
+          });
+        },
+      });
+      const r = await agent.ask(
+        `Crée le contrat entretien vitrines ${queue} pour le client cus-ratp à 1200 € par an, à partir du 01/10/2026`,
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // Rien n'est jamais créé sans confirmation, quelle que soit l'issue.
+      expect(created).toEqual([]);
+      const label = (r.value.pending?.args as { label?: string } | undefined)?.label ?? null;
+      if (label === null) continue;
+      const dansLeNom = new Set(jetons(label));
+      const reprises = jetons(queue).filter((token) => dansLeNom.has(token));
+      if (reprises.length > 0) fuites.push(`• « ${queue} » ⇒ libellé proposé « ${label} »`);
+    }
+    expect(fuites.join('\n'), `${fuites.length} queue(s) polluée(s) arrivée(s) au libellé`).toBe('');
+  });
+
+  it('GARDE : le nom REDIT par le pro est accepté tel quel et CONVERGE (jamais un cul-de-sac)', async () => {
+    const agent = lifecycleAgent();
+    // Le pro a NOMMÉ le contrat : « trimestriel » est un mot de son métier, pas une cadence lue.
+    const r = await agent.ask(
+      'Crée le contrat « Entretien trimestriel » pour le client cus-ratp à 1200 € par an, à partir du 01/10/2026',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).toMatchObject({
+      customerId: 'cus-ratp',
+      label: 'Entretien trimestriel',
+      anniversaryDate: '2026-10-01',
+    });
+  });
+
+  it('GARDE : un montant glissé PAR INADVERTANCE dans la réponse refuse encore, et Bob l’explique', async () => {
+    const created: unknown[] = [];
+    const agent = lifecycleAgent({
+      createMaintenanceContract: async (input) => {
+        created.push(input);
+        return ok({
+          contractId: 'contract-new',
+          label: input.label,
+          status: 'draft' as const,
+          anniversaryDate: input.anniversaryDate,
+          terminationEffectiveDate: null,
+        });
+      },
+    });
+    const r = await agent.ask(
+      'Crée le contrat « Entretien vitrines à 1.200 € » pour le client cus-ratp à 1200 € par an, à partir du 01/10/2026',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(created).toEqual([]);
+    // SECOND refus : Bob ne redit pas « j'ai entendu », il dit ce qui pose problème.
+    expect(r.value.card.body).toContain('ne peut pas devenir le nom du contrat');
+    expect(r.value.card.body).toContain('montant');
+  });
+
   it('refus du domaine à l’exécution (site clôturé) restitué VERBATIM — jamais un code brut', async () => {
     const agent = lifecycleAgent({
       createMaintenanceContract: async () =>

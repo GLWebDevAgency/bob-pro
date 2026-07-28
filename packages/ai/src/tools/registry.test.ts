@@ -984,19 +984,24 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
 
   it('creer_contrat_maintenance : arguments strictement validés (anti-hallucination)', () => {
     const t = tool(lifecycleActions, 'creer_contrat_maintenance')!;
-    expect(t.parse({ label: 'X', anniversaryDate: '2026-10-01' }).ok).toBe(false);
+    // Chaque refus doit tomber sur LE défaut qu'il nomme : le libellé est donc toujours
+    // irréprochable ici, sinon la garde fail-closed refuserait la première et ces assertions
+    // deviendraient vraies sans rien prouver (« X » est un moignon, il refuse à lui seul).
+    const OK_LABEL = 'Entretien vitrines';
+    expect(t.parse({ label: OK_LABEL, anniversaryDate: '2026-10-01' }).ok).toBe(false);
     expect(t.parse({ customerId: 'c', label: '', anniversaryDate: '2026-10-01' }).ok).toBe(false);
-    expect(t.parse({ customerId: 'c', label: 'X', anniversaryDate: '01/10/2026' }).ok).toBe(false);
-    expect(t.parse({ customerId: 'c', label: 'X', anniversaryDate: '2026-02-31' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '01/10/2026' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '2026-02-31' }).ok).toBe(false);
     expect(
-      t.parse({ customerId: 'c', label: 'X', anniversaryDate: '2026-10-01', visitsPerYear: 99 }).ok,
+      t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '2026-10-01', visitsPerYear: 99 })
+        .ok,
     ).toBe(false);
     expect(
       t.parse({
         customerId: 'c',
-        label: 'X',
+        label: OK_LABEL,
         anniversaryDate: '2026-10-01',
-        lines: [{ label: 'L', quantity: 1, unitPriceHtCents: 120_000, vatRate: 7 }],
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 7 }],
       }).ok,
     ).toBe(false);
     const parsed = t.parse({
@@ -1021,6 +1026,58 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
       lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
       equipmentIds: ['eq-1'],
     });
+  });
+
+  /**
+   * CHEMIN DU MODÈLE — la garde fail-closed du libellé (`contract-label-guard.ts`) est posée au
+   * POINT DE CONVERGENCE des deux chemins qui peuvent produire un contrat : l'extraction
+   * déterministe (l'agent construit ces arguments, cf. `bob-agent-contracts.test.ts`) et CELUI-CI,
+   * où un modèle remplit `label` lui-même. Un modèle n'a aucune raison structurelle de séparer le
+   * nom des faits : il recopie volontiers la phrase du pro. Ce test prouve que le registre ne lui
+   * fait pas confiance — sans lui, la garde ne couvrirait qu'une moitié du problème.
+   */
+  it('GARDE : le libellé rempli PAR LE MODÈLE traverse la même garde (jamais un fait sur la ligne)', () => {
+    const t = tool(lifecycleActions, 'creer_contrat_maintenance')!;
+    const base = { customerId: 'cus-1', anniversaryDate: '2026-10-01' };
+    // Les formes que quatre revues ont vues échapper à l'extraction — refusées ICI par la garde,
+    // quelle que soit la façon dont elles sont arrivées dans l'argument.
+    const refuses: readonly string[] = [
+      'Entretien vitrines à 1.200 € par an',
+      'Entretien vitrines à deux mille euros',
+      'Entretien vitrines 12 k€',
+      'Entretien vitrines à partir du 01/10/2026',
+      'Entretien vitrines le 1er octobre',
+      'Entretien vitrines pour le compte de RATP',
+      'Entretien vitrines au nom de Carrefour',
+      'Entretien vitrines pour la SARL Dupont',
+      'Entretien vitrines pour',
+      'de la',
+    ];
+    const passes = refuses.filter((label) => t.parse({ ...base, label }).ok);
+    expect(passes.join(' | '), 'libellés qui auraient dû être refusés par la garde').toBe('');
+    // Le refus est DIT en français au point de décision, jamais rendu en code technique.
+    const refused = t.parse({ ...base, label: 'Entretien vitrines à 1.200 € par an' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(JSON.stringify(refused.error)).toContain('facture');
+    // La LIGNE s'imprime aussi : elle passe par la MÊME garde, sans raccourci…
+    expect(
+      t.parse({
+        ...base,
+        label: 'Entretien vitrines',
+        lines: [
+          { label: '1 200 € par an', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 },
+        ],
+      }).ok,
+    ).toBe(false);
+    // …et un nom de contrat parfaitement légitime reste possible (la garde n'est pas un mur).
+    expect(
+      t.parse({
+        ...base,
+        label: 'Entretien annuel hall A',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }).ok,
+    ).toBe(true);
   });
 
   it('resilier_contrat : le MOTIF est exigé (trace légale) et la date d’effet reste optionnelle', () => {

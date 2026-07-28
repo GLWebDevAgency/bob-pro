@@ -33,6 +33,7 @@ import {
   extractSpokenStartDate,
   extractSpokenTerminationNote,
 } from './contract-command';
+import { contractLabelRefusalSaid, inspectContractLabel } from './contract-label-guard';
 import {
   type AgentAskPayload,
   type AgentCapability,
@@ -4699,6 +4700,29 @@ export class BobAgent {
         customerNames: customers.map((candidate) => candidate.name),
       });
 
+      // ── GARDE FAIL-CLOSED DU LIBELLÉ ──────────────────────────────────────────────────────
+      // Cinq revues ont conclu la même chose : l'analyse d'énoncés libres par règles
+      // déterministes ne sera jamais exhaustive — perfectionner l'extracteur est un puits sans
+      // fond, et une garde qui ÉNUMÈRE les formes interdites en est un aussi (elle a les mêmes
+      // trous que ce qu'elle surveille). La garde est donc écrite à l'ENVERS : elle n'accepte
+      // qu'une FORME SÛRE — des mots, de petits nombres, une poignée de connecteurs —, ensemble
+      // FINI, et refuse tout le reste. On ne garantit plus que l'extraction est PARFAITE, mais
+      // qu'une extraction DOUTEUSE ne produit JAMAIS une pièce fausse : le doute devient une
+      // QUESTION, pas une donnée.
+      //
+      // Le libellé retenu est persisté comme libellé du contrat ET de sa LIGNE UNIQUE, donc
+      // repris tel quel comme LIGNE de la facture annuelle : il s'imprime sur une pièce légale
+      // archivée immuable. Un libellé douteux n'est donc NI proposé, NI RÉCITÉ (le pro
+      // n'entendrait que sa propre phrase et validerait) : il est mis de côté et Bob demande
+      // le nom. La sévérité vient de la PROVENANCE, jamais d'un choix d'appelant : ce que le
+      // pro a NOMMÉ entre guillemets est pris tel quel, ce que Bob a DÉDUIT est questionné au
+      // moindre indice.
+      const labelVerdict = inspectContractLabel(facts.label, {
+        customerNames: customers.map((candidate) => candidate.name),
+        mode: facts.labelProvenance === 'nomme' ? 'nomme' : 'extrait',
+      });
+      const safeLabel = labelVerdict.accepted ? facts.label : null;
+
       const customerResolution = resolveSpokenContractCustomer({ conversation, customers });
       const customer =
         customerResolution.byId.length === 1
@@ -4709,8 +4733,13 @@ export class BobAgent {
       // La commande CANONIQUE : chaque followUp la REDIT en entier — le client y est porté par
       // son ID (résolu par byId au tour suivant : la question ne reboucle jamais), le libellé
       // guillemeté (relu tel quel), les montants et la date en forme non ambiguë.
+      //
+      // Elle ne redit QUE le libellé que la garde a laissé passer : recopier un libellé douteux
+      // dans le followUp le ferait revenir GUILLEMETÉ au tour suivant, donc lu comme « nommé par
+      // le pro » — Bob blanchirait ainsi sa propre erreur en mettant les mots dans la bouche du
+      // pro. Le nom douteux est CITÉ dans la question, jamais pré-rempli dans la réponse.
       const restate = (over: { customerId?: string; label?: string | null } = {}): string => {
-        const label = over.label !== undefined ? over.label : facts.label;
+        const label = over.label !== undefined ? over.label : safeLabel;
         const customerId = over.customerId ?? customer?.id ?? null;
         return (
           `Crée le contrat${label ? ` « ${label} »` : ''}` +
@@ -4722,19 +4751,46 @@ export class BobAgent {
         );
       };
 
+      if (customers.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier les clients réels'],
+          card: {
+            title: 'Aucun client',
+            body: 'Je ne vois aucun client dans ton fichier — rien n’a été créé. Crée d’abord le client, puis redis-moi le contrat.',
+          },
+        });
+      }
+
+      // LE DOUTE DEVIENT UNE QUESTION — un libellé REFUSÉ par la garde est questionné TOUT DE
+      // SUITE, avant même le client : c'est le seul fait que Bob vient d'entendre et qu'il ne
+      // redira pas dans ses followUps (voir `restate`), donc le seul qu'il perdrait en le
+      // remettant à plus tard. La question CITE ce que Bob a entendu et EXPLIQUE pourquoi ce nom
+      // ne peut pas s'imprimer ; tous les autres faits déjà lus sont redits dans la commande
+      // canonique, si bien que rien n'est perdu et que rien n'est créé.
+      if (facts.label !== null && safeLabel === null) {
+        const secondRefus = facts.labelProvenance === 'nomme';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Refuser un nom qui s’imprimerait faux sur la facture', 'Demander le nom du contrat'],
+          card: {
+            title: 'Quel nom pour ce contrat ?',
+            body:
+              (secondRefus
+                ? `« ${facts.label} » ne peut pas devenir le nom du contrat. `
+                : `J’ai entendu « ${facts.label} » comme nom du contrat. `) +
+              `${contractLabelRefusalSaid(labelVerdict)} Rien n’a été créé — ` +
+              `donne-moi un nom sans cette partie (ex. « Entretien fontaines ») : ` +
+              `redis-moi « ${restate({ label: '{nom}' })} ».`,
+          },
+        });
+      }
+
       if (customer === null) {
-        if (customers.length === 0) {
-          return ok({
-            kind: 'answer',
-            intent,
-            model,
-            plan: ['Vérifier les clients réels'],
-            card: {
-              title: 'Aucun client',
-              body: 'Je ne vois aucun client dans ton fichier — rien n’a été créé. Crée d’abord le client, puis redis-moi le contrat.',
-            },
-          });
-        }
         const named = customerResolution.saidTokens.length > 0 && customerResolution.matched.length === 0;
         const options = (
           customerResolution.matched.length > 1 ? customerResolution.matched : customers
@@ -4753,7 +4809,7 @@ export class BobAgent {
               }
             : {
                 title: 'Pour quel client ?',
-                body: `Pour quel client j’établis ${facts.label ? `le contrat « ${facts.label} »` : 'ce contrat'} ?`,
+                body: `Pour quel client j’établis ${safeLabel ? `le contrat « ${safeLabel} »` : 'ce contrat'} ?`,
               },
           choices: options.map((candidate) => ({
             label: candidate.name,
@@ -4874,7 +4930,7 @@ export class BobAgent {
 
       // Questions ciblées sur les SEULS manques REQUIS par le domaine — dans l'ordre où elles se
       // disent naturellement ; chaque followUp redit tout ce qui a déjà été énoncé.
-      if (!facts.label) {
+      if (safeLabel === null) {
         return ok({
           kind: 'answer',
           intent,
@@ -4894,7 +4950,7 @@ export class BobAgent {
           plan: ['Demander le seul manque : le montant annuel'],
           card: {
             title: 'Combien par an ?',
-            body: `Le contrat « ${facts.label} » de ${customer.name} vaut combien par an ? Redis-moi « ${restate()} à {montant} € par an ».`,
+            body: `Le contrat « ${safeLabel} » de ${customer.name} vaut combien par an ? Redis-moi « ${restate()} à {montant} € par an ».`,
           },
         });
       }
@@ -4950,12 +5006,12 @@ export class BobAgent {
       // le comptage reste `null` — Bob préfère ne rien dire à dire un nombre faux.
       const spokenEquipmentCount =
         parkVocabulary.length > 0
-          ? extractSpokenEquipmentCount(message, { label: facts.label, today, parkVocabulary })
+          ? extractSpokenEquipmentCount(message, { today, parkVocabulary })
           : facts.equipmentCount;
 
       const args = {
         customerId: customer.id,
-        label: facts.label,
+        label: safeLabel,
         anniversaryDate: facts.startDate,
         ...(site !== null ? { chantierId: site.id } : {}),
         ...(facts.visitsPerYear !== null ? { visitsPerYear: facts.visitsPerYear } : {}),
@@ -4963,7 +5019,7 @@ export class BobAgent {
         // Le montant ANNUEL dit devient la ligne unique du contrat — TVA au taux normal comme
         // le wizard ; elle sera de toute façon re-jugée au jour du brouillon annuel (§2.6).
         lines: [
-          { label: facts.label, quantity: 1, unitPriceHtCents: facts.annualAmountCents, vatRate: 20 },
+          { label: safeLabel, quantity: 1, unitPriceHtCents: facts.annualAmountCents, vatRate: 20 },
         ],
         ...(coveredEquipments.length > 0
           ? { equipmentIds: coveredEquipments.map((equipment) => equipment.id) }
@@ -4972,7 +5028,7 @@ export class BobAgent {
       const parsed = createTool.parse(args);
       if (!parsed.ok) return err(parsed.error);
       const summary =
-        `Créer le contrat « ${facts.label} » pour ${customer.name}` +
+        `Créer le contrat « ${safeLabel} » pour ${customer.name}` +
         (site !== null ? ` sur le site ${site.nom}` : '') +
         ` · ${formatEUR(facts.annualAmountCents)} HT par an` +
         (facts.visitsPerYear !== null ? ` · ${facts.visitsPerYear} passage(s) par an` : '') +

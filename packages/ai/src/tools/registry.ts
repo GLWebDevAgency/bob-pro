@@ -23,6 +23,10 @@ import {
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
+  contractLabelRefusalSaid,
+  inspectContractLabel,
+} from '../agent/contract-label-guard';
+import {
   type AcknowledgeDocumentActionInput,
   type AcknowledgeDocumentActionOutput,
   type AssignExpenseChantierActionInput,
@@ -1660,6 +1664,19 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           return err(appValidation('customerId', 'Client du contrat manquant.'));
         if (typeof r?.label !== 'string' || r.label.trim().length === 0 || r.label.length > 200)
           return err(appValidation('label', 'Libellé de contrat manquant (200 caractères maximum).'));
+        // GARDE FAIL-CLOSED — POINT DE CONVERGENCE des DEUX chemins : celui de l'extraction
+        // déterministe (l'agent construit ces arguments) et celui du modèle (qui remplit `label`
+        // lui-même via ce registre). Le libellé s'imprime sur la LIGNE de la facture annuelle :
+        // le geste est refusé ICI dès qu'un mot du nom sort de la FORME SÛRE (un mot, un petit
+        // nombre, un connecteur, une lettre de désignation — rien d'autre), jamais rattrapé plus
+        // loin. Sévérité `'nomme'` : quelqu'un a délibérément écrit ce nom, la forme s'applique
+        // toujours (aucun montant, aucune date n'entre par cette porte) mais les mots que le
+        // métier emploie légitimement cessent de refuser — sinon un nom légitime (« Entretien
+        // annuel ») deviendrait un cul-de-sac. Un modèle, lui, n'a aucune raison structurelle de
+        // séparer le nom des faits : il recopie volontiers la phrase du pro.
+        const labelVerdict = inspectContractLabel(r.label, { mode: 'nomme' });
+        if (!labelVerdict.accepted)
+          return err(appValidation('label', contractLabelRefusalSaid(labelVerdict)));
         if (typeof r?.anniversaryDate !== 'string' || !isValidDateOnly(r.anniversaryDate))
           return err(appValidation('anniversaryDate', 'Date de démarrage attendue (AAAA-MM-JJ).'));
         if (
@@ -1691,6 +1708,11 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
             };
             if (typeof line?.label !== 'string' || line.label.trim().length === 0 || line.label.length > 200)
               return err(appValidation(`lines.${index}.label`, 'Libellé de ligne manquant.'));
+            // La LIGNE est ce qui s'imprime littéralement sur la facture annuelle : elle passe
+            // par la MÊME garde que le libellé du contrat, sans exception ni raccourci.
+            const lineVerdict = inspectContractLabel(line.label, { mode: 'nomme' });
+            if (!lineVerdict.accepted)
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalSaid(lineVerdict)));
             if (typeof line?.quantity !== 'number' || !(line.quantity > 0))
               return err(appValidation(`lines.${index}.quantity`, 'Quantité invalide.'));
             if (
