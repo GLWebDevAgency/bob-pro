@@ -51,6 +51,8 @@ import {
   MAX_PURCHASE_ORDER_NUMBER_LENGTH,
   Siren,
   Siret,
+  contractLabelRefusal,
+  contractLabelRefusalMessage,
   isCatalogueCategory,
   isValidDateOnly,
   isVatRate,
@@ -4366,8 +4368,20 @@ function parseContractEquipmentIds(value: unknown, issues: ValidationIssue[]): s
 
 function parseContractScalarFields(body: Record<string, unknown>, issues: ValidationIssue[]) {
   const label = 'label' in body ? body['label'] : undefined;
-  if (label !== undefined && (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)))
-    issues.push({ field: 'label', message: 'Nom du contrat requis (200 caractères maximum).' });
+  // LA borne du nom vit dans le domaine (`contractLabelRefusal`), et cette frontière est la
+  // SEULE que le geste « Renommer » traverse en production : y garder une copie de la règle,
+  // c'est garantir qu'un jour l'écran bornera son champ à une valeur et que le serveur en
+  // refusera une autre — le cul-de-sac que ce geste existe pour fermer. La phrase du refus
+  // vient du domaine elle aussi : une seule règle, une seule explication, partout.
+  if (label !== undefined) {
+    if (typeof label !== 'string') {
+      issues.push({ field: 'label', message: contractLabelRefusalMessage('vide') });
+    } else {
+      const refusal = contractLabelRefusal(label);
+      if (refusal !== null)
+        issues.push({ field: 'label', message: contractLabelRefusalMessage(refusal) });
+    }
+  }
   const chantierId = parseEquipmentFreeField(body, 'chantierId', 200, issues);
   const anniversaryDate = parseEquipmentDateField(body, 'anniversaryDate', issues);
   const importCoveredUntil = parseEquipmentDateField(body, 'importCoveredUntil', issues);

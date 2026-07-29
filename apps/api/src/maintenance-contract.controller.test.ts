@@ -4,11 +4,13 @@ import {
   Customer,
   Equipment,
   MAX_CONTRACT_LABEL_LENGTH,
+  contractLabelRefusalMessage,
   type OcrPort,
   type PaymentGatewayPort,
   type PdfRendererPort,
 } from '@bob/core';
 import { seedCompany } from '@bob/core/testing';
+import { MaintenanceContractsController } from './api.controllers';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -409,5 +411,70 @@ describe('contrats de maintenance — service (PR-12b)', () => {
       }),
     );
     expect(tooLong.ok).toBe(false);
+  });
+});
+
+describe('MaintenanceContractsController — la frontière HTTP lit la borne du DOMAINE', () => {
+  function controller(overrides: Partial<BackendService> = {}) {
+    return new MaintenanceContractsController(overrides as BackendService);
+  }
+
+  /** Le message de refus porté par le 422, tel que le client le recevra. */
+  function labelIssueMessage(error: unknown): string | undefined {
+    const response = (error as { response?: unknown }).response as
+      | { error?: { issues?: { field: string; message: string }[] } }
+      | undefined;
+    return response?.error?.issues?.find((issue) => issue.field === 'label')?.message;
+  }
+
+  it('la borne du nom est celle du domaine — et la phrase du refus AUSSI (jamais une copie qui diverge)', async () => {
+    const updateMaintenanceContract = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const c = controller({ updateMaintenanceContract } as never);
+
+    // La borne EXACTE passe la frontière : elle ne peut pas être plus sévère que `record`,
+    // sinon l'écran (qui borne son champ avec la MÊME constante) laisserait taper un nom que
+    // le serveur refuserait — le cul-de-sac que le geste « Renommer » existe pour fermer.
+    await c.update('c-1', {
+      expectedRevision: 1,
+      patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH) },
+    });
+    expect(updateMaintenanceContract).toHaveBeenCalledTimes(1);
+
+    // Un caractère de plus est refusé AVANT le domaine — avec la phrase du domaine, mot pour
+    // mot : c'est la seule frontière que ce geste traverse en production, elle ne peut pas
+    // inventer sa propre formulation de la même règle.
+    const tooLong = await c
+      .update('c-1', {
+        expectedRevision: 1,
+        patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH + 1) },
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(tooLong).not.toBeNull();
+    expect(tooLong).toMatchObject({ status: 422 });
+    expect(labelIssueMessage(tooLong)).toBe(contractLabelRefusalMessage('trop_long'));
+
+    const emptied = await c
+      .update('c-1', { expectedRevision: 1, patch: { label: '   ' } })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(labelIssueMessage(emptied)).toBe(contractLabelRefusalMessage('vide'));
+
+    const controlChars = await c
+      .update('c-1', { expectedRevision: 1, patch: { label: 'Entretien\u0007fontaines' } })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(labelIssueMessage(controlChars)).toBe(
+      contractLabelRefusalMessage('caractere_de_controle'),
+    );
+
+    // Rien d'invalide n'a jamais atteint le use case.
+    expect(updateMaintenanceContract).toHaveBeenCalledTimes(1);
   });
 });
