@@ -1080,6 +1080,13 @@ const CONTRACT_RENAME_VERB =
  * clef de comparaison. La forme GUILLEMETÉE prime : c'est la seule où le pro a délimité lui-même
  * où son nom commence et où il finit ; à défaut, la coupure se fait au premier « en »/« comme »
  * qui suit le verbe.
+ *
+ * Un guillemet DÉLIMITE, il ne nomme jamais : la dictée en sème (paire vide « en "" », guillemet
+ * orphelin resté d'une paire que la transcription n'a pas refermée) et aucun ne fait partie du
+ * nom. Les laisser entrer coûte deux fois : le contrat s'appellerait « Entretien des ascenseurs »
+ * » PARTOUT dans l'application, et une paire VIDE deviendrait un nom « trop court » — un refus
+ * inexploitable, opposé à un nom que le pro n'a jamais dit. Nettoyés, il ne reste rien, et
+ * l'absence de nom se dit comme telle : « quel nouveau nom ? ».
  */
 export function splitSpokenContractRename(message: string): {
   targetPart: string;
@@ -1088,8 +1095,16 @@ export function splitSpokenContractRename(message: string): {
   const verb = CONTRACT_RENAME_VERB.exec(message);
   const from = verb === null ? 0 : verb.index + verb[0].length;
   const rest = message.slice(from);
+  // L'apostrophe (droite ou typographique) n'est PAS un guillemet : « Entretien de l'accueil »
+  // est un nom légitime, et le mutiler serait réintroduire par la porte du nettoyage le nom que
+  // personne n'a voulu.
   const clean = (raw: string): string =>
-    raw.replace(/\s+/gu, ' ').replace(/[.;!?]+$/u, '').trim();
+    raw
+      .replace(/[«»"“”]/gu, ' ')
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .replace(/[.;!?]+$/u, '')
+      .trim();
   const separator = /\b(?:en|comme)\b/iu;
 
   // 1) FORME GUILLEMETÉE. Le DERNIER segment guillemeté est le nouveau nom — mais SEULEMENT si

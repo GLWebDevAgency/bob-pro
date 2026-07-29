@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CONTRACT_B2C_REFUSED_MESSAGE, err, ok } from '@bob/core';
 import { contractLabelRefusalSaid, inspectContractLabel } from './contract-label-guard';
-import { BobAgent } from './bob-agent';
+import { BobAgent, splitSpokenContractRename } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import {
   type AgentContract,
@@ -1222,5 +1222,66 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
       contractId: 'contract-fontaines',
       label: 'Entretien des ascenseurs',
     });
+  });
+
+  it('des guillemets VIDES ne sont pas un nom « invalide » : le nom MANQUE, et le refus le dit', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    // Une dictée ponctuée par la transcription — « en "" » — n'apporte aucun nom. Refuser sa
+    // FORME renverrait au pro un message inexploitable sur un nom qu'il n'a jamais dit ; le
+    // seul refus honnête est celui qui redemande le nom.
+    const r = await agent.ask('Renomme le contrat fontaines en ""');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.body).toContain('Quel nouveau nom');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect(r.value.card.body).not.toContain('""');
+  });
+
+  it('un guillemet ORPHELIN laissé par la dictée ne s’écrit pas dans le nom du contrat', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat fontaines en Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    // Sans nettoyage, le contrat s'appellerait « Entretien des ascenseurs » » PARTOUT dans
+    // l'application — un nom que personne n'a voulu et que le pro devrait re-corriger.
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'Entretien des ascenseurs',
+    });
+  });
+});
+
+describe('splitSpokenContractRename — les guillemets délimitent, ils ne NOMMENT jamais', () => {
+  it('guillemets vides (droits ou français) ⇒ aucun nom, jamais une chaîne de ponctuation', () => {
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en ""').newName).toBe('');
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en « »').newName).toBe('');
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en «  »').newName).toBe('');
+  });
+
+  it('guillemets ORPHELINS (ouvrant ou fermant seul) retirés du nom, jamais du sens', () => {
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en Entretien des ascenseurs »')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en « Entretien des ascenseurs')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
+  });
+
+  it('la forme guillemetée COMPLÈTE reste la référence, et l’apostrophe n’est pas un guillemet', () => {
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en « Entretien de l’accueil »')
+        .newName,
+    ).toBe('Entretien de l’accueil');
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en "Entretien des ascenseurs"')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
   });
 });
