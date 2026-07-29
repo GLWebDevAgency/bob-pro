@@ -10,6 +10,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Res,
 } from '@nestjs/common';
 import { unwrap } from '../http/result';
@@ -44,9 +45,105 @@ function exactBody(value: unknown, fields: readonly string[]): Record<string, un
   const unknown = Object.keys(body).find((field) => !fields.includes(field));
   if (unknown !== undefined) invalidBody(unknown, 'Champ non autorisé.');
   for (const field of fields) {
-    if (!(field in body)) invalidBody(field, 'Champ requis.');
+    if (!Object.hasOwn(body, field)) invalidBody(field, 'Champ requis.');
   }
   return body;
+}
+
+function decisionBody(value: unknown):
+  | {
+      readonly action: 'choose_presented_option';
+      readonly commandId: string;
+      readonly expectedMissionRevision: number;
+      readonly expectedDraftSessionId: string;
+      readonly expectedDraftSlotRevision: number;
+      readonly expectedDraftContentRevision: number;
+      readonly decisionId: string;
+      readonly choiceSetRevision: number;
+      readonly choiceId: string;
+    }
+  | {
+      readonly action: 'select_screen_customer';
+      readonly commandId: string;
+      readonly expectedMissionRevision: number;
+      readonly expectedDraftSessionId: string;
+      readonly expectedDraftSlotRevision: number;
+      readonly expectedDraftContentRevision: number;
+      readonly customerId: string;
+    } {
+  const candidate = jsonObject(value);
+  if (candidate === null) invalidBody('body', 'Corps JSON objet requis.');
+  const action = candidate.action;
+  if (action === 'choose_presented_option') {
+    const body = exactBody(value, [
+      'action',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceId',
+    ]);
+    return {
+      action,
+      commandId: body.commandId as string,
+      expectedMissionRevision: body.expectedMissionRevision as number,
+      expectedDraftSessionId: body.expectedDraftSessionId as string,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+      expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+      decisionId: body.decisionId as string,
+      choiceSetRevision: body.choiceSetRevision as number,
+      choiceId: body.choiceId as string,
+    };
+  }
+  if (action === 'select_screen_customer') {
+    const body = exactBody(value, [
+      'action',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'customerId',
+    ]);
+    return {
+      action,
+      commandId: body.commandId as string,
+      expectedMissionRevision: body.expectedMissionRevision as number,
+      expectedDraftSessionId: body.expectedDraftSessionId as string,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
+      expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+      customerId: body.customerId as string,
+    };
+  }
+  invalidBody('action', 'Action de décision non prise en charge.');
+}
+
+function cancellationBody(value: unknown): {
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly reason: 'user_cancelled' | 'manual_handoff';
+} {
+  const candidate = jsonObject(value);
+  if (candidate === null) invalidBody('body', 'Corps JSON objet requis.');
+  const hasReason = Object.hasOwn(candidate, 'reason');
+  const body = exactBody(
+    value,
+    hasReason
+      ? ['commandId', 'expectedMissionRevision', 'reason']
+      : ['commandId', 'expectedMissionRevision'],
+  );
+  const reason = hasReason ? body.reason : 'user_cancelled';
+  if (reason !== 'user_cancelled' && reason !== 'manual_handoff') {
+    invalidBody('reason', 'Motif d’arrêt invalide.');
+  }
+  return {
+    commandId: body.commandId as string,
+    expectedMissionRevision: body.expectedMissionRevision as number,
+    reason,
+  };
 }
 
 @Controller('agent-missions')
@@ -78,6 +175,17 @@ export class AgentMissionController {
     return unwrap(await this.missions.getCurrent(authorization));
   }
 
+  @Get('current/quote-creation/resume')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('Vary', 'Authorization')
+  async getCurrentResume(
+    @Query() query: Readonly<Record<string, unknown>>,
+  ) {
+    const unknown = Object.keys(query)[0];
+    if (unknown !== undefined) invalidBody(unknown, 'Paramètre non autorisé.');
+    return unwrap(await this.missions.getCurrentResume());
+  }
+
   @Post('quote-creation/start')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'private, no-store')
@@ -105,12 +213,13 @@ export class AgentMissionController {
     @Headers('x-bob-agent-mission-capability') capability: string | undefined,
   ) {
     const authorization = this.requireAuthority('cancel_quote_creation', capability);
-    const body = exactBody(value, ['commandId', 'expectedMissionRevision']);
+    const body = cancellationBody(value);
     return unwrap(await this.missions.cancel({
       authorization,
       missionId,
       commandId: body.commandId as string,
       expectedMissionRevision: body.expectedMissionRevision as number,
+      reason: body.reason,
     }));
   }
 
@@ -147,6 +256,41 @@ export class AgentMissionController {
       draftSessionId: body.draftSessionId as string,
       expectedDraftSlotRevision: body.expectedDraftSlotRevision as number,
       expectedDraftContentRevision: body.expectedDraftContentRevision as number,
+    }));
+  }
+
+  @Post(':missionId/decisions')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store')
+  async decide(
+    @Param('missionId') missionId: string,
+    @Body() value: unknown,
+    @Headers('x-bob-agent-mission-capability') capability: string | undefined,
+  ) {
+    const authorization = this.requireAuthority(
+      'decide_quote_creation',
+      capability,
+    );
+    const body = decisionBody(value);
+    return unwrap(await this.missions.decide({
+      authorization,
+      missionId,
+      commandId: body.commandId,
+      expectedMissionRevision: body.expectedMissionRevision,
+      expectedDraftSessionId: body.expectedDraftSessionId,
+      expectedDraftSlotRevision: body.expectedDraftSlotRevision,
+      expectedDraftContentRevision: body.expectedDraftContentRevision,
+      decision: body.action === 'choose_presented_option'
+        ? {
+            action: body.action,
+            decisionId: body.decisionId,
+            choiceSetRevision: body.choiceSetRevision,
+            choiceId: body.choiceId,
+          }
+        : {
+            action: body.action,
+            customerId: body.customerId,
+          },
     }));
   }
 }

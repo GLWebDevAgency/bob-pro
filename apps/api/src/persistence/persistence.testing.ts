@@ -169,6 +169,10 @@ export class InMemoryPersistence implements Persistence {
     // simule jamais abusivement RLS, advisory locks ou transaction_timestamp().
     return null;
   }
+  createAgentMissionResumeUnitOfWork(): null {
+    // Un double mémoire ne peut pas attester RLS owner + snapshot RR strictement read-only.
+    return null;
+  }
   createAgentMissionFingerprintKeyVersionAuthority(
     _configuredBindings: readonly AgentMissionFingerprintKeyBinding[],
     _currentVersion: number,

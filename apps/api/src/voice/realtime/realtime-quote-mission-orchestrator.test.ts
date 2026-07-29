@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LlmPort, LlmToolCall } from '@bob/ai';
-import type { AgentMissionViewV1 } from '@bob/core';
+import type {
+  AgentMissionViewV1,
+  DecideQuoteAgentMissionOutput,
+} from '@bob/core';
 import {
   RealtimeQuoteMissionOrchestrator,
   type RealtimeQuoteMissionGateway,
@@ -90,12 +93,24 @@ function mission(
 function harness(input: {
   readonly call: LlmToolCall;
   readonly current?: AgentMissionViewV1 | null;
+  readonly currentAfterDecision?: AgentMissionViewV1 | null;
   readonly started?: AgentMissionViewV1;
+  readonly decided?: AgentMissionViewV1;
+  readonly decisionOutcome?: 'selected' | 'invalidated' | 'presented' | 'not_found' | 'replayed';
+  readonly replayEffect?: DecideQuoteAgentMissionOutput['effect'];
+  readonly decisionFailure?: 'conflict' | 'throws';
 }) {
-  const getCurrent = vi.fn<RealtimeQuoteMissionGateway['getCurrent']>(async () => ({
-    ok: true,
-    value: { mission: input.current ?? null },
-  }));
+  let currentReadCount = 0;
+  const getCurrent = vi.fn<RealtimeQuoteMissionGateway['getCurrent']>(async () => {
+    const selected = currentReadCount > 0 && 'currentAfterDecision' in input
+      ? input.currentAfterDecision ?? null
+      : input.current ?? null;
+    currentReadCount += 1;
+    return {
+      ok: true,
+      value: { mission: selected },
+    };
+  });
   const startFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['startFromVoiceTurn']>(
     async () => ({
       ok: true,
@@ -106,13 +121,77 @@ function harness(input: {
       },
     }),
   );
+  const decideFromVoiceTurn = vi.fn<
+    RealtimeQuoteMissionGateway['decideFromVoiceTurn']
+  >(async () => {
+    if (input.decisionFailure === 'throws') {
+      throw new Error('response lost');
+    }
+    if (input.decisionFailure === 'conflict') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_decision',
+          reason: 'revision_mismatch',
+        },
+      };
+    }
+    const outcome = input.decisionOutcome ?? 'selected';
+    const missionView = input.decided ?? mission({
+      phase: 'awaiting_lines',
+      revision: 4,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    let value: DecideQuoteAgentMissionOutput;
+    if (outcome === 'presented') {
+      value = { outcome, effect: { kind: outcome, candidateCount: 2 }, mission: missionView };
+    } else if (outcome === 'not_found') {
+      value = { outcome, effect: { kind: outcome, result: 'none' }, mission: missionView };
+    } else if (outcome === 'invalidated') {
+      value = {
+        outcome,
+        effect: { kind: outcome, reason: 'candidate_unavailable' },
+        mission: missionView,
+      };
+    } else if (outcome === 'replayed') {
+      value = {
+        outcome,
+        effect: input.replayEffect ?? { kind: 'selected' },
+        mission: missionView,
+      };
+    } else {
+      value = { outcome, effect: { kind: outcome }, mission: missionView };
+    }
+    return {
+      ok: true,
+      value,
+    };
+  });
   const gateway: RealtimeQuoteMissionGateway = {
     getCurrent,
     startFromVoiceTurn,
+    decideFromVoiceTurn,
   };
   const model = llm(input.call);
   const orchestrator = new RealtimeQuoteMissionOrchestrator(model, gateway);
-  return { orchestrator, model, getCurrent, startFromVoiceTurn };
+  return {
+    orchestrator,
+    model,
+    getCurrent,
+    startFromVoiceTurn,
+    decideFromVoiceTurn,
+  };
 }
 
 function input(signal = new AbortController().signal) {
@@ -184,18 +263,228 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     expect(h.startFromVoiceTurn).not.toHaveBeenCalled();
   });
 
-  it('ne contourne pas une transition client reconnue mais pas encore livrée', async () => {
+  it('résout une nouvelle référence client par le même use case durable sans renavigation', async () => {
     const h = harness({
       call: toolCall('set_customer_reference', 'Camping les Pins', null),
       current: mission({ phase: 'awaiting_customer' }),
     });
 
     await expect(h.orchestrator.run(input())).resolves.toEqual({
-      status: 'failed',
+      status: 'handled',
       canonicalSpeech:
-        'La mission est bien ouverte, mais je ne peux pas encore appliquer ce choix vocal de façon sûre. Continue sur l’écran.',
+        'Client confirmé. L’écran est à jour. Tu peux toucher Continuer à la main pour ajouter les prestations.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.decideFromVoiceTurn).toHaveBeenCalledWith({
+      authorization: { owner: OWNER, proof: PROOF },
+      missionId: '30000000-0000-4000-8000-000000000001',
+      turnId: TURN_ID,
+      realtimeSessionId: SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 1,
+      expectedDraftSessionId: 'draft-session-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      decision: {
+        action: 'resolve_customer_reference',
+        customerReference: 'Camping les Pins',
+      },
     });
     expect(h.startFromVoiceTurn).not.toHaveBeenCalled();
+  });
+
+  it('convertit un ordinal en choiceId persistant sans transmettre de customerId', async () => {
+    const current = mission({
+      phase: 'awaiting_customer_choice',
+      revision: 3,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 1,
+          contentRevision: 0,
+        },
+        decision: {
+          kind: 'customer',
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 3,
+          candidates: [
+            {
+              choiceId: '50000000-0000-4000-8000-000000000001',
+              customerId: 'customer-first',
+            },
+            {
+              choiceId: '50000000-0000-4000-8000-000000000002',
+              customerId: 'customer-second',
+            },
+          ],
+          choiceSetHash: 'e'.repeat(64),
+        },
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCall('select_presented_customer', null, 2),
+      current,
+    });
+
+    await expect(h.orchestrator.run(input())).resolves.toMatchObject({
+      status: 'handled',
+      speechPurpose: 'action_result',
+    });
+    expect(h.decideFromVoiceTurn).toHaveBeenCalledWith(expect.objectContaining({
+      missionId: current.id,
+      expectedMissionRevision: 3,
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: '40000000-0000-4000-8000-000000000001',
+        choiceSetRevision: 3,
+        choiceId: '50000000-0000-4000-8000-000000000002',
+      },
+    }));
+    expect(h.decideFromVoiceTurn.mock.calls[0]?.[0].decision).not.toHaveProperty(
+      'customerId',
+    );
+  });
+
+  it('rend un choix structuré quand la résolution réelle reste ambiguë', async () => {
+    const choices = mission({
+      phase: 'awaiting_customer_choice',
+      revision: 2,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 1,
+          contentRevision: 0,
+        },
+        decision: {
+          kind: 'customer',
+          decisionId: '40000000-0000-4000-8000-000000000001',
+          choiceSetRevision: 2,
+          candidates: [
+            {
+              choiceId: '50000000-0000-4000-8000-000000000001',
+              customerId: 'customer-first',
+            },
+            {
+              choiceId: '50000000-0000-4000-8000-000000000002',
+              customerId: 'customer-second',
+            },
+          ],
+          choiceSetHash: 'e'.repeat(64),
+        },
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCall('set_customer_reference', 'Camping', null),
+      current: mission({ phase: 'awaiting_customer' }),
+      decided: choices,
+      decisionOutcome: 'presented',
+    });
+
+    await expect(h.orchestrator.run(input())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'J’ai trouvé 2 clients possibles, affichés dans le même ordre. Dis-moi le premier, le deuxième, ou précise le nom.',
+      speechPurpose: 'structured_choice',
+    });
+  });
+
+  it('relit l’autorité quand le tap gagne la course et annonce l’état convergé', async () => {
+    const h = harness({
+      call: toolCall('set_customer_reference', 'Camping les Pins', null),
+      current: mission({ phase: 'awaiting_customer' }),
+      currentAfterDecision: mission({
+        phase: 'awaiting_lines',
+        revision: 4,
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 1,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      decisionFailure: 'conflict',
+    });
+
+    await expect(h.orchestrator.run(input())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Le client est déjà confirmé. J’ai actualisé le devis avec l’état enregistré.',
+      speechPurpose: 'action_result',
+    });
+    expect(h.getCurrent).toHaveBeenCalledTimes(2);
+  });
+
+  it('relit l’autorité après une réponse réseau perdue au lieu d’inventer un échec', async () => {
+    const h = harness({
+      call: toolCall('set_customer_reference', 'Camping les Pins', null),
+      current: mission({ phase: 'awaiting_customer' }),
+      currentAfterDecision: mission({
+        phase: 'awaiting_lines',
+        revision: 4,
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 1,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      decisionFailure: 'throws',
+    });
+
+    await expect(h.orchestrator.run(input())).resolves.toMatchObject({
+      status: 'handled',
+      canonicalSpeech:
+        'Le client est déjà confirmé. J’ai actualisé le devis avec l’état enregistré.',
+    });
+    expect(h.getCurrent).toHaveBeenCalledTimes(2);
+  });
+
+  it('ne présente pas comme actuels les choix d’un replay devenu historique', async () => {
+    const h = harness({
+      call: toolCall('set_customer_reference', 'Camping', null),
+      current: mission({ phase: 'awaiting_customer' }),
+      decided: mission({
+        phase: 'awaiting_lines',
+        revision: 5,
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 1,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      decisionOutcome: 'replayed',
+      replayEffect: { kind: 'presented', candidateCount: 2 },
+    });
+
+    await expect(h.orchestrator.run(input())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'Le client est déjà confirmé. J’ai actualisé le devis avec l’état enregistré.',
+      speechPurpose: 'action_result',
+    });
   });
 
   it('ne redélègue jamais au cerveau générique pendant une phase mission non actionnable', async () => {

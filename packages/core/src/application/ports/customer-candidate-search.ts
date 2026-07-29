@@ -15,6 +15,11 @@ export interface CustomerCandidateReference {
 }
 
 export interface CustomerCandidateSearchPort {
+  /**
+   * Dans une transaction de décision, l'adapter verrouille les lignes retournées jusqu'au
+   * commit. Une relecture par ID ne peut ainsi jamais sélectionner un client renommé après
+   * avoir correspondu à la parole de l'utilisateur.
+   */
   search(input: {
     readonly companyId: string;
     readonly query: string;

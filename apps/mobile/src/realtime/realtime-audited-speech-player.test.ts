@@ -229,7 +229,14 @@ describe('RealtimeAuditedSpeechPlayerController', () => {
       'speech_started',
       'speech_completed',
       'control_candidate',
+      'turn_terminal',
     ]);
+    expect(value.events.at(-1)).toEqual({
+      type: 'turn_terminal',
+      turnId: TURN,
+      status: 'done',
+      atMs: expect.any(Number),
+    });
     expect(value.client.getNextRealtimeVoiceSpeech.mock.calls[1]?.[1]).toEqual({
       afterSequence: 1,
       waitMs: 0,

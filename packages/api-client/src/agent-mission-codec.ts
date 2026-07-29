@@ -1,10 +1,17 @@
 import {
+  normalizeCustomerName,
   AGENT_MISSION_HARD_TTL_MS,
   AGENT_MISSION_RETENTION_MS,
+  QUOTE_CREATION_MISSION_PHASES,
   AgentMission,
+  isCanonicalAgentMissionDraftSessionId,
+  isCanonicalAgentMissionUuid,
   type AcknowledgeQuoteScreenOutput,
   type AgentMissionViewV1,
   type CancelQuoteAgentMissionOutput,
+  type CustomerMissionChoiceView,
+  type DecideQuoteAgentMissionOutput,
+  type QuoteAgentMissionResumeView,
   type StartQuoteAgentMissionOutput,
 } from '@bob/core';
 
@@ -146,6 +153,173 @@ export function decodeAgentMissionCurrent(
   return mission === null ? null : Object.freeze({ mission });
 }
 
+const RESUME_MISSION_KEYS = [
+  'id',
+  'status',
+  'phase',
+  'revision',
+  'actionable',
+  'draft',
+  'idleExpiresAt',
+  'hardExpiresAt',
+] as const;
+const RESUME_DRAFT_REFERENCE_KEYS = [
+  'sessionId',
+  'slotRevision',
+  'contentRevision',
+] as const;
+const RESUME_DRAFT_KEYS = [
+  ...RESUME_DRAFT_REFERENCE_KEYS,
+  'step',
+] as const;
+const QUOTE_DRAFT_STEPS = [
+  'client',
+  'lignes',
+  'tvaMentions',
+  'acompte',
+  'signature',
+] as const;
+function positiveRevision(value: unknown, allowZero = false): value is number {
+  return Number.isSafeInteger(value)
+    && !Object.is(value, -0)
+    && (value as number) >= (allowZero ? 0 : 1)
+    && (value as number) <= 2_147_483_647;
+}
+
+function resumeDraftReference(
+  value: unknown,
+  withStep: boolean,
+): {
+  readonly sessionId: string;
+  readonly slotRevision: number;
+  readonly contentRevision: number;
+  readonly step?: (typeof QUOTE_DRAFT_STEPS)[number];
+} | null {
+  const draft = record(value);
+  const keys = withStep ? RESUME_DRAFT_KEYS : RESUME_DRAFT_REFERENCE_KEYS;
+  if (
+    draft === null
+    || !exactKeys(draft, keys)
+    || !isCanonicalAgentMissionDraftSessionId(draft.sessionId)
+    || !positiveRevision(draft.slotRevision)
+    || !positiveRevision(draft.contentRevision, true)
+    || (
+      withStep
+      && !QUOTE_DRAFT_STEPS.includes(
+        draft.step as (typeof QUOTE_DRAFT_STEPS)[number],
+      )
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    sessionId: draft.sessionId,
+    slotRevision: draft.slotRevision,
+    contentRevision: draft.contentRevision,
+    ...(withStep
+      ? { step: draft.step as (typeof QUOTE_DRAFT_STEPS)[number] }
+      : {}),
+  });
+}
+
+export function decodeQuoteAgentMissionResume(
+  value: unknown,
+): QuoteAgentMissionResumeView | null {
+  const response = record(value);
+  if (response === null) return null;
+  if (response.mission === null) {
+    return exactKeys(response, ['mission'])
+      ? Object.freeze({ mission: null })
+      : null;
+  }
+  if (!exactKeys(response, ['mission', 'draft', 'customerChoices'])) return null;
+  const mission = record(response.mission);
+  const missionDraft = mission === null
+    ? null
+    : resumeDraftReference(mission.draft, false);
+  const draft = resumeDraftReference(response.draft, true);
+  if (
+    mission === null
+    || !exactKeys(mission, RESUME_MISSION_KEYS)
+    || !isCanonicalAgentMissionUuid(mission.id)
+    || (mission.status !== 'active' && mission.status !== 'expired')
+    || mission.actionable !== (mission.status === 'active')
+    || !QUOTE_CREATION_MISSION_PHASES.includes(
+      mission.phase as (typeof QUOTE_CREATION_MISSION_PHASES)[number],
+    )
+    || !positiveRevision(mission.revision)
+    || !canonicalInstant(mission.idleExpiresAt)
+    || !canonicalInstant(mission.hardExpiresAt)
+    || Date.parse(mission.idleExpiresAt) > Date.parse(mission.hardExpiresAt)
+    || missionDraft === null
+    || draft === null
+    || missionDraft.sessionId !== draft.sessionId
+    || missionDraft.slotRevision !== draft.slotRevision
+    || missionDraft.contentRevision !== draft.contentRevision
+    || !Array.isArray(response.customerChoices)
+    || response.customerChoices.length > 5
+    || (
+      mission.phase === 'awaiting_customer_choice'
+        ? response.customerChoices.length < 1
+        : response.customerChoices.length !== 0
+    )
+  ) {
+    return null;
+  }
+  const choices = response.customerChoices.map((value) => {
+    const choice = record(value);
+    if (choice === null || !isCanonicalAgentMissionUuid(choice.choiceId)) return null;
+    if (choice.status === 'unavailable' && exactKeys(choice, ['status', 'choiceId'])) {
+      return Object.freeze({
+        status: 'unavailable' as const,
+        choiceId: choice.choiceId,
+      });
+    }
+    const normalizedLabel = choice === null
+      ? null
+      : normalizeCustomerName(choice.label);
+    if (
+      choice.status === 'available'
+      && exactKeys(choice, ['status', 'choiceId', 'label'])
+      && normalizedLabel !== null
+    ) {
+      return Object.freeze({
+        status: 'available' as const,
+        choiceId: choice.choiceId,
+        label: normalizedLabel,
+      });
+    }
+    return null;
+  });
+  if (
+    choices.some((choice) => choice === null)
+    || new Set(choices.map((choice) => choice?.choiceId)).size !== choices.length
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    mission: Object.freeze({
+      id: mission.id,
+      status: mission.status,
+      phase: mission.phase as (typeof QUOTE_CREATION_MISSION_PHASES)[number],
+      revision: mission.revision,
+      actionable: mission.actionable,
+      draft: missionDraft,
+      idleExpiresAt: mission.idleExpiresAt,
+      hardExpiresAt: mission.hardExpiresAt,
+    }),
+    draft: Object.freeze({
+      sessionId: draft.sessionId,
+      slotRevision: draft.slotRevision,
+      contentRevision: draft.contentRevision,
+      step: draft.step!,
+    }),
+    customerChoices: Object.freeze(
+      choices as CustomerMissionChoiceView[],
+    ),
+  });
+}
+
 export function decodeAgentMissionStart(
   value: unknown,
 ): StartQuoteAgentMissionOutput | null {
@@ -271,4 +445,68 @@ export function decodeAgentMissionScreenAck(
     }),
     mission,
   }) as AcknowledgeQuoteScreenOutput;
+}
+
+export function decodeAgentMissionDecision(
+  value: unknown,
+  expectedMissionId: string,
+): DecideQuoteAgentMissionOutput | null {
+  const response = record(value);
+  if (!response || !exactKeys(response, ['outcome', 'effect', 'mission'])) return null;
+  const mission = decodeAgentMissionViewV1(response.mission);
+  const outcome = response.outcome;
+  const effect = record(response.effect);
+  const decodedEffect = effect !== null
+    && exactKeys(
+      effect,
+      effect.kind === 'selected' ? ['kind'] : ['kind', 'reason'],
+    )
+    && (
+      effect.kind === 'selected'
+      || (
+        effect.kind === 'invalidated'
+        && (
+          effect.reason === 'candidate_unavailable'
+          || effect.reason === 'draft_changed'
+          || effect.reason === 'choice_set_stale'
+        )
+      )
+    )
+      ? effect
+      : null;
+  if (
+    mission === null
+    || mission.id !== expectedMissionId
+    || decodedEffect === null
+    || (
+      outcome !== 'selected'
+      && outcome !== 'invalidated'
+      && outcome !== 'replayed'
+    )
+    || (
+      outcome !== 'replayed'
+      && outcome !== decodedEffect.kind
+    )
+    || (
+      outcome === 'selected'
+      && (
+        mission.status !== 'active'
+        || !mission.actionable
+        || mission.phase !== 'awaiting_lines'
+      )
+    )
+    || (
+      outcome === 'invalidated'
+      && (
+        mission.status !== 'active'
+        || !mission.actionable
+        || mission.phase !== 'awaiting_customer'
+      )
+    )
+  ) {
+    return null;
+  }
+  return Object.freeze(
+    { outcome, effect: Object.freeze({ ...decodedEffect }), mission },
+  ) as DecideQuoteAgentMissionOutput;
 }

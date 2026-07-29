@@ -4,7 +4,9 @@ import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
+  DecideQuoteAgentMission,
   GetActiveAgentMission,
+  GetResumableQuoteAgentMission,
   StartQuoteAgentMission,
   appUnavailable,
   err,
@@ -19,10 +21,13 @@ import {
   type AcknowledgeQuoteScreenOutput,
   type AppError,
   type CancelQuoteAgentMissionOutput,
+  type DecideQuoteAgentMissionOutput,
+  type QuoteAgentMissionCustomerDecision,
   type Result,
+  type QuoteAgentMissionResumeView,
   type StartQuoteAgentMissionOutput,
 } from '@bob/core';
-import { AppLogger } from '../observability/logger';
+import { AppLogger, getPrincipal } from '../observability/logger';
 import { Metrics } from '../observability/metrics';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
@@ -164,6 +169,33 @@ export class AgentMissionService {
       .then((result) => result.ok ? { ok: true, value: { mission: result.value } } : result);
   }
 
+  async getCurrentResume(): Promise<
+    Result<QuoteAgentMissionResumeView, AppError>
+  > {
+    const principal = getPrincipal();
+    if (principal === undefined || principal.companyId === null) {
+      return err({ kind: 'forbidden', reason: 'authenticated_owner_required' });
+    }
+    const unitOfWork = this.persistence.createAgentMissionResumeUnitOfWork();
+    if (unitOfWork === null) {
+      return err(appUnavailable('agent_mission_resume_persistence'));
+    }
+    try {
+      return await new GetResumableQuoteAgentMission({ unitOfWork }).execute({
+        companyId: principal.companyId,
+        ownerUserId: principal.userId,
+      });
+    } catch (error) {
+      const cause = error instanceof Error ? error.name : 'UnknownError';
+      this.logger.error(
+        `Lecture de reprise AgentMission impossible (${cause}).`,
+        undefined,
+        'AgentMissionService',
+      );
+      return err(appUnavailable('agent_mission_resume_persistence'));
+    }
+  }
+
   start(input: {
     readonly authorization: AgentMissionServiceAuthorization;
     readonly commandId: string;
@@ -249,6 +281,7 @@ export class AgentMissionService {
     readonly missionId: string;
     readonly commandId: string;
     readonly expectedMissionRevision: number;
+    readonly reason?: 'user_cancelled' | 'manual_handoff';
   }): Promise<Result<CancelQuoteAgentMissionOutput, AppError>> {
     const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
     if (persistedUnitOfWork === null) {
@@ -271,7 +304,7 @@ export class AgentMissionService {
       missionId: input.missionId,
       commandId: input.commandId,
       expectedRevision: input.expectedMissionRevision,
-      reason: 'user_cancelled',
+      reason: input.reason ?? 'user_cancelled',
       actor: 'user_tap',
     }).then((result) => {
       if (result.ok && result.value.outcome === 'cancelled') {
@@ -377,5 +410,112 @@ export class AgentMissionService {
       });
     }
     return result;
+  }
+
+  decide(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decision: QuoteAgentMissionCustomerDecision;
+  }): Promise<Result<DecideQuoteAgentMissionOutput, AppError>> {
+    return this.executeDecision({
+      ...input,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+  }
+
+  decideFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decision: Exclude<
+      QuoteAgentMissionCustomerDecision,
+      { readonly action: 'select_screen_customer' }
+    >;
+  }): Promise<Result<DecideQuoteAgentMissionOutput, AppError>> {
+    return this.executeDecision({
+      authorization: input.authorization,
+      missionId: input.missionId,
+      commandId: input.turnId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      decision: input.decision,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+    });
+  }
+
+  private executeDecision(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly commandId: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decision: QuoteAgentMissionCustomerDecision;
+    readonly origin: Parameters<DecideQuoteAgentMission['execute']>[0]['origin'];
+  }): Promise<Result<DecideQuoteAgentMissionOutput, AppError>> {
+    const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
+    if (persistedUnitOfWork === null) {
+      return Promise.resolve(err(appUnavailable('agent_mission_persistence')));
+    }
+    const unitOfWork = instrumentAgentMissionCapabilityRejections(
+      persistedUnitOfWork,
+      this.metrics,
+      'decision',
+    );
+    const owner = input.authorization.owner;
+    return new DecideQuoteAgentMission({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids: { newId: () => randomUUID() },
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: input.expectedMissionRevision,
+      expectedDraftSessionId: input.expectedDraftSessionId,
+      expectedDraftSlotRevision: input.expectedDraftSlotRevision,
+      expectedDraftContentRevision: input.expectedDraftContentRevision,
+      decision: input.decision,
+      origin: input.origin,
+    }).then((result) => {
+      if (result.ok && result.value.outcome !== 'replayed') {
+        this.logger.audit('agent_mission.customer_decision', {
+          ...auditReferences(this.fingerprints, {
+            companyId: owner.companyId,
+            ownerUserId: owner.ownerUserId,
+            missionId: result.value.mission.id,
+          }),
+          actor: input.origin.actor,
+          action: input.decision.action,
+          outcome: result.value.outcome,
+          phase: result.value.mission.phase,
+        });
+      }
+      return result;
+    });
   }
 }

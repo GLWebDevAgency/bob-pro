@@ -1811,7 +1811,7 @@ SQL
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729010000_agent_mission_customer_resolution_expand/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100000_agent_mission_customer_resolution_expand/migration.sql"
 
 # Expand : l'ancien writer reste accepté sous les huit nouvelles contraintes NOT VALID, tandis
 # que le nouveau payload staged reste volontairement bloqué par les contraintes canoniques N-1.
@@ -1829,7 +1829,7 @@ certify_agent_mission_m1c_writer_blocked \
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729020000_agent_mission_customer_resolution_validate/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100100_agent_mission_customer_resolution_validate/migration.sql"
 
 # Validate sans cutover : même compatibilité N-1 et même blocage volontaire du writer M1-C.
 certify_agent_mission_event_writer \
@@ -1846,7 +1846,7 @@ certify_agent_mission_m1c_writer_blocked \
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
   -c 'SET ROLE bob_schema_owner' \
-  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729030000_agent_mission_customer_resolution_cutover/migration.sql"
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100200_agent_mission_customer_resolution_cutover/migration.sql"
 
 # Cutover : N-1 reste accepté après le remplacement atomique des huit contraintes.
 certify_agent_mission_event_writer \

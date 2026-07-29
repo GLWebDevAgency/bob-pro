@@ -37,6 +37,7 @@ export interface RealtimeAgentControl {
 
 export type DecodedRealtimeEvent =
   | { type: 'session_ready' }
+  | { type: 'input_committed'; providerInputItemId: string }
   | {
       type: 'response_started';
       controlReference?: RealtimeAgentControlReference;
@@ -78,6 +79,7 @@ function boundedCode(value: unknown): string {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROVIDER_RESPONSE_ID = /^[A-Za-z0-9_-]{1,200}$/;
+const PROVIDER_INPUT_ITEM_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const SHA_256 = /^[a-f0-9]{64}$/;
 const REQUEST_NONCE = /^[A-Za-z0-9_-]{32,128}$/;
 const OPENAI_NATIVE_RESPONSE_PROTOCOL = 'bob.openai-native-response.v1';
@@ -197,6 +199,10 @@ export function decodeRealtimeServerEvent(raw: unknown): DecodedRealtimeEvent {
     case 'session.created':
     case 'session.updated':
       return { type: 'session_ready' };
+    case 'input_audio_buffer.committed':
+      return typeof event.item_id === 'string' && PROVIDER_INPUT_ITEM_ID.test(event.item_id)
+        ? { type: 'input_committed', providerInputItemId: event.item_id }
+        : { type: 'protocol_error', code: 'invalid_input_item_id' };
     case 'response.created': {
       const responseId = providerResponseId(record(event.response)?.id);
       if (!responseId) return { type: 'protocol_error', code: 'invalid_response_id' };

@@ -70,6 +70,10 @@ describe('resolveCustomerReference', () => {
   it.each([
     [[], { kind: 'none' }],
     [[candidate(1, 'exact')], { kind: 'exact', customerId: 'customer-1' }],
+    [
+      [candidate(2), candidate(1, 'exact'), candidate(3)],
+      { kind: 'exact', customerId: 'customer-1' },
+    ],
     [[candidate(1)], {
       kind: 'choices',
       decisionId: '20000000-0000-4000-8000-000000000001',
@@ -102,6 +106,37 @@ describe('resolveCustomerReference', () => {
     [
       Array.from({ length: CUSTOMER_CANDIDATE_SEARCH_LIMIT }, (_, index) => candidate(index + 1)),
       { kind: 'too_many' },
+    ],
+    [
+      [
+        candidate(1, 'exact'),
+        ...Array.from(
+          { length: CUSTOMER_CANDIDATE_SEARCH_LIMIT - 1 },
+          (_, index) => candidate(index + 2),
+        ),
+      ],
+      { kind: 'too_many' },
+    ],
+    [
+      [candidate(1, 'exact'), candidate(2, 'exact'), candidate(3)],
+      {
+        kind: 'choices',
+        decisionId: '20000000-0000-4000-8000-000000000001',
+        candidates: [
+          {
+            choiceId: '20000000-0000-4000-8000-000000000002',
+            customerId: 'customer-1',
+          },
+          {
+            choiceId: '20000000-0000-4000-8000-000000000003',
+            customerId: 'customer-2',
+          },
+          {
+            choiceId: '20000000-0000-4000-8000-000000000004',
+            customerId: 'customer-3',
+          },
+        ],
+      },
     ],
   ] as const)(
     'applique la politique 0/exact/fuzzy/choix/limite sans persister de label',

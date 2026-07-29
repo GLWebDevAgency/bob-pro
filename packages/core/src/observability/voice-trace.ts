@@ -91,6 +91,7 @@ const BUSINESS_REFUSAL_KINDS: ReadonlySet<string> = new Set([
   'forbidden',
   'not_found',
   'conflict',
+  'gone',
   'domain',
 ]);
 

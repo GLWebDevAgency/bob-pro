@@ -17,6 +17,7 @@ import {
   type RealtimeTransportEvent,
   type RealtimeTransportMetrics,
   type RealtimeTransportState,
+  type RealtimeTurnSettlementStatus,
   type VoiceConversationTransport,
 } from './realtime-transport';
 
@@ -30,6 +31,8 @@ type SpeechClient = Pick<
 const DEFAULT_RESPONSE_START_TIMEOUT_MS = 30_000;
 const MIN_RESPONSE_START_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_START_TIMEOUT_MS = 60_000;
+const MAX_TURNS_PER_SESSION = 60;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface RealtimeAuditedUplinkTransport extends VoiceConversationTransport {
   getProcessAudioLease(): ProcessAudioLease | null;
@@ -88,6 +91,8 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   private driftReported = false;
   private auditedFailureReported = false;
   private responseStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly pendingTurns = new Set<string>();
+  private readonly settledTurns = new Map<string, RealtimeTurnSettlementStatus>();
   private microphoneRequested = false;
   private closed = false;
   private closeTask: Promise<void> | null = null;
@@ -187,9 +192,6 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
   }
 
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean {
-    // Toute interruption annule la reponse attendue. Le watchdog appartient au commit courant,
-    // jamais au prochain contexte ni a une utterance annulee.
-    this.clearResponseStartTimeout();
     const player = this.player;
     const hadSpeech = this.speechActive;
     if (player) {
@@ -198,6 +200,10 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
       this.speechActive = false;
     }
     const uplinkInterrupted = this.uplink.interrupt(reason);
+    // Un geste n'est pas une preuve d'annulation. Tant que ni une parole effectivement active ni
+    // l'uplink n'a acquis l'interruption, le tour reste dû et son watchdog doit produire le
+    // terminal borné. Sinon un tap à vide peut orpheliner définitivement la mission.
+    if (hadSpeech || uplinkInterrupted) this.clearResponseStartTimeout();
     return hadSpeech || uplinkInterrupted;
   }
 
@@ -238,9 +244,14 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     if (event.type === 'user_input_committed') {
       // Signal autoritatif commun au VAD automatique et au commit manuel. Le runtime ne
       // l'emet qu'apres l'envoi local de turn.commit.
+      if (!this.registerCommittedTurn(event.turnId)) return;
       this.armResponseStartTimeout();
     }
-    if (event.type === 'bob_transcript' || event.type === 'agent_control_candidate') {
+    if (
+      event.type === 'bob_transcript'
+      || event.type === 'agent_control_candidate'
+      || event.type === 'turn_settled'
+    ) {
       this.reportProviderDownlinkDrift();
       return;
     }
@@ -294,12 +305,20 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
       this.emit({ type: 'agent_control_candidate', reference: event.reference });
       return;
     }
+    if (event.type === 'turn_terminal') {
+      this.clearResponseStartTimeout();
+      if (!this.publishTurnSettlement(event.turnId, event.status)) {
+        this.failAuditedDownlink('audited_speech_turn_terminal_conflict');
+      }
+      return;
+    }
     this.failAuditedDownlink(`audited_speech_${event.code}`);
   }
 
   private reportProviderDownlinkDrift(): void {
     if (this.driftReported) return;
     this.driftReported = true;
+    this.settlePendingTurns('failed');
     this.emit({ type: 'error', code: 'provider_downlink_rejected' });
     this.emit({ type: 'fallback', reason: 'provider_error' });
   }
@@ -309,8 +328,50 @@ export class RealtimeAuditedConversationTransport implements VoiceConversationTr
     this.auditedFailureReported = true;
     this.clearResponseStartTimeout();
     this.uplink.setMicrophoneEnabled(false);
+    this.settlePendingTurns('failed');
     this.emit({ type: 'error', code });
     this.emit({ type: 'fallback', reason: 'provider_error' });
+  }
+
+  private registerCommittedTurn(turnId: string): boolean {
+    if (
+      !UUID_PATTERN.test(turnId)
+      || this.settledTurns.has(turnId)
+      || (
+        !this.pendingTurns.has(turnId)
+        && this.pendingTurns.size + this.settledTurns.size >= MAX_TURNS_PER_SESSION
+      )
+    ) {
+      this.failAuditedDownlink('audited_speech_input_commit_invalid');
+      return false;
+    }
+    if (this.pendingTurns.has(turnId)) return false;
+    this.pendingTurns.add(turnId);
+    return true;
+  }
+
+  private publishTurnSettlement(
+    turnId: string,
+    status: RealtimeTurnSettlementStatus,
+  ): boolean {
+    if (!UUID_PATTERN.test(turnId)) return false;
+    const previous = this.settledTurns.get(turnId);
+    if (previous !== undefined) return previous === status;
+    if (!this.pendingTurns.has(turnId) || this.settledTurns.size >= MAX_TURNS_PER_SESSION) {
+      return false;
+    }
+    this.pendingTurns.delete(turnId);
+    this.settledTurns.set(turnId, status);
+    this.emit({ type: 'turn_settled', turnId, status });
+    return true;
+  }
+
+  private settlePendingTurns(status: RealtimeTurnSettlementStatus): void {
+    for (const turnId of [...this.pendingTurns]) {
+      if (!this.publishTurnSettlement(turnId, status)) {
+        this.emit({ type: 'error', code: 'audited_speech_turn_terminal_conflict' });
+      }
+    }
   }
 
   private armResponseStartTimeout(): void {

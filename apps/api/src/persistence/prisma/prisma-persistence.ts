@@ -24,9 +24,13 @@ import {
 } from './repositories';
 import {
   PrismaAgentMissionDraftFence,
+  PrismaAgentMissionResumeUnitOfWork,
   PrismaAgentMissionUnitOfWork,
 } from './agent-mission.persistence';
-import type { AgentMissionUnitOfWorkPort } from '@bob/core';
+import type {
+  AgentMissionResumeUnitOfWorkPort,
+  AgentMissionUnitOfWorkPort,
+} from '@bob/core';
 import type {
   AgentMissionFingerprintKeyBinding,
   AgentMissionFingerprintKeyVersionAuthority,
@@ -174,6 +178,10 @@ export class PrismaPersistence implements Persistence {
 
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort {
     return new PrismaAgentMissionUnitOfWork(this.prisma);
+  }
+
+  createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort {
+    return new PrismaAgentMissionResumeUnitOfWork(this.prisma);
   }
 
   createAgentMissionFingerprintKeyVersionAuthority(

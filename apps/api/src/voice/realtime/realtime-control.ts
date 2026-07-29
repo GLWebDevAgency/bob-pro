@@ -228,10 +228,14 @@ export class RealtimeDurableControlAuthority implements RealtimeDurableControlPo
       return { status: 'unavailable' };
     }
     if (consumed.status !== 'consumed') return consumed;
-    // L'idempotence protège la mutation durable, pas l'effet UI. Une capacité déjà consommée ne
-    // doit jamais ressortir une seconde fois : le retry réseau reçoit un not_found fail-closed.
-    return consumed.idempotent
-      ? { status: 'not_found' }
-      : { status: 'approved', control, idempotent: false };
+    // Le même ACK acoustique est un reçu durable rejouable. C'est indispensable quand le commit
+    // PostgreSQL réussit mais que le HTTP 200 se perd : le mobile doit retrouver le contrôle exact
+    // sans rouvrir la capacité pour un autre ACK. La déduplication de l'effet UI reste un ledger
+    // borné côté session mobile.
+    return {
+      status: 'approved',
+      control,
+      idempotent: consumed.idempotent,
+    };
   }
 }

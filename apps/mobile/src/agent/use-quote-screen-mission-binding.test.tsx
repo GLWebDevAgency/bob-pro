@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentMissionViewV1 } from '@bob/core';
 import type { QuoteDraftAuthoritativeReference } from '../quote-draft/quote-draft-remote-store';
 import type {
@@ -8,6 +8,7 @@ import type {
   AgentMissionRuntimeActions,
   AgentMissionRuntimeSnapshot,
 } from './agent-mission-runtime';
+import type { AgentMissionRecoverySnapshot } from './agent-mission-recovery-state';
 import {
   useQuoteScreenMissionBinding,
   type QuoteScreenMissionBinding,
@@ -19,6 +20,15 @@ import {
 const fixtures = vi.hoisted(() => ({
   actions: null as unknown as AgentMissionRuntimeActions,
   snapshot: null as unknown as AgentMissionRuntimeSnapshot,
+  recovery: {
+    snapshot: { phase: 'absent' } as AgentMissionRecoverySnapshot,
+    refresh: vi.fn<() => Promise<AgentMissionRecoverySnapshot>>(
+      async () => ({ phase: 'absent' }),
+    ),
+    refreshAfterMutation: vi.fn<() => Promise<AgentMissionRecoverySnapshot>>(
+      async () => ({ phase: 'absent' }),
+    ),
+  },
 }));
 
 vi.mock('expo-crypto', () => ({
@@ -27,6 +37,9 @@ vi.mock('expo-crypto', () => ({
 vi.mock('./agent-mission-provider', () => ({
   useAgentMissionRuntimeActions: () => fixtures.actions,
   useAgentMissionRuntimeSnapshot: () => fixtures.snapshot,
+}));
+vi.mock('./agent-mission-recovery', () => ({
+  useAgentMissionRecovery: () => fixtures.recovery,
 }));
 
 const REALTIME_ID = '10000000-0000-4000-8000-000000000001';
@@ -84,11 +97,24 @@ function boundMission(context: AgentMissionConfirmedContext): AgentMissionViewV1
   } as AgentMissionViewV1;
 }
 
+function handedOffMission(context: AgentMissionConfirmedContext): AgentMissionViewV1 {
+  return {
+    ...boundMission(context),
+    status: 'cancelled',
+    actionable: false,
+    revision: 6,
+    terminalAt: '2026-07-29T00:01:00.000Z',
+    updatedAt: '2026-07-29T00:01:00.000Z',
+  } as AgentMissionViewV1;
+}
+
 async function mount(input: {
   readonly authoritativeDraft: QuoteDraftAuthoritativeReference | null;
   readonly hydrateDraft?: (
     expected: QuoteDraftAuthoritativeReference,
   ) => Promise<{ readonly status: 'ready'; readonly reference: QuoteDraftAuthoritativeReference }>;
+  readonly suspendLiveForManualHandoff?: () => Promise<boolean>;
+  readonly stopLiveAfterManualHandoff?: () => Promise<void>;
   readonly strict?: boolean;
 }): Promise<{
   readonly current: () => QuoteScreenMissionBinding;
@@ -105,6 +131,10 @@ async function mount(input: {
       authoritativeDraft: input.authoritativeDraft,
       persistenceStatus: 'ready',
       hydrateDraft,
+      suspendLiveForManualHandoff:
+        input.suspendLiveForManualHandoff ?? (async () => true),
+      stopLiveAfterManualHandoff:
+        input.stopLiveAfterManualHandoff ?? (async () => undefined),
     });
     useEffect(() => {
       binding = current;
@@ -133,6 +163,18 @@ async function mount(input: {
 describe('useQuoteScreenMissionBinding — frontière React', () => {
   let renderer: ReactTestRenderer | null = null;
 
+  beforeEach(() => {
+    fixtures.recovery = {
+      snapshot: { phase: 'absent' },
+      refresh: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
+        phase: 'absent',
+      })),
+      refreshAfterMutation: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
+        phase: 'absent',
+      })),
+    };
+  });
+
   afterEach(async () => {
     if (renderer !== null) {
       await act(async () => renderer?.unmount());
@@ -140,50 +182,257 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
     }
   });
 
-  it('conserve le wizard manuel sans session et sans aucun appel réseau', async () => {
+  it('conserve le wizard manuel sans session après preuve froide mission:null', async () => {
     fixtures.snapshot = {
       generation: 0,
       realtimeSessionId: null,
       confirmedContext: null,
+      lastTurnSettlement: null,
     };
     fixtures.actions = {
       readCurrentQuoteCreation: vi.fn(),
       acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
     };
     const mounted = await mount({ authoritativeDraft: null });
     renderer = mounted.renderer;
 
     expect(mounted.current().state).toEqual({
       phase: 'manual',
-      reason: 'no_realtime_session',
+      reason: 'no_mission',
     });
     expect(fixtures.actions.readCurrentQuoteCreation).not.toHaveBeenCalled();
   });
 
-  it('libère M1-C après le même brouillon et le même contexte confirmé', async () => {
+  it('propose une reprise explicite après kill sans parler, naviguer ni appeler la capability', async () => {
+    const coldMission = boundMission(confirmedContext());
+    fixtures.snapshot = {
+      generation: 0,
+      realtimeSessionId: null,
+      confirmedContext: null,
+      lastTurnSettlement: null,
+    };
+    fixtures.actions = {
+      readCurrentQuoteCreation: vi.fn(),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
+    };
+    fixtures.recovery = {
+      snapshot: {
+        phase: 'resumable',
+        value: {
+          mission: {
+            id: coldMission.id,
+            status: 'active',
+            phase: coldMission.phase,
+            revision: coldMission.revision,
+            actionable: true,
+            draft: DRAFT,
+            idleExpiresAt: coldMission.idleExpiresAt,
+            hardExpiresAt: coldMission.hardExpiresAt,
+          },
+          draft: { ...DRAFT, step: 'lignes' },
+          customerChoices: [],
+        },
+      },
+      refresh: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
+        phase: 'error',
+        reason: 'unavailable',
+      })),
+      refreshAfterMutation: vi.fn(async (): Promise<AgentMissionRecoverySnapshot> => ({
+        phase: 'error',
+        reason: 'unavailable',
+      })),
+    };
+
+    const mounted = await mount({ authoritativeDraft: null });
+    renderer = mounted.renderer;
+
+    expect(mounted.current().state).toMatchObject({
+      phase: 'resume_required',
+      recovery: { mission: { id: MISSION_ID, revision: 5 } },
+    });
+    expect(fixtures.actions.readCurrentQuoteCreation).not.toHaveBeenCalled();
+    expect(fixtures.recovery.refresh).not.toHaveBeenCalled();
+  });
+
+  it('bloque le writer puis libère M1-C seulement après la passation durable', async () => {
+    const order: string[] = [];
     const context = confirmedContext();
     fixtures.snapshot = {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
       confirmedContext: context,
+      lastTurnSettlement: null,
     };
     const readCurrentQuoteCreation = vi.fn(async () => ({
       status: 'completed' as const,
       value: { mission: boundMission(context) },
     }));
+    const manualHandoffQuoteCreation = vi.fn(async () => {
+      order.push('cancel');
+      return {
+        status: 'completed' as const,
+        value: {
+          outcome: 'cancelled' as const,
+          mission: handedOffMission(context),
+        },
+      };
+    });
     fixtures.actions = {
       readCurrentQuoteCreation,
       acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation,
     };
-    const mounted = await mount({ authoritativeDraft: DRAFT, strict: true });
+    fixtures.recovery.refreshAfterMutation = vi.fn(async () => {
+      order.push('refresh');
+      return { phase: 'absent' as const };
+    });
+    const mounted = await mount({
+      authoritativeDraft: DRAFT,
+      strict: true,
+      suspendLiveForManualHandoff: async () => {
+        order.push('suspend');
+        return true;
+      },
+      stopLiveAfterManualHandoff: async () => {
+        order.push('stop');
+      },
+    });
     renderer = mounted.renderer;
 
     expect(mounted.current().state).toMatchObject({
-      phase: 'handoff',
+      phase: 'handoff_required',
       mission: { id: MISSION_ID, revision: 5 },
     });
     expect(readCurrentQuoteCreation).toHaveBeenCalledTimes(1);
     expect(fixtures.actions.acknowledgeQuoteScreen).not.toHaveBeenCalled();
+    expect(manualHandoffQuoteCreation).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await mounted.current().continueManually();
+    });
+
+    expect(manualHandoffQuoteCreation).toHaveBeenCalledWith({
+      missionId: MISSION_ID,
+      commandId: '30000000-0000-4000-8000-000000000001',
+      expectedMissionRevision: 5,
+      expectedScreenInstanceId: SCREEN_ID,
+    });
+    expect(mounted.current().state).toMatchObject({
+      phase: 'handoff',
+      mission: { id: MISSION_ID, status: 'cancelled', revision: 6 },
+    });
+    expect(order).toEqual(['suspend', 'cancel', 'stop', 'refresh']);
+  });
+
+  it('ne libère jamais le writer si la lecture causale retrouve une mission active', async () => {
+    const context = confirmedContext();
+    const current = boundMission(context);
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    const manualHandoffQuoteCreation = vi.fn(async () => ({
+      status: 'completed' as const,
+      value: {
+        outcome: 'cancelled' as const,
+        mission: handedOffMission(context),
+      },
+    }));
+    fixtures.actions = {
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: current },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation,
+    };
+    const recovered: AgentMissionRecoverySnapshot = {
+      phase: 'resumable',
+      value: {
+        mission: {
+          id: current.id,
+          status: 'active',
+          phase: current.phase,
+          revision: current.revision,
+          actionable: true,
+          draft: DRAFT,
+          idleExpiresAt: current.idleExpiresAt,
+          hardExpiresAt: current.hardExpiresAt,
+        },
+        draft: { ...DRAFT, step: 'lignes' },
+        customerChoices: [],
+      },
+    };
+    fixtures.recovery.refreshAfterMutation = vi.fn(async () => recovered);
+    const mounted = await mount({ authoritativeDraft: DRAFT });
+    renderer = mounted.renderer;
+    expect(mounted.current().state.phase).toBe('handoff_required');
+
+    let first!: Promise<void>;
+    let doubled!: Promise<void>;
+    await act(async () => {
+      first = mounted.current().continueManually();
+      doubled = mounted.current().continueManually();
+      expect(doubled).toBe(first);
+      await Promise.all([first, doubled]);
+    });
+
+    expect(manualHandoffQuoteCreation).toHaveBeenCalledOnce();
+    expect(fixtures.recovery.refreshAfterMutation).toHaveBeenCalledOnce();
+    expect(mounted.current().state).toMatchObject({
+      phase: 'resume_required',
+      recovery: { mission: { id: MISSION_ID, status: 'active' } },
+    });
+  });
+
+  it('ne libère jamais le writer si la fermeture transport/capability échoue', async () => {
+    const context = confirmedContext();
+    fixtures.snapshot = {
+      generation: 2,
+      realtimeSessionId: REALTIME_ID,
+      confirmedContext: context,
+      lastTurnSettlement: null,
+    };
+    fixtures.actions = {
+      readCurrentQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: { mission: boundMission(context) },
+      })),
+      acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(async () => ({
+        status: 'completed' as const,
+        value: {
+          outcome: 'cancelled' as const,
+          mission: handedOffMission(context),
+        },
+      })),
+    };
+    fixtures.recovery.refreshAfterMutation = vi.fn(async () => ({
+      phase: 'absent' as const,
+    }));
+    const mounted = await mount({
+      authoritativeDraft: DRAFT,
+      stopLiveAfterManualHandoff: async () => {
+        throw new Error('release_failed');
+      },
+    });
+    renderer = mounted.renderer;
+
+    await act(async () => {
+      await mounted.current().continueManually();
+    });
+
+    expect(fixtures.recovery.refreshAfterMutation).toHaveBeenCalledOnce();
+    expect(mounted.current().state.phase).toBe('handoff_error');
   });
 
   it('ne réhydrate plus par-dessus une saisie manuelle après le handoff lignes', async () => {
@@ -192,14 +441,24 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
       confirmedContext: context,
+      lastTurnSettlement: null,
     };
     const readCurrentQuoteCreation = vi.fn(async () => ({
       status: 'completed' as const,
       value: { mission: boundMission(context) },
     }));
+    const manualHandoffQuoteCreation = vi.fn(async () => ({
+      status: 'completed' as const,
+      value: {
+        outcome: 'cancelled' as const,
+        mission: handedOffMission(context),
+      },
+    }));
     fixtures.actions = {
       readCurrentQuoteCreation,
       acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation,
     };
     const hydrateDraft = vi.fn(async (expected: QuoteDraftAuthoritativeReference) => ({
       status: 'ready' as const,
@@ -218,6 +477,8 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         authoritativeDraft,
         persistenceStatus: 'ready',
         hydrateDraft,
+        suspendLiveForManualHandoff: async () => true,
+        stopLiveAfterManualHandoff: async () => undefined,
       });
       useEffect(() => {
         binding = current;
@@ -235,6 +496,10 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       );
       await Promise.resolve();
       await Promise.resolve();
+    });
+    expect(currentBinding().state.phase).toBe('handoff_required');
+    await act(async () => {
+      await currentBinding().continueManually();
     });
     expect(currentBinding().state.phase).toBe('handoff');
 
@@ -260,6 +525,7 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
       generation: 2,
       realtimeSessionId: REALTIME_ID,
       confirmedContext: context,
+      lastTurnSettlement: null,
     };
     const mission = {
       ...boundMission(context),
@@ -276,6 +542,8 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         value: { mission },
       })),
       acknowledgeQuoteScreen: vi.fn(),
+      decideQuoteCreation: vi.fn(),
+      manualHandoffQuoteCreation: vi.fn(),
     };
     const hydrateDraft = vi.fn(async () => ({ status: 'busy' as const }));
     let binding: QuoteScreenMissionBinding | null = null;
@@ -285,6 +553,8 @@ describe('useQuoteScreenMissionBinding — frontière React', () => {
         authoritativeDraft: DRAFT,
         persistenceStatus: 'saving',
         hydrateDraft,
+        suspendLiveForManualHandoff: async () => true,
+        stopLiveAfterManualHandoff: async () => undefined,
       });
       useEffect(() => {
         binding = current;

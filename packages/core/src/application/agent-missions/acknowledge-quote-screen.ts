@@ -2,7 +2,6 @@ import {
   isCanonicalAgentMissionUserCommandId,
   type AgentMissionEventSnapshot,
 } from '../../domain/agent/agent-mission-event';
-import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type IdGeneratorPort } from '../ports/services';
 import { type AgentMissionFingerprintPort } from '../ports/agent-mission-fingerprint';
@@ -30,10 +29,10 @@ import {
   verifyAgentMissionFingerprint,
   type AgentMissionViewV1,
 } from './agent-mission-application';
+import { isCanonicalAgentMissionDraftSessionId } from './agent-mission-identifiers';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const POSTGRES_INT_MAX = 2_147_483_647;
-const MAX_DRAFT_SESSION_ID_LENGTH = 160;
 
 export interface AcknowledgeQuoteScreenInput extends AgentMissionOwner {
   readonly authority: AgentMissionRealtimeAuthorityProof;
@@ -85,14 +84,6 @@ function isRevision(value: unknown, allowZero: boolean): value is number {
     && !Object.is(value, -0)
     && (value as number) >= (allowZero ? 0 : 1)
     && (value as number) <= POSTGRES_INT_MAX;
-}
-
-function isDraftSessionId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length >= 1
-    && value.length <= MAX_DRAFT_SESSION_ID_LENGTH
-    && value === value.trim()
-    && !hasAsciiControlCharacter(value);
 }
 
 function validation(field: string, message: string): Result<never, AppError> {
@@ -155,7 +146,7 @@ export class AcknowledgeQuoteScreen {
     if (!SHA256_HEX.test(input.contextDigest)) {
       return validation('contextDigest', 'Empreinte SHA-256 canonique requise.');
     }
-    if (!isDraftSessionId(input.draftSessionId)) {
+    if (!isCanonicalAgentMissionDraftSessionId(input.draftSessionId)) {
       return validation('draftSessionId', 'Identifiant de brouillon canonique requis.');
     }
     if (!isRevision(input.expectedDraftSlotRevision, false)) {

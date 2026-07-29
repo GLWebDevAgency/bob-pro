@@ -63,6 +63,8 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
 14. Lecture de reprise froide owner-scopée par JWT + RLS, strictement read-only et indépendante
     d'une capability Live disparue au kill.
 15. Wizard manuel inchangé lorsqu'aucune mission compatible n'est active.
+16. Handoff explicite `Continuer à la main` après sélection : la mission est terminalisée avec
+    `manual_handoff` et le slot est libéré atomiquement avant d'autoriser le writer manuel.
 
 ### Non inclus
 
@@ -185,7 +187,8 @@ cutover. Le flag M1-C n'est activé qu'après déploiement du writer N et draina
 - « le deuxième » est résolu vers le deuxième `choiceId` du jeu courant ; un tap transmet ce même
   `choiceId`.
 - Un tap direct hors jeu transmet un `customerId` non fiable, relu sous tenant, puis traverse la
-  même transition de brouillon et le même use case.
+  même transition de brouillon et le même use case. Il est permis même lorsqu'un jeu est présenté :
+  le choix explicite dans la liste réelle remplace alors ce jeu, qui est consommé atomiquement.
 - La différence d'événement entre les canaux se limite à l'acteur et à la corrélation de tour.
 
 ### 3.4 Runtime et reprise
@@ -193,10 +196,40 @@ cutover. Le flag M1-C n'est activé qu'après déploiement du writer N et draina
 - Le secret capability reste privé dans le handle mobile ; il n'est ni sérialisé ni reconstruit.
 - La reprise froide ne recrée jamais une capability : elle utilise un endpoint de lecture séparé,
   dérive tenant/owner du JWT et traverse une transaction RLS sans accès aux mutations.
+- M1-C n'est admis que sur une livraison `audited-signed-url-v1`, y compris lorsque l'uplink est
+  GPT Realtime/WebRTC. Le contrat natif V1 ne sait pas basculer par tour vers une parole exacte :
+  il refuse donc la capability M1-C dès l'admission au lieu d'accepter puis de couper le premier
+  choix, fait tenanté ou contrôle. Le plein duplex hybride natif↔audité est une tranche de
+  protocole distincte ; il ne peut pas être simulé par un fallback silencieux.
 - Le serveur réutilise seulement l'attestation de capability persistée lors de l'admission
   Realtime ; aucune capability fournie par le modèle ou le datachannel n'est acceptée.
 - Chaque tour expose un `turnId` UUID stable et produit exactement un `turn_settled` terminal
   `done | cancelled | failed` sur WebRTC natif et livraison auditée.
+- Le `turnId` OpenAI est dérivé par la même fonction pure côté sideband et côté mobile depuis
+  `(sessionHandle, input_audio_buffer.committed.item_id)`. La corrélation de réponse ou d'artefact
+  doit porter exactement ce même identifiant ; toute divergence ferme le transport.
+- `done` exige une preuve acoustique acquittée : reçu HTTP durable exact de livraison native ou
+  auditée. `cancelled` exige un terminal fournisseur ou une annulation HTTP durable. Une erreur
+  terminale connue avec un `turnId` produit `failed` avant le fallback et la fermeture.
+- Le premier terminal gagne. Un replay identique est inerte ; deux statuts terminaux différents
+  pour le même `turnId` sont une violation de protocole et ne produisent jamais un second
+  `turn_settled`.
+- Une interruption locale n'annule le watchdog d'un tour que si le player ou l'uplink confirme
+  avoir réellement acquis l'interruption. Un tap sans parole active et refusé par l'uplink laisse
+  la borne terminale armée ; il ne peut produire ni faux `cancelled`, ni tour orphelin.
+- L'ACK d'un contrôle est rejouable avec le même `acknowledgementId`. Une réponse HTTP perdue
+  relit le reçu consommé, rouvre le payload scellé exact et converge une seule fois côté mobile ;
+  un autre ACK, contexte ou payload reste refusé. Le mobile conserve un ledger borné des effets
+  appliqués pour qu'un replay de transport ne double jamais une navigation.
+- Les ACK de deux tours distincts sur la même fence sont deux vols indépendants : le second
+  n'annule jamais le premier. Seul le doublon de la même référence partage son vol, et la fermeture
+  du primaire annule tous les vols encore ouverts.
+- Dès qu'une capability Mission est observée sur un primaire, toute rupture échoue fermée. Ni un
+  refus d'adoption, ni une fence perdue, ni un contrôle non relu, ni un signal de l'orchestrateur ne
+  peut transférer la conversation au pilote legacy.
+- Cette autorité dure pendant toute la session contrôleur, reconnexions comprises. Un peer
+  reconnecté doit rendre une capability fraîche avant toute réouverture du micro ; son absence
+  terminalise la session et l'orbe UI en erreur honnête, sans zombie « écoute ».
 - `ready`, transcript final et `conversation_completed` ne valent pas `turn_settled`.
 - Une fermeture de transport dispose le handle seulement si aucun provider ne l'a adopté.
 - Après kill : aucune voix, navigation ou mutation automatique. La UI propose une reprise, puis
@@ -251,10 +284,21 @@ Chaque requête asynchrone mobile capture la génération du handle et du brouil
 tardif, une mutation manuelle concurrente ou un changement de session est ignoré et relu, jamais
 appliqué par-dessus l'état plus récent. `turn_settled` provoque une relecture au plus une fois par
 tour ; foreground et action tactile peuvent également relire, sans produire de mutation implicite.
+Le contrôle durable du même tour est acquitté avant de publier cette relecture. Le runtime conserve
+un ledger borné par la limite de 60 tours de la session ; le binding ne déduit jamais un terminal
+depuis un état visuel ou une transcription.
 
 Une navigation n'est jamais rendue si la transition mission reconnue n'a pas été persistée. Une
 erreur du planificateur, de l'autorisation, de la base ou de la revalidation échoue fermée et ne
 retombe pas vers une navigation générique qui contournerait la mission.
+
+À l'arrivée en `awaiting_lines`, le binding reste en `handoff_required` et interdit toute mutation
+legacy. Le CTA explicite `Continuer à la main` appelle `CancelQuoteAgentMission` avec
+`reason=manual_handoff`. Le mobile ne passe en mode manuel qu'après un résultat durable
+`cancelled|replayed` dont la mission est terminale ; une réponse perdue réutilise le même
+`commandId`. La transaction conserve le payload du brouillon et sa révision, libère uniquement son
+`agentMissionId`, puis journalise `mission_cancelled`. Un échec ou un conflit laisse l'interface
+bloquée avec retry, sans saisie locale.
 
 #### 3.4.3 Observation atomique du slot et point fixe écran
 
@@ -324,6 +368,47 @@ POST /agent-missions/:missionId/decisions
 Le body est exactement l'une des deux formes de la spec parente §13.1 :
 `choose_presented_option` ou `select_screen_customer`. Champs inconnus rejetés.
 
+La réponse tactile exacte est l'une de :
+
+```ts
+{
+  outcome: 'selected' | 'invalidated' | 'replayed';
+  effect:
+    | { kind: 'selected' }
+    | { kind: 'invalidated'; reason: DecisionInvalidationReason };
+  mission: AgentMissionViewV1;
+}
+```
+
+Le service vocal utilise la même sortie avec les effets internes additionnels
+`{ kind: 'presented'; candidateCount }` et `{ kind: 'not_found'; result }`. Un replay transporte
+toujours son effet immuable depuis les données de l'événement acquis ; la parole ne l'infère jamais
+depuis la phase courante, qui peut avoir progressé depuis.
+`invalidated` signifie qu'un choix présenté n'existe plus dans les données réelles : le jeu est
+invalidé sous CAS, le brouillon reste strictement inchangé et l'écran relit les choix. Un client
+fourni directement mais supprimé ou hors tenant échoue sans écriture.
+
+#### 4.2.1 Décision vocale après ACK
+
+Le cadre sémantique ne produit que :
+
+- `set_customer_reference(customerReference)` avec un nom humain canonique, jamais un ID ;
+- `select_presented_customer(ordinal)` borné par le nombre de choix courant.
+
+Les deux traversent `DecideQuoteAgentMission`, comme le toucher. La référence est résolue dans
+l'unique transaction tenantée de la décision ; les candidats sont relus avant présentation. Un
+exact appartenant au jeu courant consomme son `choiceId` persistant, un exact hors jeu remplace
+explicitement la suggestion, et une nouvelle ambiguïté remplace le jeu en une seule transition.
+La requête humaine ne quitte jamais le fingerprint HMAC transitoire.
+
+Après cette mutation, l'orchestrateur retourne une progression sans route : aucun second traitement
+par le cerveau historique et aucune renavigation `/devis/new`. Tant que M2 n'est pas livré, la
+parole de succès invite honnêtement à continuer les prestations à l'écran.
+
+L'écran relit les clients réels, place les candidats encore disponibles en tête dans l'ordre
+persisté et affiche leur ordinal. Le même « deuxième » et le deuxième élément tactile transmettent
+donc exactement le même `choiceId`.
+
 ### 4.3 Reprise froide read-only
 
 ```text
@@ -346,7 +431,41 @@ relectures pendant une session. Toutes les mutations restent exclusivement sous 
 
 ### 4.4 Vue
 
-La vue ajoute le brouillon observé et, pour une décision client :
+La reprise n'expose pas `AgentMissionViewV1` directement : son `currentBinding` contient une
+identité de session Realtime inutile après kill. Elle retourne un DTO minimal, exact et
+non extensible silencieusement :
+
+```ts
+type QuoteAgentMissionResumeView =
+  | { mission: null }
+  | {
+      mission: {
+        id: string;
+        status: 'active' | 'expired';
+        phase: QuoteCreationMissionPhase;
+        revision: number;
+        actionable: boolean;
+        draft: {
+          sessionId: string;
+          slotRevision: number;
+          contentRevision: number;
+        };
+        idleExpiresAt: string;
+        hardExpiresAt: string;
+      };
+      draft: {
+        sessionId: string;
+        slotRevision: number;
+        contentRevision: number;
+        step: QuoteDraftStep;
+      };
+      customerChoices: readonly CustomerMissionChoiceView[];
+    };
+```
+
+La vue ne transporte ni tenant/owner, ni `currentBinding`/session Realtime, ni capability, ni
+transcript, ni référence humaine saisie. Elle ajoute le brouillon observé et, pour une décision
+client :
 
 ```ts
 type CustomerMissionChoiceView =
@@ -355,7 +474,27 @@ type CustomerMissionChoiceView =
 ```
 
 Une indisponibilité de la base rend la vue indisponible ; elle ne transforme pas les clients en
-choix vides.
+choix vides. L'ordre est celui des `choiceId` persistés, le libellé vient du même snapshot
+PostgreSQL et un client supprimé devient `unavailable` sans ancien nom. Des doublons, un client
+inattendu, un mismatch mission/slot ou un slot encore marqué par une mission active introuvable
+sont une corruption indisponible (`503`), jamais une autorisation implicite de passer en manuel.
+Un choix déclaré `available` par cette projection reste sélectionnable même s'il n'est pas encore
+présent dans le cache indépendant de la liste clients ; ce cache ne fournit que des attributs
+facultatifs. Un refetch de reprise en vol bloque le writer mais ne déclenche ni second refetch ni
+boucle de point fixe. Les choix autoritaires restent visibles pendant le chargement ou l'échec de
+la liste complète ; l'écran affiche alors séparément le skeleton ou l'erreur partielle. Aucun texte
+ne prétend que la liste a été actualisée tant que le résultat du refetch n'est pas un succès.
+
+Pendant `detecting | waiting_* | hydrating | acknowledging | refreshing | resume_required |
+handoff_* | blocked | error`, le bouton Bob global est masqué : une deuxième session ne peut pas
+se superposer à la décision possédée. Une reprise ou une passation en vol interdit également
+close, back Android et swipe iOS jusqu'à la transition autoritaire suivante. Les états bloqués
+offrent une sortie explicite qui ferme la session sans mutation ; ils ne proposent jamais un retry
+infini incapable de solder la décision.
+
+Un brouillon local parké n'est proposé qu'en phase `manual`, après preuve autoritaire qu'aucune
+mission ne possède le writer. Il reste invisible en `ready`, `handoff` et dans tous les gates :
+un tap local ne peut donc jamais remplacer le brouillon serveur d'une mission active.
 
 ## 5. Critères d'acceptation binaires
 
@@ -376,14 +515,50 @@ choix vides.
       les mêmes révisions et le même hash de payload.
 - [ ] Le tap direct d'un client cross-tenant ou supprimé échoue sans write/event.
 - [ ] Une faute injectée après le write brouillon rollbacke brouillon, mission et événement.
+- [ ] Avant le CTA `Continuer à la main`, le PUT/DELETE legacy est refusé
+      `owned_by_agent_mission`; après le handoff durable, la mission est `cancelled` avec
+      `manual_handoff`, le payload/révision du slot sont inchangés, son owner mission est nul et le
+      même PUT réussit.
+- [ ] Double tap et réponse perdue du handoff produisent une requête en vol, un `commandId`
+      réutilisé et un seul événement ; un échec de release rollbacke mission + événement.
 - [ ] Deux décisions concurrentes donnent un gagnant, un conflit et un seul événement.
 - [ ] Un replay exact ne crée pas de second événement ; un replay altéré échoue.
 - [ ] Un crash après ACK mais avant consommation conserve le staged ; la reprise recalcule le même
       UUIDv8 et produit exactement un événement métier.
 - [ ] La continuation refuse toute substitution, injection, duplication ou permutation des IDs
       staged avant le premier write.
-- [ ] `turn_settled` est émis exactement une fois pour `done`, `cancelled` et `failed` sur les deux
-      chemins OpenAI, et provoque une relecture mobile.
+- [ ] `turn_settled` est émis exactement une fois pour `done`, `cancelled` et `failed` sur le
+      chemin OpenAI/WebRTC à parole auditée, après l'ACK durable correspondant, et provoque une
+      relecture mobile au plus une fois par `turnId`. Le contrat natif V1 refuse l'admission M1-C
+      avant toute capability. `ready`, transcripts et `conversation_completed` seuls n'en
+      émettent aucun.
+- [ ] Le vecteur `(sessionHandle, provider item id)` donne exactement le même `turnId` dans core,
+      API et mobile ; un mismatch réponse/artefact/commit échoue fermé.
+- [ ] Un refetch de reprise différé reste single-flight sans faux `slot_unavailable`, et un choix
+      PostgreSQL disponible absent du cache client reste affiché avec son libellé autoritaire.
+- [ ] Une erreur de la liste complète laisse les choix PostgreSQL sélectionnables, affiche une
+      erreur partielle avec retry single-flight et ne rend aucun faux succès d'actualisation.
+- [ ] Le bouton Bob global reste masqué pendant chaque gate mission ; back, close et swipe sont
+      refusés pendant reprise/passation, puis réactivés par la transition autoritaire.
+- [ ] `mission_expired`, `local_changes` et `draft_decision_required` offrent une sortie bornée
+      sans mutation ni boucle de retry aveugle.
+- [ ] La lecture post-handoff ne partage jamais un GET parti avant la mutation ; espaces
+      successifs, tabulations ou retours dans un ancien nom client sont canonisés une fois à la
+      frontière et ne provoquent ni faux `503` ni libellé inventé.
+- [ ] Le CTA de reprise exige une session Realtime V1 et ne bascule jamais vers le pilote legacy.
+- [ ] Une perte de réponse après consommation d'un contrôle rejoue le même ACK, rend le même reçu
+      et applique exactement une fois la navigation ; une interruption non acquise conserve son
+      watchdog puis produit un terminal borné.
+- [ ] Deux ACK de tours distincts peuvent terminer dans l'ordre inverse sans s'annuler ; le doublon
+      exact partage un seul appel et `close()` annule tous les vols restants.
+- [ ] Après observation d'une capability Mission, toute panne ferme le primaire sans aucun appel
+      au fallback legacy, y compris sur contrôle non relu et fallback explicite de l'orchestrateur.
+- [ ] Une reconnexion après adoption conserve l'autorité Mission : fallback avant `ready` et peer
+      sans capability ferment micro, contrôleur et orbe UI, sans pilote legacy.
+- [ ] La passation suspend l'entrée, annule durablement, ferme le transport, relit la reprise puis
+      n'ouvre le writer manuel qu'après preuve fraîche que la mission est absente.
+- [ ] La bannière d'un brouillon local parké est absente sous toute autorité Mission et n'est
+      interactive qu'en phase manuelle.
 - [ ] La capability n'apparaît dans aucun JSON, log, métrique, trace ou stockage mobile.
 - [ ] Kill/relaunch relit par JWT+RLS le même draft/choix sans recréer de capability, sans
       navigation, parole ni mutation automatique.

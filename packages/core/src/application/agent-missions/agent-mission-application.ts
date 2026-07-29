@@ -5,6 +5,7 @@ import {
   type QuoteCreationMissionPayloadV1,
   type QuoteMissionDraftReferenceV1,
 } from '../../domain/agent/agent-mission';
+import { normalizeCustomerName } from '../../domain/customer/customer';
 import {
   type AgentMissionActor,
   AgentMissionEvent,
@@ -32,6 +33,7 @@ import {
   appNotFound,
   appUnavailable,
 } from '../result';
+import { type CustomerCandidateReference } from '../ports/customer-candidate-search';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -237,6 +239,91 @@ export function canonicalAgentMissionAdvanceCustomerCommand(input: AgentMissionO
     input.contextRevision,
     input.contextDigest,
   ]);
+}
+
+export function canonicalAgentMissionCustomerDecisionCommand(input: AgentMissionOwner & {
+  readonly missionId: string;
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+  readonly origin: AgentMissionUserCommandOrigin;
+  readonly decision:
+    | {
+        readonly action: 'choose_presented_option';
+        readonly decisionId: string;
+        readonly choiceSetRevision: number;
+        readonly choiceId: string;
+      }
+    | {
+      readonly action: 'select_screen_customer';
+      readonly customerId: string;
+    }
+    | {
+      readonly action: 'resolve_customer_reference';
+      readonly customerReference: string;
+    };
+}): string {
+  const correlation = input.origin.correlation;
+  const turnId = input.origin.actor === 'user_voice'
+    ? input.origin.correlation.turnId
+    : null;
+  const decision = input.decision.action === 'choose_presented_option'
+    ? [
+        input.decision.action,
+        input.decision.decisionId,
+        input.decision.choiceSetRevision,
+        input.decision.choiceId,
+      ]
+    : input.decision.action === 'select_screen_customer'
+      ? [
+          input.decision.action,
+          input.decision.customerId,
+        ]
+      : [
+          input.decision.action,
+          input.decision.customerReference,
+        ];
+  return JSON.stringify([
+    'bob.agent-mission.command.customer-decision.v1',
+    input.companyId,
+    input.ownerUserId,
+    input.missionId,
+    input.commandId,
+    input.expectedMissionRevision,
+    input.expectedDraftSessionId,
+    input.expectedDraftSlotRevision,
+    input.expectedDraftContentRevision,
+    input.origin.actor,
+    correlation?.realtimeSessionId ?? null,
+    turnId,
+    correlation?.contextRevision ?? null,
+    correlation?.contextDigest ?? null,
+    decision,
+  ]);
+}
+
+export function isCanonicalCustomerCandidateReference(
+  value: unknown,
+): value is CustomerCandidateReference {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 2
+    || !Object.hasOwn(candidate, 'customerId')
+    || !Object.hasOwn(candidate, 'canonicalName')
+  ) return false;
+  return (
+    typeof candidate['customerId'] === 'string'
+    && candidate['customerId'].length >= 1
+    && candidate['customerId'].length <= 200
+    && candidate['customerId'] === candidate['customerId'].trim()
+    && !hasAsciiControlCharacter(candidate['customerId'])
+    && typeof candidate['canonicalName'] === 'string'
+    && normalizeCustomerName(candidate['canonicalName'])
+      === candidate['canonicalName']
+  );
 }
 
 export type AgentMissionSystemCommandInput =

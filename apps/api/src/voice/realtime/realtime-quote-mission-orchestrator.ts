@@ -9,6 +9,7 @@ import type {
   AgentMissionRealtimeAuthorityProof,
   AgentMissionViewV1,
   AppError,
+  DecideQuoteAgentMissionOutput,
   Result,
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
@@ -34,6 +35,29 @@ export interface RealtimeQuoteMissionGateway {
     readonly contextDigest: string;
     readonly customerReference: string | null;
   }): Promise<Result<StartQuoteAgentMissionOutput, AppError>>;
+  decideFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly missionId: string;
+    readonly turnId: string;
+    readonly realtimeSessionId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly expectedMissionRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftSlotRevision: number;
+    readonly expectedDraftContentRevision: number;
+    readonly decision:
+      | {
+          readonly action: 'choose_presented_option';
+          readonly decisionId: string;
+          readonly choiceSetRevision: number;
+          readonly choiceId: string;
+        }
+      | {
+          readonly action: 'resolve_customer_reference';
+          readonly customerReference: string;
+        };
+  }): Promise<Result<DecideQuoteAgentMissionOutput, AppError>>;
 }
 
 export interface RealtimeQuoteMissionOrchestrationInput {
@@ -50,6 +74,11 @@ export type RealtimeQuoteMissionOrchestrationOutcome =
   | { readonly status: 'not_applicable' }
   | { readonly status: 'failed'; readonly canonicalSpeech: string }
   | {
+      readonly status: 'handled';
+      readonly canonicalSpeech: string;
+      readonly speechPurpose: 'action_result' | 'structured_choice';
+    }
+  | {
       readonly status: 'ready';
       readonly canonicalSpeech: string;
       readonly navigate: '/devis/new';
@@ -62,7 +91,7 @@ export interface RealtimeQuoteMissionOrchestratorPort {
 }
 
 const TEMPORARY_FAILURE =
-  'Je rencontre un souci temporaire avec la mission. Rien n’a été exécuté.';
+  'Je rencontre un souci temporaire et je ne peux pas vérifier l’état de la mission. Consulte l’écran avant de réessayer.';
 const UNSAFE_UNDERSTANDING =
   'Je n’ai pas pu sécuriser cette demande. Rien n’a été exécuté. Reformule-la simplement.';
 
@@ -108,6 +137,116 @@ function canonicalStartSpeech(mission: AgentMissionViewV1): string {
   return 'Je prépare le devis. Choisis le client, ou dis-moi son nom.';
 }
 
+function currentCustomerChoiceCount(mission: AgentMissionViewV1): number | null {
+  const decision = mission.payload.decision;
+  return mission.status === 'active'
+    && mission.phase === 'awaiting_customer_choice'
+    && decision?.kind === 'customer'
+    ? decision.candidates.length
+    : null;
+}
+
+function canonicalCurrentChoiceSpeech(count: number): string {
+  return count > 1
+    ? `J’ai trouvé ${count} clients possibles, affichés dans le même ordre. Dis-moi le premier, le deuxième, ou précise le nom.`
+    : 'J’ai trouvé un client proche, affiché à l’écran. Confirme-le, ou précise le nom.';
+}
+
+function canonicalConvergedDecision(
+  mission: AgentMissionViewV1 | null,
+): Extract<
+  RealtimeQuoteMissionOrchestrationOutcome,
+  { readonly status: 'handled' }
+> {
+  if (mission === null || mission.status !== 'active') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Cette mission n’est plus active. J’ai actualisé son état à l’écran.',
+      speechPurpose: 'action_result',
+    };
+  }
+  if (mission.phase === 'awaiting_lines') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Le client est déjà confirmé. J’ai actualisé le devis avec l’état enregistré.',
+      speechPurpose: 'action_result',
+    };
+  }
+  const choiceCount = currentCustomerChoiceCount(mission);
+  if (choiceCount !== null) {
+    return {
+      status: 'handled',
+      canonicalSpeech: canonicalCurrentChoiceSpeech(choiceCount),
+      speechPurpose: 'structured_choice',
+    };
+  }
+  if (mission.phase === 'awaiting_customer') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Le client reste à choisir. J’ai actualisé l’étape avec l’état enregistré.',
+      speechPurpose: 'structured_choice',
+    };
+  }
+  return {
+    status: 'handled',
+    canonicalSpeech:
+      'La mission a changé pendant ta demande. J’ai actualisé l’écran avec l’état enregistré.',
+    speechPurpose: 'action_result',
+  };
+}
+
+function canonicalDecisionOutcome(
+  output: DecideQuoteAgentMissionOutput,
+): Extract<
+  RealtimeQuoteMissionOrchestrationOutcome,
+  { readonly status: 'handled' }
+> {
+  const effect = output.effect;
+  if (effect.kind === 'selected') {
+    return output.mission.status === 'active'
+      && output.mission.phase === 'awaiting_lines'
+      ? {
+          status: 'handled',
+          canonicalSpeech:
+            'Client confirmé. L’écran est à jour. Tu peux toucher Continuer à la main pour ajouter les prestations.',
+          speechPurpose: 'action_result',
+        }
+      : canonicalConvergedDecision(output.mission);
+  }
+  if (effect.kind === 'presented') {
+    const currentCount = currentCustomerChoiceCount(output.mission);
+    if (currentCount === effect.candidateCount) {
+      return {
+        status: 'handled',
+        canonicalSpeech: canonicalCurrentChoiceSpeech(currentCount),
+        speechPurpose: 'structured_choice',
+      };
+    }
+    return canonicalConvergedDecision(output.mission);
+  }
+  if (effect.kind === 'invalidated') {
+    return output.outcome === 'replayed'
+      ? canonicalConvergedDecision(output.mission)
+      : {
+          status: 'handled',
+          canonicalSpeech:
+            'Ce client n’est plus disponible. Le devis n’a pas été modifié. Dis-moi lequel choisir.',
+          speechPurpose: 'structured_choice',
+        };
+  }
+  return output.outcome === 'replayed'
+    ? canonicalConvergedDecision(output.mission)
+    : {
+        status: 'handled',
+        canonicalSpeech:
+          'Je n’ai pas de correspondance suffisamment sûre. Vérifie le nom ou précise-le.',
+        speechPurpose: 'structured_choice',
+      };
+}
+
 /**
  * Frontière probabiliste → déterministe de M1-C.
  *
@@ -121,6 +260,23 @@ implements RealtimeQuoteMissionOrchestratorPort {
     private readonly llm: LlmPort,
     private readonly missions: RealtimeQuoteMissionGateway,
   ) {}
+
+  private async convergeAfterUncertainDecision(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly signal: AbortSignal;
+  }): Promise<RealtimeQuoteMissionOrchestrationOutcome> {
+    let refreshed: Awaited<ReturnType<RealtimeQuoteMissionGateway['getCurrent']>>;
+    try {
+      refreshed = await this.missions.getCurrent(input.authorization);
+    } catch {
+      input.signal.throwIfAborted();
+      return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+    }
+    input.signal.throwIfAborted();
+    return refreshed.ok
+      ? canonicalConvergedDecision(refreshed.value.mission)
+      : { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+  }
 
   async run(
     input: RealtimeQuoteMissionOrchestrationInput,
@@ -174,11 +330,66 @@ implements RealtimeQuoteMissionOrchestratorPort {
       operation.kind === 'set_customer_reference'
       || operation.kind === 'select_presented_customer'
     ) {
-      return {
-        status: 'failed',
-        canonicalSpeech:
-          'La mission est bien ouverte, mais je ne peux pas encore appliquer ce choix vocal de façon sûre. Continue sur l’écran.',
-      };
+      const mission = current.value.mission;
+      const draft = mission?.payload.draft ?? null;
+      if (mission === null || draft === null) {
+        return { status: 'failed', canonicalSpeech: TEMPORARY_FAILURE };
+      }
+      const decision = operation.kind === 'select_presented_customer'
+        ? (() => {
+            const presented = mission.payload.decision;
+            const candidate = presented?.kind === 'customer'
+              ? presented.candidates[operation.ordinal - 1]
+              : undefined;
+            return presented?.kind === 'customer' && candidate !== undefined
+              ? {
+                  action: 'choose_presented_option' as const,
+                  decisionId: presented.decisionId,
+                  choiceSetRevision: presented.choiceSetRevision,
+                  choiceId: candidate.choiceId,
+                }
+              : null;
+          })()
+        : {
+            action: 'resolve_customer_reference' as const,
+            customerReference: operation.customerReference,
+          };
+      if (decision === null) {
+        return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };
+      }
+
+      let decided: Awaited<
+        ReturnType<RealtimeQuoteMissionGateway['decideFromVoiceTurn']>
+      >;
+      try {
+        decided = await this.missions.decideFromVoiceTurn({
+          authorization,
+          missionId: mission.id,
+          turnId: input.turnId,
+          realtimeSessionId: input.authority.realtimeSessionId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+          expectedMissionRevision: mission.revision,
+          expectedDraftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+          decision,
+        });
+      } catch {
+        input.signal.throwIfAborted();
+        return this.convergeAfterUncertainDecision({
+          authorization,
+          signal: input.signal,
+        });
+      }
+      input.signal.throwIfAborted();
+      if (!decided.ok || decided.value.mission.status !== 'active') {
+        return this.convergeAfterUncertainDecision({
+          authorization,
+          signal: input.signal,
+        });
+      }
+      return canonicalDecisionOutcome(decided.value);
     }
 
     let started: Awaited<ReturnType<RealtimeQuoteMissionGateway['startFromVoiceTurn']>>;

@@ -1,5 +1,7 @@
 export * from './agent-context';
 export * from './agent-mission-provider';
+export * from './agent-mission-recovery';
+export * from './agent-mission-recovery-state';
 export * from './agent-mission-runtime';
 export * from './agent-session';
 export * from './quote-screen-mission-coordinator';

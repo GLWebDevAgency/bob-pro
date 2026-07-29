@@ -51,7 +51,7 @@ function v1Input() {
     userId: USER_ID,
     providerId: 'openai' as const,
     transport: 'webrtc' as const,
-    speechDelivery: 'openai-native-webrtc-v1' as const,
+    speechDelivery: 'audited-signed-url-v1' as const,
   };
 }
 
@@ -107,6 +107,12 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
         providerId: 'mistral' as const,
         transport: 'mistral-pcm' as const,
         speechDelivery: 'audited-signed-url-v1' as const,
+      },
+    },
+    {
+      label: 'OpenAI natif sans protocole hybride audité',
+      patch: {
+        speechDelivery: 'openai-native-webrtc-v1' as const,
       },
     },
   ])('ne consulte ni flag ni entropy pour $label', async ({ patch }) => {

@@ -3,14 +3,12 @@ import {
   isCanonicalAgentMissionUserCommandId,
   type AgentMissionEventSnapshot,
 } from '../../domain/agent/agent-mission-event';
-import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { applyQuoteDraftCustomerSelection } from '../quote-drafts/apply-quote-draft-transition';
 import {
   type AgentMissionOwner,
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
-import { type CustomerCandidateReference } from '../ports/customer-candidate-search';
 import {
   type AgentMissionRealtimeAuthorityProof,
   type AgentMissionUnitOfWorkPort,
@@ -27,6 +25,7 @@ import {
   deriveAgentMissionSystemCommandId,
   isCanonicalAgentMissionOwner,
   isCanonicalAgentMissionUuid,
+  isCanonicalCustomerCandidateReference,
   missingAgentMission,
   recordAgentMissionEvent,
   rejectedAgentMissionCapability,
@@ -100,31 +99,6 @@ function draftReference(slot: AgentMissionQuoteDraftSlot): {
     slotRevision: slot.revision,
     contentRevision: slot.payload.draft.contentRevision,
   };
-}
-
-function isCanonicalCustomerCandidateReference(
-  value: unknown,
-): value is CustomerCandidateReference {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  if (
-    Object.keys(candidate).length !== 2
-    || !Object.hasOwn(candidate, 'customerId')
-    || !Object.hasOwn(candidate, 'canonicalName')
-  ) return false;
-  return (
-    typeof candidate['customerId'] === 'string'
-    && candidate['customerId'].length >= 1
-    && candidate['customerId'].length <= 200
-    && candidate['customerId'] === candidate['customerId'].trim()
-    && !hasAsciiControlCharacter(candidate['customerId'])
-    && typeof candidate['canonicalName'] === 'string'
-    && candidate['canonicalName'].length >= 1
-    && candidate['canonicalName'].length <= 300
-    && candidate['canonicalName']
-      === candidate['canonicalName'].trim().replace(/\s+/gu, ' ')
-    && !hasAsciiControlCharacter(candidate['canonicalName'])
-  );
 }
 
 function invalidCustomerRead(): never {

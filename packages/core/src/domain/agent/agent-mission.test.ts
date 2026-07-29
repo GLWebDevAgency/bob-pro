@@ -1241,6 +1241,68 @@ describe('AgentMission — ACK écran et résolution client', () => {
     expect(JSON.stringify(transition)).not.toContain('Camping');
   });
 
+  it('permet de choisir au toucher un client réel hors suggestions et invalide le jeu courant', () => {
+    const transition = value(awaitingChoice().selectCustomer({
+      expectedRevision: 3,
+      source: 'screen_selection',
+      customerId: 'customer-outside-current-choice-set',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+    }));
+
+    expectTransition(transition, 3, 4, 'customer_selected');
+    expect(transition.mission.phase).toBe('awaiting_lines');
+    expect(transition.mission.payload).toMatchObject({
+      draft: draft('quote-session-1', 2, 1),
+      decision: null,
+    });
+    expect(transition.event.data).toEqual({
+      kind: 'customer_selected',
+      customerId: 'customer-outside-current-choice-set',
+      source: 'screen_selection',
+      choiceId: null,
+      choiceSetHash: null,
+    });
+  });
+
+  it('remplace en une transition le jeu courant après une nouvelle référence vocale', () => {
+    const notFound = value(awaitingChoice().recordCustomerNotFound({
+      expectedRevision: 3,
+      result: 'none',
+      occurredAt: at(3),
+    }));
+    expectTransition(notFound, 3, 4, 'customer_not_found');
+    expect(notFound.mission.phase).toBe('awaiting_customer');
+    expect(notFound.mission.payload.decision).toBeNull();
+
+    const replaced = value(awaitingChoice().presentCustomerChoices({
+      expectedRevision: 3,
+      decisionId: DECISION_2,
+      candidates: [
+        { choiceId: CHOICE_3, customerId: 'customer-c' },
+      ],
+      occurredAt: at(3),
+    }));
+    expectTransition(replaced, 3, 4, 'customer_choice_presented');
+    expect(replaced.mission.phase).toBe('awaiting_customer_choice');
+    expect(replaced.mission.payload.decision).toMatchObject({
+      kind: 'customer',
+      decisionId: DECISION_2,
+      candidates: [{ choiceId: CHOICE_3, customerId: 'customer-c' }],
+    });
+
+    const selected = value(awaitingChoice().selectCustomer({
+      expectedRevision: 3,
+      source: 'exact_match',
+      customerId: 'customer-new-exact',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+    }));
+    expectTransition(selected, 3, 4, 'customer_selected');
+    expect(selected.mission.phase).toBe('awaiting_lines');
+    expect(selected.mission.payload.decision).toBeNull();
+  });
+
   it.each(['exact_match', 'screen_selection'] as const)(
     'fait passer la sélection %s par la même transition de brouillon',
     (source) => {
@@ -1366,6 +1428,33 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
       reason: 'user_cancelled',
       occurredAt: at(5),
     })).toMatchObject({ ok: false, error: { code: 'agent_mission_terminal', status: 'cancelled' } });
+  });
+
+  it('réserve le handoff manuel à l’étape lignes', () => {
+    expect(noSlotMission().cancel({
+      expectedRevision: 1,
+      reason: 'manual_handoff',
+      occurredAt: at(1),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        phase: 'awaiting_quote_screen',
+      },
+    });
+
+    const lines = value(noSlotMission().acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).mission;
+    expect(value(lines.cancel({
+      expectedRevision: 2,
+      reason: 'manual_handoff',
+      occurredAt: at(2),
+    })).mission.status).toBe('cancelled');
   });
 
   it('expire à la première échéance effective, même si le worker intervient après la seconde', () => {

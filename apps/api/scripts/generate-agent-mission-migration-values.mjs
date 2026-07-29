@@ -34,7 +34,7 @@ const commandNamespaceMigrationPath = path.join(
 );
 const customerResolutionExpandMigrationPath = path.join(
   apiDir,
-  'prisma/migrations/20260729010000_agent_mission_customer_resolution_expand/migration.sql',
+  'prisma/migrations/20260729100000_agent_mission_customer_resolution_expand/migration.sql',
 );
 const frozenCapabilityExpandProtocolVersions = ['1'];
 const frozenHistoricalMigrationHashes = Object.freeze({

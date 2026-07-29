@@ -503,6 +503,75 @@ describe.skipIf(!RUN_CERT)(
       };
     }
 
+    async function prepareMissionForCancellation(
+      owner: AgentMissionOwner,
+      reason: CancelQuoteAgentMissionInput['reason'],
+    ) {
+      if (reason === 'user_cancelled') {
+        const started = await start(uowA).execute({
+          ...owner,
+          commandId: randomUUID(),
+        });
+        if (!started.ok) {
+          throw new Error(`start cancellation fixture failed:${JSON.stringify(started.error)}`);
+        }
+        return started.value.mission;
+      }
+
+      // `manual_handoff` est volontairement réservé à awaiting_lines : la certification DB
+      // traverse donc le vrai chemin voix → résolution tenantée → ACK écran → continuation,
+      // au lieu de fabriquer une phase ou d'affaiblir l'invariant du domaine.
+      const context = await publishQuoteScreenContext(owner);
+      const turnId = randomUUID();
+      const started = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'Camping Les Pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+      if (!started.ok) {
+        throw new Error(`manual handoff start fixture failed:${JSON.stringify(started)}`);
+      }
+      const mission = started.value.mission;
+      const draft = mission.payload.draft;
+      if (draft === null) {
+        throw new Error('manual handoff start fixture returned no draft');
+      }
+      const acknowledgementCommandId = randomUUID();
+      const acknowledged = await acknowledge(uowA).execute({
+        ...owner,
+        missionId: mission.id,
+        commandId: acknowledgementCommandId,
+        expectedMissionRevision: mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      });
+      if (!acknowledged.ok) {
+        throw new Error(`manual handoff ACK fixture failed:${JSON.stringify(acknowledged.error)}`);
+      }
+      const advanced = await advance(uowA).execute({
+        ...owner,
+        missionId: mission.id,
+        acknowledgementCommandId,
+      });
+      if (!advanced.ok || advanced.value.mission.phase !== 'awaiting_lines') {
+        throw new Error(`manual handoff advance fixture failed:${JSON.stringify(advanced)}`);
+      }
+      return advanced.value.mission;
+    }
+
     afterAll(async () => {
       await Promise.allSettled([
         workerA?.$disconnect(),
@@ -2248,18 +2317,16 @@ describe.skipIf(!RUN_CERT)(
           companyId: companyA,
           ownerUserId: `owner-${reason}-${randomUUID()}`,
         };
-        const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
-        expect(started.ok).toBe(true);
-        if (!started.ok) return;
+        const mission = await prepareMissionForCancellation(owner, reason);
         const before = await admin.quoteDraftSlot.findUniqueOrThrow({
           where: { quote_draft_slot_owner: owner },
         });
 
         const cancelled = await cancel(uowA).execute({
           ...owner,
-          missionId: started.value.mission.id,
+          missionId: mission.id,
           commandId: randomUUID(),
-          expectedRevision: 1,
+          expectedRevision: mission.revision,
           reason,
           actor: 'user_tap',
         });
@@ -2340,26 +2407,29 @@ describe.skipIf(!RUN_CERT)(
             companyId: companyB,
             ownerUserId: `owner-${reason}-rollback-${failAtWrite}-${randomUUID()}`,
           };
-          const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
-          expect(started.ok, JSON.stringify(started)).toBe(true);
-          if (!started.ok) continue;
+          const mission = await prepareMissionForCancellation(owner, reason);
           const slotBefore = await admin.quoteDraftSlot.findUniqueOrThrow({
             where: { quote_draft_slot_owner: owner },
+          });
+          const eventCountBefore = await admin.agentMissionEvent.count({
+            where: { missionId: mission.id },
           });
 
           await expect(cancel(faultAfterWrite(uowA, failAtWrite)).execute({
             ...owner,
-            missionId: started.value.mission.id,
+            missionId: mission.id,
             commandId: randomUUID(),
-            expectedRevision: 1,
+            expectedRevision: mission.revision,
             reason,
             actor: 'user_tap',
           })).rejects.toThrow(`injected-write-${failAtWrite}`);
 
           expect(await admin.agentMission.findUniqueOrThrow({
-            where: { id: started.value.mission.id },
-          })).toMatchObject({ status: 'active', revision: 1 });
-          expect(await admin.agentMissionEvent.count({ where: owner })).toBe(1);
+            where: { id: mission.id },
+          })).toMatchObject({ status: 'active', revision: mission.revision });
+          expect(await admin.agentMissionEvent.count({
+            where: { missionId: mission.id },
+          })).toBe(eventCountBefore);
           expect(await admin.quoteDraftSlot.findUniqueOrThrow({
             where: { quote_draft_slot_owner: owner },
           })).toEqual(slotBefore);

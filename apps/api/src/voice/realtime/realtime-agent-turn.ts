@@ -270,7 +270,10 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       }
       if (input.signal.aborted) return { status: 'aborted' };
       if (missionOutcome.status === 'failed') return missionOutcome;
-      if (missionOutcome.status === 'ready') {
+      if (
+        missionOutcome.status === 'ready'
+        || missionOutcome.status === 'handled'
+      ) {
         let afterMission: RealtimeAgentContextVersion;
         try {
           afterMission = await input.contextFence.revalidate(input.signal);
@@ -281,6 +284,18 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
         if (input.signal.aborted) return { status: 'aborted' };
         if (!sameContextVersion(afterMission, input.contextFence.expected)) {
           return { status: 'aborted' };
+        }
+        if (missionOutcome.status === 'handled') {
+          return {
+            status: 'ready',
+            turnId: input.turnId,
+            canonicalSpeech: missionOutcome.canonicalSpeech,
+            kind: 'answer',
+            speechPurpose: missionOutcome.speechPurpose,
+            speechSource: 'card_body',
+            hasTenantContext: true,
+            contextVersion: input.contextFence.expected,
+          };
         }
         return {
           status: 'ready',

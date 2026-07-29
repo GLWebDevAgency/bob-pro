@@ -1,17 +1,21 @@
 import {
   appUnavailable,
+  isCanonicalAgentMissionDraftSessionId,
+  isCanonicalAgentMissionOpaqueIdentifier,
   isCanonicalAgentMissionUserCommandId,
   isCanonicalAgentMissionUuid,
   type AcknowledgeQuoteScreenOutput,
   type AgentMissionViewV1,
   type AppError,
   type CancelQuoteAgentMissionOutput,
+  type DecideQuoteAgentMissionOutput,
   type Result,
   type StartQuoteAgentMissionOutput,
 } from '@bob/core';
 import {
   decodeAgentMissionCancel,
   decodeAgentMissionCurrent,
+  decodeAgentMissionDecision,
   decodeAgentMissionScreenAck,
   decodeAgentMissionStart,
 } from './agent-mission-codec';
@@ -19,13 +23,13 @@ import {
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionAcknowledgeQuoteScreenInput,
   type RealtimeAgentMissionCancelQuoteInput,
+  type RealtimeAgentMissionQuoteDecisionInput,
   type RealtimeAgentMissionSession,
   type RealtimeAgentMissionStartQuoteInput,
 } from './agent-mission-session';
 
 const POSTGRES_INT_MAX = 2_147_483_647;
 const SHA_256 = /^[a-f0-9]{64}$/u;
-const MAX_DRAFT_SESSION_ID_LENGTH = 160;
 const AGENT_MISSION_REQUEST_TIMEOUT_MS = 12_000;
 
 export interface HttpAgentMissionRequest<T> {
@@ -63,20 +67,14 @@ function revision(value: unknown, allowZero = false): value is number {
     && (value as number) <= POSTGRES_INT_MAX;
 }
 
-function hasAsciiControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 31 || code === 127) return true;
-  }
-  return false;
+function draftSessionId(value: unknown): value is string {
+  return isCanonicalAgentMissionDraftSessionId(value);
 }
 
-function draftSessionId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length >= 1
-    && value.length <= MAX_DRAFT_SESSION_ID_LENGTH
-    && value === value.trim()
-    && !hasAsciiControlCharacter(value);
+function exactInput(value: unknown, fields: readonly string[]): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === fields.length && fields.every((field) => Object.hasOwn(value, field));
 }
 
 class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
@@ -157,12 +155,23 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
         'Révision positive requise.',
       );
     }
+    if (
+      input.reason !== undefined
+      && input.reason !== 'user_cancelled'
+      && input.reason !== 'manual_handoff'
+    ) {
+      return validation<CancelQuoteAgentMissionOutput>(
+        'reason',
+        'Motif d’arrêt invalide.',
+      );
+    }
     return this.call<CancelQuoteAgentMissionOutput>({
       method: 'POST',
       path: `/agent-missions/${encodeURIComponent(input.missionId)}/cancel`,
       body: {
         commandId: input.commandId,
         expectedMissionRevision: input.expectedMissionRevision,
+        reason: input.reason ?? 'user_cancelled',
       },
       decode: decodeAgentMissionCancel,
       signal,
@@ -235,6 +244,120 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
         expectedDraftContentRevision: input.expectedDraftContentRevision,
       },
       decode: decodeAgentMissionScreenAck,
+      signal,
+    });
+  }
+
+  decideQuoteCreation(
+    input: RealtimeAgentMissionQuoteDecisionInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!isCanonicalAgentMissionUserCommandId(input.commandId)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'commandId',
+        'UUID v4 canonique requis.',
+      );
+    }
+    if (!revision(input.expectedMissionRevision)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'expectedMissionRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (!draftSessionId(input.expectedDraftSessionId)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'expectedDraftSessionId',
+        'Session de brouillon canonique requise.',
+      );
+    }
+    if (!revision(input.expectedDraftSlotRevision)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'expectedDraftSlotRevision',
+        'Révision de slot positive requise.',
+      );
+    }
+    if (!revision(input.expectedDraftContentRevision, true)) {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'expectedDraftContentRevision',
+        'Révision de contenu requise.',
+      );
+    }
+    if (input.action === 'choose_presented_option') {
+      if (!exactInput(input, [
+        'missionId',
+        'action',
+        'commandId',
+        'expectedMissionRevision',
+        'expectedDraftSessionId',
+        'expectedDraftSlotRevision',
+        'expectedDraftContentRevision',
+        'decisionId',
+        'choiceSetRevision',
+        'choiceId',
+      ])) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'decision',
+          'Décision de choix exacte requise.',
+        );
+      }
+      if (!isCanonicalAgentMissionUuid(input.decisionId)) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'decisionId',
+          'UUID canonique requis.',
+        );
+      }
+      if (!revision(input.choiceSetRevision)) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'choiceSetRevision',
+          'Révision positive requise.',
+        );
+      }
+      if (!isCanonicalAgentMissionUuid(input.choiceId)) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'choiceId',
+          'UUID canonique requis.',
+        );
+      }
+    } else if (input.action === 'select_screen_customer') {
+      if (!exactInput(input, [
+        'missionId',
+        'action',
+        'commandId',
+        'expectedMissionRevision',
+        'expectedDraftSessionId',
+        'expectedDraftSlotRevision',
+        'expectedDraftContentRevision',
+        'customerId',
+      ])) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'decision',
+          'Sélection client exacte requise.',
+        );
+      }
+      if (!isCanonicalAgentMissionOpaqueIdentifier(input.customerId)) {
+        return validation<DecideQuoteAgentMissionOutput>(
+          'customerId',
+          'Identifiant client canonique requis.',
+        );
+      }
+    } else {
+      return validation<DecideQuoteAgentMissionOutput>(
+        'action',
+        'Action de décision inconnue.',
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<DecideQuoteAgentMissionOutput>({
+      method: 'POST',
+      path: `/agent-missions/${encodeURIComponent(missionId)}/decisions`,
+      body,
+      decode: (value) => decodeAgentMissionDecision(value, missionId),
       signal,
     });
   }

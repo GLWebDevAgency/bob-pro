@@ -2,6 +2,8 @@ import type {
   AgentMissionFingerprintPort,
   AgentMissionOwner,
   AgentMissionReadTransaction,
+  AgentMissionResumeReadTransaction,
+  AgentMissionResumeUnitOfWorkPort,
   AgentMissionRealtimeAuthorityProof,
   AgentMissionTransaction,
   AgentMissionUnitOfWorkPort,
@@ -10,11 +12,12 @@ import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
   AgentMission,
+  DecideQuoteAgentMission,
   StartQuoteAgentMission,
   toAgentMissionView,
 } from '@bob/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AppLogger } from '../observability/logger';
+import { requestContext, type AppLogger } from '../observability/logger';
 import type { Metrics } from '../observability/metrics';
 import type { Persistence } from '../persistence/persistence';
 import type { AgentMissionHttpAuthorization } from './agent-mission-http-authority';
@@ -146,7 +149,10 @@ class RejectingUnitOfWork implements AgentMissionUnitOfWorkPort {
   }
 }
 
-function harness(unitOfWork: AgentMissionUnitOfWorkPort | null) {
+function harness(
+  unitOfWork: AgentMissionUnitOfWorkPort | null,
+  resumeUnitOfWork: AgentMissionResumeUnitOfWorkPort | null = null,
+) {
   const capabilityInc = vi.fn();
   const screenAckInc = vi.fn();
   const metrics = {
@@ -155,19 +161,100 @@ function harness(unitOfWork: AgentMissionUnitOfWorkPort | null) {
   } as unknown as Metrics;
   const persistence = {
     createAgentMissionUnitOfWork: vi.fn(() => unitOfWork),
+    createAgentMissionResumeUnitOfWork: vi.fn(() => resumeUnitOfWork),
   } as unknown as Persistence;
+  const logger = {
+    audit: vi.fn(),
+    error: vi.fn(),
+  } as unknown as AppLogger;
   const service = new AgentMissionService(
     persistence,
     FINGERPRINTS,
-    { audit: vi.fn() } as unknown as AppLogger,
+    logger,
     metrics,
   );
-  return { service, capabilityInc, screenAckInc };
+  return { service, capabilityInc, screenAckInc, persistence, logger };
+}
+
+class ResumeNullUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
+  readonly owners: AgentMissionOwner[] = [];
+
+  async readQuoteCreationOwner<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionResumeReadTransaction) => Promise<T>,
+  ) {
+    this.owners.push(owner);
+    return {
+      status: 'executed' as const,
+      value: await work({
+        databaseNow: async () => NOW,
+        missions: { findActive: async () => null },
+        quoteDrafts: { get: async () => null },
+        customers: { findByIds: async () => [] },
+      }),
+    };
+  }
 }
 
 describe('AgentMissionService metrics', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('dérive la reprise froide du principal JWT sans capability ni identité appelante', async () => {
+    const resume = new ResumeNullUnitOfWork();
+    const { service } = harness(null, resume);
+
+    const result = await requestContext.run(
+      {
+        correlationId: 'resume-owner-test',
+        principal: { userId: OWNER.ownerUserId, companyId: OWNER.companyId },
+      },
+      () => service.getCurrentResume(),
+    );
+
+    expect(result).toEqual({ ok: true, value: { mission: null } });
+    expect(resume.owners).toEqual([OWNER]);
+  });
+
+  it('refuse la reprise sans principal avant toute factory de persistance', async () => {
+    const resume = new ResumeNullUnitOfWork();
+    const { service, persistence } = harness(null, resume);
+
+    await expect(service.getCurrentResume()).resolves.toEqual({
+      ok: false,
+      error: { kind: 'forbidden', reason: 'authenticated_owner_required' },
+    });
+    expect(persistence.createAgentMissionResumeUnitOfWork).not.toHaveBeenCalled();
+  });
+
+  it('convertit une panne du snapshot froid en indisponibilité sans faux mission:null', async () => {
+    const resume: AgentMissionResumeUnitOfWorkPort = {
+      readQuoteCreationOwner: async () => {
+        throw new Error('sensitive database detail');
+      },
+    };
+    const { service, logger } = harness(null, resume);
+
+    const result = await requestContext.run(
+      {
+        correlationId: 'resume-failure-test',
+        principal: { userId: OWNER.ownerUserId, companyId: OWNER.companyId },
+      },
+      () => service.getCurrentResume(),
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'agent_mission_resume_persistence' },
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      'Lecture de reprise AgentMission impossible (Error).',
+      undefined,
+      'AgentMissionService',
+    );
+    expect(JSON.stringify((logger.error as ReturnType<typeof vi.fn>).mock.calls))
+      .not.toContain('sensitive database detail');
   });
 
   it.each([
@@ -193,6 +280,23 @@ describe('AgentMissionService metrics', () => {
         missionId: '20000000-0000-4000-8000-000000000001',
         commandId: '10000000-0000-4000-8000-000000000002',
         expectedMissionRevision: 1,
+      }),
+    ],
+    [
+      'decision',
+      'state',
+      (service: AgentMissionService) => service.decide({
+        authorization: authorization('decide_quote_creation'),
+        missionId: '20000000-0000-4000-8000-000000000001',
+        commandId: '10000000-0000-4000-8000-000000000006',
+        expectedMissionRevision: 2,
+        expectedDraftSessionId: 'quote-draft-session-1',
+        expectedDraftSlotRevision: 1,
+        expectedDraftContentRevision: 0,
+        decision: {
+          action: 'select_screen_customer',
+          customerId: 'customer-camping',
+        },
       }),
     ],
   ] as const)(
@@ -362,6 +466,80 @@ describe('AgentMissionService metrics', () => {
         },
       },
       customerReference: 'Camping les Pins',
+    });
+  });
+
+  it('fait traverser le même use case de décision au toucher et à la voix', async () => {
+    vi.spyOn(DecideQuoteAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'sentinel', message: 'test' }],
+      },
+    });
+    const { service } = harness(new RejectingUnitOfWork('state'));
+    const base = {
+      missionId: MISSION_ID,
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+    };
+    await service.decide({
+      authorization: authorization('decide_quote_creation'),
+      ...base,
+      commandId: '10000000-0000-4000-8000-000000000006',
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+    });
+    await service.decideFromVoiceTurn({
+      authorization: authorization('decide_quote_creation'),
+      ...base,
+      turnId: '10000000-0000-4000-8000-000000000007',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: '30000000-0000-4000-8000-000000000001',
+        choiceSetRevision: 3,
+        choiceId: '40000000-0000-4000-8000-000000000001',
+      },
+    });
+
+    expect(DecideQuoteAgentMission.prototype.execute).toHaveBeenNthCalledWith(1, {
+      ...OWNER,
+      authority: PROOF,
+      ...base,
+      commandId: '10000000-0000-4000-8000-000000000006',
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+    });
+    expect(DecideQuoteAgentMission.prototype.execute).toHaveBeenNthCalledWith(2, {
+      ...OWNER,
+      authority: PROOF,
+      ...base,
+      commandId: '10000000-0000-4000-8000-000000000007',
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: '10000000-0000-4000-8000-000000000007',
+          contextRevision: 4,
+          contextDigest: 'f'.repeat(64),
+        },
+      },
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: '30000000-0000-4000-8000-000000000001',
+        choiceSetRevision: 3,
+        choiceId: '40000000-0000-4000-8000-000000000001',
+      },
     });
   });
 });

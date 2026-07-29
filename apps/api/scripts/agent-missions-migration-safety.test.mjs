@@ -63,15 +63,15 @@ const bootstrapReceiptValidatePath = path.join(
 );
 const customerResolutionExpandPath = path.join(
   apiDir,
-  'prisma/migrations/20260729010000_agent_mission_customer_resolution_expand/migration.sql',
+  'prisma/migrations/20260729100000_agent_mission_customer_resolution_expand/migration.sql',
 );
 const customerResolutionValidatePath = path.join(
   apiDir,
-  'prisma/migrations/20260729020000_agent_mission_customer_resolution_validate/migration.sql',
+  'prisma/migrations/20260729100100_agent_mission_customer_resolution_validate/migration.sql',
 );
 const customerResolutionCutoverPath = path.join(
   apiDir,
-  'prisma/migrations/20260729030000_agent_mission_customer_resolution_cutover/migration.sql',
+  'prisma/migrations/20260729100200_agent_mission_customer_resolution_cutover/migration.sql',
 );
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');

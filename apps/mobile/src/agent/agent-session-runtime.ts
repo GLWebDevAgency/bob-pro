@@ -13,6 +13,25 @@ export type AgentSessionFallbackPlan =
       readonly issue: 'denied' | 'unavailable';
     };
 
+export interface AgentSessionFailedClosedPlan {
+  readonly driver: 'idle';
+  readonly active: false;
+  readonly issue: 'failed';
+  readonly phase: 'error';
+  readonly responseKey: 'live.error';
+}
+
+/** Une autorité Mission perdue ferme l'orbe sans jamais armer le pilote legacy. */
+export function planAgentSessionFailedClosed(): AgentSessionFailedClosedPlan {
+  return Object.freeze({
+    driver: 'idle',
+    active: false,
+    issue: 'failed',
+    phase: 'error',
+    responseKey: 'live.error',
+  });
+}
+
 /** Le canal décidé par la policy est autoritaire : `text_only` ne retente jamais un micro. */
 export function planAgentSessionFallback(
   reason: RealtimeFallbackReason,

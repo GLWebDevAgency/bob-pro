@@ -58,6 +58,22 @@ function acknowledgedMission() {
   return result.value.mission;
 }
 
+function selectedMission() {
+  const result = acknowledgedMission().selectCustomer({
+    expectedRevision: 2,
+    source: 'screen_selection',
+    customerId: 'customer-camping',
+    updatedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    occurredAt: '2026-07-26T08:02:00.000Z',
+  });
+  if (!result.ok) throw new Error(`Sélection fixture invalide: ${result.error.code}`);
+  return result.value.mission;
+}
+
 function nativeBootstrap(
   negotiation: Readonly<Record<string, unknown>> = {},
 ): Record<string, unknown> {
@@ -107,6 +123,7 @@ describe('Realtime AgentMission capability handle', () => {
   it('encapsule le secret, pose seule le header et injecte le vrai realtimeSessionId', async () => {
     const initialView = missionView(initialMission(), CREATED_AT);
     const acknowledgedView = missionView(acknowledgedMission(), ACKNOWLEDGED_AT);
+    const selectedView = missionView(selectedMission(), '2026-07-26T08:02:00.000Z');
     const cancelled = initialMission().cancel({
       expectedRevision: 1,
       reason: 'user_cancelled',
@@ -169,6 +186,7 @@ describe('Realtime AgentMission capability handle', () => {
         expect(JSON.parse(String(init?.body))).toEqual({
           commandId: '44444444-4444-4444-8444-444444444444',
           expectedMissionRevision: 1,
+          reason: 'user_cancelled',
         });
         return new Response(JSON.stringify({
           outcome: 'cancelled',
@@ -198,6 +216,40 @@ describe('Realtime AgentMission capability handle', () => {
             occurredAt: ACKNOWLEDGED_AT,
           },
           mission: acknowledgedView,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/decisions`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('realtimeSessionId');
+        expect(body).not.toHaveProperty('actor');
+        if (body.action === 'select_screen_customer') {
+          expect(body).toEqual({
+            action: 'select_screen_customer',
+            commandId: '66666666-6666-4666-8666-666666666666',
+            expectedMissionRevision: 2,
+            expectedDraftSessionId: DRAFT.sessionId,
+            expectedDraftSlotRevision: 1,
+            expectedDraftContentRevision: 0,
+            customerId: 'customer-camping',
+          });
+        } else {
+          expect(body).toEqual({
+            action: 'choose_presented_option',
+            commandId: '77777777-7777-4777-8777-777777777777',
+            expectedMissionRevision: 2,
+            expectedDraftSessionId: DRAFT.sessionId,
+            expectedDraftSlotRevision: 1,
+            expectedDraftContentRevision: 0,
+            decisionId: '88888888-8888-4888-8888-888888888888',
+            choiceSetRevision: 2,
+            choiceId: '99999999-9999-4999-8999-999999999999',
+          });
+        }
+        return new Response(JSON.stringify({
+          outcome: 'selected',
+          effect: { kind: 'selected' },
+          mission: selectedView,
         }), { headers: { 'content-type': 'application/json' } });
       }
       throw new Error(`Route inattendue: ${path}`);
@@ -245,12 +297,47 @@ describe('Realtime AgentMission capability handle', () => {
       expectedDraftSlotRevision: 1,
       expectedDraftContentRevision: 0,
     })).resolves.toMatchObject({ ok: true, value: { outcome: 'acknowledged' } });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'select_screen_customer',
+      commandId: '66666666-6666-4666-8666-666666666666',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    })).resolves.toMatchObject({ ok: true, value: { outcome: 'selected' } });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'choose_presented_option',
+      commandId: '77777777-7777-4777-8777-777777777777',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      decisionId: '88888888-8888-4888-8888-888888888888',
+      choiceSetRevision: 2,
+      choiceId: '99999999-9999-4999-8999-999999999999',
+    })).resolves.toMatchObject({ ok: true, value: { outcome: 'selected' } });
 
     const fetchesBeforeDispose = fetchMock.mock.calls.length;
     const tokenReadsBeforeDispose = getToken.mock.calls.length;
     handle.dispose();
     expect(handle.disposed).toBe(true);
     await expect(handle.getCurrentQuoteCreation()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable' },
+    });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'select_screen_customer',
+      commandId: '66666666-6666-4666-8666-666666666666',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    })).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable' },
     });

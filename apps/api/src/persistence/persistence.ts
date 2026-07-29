@@ -1,6 +1,7 @@
 import type {
   AccountingEntryRepository,
   AgentMissionUnitOfWorkPort,
+  AgentMissionResumeUnitOfWorkPort,
   AgentMissionDraftFencePort,
   BankBalanceSnapshotRepository,
   CashMovementProjectionPort,
@@ -177,6 +178,11 @@ export interface Persistence {
    * doubles qui ne peuvent pas prouver RLS, verrou distribué et horloge PostgreSQL.
    */
   createAgentMissionUnitOfWork(): AgentMissionUnitOfWorkPort | null;
+  /**
+   * Snapshot froid JWT+RLS des missions Jarvis. `null` reste fail-closed pour tout adapter qui
+   * ne peut pas prouver READ ONLY + REPEATABLE READ + scoping owner.
+   */
+  createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort | null;
   /**
    * Readiness globale bornée des versions de fingerprint encore retenues par le journal durable.
    * `null` refuse l'activation : un double mémoire ne peut pas attester cette vérité PostgreSQL.

@@ -28,6 +28,7 @@ import { GlobalBobAccess } from '../src/components/GlobalBobAccess';
 import {
   AgentContextProvider,
   AgentMissionProvider,
+  AgentMissionRecoveryProvider,
   AgentSessionProvider,
 } from '../src/agent';
 import { QuoteDraftProvider } from '../src/quote-draft';
@@ -235,8 +236,9 @@ function RootLayout() {
                       <QuoteDraftProvider>
                         <AgentContextProvider>
                           <AgentMissionProvider>
-                            <AgentSessionProvider>
-                              <ConfirmProvider>
+                            <AgentMissionRecoveryProvider>
+                              <AgentSessionProvider>
+                                <ConfirmProvider>
                                 <Stack screenOptions={{ headerShown: false }}>
                                 <Stack.Screen name="(tabs)" />
                                 <Stack.Screen name="auth/recovery" />
@@ -269,8 +271,9 @@ function RootLayout() {
                                 <Stack.Screen name="pilotage" />
                                 </Stack>
                                 <GlobalBobAccess />
-                              </ConfirmProvider>
-                            </AgentSessionProvider>
+                                </ConfirmProvider>
+                              </AgentSessionProvider>
+                            </AgentMissionRecoveryProvider>
                           </AgentMissionProvider>
                         </AgentContextProvider>
                       </QuoteDraftProvider>

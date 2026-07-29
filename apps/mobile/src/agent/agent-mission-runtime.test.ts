@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ok, type AcknowledgeQuoteScreenOutput } from '@bob/core';
+import {
+  ok,
+  type AcknowledgeQuoteScreenOutput,
+  type CancelQuoteAgentMissionOutput,
+  type DecideQuoteAgentMissionOutput,
+} from '@bob/core';
 import {
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionSession,
@@ -28,6 +33,7 @@ function session(
     startQuoteCreation: unused,
     cancelQuoteCreation: unused,
     acknowledgeQuoteScreen: unused,
+    decideQuoteCreation: unused,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -144,6 +150,51 @@ describe('AgentMissionRuntimeOwner', () => {
       capabilities: ['screen.read'],
     })).toBe(false);
     expect(owner.snapshot().confirmedContext).toEqual(revisionFour.confirmedContext);
+  });
+
+  it('publie un terminal une seule fois, fence les lectures en vol et refuse une contradiction', () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const currentId = '21000000-0000-4000-8000-000000000001';
+    const turnId = '21000000-0000-4000-8000-000000000002';
+    owner.adopt(session(currentId, []));
+    const beforeSettlement = owner.capture() as AgentMissionRuntimeCapture;
+    const snapshots: ReturnType<AgentMissionRuntimeOwner['snapshot']>[] = [];
+    owner.subscribe((snapshot) => snapshots.push(snapshot));
+
+    expect(owner.settleTurn(currentId, { turnId, status: 'done' })).toBe(true);
+    expect(owner.isCurrent(beforeSettlement)).toBe(false);
+    expect(owner.snapshot().lastTurnSettlement).toEqual({ turnId, status: 'done' });
+    const generationAfterFirst = owner.snapshot().generation;
+    const publicationCountAfterFirst = snapshots.length;
+
+    expect(owner.settleTurn(currentId, { turnId, status: 'done' })).toBe(true);
+    expect(owner.snapshot().generation).toBe(generationAfterFirst);
+    expect(snapshots).toHaveLength(publicationCountAfterFirst);
+    expect(owner.settleTurn(currentId, { turnId, status: 'cancelled' })).toBe(false);
+    expect(owner.settleTurn(
+      '21000000-0000-4000-8000-000000000099',
+      { turnId: '21000000-0000-4000-8000-000000000003', status: 'failed' },
+    )).toBe(false);
+  });
+
+  it('libère move-only la capability terminalisée et fence toutes les captures', () => {
+    const disposals: string[] = [];
+    const owner = new AgentMissionRuntimeOwner();
+    const currentId = '22000000-0000-4000-8000-000000000001';
+    owner.adopt(session(currentId, disposals));
+    const capture = owner.capture() as AgentMissionRuntimeCapture;
+
+    expect(owner.release('22000000-0000-4000-8000-000000000099')).toBe(false);
+    expect(owner.release(currentId)).toBe(true);
+    expect(owner.release(currentId)).toBe(false);
+    expect(disposals).toEqual([currentId]);
+    expect(owner.capture()).toBeNull();
+    expect(owner.isCurrent(capture)).toBe(false);
+    expect(owner.snapshot()).toMatchObject({
+      realtimeSessionId: null,
+      confirmedContext: null,
+      lastTurnSettlement: null,
+    });
   });
 
   it('fence synchroniquement les captures pendant un démontage puis survit au cycle Strict Effects', () => {
@@ -293,6 +344,126 @@ describe('AgentMissionRuntimeOwner', () => {
     await expect(actions.acknowledgeQuoteScreen({
       ...input,
       commandId: '70000000-0000-4000-8000-000000000002',
+    })).resolves.toEqual({ status: 'invalid_response' });
+  });
+
+  it('transmet une décision exacte sans exposer le fence ni accepter une autre mission', async () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const id = '80000000-0000-4000-8000-000000000001';
+    const missionId = '80000000-0000-4000-8000-000000000002';
+    const candidate = session(id, []);
+    const decideQuoteCreation = vi.fn();
+    Object.assign(candidate, { decideQuoteCreation });
+    owner.adopt(candidate);
+    owner.confirmContext(id, {
+      sessionHandle: id,
+      contextRevision: 5,
+      contextDigest: 'f'.repeat(64),
+    }, {
+      screen: { name: '/devis/new', instanceId: 'devis-new:decision' },
+      entities: [],
+      capabilities: ['screen.read'],
+    });
+    const output = {
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: { id: missionId },
+    } as unknown as DecideQuoteAgentMissionOutput;
+    decideQuoteCreation.mockResolvedValue(ok(output));
+    const actions = new FencedAgentMissionRuntimeActions(owner);
+    const input = {
+      missionId,
+      action: 'select_screen_customer',
+      commandId: '80000000-0000-4000-8000-000000000003',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: 'draft-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+      expectedScreenInstanceId: 'devis-new:decision',
+    } as const;
+
+    await expect(actions.decideQuoteCreation(input)).resolves.toEqual({
+      status: 'completed',
+      value: output,
+    });
+    expect(decideQuoteCreation).toHaveBeenCalledWith({
+      missionId,
+      action: 'select_screen_customer',
+      commandId: '80000000-0000-4000-8000-000000000003',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: 'draft-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    });
+
+    decideQuoteCreation.mockResolvedValueOnce(ok({
+      ...output,
+      mission: { id: '80000000-0000-4000-8000-000000000099' },
+    } as DecideQuoteAgentMissionOutput));
+    await expect(actions.decideQuoteCreation({
+      ...input,
+      commandId: '80000000-0000-4000-8000-000000000004',
+    })).resolves.toEqual({ status: 'invalid_response' });
+  });
+
+  it('libère manuellement avec le motif exact et refuse une mission non terminale', async () => {
+    const owner = new AgentMissionRuntimeOwner();
+    const id = '90000000-0000-4000-8000-000000000001';
+    const missionId = '90000000-0000-4000-8000-000000000002';
+    const cancelQuoteCreation = vi.fn();
+    const candidate = session(id, []);
+    Object.assign(candidate, { cancelQuoteCreation });
+    owner.adopt(candidate);
+    owner.confirmContext(id, {
+      sessionHandle: id,
+      contextRevision: 6,
+      contextDigest: 'a'.repeat(64),
+    }, {
+      screen: { name: '/devis/new', instanceId: 'devis-new:handoff' },
+      entities: [],
+      capabilities: ['screen.read'],
+    });
+    const output = {
+      outcome: 'cancelled',
+      mission: {
+        id: missionId,
+        status: 'cancelled',
+        actionable: false,
+      },
+    } as unknown as CancelQuoteAgentMissionOutput;
+    cancelQuoteCreation.mockResolvedValue(ok(output));
+    const actions = new FencedAgentMissionRuntimeActions(owner);
+    const input = {
+      missionId,
+      commandId: '90000000-0000-4000-8000-000000000003',
+      expectedMissionRevision: 4,
+      expectedScreenInstanceId: 'devis-new:handoff',
+    } as const;
+
+    await expect(actions.manualHandoffQuoteCreation(input)).resolves.toEqual({
+      status: 'completed',
+      value: output,
+    });
+    expect(cancelQuoteCreation).toHaveBeenCalledWith({
+      missionId,
+      commandId: input.commandId,
+      expectedMissionRevision: 4,
+      reason: 'manual_handoff',
+    });
+
+    cancelQuoteCreation.mockResolvedValueOnce(ok({
+      ...output,
+      mission: {
+        ...output.mission,
+        status: 'active',
+        actionable: true,
+      },
+    } as typeof output));
+    await expect(actions.manualHandoffQuoteCreation({
+      ...input,
+      commandId: '90000000-0000-4000-8000-000000000004',
     })).resolves.toEqual({ status: 'invalid_response' });
   });
 });

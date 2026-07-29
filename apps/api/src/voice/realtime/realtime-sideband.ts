@@ -5,7 +5,7 @@ import {
   type AgentHistoryTurn,
   type AgentRunKind,
 } from '@bob/ai';
-import type { PlanTier } from '@bob/core';
+import { deriveRealtimeTurnId, type PlanTier } from '@bob/core';
 import WebSocket, { type ClientOptions, type RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
@@ -74,34 +74,7 @@ const NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS = 5_000;
 const NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS = 500;
 const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
-/**
- * Produit la clé de commande utilisateur stable d'un item provider. Le format UUID v4 reste celui
- * admis par le domaine, tandis que le hash de namespace garantit qu'un replay du même item dans la
- * même session ne peut pas démarrer une seconde mission. L'identifiant provider n'est pas
- * persisté.
- */
-export function deriveRealtimeTurnId(
-  sessionHandle: string,
-  providerInputItemId: string,
-): string {
-  const bytes = createHash('sha256')
-    .update('bob-pro:realtime-turn:v1\u0000', 'utf8')
-    .update(sessionHandle, 'utf8')
-    .update('\u0000', 'utf8')
-    .update(providerInputItemId, 'utf8')
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20),
-  ].join('-');
-}
+export { deriveRealtimeTurnId };
 
 interface SidebandSocket {
   readonly readyState: number;

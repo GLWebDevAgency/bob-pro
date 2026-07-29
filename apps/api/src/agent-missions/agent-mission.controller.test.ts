@@ -37,6 +37,10 @@ import { AgentMissionService } from './agent-mission.service';
 function serviceSpies() {
   return {
     getCurrent: vi.fn(async () => ({ ok: true as const, value: { mission: null } })),
+    getCurrentResume: vi.fn(async () => ({
+      ok: true as const,
+      value: { mission: null },
+    })),
     start: vi.fn(async () => ({
       ok: true as const,
       value: {
@@ -56,6 +60,14 @@ function serviceSpies() {
       ok: true as const,
       value: {
         outcome: 'acknowledged',
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    decide: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'selected',
+        effect: { kind: 'selected' },
         mission: { id: '20000000-0000-4000-8000-000000000001' },
       },
     })),
@@ -258,6 +270,24 @@ const TEST_FINGERPRINTS: AgentMissionFingerprintPort = {
 };
 
 describe('AgentMissionController M1-A', () => {
+  it('expose la reprise JWT sans authority capability et rejette toute query', async () => {
+    const authority = testAuthority();
+    const { controller: candidate, spies } = controller(authority);
+
+    await expect(candidate.getCurrentResume({})).resolves.toEqual({
+      mission: null,
+    });
+    expect(spies.getCurrentResume).toHaveBeenCalledOnce();
+    expect(authority.prepare).not.toHaveBeenCalled();
+
+    const invalid = await candidate.getCurrentResume({
+      ownerUserId: 'forged-owner',
+    }).catch((error: unknown) => error);
+    expect(invalid).toBeInstanceOf(HttpException);
+    expect((invalid as HttpException).getStatus()).toBe(422);
+    expect(spies.getCurrentResume).toHaveBeenCalledOnce();
+  });
+
   it('fixe la baseline idempotente à 200 avant le statut dynamique 201 de la création', () => {
     expect(Reflect.getMetadata(
       HTTP_CODE_METADATA,
@@ -266,6 +296,10 @@ describe('AgentMissionController M1-A', () => {
     expect(Reflect.getMetadata(
       HTTP_CODE_METADATA,
       AgentMissionController.prototype.cancel,
+    )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.decide,
     )).toBe(200);
   });
 
@@ -282,6 +316,11 @@ describe('AgentMissionController M1-A', () => {
       undefined,
     )],
     ['screen ACK', (candidate: AgentMissionController) => candidate.acknowledgeScreen(
+      'not-a-uuid',
+      null,
+      undefined,
+    )],
+    ['decision', (candidate: AgentMissionController) => candidate.decide(
       'not-a-uuid',
       null,
       undefined,
@@ -303,8 +342,91 @@ describe('AgentMissionController M1-A', () => {
       expect(spies.start).not.toHaveBeenCalled();
       expect(spies.cancel).not.toHaveBeenCalled();
       expect(spies.acknowledgeScreen).not.toHaveBeenCalled();
+      expect(spies.decide).not.toHaveBeenCalled();
     },
   );
+
+  it('mappe les deux décisions HTTP exactes sans accepter identité ni acteur forgés', async () => {
+    const { controller: candidate, spies } = controller(testAuthority());
+    const common = {
+      commandId: '10000000-0000-4000-8000-000000000010',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+    };
+    const missionId = '20000000-0000-4000-8000-000000000001';
+
+    await candidate.decide(missionId, {
+      action: 'choose_presented_option',
+      ...common,
+      decisionId: '30000000-0000-4000-8000-000000000001',
+      choiceSetRevision: 3,
+      choiceId: '40000000-0000-4000-8000-000000000001',
+    }, TEST_CAPABILITY);
+    await candidate.decide(missionId, {
+      action: 'select_screen_customer',
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000011',
+      customerId: 'customer-camping',
+    }, TEST_CAPABILITY);
+
+    expect(spies.decide).toHaveBeenNthCalledWith(1, {
+      authorization: testAuthorization('decide_quote_creation'),
+      missionId,
+      ...common,
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: '30000000-0000-4000-8000-000000000001',
+        choiceSetRevision: 3,
+        choiceId: '40000000-0000-4000-8000-000000000001',
+      },
+    });
+    expect(spies.decide).toHaveBeenNthCalledWith(2, {
+      authorization: testAuthorization('decide_quote_creation'),
+      missionId,
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000011',
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+    });
+  });
+
+  it.each([
+    ['action inconnue', { action: 'pick_customer' }],
+    ['champ acteur forgé', {
+      action: 'select_screen_customer',
+      customerId: 'customer-camping',
+      actor: 'user_voice',
+    }],
+    ['champs croisés', {
+      action: 'choose_presented_option',
+      decisionId: '30000000-0000-4000-8000-000000000001',
+      choiceSetRevision: 3,
+      choiceId: '40000000-0000-4000-8000-000000000001',
+      customerId: 'customer-forged',
+    }],
+  ])('rejette une décision avec %s avant le service', async (_label, specific) => {
+    const { controller: candidate, spies } = controller(testAuthority());
+    const result = await candidate.decide(
+      '20000000-0000-4000-8000-000000000001',
+      {
+        commandId: '10000000-0000-4000-8000-000000000010',
+        expectedMissionRevision: 3,
+        expectedDraftSessionId: 'quote-draft-session-1',
+        expectedDraftSlotRevision: 1,
+        expectedDraftContentRevision: 0,
+        ...specific,
+      },
+      TEST_CAPABILITY,
+    ).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(HttpException);
+    expect((result as HttpException).getStatus()).toBe(422);
+    expect(spies.decide).not.toHaveBeenCalled();
+  });
 
   it('une autorité de test explicite ouvre le contrat exact, jamais un champ forgé', async () => {
     const authority = testAuthority();

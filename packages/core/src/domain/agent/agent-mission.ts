@@ -1709,8 +1709,14 @@ export class AgentMission {
   }): AgentMissionResult<AgentMissionTransition> {
     const shape = requireExactInput(input, ['expectedRevision', 'result', 'occurredAt']);
     if (!shape.ok) return shape;
-    const ready = this.authorize('customer_not_found', input.expectedRevision, input.occurredAt, 'awaiting_customer');
+    const ready = this.authorize('customer_not_found', input.expectedRevision, input.occurredAt);
     if (!ready.ok) return ready;
+    if (
+      this.snapshot.phase !== 'awaiting_customer'
+      && this.snapshot.phase !== 'awaiting_customer_choice'
+    ) {
+      return this.invalidTransition('customer_not_found');
+    }
     if (!(['none', 'too_many'] as const).includes(input.result)) return invalid('result', 'invalid_value');
     if (this.snapshot.payload.stagedCustomerResolution !== null) {
       return this.invalidTransition('customer_not_found');
@@ -1737,8 +1743,14 @@ export class AgentMission {
   }): AgentMissionResult<AgentMissionTransition> {
     const shape = requireExactInput(input, ['expectedRevision', 'decisionId', 'candidates', 'occurredAt']);
     if (!shape.ok) return shape;
-    const ready = this.authorize('present_customer_choices', input.expectedRevision, input.occurredAt, 'awaiting_customer');
+    const ready = this.authorize('present_customer_choices', input.expectedRevision, input.occurredAt);
     if (!ready.ok) return ready;
+    if (
+      this.snapshot.phase !== 'awaiting_customer'
+      && this.snapshot.phase !== 'awaiting_customer_choice'
+    ) {
+      return this.invalidTransition('present_customer_choices');
+    }
     if (this.snapshot.payload.stagedCustomerResolution !== null) {
       return this.invalidTransition('present_customer_choices');
     }
@@ -1829,9 +1841,20 @@ export class AgentMission {
     if (!(['exact_match', 'screen_selection', 'presented_choice'] as const).includes(input.source)) {
       return invalid('source', 'invalid_value');
     }
-    const requiredPhase = input.source === 'presented_choice' ? 'awaiting_customer_choice' : 'awaiting_customer';
-    const ready = this.authorize('select_customer', input.expectedRevision, input.occurredAt, requiredPhase);
+    const ready = this.authorize('select_customer', input.expectedRevision, input.occurredAt);
     if (!ready.ok) return ready;
+    const phaseAllowsSelection = input.source === 'presented_choice'
+      ? this.snapshot.phase === 'awaiting_customer_choice'
+      : input.source === 'screen_selection'
+        ? (
+            this.snapshot.phase === 'awaiting_customer'
+            || this.snapshot.phase === 'awaiting_customer_choice'
+          )
+        : (
+            this.snapshot.phase === 'awaiting_customer'
+            || this.snapshot.phase === 'awaiting_customer_choice'
+          );
+    if (!phaseAllowsSelection) return this.invalidTransition('select_customer');
     if (!isCanonicalIdentifier(input.customerId)) return invalid('customerId', 'invalid_identifier');
     if (
       input.source === 'exact_match'
@@ -1919,6 +1942,9 @@ export class AgentMission {
     if (!ready.ok) return ready;
     if (!(['user_cancelled', 'manual_handoff'] as const).includes(input.reason)) {
       return invalid('reason', 'invalid_value');
+    }
+    if (input.reason === 'manual_handoff' && this.snapshot.phase !== 'awaiting_lines') {
+      return this.invalidTransition('cancel');
     }
     return this.terminalTransition('cancelled', input.occurredAt, {
       kind: 'mission_cancelled',

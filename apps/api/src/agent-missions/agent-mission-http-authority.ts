@@ -32,13 +32,15 @@ export type AgentMissionHttpOperation =
   | 'get_current_quote_creation'
   | 'start_quote_creation'
   | 'acknowledge_quote_screen'
+  | 'decide_quote_creation'
   | 'cancel_quote_creation';
 
 export type AgentMissionCapabilityMetricOperation =
   | 'get'
   | 'start'
   | 'cancel'
-  | 'screen_ack';
+  | 'screen_ack'
+  | 'decision';
 
 export function agentMissionCapabilityMetricOperation(
   operation: AgentMissionHttpOperation,
@@ -48,6 +50,7 @@ export function agentMissionCapabilityMetricOperation(
     case 'start_quote_creation': return 'start';
     case 'cancel_quote_creation': return 'cancel';
     case 'acknowledge_quote_screen': return 'screen_ack';
+    case 'decide_quote_creation': return 'decision';
   }
 }
 

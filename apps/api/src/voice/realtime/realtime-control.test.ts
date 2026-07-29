@@ -99,7 +99,7 @@ describe('RealtimeDurableControlAuthority', () => {
     }));
   });
 
-  it('ouvre une fois le grant livré puis rend son retry non actionnable', async () => {
+  it('ouvre le grant livré et rejoue le même reçu après une réponse HTTP perdue', async () => {
     const binding = {
       companyId: ISSUE.companyId,
       sessionId: SESSION,
@@ -171,7 +171,17 @@ describe('RealtimeDurableControlAuthority', () => {
       acknowledgementId: ACK,
       contextRevision: 7,
       contextDigest: DIGEST,
-    })).resolves.toEqual({ status: 'not_found' });
+    })).resolves.toEqual({
+      status: 'approved',
+      idempotent: true,
+      control: {
+        turnId: TURN,
+        kind: 'done',
+        contextRevision: 7,
+        contextDigest: DIGEST,
+        navigate: '/devis/new',
+      },
+    });
   });
 
   it('échoue fermé avant le CAS si le ciphertext a été altéré', async () => {

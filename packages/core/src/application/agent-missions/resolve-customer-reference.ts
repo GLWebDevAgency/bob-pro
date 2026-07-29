@@ -80,13 +80,18 @@ export async function resolveCustomerReference(input: {
     });
   }
   if (candidates.length === 0) return ok(Object.freeze({ kind: 'none' }));
+  // LIMIT 6 est une sentinelle : même un exact parmi ces six résultats ne permet pas de prouver
+  // qu'il n'existe pas d'autres homonymes. La règle produit exige donc toujours de préciser.
   if (candidates.length === CUSTOMER_CANDIDATE_SEARCH_LIMIT) {
     return ok(Object.freeze({ kind: 'too_many' }));
   }
-  if (candidates.length === 1 && candidates[0]?.matchKind === 'exact') {
+  const exactCandidates = candidates.filter(
+    (candidate) => candidate.matchKind === 'exact',
+  );
+  if (exactCandidates.length === 1) {
     return ok(Object.freeze({
       kind: 'exact',
-      customerId: candidates[0].customerId,
+      customerId: exactCandidates[0]!.customerId,
     }));
   }
   return ok(Object.freeze({

@@ -21,11 +21,6 @@ import {
 
 const PRINCIPAL_BINDING_DOMAIN = 'bob.agent-mission.principal-lock.v1\u0000';
 const MAX_PRINCIPAL_USER_ID_BYTES = 512;
-const ALLOWED_AGENT_MISSION_SPEECH_DELIVERIES = [
-  'openai-native-webrtc-v1',
-  'audited-signed-url-v1',
-] as const;
-
 export type RealtimeAgentMissionAdmissionPreparation =
   | {
       readonly capability: null;
@@ -86,8 +81,10 @@ function runtimeAllowsV1(input: {
 }): boolean {
   return input.providerId === 'openai'
     && input.transport === 'webrtc'
-    && (ALLOWED_AGENT_MISSION_SPEECH_DELIVERIES as readonly string[])
-      .includes(input.speechDelivery);
+    // Le natif V1 ne dispose pas encore d'un basculement audité par tour. Or tout fait tenanté,
+    // choix et contrôle M1-C exige une parole exacte avant l'effet UI. Refuser ici évite une
+    // capability mensongère qui ne casserait qu'après la première commande métier.
+    && input.speechDelivery === 'audited-signed-url-v1';
 }
 
 export class DisabledRealtimeAgentMissionAdmissionGate

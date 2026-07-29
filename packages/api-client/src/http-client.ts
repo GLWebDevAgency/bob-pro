@@ -74,6 +74,7 @@ import type {
   InvoiceTransmissionStatus,
   CustomerPaymentTerms,
   CustomerBillingChannel,
+  QuoteAgentMissionResumeView,
 } from '@bob/core';
 import type {
   BobClient,
@@ -206,6 +207,9 @@ import {
   decodeRealtimeVoiceNativeSpeechDeliveryAcknowledgement,
   encodeRealtimeVoiceNativeSpeechDeliveryInput,
 } from './realtime-native-speech-ack-codec';
+import {
+  decodeQuoteAgentMissionResume,
+} from './agent-mission-codec';
 import {
   createHttpRealtimeAgentMissionSession,
   type HttpAgentMissionRequest,
@@ -1231,6 +1235,13 @@ function decodeHttpAppError(value: unknown): AppError | null {
     isBoundedString(error.id, 200)
   )
     return { kind: 'not_found', entity: error.entity, id: error.id };
+  if (
+    error.kind === 'gone' &&
+    hasExactKeys(error, ['kind', 'entity', 'reason']) &&
+    isBoundedString(error.entity, 120) &&
+    isBoundedString(error.reason)
+  )
+    return { kind: 'gone', entity: error.entity, reason: error.reason };
   if (
     error.kind === 'conflict' &&
     hasExactKeys(error, ['kind', 'entity', 'reason']) &&
@@ -2262,6 +2273,17 @@ export class HttpBobClient implements BobClient {
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  getCurrentQuoteAgentMissionResume(signal?: AbortSignal) {
+    return this.req<QuoteAgentMissionResumeView>(
+      'GET',
+      '/agent-missions/current/quote-creation/resume',
+      undefined,
+      undefined,
+      decodeQuoteAgentMissionResume,
+      12_000,
+      signal,
+    );
   }
   listSubscriptionInvoices() {
     return this.req<SubscriptionBillingInvoiceView[]>('GET', '/subscription/invoices');

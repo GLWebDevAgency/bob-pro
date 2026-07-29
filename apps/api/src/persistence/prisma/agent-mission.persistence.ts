@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   AgentMission,
   AgentMissionEvent,
+  normalizeCustomerName,
   parseQuoteDraftPayload,
   type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionCapabilityRejectionReason,
@@ -20,6 +21,9 @@ import {
   type AgentMissionRealtimeAuthorityProof,
   type AgentMissionRepositoryPort,
   type AgentMissionReadExecution,
+  type AgentMissionResumeReadExecution,
+  type AgentMissionResumeReadTransaction,
+  type AgentMissionResumeUnitOfWorkPort,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
@@ -110,6 +114,13 @@ interface CustomerCandidateRow {
 interface CustomerCandidateReferenceRow {
   readonly customerId: string;
   readonly canonicalName: string;
+}
+
+function canonicalCustomerName(value: string): string {
+  // Les lignes historiques précèdent parfois la normalisation du domaine. Une valeur réellement
+  // invalide reste inchangée afin que le validateur core échoue fermé ; seuls les espaces sans
+  // sémantique sont réparés à la frontière Prisma.
+  return normalizeCustomerName(value) ?? value;
 }
 
 type AgentMissionAuthorityResolution =
@@ -805,10 +816,11 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
         immutable_unaccent(lower(c."name")) COLLATE "C" ASC,
         c."id" ASC
       LIMIT ${input.limit}
+      FOR SHARE OF c
     `;
     return rows.map((row) => Object.freeze({
       customerId: row.customerId,
-      canonicalName: row.canonicalName,
+      canonicalName: canonicalCustomerName(row.canonicalName),
       matchKind: row.matchKind,
       score: row.score,
     }));
@@ -827,7 +839,12 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
       FOR SHARE
     `;
     const row = rows[0];
-    return row === undefined ? null : Object.freeze({ ...row });
+    return row === undefined
+      ? null
+      : Object.freeze({
+          ...row,
+          canonicalName: canonicalCustomerName(row.canonicalName),
+        });
   }
 
   async findByIds(input: {
@@ -843,7 +860,47 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
       ORDER BY c."id" ASC
       FOR SHARE
     `;
-    return rows.map((row) => Object.freeze({ ...row }));
+    return rows.map((row) => Object.freeze({
+      ...row,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+    }));
+  }
+}
+
+class PrismaAgentMissionResumeQuoteDraftRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async get(owner: AgentMissionOwner): Promise<AgentMissionQuoteDraftSlot | null> {
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      SELECT ${QUOTE_DRAFT_COLUMNS}
+      FROM public.quote_draft_slots
+      WHERE "companyId" = ${owner.companyId}
+        AND "ownerUserId" = ${owner.ownerUserId}
+      LIMIT 1
+    `;
+    return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
+  }
+}
+
+class PrismaAgentMissionResumeCustomerRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async findByIds(input: {
+    readonly companyId: string;
+    readonly customerIds: readonly string[];
+  }): Promise<readonly CustomerCandidateReference[]> {
+    if (input.customerIds.length === 0) return [];
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" IN (${Prisma.join(input.customerIds)})
+      ORDER BY c."id" ASC
+    `;
+    return rows.map((row) => Object.freeze({
+      ...row,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+    }));
   }
 }
 
@@ -1063,6 +1120,58 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         )),
       } as const;
     }, { ...OWNER_TRANSACTION_OPTIONS, readOnly: false });
+  }
+}
+
+/**
+ * Reprise après perte du handle volatile.
+ *
+ * Cette autorité n'accède ni aux leases Realtime ni à leurs capabilities. Elle ne prend aucun
+ * verrou SQL et ne fournit aucun port d'écriture au callback.
+ */
+export class PrismaAgentMissionResumeUnitOfWork
+implements AgentMissionResumeUnitOfWorkPort {
+  constructor(private readonly prisma: PrismaService) {}
+
+  readQuoteCreationOwner<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionResumeReadTransaction) => Promise<T>,
+  ): Promise<AgentMissionResumeReadExecution<T>> {
+    return this.prisma.withIsolatedOwner(
+      owner.companyId,
+      owner.ownerUserId,
+      async (transaction) => {
+        await setTransactionTimeouts(transaction);
+        const companies = await transaction.$queryRaw<Array<{ closedAt: Date | null }>>`
+          SELECT "closedAt"
+          FROM public.companies
+          WHERE "id" = ${owner.companyId}
+          LIMIT 1
+        `;
+        const company = companies[0];
+        if (company === undefined) {
+          return { status: 'company_unavailable', reason: 'missing' } as const;
+        }
+        if (company.closedAt !== null) {
+          return { status: 'company_unavailable', reason: 'closed' } as const;
+        }
+        const now = await databaseClock(transaction);
+        return {
+          status: 'executed',
+          value: await work({
+            databaseNow: async () => now.toISOString(),
+            missions: new PrismaAgentMissionReadRepository(transaction),
+            quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
+            customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
+          }),
+        } as const;
+      },
+      {
+        ...OWNER_TRANSACTION_OPTIONS,
+        readOnly: true,
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      },
+    );
   }
 }
 

@@ -41,6 +41,10 @@ import {
   CancelQuoteAgentMission,
   type CancelQuoteAgentMissionInput,
 } from './cancel-quote-agent-mission';
+import {
+  DecideQuoteAgentMission,
+  type DecideQuoteAgentMissionInput,
+} from './decide-quote-agent-mission';
 import { GetActiveAgentMission } from './get-active-agent-mission';
 import {
   StartQuoteAgentMission,
@@ -60,9 +64,11 @@ const START_COMMAND = '10000000-0000-4000-8000-000000000001';
 const SECOND_START_COMMAND = '10000000-0000-4000-8000-000000000002';
 const CANCEL_COMMAND = '10000000-0000-4000-8000-000000000003';
 const ACK_COMMAND = '10000000-0000-4000-8000-000000000004';
+const DECISION_COMMAND = '10000000-0000-4000-8000-000000000005';
 const INITIAL_NOW = '2026-07-26T10:00:00.000Z';
 const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
 const TURN_ID = '30000000-0000-4000-8000-000000000002';
+const SECOND_TURN_ID = '30000000-0000-4000-8000-000000000003';
 const AUTHORITY = Object.freeze({
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
@@ -430,6 +436,7 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
   const cancel = new CancelQuoteAgentMission(deps);
   const acknowledge = new AcknowledgeQuoteScreen(deps);
   const advance = new AdvanceQuoteAgentMission(deps);
+  const decide = new DecideQuoteAgentMission(deps);
   return {
     unitOfWork,
     start: {
@@ -463,6 +470,73 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
         input: Omit<AdvanceQuoteAgentMissionInput, 'authority'>,
       ) => advance.execute({ ...input, authority: AUTHORITY }),
     },
+    decide: {
+      execute: (
+        input: Omit<DecideQuoteAgentMissionInput, 'authority'>,
+      ) => decide.execute({ ...input, authority: AUTHORITY }),
+    },
+  };
+}
+
+async function preparedCustomerDecisionMission(input: {
+  readonly customers: readonly CustomerCandidateReference[];
+  readonly customerReference: string | null;
+}) {
+  const suite = useCases();
+  suite.unitOfWork.setCustomers(input.customers);
+  const started = await suite.start.execute({
+    ...OWNER,
+    commandId: START_COMMAND,
+    customerReference: input.customerReference,
+  });
+  if (!started.ok || started.value.mission.payload.draft === null) {
+    throw new Error('customer decision fixture start failed');
+  }
+  const draft = started.value.mission.payload.draft;
+  const contextRevision = 7;
+  const contextDigest = 'd'.repeat(64);
+  suite.unitOfWork.appliedContext = { revision: contextRevision, digest: contextDigest };
+  suite.unitOfWork.screenObservation = {
+    status: 'ready',
+    realtimeSessionId: REALTIME_SESSION_ID,
+    contextRevision,
+    contextDigest,
+    screenInstanceId: 'quote-wizard-instance-decision',
+    draft,
+    draftHasCustomer: false,
+  };
+  const acknowledged = await suite.acknowledge.execute({
+    ...OWNER,
+    missionId: started.value.mission.id,
+    commandId: ACK_COMMAND,
+    expectedMissionRevision: started.value.mission.revision,
+    realtimeSessionId: REALTIME_SESSION_ID,
+    contextRevision,
+    contextDigest,
+    draftSessionId: draft.sessionId,
+    expectedDraftSlotRevision: draft.slotRevision,
+    expectedDraftContentRevision: draft.contentRevision,
+  });
+  if (!acknowledged.ok) throw new Error('customer decision fixture ACK failed');
+  if (input.customerReference === null) {
+    return {
+      ...suite,
+      mission: acknowledged.value.mission,
+      contextRevision,
+      contextDigest,
+    };
+  }
+  const advanced = await suite.advance.execute({
+    ...OWNER,
+    missionId: started.value.mission.id,
+    acknowledgementCommandId: ACK_COMMAND,
+  });
+  if (!advanced.ok) throw new Error('customer decision fixture advance failed');
+  return {
+    ...suite,
+    mission: advanced.value.mission,
+    contextRevision,
+    contextDigest,
   };
 }
 
@@ -720,9 +794,10 @@ describe('AgentMission application M1-A', () => {
     );
   });
 
-  it.each(['user_cancelled', 'manual_handoff'] as const)(
-    'terminalise par %s et libère le brouillon atomiquement',
-    async (reason) => {
+  it(
+    'terminalise une annulation utilisateur et libère le brouillon atomiquement',
+    async () => {
+      const reason = 'user_cancelled' as const;
       const { unitOfWork, start, cancel } = useCases();
       const started = await start.execute({ ...OWNER, commandId: START_COMMAND });
       expect(started.ok).toBe(true);
@@ -764,6 +839,125 @@ describe('AgentMission application M1-A', () => {
       });
       expect(replayed).toMatchObject({ ok: true, value: { outcome: 'replayed' } });
       expect(unitOfWork.snapshot().events).toHaveLength(eventCount);
+    },
+  );
+
+  it('autorise manual_handoff seulement après la sélection client et conserve le brouillon', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [{
+        customerId: 'customer-handoff',
+        canonicalName: 'Client passation',
+      }],
+      customerReference: null,
+    });
+    const draft = suite.mission.payload.draft;
+    if (draft === null) throw new Error('draft absent');
+    const selected = await suite.decide.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-handoff',
+      },
+    });
+    expect(selected).toMatchObject({
+      ok: true,
+      value: { outcome: 'selected', mission: { phase: 'awaiting_lines' } },
+    });
+    if (!selected.ok) return;
+    const before = suite.unitOfWork.snapshot();
+
+    const cancelled = await suite.cancel.execute({
+      ...OWNER,
+      missionId: selected.value.mission.id,
+      commandId: CANCEL_COMMAND,
+      expectedRevision: selected.value.mission.revision,
+      reason: 'manual_handoff',
+      actor: 'user_tap',
+    });
+
+    expect(cancelled).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'cancelled',
+        mission: {
+          status: 'cancelled',
+          actionable: false,
+          revision: selected.value.mission.revision + 1,
+        },
+      },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect(after.slot).toMatchObject({
+      agentMissionId: null,
+      revision: before.slot?.revision,
+      payload: before.slot?.payload,
+    });
+    expect(after.events.at(-1)?.toSnapshot()).toMatchObject({
+      eventType: 'mission_cancelled',
+      data: { kind: 'mission_cancelled', reason: 'manual_handoff' },
+    });
+
+    expect(await suite.cancel.execute({
+      ...OWNER,
+      missionId: selected.value.mission.id,
+      commandId: CANCEL_COMMAND,
+      expectedRevision: selected.value.mission.revision,
+      reason: 'manual_handoff',
+      actor: 'user_tap',
+    })).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().events).toHaveLength(after.events.length);
+  });
+
+  it.each([2, 3])(
+    'rollbacke mission, slot et événement si manual_handoff échoue au write %s',
+    async (failureWrite) => {
+      const suite = await preparedCustomerDecisionMission({
+        customers: [{
+          customerId: 'customer-handoff-rollback',
+          canonicalName: 'Client rollback',
+        }],
+        customerReference: null,
+      });
+      const draft = suite.mission.payload.draft;
+      if (draft === null) throw new Error('draft absent');
+      const selected = await suite.decide.execute({
+        ...OWNER,
+        missionId: suite.mission.id,
+        commandId: DECISION_COMMAND,
+        expectedMissionRevision: suite.mission.revision,
+        expectedDraftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+        origin: { actor: 'user_tap', correlation: null },
+        decision: {
+          action: 'select_screen_customer',
+          customerId: 'customer-handoff-rollback',
+        },
+      });
+      if (!selected.ok) throw new Error('selection failed');
+      const before = suite.unitOfWork.snapshot();
+      suite.unitOfWork.failAtWrite = failureWrite;
+
+      await expect(suite.cancel.execute({
+        ...OWNER,
+        missionId: selected.value.mission.id,
+        commandId: CANCEL_COMMAND,
+        expectedRevision: selected.value.mission.revision,
+        reason: 'manual_handoff',
+        actor: 'user_tap',
+      })).rejects.toThrow(`injected-write-${failureWrite}`);
+
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
     },
   );
 
@@ -1410,6 +1604,660 @@ describe('AgentMission application M1-A', () => {
     });
     expect(unitOfWork.snapshot()).toEqual(before);
   });
+
+  it('sélectionne au tap un client réel par une seule commande durable et rejouable', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [{
+        customerId: 'customer-camping',
+        canonicalName: 'Camping les Pins — nom DB',
+      }],
+      customerReference: null,
+    });
+    const draft = suite.mission.payload.draft;
+    expect(suite.mission.phase).toBe('awaiting_customer');
+    if (draft === null) return;
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+    } as const;
+
+    const selected = await suite.decide.execute(command);
+
+    expect(selected).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        mission: {
+          phase: 'awaiting_lines',
+          revision: suite.mission.revision + 1,
+          payload: {
+            draft: {
+              sessionId: draft.sessionId,
+              slotRevision: draft.slotRevision + 1,
+              contentRevision: draft.contentRevision + 1,
+            },
+          },
+        },
+      },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect(after.slot).toMatchObject({
+      revision: draft.slotRevision + 1,
+      payload: {
+        draft: {
+          step: 'lignes',
+          contentRevision: draft.contentRevision + 1,
+          customer: {
+            id: 'customer-camping',
+            name: 'Camping les Pins — nom DB',
+          },
+        },
+      },
+    });
+    expect(after.events.at(-1)?.toSnapshot()).toMatchObject({
+      eventType: 'customer_selected',
+      actor: 'user_tap',
+      commandId: DECISION_COMMAND,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      turnId: null,
+      contextRevision: suite.contextRevision,
+      contextDigest: suite.contextDigest,
+      data: {
+        kind: 'customer_selected',
+        source: 'screen_selection',
+        customerId: 'customer-camping',
+      },
+    });
+
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().events).toHaveLength(after.events.length);
+    expect(await suite.decide.execute({
+      ...command,
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-other',
+      },
+    })).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'fingerprint_mismatch',
+      },
+    });
+  });
+
+  it('résout une référence vocale contre la BDD et sélectionne le nom canonique dans la même commande', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [{
+        customerId: 'customer-camping',
+        canonicalName: 'Camping les Pins — nom DB',
+      }],
+      customerReference: null,
+    });
+    const draft = suite.mission.payload.draft;
+    if (draft === null) return;
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: TURN_ID,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: TURN_ID,
+          contextRevision: suite.contextRevision,
+          contextDigest: suite.contextDigest,
+        },
+      },
+      decision: {
+        action: 'resolve_customer_reference',
+        customerReference: 'camping les pins — nom db',
+      },
+    } as const;
+
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        mission: { phase: 'awaiting_lines' },
+      },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect(after.slot).toMatchObject({
+      payload: {
+        draft: {
+          step: 'lignes',
+          customer: {
+            id: 'customer-camping',
+            name: 'Camping les Pins — nom DB',
+          },
+        },
+      },
+    });
+    expect(after.events.at(-1)?.toSnapshot()).toMatchObject({
+      eventType: 'customer_selected',
+      actor: 'user_voice',
+      commandId: TURN_ID,
+      turnId: TURN_ID,
+      data: {
+        kind: 'customer_selected',
+        source: 'exact_match',
+        customerId: 'customer-camping',
+      },
+    });
+    expect(JSON.stringify(after.events.at(-1)?.toSnapshot())).not.toContain(
+      'camping les pins — nom db',
+    );
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().events).toHaveLength(after.events.length);
+  });
+
+  it('présente 1–5 choix réels puis remplace ce jeu par une nouvelle référence vocale exacte', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [
+        { customerId: 'customer-north', canonicalName: 'Camping Nord' },
+        { customerId: 'customer-south', canonicalName: 'Camping Sud' },
+      ],
+      customerReference: null,
+    });
+    const draft = suite.mission.payload.draft;
+    if (draft === null) return;
+    const voiceOrigin = (turnId: string) => ({
+      actor: 'user_voice' as const,
+      correlation: {
+        realtimeSessionId: REALTIME_SESSION_ID,
+        turnId,
+        contextRevision: suite.contextRevision,
+        contextDigest: suite.contextDigest,
+      },
+    });
+    const presented = await suite.decide.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: TURN_ID,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: voiceOrigin(TURN_ID),
+      decision: {
+        action: 'resolve_customer_reference',
+        customerReference: 'Camping',
+      },
+    });
+    expect(presented).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'presented',
+        mission: {
+          phase: 'awaiting_customer_choice',
+          payload: {
+            decision: {
+              kind: 'customer',
+              candidates: [
+                { customerId: 'customer-north' },
+                { customerId: 'customer-south' },
+              ],
+            },
+          },
+        },
+      },
+    });
+    if (!presented.ok) return;
+
+    const selected = await suite.decide.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: SECOND_TURN_ID,
+      expectedMissionRevision: presented.value.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: voiceOrigin(SECOND_TURN_ID),
+      decision: {
+        action: 'resolve_customer_reference',
+        customerReference: 'Camping Sud',
+      },
+    });
+    expect(selected).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        mission: {
+          phase: 'awaiting_lines',
+          payload: { decision: null },
+        },
+      },
+    });
+    expect(suite.unitOfWork.snapshot().slot).toMatchObject({
+      payload: {
+        draft: {
+          customer: { id: 'customer-south', name: 'Camping Sud' },
+        },
+      },
+    });
+    expect(suite.unitOfWork.snapshot().events.at(-1)?.toSnapshot()).toMatchObject({
+      eventType: 'customer_selected',
+      data: {
+        kind: 'customer_selected',
+        source: 'presented_choice',
+      },
+    });
+  });
+
+  it('journalise zéro et trop de résultats sans modifier le brouillon ni persister la requête', async () => {
+    for (const testCase of [
+      { reference: 'Introuvable', customers: [] },
+      {
+        reference: 'Camping',
+        customers: Array.from({ length: 6 }, (_, index) => ({
+          customerId: `customer-${index}`,
+          canonicalName: `Camping ${index}`,
+        })),
+      },
+    ] as const) {
+      const suite = await preparedCustomerDecisionMission({
+        customers: testCase.customers,
+        customerReference: null,
+      });
+      const draft = suite.mission.payload.draft;
+      if (draft === null) continue;
+      const before = suite.unitOfWork.snapshot();
+      const result = await suite.decide.execute({
+        ...OWNER,
+        missionId: suite.mission.id,
+        commandId: TURN_ID,
+        expectedMissionRevision: suite.mission.revision,
+        expectedDraftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: REALTIME_SESSION_ID,
+            turnId: TURN_ID,
+            contextRevision: suite.contextRevision,
+            contextDigest: suite.contextDigest,
+          },
+        },
+        decision: {
+          action: 'resolve_customer_reference',
+          customerReference: testCase.reference,
+        },
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'not_found',
+          mission: { phase: 'awaiting_customer', payload: { decision: null } },
+        },
+      });
+      const after = suite.unitOfWork.snapshot();
+      expect(after.slot).toEqual(before.slot);
+      expect(after.events.at(-1)?.toSnapshot()).toMatchObject({
+        eventType: 'customer_not_found',
+        actor: 'user_voice',
+      });
+      expect(JSON.stringify(after.events.at(-1)?.toSnapshot())).not.toContain(
+        testCase.reference,
+      );
+    }
+  });
+
+  it('relit les choix vocaux avant de les présenter et refuse toute substitution adapter', async () => {
+    const buildSuite = () => preparedCustomerDecisionMission({
+      customers: [
+        { customerId: 'customer-north', canonicalName: 'Camping Nord' },
+        { customerId: 'customer-south', canonicalName: 'Camping Sud' },
+      ],
+      customerReference: null,
+    });
+    const commandFor = (
+      suite: Awaited<ReturnType<typeof buildSuite>>,
+      draft: NonNullable<typeof suite.mission.payload.draft>,
+    ) => ({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: TURN_ID,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: {
+        actor: 'user_voice' as const,
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: TURN_ID,
+          contextRevision: suite.contextRevision,
+          contextDigest: suite.contextDigest,
+        },
+      },
+      decision: {
+        action: 'resolve_customer_reference' as const,
+        customerReference: 'Camping',
+      },
+    });
+
+    const filtered = await buildSuite();
+    const filteredDraft = filtered.mission.payload.draft;
+    if (filteredDraft === null) return;
+    filtered.unitOfWork.customersByIdsOverride = [{
+      customerId: 'customer-south',
+      canonicalName: 'Camping Sud',
+    }];
+    expect(await filtered.decide.execute(commandFor(filtered, filteredDraft)))
+      .toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'presented',
+          mission: {
+            payload: {
+              decision: {
+                kind: 'customer',
+                candidates: [{ customerId: 'customer-south' }],
+              },
+            },
+          },
+        },
+      });
+
+    const injected = await buildSuite();
+    const injectedDraft = injected.mission.payload.draft;
+    if (injectedDraft === null) return;
+    injected.unitOfWork.customersByIdsOverride = [{
+      customerId: 'customer-injected',
+      canonicalName: 'Client injecté',
+    }];
+    const before = injected.unitOfWork.snapshot();
+    expect(await injected.decide.execute(commandFor(injected, injectedDraft))).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'customer_candidate_search',
+        cause: 'invalid_customer_read',
+      },
+    });
+    expect(injected.unitOfWork.snapshot()).toEqual(before);
+  });
+
+  it('donne exactement la même transition au choix présenté vocal et tactile', async () => {
+    const customers = [
+      { customerId: 'customer-one', canonicalName: 'Camping Nord' },
+      { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+    ] as const;
+    const tactile = await preparedCustomerDecisionMission({
+      customers,
+      customerReference: 'Camping',
+    });
+    const vocal = await preparedCustomerDecisionMission({
+      customers,
+      customerReference: 'Camping',
+    });
+    const tactileDraft = tactile.mission.payload.draft;
+    const vocalDraft = vocal.mission.payload.draft;
+    const tactileDecision = tactile.mission.payload.decision;
+    const vocalDecision = vocal.mission.payload.decision;
+    expect(tactile.mission.phase).toBe('awaiting_customer_choice');
+    expect(vocal.mission).toEqual(tactile.mission);
+    if (
+      tactileDraft === null
+      || vocalDraft === null
+      || tactileDecision?.kind !== 'customer'
+      || vocalDecision?.kind !== 'customer'
+      || tactileDecision.candidates[1] === undefined
+      || vocalDecision.candidates[1] === undefined
+    ) return;
+    const tactileChoice = tactileDecision.candidates[1];
+    const vocalChoice = vocalDecision.candidates[1];
+
+    const tactileResult = await tactile.decide.execute({
+      ...OWNER,
+      missionId: tactile.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: tactile.mission.revision,
+      expectedDraftSessionId: tactileDraft.sessionId,
+      expectedDraftSlotRevision: tactileDraft.slotRevision,
+      expectedDraftContentRevision: tactileDraft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: tactileDecision.decisionId,
+        choiceSetRevision: tactileDecision.choiceSetRevision,
+        choiceId: tactileChoice.choiceId,
+      },
+    });
+    const vocalResult = await vocal.decide.execute({
+      ...OWNER,
+      missionId: vocal.mission.id,
+      commandId: TURN_ID,
+      expectedMissionRevision: vocal.mission.revision,
+      expectedDraftSessionId: vocalDraft.sessionId,
+      expectedDraftSlotRevision: vocalDraft.slotRevision,
+      expectedDraftContentRevision: vocalDraft.contentRevision,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: TURN_ID,
+          contextRevision: vocal.contextRevision,
+          contextDigest: vocal.contextDigest,
+        },
+      },
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: vocalDecision.decisionId,
+        choiceSetRevision: vocalDecision.choiceSetRevision,
+        choiceId: vocalChoice.choiceId,
+      },
+    });
+
+    expect(tactileResult).toMatchObject({
+      ok: true,
+      value: { outcome: 'selected', mission: { phase: 'awaiting_lines' } },
+    });
+    expect(vocalResult).toMatchObject({
+      ok: true,
+      value: { outcome: 'selected', mission: { phase: 'awaiting_lines' } },
+    });
+    if (!tactileResult.ok || !vocalResult.ok) return;
+    expect(vocalResult.value.mission).toEqual(tactileResult.value.mission);
+    expect(vocal.unitOfWork.snapshot().slot).toEqual(tactile.unitOfWork.snapshot().slot);
+    expect(tactile.unitOfWork.snapshot().events.at(-1)?.toSnapshot()).toMatchObject({
+      actor: 'user_tap',
+      data: {
+        kind: 'customer_selected',
+        source: 'presented_choice',
+        choiceId: tactileChoice.choiceId,
+      },
+    });
+    expect(vocal.unitOfWork.snapshot().events.at(-1)?.toSnapshot()).toMatchObject({
+      actor: 'user_voice',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      turnId: TURN_ID,
+      contextRevision: vocal.contextRevision,
+      contextDigest: vocal.contextDigest,
+      data: {
+        kind: 'customer_selected',
+        source: 'presented_choice',
+        choiceId: vocalChoice.choiceId,
+      },
+    });
+  });
+
+  it('invalide sous CAS un choix supprimé sans toucher au brouillon', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [
+        { customerId: 'customer-one', canonicalName: 'Camping Nord' },
+        { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+      ],
+      customerReference: 'Camping',
+    });
+    const draft = suite.mission.payload.draft;
+    const decision = suite.mission.payload.decision;
+    if (
+      draft === null
+      || decision?.kind !== 'customer'
+      || decision.candidates[0] === undefined
+    ) return;
+    const removedChoice = decision.candidates[0];
+    suite.unitOfWork.setCustomers([
+      { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+    ]);
+    const before = suite.unitOfWork.snapshot();
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'choose_presented_option',
+        decisionId: decision.decisionId,
+        choiceSetRevision: decision.choiceSetRevision,
+        choiceId: removedChoice.choiceId,
+      },
+    } as const;
+
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'invalidated',
+        mission: {
+          phase: 'awaiting_customer',
+          payload: { decision: null },
+        },
+      },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect(after.slot).toEqual(before.slot);
+    expect(after.events).toHaveLength(before.events.length + 1);
+    expect(after.events.at(-1)?.toSnapshot()).toMatchObject({
+      eventType: 'decision_invalidated',
+      actor: 'user_tap',
+      draftSlotRevisionBefore: draft.slotRevision,
+      draftSlotRevisionAfter: draft.slotRevision,
+      draftContentRevisionBefore: draft.contentRevision,
+      draftContentRevisionAfter: draft.contentRevision,
+      data: {
+        kind: 'decision_invalidated',
+        reason: 'candidate_unavailable',
+      },
+    });
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().events).toHaveLength(after.events.length);
+  });
+
+  it('refuse un client direct supprimé ou substitué sans aucune écriture', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [{
+        customerId: 'customer-camping',
+        canonicalName: 'Camping les Pins',
+      }],
+      customerReference: null,
+    });
+    const draft = suite.mission.payload.draft;
+    if (draft === null) return;
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null },
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+    } as const;
+    suite.unitOfWork.setCustomers([]);
+    const beforeMissing = suite.unitOfWork.snapshot();
+    expect(await suite.decide.execute(command)).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_customer',
+        reason: 'unavailable',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(beforeMissing);
+
+    suite.unitOfWork.customerByIdOverride = {
+      customerId: 'customer-substituted',
+      canonicalName: 'Client substitué',
+    };
+    const beforeSubstitution = suite.unitOfWork.snapshot();
+    expect(await suite.decide.execute(command)).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'customer_candidate_search',
+        cause: 'invalid_customer_read',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(beforeSubstitution);
+  });
+
+  it.each([1, 2, 3])(
+    'rollbacke la décision client entière si la faute %s survient',
+    async (failAtWrite) => {
+      const suite = await preparedCustomerDecisionMission({
+        customers: [{
+          customerId: 'customer-camping',
+          canonicalName: 'Camping les Pins',
+        }],
+        customerReference: null,
+      });
+      const draft = suite.mission.payload.draft;
+      if (draft === null) return;
+      const before = suite.unitOfWork.snapshot();
+      suite.unitOfWork.failAtWrite = failAtWrite;
+
+      await expect(suite.decide.execute({
+        ...OWNER,
+        missionId: suite.mission.id,
+        commandId: DECISION_COMMAND,
+        expectedMissionRevision: suite.mission.revision,
+        expectedDraftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+        origin: { actor: 'user_tap', correlation: null },
+        decision: {
+          action: 'select_screen_customer',
+          customerId: 'customer-camping',
+        },
+      })).rejects.toThrow(`injected-write-${failAtWrite}`);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    },
+  );
 
   it.each([1, 2, 3])(
     'rollbacke brouillon, mission et événement si la faute %s survient dans Advance',

@@ -15,6 +15,7 @@ import {
   type AgentMissionRuntimeBridge,
   type AgentMissionRuntimeActions,
   type AgentMissionRuntimeSnapshot,
+  type AgentMissionTurnSettlement,
 } from './agent-mission-runtime';
 import type { RealtimePublishedFence } from './realtime-driver';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
@@ -79,6 +80,13 @@ export function AgentMissionProvider({
         context: AgentContext,
       ) =>
         owner.confirmContext(realtimeSessionId, fence, context),
+      settleTurn: (
+        realtimeSessionId: string,
+        settlement: AgentMissionTurnSettlement,
+      ) =>
+        owner.settleTurn(realtimeSessionId, settlement),
+      release: (realtimeSessionId: string) =>
+        owner.release(realtimeSessionId),
     }),
     [owner],
   );

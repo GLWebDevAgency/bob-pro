@@ -8,6 +8,8 @@ export function unwrap<T>(r: Result<T, AppError>): T {
   const status =
     e.kind === 'not_found'
       ? HttpStatus.NOT_FOUND
+      : e.kind === 'gone'
+        ? HttpStatus.GONE
       : e.kind === 'conflict'
         ? HttpStatus.CONFLICT
       : e.kind === 'rate_limited'

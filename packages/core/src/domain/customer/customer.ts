@@ -4,6 +4,9 @@ import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { validateProPaymentTermsCeiling } from '../services/payment-terms-legal';
 import { validateFrenchVatId } from '../../shared-kernel/french-vat-id';
 import { Siren } from '../../shared-kernel/identifiers';
+import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
+
+const UNICODE_CONTROL_CHARACTER = /\p{Cc}/u;
 
 export type CustomerType = 'b2c' | 'b2b' | 'b2g';
 
@@ -130,6 +133,24 @@ export interface CustomerProps {
   isSubcontractingBtp?: boolean;
 }
 
+/**
+ * Forme canonique commune des noms client.
+ *
+ * Les données historiques et les saisies vocales peuvent contenir plusieurs espaces, tabulations
+ * ou retours à la ligne. Ils ne portent aucune sémantique métier : on les réduit avant la borne,
+ * afin que PostgreSQL, le domaine, l'API de reprise et le mobile parlent exactement le même nom.
+ */
+export function normalizeCustomerName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().replace(/\s+/gu, ' ');
+  return normalized.length >= 1
+    && normalized.length <= 200
+    && !hasAsciiControlCharacter(normalized)
+    && !UNICODE_CONTROL_CHARACTER.test(normalized)
+    ? normalized
+    : null;
+}
+
 export class Customer {
   private constructor(private readonly p: CustomerProps) {}
 
@@ -140,7 +161,8 @@ export class Customer {
       return err({ code: 'VALIDATION', field: 'companyId', message: 'Entreprise requise.' });
     if (!['b2c', 'b2b', 'b2g'].includes(p.type))
       return err({ code: 'VALIDATION', field: 'type', message: 'Type de client invalide.' });
-    if (typeof p.name !== 'string' || p.name.trim().length === 0 || p.name.trim().length > 200)
+    const name = normalizeCustomerName(p.name);
+    if (name === null)
       return err({ code: 'VALIDATION', field: 'name', message: 'Nom client requis (200 caractères maximum).' });
     if (
       p.address === null
@@ -204,7 +226,7 @@ export class Customer {
       id: p.id,
       companyId: p.companyId,
       type: p.type,
-      name: p.name.trim(),
+      name,
       address: { ...p.address },
       ...(siren !== undefined ? { siren } : {}),
       ...(tvaIntracom !== undefined ? { tvaIntracom } : {}),

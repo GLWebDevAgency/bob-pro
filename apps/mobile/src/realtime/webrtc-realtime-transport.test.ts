@@ -4,6 +4,7 @@ import {
   type RealtimeAgentMissionSession,
   type RealtimeVoiceNativeSpeechDeliveryInput,
 } from '@bob/api-client';
+import { deriveRealtimeTurnId } from '@bob/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { processAudioSession, type ProcessAudioLease } from '../audio';
 import type { WebRtcRuntime } from './webrtc-runtime';
@@ -1214,13 +1215,22 @@ describe('RealtimeWebRtcTransport — courses et autorite serveur', () => {
 describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
   const NATIVE_CONTEXT_REVISION = 7;
   const NATIVE_CONTEXT_DIGEST = 'c'.repeat(64);
+  let nativeSessionHandle: string | null = null;
+
+  function nativeProviderInputItemId(sequence: number): string {
+    return `item_native_${sequence.toString().padStart(12, '0')}`;
+  }
 
   function nativeMetadata(sequence = 21): Record<string, string> {
+    if (nativeSessionHandle === null) throw new Error('native_session_not_connected');
     const suffix = sequence.toString().padStart(12, '0');
     return {
       bob_protocol: 'bob.openai-native-response.v1',
       bob_delivery_id: `00000000-0000-4000-8000-${suffix}`,
-      bob_turn_id: `10000000-0000-4000-8000-${suffix}`,
+      bob_turn_id: deriveRealtimeTurnId(
+        nativeSessionHandle,
+        nativeProviderInputItemId(sequence),
+      ),
       bob_context_revision: String(NATIVE_CONTEXT_REVISION),
       bob_context_digest: NATIVE_CONTEXT_DIGEST,
       bob_request_nonce: `request_nonce_${sequence.toString().padStart(20, '0')}`,
@@ -1231,6 +1241,7 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
     await value.connect();
     const sessionHandle = value.getSessionHandle();
     expect(sessionHandle).not.toBeNull();
+    nativeSessionHandle = sessionHandle;
     await expect(value.synchronizePublishedContext!({
       sessionHandle: sessionHandle!,
       contextRevision: NATIVE_CONTEXT_REVISION,
@@ -1239,6 +1250,10 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
   }
 
   function startNativeResponse(peer: FakePeer, id: string, sequence = 21): Record<string, unknown> {
+    peer.channel.receive({
+      type: 'input_audio_buffer.committed',
+      item_id: nativeProviderInputItemId(sequence),
+    });
     const response = { id, metadata: nativeMetadata(sequence) };
     peer.channel.receive({ type: 'response.created', response });
     return response;
@@ -1392,6 +1407,10 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
 
   it('termine une réponse tool-call sans audio et accepte immédiatement la suivante', async () => {
     const { harness, value } = nativeHarness();
+    const settlements: unknown[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') settlements.push(event);
+    });
     await connectNative(value);
     const peer = harness.peers[0]!;
     const remote = peer.receiveRemoteTrack();
@@ -1400,11 +1419,54 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
     finishNativeResponse(peer, toolOnly);
     expect(value.state.phase).toBe('ready');
     expect(remote.track.enabled).toBe(false);
+    expect(settlements).toEqual([]);
 
     startNativeResponse(peer, 'resp_after_tool', 23);
     peer.channel.receive({ type: 'output_audio_buffer.started', response_id: 'resp_after_tool' });
     expect(value.state.phase).toBe('bob_speaking');
     expect(remote.track.enabled).toBe(true);
+  });
+
+  it('refuse toute réponse native sans commit local corrélé', async () => {
+    const { harness, value } = nativeHarness();
+    const events: Array<{ type: string; code?: string }> = [];
+    value.subscribe((event) => {
+      if (event.type === 'error') events.push({ type: event.type, code: event.code });
+      if (event.type === 'turn_settled') events.push({ type: event.type });
+    });
+    await connectNative(value);
+    const peer = harness.peers[0]!;
+
+    peer.channel.receive({
+      type: 'response.created',
+      response: { id: 'resp_without_commit', metadata: nativeMetadata(58) },
+    });
+
+    await waitUntil(() => value.state.phase === 'closed');
+    expect(events).toContainEqual({ type: 'error', code: 'response_turn_mismatch' });
+    expect(events.some((event) => event.type === 'turn_settled')).toBe(false);
+  });
+
+  it('settle failed avant fallback si la réponse référence un autre tour que le commit', async () => {
+    const { harness, value } = nativeHarness();
+    const order: string[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') order.push(`settled:${event.status}`);
+      if (event.type === 'fallback') order.push('fallback');
+    });
+    await connectNative(value);
+    const peer = harness.peers[0]!;
+    peer.channel.receive({
+      type: 'input_audio_buffer.committed',
+      item_id: nativeProviderInputItemId(59),
+    });
+    peer.channel.receive({
+      type: 'response.created',
+      response: { id: 'resp_wrong_turn', metadata: nativeMetadata(60) },
+    });
+
+    await waitUntil(() => value.state.phase === 'closed');
+    expect(order).toEqual(['settled:failed', 'fallback']);
   });
 
   it('ne publie aucun controlReference legacy depuis le contrat natif V1', async () => {
@@ -1863,6 +1925,10 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
   it('annule le watchdog terminal au barge-in et rend son timer stale inerte', async () => {
     vi.useFakeTimers();
     const { harness, value } = nativeHarness();
+    const settlements: unknown[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') settlements.push(event);
+    });
     await connectNative(value);
     const peer = harness.peers[0]!;
     const remote = peer.receiveRemoteTrack();
@@ -1879,10 +1945,78 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       response_id: 'resp_watchdog_interrupted',
     });
     expect(value.state.phase).toBe('ready');
+    expect(settlements).toEqual([{
+      type: 'turn_settled',
+      turnId: nativeMetadata(56).bob_turn_id,
+      status: 'cancelled',
+    }]);
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(value.state.phase).toBe('ready');
     expect(value.state.fallbackReason).toBeNull();
+    expect(settlements).toHaveLength(1);
+  });
+
+  it('ferme sur un terminal provider contradictoire sans republier le tour', async () => {
+    const { harness, value } = nativeHarness();
+    const settlements: unknown[] = [];
+    const errors: string[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') settlements.push(event);
+      if (event.type === 'error') errors.push(event.code);
+    });
+    await connectNative(value);
+    const peer = harness.peers[0]!;
+    const response = startNativeResponse(peer, 'resp_terminal_conflict', 62);
+    finishNativeResponse(peer, response, 'cancelled');
+    expect(value.state.phase).toBe('ready');
+
+    finishNativeResponse(peer, response, 'completed');
+    await waitUntil(() => value.state.phase === 'closed');
+
+    expect(errors).toContain('provider_response_terminal_conflict');
+    expect(settlements).toEqual([{
+      type: 'turn_settled',
+      turnId: nativeMetadata(62).bob_turn_id,
+      status: 'cancelled',
+    }]);
+  });
+
+  it('borne un commit sans aucune réponse et publie failed avant fallback', async () => {
+    vi.useFakeTimers();
+    const { harness, value } = nativeHarness();
+    const order: string[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') order.push(`settled:${event.status}`);
+      if (event.type === 'fallback') order.push('fallback');
+    });
+    await connectNative(value);
+    harness.peers[0]!.channel.receive({
+      type: 'input_audio_buffer.committed',
+      item_id: nativeProviderInputItemId(63),
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await waitUntil(() => value.state.phase === 'closed');
+
+    expect(order).toEqual(['settled:failed', 'fallback']);
+  });
+
+  it('ne fabrique aucun cancelled quand background ferme un tour non terminal', async () => {
+    const { harness, value } = nativeHarness();
+    const settlements: unknown[] = [];
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') settlements.push(event);
+    });
+    await connectNative(value);
+    harness.peers[0]!.channel.receive({
+      type: 'input_audio_buffer.committed',
+      item_id: nativeProviderInputItemId(64),
+    });
+
+    await value.close('background');
+
+    expect(settlements).toEqual([]);
   });
 
   it.each(['done-puis-stopped', 'stopped-puis-done'] as const)(
@@ -1891,10 +2025,12 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       vi.useFakeTimers();
       const { bobClient, harness, value } = nativeHarness();
       const bobTranscripts: Array<{ text: string; final: boolean }> = [];
+      const settlements: unknown[] = [];
       value.subscribe((event) => {
         if (event.type === 'bob_transcript') {
           bobTranscripts.push({ text: event.text, final: event.final });
         }
+        if (event.type === 'turn_settled') settlements.push(event);
       });
       await connectNative(value);
       const peer = harness.peers[0]!;
@@ -1943,6 +2079,11 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       });
       expect(JSON.stringify(ack.mock.calls[0]?.[3])).not.toContain('request_nonce');
       expect(bobTranscripts).toEqual([]);
+      expect(settlements).toEqual([{
+        type: 'turn_settled',
+        turnId: nativeMetadata(order === 'done-puis-stopped' ? 30 : 31).bob_turn_id,
+        status: 'done',
+      }]);
       expect(value.state.phase).toBe('ready');
       expect(peer.transceiver?.receiver.track?.enabled).toBe(true);
 
@@ -1961,6 +2102,64 @@ describe('RealtimeWebRtcTransport — downlink OpenAI natif', () => {
       expect(peer.transceiver?.receiver.track?.enabled).toBe(false);
     },
   );
+
+  it('n’émet done et READY qu’après la résolution de l’ACK acoustique durable', async () => {
+    vi.useFakeTimers();
+    const { bobClient, harness, value } = nativeHarness();
+    const acknowledgement = vi.mocked(
+      bobClient.acknowledgeRealtimeVoiceNativeSpeechDelivery,
+    );
+    const gate = deferred<Awaited<ReturnType<
+      BobClient['acknowledgeRealtimeVoiceNativeSpeechDelivery']
+    >>>();
+    const order: string[] = [];
+    acknowledgement.mockImplementation(async () => {
+      order.push('ack:start');
+      const result = await gate.promise;
+      order.push('ack:durable');
+      return result;
+    });
+    value.subscribe((event) => {
+      if (event.type === 'turn_settled') order.push(`settled:${event.status}`);
+      if (event.type === 'state' && event.state.phase === 'ready') order.push('state:ready');
+    });
+    await connectNative(value);
+    order.length = 0;
+    const peer = harness.peers[0]!;
+    const response = await prepareAuditableNativeResponse(peer, 'resp_ack_gate', 61);
+    peer.channel.receive({
+      type: 'response.output_audio_transcript.done',
+      response_id: 'resp_ack_gate',
+      transcript: 'Réponse acquittée',
+    });
+    finishNativeResponse(peer, response);
+    peer.channel.receive({ type: 'output_audio_buffer.stopped', response_id: 'resp_ack_gate' });
+    await waitUntil(() => acknowledgement.mock.calls.length === 1);
+
+    expect(order.at(-1)).toBe('ack:start');
+    expect(order.some((entry) => entry.startsWith('settled:'))).toBe(false);
+    expect(value.state.phase).toBe('bob_speaking');
+    const [, turnId, deliveryId, input] = acknowledgement.mock.calls[0]!;
+    gate.resolve({
+      ok: true,
+      value: {
+        turnId,
+        deliveryId,
+        acknowledgementId: input.acknowledgementId,
+        contextRevision: input.contextRevision,
+        contextDigest: input.contextDigest,
+        idempotent: false,
+      },
+    });
+    await waitUntil(() => value.state.phase === 'ready');
+
+    expect(order.slice(-4)).toEqual([
+      'ack:start',
+      'ack:durable',
+      'settled:done',
+      'state:ready',
+    ]);
+  });
 
   it('réessaie une réponse HTTP perdue avec le même acknowledgementId et le même corps', async () => {
     vi.useFakeTimers();

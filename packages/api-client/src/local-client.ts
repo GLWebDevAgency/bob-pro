@@ -118,6 +118,7 @@ import {
   type FiscalProfileDerivationInput,
   type FiscalProfileRepository,
   type FiscalProfileView,
+  type QuoteAgentMissionResumeView,
   SearchAddress,
   CloseAccount,
   type SubscriptionRepository,
@@ -540,6 +541,12 @@ function clampAutonomy(
 /** Implémentation locale (hors-ligne, fixtures) de BobClient : exécute les use cases du domaine en mémoire. */
 export class LocalBobClient implements BobClient {
   readonly companyId: string;
+
+  async getCurrentQuoteAgentMissionResume(): Promise<
+    Result<QuoteAgentMissionResumeView, AppError>
+  > {
+    return err(appUnavailable('agent_mission_resume_persistence'));
+  }
 
   private readonly companies = new InMemoryCompanyRepository();
   private readonly customers = new InMemoryCustomerRepository();

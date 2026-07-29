@@ -31,6 +31,7 @@ import {
   composeHandoffSpeech,
   LEGACY_LISTENING_SILENCE_GRACE_MS,
   planAgentSessionFallback,
+  planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldRecoverLegacyListeningSilence,
@@ -105,6 +106,12 @@ export interface AgentSessionValue {
   readonly contextAtTurn: AgentContext | null;
   readonly handoff: AgentSessionHandoff | null;
   readonly start: () => void;
+  /** Reprise de mission V1 strictement Live ; ne lance jamais l'ASR/TTS historique. */
+  readonly resumeMissionV1: () => Promise<boolean>;
+  /** Coupe l'oreille et attend le terminal du tour courant sans perdre la capability. */
+  readonly suspendForManualHandoff: () => Promise<boolean>;
+  /** Détruit la capability terminalisée puis attend la fermeture complète du transport. */
+  readonly stopAfterManualHandoff: () => Promise<void>;
   readonly stop: () => void;
   readonly toggle: () => void;
   readonly dismissResponse: () => void;
@@ -335,6 +342,20 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             await say(t('agent.global.liveFallback', { personality }), true);
           })();
         },
+        onFailedClosed: () => {
+          const plan = planAgentSessionFailedClosed();
+          sessionGenerationRef.current += 1;
+          realtimeActiveRef.current = false;
+          driverRef.current = plan.driver;
+          activeRef.current = plan.active;
+          setActive(plan.active);
+          setIssue(plan.issue);
+          setReviewRequired(false);
+          setContextAtTurn(null);
+          setHandoff(null);
+          setResponse(t(plan.responseKey, { personality }));
+          setSessionPhase(plan.phase);
+        },
         onCompleted: () => {
           realtimeActiveRef.current = false;
           driverRef.current = 'idle';
@@ -406,6 +427,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
   const stopWithReason = useCallback((
     reason: 'user' | 'background' | 'unmount',
+    afterManualHandoff = false,
   ): Promise<void> => {
     // INCONDITIONNEL (P0 review 14/07) : un stop() pendant le bootstrap temps réel (avant que
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
@@ -414,7 +436,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     driverRef.current = 'idle';
     realtimeMistralCheckpointUsedRef.current = null;
     sessionGenerationRef.current += 1;
-    const realtimeStop = realtimeRef.current?.stop(reason) ?? Promise.resolve();
+    const realtimeStop = afterManualHandoff
+      ? realtimeRef.current?.stopAfterManualHandoff() ?? Promise.resolve()
+      : realtimeRef.current?.stop(reason) ?? Promise.resolve();
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -426,12 +450,25 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setHandoff(null);
     setReviewRequired(false);
     setSessionPhase('idle');
-    return realtimeStop.catch(() => undefined);
+    return afterManualHandoff
+      ? realtimeStop
+      : realtimeStop.catch(() => undefined);
   }, [setSessionPhase, stopSpeaking]);
 
   const stop = useCallback((): void => {
     void stopWithReason('user');
   }, [stopWithReason]);
+
+  const suspendForManualHandoff = useCallback(
+    (): Promise<boolean> =>
+      realtimeRef.current?.suspendForManualHandoff() ?? Promise.resolve(false),
+    [],
+  );
+
+  const stopAfterManualHandoff = useCallback(
+    (): Promise<void> => stopWithReason('user', true),
+    [stopWithReason],
+  );
 
   useEffect(
     () => registerBeforeSignOutCleanup(() => stopWithReason('unmount')),
@@ -724,8 +761,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     void realtimeRef.current?.publishContext();
   }, [liveContextKey]);
 
-  const start = useCallback((): void => {
-    if (activeRef.current) return;
+  const beginSession = useCallback(async (
+    requireMissionV1: boolean,
+  ): Promise<boolean> => {
+    if (activeRef.current) return false;
     if (mistralConversationCheckpointRef.current === null) {
       // Le tap Bob est le retry utilisateur explicite. La mission courante reste fail-closed ;
       // une reprise reussie publiera la capability pour le prochain demarrage.
@@ -750,11 +789,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setContextAtTurn(null);
     setHandoff(null);
     setSessionPhase('thinking');
-    void (async () => {
-      // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Refusé/indispo :
-      // la boucle historique reprend exactement comme avant, greeting compris.
-      const controller = getRealtimeController();
-      const outcome = await controller.start();
+    // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Une reprise M1-C
+    // interdit structurellement le repli historique : sans capability+contexte, elle échoue.
+    const controller = getRealtimeController();
+    const outcome = requireMissionV1
+      ? await controller.resumeMissionV1()
+      : await controller.start();
       if (
         !activeRef.current
         || sessionGeneration !== sessionGenerationRef.current
@@ -764,15 +804,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         // stop() est passé pendant le bootstrap : le contrôleur est déjà invalidé par
         // génération — ceinture ET bretelles, on ne laisse RIEN d'ouvert derrière soi.
         void controller.stop('user');
-        return;
+        return false;
       }
-      if (outcome === 'realtime') {
+      if (outcome === 'realtime' || outcome === 'resumed') {
         driverRef.current = 'live';
         realtimeActiveRef.current = true;
-        return; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
+        return true; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
       }
-      if (outcome === 'fallback') return; // onFallback a DÉJÀ relancé la boucle historique
-      if (outcome === 'failed_closed') {
+      if (outcome === 'fallback') return false; // onFallback a DÉJÀ relancé la boucle historique
+      if (outcome === 'failed_closed' || requireMissionV1) {
         driverRef.current = 'idle';
         realtimeActiveRef.current = false;
         activeRef.current = false;
@@ -780,7 +820,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         setIssue('failed');
         setResponse(t('live.error', { personality }));
         setSessionPhase('error');
-        return;
+        return false;
       }
       driverRef.current = 'legacy';
       realtimeActiveRef.current = false;
@@ -793,8 +833,17 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         // (« Mode vocal activé — je t'écoute. ») puis écoute — même contrat que le guidage.
         void say(t('live.on', { personality }), true);
       }
-    })();
+      return false;
   }, [personality, retryMistralConversationCheckpoint, say, speakGreeting]);
+
+  const start = useCallback((): void => {
+    void beginSession(false);
+  }, [beginSession]);
+
+  const resumeMissionV1 = useCallback(
+    (): Promise<boolean> => beginSession(true),
+    [beginSession],
+  );
 
   const dismissResponse = useCallback((): void => {
     setResponse(null);
@@ -923,6 +972,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       contextAtTurn,
       handoff,
       start,
+      resumeMissionV1,
+      suspendForManualHandoff,
+      stopAfterManualHandoff,
       stop,
       toggle,
       dismissResponse,
@@ -938,10 +990,13 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       issue,
       phase,
       requestHandoff,
+      resumeMissionV1,
       response,
       reviewRequired,
       start,
       stop,
+      stopAfterManualHandoff,
+      suspendForManualHandoff,
       toggle,
       transcript,
     ],
