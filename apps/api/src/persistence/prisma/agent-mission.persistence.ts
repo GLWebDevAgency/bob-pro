@@ -23,6 +23,10 @@ import {
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
+  type CustomerCandidate,
+  type CustomerCandidateReadPort,
+  type CustomerCandidateReference,
+  type CustomerCandidateSearchPort,
   type QuoteDraftPayloadV1,
 } from '@bob/core';
 import {
@@ -94,6 +98,18 @@ interface AgentMissionAuthorityLeaseRow {
   readonly agentMissionCapabilityHash: string | null;
   readonly agentMissionReleaseFlagVersion: number | null;
   readonly agentMissionBootstrapAcknowledgedAt: Date | null;
+}
+
+interface CustomerCandidateRow {
+  readonly customerId: string;
+  readonly canonicalName: string;
+  readonly matchKind: 'exact' | 'fuzzy';
+  readonly score: number;
+}
+
+interface CustomerCandidateReferenceRow {
+  readonly customerId: string;
+  readonly canonicalName: string;
 }
 
 type AgentMissionAuthorityResolution =
@@ -710,6 +726,125 @@ implements AgentMissionQuoteDraftRepositoryPort {
     `;
     return rows.length === 1;
   }
+
+  async selectCustomerCas(input: AgentMissionOwner & {
+    readonly missionId: string;
+    readonly expectedSlotRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftContentRevision: number;
+    readonly payload: QuoteDraftPayloadV1;
+  }): Promise<AgentMissionQuoteDraftSlot | null> {
+    await setMissionContext(this.transaction, input.missionId);
+    const payloadJson = JSON.stringify(input.payload);
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      UPDATE public.quote_draft_slots
+      SET
+        "revision" = "revision" + 1,
+        "payloadVersion" = 1,
+        "payload" = ${payloadJson}::jsonb,
+        "updatedAt" = clock_timestamp()
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "agentMissionId" = ${input.missionId}::UUID
+        AND "revision" = ${input.expectedSlotRevision}
+        AND "revision" < 2147483647
+        AND "payloadVersion" = 1
+        AND "payload" -> 'draft' ->> 'sessionId' = ${input.expectedDraftSessionId}
+        AND ("payload" #>> '{draft,contentRevision}')::integer
+          = ${input.expectedDraftContentRevision}
+        AND "payload" -> 'draft' ->> 'step' = 'client'
+        AND "payload" -> 'draft' -> 'customer' = 'null'::jsonb
+      RETURNING ${QUOTE_DRAFT_COLUMNS}
+    `;
+    return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
+  }
+}
+
+class PrismaAgentMissionCustomerRepository
+implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async search(input: {
+    readonly companyId: string;
+    readonly query: string;
+    readonly limit: 6;
+  }): Promise<readonly CustomerCandidate[]> {
+    const rows = await this.transaction.$queryRaw<CustomerCandidateRow[]>`
+      SELECT
+        c."id" AS "customerId",
+        c."name" AS "canonicalName",
+        CASE
+          WHEN immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          THEN 'exact'::text
+          ELSE 'fuzzy'::text
+        END AS "matchKind",
+        CASE
+          WHEN immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          THEN 1.0::double precision
+          ELSE word_similarity(
+            immutable_unaccent(lower(${input.query})),
+            immutable_unaccent(lower(c."name"))
+          )::double precision
+        END AS "score"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND (
+          immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          OR immutable_unaccent(lower(${input.query}))
+            <% immutable_unaccent(lower(c."name"))
+        )
+      ORDER BY
+        (
+          immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+        ) DESC,
+        "score" DESC,
+        immutable_unaccent(lower(c."name")) COLLATE "C" ASC,
+        c."id" ASC
+      LIMIT ${input.limit}
+    `;
+    return rows.map((row) => Object.freeze({
+      customerId: row.customerId,
+      canonicalName: row.canonicalName,
+      matchKind: row.matchKind,
+      score: row.score,
+    }));
+  }
+
+  async findById(input: {
+    readonly companyId: string;
+    readonly customerId: string;
+  }): Promise<CustomerCandidateReference | null> {
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" = ${input.customerId}
+      LIMIT 1
+      FOR SHARE
+    `;
+    const row = rows[0];
+    return row === undefined ? null : Object.freeze({ ...row });
+  }
+
+  async findByIds(input: {
+    readonly companyId: string;
+    readonly customerIds: readonly string[];
+  }): Promise<readonly CustomerCandidateReference[]> {
+    if (input.customerIds.length === 0) return [];
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" IN (${Prisma.join(input.customerIds)})
+      ORDER BY c."id" ASC
+      FOR SHARE
+    `;
+    return rows.map((row) => Object.freeze({ ...row }));
+  }
 }
 
 function authorizedRealtimeLease(
@@ -817,6 +952,7 @@ function createWriteTransaction(
     events: new PrismaAgentMissionEventRepository(transaction),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
+    customers: new PrismaAgentMissionCustomerRepository(transaction),
   };
 }
 

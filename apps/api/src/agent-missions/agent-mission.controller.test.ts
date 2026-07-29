@@ -213,12 +213,18 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           this.slot = { ...this.slot, agentMissionId: null };
           return true;
         },
+        selectCustomerCas: async () => null,
       },
       quoteScreen: {
         observeForUpdate: async () => ({
           status: 'rejected',
           reason: 'unavailable',
         }),
+      },
+      customers: {
+        search: async () => [],
+        findById: async () => null,
+        findByIds: async () => [],
       },
     });
     return { status: 'executed', value };

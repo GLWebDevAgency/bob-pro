@@ -6,6 +6,10 @@ import {
   type AgentMissionReadRepositoryPort,
   type AgentMissionRepositoryPort,
 } from './agent-mission-repository';
+import {
+  type CustomerCandidateReadPort,
+  type CustomerCandidateSearchPort,
+} from './customer-candidate-search';
 
 export interface AgentMissionRealtimeAuthorityProof {
   /**
@@ -83,6 +87,7 @@ export interface AgentMissionTransaction {
   readonly events: AgentMissionEventRepositoryPort;
   readonly quoteDrafts: AgentMissionQuoteDraftRepositoryPort;
   readonly quoteScreen: AgentMissionQuoteScreenAuthorityPort;
+  readonly customers: CustomerCandidateSearchPort & CustomerCandidateReadPort;
 }
 
 export type AgentMissionCompanyUnavailableReason = 'missing' | 'closed';

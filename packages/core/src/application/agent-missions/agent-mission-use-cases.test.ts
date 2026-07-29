@@ -12,6 +12,9 @@ import {
 } from '../quote-drafts/quote-draft-slot';
 import { type AgentMissionFingerprintPort } from '../ports/agent-mission-fingerprint';
 import {
+  type CustomerCandidateReference,
+} from '../ports/customer-candidate-search';
+import {
   type AgentMissionOwner,
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
@@ -29,6 +32,10 @@ import {
   AcknowledgeQuoteScreen,
   type AcknowledgeQuoteScreenInput,
 } from './acknowledge-quote-screen';
+import {
+  AdvanceQuoteAgentMission,
+  type AdvanceQuoteAgentMissionInput,
+} from './advance-quote-agent-mission';
 import {
   CancelQuoteAgentMission,
   type CancelQuoteAgentMissionInput,
@@ -54,6 +61,7 @@ const CANCEL_COMMAND = '10000000-0000-4000-8000-000000000003';
 const ACK_COMMAND = '10000000-0000-4000-8000-000000000004';
 const INITIAL_NOW = '2026-07-26T10:00:00.000Z';
 const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
+const TURN_ID = '30000000-0000-4000-8000-000000000002';
 const AUTHORITY = Object.freeze({
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
@@ -63,6 +71,7 @@ const AUTHORITY = Object.freeze({
 interface MemoryState {
   readonly missions: Map<string, AgentMission>;
   readonly events: AgentMissionEvent[];
+  readonly customers: readonly CustomerCandidateReference[];
   slot: AgentMissionQuoteDraftSlot | null;
 }
 
@@ -82,6 +91,7 @@ function cloneState(state: MemoryState): MemoryState {
   return {
     missions: new Map(state.missions),
     events: [...state.events],
+    customers: state.customers.map((customer) => ({ ...customer })),
     slot: cloneSlot(state.slot),
   };
 }
@@ -116,6 +126,7 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   private state: MemoryState = {
     missions: new Map(),
     events: [],
+    customers: [],
     slot: null,
   };
 
@@ -128,6 +139,9 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   };
   readTransactions = 0;
   writeTransactions = 0;
+  customerSearches = 0;
+  customerByIdOverride: CustomerCandidateReference | null | undefined;
+  customersByIdsOverride: readonly CustomerCandidateReference[] | undefined;
 
   snapshot(): MemoryState {
     return cloneState(this.state);
@@ -142,6 +156,13 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       agentMissionId: null,
       createdAt: INITIAL_NOW,
       updatedAt: INITIAL_NOW,
+    };
+  }
+
+  setCustomers(customers: readonly CustomerCandidateReference[]): void {
+    this.state = {
+      ...this.state,
+      customers: customers.map((customer) => ({ ...customer })),
     };
   }
 
@@ -288,9 +309,86 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           nextState.slot = { ...slot, agentMissionId: null, updatedAt: this.now };
           return true;
         },
+        selectCustomerCas: async ({
+          missionId,
+          expectedSlotRevision,
+          expectedDraftSessionId,
+          expectedDraftContentRevision,
+          payload,
+        }) => {
+          beforeWrite();
+          const slot = scopedSlot();
+          if (
+            slot === null
+            || slot.agentMissionId !== missionId
+            || slot.revision !== expectedSlotRevision
+            || slot.payload.draft.sessionId !== expectedDraftSessionId
+            || slot.payload.draft.contentRevision !== expectedDraftContentRevision
+            || slot.payload.draft.step !== 'client'
+            || slot.payload.draft.customer !== null
+            || payload.draft.sessionId !== expectedDraftSessionId
+            || payload.draft.contentRevision !== expectedDraftContentRevision + 1
+            || payload.draft.step !== 'lignes'
+            || payload.draft.customer === null
+          ) {
+            return null;
+          }
+          nextState.slot = {
+            ...slot,
+            revision: slot.revision + 1,
+            payload,
+            updatedAt: this.now,
+          };
+          return nextState.slot;
+        },
       },
       quoteScreen: {
         observeForUpdate: async () => this.screenObservation,
+      },
+      customers: {
+        search: async ({ query, limit }) => {
+          this.customerSearches += 1;
+          const normalizedQuery = query.normalize('NFD')
+            .replace(/\p{Diacritic}/gu, '')
+            .toLocaleLowerCase('fr-FR');
+          return nextState.customers
+            .map((customer) => {
+              const normalizedName = customer.canonicalName.normalize('NFD')
+                .replace(/\p{Diacritic}/gu, '')
+                .toLocaleLowerCase('fr-FR');
+              const exact = normalizedName === normalizedQuery;
+              const fuzzy = normalizedName.includes(normalizedQuery)
+                || normalizedQuery.includes(normalizedName);
+              if (!exact && !fuzzy) return null;
+              return {
+                ...customer,
+                matchKind: exact ? 'exact' as const : 'fuzzy' as const,
+                score: exact ? 1 : 0.8,
+              };
+            })
+            .filter((candidate) => candidate !== null)
+            .sort((left, right) => (
+              Number(right.matchKind === 'exact') - Number(left.matchKind === 'exact')
+              || right.score - left.score
+              || left.canonicalName.localeCompare(right.canonicalName, 'fr')
+              || left.customerId.localeCompare(right.customerId)
+            ))
+            .slice(0, limit);
+        },
+        findById: async ({ customerId }) => (
+          this.customerByIdOverride !== undefined
+            ? this.customerByIdOverride
+            : nextState.customers.find(
+                (customer) => customer.customerId === customerId,
+              ) ?? null
+        ),
+        findByIds: async ({ customerIds }) => {
+          if (this.customersByIdsOverride !== undefined) {
+            return this.customersByIdsOverride;
+          }
+          const ids = new Set(customerIds);
+          return nextState.customers.filter((customer) => ids.has(customer.customerId));
+        },
       },
     };
     const output = await work(transaction);
@@ -320,12 +418,21 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
   const get = new GetActiveAgentMission({ unitOfWork });
   const cancel = new CancelQuoteAgentMission(deps);
   const acknowledge = new AcknowledgeQuoteScreen(deps);
+  const advance = new AdvanceQuoteAgentMission(deps);
   return {
     unitOfWork,
     start: {
       execute: (
-        input: Omit<StartQuoteAgentMissionCommand, 'authority'>,
-      ) => start.execute({ ...input, authority: AUTHORITY }),
+        input: Omit<
+          StartQuoteAgentMissionCommand,
+          'authority' | 'origin' | 'customerReference'
+        > & Partial<Pick<StartQuoteAgentMissionCommand, 'origin' | 'customerReference'>>,
+      ) => start.execute({
+        ...input,
+        authority: AUTHORITY,
+        origin: input.origin ?? { actor: 'user_tap', correlation: null },
+        customerReference: input.customerReference ?? null,
+      }),
     },
     get: {
       execute: (owner: AgentMissionOwner) => get.execute(owner, AUTHORITY),
@@ -339,6 +446,11 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
       execute: (
         input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
       ) => acknowledge.execute({ ...input, authority: AUTHORITY }),
+    },
+    advance: {
+      execute: (
+        input: Omit<AdvanceQuoteAgentMissionInput, 'authority'>,
+      ) => advance.execute({ ...input, authority: AUTHORITY }),
     },
   };
 }
@@ -813,6 +925,487 @@ describe('AgentMission application M1-A', () => {
       .toBe(revisionBefore);
     expect(unitOfWork.snapshot().events).toHaveLength(eventCount);
   });
+
+  it('lie la référence et la provenance voix au start, sans rechercher au replay', async () => {
+    const { unitOfWork, start } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+      { customerId: 'customer-ratp', canonicalName: 'RATP' },
+    ]);
+    const origin = {
+      actor: 'user_voice',
+      correlation: {
+        realtimeSessionId: REALTIME_SESSION_ID,
+        turnId: TURN_ID,
+        contextRevision: 4,
+        contextDigest: 'f'.repeat(64),
+      },
+    } as const;
+    const command = {
+      ...OWNER,
+      commandId: START_COMMAND,
+      origin,
+      customerReference: 'Camping les Pins',
+    };
+
+    const started = await start.execute(command);
+    expect(started).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'created',
+        mission: {
+          payload: {
+            stagedCustomerResolution: {
+              kind: 'exact',
+              customerId: 'customer-camping',
+            },
+          },
+        },
+      },
+    });
+    expect(unitOfWork.customerSearches).toBe(1);
+    expect(unitOfWork.snapshot().events[0]?.toSnapshot()).toMatchObject({
+      actor: 'user_voice',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      turnId: TURN_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+    });
+
+    expect(await start.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(unitOfWork.customerSearches).toBe(1);
+
+    expect(await start.execute({
+      ...command,
+      customerReference: 'RATP',
+    })).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'fingerprint_mismatch',
+      },
+    });
+    expect(unitOfWork.customerSearches).toBe(1);
+  });
+
+  it('refuse une provenance de session croisée avant recherche et écriture', async () => {
+    const { unitOfWork, start } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+    ]);
+
+    const result = await start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+      customerReference: 'Camping les Pins',
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: '30000000-0000-4000-8000-000000000099',
+          turnId: TURN_ID,
+          contextRevision: 1,
+          contextDigest: 'f'.repeat(64),
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'context_stale',
+      },
+    });
+    expect(unitOfWork.customerSearches).toBe(0);
+    expect(unitOfWork.snapshot()).toMatchObject({
+      events: [],
+      slot: null,
+    });
+    expect(unitOfWork.snapshot().missions.size).toBe(0);
+  });
+
+  it('enchaîne exact staged → ACK réel → sélection client atomique et rejouable', async () => {
+    const { unitOfWork, start, acknowledge, advance } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+    ]);
+    const started = await start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+      customerReference: 'Camping les Pins',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    const contextDigest = 'd'.repeat(64);
+    unitOfWork.screenObservation = {
+      status: 'ready',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 7,
+      contextDigest,
+      screenInstanceId: 'quote-wizard-instance-1',
+      draft,
+      draftHasCustomer: false,
+    };
+    const ackCommand = {
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: started.value.mission.revision,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 7,
+      contextDigest,
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    };
+    const acknowledged = await acknowledge.execute(ackCommand);
+    expect(acknowledged).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'acknowledged',
+        receipt: {
+          ackCommandId: ACK_COMMAND,
+          missionId: started.value.mission.id,
+          missionRevisionAfter: 2,
+          realtimeSessionId: REALTIME_SESSION_ID,
+          contextRevision: 7,
+          contextDigest,
+          occurredAt: INITIAL_NOW,
+        },
+        mission: {
+          phase: 'awaiting_customer',
+          payload: {
+            stagedCustomerResolution: {
+              kind: 'exact',
+              customerId: 'customer-camping',
+            },
+          },
+        },
+      },
+    });
+
+    const advanced = await advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    });
+    expect(advanced).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'advanced',
+        mission: {
+          phase: 'awaiting_lines',
+          revision: 3,
+          payload: { stagedCustomerResolution: null },
+        },
+      },
+    });
+    const afterAdvance = unitOfWork.snapshot();
+    expect(afterAdvance.slot).toMatchObject({
+      revision: 2,
+      agentMissionId: started.value.mission.id,
+      payload: {
+        draft: {
+          contentRevision: 1,
+          step: 'lignes',
+          customer: {
+            id: 'customer-camping',
+            name: 'Camping les Pins',
+          },
+        },
+      },
+    });
+    const continuation = afterAdvance.events.at(-1)?.toSnapshot();
+    expect(continuation).toMatchObject({
+      eventType: 'customer_selected',
+      actor: 'system',
+      missionRevisionBefore: 2,
+      missionRevisionAfter: 3,
+      draftSlotRevisionBefore: 1,
+      draftSlotRevisionAfter: 2,
+      draftContentRevisionBefore: 0,
+      draftContentRevisionAfter: 1,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      turnId: null,
+      contextRevision: 7,
+      contextDigest,
+      data: {
+        kind: 'customer_selected',
+        customerId: 'customer-camping',
+        source: 'exact_match',
+      },
+    });
+    expect(continuation?.commandId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+
+    const replayedAdvance = await advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    });
+    expect(replayedAdvance).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed', mission: { revision: 3 } },
+    });
+    expect(unitOfWork.snapshot().events).toHaveLength(afterAdvance.events.length);
+
+    const replayedAck = await acknowledge.execute(ackCommand);
+    expect(replayedAck).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'replayed',
+        receipt: acknowledged.ok ? acknowledged.value.receipt : {},
+        mission: { revision: 3 },
+      },
+    });
+  });
+
+  it('refuse une relecture client substituée par un adapter sans aucune écriture', async () => {
+    const { unitOfWork, start, acknowledge, advance } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+    ]);
+    const started = await start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+      customerReference: 'Camping les Pins',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    unitOfWork.screenObservation = {
+      status: 'ready',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      screenInstanceId: 'quote-wizard-instance-1',
+      draft,
+      draftHasCustomer: false,
+    };
+    expect(await acknowledge.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: started.value.mission.revision,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    })).toMatchObject({ ok: true });
+    const before = unitOfWork.snapshot();
+    unitOfWork.customerByIdOverride = {
+      customerId: 'customer-substituted',
+      canonicalName: 'Client substitué',
+    };
+
+    await expect(advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'customer_candidate_search',
+        cause: 'invalid_customer_read',
+      },
+    });
+    expect(unitOfWork.snapshot()).toEqual(before);
+  });
+
+  it('conserve un choix explicite après suppression concurrente de candidats', async () => {
+    const { unitOfWork, start, acknowledge, advance } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-one', canonicalName: 'Camping Nord' },
+      { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+    ]);
+    const started = await start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+      customerReference: 'Camping',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    const staged = started.value.mission.payload.stagedCustomerResolution;
+    expect(staged?.kind).toBe('choices');
+    unitOfWork.screenObservation = {
+      status: 'ready',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      screenInstanceId: 'quote-wizard-instance-1',
+      draft,
+      draftHasCustomer: false,
+    };
+    const acknowledged = await acknowledge.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: started.value.mission.revision,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    });
+    expect(acknowledged.ok).toBe(true);
+    unitOfWork.setCustomers([
+      { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+    ]);
+
+    const advanced = await advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    });
+
+    expect(advanced).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'advanced',
+        mission: {
+          phase: 'awaiting_customer_choice',
+          payload: {
+            decision: {
+              kind: 'customer',
+              candidates: [{
+                customerId: 'customer-two',
+              }],
+            },
+            stagedCustomerResolution: null,
+          },
+        },
+      },
+    });
+    if (staged?.kind === 'choices' && advanced.ok) {
+      expect(advanced.value.mission.payload.decision).toMatchObject({
+        candidates: [{
+          choiceId: staged.candidates[1]?.choiceId,
+          customerId: 'customer-two',
+        }],
+      });
+    }
+    expect(unitOfWork.snapshot().slot).toMatchObject({
+      revision: 1,
+      payload: { draft: { step: 'client', customer: null, contentRevision: 0 } },
+    });
+  });
+
+  it('refuse qu’un adapter injecte un client hors du jeu staged', async () => {
+    const { unitOfWork, start, acknowledge, advance } = useCases();
+    unitOfWork.setCustomers([
+      { customerId: 'customer-one', canonicalName: 'Camping Nord' },
+      { customerId: 'customer-two', canonicalName: 'Camping Sud' },
+    ]);
+    const started = await start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+      customerReference: 'Camping',
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.mission.payload.draft === null) return;
+    const draft = started.value.mission.payload.draft;
+    unitOfWork.screenObservation = {
+      status: 'ready',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      screenInstanceId: 'quote-wizard-instance-1',
+      draft,
+      draftHasCustomer: false,
+    };
+    expect(await acknowledge.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: ACK_COMMAND,
+      expectedMissionRevision: started.value.mission.revision,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      draftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+    })).toMatchObject({ ok: true });
+    const before = unitOfWork.snapshot();
+    unitOfWork.customersByIdsOverride = [{
+      customerId: 'customer-injected',
+      canonicalName: 'Client injecté',
+    }];
+
+    await expect(advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'customer_candidate_search',
+        cause: 'invalid_customer_read',
+      },
+    });
+    expect(unitOfWork.snapshot()).toEqual(before);
+  });
+
+  it.each([1, 2, 3])(
+    'rollbacke brouillon, mission et événement si la faute %s survient dans Advance',
+    async (failAtWrite) => {
+      const { unitOfWork, start, acknowledge, advance } = useCases();
+      unitOfWork.setCustomers([
+        { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+      ]);
+      const started = await start.execute({
+        ...OWNER,
+        commandId: START_COMMAND,
+        customerReference: 'Camping les Pins',
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok || started.value.mission.payload.draft === null) return;
+      const draft = started.value.mission.payload.draft;
+      unitOfWork.screenObservation = {
+        status: 'ready',
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        screenInstanceId: 'quote-wizard-instance-1',
+        draft,
+        draftHasCustomer: false,
+      };
+      expect(await acknowledge.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        commandId: ACK_COMMAND,
+        expectedMissionRevision: 1,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      })).toMatchObject({ ok: true });
+      const before = unitOfWork.snapshot();
+      unitOfWork.failAtWrite = failAtWrite;
+
+      await expect(advance.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        acknowledgementCommandId: ACK_COMMAND,
+      })).rejects.toThrow(`injected-write-${failAtWrite}`);
+
+      expect(unitOfWork.snapshot()).toEqual(before);
+    },
+  );
 
   it.each([1, 2, 3, 4])(
     'rollbacke toutes les écritures si la faute %s survient dans la transaction de start',

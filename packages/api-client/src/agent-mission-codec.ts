@@ -24,6 +24,9 @@ const VIEW_KEYS = [
   'createdAt',
   'updatedAt',
 ] as const;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -208,10 +211,36 @@ export function decodeAgentMissionScreenAck(
   value: unknown,
 ): AcknowledgeQuoteScreenOutput | null {
   const response = record(value);
-  if (!response || !exactKeys(response, ['outcome', 'mission'])) return null;
+  if (!response || !exactKeys(response, ['outcome', 'receipt', 'mission'])) return null;
   const mission = decodeAgentMissionViewV1(response.mission);
+  const receipt = record(response.receipt);
   if (
     mission === null
+    || receipt === null
+    || !exactKeys(receipt, [
+      'ackCommandId',
+      'missionId',
+      'missionRevisionAfter',
+      'realtimeSessionId',
+      'contextRevision',
+      'contextDigest',
+      'occurredAt',
+    ])
+    || typeof receipt.ackCommandId !== 'string'
+    || !UUID_V4.test(receipt.ackCommandId)
+    || typeof receipt.missionId !== 'string'
+    || !UUID.test(receipt.missionId)
+    || receipt.missionId !== mission.id
+    || !Number.isSafeInteger(receipt.missionRevisionAfter)
+    || (receipt.missionRevisionAfter as number) < 1
+    || (receipt.missionRevisionAfter as number) > mission.revision
+    || typeof receipt.realtimeSessionId !== 'string'
+    || !UUID.test(receipt.realtimeSessionId)
+    || !Number.isSafeInteger(receipt.contextRevision)
+    || (receipt.contextRevision as number) < 1
+    || typeof receipt.contextDigest !== 'string'
+    || !SHA256.test(receipt.contextDigest)
+    || !canonicalInstant(receipt.occurredAt)
     || (response.outcome !== 'acknowledged' && response.outcome !== 'replayed')
     || (
       response.outcome === 'acknowledged'
@@ -231,6 +260,15 @@ export function decodeAgentMissionScreenAck(
   }
   return Object.freeze({
     outcome: response.outcome,
+    receipt: Object.freeze({
+      ackCommandId: receipt.ackCommandId,
+      missionId: receipt.missionId,
+      missionRevisionAfter: receipt.missionRevisionAfter,
+      realtimeSessionId: receipt.realtimeSessionId,
+      contextRevision: receipt.contextRevision,
+      contextDigest: receipt.contextDigest,
+      occurredAt: receipt.occurredAt,
+    }),
     mission,
   }) as AcknowledgeQuoteScreenOutput;
 }

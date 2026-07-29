@@ -34,6 +34,27 @@ import {
 } from '../result';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+const POSTGRES_INT_MAX = 2_147_483_647;
+
+export type AgentMissionUserCommandOrigin =
+  | {
+      readonly actor: 'user_tap';
+      readonly correlation: null | {
+        readonly realtimeSessionId: string;
+        readonly contextRevision: number;
+        readonly contextDigest: string;
+      };
+    }
+  | {
+      readonly actor: 'user_voice';
+      readonly correlation: {
+        readonly realtimeSessionId: string;
+        readonly turnId: string;
+        readonly contextRevision: number;
+        readonly contextDigest: string;
+      };
+    };
 
 export interface AgentMissionViewV1 {
   readonly id: string;
@@ -88,6 +109,84 @@ export function canonicalAgentMissionCommand(input: AgentMissionOwner & {
   ]);
 }
 
+export function isCanonicalAgentMissionUserCommandOrigin(
+  value: unknown,
+): value is AgentMissionUserCommandOrigin {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const origin = value as Record<string, unknown>;
+  if (
+    !Object.hasOwn(origin, 'actor')
+    || !Object.hasOwn(origin, 'correlation')
+    || Object.keys(origin).some((key) => key !== 'actor' && key !== 'correlation')
+  ) return false;
+  const actor = origin['actor'];
+  const correlation = origin['correlation'];
+  if (actor === 'user_tap' && correlation === null) return true;
+  if (
+    (actor !== 'user_tap' && actor !== 'user_voice')
+    || typeof correlation !== 'object'
+    || correlation === null
+    || Array.isArray(correlation)
+  ) return false;
+  const candidate = correlation as Record<string, unknown>;
+  const expectedKeys = actor === 'user_voice'
+    ? ['realtimeSessionId', 'turnId', 'contextRevision', 'contextDigest']
+    : ['realtimeSessionId', 'contextRevision', 'contextDigest'];
+  if (
+    Object.keys(candidate).length !== expectedKeys.length
+    || !expectedKeys.every((key) => Object.hasOwn(candidate, key))
+    || !isCanonicalAgentMissionUuid(candidate['realtimeSessionId'])
+    || (
+      actor === 'user_voice'
+      && !isCanonicalAgentMissionUuid(candidate['turnId'])
+    )
+    || !Number.isSafeInteger(candidate['contextRevision'])
+    || Object.is(candidate['contextRevision'], -0)
+    || (candidate['contextRevision'] as number) < 1
+    || (candidate['contextRevision'] as number) > POSTGRES_INT_MAX
+    || typeof candidate['contextDigest'] !== 'string'
+    || !SHA256.test(candidate['contextDigest'])
+  ) return false;
+  return true;
+}
+
+/**
+ * Préserve volontairement le fingerprint M1-A du démarrage tactile sans référence. Toute
+ * sémantique M1-C utilise une nouvelle enveloppe qui lie la provenance et la référence transitoire.
+ */
+export function canonicalAgentMissionStartCommand(input: AgentMissionOwner & {
+  readonly commandId: string;
+  readonly origin: AgentMissionUserCommandOrigin;
+  readonly customerReference: string | null;
+}): string {
+  if (input.origin.actor === 'user_tap'
+    && input.origin.correlation === null
+    && input.customerReference === null) {
+    return canonicalAgentMissionCommand({
+      companyId: input.companyId,
+      ownerUserId: input.ownerUserId,
+      operation: 'start_quote_creation',
+      commandId: input.commandId,
+    });
+  }
+  const correlation = input.origin.correlation;
+  const turnId = input.origin.actor === 'user_voice'
+    ? input.origin.correlation.turnId
+    : null;
+  return JSON.stringify([
+    'bob.agent-mission.command.start-quote.v2',
+    input.companyId,
+    input.ownerUserId,
+    input.commandId,
+    input.origin.actor,
+    correlation?.realtimeSessionId ?? null,
+    turnId,
+    correlation?.contextRevision ?? null,
+    correlation?.contextDigest ?? null,
+    input.customerReference,
+  ]);
+}
+
 export function canonicalAgentMissionScreenAckCommand(input: AgentMissionOwner & {
   readonly commandId: string;
   readonly missionId: string;
@@ -116,25 +215,71 @@ export function canonicalAgentMissionScreenAckCommand(input: AgentMissionOwner &
   ]);
 }
 
-export function deriveAgentMissionSystemCommandId(input: {
-  readonly operation: 'expire_quote_creation';
-  readonly companyId: string;
-  readonly ownerUserId: string;
+export function canonicalAgentMissionAdvanceCustomerCommand(input: AgentMissionOwner & {
+  readonly commandId: string;
   readonly missionId: string;
-  readonly missionRevision: number;
-  readonly effectiveReason: 'idle_ttl' | 'hard_ttl';
-  readonly effectiveExpiresAt: Instant;
+  readonly acknowledgementCommandId: string;
+  readonly acknowledgementMissionRevision: number;
+  readonly realtimeSessionId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
 }): string {
-  const hex = sha256Hex(JSON.stringify([
-    'bob.agent-mission.system-command.uuid-v8.v1',
-    input.operation,
+  return JSON.stringify([
+    'bob.agent-mission.command.v1',
+    'consume_staged_customer_resolution',
     input.companyId,
     input.ownerUserId,
+    input.commandId,
     input.missionId,
-    input.missionRevision,
-    input.effectiveReason,
-    input.effectiveExpiresAt,
-  ]));
+    input.acknowledgementCommandId,
+    input.acknowledgementMissionRevision,
+    input.realtimeSessionId,
+    input.contextRevision,
+    input.contextDigest,
+  ]);
+}
+
+export type AgentMissionSystemCommandInput =
+  | {
+      readonly operation: 'expire_quote_creation';
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly missionId: string;
+      readonly missionRevision: number;
+      readonly effectiveReason: 'idle_ttl' | 'hard_ttl';
+      readonly effectiveExpiresAt: Instant;
+    }
+  | {
+      readonly operation: 'consume_staged_customer_resolution';
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly missionId: string;
+      readonly acknowledgementMissionRevision: number;
+    };
+
+export function deriveAgentMissionSystemCommandId(
+  input: AgentMissionSystemCommandInput,
+): string {
+  const canonical = input.operation === 'expire_quote_creation'
+    ? [
+        'bob.agent-mission.system-command.uuid-v8.v1',
+        input.operation,
+        input.companyId,
+        input.ownerUserId,
+        input.missionId,
+        input.missionRevision,
+        input.effectiveReason,
+        input.effectiveExpiresAt,
+      ]
+    : [
+        'bob.agent-mission.system-command.uuid-v8.v1',
+        input.operation,
+        input.companyId,
+        input.ownerUserId,
+        input.missionId,
+        input.acknowledgementMissionRevision,
+      ];
+  const hex = sha256Hex(JSON.stringify(canonical));
   return [
     hex.slice(0, 8),
     hex.slice(8, 12),
@@ -244,6 +389,7 @@ export function recordAgentMissionEvent(input: {
   readonly draftAfter: QuoteMissionDraftReferenceV1;
   readonly correlation?: {
     readonly realtimeSessionId: string;
+    readonly turnId: string | null;
     readonly contextRevision: number;
     readonly contextDigest: string;
   };
@@ -273,7 +419,7 @@ export function recordAgentMissionEvent(input: {
     draftContentRevisionBefore: input.draftBefore?.contentRevision ?? null,
     draftContentRevisionAfter: input.draftAfter.contentRevision,
     realtimeSessionId: input.correlation?.realtimeSessionId ?? null,
-    turnId: null,
+    turnId: input.correlation?.turnId ?? null,
     contextRevision: input.correlation?.contextRevision ?? null,
     contextDigest: input.correlation?.contextDigest ?? null,
     data: transition.event.data,

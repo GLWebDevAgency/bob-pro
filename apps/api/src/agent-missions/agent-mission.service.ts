@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   AcknowledgeQuoteScreen,
+  AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
   GetActiveAgentMission,
   StartQuoteAgentMission,
@@ -182,6 +183,8 @@ export class AgentMissionService {
       ...owner,
       authority: input.authorization.proof,
       commandId: input.commandId,
+      origin: { actor: 'user_tap', correlation: null },
+      customerReference: null,
     }).then((result) => {
       if (result.ok && result.value.outcome === 'created') {
         this.logger.audit('agent_mission.started', {
@@ -242,7 +245,7 @@ export class AgentMissionService {
     });
   }
 
-  acknowledgeScreen(input: {
+  async acknowledgeScreen(input: {
     readonly authorization: AgentMissionHttpAuthorization;
     readonly missionId: string;
     readonly commandId: string;
@@ -257,20 +260,21 @@ export class AgentMissionService {
     const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
     if (persistedUnitOfWork === null) {
       this.metrics.agentMissionScreenAcks.inc({ outcome: 'unavailable' });
-      return Promise.resolve(err(appUnavailable('agent_mission_persistence')));
+      return err(appUnavailable('agent_mission_persistence'));
     }
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
       'screen_ack',
     );
+    const ids = { newId: () => randomUUID() };
     const useCase = new AcknowledgeQuoteScreen({
       unitOfWork,
       fingerprints: this.fingerprints,
-      ids: { newId: () => randomUUID() },
+      ids,
     });
     const owner = input.authorization.owner;
-    return useCase.execute({
+    const acknowledged = await useCase.execute({
       ...owner,
       authority: input.authorization.proof,
       missionId: input.missionId,
@@ -282,22 +286,53 @@ export class AgentMissionService {
       draftSessionId: input.draftSessionId,
       expectedDraftSlotRevision: input.expectedDraftSlotRevision,
       expectedDraftContentRevision: input.expectedDraftContentRevision,
-    }).then((result) => {
-      this.metrics.agentMissionScreenAcks.inc({
-        outcome: agentMissionScreenAckMetricOutcome(result),
-      });
-      if (result.ok && result.value.outcome === 'acknowledged') {
-        this.logger.audit('agent_mission.screen_acknowledged', {
-          ...auditReferences(this.fingerprints, {
-            companyId: owner.companyId,
-            ownerUserId: owner.ownerUserId,
-            missionId: result.value.mission.id,
-          }),
-          outcome: result.value.outcome,
-          phase: result.value.mission.phase,
-        });
-      }
-      return result;
     });
+    if (!acknowledged.ok) {
+      this.metrics.agentMissionScreenAcks.inc({
+        outcome: agentMissionScreenAckMetricOutcome(acknowledged),
+      });
+      return acknowledged;
+    }
+
+    const advanced = await new AdvanceQuoteAgentMission({
+      unitOfWork,
+      fingerprints: this.fingerprints,
+      ids,
+    }).execute({
+      ...owner,
+      authority: input.authorization.proof,
+      missionId: input.missionId,
+      acknowledgementCommandId: acknowledged.value.receipt.ackCommandId,
+    });
+    if (!advanced.ok) {
+      this.metrics.agentMissionScreenAcks.inc({
+        outcome: agentMissionScreenAckMetricOutcome(advanced),
+      });
+      return advanced;
+    }
+
+    const result: Result<AcknowledgeQuoteScreenOutput, AppError> = {
+      ok: true,
+      value: Object.freeze({
+        ...acknowledged.value,
+        mission: advanced.value.mission,
+      }),
+    };
+    this.metrics.agentMissionScreenAcks.inc({
+      outcome: agentMissionScreenAckMetricOutcome(result),
+    });
+    if (acknowledged.value.outcome === 'acknowledged') {
+      this.logger.audit('agent_mission.screen_acknowledged', {
+        ...auditReferences(this.fingerprints, {
+          companyId: owner.companyId,
+          ownerUserId: owner.ownerUserId,
+          missionId: result.value.mission.id,
+        }),
+        outcome: acknowledged.value.outcome,
+        continuationOutcome: advanced.value.outcome,
+        phase: result.value.mission.phase,
+      });
+    }
+    return result;
   }
 }

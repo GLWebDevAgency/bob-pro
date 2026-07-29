@@ -164,10 +164,19 @@ La sélection réussie réalise dans une seule transaction PostgreSQL :
 Toute erreur annule les trois writes. Un replay exact n'écrit rien ; un même `commandId` avec un
 autre payload échoue. Une décision ou un écran périmé échoue sans « meilleure estimation ».
 
-Le champ `stagedCustomerResolution` est additif sur le wire : absent est lu comme `null`. La
-migration autorisant ce champ est expand-only, suivie d'une validation séparée. Le flag M1-C reste
-OFF pendant le déploiement et n'est activé qu'après drainage des pods N-1 ; un writer N-1 sous les
-contraintes finales reste certifié.
+Le champ `stagedCustomerResolution` est additif sur le wire : absent est lu comme `null`. Les
+unions JSON et événements étant fermées en base, la lignée SQL suit obligatoirement trois
+migrations append-only distinctes :
+
+1. **expand** : ajoute, en `NOT VALID`, les contraintes M1-C élargies sans supprimer les
+   contraintes canoniques actives ;
+2. **validate** : valide uniquement ces nouvelles contraintes dans une transaction séparée ;
+3. **cutover** : avec le flag M1-C toujours OFF et les writers M1-C non déployés, supprime les
+   anciennes contraintes fermées puis renomme atomiquement les contraintes validées.
+
+Les contraintes finales acceptent encore le payload N-1 à quatre clés, tous les événements legacy
+et leur namespace de commande. Le test writer N-1 est exécuté après expand, après validate et après
+cutover. Le flag M1-C n'est activé qu'après déploiement du writer N et drainage des pods N-1.
 
 ### 3.3 Parité voix/toucher
 

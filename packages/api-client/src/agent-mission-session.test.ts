@@ -12,6 +12,7 @@ const MISSION_ID = '11111111-1111-4111-8111-111111111111';
 const CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
 const CREATED_AT = '2026-07-26T08:00:00.000Z';
 const ACKNOWLEDGED_AT = '2026-07-26T08:01:00.000Z';
+const ACK_COMMAND_ID = '55555555-5555-4555-8555-555555555555';
 const DRAFT = Object.freeze({
   sessionId: 'quote-draft-session-1',
   slotRevision: 1,
@@ -24,6 +25,7 @@ function initialMission() {
     companyId: 'company-1',
     ownerUserId: 'user-1',
     createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
     startOutcome: 'no_slot',
     draft: DRAFT,
   });
@@ -186,6 +188,15 @@ describe('Realtime AgentMission capability handle', () => {
         });
         return new Response(JSON.stringify({
           outcome: 'acknowledged',
+          receipt: {
+            ackCommandId: ACK_COMMAND_ID,
+            missionId: MISSION_ID,
+            missionRevisionAfter: 2,
+            realtimeSessionId: SESSION_ID,
+            contextRevision: 3,
+            contextDigest: 'a'.repeat(64),
+            occurredAt: ACKNOWLEDGED_AT,
+          },
           mission: acknowledgedView,
         }), { headers: { 'content-type': 'application/json' } });
       }

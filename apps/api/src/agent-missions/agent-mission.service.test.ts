@@ -6,7 +6,13 @@ import type {
   AgentMissionTransaction,
   AgentMissionUnitOfWorkPort,
 } from '@bob/core';
-import { describe, expect, it, vi } from 'vitest';
+import {
+  AcknowledgeQuoteScreen,
+  AdvanceQuoteAgentMission,
+  AgentMission,
+  toAgentMissionView,
+} from '@bob/core';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../observability/logger';
 import type { Metrics } from '../observability/metrics';
 import type { Persistence } from '../persistence/persistence';
@@ -26,6 +32,84 @@ const FINGERPRINTS: AgentMissionFingerprintPort = {
   sign: () => null,
   matches: () => null,
 };
+const MISSION_ID = '20000000-0000-4000-8000-000000000001';
+const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
+const ACK_COMMAND_ID = '10000000-0000-4000-8000-000000000003';
+const NOW = '2026-07-29T00:00:00.000Z';
+
+function continuationFixtures() {
+  const started = AgentMission.start({
+    id: MISSION_ID,
+    ...OWNER,
+    createdAt: NOW,
+    stagedCustomerResolution: {
+      kind: 'exact',
+      customerId: 'customer-camping',
+    },
+    startOutcome: 'no_slot',
+    draft: {
+      sessionId: 'quote-draft-session-1',
+      slotRevision: 1,
+      contentRevision: 0,
+    },
+  });
+  if (!started.ok) {
+    throw new Error(`fixture start invalide:${JSON.stringify(started.error)}`);
+  }
+  const acknowledged = started.value.mission.acknowledgeQuoteScreen({
+    expectedRevision: 1,
+    binding: {
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      screenName: '/devis/new',
+      screenInstanceId: 'quote-screen-1',
+      acknowledgedAt: NOW,
+    },
+    observedDraft: {
+      sessionId: 'quote-draft-session-1',
+      slotRevision: 1,
+      contentRevision: 0,
+    },
+    draftHasCustomer: false,
+    occurredAt: NOW,
+  });
+  if (!acknowledged.ok) {
+    throw new Error(`fixture ACK invalide:${acknowledged.error.code}`);
+  }
+  const advanced = acknowledged.value.mission.consumeStagedCustomerResolution({
+    expectedRevision: 2,
+    outcome: 'select_exact',
+    customerId: 'customer-camping',
+    updatedDraft: {
+      sessionId: 'quote-draft-session-1',
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    occurredAt: NOW,
+  });
+  if (!advanced.ok) {
+    throw new Error(`fixture Advance invalide:${advanced.error.code}`);
+  }
+  const acknowledgedView = toAgentMissionView(acknowledged.value.mission, NOW);
+  const advancedView = toAgentMissionView(advanced.value.mission, NOW);
+  if (!acknowledgedView.ok || !advancedView.ok) {
+    throw new Error('fixture AgentMissionView invalide');
+  }
+  return {
+    acknowledgedView: acknowledgedView.value,
+    advancedView: advancedView.value,
+    receipt: {
+      ackCommandId: ACK_COMMAND_ID,
+      missionId: MISSION_ID,
+      missionRevisionAfter: 2,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      occurredAt: NOW,
+    },
+  };
+}
 
 function authorization(
   operation: AgentMissionHttpAuthorization['operation'],
@@ -81,6 +165,10 @@ function harness(unitOfWork: AgentMissionUnitOfWorkPort | null) {
 }
 
 describe('AgentMissionService metrics', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([
     [
       'get',
@@ -170,5 +258,72 @@ describe('AgentMissionService metrics', () => {
     });
     expect(capabilityInc).not.toHaveBeenCalled();
     expect(screenAckInc).toHaveBeenCalledWith({ outcome: 'unavailable' });
+  });
+
+  it('n’acquitte pas HTTP avant la continuation durable post-ACK', async () => {
+    const fixtures = continuationFixtures();
+    vi.spyOn(AcknowledgeQuoteScreen.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'acknowledged',
+        receipt: fixtures.receipt,
+        mission: fixtures.acknowledgedView,
+      },
+    });
+    let resolveAdvance:
+      | ((value: Awaited<ReturnType<AdvanceQuoteAgentMission['execute']>>) => void)
+      | undefined;
+    vi.spyOn(AdvanceQuoteAgentMission.prototype, 'execute').mockImplementation(
+      () => new Promise((resolve) => {
+        resolveAdvance = resolve;
+      }),
+    );
+    const { service, screenAckInc } = harness(
+      new RejectingUnitOfWork('state'),
+    );
+    const response = service.acknowledgeScreen({
+      authorization: authorization('acknowledge_quote_screen'),
+      missionId: MISSION_ID,
+      commandId: ACK_COMMAND_ID,
+      expectedMissionRevision: 1,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      draftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+    });
+    let settled = false;
+    void response.finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(resolveAdvance).toBeTypeOf('function');
+
+    resolveAdvance?.({
+      ok: true,
+      value: {
+        outcome: 'advanced',
+        mission: fixtures.advancedView,
+      },
+    });
+
+    await expect(response).resolves.toEqual({
+      ok: true,
+      value: {
+        outcome: 'acknowledged',
+        receipt: fixtures.receipt,
+        mission: fixtures.advancedView,
+      },
+    });
+    expect(AdvanceQuoteAgentMission.prototype.execute).toHaveBeenCalledWith({
+      ...OWNER,
+      authority: PROOF,
+      missionId: MISSION_ID,
+      acknowledgementCommandId: ACK_COMMAND_ID,
+    });
+    expect(screenAckInc).toHaveBeenCalledOnce();
+    expect(screenAckInc).toHaveBeenCalledWith({ outcome: 'accepted' });
   });
 });

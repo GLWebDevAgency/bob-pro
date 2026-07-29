@@ -1,4 +1,7 @@
-import { isCanonicalAgentMissionUserCommandId } from '../../domain/agent/agent-mission-event';
+import {
+  isCanonicalAgentMissionUserCommandId,
+  type AgentMissionEventSnapshot,
+} from '../../domain/agent/agent-mission-event';
 import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type IdGeneratorPort } from '../ports/services';
@@ -47,7 +50,18 @@ export interface AcknowledgeQuoteScreenInput extends AgentMissionOwner {
 
 export interface AcknowledgeQuoteScreenOutput {
   readonly outcome: 'acknowledged' | 'replayed';
+  readonly receipt: AcknowledgeQuoteScreenReceipt;
   readonly mission: AgentMissionViewV1;
+}
+
+export interface AcknowledgeQuoteScreenReceipt {
+  readonly ackCommandId: string;
+  readonly missionId: string;
+  readonly missionRevisionAfter: number;
+  readonly realtimeSessionId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly occurredAt: string;
 }
 
 export interface AcknowledgeQuoteScreenDeps {
@@ -91,6 +105,27 @@ function screenObservationError(
   return reason === 'unavailable'
     ? appUnavailable('agent_mission_screen_ack')
     : appConflict('agent_mission_screen_ack', reason);
+}
+
+function acknowledgementReceipt(
+  snapshot: AgentMissionEventSnapshot,
+): AcknowledgeQuoteScreenReceipt | null {
+  if (
+    snapshot.eventType !== 'screen_acknowledged'
+    || snapshot.realtimeSessionId === null
+    || snapshot.contextRevision === null
+    || snapshot.contextDigest === null
+    || snapshot.turnId !== null
+  ) return null;
+  return Object.freeze({
+    ackCommandId: snapshot.commandId,
+    missionId: snapshot.missionId,
+    missionRevisionAfter: snapshot.missionRevisionAfter,
+    realtimeSessionId: snapshot.realtimeSessionId,
+    contextRevision: snapshot.contextRevision,
+    contextDigest: snapshot.contextDigest,
+    occurredAt: snapshot.occurredAt,
+  });
 }
 
 export class AcknowledgeQuoteScreen {
@@ -190,8 +225,17 @@ export class AcknowledgeQuoteScreen {
             }
             const view = toAgentMissionView(replayed, now);
             if (!view.ok) abort(view.error);
+            const receipt = acknowledgementReceipt(snapshot);
+            if (receipt === null) {
+              abort({
+                kind: 'dependency',
+                port: 'agent_mission_event',
+                cause: 'invalid_screen_ack_receipt',
+              });
+            }
             return {
               outcome: 'replayed',
+              receipt,
               mission: view.value,
             } satisfies AcknowledgeQuoteScreenOutput;
           }
@@ -260,6 +304,7 @@ export class AcknowledgeQuoteScreen {
             draftAfter: observation.draft,
             correlation: {
               realtimeSessionId: observation.realtimeSessionId,
+              turnId: null,
               contextRevision: observation.contextRevision,
               contextDigest: observation.contextDigest,
             },
@@ -268,8 +313,17 @@ export class AcknowledgeQuoteScreen {
           await transaction.events.append(event.value);
           const view = toAgentMissionView(transition.value.mission, now);
           if (!view.ok) abort(view.error);
+          const receipt = acknowledgementReceipt(event.value.toSnapshot());
+          if (receipt === null) {
+            abort({
+              kind: 'dependency',
+              port: 'agent_mission_event',
+              cause: 'invalid_screen_ack_receipt',
+            });
+          }
           return {
             outcome: 'acknowledged',
+            receipt,
             mission: view.value,
           } satisfies AcknowledgeQuoteScreenOutput;
         },
