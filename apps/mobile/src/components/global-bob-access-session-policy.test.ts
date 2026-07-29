@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceGlobalBobSessionStopFence,
   deriveGlobalBobSessionStopReason,
+  isBobEntryRoute,
 } from './global-bob-access-session-policy';
 
 describe('GlobalBobAccess — session masquée fail-closed', () => {
@@ -34,6 +35,32 @@ describe('GlobalBobAccess — session masquée fail-closed', () => {
       entitled: true,
       pathname: '/assistant',
     })).toBeNull();
+  });
+
+  it('n’apparaît sur aucun parcours d’entrée, y compris quand l’abonnement est illisible', () => {
+    // Cas réel du 29/07/2026 : pendant l'onboarding le tenant n'existe pas encore, l'appel
+    // d'abonnement échoue, et le filet `entitlementUnavailable` affichait Bob là où il ne
+    // pouvait rien faire. La route doit trancher AVANT le droit, sans attendre le réseau.
+    for (const pathname of ['/onboarding', '/auth', '/auth/callback', '/auth/recovery']) {
+      expect(deriveGlobalBobSessionStopReason({
+        subscriptionResolved: false,
+        entitled: false,
+        pathname,
+      })).toBe('incompatible_route');
+      expect(deriveGlobalBobSessionStopReason({
+        subscriptionResolved: true,
+        entitled: true,
+        pathname,
+      })).toBe('incompatible_route');
+      expect(isBobEntryRoute(pathname)).toBe(true);
+    }
+  });
+
+  it('ne confond pas un préfixe de segment avec une route qui commence pareil', () => {
+    for (const pathname of ['/', '/assistant', '/authentification', '/onboarding-terminal', '/compte']) {
+      expect(isBobEntryRoute(pathname)).toBe(false);
+    }
+    expect(isBobEntryRoute('/onboarding/')).toBe(true);
   });
 
   it('coupe exactement une fois puis se réarme contre une activation posthume', () => {

@@ -6,8 +6,8 @@
  * Cible http(s) du `emailRedirectTo` d'inscription mobile : GoTrue vérifie l'email PUIS
  * redirige ici avec, selon le flux, `?code=` (PKCE), `#access_token…` (implicite) ou des
  * paramètres d'erreur (`error_code=otp_expired`…). La page :
- *   1. relaie TOUS les paramètres vers le deep link de l'app (`bobpro:///auth/callback`,
- *      ou `bobpro:///auth/recovery` si un fallback Site URL portait `type=recovery`) ;
+ *   1. relaie TOUS les paramètres vers le deep link de l'app (`bobpro://auth/callback`,
+ *      ou `bobpro://auth/recovery` si un fallback Site URL portait `type=recovery`) ;
  *   2. tente d'ouvrir l'app automatiquement, avec bouton + repli texte si rien ne s'ouvre
  *      (email lu sur un ordinateur : le compte est confirmé, la connexion se fait sur mobile) ;
  *   3. nettoie immédiatement l'URL du navigateur (le code/les jetons ne restent ni dans
@@ -39,8 +39,8 @@ function analyzeLocation(search: string, hash: string): Outcome {
   // renvoie alors vers la route native de récupération, pas vers la confirmation.
   const deepLink =
     read('type') === 'recovery'
-      ? `bobpro:///auth/recovery${suffix}`
-      : `bobpro:///auth/callback${suffix}`;
+      ? `bobpro://auth/recovery${suffix}`
+      : `bobpro://auth/callback${suffix}`;
 
   const errorCode = `${read('error_code') ?? ''} ${read('error') ?? ''}`.trim().toLowerCase();
   if (errorCode.length > 0) {

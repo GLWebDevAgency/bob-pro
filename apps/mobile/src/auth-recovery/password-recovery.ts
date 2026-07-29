@@ -1,5 +1,8 @@
 export const PASSWORD_RECOVERY_ROUTE = '/auth/recovery' as const;
 export const PASSWORD_RECOVERY_SCHEME = 'bobpro' as const;
+/** Forme canonique acceptée par Expo ET par l'éditeur d'allowlist Supabase. */
+export const PASSWORD_RECOVERY_DEEP_LINK =
+  `${PASSWORD_RECOVERY_SCHEME}:/${PASSWORD_RECOVERY_ROUTE}` as const;
 
 const MAX_RECOVERY_URL_LENGTH = 16_384;
 const MAX_RECOVERY_PROOF_LENGTH = 12_288;

@@ -28,6 +28,7 @@ import {
 import {
   advanceGlobalBobSessionStopFence,
   deriveGlobalBobSessionStopReason,
+  isBobEntryRoute,
 } from './global-bob-access-session-policy';
 import { useBobOverlayMetrics } from './use-bob-aware-scroll-insets';
 
@@ -99,10 +100,14 @@ export function GlobalBobAccess() {
             ? 'agent.global.error'
             : 'agent.global.idle';
   const stateLabel = t(stateKey, { personality });
+  // `entitlementUnavailable` laisse Bob visible quand l'abonnement n'a pas pu être lu — un filet
+  // qui, sur les parcours d'entrée, se retournait contre nous : l'appel échoue par construction
+  // (pas encore de tenant), donc le bouton s'affichait précisément là où Bob ne sert à rien.
   const visible = !(
     (!entitled && !entitlementUnavailable) ||
     layout.hidden ||
-    ownsItsVoiceChrome
+    ownsItsVoiceChrome ||
+    isBobEntryRoute(pathname)
   );
   const accessibilityAnnouncementInput = {
     visible,

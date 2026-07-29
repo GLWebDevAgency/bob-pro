@@ -125,7 +125,7 @@ function AuthGate({ children }: { children: ReactNode }) {
     return <PasswordRecoveryScreen />;
   }
   // Confirmation d'inscription : même sortie de gate que la récupération — l'écran consomme le
-  // deep link (`bobpro:///auth/callback`), échange la preuve PKCE puis laisse AuthGate entrer
+  // deep link (`bobpro://auth/callback`), échange la preuve PKCE puis laisse AuthGate entrer
   // naturellement une fois la session publiée.
   if (pathname === EMAIL_CONFIRMATION_ROUTE || emailConfirmation.phase !== 'idle') {
     return <EmailConfirmationScreen />;
