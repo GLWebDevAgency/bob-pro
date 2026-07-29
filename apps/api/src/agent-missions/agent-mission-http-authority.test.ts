@@ -201,12 +201,13 @@ describe('AgentMission HTTP authority', () => {
     expect(inc).not.toHaveBeenCalled();
   });
 
-  it('borne exhaustivement les quatre labels operation', () => {
+  it('borne exhaustivement les cinq labels operation', () => {
     expect([
       agentMissionCapabilityMetricOperation('get_current_quote_creation'),
       agentMissionCapabilityMetricOperation('start_quote_creation'),
       agentMissionCapabilityMetricOperation('cancel_quote_creation'),
       agentMissionCapabilityMetricOperation('acknowledge_quote_screen'),
-    ]).toEqual(['get', 'start', 'cancel', 'screen_ack']);
+      agentMissionCapabilityMetricOperation('decide_quote_creation'),
+    ]).toEqual(['get', 'start', 'cancel', 'screen_ack', 'decision']);
   });
 });

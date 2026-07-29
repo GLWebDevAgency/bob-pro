@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +61,18 @@ const bootstrapReceiptValidatePath = path.join(
   apiDir,
   'prisma/migrations/20260727230000_agent_mission_bootstrap_receipt_validate/migration.sql',
 );
+const customerResolutionExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260729100000_agent_mission_customer_resolution_expand/migration.sql',
+);
+const customerResolutionValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260729100100_agent_mission_customer_resolution_validate/migration.sql',
+);
+const customerResolutionCutoverPath = path.join(
+  apiDir,
+  'prisma/migrations/20260729100200_agent_mission_customer_resolution_cutover/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');
 const agentMissionRlsReplayPath = path.join(
@@ -82,6 +95,9 @@ const [
   fingerprintKeyReadiness,
   bootstrapReceiptExpand,
   bootstrapReceiptValidate,
+  customerResolutionExpand,
+  customerResolutionValidate,
+  customerResolutionCutover,
   schema,
   rls,
   agentMissionRlsReplay,
@@ -100,6 +116,9 @@ const [
   readFile(fingerprintKeyReadinessPath, 'utf8'),
   readFile(bootstrapReceiptExpandPath, 'utf8'),
   readFile(bootstrapReceiptValidatePath, 'utf8'),
+  readFile(customerResolutionExpandPath, 'utf8'),
+  readFile(customerResolutionValidatePath, 'utf8'),
+  readFile(customerResolutionCutoverPath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
@@ -123,6 +142,46 @@ test('les listes SQL AgentMission sont générées depuis les constantes du core
     generator,
     /AGENT_MISSION_PROTOCOL_MIGRATION_FROZEN: create a new expand\/validate migration/u,
   );
+  assert.match(generator, /return extractConstArray\(source, spread\[1\], nextStack\)/u);
+  assert.match(generator, /AGENT_MISSION_SQL_SOURCE_ARRAY_CYCLE/u);
+  assert.match(generator, /AGENT_MISSION_SQL_SOURCE_ARRAY_TOKEN_INVALID/u);
+  assert.match(generator, /frozenHistoricalMigrationHashes/u);
+  assert.equal(
+    (generator.match(/\bawait writeFile\(/gmu) ?? []).length,
+    1,
+    'Le générateur ne doit écrire que la nouvelle migration M1-C.',
+  );
+  assert.match(
+    generator,
+    /await writeFile\(\s*customerResolutionExpandMigrationPath/u,
+  );
+  assert.doesNotMatch(generator, /await writeFile\(\s*migrationPath/u);
+  assert.doesNotMatch(generator, /await writeFile\(\s*capabilityMigrationPath/u);
+  assert.doesNotMatch(generator, /await writeFile\(\s*commandNamespaceMigrationPath/u);
+
+  for (const [name, sql, expectedHash] of [
+    [
+      '20260726010000',
+      expand,
+      '51300a662e0a8a0d92bc80ba371f9fb40f3087e42b049e30823f460087f32882',
+    ],
+    [
+      '20260727140000',
+      capabilityExpand,
+      'eeeabc0eb680662b06acf5325e791e3635b20d000f90cb590217187d68b118be',
+    ],
+    [
+      '20260727180000',
+      commandNamespaceExpand,
+      '5e4a07e66e047573ccb1766f6a8c844fad8bfe0a128ce9312abac17a9d4f19c5',
+    ],
+  ]) {
+    assert.equal(
+      createHash('sha256').update(sql, 'utf8').digest('hex'),
+      expectedHash,
+      `${name}: une migration historique appliquée a été réécrite`,
+    );
+  }
 });
 
 test('chaque migration borne les verrous et le temps de statement dans sa transaction', () => {
@@ -140,6 +199,9 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['fingerprint key readiness', fingerprintKeyReadiness],
     ['bootstrap receipt expand', bootstrapReceiptExpand],
     ['bootstrap receipt validate', bootstrapReceiptValidate],
+    ['customer resolution expand', customerResolutionExpand],
+    ['customer resolution validate', customerResolutionValidate],
+    ['customer resolution cutover', customerResolutionCutover],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -150,6 +212,120 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     );
     assert.match(sql, /\bCOMMIT;/u, `${name}: commit absent`);
   }
+});
+
+test('M1-C suit expand, validate puis cutover avec huit contraintes fermées', () => {
+  const constraintNames = [
+    'agent_missions_payload_m1c_check',
+    'agent_missions_payload_closed_shape_m1c_check',
+    'agent_missions_phase_payload_m1c_check',
+    'agent_mission_events_type_m1c_check',
+    'agent_mission_events_envelope_m1c_check',
+    'agent_mission_events_data_m1c_check',
+    'agent_mission_events_correlation_m1c_check',
+    'agent_mission_events_draft_effect_m1c_check',
+  ];
+
+  assert.equal(
+    (customerResolutionExpand.match(/\bNOT VALID\b/gmu) ?? []).length,
+    constraintNames.length,
+  );
+  assert.doesNotMatch(customerResolutionExpand, /\bVALIDATE CONSTRAINT\b/u);
+  assert.doesNotMatch(customerResolutionExpand, /\bDROP CONSTRAINT\b/u);
+  assert.doesNotMatch(customerResolutionExpand, /\bRENAME CONSTRAINT\b/u);
+
+  assert.equal(
+    (customerResolutionValidate.match(/\bVALIDATE CONSTRAINT\b/gmu) ?? []).length,
+    constraintNames.length,
+  );
+  assert.doesNotMatch(customerResolutionValidate, /\bNOT VALID\b/u);
+  assert.doesNotMatch(customerResolutionValidate, /\bDROP CONSTRAINT\b/u);
+  assert.doesNotMatch(customerResolutionValidate, /\bRENAME CONSTRAINT\b/u);
+
+  assert.equal(
+    (customerResolutionCutover.match(/\bDROP CONSTRAINT\b/gmu) ?? []).length,
+    constraintNames.length,
+  );
+  assert.equal(
+    (customerResolutionCutover.match(/\bRENAME CONSTRAINT\b/gmu) ?? []).length,
+    constraintNames.length,
+  );
+  assert.doesNotMatch(customerResolutionCutover, /\bNOT VALID\b/u);
+  assert.doesNotMatch(customerResolutionCutover, /\bVALIDATE CONSTRAINT\b/u);
+
+  for (const constraintName of constraintNames) {
+    assert.match(customerResolutionExpand, new RegExp(`\\b${constraintName}\\b`, 'u'));
+    assert.match(customerResolutionValidate, new RegExp(`\\b${constraintName}\\b`, 'u'));
+    const canonicalName = constraintName.replace('_m1c_check', '_check');
+    const dropIndex = customerResolutionCutover.indexOf(`DROP CONSTRAINT ${canonicalName}`);
+    const renameIndex = customerResolutionCutover.indexOf(
+      `RENAME CONSTRAINT ${constraintName}`,
+    );
+    assert.ok(
+      dropIndex >= 0 && renameIndex > dropIndex,
+      `${constraintName}: le cutover doit supprimer l’ancienne contrainte avant le renommage`,
+    );
+  }
+});
+
+test('M1-C garde N-1 et ferme les formes staged et continuation système', () => {
+  assert.match(
+    customerResolutionExpand,
+    /NOT \("payload" \? 'stagedCustomerResolution'\)[\s\S]*?M1C_QUOTE_MISSION_LEGACY_PAYLOAD_KEYS/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"payload" -> 'stagedCustomerResolution' = 'null'::JSONB/u,
+  );
+  for (const kind of ['none', 'too_many', 'exact', 'choices']) {
+    assert.match(customerResolutionExpand, new RegExp(`'${kind}'`, 'u'));
+  }
+  assert.match(
+    customerResolutionExpand,
+    /jsonb_array_length\([\s\S]*?stagedCustomerResolution,candidates[\s\S]*?\) BETWEEN 1 AND 5/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /stagedCustomerResolution,candidates,0,choiceId[\s\S]*?<>[\s\S]*?stagedCustomerResolution,candidates,1,choiceId/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /stagedCustomerResolution,candidates,0,customerId[\s\S]*?<>[\s\S]*?stagedCustomerResolution,candidates,1,customerId/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"phase" NOT IN \('awaiting_customer_choice', 'awaiting_lines'\)/u,
+  );
+
+  assert.match(
+    customerResolutionExpand,
+    /"eventType" = 'customer_resolution_staged'[\s\S]*?"data" ->> 'result' = 'none'[\s\S]*?observedCandidateCount'\)::NUMERIC = 0/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"data" ->> 'result' = 'too_many'[\s\S]*?observedCandidateCount'\)::NUMERIC = 6/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"data" ->> 'result' = 'exact'[\s\S]*?observedCandidateCount'\)::NUMERIC = 1/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"data" ->> 'result' = 'choices'[\s\S]*?observedCandidateCount'\)::NUMERIC BETWEEN 1 AND 5/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES[\s\S]*?"actor" = 'system'[\s\S]*?-8\[a-f0-9\]\{3\}/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"eventType" <> 'customer_selected'[\s\S]*?"data" ->> 'source' = 'exact_match'/u,
+  );
+  assert.match(
+    customerResolutionExpand,
+    /"data" ->> 'source' <> 'screen_selection'[\s\S]*?"actor" = 'user_tap'/u,
+  );
+  assert.doesNotMatch(customerResolutionExpand, /\bSELECT\b/iu);
 });
 
 test('le registre fingerprint lie le matériau, borne les writers et ferme Data API', () => {

@@ -5,6 +5,7 @@ import {
   type AgentMissionViewV1,
 } from '@bob/core';
 import {
+  decodeAgentMissionDecision,
   decodeAgentMissionScreenAck,
   decodeAgentMissionStart,
 } from './agent-mission-codec';
@@ -14,6 +15,7 @@ const ACKNOWLEDGED_AT = '2026-07-26T08:01:00.000Z';
 const CANCELLED_AT = '2026-07-26T08:02:00.000Z';
 const MISSION_ID = '11111111-1111-4111-8111-111111111111';
 const REALTIME_SESSION_ID = '22222222-2222-4222-8222-222222222222';
+const ACK_COMMAND_ID = '55555555-5555-4555-8555-555555555555';
 const DRAFT = Object.freeze({
   sessionId: 'quote-draft-session-1',
   slotRevision: 1,
@@ -26,11 +28,24 @@ function initialMission() {
     companyId: 'company-1',
     ownerUserId: 'user-1',
     createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
     startOutcome: 'no_slot',
     draft: DRAFT,
   });
   if (!started.ok) throw new Error(`Mission fixture invalide: ${started.error.code}`);
   return started.value.mission;
+}
+
+function receipt() {
+  return {
+    ackCommandId: ACK_COMMAND_ID,
+    missionId: MISSION_ID,
+    missionRevisionAfter: 2,
+    realtimeSessionId: REALTIME_SESSION_ID,
+    contextRevision: 1,
+    contextDigest: 'a'.repeat(64),
+    occurredAt: ACKNOWLEDGED_AT,
+  };
 }
 
 function viewAt(
@@ -61,6 +76,24 @@ function acknowledgedMission() {
     throw new Error(`ACK fixture invalide: ${acknowledged.error.code}`);
   }
   return acknowledged.value.mission;
+}
+
+function selectedMission() {
+  const selected = acknowledgedMission().selectCustomer({
+    expectedRevision: 2,
+    source: 'screen_selection',
+    customerId: 'customer-camping',
+    updatedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    occurredAt: CANCELLED_AT,
+  });
+  if (!selected.ok) {
+    throw new Error(`Sélection fixture invalide: ${selected.error.code}`);
+  }
+  return selected.value.mission;
 }
 
 describe('AgentMission HTTP codecs', () => {
@@ -132,22 +165,99 @@ describe('AgentMission HTTP codecs', () => {
 
     expect(decodeAgentMissionScreenAck({
       outcome: 'acknowledged',
+      receipt: receipt(),
       mission: activeView,
     })).not.toBeNull();
     expect(decodeAgentMissionScreenAck({
       outcome: 'acknowledged',
+      receipt: receipt(),
       mission: viewAt(initialMission(), CREATED_AT),
     })).toBeNull();
     expect(decodeAgentMissionScreenAck({
       outcome: 'acknowledged',
+      receipt: receipt(),
       mission: cancelledView,
     })).toBeNull();
     expect(decodeAgentMissionScreenAck({
       outcome: 'replayed',
+      receipt: receipt(),
       mission: cancelledView,
     })).toEqual({
       outcome: 'replayed',
+      receipt: receipt(),
       mission: cancelledView,
     });
+    expect(decodeAgentMissionScreenAck({
+      outcome: 'replayed',
+      receipt: { ...receipt(), missionId: '99999999-9999-4999-8999-999999999999' },
+      mission: cancelledView,
+    })).toBeNull();
+  });
+
+  it('décode les effets exacts d’une décision et lie la réponse à la mission demandée', () => {
+    const awaitingCustomer = viewAt(acknowledgedMission(), ACKNOWLEDGED_AT);
+    const selected = viewAt(selectedMission(), CANCELLED_AT);
+
+    expect(decodeAgentMissionDecision({
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: selected,
+    }, MISSION_ID)).toEqual({
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: selected,
+    });
+    expect(decodeAgentMissionDecision({
+      outcome: 'invalidated',
+      effect: { kind: 'invalidated', reason: 'candidate_unavailable' },
+      mission: awaitingCustomer,
+    }, MISSION_ID)).toEqual({
+      outcome: 'invalidated',
+      effect: { kind: 'invalidated', reason: 'candidate_unavailable' },
+      mission: awaitingCustomer,
+    });
+    expect(decodeAgentMissionDecision({
+      outcome: 'replayed',
+      effect: { kind: 'invalidated', reason: 'choice_set_stale' },
+      mission: awaitingCustomer,
+    }, MISSION_ID)).toEqual({
+      outcome: 'replayed',
+      effect: { kind: 'invalidated', reason: 'choice_set_stale' },
+      mission: awaitingCustomer,
+    });
+    expect(decodeAgentMissionDecision({
+      outcome: 'replayed',
+      mission: awaitingCustomer,
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionDecision({
+      outcome: 'replayed',
+      effect: { kind: 'presented', candidateCount: 2 },
+      mission: awaitingCustomer,
+    }, MISSION_ID)).toBeNull();
+
+    expect(decodeAgentMissionDecision({
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: awaitingCustomer,
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionDecision({
+      outcome: 'invalidated',
+      effect: { kind: 'invalidated', reason: 'candidate_unavailable' },
+      mission: selected,
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionDecision({
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: selected,
+    }, '99999999-9999-4999-8999-999999999999')).toBeNull();
+    expect(decodeAgentMissionDecision({
+      outcome: 'selected',
+      mission: selected,
+      extra: true,
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionDecision({
+      outcome: 'unknown',
+      mission: selected,
+    }, MISSION_ID)).toBeNull();
   });
 });

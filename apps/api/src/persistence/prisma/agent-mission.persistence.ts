@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   AgentMission,
   AgentMissionEvent,
+  normalizeCustomerName,
   parseQuoteDraftPayload,
   type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionCapabilityRejectionReason,
@@ -20,9 +21,16 @@ import {
   type AgentMissionRealtimeAuthorityProof,
   type AgentMissionRepositoryPort,
   type AgentMissionReadExecution,
+  type AgentMissionResumeReadExecution,
+  type AgentMissionResumeReadTransaction,
+  type AgentMissionResumeUnitOfWorkPort,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
+  type CustomerCandidate,
+  type CustomerCandidateReadPort,
+  type CustomerCandidateReference,
+  type CustomerCandidateSearchPort,
   type QuoteDraftPayloadV1,
 } from '@bob/core';
 import {
@@ -94,6 +102,25 @@ interface AgentMissionAuthorityLeaseRow {
   readonly agentMissionCapabilityHash: string | null;
   readonly agentMissionReleaseFlagVersion: number | null;
   readonly agentMissionBootstrapAcknowledgedAt: Date | null;
+}
+
+interface CustomerCandidateRow {
+  readonly customerId: string;
+  readonly canonicalName: string;
+  readonly matchKind: 'exact' | 'fuzzy';
+  readonly score: number;
+}
+
+interface CustomerCandidateReferenceRow {
+  readonly customerId: string;
+  readonly canonicalName: string;
+}
+
+function canonicalCustomerName(value: string): string {
+  // Les lignes historiques précèdent parfois la normalisation du domaine. Une valeur réellement
+  // invalide reste inchangée afin que le validateur core échoue fermé ; seuls les espaces sans
+  // sémantique sont réparés à la frontière Prisma.
+  return normalizeCustomerName(value) ?? value;
 }
 
 type AgentMissionAuthorityResolution =
@@ -710,12 +737,232 @@ implements AgentMissionQuoteDraftRepositoryPort {
     `;
     return rows.length === 1;
   }
+
+  async selectCustomerCas(input: AgentMissionOwner & {
+    readonly missionId: string;
+    readonly expectedSlotRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftContentRevision: number;
+    readonly payload: QuoteDraftPayloadV1;
+  }): Promise<AgentMissionQuoteDraftSlot | null> {
+    await setMissionContext(this.transaction, input.missionId);
+    const payloadJson = JSON.stringify(input.payload);
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      UPDATE public.quote_draft_slots
+      SET
+        "revision" = "revision" + 1,
+        "payloadVersion" = 1,
+        "payload" = ${payloadJson}::jsonb,
+        "updatedAt" = clock_timestamp()
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "agentMissionId" = ${input.missionId}::UUID
+        AND "revision" = ${input.expectedSlotRevision}
+        AND "revision" < 2147483647
+        AND "payloadVersion" = 1
+        AND "payload" -> 'draft' ->> 'sessionId' = ${input.expectedDraftSessionId}
+        AND ("payload" #>> '{draft,contentRevision}')::integer
+          = ${input.expectedDraftContentRevision}
+        AND "payload" -> 'draft' ->> 'step' = 'client'
+        AND "payload" -> 'draft' -> 'customer' = 'null'::jsonb
+      RETURNING ${QUOTE_DRAFT_COLUMNS}
+    `;
+    return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
+  }
+}
+
+class PrismaAgentMissionCustomerRepository
+implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async search(input: {
+    readonly companyId: string;
+    readonly query: string;
+    readonly limit: 6;
+  }): Promise<readonly CustomerCandidate[]> {
+    const rows = await this.transaction.$queryRaw<CustomerCandidateRow[]>`
+      SELECT
+        c."id" AS "customerId",
+        c."name" AS "canonicalName",
+        CASE
+          WHEN immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          THEN 'exact'::text
+          ELSE 'fuzzy'::text
+        END AS "matchKind",
+        CASE
+          WHEN immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          THEN 1.0::double precision
+          ELSE word_similarity(
+            immutable_unaccent(lower(${input.query})),
+            immutable_unaccent(lower(c."name"))
+          )::double precision
+        END AS "score"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND (
+          immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+          OR immutable_unaccent(lower(${input.query}))
+            <% immutable_unaccent(lower(c."name"))
+        )
+      ORDER BY
+        (
+          immutable_unaccent(lower(c."name"))
+            = immutable_unaccent(lower(${input.query}))
+        ) DESC,
+        "score" DESC,
+        immutable_unaccent(lower(c."name")) COLLATE "C" ASC,
+        c."id" ASC
+      LIMIT ${input.limit}
+      FOR SHARE OF c
+    `;
+    return rows.map((row) => Object.freeze({
+      customerId: row.customerId,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+      matchKind: row.matchKind,
+      score: row.score,
+    }));
+  }
+
+  async findById(input: {
+    readonly companyId: string;
+    readonly customerId: string;
+  }): Promise<CustomerCandidateReference | null> {
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" = ${input.customerId}
+      LIMIT 1
+      FOR SHARE
+    `;
+    const row = rows[0];
+    return row === undefined
+      ? null
+      : Object.freeze({
+          ...row,
+          canonicalName: canonicalCustomerName(row.canonicalName),
+        });
+  }
+
+  async findByIds(input: {
+    readonly companyId: string;
+    readonly customerIds: readonly string[];
+  }): Promise<readonly CustomerCandidateReference[]> {
+    if (input.customerIds.length === 0) return [];
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" IN (${Prisma.join(input.customerIds)})
+      ORDER BY c."id" ASC
+      FOR SHARE
+    `;
+    return rows.map((row) => Object.freeze({
+      ...row,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+    }));
+  }
+}
+
+class PrismaAgentMissionResumeQuoteDraftRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async get(owner: AgentMissionOwner): Promise<AgentMissionQuoteDraftSlot | null> {
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      SELECT ${QUOTE_DRAFT_COLUMNS}
+      FROM public.quote_draft_slots
+      WHERE "companyId" = ${owner.companyId}
+        AND "ownerUserId" = ${owner.ownerUserId}
+      LIMIT 1
+    `;
+    return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
+  }
+}
+
+class PrismaAgentMissionResumeCustomerRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async findByIds(input: {
+    readonly companyId: string;
+    readonly customerIds: readonly string[];
+  }): Promise<readonly CustomerCandidateReference[]> {
+    if (input.customerIds.length === 0) return [];
+    const rows = await this.transaction.$queryRaw<CustomerCandidateReferenceRow[]>`
+      SELECT c."id" AS "customerId", c."name" AS "canonicalName"
+      FROM public.customers c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" IN (${Prisma.join(input.customerIds)})
+      ORDER BY c."id" ASC
+    `;
+    return rows.map((row) => Object.freeze({
+      ...row,
+      canonicalName: canonicalCustomerName(row.canonicalName),
+    }));
+  }
+}
+
+interface CanonicalAppliedRealtimeContext {
+  readonly revision: number;
+  readonly digest: string;
+  readonly screenName: string;
+  readonly screenInstanceId: string;
+}
+
+function canonicalAppliedRealtimeContext(
+  lease: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
+): CanonicalAppliedRealtimeContext | null {
+  if (
+    Number.isNaN(databaseNow.getTime())
+    || lease.contextSchemaVersion !== 1
+    || lease.contextRevision === null
+    || lease.contextAppliedRevision !== lease.contextRevision
+    || lease.contextDigest === null
+    || lease.contextAppliedDigest !== lease.contextDigest
+    || !(lease.contextUpdatedAt instanceof Date)
+    || !(lease.contextAppliedAt instanceof Date)
+    || lease.contextAppliedOwnerEpoch !== lease.sidebandOwnerEpoch
+    || lease.sidebandOwnerLeaseExpiresAt === null
+    || lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
+    || lease.contextPayload === null
+  ) {
+    return null;
+  }
+  const prepared = prepareRealtimeContext({
+    version: lease.contextSchemaVersion,
+    revision: lease.contextRevision,
+    context: lease.contextPayload,
+  });
+  if (
+    prepared === null
+    || !isDeepStrictEqual(lease.contextPayload, prepared.snapshot.context)
+    || prepared.digest !== lease.contextDigest
+    || prepared.digest !== lease.contextAppliedDigest
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    revision: lease.contextRevision,
+    digest: prepared.digest,
+    screenName: prepared.snapshot.context.screen.name,
+    screenInstanceId: prepared.snapshot.context.screen.instanceId,
+  });
 }
 
 function authorizedRealtimeLease(
   lease: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
 ): AgentMissionAuthorizedRealtimeLease {
-  return Object.freeze({ realtimeSessionId: lease.sessionId });
+  const applied = canonicalAppliedRealtimeContext(lease, databaseNow);
+  return Object.freeze({
+    realtimeSessionId: lease.sessionId,
+    appliedContext: applied === null
+      ? null
+      : Object.freeze({ revision: applied.revision, digest: applied.digest }),
+  });
 }
 
 class PrismaAgentMissionQuoteScreenAuthority
@@ -730,36 +977,13 @@ implements AgentMissionQuoteScreenAuthorityPort {
     fences: AgentMissionQuoteScreenFences,
   ): Promise<AgentMissionQuoteScreenObservation> {
     const databaseNow = new Date(fences.databaseNow);
+    const appliedContext = canonicalAppliedRealtimeContext(this.lease, databaseNow);
     if (
-      Number.isNaN(databaseNow.getTime())
+      appliedContext === null
       || fences.realtimeSessionId !== this.lease.sessionId
-      || this.lease.contextSchemaVersion !== 1
-      || this.lease.contextRevision !== fences.contextRevision
-      || this.lease.contextAppliedRevision !== fences.contextRevision
-      || this.lease.contextDigest !== fences.contextDigest
-      || !(this.lease.contextUpdatedAt instanceof Date)
-      || this.lease.contextAppliedDigest !== fences.contextDigest
-      || !(this.lease.contextAppliedAt instanceof Date)
-      || this.lease.contextAppliedOwnerEpoch !== this.lease.sidebandOwnerEpoch
-      || this.lease.sidebandOwnerLeaseExpiresAt === null
-      || this.lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
-      || this.lease.contextPayload === null
-    ) {
-      return { status: 'rejected', reason: 'context_stale' };
-    }
-
-    const prepared = prepareRealtimeContext({
-      version: this.lease.contextSchemaVersion,
-      revision: this.lease.contextRevision,
-      context: this.lease.contextPayload,
-    });
-    if (
-      prepared === null
-      || !isDeepStrictEqual(this.lease.contextPayload, prepared.snapshot.context)
-      || prepared.digest !== this.lease.contextDigest
-      || prepared.digest !== this.lease.contextAppliedDigest
-      || prepared.digest !== fences.contextDigest
-      || prepared.snapshot.context.screen.name !== '/devis/new'
+      || appliedContext.revision !== fences.contextRevision
+      || appliedContext.digest !== fences.contextDigest
+      || appliedContext.screenName !== '/devis/new'
     ) {
       return { status: 'rejected', reason: 'context_stale' };
     }
@@ -791,9 +1015,9 @@ implements AgentMissionQuoteScreenAuthorityPort {
     return {
       status: 'ready',
       realtimeSessionId: this.lease.sessionId,
-      contextRevision: this.lease.contextAppliedRevision,
-      contextDigest: this.lease.contextAppliedDigest,
-      screenInstanceId: prepared.snapshot.context.screen.instanceId,
+      contextRevision: appliedContext.revision,
+      contextDigest: appliedContext.digest,
+      screenInstanceId: appliedContext.screenInstanceId,
       draft: {
         sessionId: draft.payload.draft.sessionId,
         slotRevision: draft.revision,
@@ -812,11 +1036,12 @@ function createWriteTransaction(
   const instant = databaseNow.toISOString();
   return {
     databaseNow: async () => instant,
-    realtime: authorizedRealtimeLease(lease),
+    realtime: authorizedRealtimeLease(lease, databaseNow),
     missions: new PrismaAgentMissionRepository(transaction),
     events: new PrismaAgentMissionEventRepository(transaction),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
+    customers: new PrismaAgentMissionCustomerRepository(transaction),
   };
 }
 
@@ -848,7 +1073,10 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         status: 'executed',
         value: await work({
           databaseNow: async () => instant,
-          realtime: authorizedRealtimeLease(resolution.lease),
+          realtime: authorizedRealtimeLease(
+            resolution.lease,
+            resolution.databaseNow,
+          ),
           missions,
         }),
       } as const;
@@ -892,6 +1120,58 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         )),
       } as const;
     }, { ...OWNER_TRANSACTION_OPTIONS, readOnly: false });
+  }
+}
+
+/**
+ * Reprise après perte du handle volatile.
+ *
+ * Cette autorité n'accède ni aux leases Realtime ni à leurs capabilities. Elle ne prend aucun
+ * verrou SQL et ne fournit aucun port d'écriture au callback.
+ */
+export class PrismaAgentMissionResumeUnitOfWork
+implements AgentMissionResumeUnitOfWorkPort {
+  constructor(private readonly prisma: PrismaService) {}
+
+  readQuoteCreationOwner<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionResumeReadTransaction) => Promise<T>,
+  ): Promise<AgentMissionResumeReadExecution<T>> {
+    return this.prisma.withIsolatedOwner(
+      owner.companyId,
+      owner.ownerUserId,
+      async (transaction) => {
+        await setTransactionTimeouts(transaction);
+        const companies = await transaction.$queryRaw<Array<{ closedAt: Date | null }>>`
+          SELECT "closedAt"
+          FROM public.companies
+          WHERE "id" = ${owner.companyId}
+          LIMIT 1
+        `;
+        const company = companies[0];
+        if (company === undefined) {
+          return { status: 'company_unavailable', reason: 'missing' } as const;
+        }
+        if (company.closedAt !== null) {
+          return { status: 'company_unavailable', reason: 'closed' } as const;
+        }
+        const now = await databaseClock(transaction);
+        return {
+          status: 'executed',
+          value: await work({
+            databaseNow: async () => now.toISOString(),
+            missions: new PrismaAgentMissionReadRepository(transaction),
+            quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
+            customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
+          }),
+        } as const;
+      },
+      {
+        ...OWNER_TRANSACTION_OPTIONS,
+        readOnly: true,
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      },
+    );
   }
 }
 

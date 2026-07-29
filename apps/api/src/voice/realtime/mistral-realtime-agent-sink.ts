@@ -345,6 +345,8 @@ export class MistralRealtimeAgentSink implements MistralRealtimeTranscriptionSin
       let outcome: Awaited<ReturnType<RealtimeAgentTurnPort['run']>>;
       try {
         outcome = await this.dependencies.agentTurns.run({
+          // Le ticket one-shot est déjà l'identité idempotente stable de ce tour Mistral.
+          turnId: input.redemptionId,
           userId: input.userId,
           companyId: input.companyId,
           transcript,

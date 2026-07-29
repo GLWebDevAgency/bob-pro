@@ -69,6 +69,8 @@ export function voiceTraceErrorFacts(error: AppError): VoiceTraceErrorFacts {
       return { kind: error.kind, entity: error.entity };
     case 'conflict':
       return { kind: error.kind, entity: error.entity, reason: error.reason };
+    case 'gone':
+      return { kind: error.kind, entity: error.entity, reason: error.reason };
     case 'forbidden':
     case 'rate_limited':
       return { kind: error.kind, reason: error.reason };

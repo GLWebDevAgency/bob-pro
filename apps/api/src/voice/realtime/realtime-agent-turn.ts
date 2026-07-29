@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   isAllowedAgentNavigationRoute,
   type AgentAskPayload,
@@ -15,15 +15,24 @@ import type {
   OpenAiNativeSpeechSource,
 } from './openai-native-speech-risk';
 import { prepareRealtimeContext } from './realtime-context';
+import type {
+  RealtimeQuoteMissionAuthority,
+  RealtimeQuoteMissionOrchestratorPort,
+} from './realtime-quote-mission-orchestrator';
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 export interface RealtimeAgentTurnInput {
+  /** Clé stable dérivée de la session et de l'item provider avant tout appel LLM ou métier. */
+  readonly turnId: string;
   readonly userId: string;
   readonly companyId: string;
   readonly transcript: string;
   readonly history: readonly AgentHistoryTurn[];
   readonly context?: AgentContext;
+  /** Autorité serveur dérivée de la lease admise ; jamais fournie par le modèle ou le client. */
+  readonly agentMissionAuthority?: RealtimeQuoteMissionAuthority;
   /** Fence durable lu au début du tour, puis relu juste avant toute publication. */
   readonly contextFence: RealtimeAgentContextFence;
   readonly signal: AbortSignal;
@@ -185,10 +194,17 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     private readonly persistence: Persistence,
     private readonly requiredProvider: RealtimeAgentProvider,
     private readonly resolveExecutor: () => RealtimeBobAgentExecutor,
+    private readonly quoteMissions: RealtimeQuoteMissionOrchestratorPort | null = null,
   ) {}
 
   async run(input: RealtimeAgentTurnInput): Promise<RealtimeAgentTurnOutcome> {
     if (input.signal.aborted) return { status: 'aborted' };
+    if (!UUID_V4.test(input.turnId)) {
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je ne peux pas sécuriser ce tour. Rien n’a été exécuté.',
+      };
+    }
     const inputContextVersion = realtimeAgentContextVersion(
       input.contextFence.expected.revision === null || input.context === undefined
         ? null
@@ -201,6 +217,100 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     if (!sameContextVersion(inputContextVersion, input.contextFence.expected)) {
       return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
     }
+
+    if (input.agentMissionAuthority !== undefined) {
+      const authority = input.agentMissionAuthority;
+      const quoteMissions = this.quoteMissions;
+      const contextRevision = input.contextFence.expected.revision;
+      if (
+        quoteMissions === null
+        || input.contextFence.expected.version !== 1
+        || contextRevision === null
+      ) {
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je ne peux pas sécuriser la mission. Rien n’a été exécuté.',
+        };
+      }
+      let beforeMission: RealtimeAgentContextVersion;
+      try {
+        beforeMission = await input.contextFence.revalidate(input.signal);
+      } catch {
+        if (input.signal.aborted) return { status: 'aborted' };
+        return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+      }
+      if (input.signal.aborted) return { status: 'aborted' };
+      if (!sameContextVersion(beforeMission, input.contextFence.expected)) {
+        return { status: 'aborted' };
+      }
+
+      let missionOutcome: Awaited<ReturnType<RealtimeQuoteMissionOrchestratorPort['run']>>;
+      try {
+        missionOutcome = await requestContext.run(
+          {
+            correlationId: `bob-live-turn-${input.turnId}`,
+            principal: { userId: input.userId, companyId: input.companyId },
+          },
+          () => quoteMissions.run({
+            authority,
+            turnId: input.turnId,
+            transcript: input.transcript,
+            history: input.history,
+            contextRevision,
+            contextDigest: input.contextFence.expected.digest,
+            signal: input.signal,
+          }),
+        );
+      } catch {
+        if (input.signal.aborted) return { status: 'aborted' };
+        return {
+          status: 'failed',
+          canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.',
+        };
+      }
+      if (input.signal.aborted) return { status: 'aborted' };
+      if (missionOutcome.status === 'failed') return missionOutcome;
+      if (
+        missionOutcome.status === 'ready'
+        || missionOutcome.status === 'handled'
+      ) {
+        let afterMission: RealtimeAgentContextVersion;
+        try {
+          afterMission = await input.contextFence.revalidate(input.signal);
+        } catch {
+          if (input.signal.aborted) return { status: 'aborted' };
+          return { status: 'failed', canonicalSpeech: CONTEXT_UNAVAILABLE_SPEECH };
+        }
+        if (input.signal.aborted) return { status: 'aborted' };
+        if (!sameContextVersion(afterMission, input.contextFence.expected)) {
+          return { status: 'aborted' };
+        }
+        if (missionOutcome.status === 'handled') {
+          return {
+            status: 'ready',
+            turnId: input.turnId,
+            canonicalSpeech: missionOutcome.canonicalSpeech,
+            kind: 'answer',
+            speechPurpose: missionOutcome.speechPurpose,
+            speechSource: 'card_body',
+            hasTenantContext: true,
+            contextVersion: input.contextFence.expected,
+          };
+        }
+        return {
+          status: 'ready',
+          turnId: input.turnId,
+          canonicalSpeech: missionOutcome.canonicalSpeech,
+          kind: 'answer',
+          speechPurpose: 'navigation',
+          speechSource: 'card_body',
+          hasTenantContext: true,
+          contextVersion: input.contextFence.expected,
+          navigate: missionOutcome.navigate,
+        };
+      }
+    }
+
     const payload: AgentAskPayload = {
       message: input.transcript,
       // Bob Live ne peut jamais muter sans une proposition opaque et une confirmation dédiée.
@@ -214,7 +324,7 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
     try {
       result = await requestContext.run(
         {
-          correlationId: `bob-live-turn-${randomUUID()}`,
+          correlationId: `bob-live-turn-${input.turnId}`,
           principal: { userId: input.userId, companyId: input.companyId },
         },
         () => this.persistence.runWithTenant(
@@ -247,18 +357,28 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       return { status: 'failed', canonicalSpeech: 'Je n’ai pas de réponse fiable à te donner pour le moment.' };
     }
     const pending = result.value.pending;
+    const navigate = isAllowedAgentNavigationRoute(result.value.navigate)
+      ? result.value.navigate
+      : undefined;
+    if (
+      input.agentMissionAuthority !== undefined
+      && navigate === '/devis/new'
+    ) {
+      return {
+        status: 'failed',
+        canonicalSpeech: 'Je ne peux pas ouvrir un devis sans mission vérifiée. Rien n’a été exécuté.',
+      };
+    }
     return {
       status: 'ready',
-      turnId: randomUUID(),
+      turnId: input.turnId,
       canonicalSpeech: speech.text,
       kind: result.value.kind,
       speechPurpose: classifyRealtimeAgentSpeechPurpose(result.value, input.context !== undefined),
       speechSource: speech.source,
       hasTenantContext: input.context !== undefined,
       contextVersion: input.contextFence.expected,
-      ...(isAllowedAgentNavigationRoute(result.value.navigate)
-        ? { navigate: result.value.navigate }
-        : {}),
+      ...(navigate === undefined ? {} : { navigate }),
       ...(typeof pending?.proposalId === 'string' ? { proposalId: pending.proposalId } : {}),
       ...(typeof pending?.expiresAt === 'string' ? { proposalExpiresAt: pending.expiresAt } : {}),
     };

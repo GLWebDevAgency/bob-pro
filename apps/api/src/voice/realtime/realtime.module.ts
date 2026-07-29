@@ -2,10 +2,13 @@ import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { SttPort } from '@bob/ai';
 import {
+  buildLlmForProvider,
   buildRealtimeSpeechAuditStt,
   buildRealtimeSpeechTts,
   type LocalWhisperAuditDeploymentProbePort,
 } from '../../ai/providers';
+import { AgentMissionModule } from '../../agent-missions/agent-mission.module';
+import { AgentMissionService } from '../../agent-missions/agent-mission.service';
 import { BackendService } from '../../backend.service';
 import {
   loadEnv,
@@ -41,6 +44,7 @@ import {
 import { RealtimeSidebandManager } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
+import { RealtimeQuoteMissionOrchestrator } from './realtime-quote-mission-orchestrator';
 import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
 import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
 import {
@@ -689,19 +693,23 @@ const sidebandProvider: Provider = {
 
 const realtimeAgentTurnProvider: Provider = {
   provide: REALTIME_AGENT_TURN,
-  inject: [PERSISTENCE, REALTIME_VOICE_SETTINGS, ModuleRef],
+  inject: [PERSISTENCE, REALTIME_VOICE_SETTINGS, ModuleRef, AgentMissionService],
   useFactory: (
     persistence: Persistence,
     settings: RealtimeVoiceSettings,
     moduleRef: ModuleRef,
-  ) =>
-    new RealtimeBobAgentTurnAdapter(
+    missions: AgentMissionService,
+  ) => {
+    const llm = buildLlmForProvider(settings.provider);
+    return new RealtimeBobAgentTurnAdapter(
       persistence,
       settings.provider,
       // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
       // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
       () => moduleRef.get(BackendService, { strict: false }),
-    ),
+      llm === undefined ? null : new RealtimeQuoteMissionOrchestrator(llm, missions),
+    );
+  },
 };
 
 const realtimeEntitlementProvider: Provider = {
@@ -778,7 +786,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
 };
 
 @Module({
-  imports: [PersistenceModule],
+  imports: [PersistenceModule, AgentMissionModule],
   controllers: [RealtimeVoiceController],
   providers: [
     realtimeVoiceSettingsProvider,

@@ -4557,6 +4557,141 @@ const legacyFr = {
     pro: 'Le brouillon n’a pas pu être récupéré. Aucune donnée locale ne lui est substituée.',
     direct: 'Brouillon inaccessible. Aucune donnée locale affichée.',
   },
+  'devis.mission.loading': {
+    pote: 'Je synchronise le devis avec ce que tu viens de me demander.',
+    pro: 'Synchronisation de la mission avec le devis affiché.',
+    direct: 'Synchronisation du devis.',
+  },
+  'devis.mission.error': {
+    pote: 'Je n’ai pas pu vérifier que ce devis est bien celui de notre conversation. Rien n’a été modifié.',
+    pro: 'La mission n’a pas pu être reliée de façon sûre au devis affiché. Aucune modification n’a été appliquée.',
+    direct: 'Mission non vérifiée. Aucune modification appliquée.',
+  },
+  'devis.mission.localChanges': {
+    pote: 'Ce devis a changé pendant la synchronisation. Je garde tes modifications et je n’écrase rien. Ferme cet écran pour décider de la suite avant de relancer Bob.',
+    pro: 'Le devis a été modifié pendant la synchronisation. Les modifications sont préservées. Fermez cet écran afin de décider de la suite avant de relancer Bob.',
+    direct: 'Modifications préservées. Ferme cet écran avant de relancer Bob.',
+  },
+  'devis.mission.draftDecision': {
+    pote: 'J’ai retrouvé un autre brouillon. Ferme cet écran, choisis celui que tu veux reprendre, puis relance Bob.',
+    pro: 'Un autre brouillon a été retrouvé. Fermez cet écran, choisissez le brouillon à reprendre, puis relancez Bob.',
+    direct: 'Autre brouillon trouvé. Ferme, choisis le brouillon, puis relance Bob.',
+  },
+  'devis.mission.expired': {
+    pote: 'Cette mission a expiré. Le devis reste protégé : ferme cet écran, puis relance Bob pour décider de la suite sans rien écraser.',
+    pro: 'Cette mission a expiré. Le brouillon reste protégé ; fermez cet écran, puis relancez Bob afin de décider de la suite.',
+    direct: 'Mission expirée. Ferme cet écran, puis relance Bob.',
+  },
+  'devis.mission.leaveAction': {
+    pote: 'Fermer sans rien modifier',
+    pro: 'Fermer sans modifier',
+    direct: 'Fermer',
+  },
+  'devis.mission.resumeTitle': {
+    pote: 'J’ai retrouvé notre devis',
+    pro: 'Mission de devis retrouvée',
+    direct: 'Devis retrouvé',
+  },
+  'devis.mission.resumeBody': {
+    pote: 'Le vrai brouillon et tes choix sont toujours là. Reprends avec Bob pour rattacher une nouvelle session, sans rejouer ni inventer quoi que ce soit.',
+    pro: 'Le brouillon autoritaire et ses choix sont intacts. Reprenez avec Bob pour rattacher une nouvelle session sécurisée.',
+    direct: 'Brouillon intact. Rattache une nouvelle session Bob.',
+  },
+  'devis.mission.resumeExpiredTitle': {
+    pote: 'Cette conversation a expiré',
+    pro: 'Mission arrivée à expiration',
+    direct: 'Mission expirée',
+  },
+  'devis.mission.resumeExpiredBody': {
+    pote: 'Le brouillon reste protégé. Relance Bob : il vérifiera la situation avant de reprendre ou de te rendre la main.',
+    pro: 'Le brouillon reste protégé. Relancez Bob afin qu’il vérifie la situation avant toute reprise.',
+    direct: 'Brouillon protégé. Relance Bob pour vérifier la suite.',
+  },
+  'devis.mission.resumeAction': {
+    pote: 'Reprendre avec Bob',
+    pro: 'Reprendre avec Bob',
+    direct: 'Reprendre avec Bob',
+  },
+  'devis.mission.resumeLoading': {
+    pote: 'Je me reconnecte…',
+    pro: 'Reconnexion sécurisée…',
+    direct: 'Reconnexion…',
+  },
+  'devis.mission.linesHandoff': {
+    pote: 'Le client est confirmé et le devis est libéré. Tu peux continuer les prestations à l’écran.',
+    pro: 'Le client est confirmé et le devis est libéré. Vous pouvez poursuivre les prestations à l’écran.',
+    direct: 'Client confirmé, devis libéré. Continue les prestations.',
+  },
+  'devis.mission.handoffTitle': {
+    pote: 'Le client est confirmé',
+    pro: 'Client confirmé',
+    direct: 'Client confirmé',
+  },
+  'devis.mission.handoffBody': {
+    pote: 'J’ai sécurisé le choix dans le vrai brouillon. Passe à la saisie manuelle pour ajouter les prestations sans perdre ce travail.',
+    pro: 'Le choix est enregistré dans le brouillon autoritaire. Libérez la mission avant de poursuivre la saisie manuelle des prestations.',
+    direct: 'Choix enregistré. Libère la mission pour saisir les prestations.',
+  },
+  'devis.mission.handoffAction': {
+    pote: 'Continuer à la main',
+    pro: 'Continuer à la main',
+    direct: 'Continuer à la main',
+  },
+  'devis.mission.handoffLoading': {
+    pote: 'Je sécurise la passation…',
+    pro: 'Passation sécurisée…',
+    direct: 'Passation…',
+  },
+  'devis.mission.handoffError': {
+    pote: 'La passation n’a pas été confirmée. Le devis reste protégé : réessaie, rien n’a été perdu.',
+    pro: 'La passation n’a pas été confirmée. Le brouillon reste protégé et aucune saisie concurrente n’est autorisée.',
+    direct: 'Passation non confirmée. Brouillon protégé, réessaie.',
+  },
+  'devis.mission.customerSelectionLoading': {
+    pote: 'Je confirme ce client.',
+    pro: 'Confirmation du client.',
+    direct: 'Confirmation du client.',
+  },
+  'devis.mission.customerSelectionError': {
+    pote: 'Je n’ai pas pu confirmer ce client sans risque. Rien n’a été modifié ; réessaie.',
+    pro: 'Le client n’a pas pu être confirmé de façon sûre. Aucune modification n’a été appliquée.',
+    direct: 'Client non confirmé. Rien n’a été modifié.',
+  },
+  'devis.mission.customerRefreshError': {
+    pote: 'Ce client n’est plus disponible et je n’ai pas pu actualiser la liste. Le devis n’a pas bougé ; réessaie.',
+    pro: 'Ce client n’est plus disponible et la liste n’a pas pu être actualisée. Le devis reste inchangé.',
+    direct: 'Client indisponible. Actualisation échouée, devis inchangé.',
+  },
+  'devis.mission.customerListPartialError': {
+    pote: 'Les choix de Bob restent disponibles, mais je n’ai pas pu charger le reste de tes clients.',
+    pro: 'Les choix proposés restent disponibles, mais le reste de la liste clients n’a pas pu être chargé.',
+    direct: 'Choix Bob disponibles. Reste de la liste inaccessible.',
+  },
+  'devis.mission.customerChoicesTitle': {
+    pote: 'Voici les choix que j’ai trouvés',
+    pro: 'Choix proposés par Bob',
+    direct: 'Choix proposés',
+  },
+  'devis.mission.customerChoicesBody': {
+    pote: 'Ils sont numérotés dans le même ordre que mes choix vocaux. Tu peux répondre ou toucher directement un autre client.',
+    pro: 'Les clients proposés sont numérotés dans l’ordre vocal. Vous pouvez répondre ou sélectionner directement un autre client.',
+    direct: 'Ordre identique à la voix. Réponds ou touche un autre client.',
+  },
+  'devis.mission.customerChoiceAccessibility': {
+    pote: 'Choix {ordinal}, {name}',
+    pro: 'Choix {ordinal}, {name}',
+    direct: 'Choix {ordinal}, {name}',
+  },
+  'devis.mission.customerChoiceUnavailable': {
+    pote: 'Ce client n’est plus disponible',
+    pro: 'Client désormais indisponible',
+    direct: 'Client indisponible',
+  },
+  'devis.mission.customerChoiceUnavailableAccessibility': {
+    pote: 'Choix {ordinal}, client indisponible',
+    pro: 'Choix {ordinal}, client indisponible',
+    direct: 'Choix {ordinal}, indisponible',
+  },
   'devis.draftExit.title': {
     pote: 'Que veux-tu faire de ce devis ?',
     pro: 'Que souhaitez-vous faire de ce devis ?',

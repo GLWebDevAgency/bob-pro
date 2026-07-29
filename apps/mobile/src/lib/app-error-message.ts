@@ -16,6 +16,7 @@ export function appErrorMessage(e: unknown): string {
     if (err.kind === 'dependency')
       return 'Service indisponible pour le moment. Réessaie ou saisis les infos à la main.';
     if (err.kind === 'not_found') return 'Introuvable.';
+    if (err.kind === 'gone') return 'Cette action a expiré. Actualise puis réessaie.';
     // A3 — gel de rétractation (RETRACTATION_PERIOD_ACTIVE) et autres refus du domaine porteurs
     // d'un message : on affiche le message HONNÊTE fabriqué par @bob/core (pourquoi, jusqu'à
     // quand, ce qui reste possible) au lieu d'un « Action impossible » muet. Source unique — le

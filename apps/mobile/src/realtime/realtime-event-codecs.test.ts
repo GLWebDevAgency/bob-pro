@@ -46,6 +46,24 @@ describe('Bob Live — codecs événements Realtime', () => {
       .toEqual({ type: 'response_started' });
   });
 
+  it('extrait seulement l’identifiant provider borné du commit audio', () => {
+    expect(decodeRealtimeServerEvent({
+      type: 'input_audio_buffer.committed',
+      item_id: 'item_user_42',
+    })).toEqual({
+      type: 'input_committed',
+      providerInputItemId: 'item_user_42',
+    });
+    expect(decodeRealtimeServerEvent({
+      type: 'input_audio_buffer.committed',
+      item_id: '../secret',
+    })).toEqual({ type: 'protocol_error', code: 'invalid_input_item_id' });
+    expect(decodeRealtimeServerEvent({
+      type: 'input_audio_buffer.committed',
+      item_id: 'a'.repeat(201),
+    })).toEqual({ type: 'protocol_error', code: 'invalid_input_item_id' });
+  });
+
   it('ne conserve des metadata provider qu’une référence sans aucun effet UI', () => {
     const decoded = decodeRealtimeServerEvent({
       type: 'response.created',

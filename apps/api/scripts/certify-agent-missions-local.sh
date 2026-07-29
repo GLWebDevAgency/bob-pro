@@ -237,6 +237,18 @@ CREATE TYPE public."ReleaseEnvironment" AS ENUM (
 );
 CREATE TYPE public."ReleaseFlagSubjectType" AS ENUM ('user', 'cabinet');
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE OR REPLACE FUNCTION public.immutable_unaccent(TEXT)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+STRICT
+AS $immutable_unaccent$
+  SELECT public.unaccent('public.unaccent', $1)
+$immutable_unaccent$;
+
 CREATE TABLE public.companies (
   "id" TEXT PRIMARY KEY,
   "name" TEXT NOT NULL,
@@ -353,6 +365,20 @@ CREATE TABLE public.quote_draft_slots (
     FOREIGN KEY ("companyId") REFERENCES public.companies("id")
 );
 
+-- Surface client minimale mais réelle consommée par la recherche M1-C. Le certificat exerce la
+-- requête PostgreSQL de production (unaccent + pg_trgm) et son isolation tenant, pas un double.
+CREATE TABLE public.customers (
+  "id" TEXT PRIMARY KEY,
+  "companyId" TEXT NOT NULL,
+  "name" TEXT NOT NULL,
+  CONSTRAINT customers_company_fkey
+    FOREIGN KEY ("companyId") REFERENCES public.companies("id") ON DELETE RESTRICT,
+  CONSTRAINT uniq_customer_id_company UNIQUE ("id", "companyId")
+);
+CREATE INDEX customers_name_trgm_idx
+  ON public.customers
+  USING GIN (public.immutable_unaccent(lower("name")) gin_trgm_ops);
+
 ALTER TABLE public.quote_draft_slots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quote_draft_slots FORCE ROW LEVEL SECURITY;
 CREATE POLICY quote_draft_slot_owner_select ON public.quote_draft_slots FOR SELECT
@@ -379,6 +405,12 @@ CREATE POLICY quote_draft_slot_owner_delete ON public.quote_draft_slots FOR DELE
     "companyId" = current_setting('app.current_company_id', true)
     AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
   );
+
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.customers
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 ALTER TABLE public.release_flags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.release_flags FORCE ROW LEVEL SECURITY;
@@ -412,6 +444,9 @@ GRANT USAGE ON SCHEMA public TO bob_app;
 -- PostgreSQL exige SELECT + UPDATE pour SELECT ... FOR SHARE. Le runtime production possède
 -- déjà UPDATE sur companies (la clôture monotone l'utilise) ; le harnais reproduit ce droit exact.
 GRANT SELECT, UPDATE ON TABLE public.companies TO bob_app;
+-- SELECT ... FOR SHARE exige aussi un privilège UPDATE ; une colonne suffit à reproduire ce
+-- droit sans élargir le harnais aux mutations client (la release réelle accorde déjà UPDATE).
+GRANT SELECT, UPDATE ("id") ON TABLE public.customers TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_app;
 GRANT SELECT ON TABLE public.release_flags, public.release_flag_subjects TO bob_app;
 
@@ -1712,6 +1747,158 @@ $writer_n1_bootstrap_receipt_validate$;
 COMMIT;
 SQL
 
+certify_agent_mission_m1c_writer_blocked() {
+  blocked_owner_user_id="$1"
+  blocked_mission_id="$2"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v owner_user_id="$blocked_owner_user_id" \
+    -v mission_id="$blocked_mission_id" <<'SQL'
+BEGIN;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', :'owner_user_id', true);
+SELECT set_config('bob.cert.m1c_mission_id', :'mission_id', true);
+SELECT set_config('app.current_agent_mission_id', :'mission_id', true);
+DO $agent_mission_m1c_pre_cutover_certificate$
+DECLARE
+  rejected BOOLEAN := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_missions (
+      "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+      "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+      "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+    ) VALUES (
+      current_setting('bob.cert.m1c_mission_id')::UUID,
+      'writer-n1-company',
+      current_setting('app.current_user_id'),
+      'quote_creation',
+      'active',
+      'awaiting_quote_screen',
+      1,
+      1,
+      jsonb_build_object(
+        'schema', 'bob.agent-mission.quote-creation',
+        'version', 1,
+        'draft', jsonb_build_object(
+          'sessionId', current_setting('app.current_user_id'),
+          'slotRevision', 1,
+          'contentRevision', 0
+        ),
+        'decision', 'null'::JSONB,
+        'stagedCustomerResolution', jsonb_build_object('kind', 'none')
+      ),
+      NULL,
+      clock_timestamp() + INTERVAL '24 hours',
+      clock_timestamp() + INTERVAL '168 hours',
+      NULL,
+      clock_timestamp() + INTERVAL '2328 hours',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION
+    WHEN check_violation THEN
+      rejected := true;
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M1C_WRITER_ACCEPTED_BEFORE_CUTOVER';
+  END IF;
+END;
+$agent_mission_m1c_pre_cutover_certificate$;
+ROLLBACK;
+SQL
+}
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100000_agent_mission_customer_resolution_expand/migration.sql"
+
+# Expand : l'ancien writer reste accepté sous les huit nouvelles contraintes NOT VALID, tandis
+# que le nouveau payload staged reste volontairement bloqué par les contraintes canoniques N-1.
+certify_agent_mission_event_writer \
+  writer-n1-m1c-expand \
+  90000000-0000-4000-8000-000000000001 \
+  90000000-0000-4000-8000-000000000002 \
+  90000000-0000-4000-8000-000000000003 \
+  90000000-0000-4000-8000-000000000004 \
+  90000000-0000-4000-8000-000000000005 \
+  90000000-0000-4000-8000-000000000006
+certify_agent_mission_m1c_writer_blocked \
+  writer-m1c-blocked-expand \
+  90000000-0000-4000-8000-000000000007
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100100_agent_mission_customer_resolution_validate/migration.sql"
+
+# Validate sans cutover : même compatibilité N-1 et même blocage volontaire du writer M1-C.
+certify_agent_mission_event_writer \
+  writer-n1-m1c-validate \
+  a0000000-0000-4000-8000-000000000001 \
+  a0000000-0000-4000-8000-000000000002 \
+  a0000000-0000-4000-8000-000000000003 \
+  a0000000-0000-4000-8000-000000000004 \
+  a0000000-0000-4000-8000-000000000005 \
+  a0000000-0000-4000-8000-000000000006
+certify_agent_mission_m1c_writer_blocked \
+  writer-m1c-blocked-validate \
+  a0000000-0000-4000-8000-000000000007
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -c 'SET ROLE bob_schema_owner' \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729100200_agent_mission_customer_resolution_cutover/migration.sql"
+
+# Cutover : N-1 reste accepté après le remplacement atomique des huit contraintes.
+certify_agent_mission_event_writer \
+  writer-n1-m1c-cutover \
+  b0000000-0000-4000-8000-000000000001 \
+  b0000000-0000-4000-8000-000000000002 \
+  b0000000-0000-4000-8000-000000000003 \
+  b0000000-0000-4000-8000-000000000004 \
+  b0000000-0000-4000-8000-000000000005 \
+  b0000000-0000-4000-8000-000000000006
+
+canonical_m1c_constraint_count="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_constraint AS con
+  JOIN pg_catalog.pg_class AS relation
+    ON relation.oid = con.conrelid
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = relation.relnamespace
+ WHERE namespace.nspname = 'public'
+   AND relation.relname IN ('agent_missions', 'agent_mission_events')
+   AND con.conname IN (
+     'agent_missions_payload_check',
+     'agent_missions_payload_closed_shape_check',
+     'agent_missions_phase_payload_check',
+     'agent_mission_events_type_check',
+     'agent_mission_events_envelope_check',
+     'agent_mission_events_data_check',
+     'agent_mission_events_correlation_check',
+     'agent_mission_events_draft_effect_check'
+   )
+   AND con.convalidated
+   AND con.conname NOT LIKE '%\_m1c\_%' ESCAPE '\';
+SQL
+)"
+if [ "$canonical_m1c_constraint_count" != "8" ]; then
+  echo "AgentMission M1-C canonical validated constraint set is incomplete" >&2
+  exit 1
+fi
+
+temporary_m1c_constraint_count="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_constraint AS con
+ WHERE con.conname LIKE '%\_m1c\_%' ESCAPE '\';
+SQL
+)"
+if [ "$temporary_m1c_constraint_count" != "0" ]; then
+  echo "AgentMission M1-C temporary constraints survived cutover" >&2
+  exit 1
+fi
+
 "$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -v app_role=bob_app \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql"
@@ -2429,10 +2616,11 @@ GRANT SELECT ON TABLE
   public.realtime_mistral_ingress_tickets,
   public.release_flags,
   public.release_flag_subjects,
-  public.release_flag_audit_events
+  public.release_flag_audit_events,
+  public.customers
 TO bob_cert_auditor;
 GRANT DELETE ON TABLE public.realtime_session_leases TO bob_cert_auditor;
-GRANT SELECT, INSERT ON TABLE public.companies TO bob_cert_auditor;
+GRANT SELECT, INSERT ON TABLE public.companies, public.customers TO bob_cert_auditor;
 RESET ROLE;
 SQL
 

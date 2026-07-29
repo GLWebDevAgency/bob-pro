@@ -60,6 +60,17 @@ export interface AgentMissionQuoteDraftRepositoryPort {
   release(input: AgentMissionOwner & {
     readonly missionId: string;
   }): Promise<boolean>;
+  /**
+   * CAS étroit du seul geste `client → lignes`. L'adapter doit aussi vérifier que le brouillon
+   * appartient encore à la mission, que le client est absent et que l'étape vaut `client`.
+   */
+  selectCustomerCas(input: AgentMissionOwner & {
+    readonly missionId: string;
+    readonly expectedSlotRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftContentRevision: number;
+    readonly payload: QuoteDraftPayloadV1;
+  }): Promise<AgentMissionQuoteDraftSlot | null>;
 }
 
 export type AgentMissionDraftFenceResult<T> =

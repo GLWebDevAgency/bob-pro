@@ -23,7 +23,7 @@ describe('classifyVoiceTurn — trois niveaux d’alerte du bêta-test', () => {
     });
   });
 
-  it.each(['validation', 'forbidden', 'not_found', 'conflict', 'domain'])(
+  it.each(['validation', 'forbidden', 'not_found', 'conflict', 'gone', 'domain'])(
     'refus métier attendu (%s) : warn, avec sa raison, JAMAIS remonté au canal d’incident',
     (kind) => {
       const classification = classifyVoiceTurn({ kind });

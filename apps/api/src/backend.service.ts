@@ -954,6 +954,7 @@ function appErrorSummary(error: AppError): string {
   if (error.kind === 'domain')
     return `${error.error.code}:${'field' in error.error ? error.error.field : ''}`;
   if (error.kind === 'not_found') return `not_found:${error.entity}:${error.id}`;
+  if (error.kind === 'gone') return `gone:${error.entity}:${error.reason}`;
   if (error.kind === 'forbidden') return `forbidden:${error.reason}`;
   if (error.kind === 'validation')
     return `validation:${error.issues.map((i) => `${i.field}:${i.message}`).join(';')}`;

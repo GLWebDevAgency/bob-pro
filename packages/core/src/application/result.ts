@@ -4,6 +4,7 @@ import { type DomainError } from '../shared-kernel/result';
 export type AppError =
   | { kind: 'domain'; error: DomainError }
   | { kind: 'not_found'; entity: string; id: string }
+  | { kind: 'gone'; entity: string; reason: string }
   | { kind: 'conflict'; entity: string; reason: string }
   | { kind: 'forbidden'; reason: string }
   | { kind: 'rate_limited'; reason: string; retryAfterSeconds: number }
@@ -13,6 +14,7 @@ export type AppError =
 
 export const appDomain = (error: DomainError): AppError => ({ kind: 'domain', error });
 export const appNotFound = (entity: string, id: string): AppError => ({ kind: 'not_found', entity, id });
+export const appGone = (entity: string, reason: string): AppError => ({ kind: 'gone', entity, reason });
 export const appConflict = (entity: string, reason: string): AppError => ({ kind: 'conflict', entity, reason });
 export const appForbidden = (reason: string): AppError => ({ kind: 'forbidden', reason });
 export const appRateLimited = (reason: string, retryAfterSeconds: number): AppError => ({

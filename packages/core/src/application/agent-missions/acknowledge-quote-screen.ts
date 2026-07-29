@@ -1,5 +1,7 @@
-import { isCanonicalAgentMissionUserCommandId } from '../../domain/agent/agent-mission-event';
-import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
+import {
+  isCanonicalAgentMissionUserCommandId,
+  type AgentMissionEventSnapshot,
+} from '../../domain/agent/agent-mission-event';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type IdGeneratorPort } from '../ports/services';
 import { type AgentMissionFingerprintPort } from '../ports/agent-mission-fingerprint';
@@ -27,10 +29,10 @@ import {
   verifyAgentMissionFingerprint,
   type AgentMissionViewV1,
 } from './agent-mission-application';
+import { isCanonicalAgentMissionDraftSessionId } from './agent-mission-identifiers';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const POSTGRES_INT_MAX = 2_147_483_647;
-const MAX_DRAFT_SESSION_ID_LENGTH = 160;
 
 export interface AcknowledgeQuoteScreenInput extends AgentMissionOwner {
   readonly authority: AgentMissionRealtimeAuthorityProof;
@@ -47,7 +49,18 @@ export interface AcknowledgeQuoteScreenInput extends AgentMissionOwner {
 
 export interface AcknowledgeQuoteScreenOutput {
   readonly outcome: 'acknowledged' | 'replayed';
+  readonly receipt: AcknowledgeQuoteScreenReceipt;
   readonly mission: AgentMissionViewV1;
+}
+
+export interface AcknowledgeQuoteScreenReceipt {
+  readonly ackCommandId: string;
+  readonly missionId: string;
+  readonly missionRevisionAfter: number;
+  readonly realtimeSessionId: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly occurredAt: string;
 }
 
 export interface AcknowledgeQuoteScreenDeps {
@@ -73,14 +86,6 @@ function isRevision(value: unknown, allowZero: boolean): value is number {
     && (value as number) <= POSTGRES_INT_MAX;
 }
 
-function isDraftSessionId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length >= 1
-    && value.length <= MAX_DRAFT_SESSION_ID_LENGTH
-    && value === value.trim()
-    && !hasAsciiControlCharacter(value);
-}
-
 function validation(field: string, message: string): Result<never, AppError> {
   return err({ kind: 'validation', issues: [{ field, message }] });
 }
@@ -91,6 +96,27 @@ function screenObservationError(
   return reason === 'unavailable'
     ? appUnavailable('agent_mission_screen_ack')
     : appConflict('agent_mission_screen_ack', reason);
+}
+
+function acknowledgementReceipt(
+  snapshot: AgentMissionEventSnapshot,
+): AcknowledgeQuoteScreenReceipt | null {
+  if (
+    snapshot.eventType !== 'screen_acknowledged'
+    || snapshot.realtimeSessionId === null
+    || snapshot.contextRevision === null
+    || snapshot.contextDigest === null
+    || snapshot.turnId !== null
+  ) return null;
+  return Object.freeze({
+    ackCommandId: snapshot.commandId,
+    missionId: snapshot.missionId,
+    missionRevisionAfter: snapshot.missionRevisionAfter,
+    realtimeSessionId: snapshot.realtimeSessionId,
+    contextRevision: snapshot.contextRevision,
+    contextDigest: snapshot.contextDigest,
+    occurredAt: snapshot.occurredAt,
+  });
 }
 
 export class AcknowledgeQuoteScreen {
@@ -120,7 +146,7 @@ export class AcknowledgeQuoteScreen {
     if (!SHA256_HEX.test(input.contextDigest)) {
       return validation('contextDigest', 'Empreinte SHA-256 canonique requise.');
     }
-    if (!isDraftSessionId(input.draftSessionId)) {
+    if (!isCanonicalAgentMissionDraftSessionId(input.draftSessionId)) {
       return validation('draftSessionId', 'Identifiant de brouillon canonique requis.');
     }
     if (!isRevision(input.expectedDraftSlotRevision, false)) {
@@ -190,8 +216,17 @@ export class AcknowledgeQuoteScreen {
             }
             const view = toAgentMissionView(replayed, now);
             if (!view.ok) abort(view.error);
+            const receipt = acknowledgementReceipt(snapshot);
+            if (receipt === null) {
+              abort({
+                kind: 'dependency',
+                port: 'agent_mission_event',
+                cause: 'invalid_screen_ack_receipt',
+              });
+            }
             return {
               outcome: 'replayed',
+              receipt,
               mission: view.value,
             } satisfies AcknowledgeQuoteScreenOutput;
           }
@@ -260,6 +295,7 @@ export class AcknowledgeQuoteScreen {
             draftAfter: observation.draft,
             correlation: {
               realtimeSessionId: observation.realtimeSessionId,
+              turnId: null,
               contextRevision: observation.contextRevision,
               contextDigest: observation.contextDigest,
             },
@@ -268,8 +304,17 @@ export class AcknowledgeQuoteScreen {
           await transaction.events.append(event.value);
           const view = toAgentMissionView(transition.value.mission, now);
           if (!view.ok) abort(view.error);
+          const receipt = acknowledgementReceipt(event.value.toSnapshot());
+          if (receipt === null) {
+            abort({
+              kind: 'dependency',
+              port: 'agent_mission_event',
+              cause: 'invalid_screen_ack_receipt',
+            });
+          }
           return {
             outcome: 'acknowledged',
+            receipt,
             mission: view.value,
           } satisfies AcknowledgeQuoteScreenOutput;
         },

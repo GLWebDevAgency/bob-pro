@@ -11,6 +11,9 @@ import {
   type RealtimeBobAgentExecutor,
   type RealtimeAgentContextFence,
 } from './realtime-agent-turn';
+import type {
+  RealtimeQuoteMissionOrchestratorPort,
+} from './realtime-quote-mission-orchestrator';
 
 function run(overrides: Partial<AgentRun> = {}): AgentRun {
   return {
@@ -23,7 +26,11 @@ function run(overrides: Partial<AgentRun> = {}): AgentRun {
   };
 }
 
-function harness(result: Result<AgentRun, AppError>, requiredProvider: 'openai' | 'mistral' = 'openai') {
+function harness(
+  result: Result<AgentRun, AppError>,
+  requiredProvider: 'openai' | 'mistral' = 'openai',
+  quoteMissions: RealtimeQuoteMissionOrchestratorPort | null = null,
+) {
   const runWithTenant = vi.fn(async (_companyId: string, operation: () => Promise<unknown>) => operation());
   const askBob = vi.fn<RealtimeBobAgentExecutor['askBob']>(
     async (_payload: AgentAskPayload, _execution) => result,
@@ -31,7 +38,12 @@ function harness(result: Result<AgentRun, AppError>, requiredProvider: 'openai' 
   const persistence = { runWithTenant } as unknown as Persistence;
   const executor: RealtimeBobAgentExecutor = { askBob };
   return {
-    adapter: new RealtimeBobAgentTurnAdapter(persistence, requiredProvider, () => executor),
+    adapter: new RealtimeBobAgentTurnAdapter(
+      persistence,
+      requiredProvider,
+      () => executor,
+      quoteMissions,
+    ),
     runWithTenant,
     askBob,
   };
@@ -76,6 +88,7 @@ function input(
   fence: RealtimeAgentContextFence = contextFence(),
 ) {
   return {
+    turnId: '10000000-0000-4000-8000-000000000001',
     userId: 'user-1',
     companyId: 'company-1',
     transcript: 'Ouvre un nouveau devis',
@@ -87,6 +100,22 @@ function input(
 }
 
 describe('RealtimeBobAgentTurnAdapter', () => {
+  it('refuse un turnId qui ne peut pas porter l’idempotence durable', async () => {
+    const h = harness({ ok: true, value: run({ navigate: '/devis/new' }) });
+
+    const result = await h.adapter.run({
+      ...input(),
+      turnId: 'not-a-command-id',
+    });
+
+    expect(result).toEqual({
+      status: 'failed',
+      canonicalSpeech: 'Je ne peux pas sécuriser ce tour. Rien n’a été exécuté.',
+    });
+    expect(h.askBob).not.toHaveBeenCalled();
+    expect(h.runWithTenant).not.toHaveBeenCalled();
+  });
+
   it('exécute Bob dans un contexte identité+tenant neuf et impose confirm_all', async () => {
     const h = harness({ ok: true, value: run({ navigate: '/devis/new' }) });
     h.askBob.mockImplementationOnce(async (_payload) => {
@@ -98,6 +127,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
 
     expect(result).toMatchObject({
       status: 'ready',
+      turnId: '10000000-0000-4000-8000-000000000001',
       canonicalSpeech: 'Réponse canonique.',
       navigate: '/devis/new',
       speechPurpose: 'navigation',
@@ -113,6 +143,132 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       }),
       { signal: expect.any(AbortSignal), requiredProvider: 'openai' },
     );
+  });
+
+  it('ne rend la navigation mission qu’après orchestration et double revalidation du contexte', async () => {
+    const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+      async () => ({
+        status: 'ready',
+        canonicalSpeech: 'Mission vérifiée.',
+        navigate: '/devis/new',
+      }),
+    );
+    const h = harness(
+      { ok: true, value: run({ navigate: '/devis/new' }) },
+      'openai',
+      { run: runMission },
+    );
+    const revalidate = vi.fn(async () => contextVersion);
+    const missionInput = {
+      ...input(undefined, contextFence(revalidate)),
+      agentMissionAuthority: {
+        owner: { companyId: 'company-1', ownerUserId: 'user-1' },
+        proof: {
+          subjectHashCandidates: ['a'.repeat(64)],
+          principalBindingHash: 'b'.repeat(64),
+          capabilityHash: 'c'.repeat(64),
+        },
+        realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+      },
+    };
+
+    await expect(h.adapter.run(missionInput)).resolves.toEqual({
+      status: 'ready',
+      turnId: missionInput.turnId,
+      canonicalSpeech: 'Mission vérifiée.',
+      kind: 'answer',
+      speechPurpose: 'navigation',
+      speechSource: 'card_body',
+      hasTenantContext: true,
+      contextVersion,
+      navigate: '/devis/new',
+    });
+    expect(runMission).toHaveBeenCalledWith(expect.objectContaining({
+      authority: missionInput.agentMissionAuthority,
+      turnId: missionInput.turnId,
+      transcript: missionInput.transcript,
+      contextRevision: 1,
+      contextDigest: contextVersion.digest,
+    }));
+    expect(revalidate).toHaveBeenCalledTimes(2);
+    expect(h.askBob).not.toHaveBeenCalled();
+    expect(h.runWithTenant).not.toHaveBeenCalled();
+  });
+
+  it('publie la progression mission sans renavigation ni double traitement générique', async () => {
+    const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+      async () => ({
+        status: 'handled',
+        canonicalSpeech: 'Deux clients possibles.',
+        speechPurpose: 'structured_choice',
+      }),
+    );
+    const h = harness(
+      { ok: true, value: run({ navigate: '/devis/new' }) },
+      'openai',
+      { run: runMission },
+    );
+    const revalidate = vi.fn(async () => contextVersion);
+    const missionInput = {
+      ...input(undefined, contextFence(revalidate)),
+      agentMissionAuthority: {
+        owner: { companyId: 'company-1', ownerUserId: 'user-1' },
+        proof: {
+          subjectHashCandidates: ['a'.repeat(64)],
+          principalBindingHash: 'b'.repeat(64),
+          capabilityHash: 'c'.repeat(64),
+        },
+        realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+      },
+    };
+
+    const outcome = await h.adapter.run(missionInput);
+
+    expect(outcome).toEqual({
+      status: 'ready',
+      turnId: missionInput.turnId,
+      canonicalSpeech: 'Deux clients possibles.',
+      kind: 'answer',
+      speechPurpose: 'structured_choice',
+      speechSource: 'card_body',
+      hasTenantContext: true,
+      contextVersion,
+    });
+    expect(outcome).not.toHaveProperty('navigate');
+    expect(revalidate).toHaveBeenCalledTimes(2);
+    expect(h.askBob).not.toHaveBeenCalled();
+    expect(h.runWithTenant).not.toHaveBeenCalled();
+  });
+
+  it('interdit au moteur historique de contourner une mission par /devis/new', async () => {
+    const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+      async () => ({ status: 'not_applicable' }),
+    );
+    const h = harness(
+      { ok: true, value: run({ navigate: '/devis/new' }) },
+      'openai',
+      { run: runMission },
+    );
+
+    const outcome = await h.adapter.run({
+      ...input(),
+      agentMissionAuthority: {
+        owner: { companyId: 'company-1', ownerUserId: 'user-1' },
+        proof: {
+          subjectHashCandidates: ['a'.repeat(64)],
+          principalBindingHash: 'b'.repeat(64),
+          capabilityHash: 'c'.repeat(64),
+        },
+        realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: 'failed',
+      canonicalSpeech:
+        'Je ne peux pas ouvrir un devis sans mission vérifiée. Rien n’a été exécuté.',
+    });
+    expect(h.askBob).toHaveBeenCalledOnce();
   });
 
   it('propage le fournisseur Mistral exact sans le déduire des clés disponibles', async () => {

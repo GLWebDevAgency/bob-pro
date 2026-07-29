@@ -305,11 +305,13 @@ describe('RealtimeAuditedConversationTransport', () => {
     const events: string[] = [];
     value.transport.subscribe((event) => {
       if (event.type === 'agent_control_candidate') events.push('control');
+      if (event.type === 'turn_settled') events.push(`settled:${event.status}`);
       if (event.type === 'conversation_completed') events.push('completed');
     });
     await value.transport.connect();
     expect(value.transport.completionMode).toBe('one-shot');
     await expect(value.transport.finishUserInput()).resolves.toBe(true);
+    value.uplink.emit({ type: 'user_input_committed', turnId: TURN });
     expect(value.log).toContain('uplink:finish');
 
     const control: RealtimeVoiceControlReference = {
@@ -321,9 +323,10 @@ describe('RealtimeAuditedConversationTransport', () => {
     value.emitPlayer({ type: 'speech_started', sequence: 1, atMs: 10 });
     value.emitPlayer({ type: 'speech_completed', sequence: 1, atMs: 11 });
     value.emitPlayer({ type: 'control_candidate', reference: control, atMs: 11 });
+    value.emitPlayer({ type: 'turn_terminal', turnId: TURN, status: 'done', atMs: 11 });
     await Promise.resolve();
 
-    expect(events).toEqual(['control', 'completed']);
+    expect(events).toEqual(['control', 'settled:done', 'completed']);
   });
 
   it('dégrade une réponse one-shot qui ne produit aucun son audité dans le budget', async () => {
@@ -361,11 +364,52 @@ describe('RealtimeAuditedConversationTransport', () => {
       await vi.advanceTimersByTimeAsync(30_000);
 
       expect(events).toContainEqual({ type: 'user_input_committed', turnId: TURN });
+      expect(events).toContainEqual({ type: 'turn_settled', turnId: TURN, status: 'failed' });
       expect(events).toContainEqual({ type: 'error', code: 'audited_speech_response_timeout' });
       await value.transport.close('fallback');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('refuse un terminal audité sans commit correspondant et ne fabrique aucun succès', async () => {
+    const value = harness();
+    const events: RealtimeTransportEvent[] = [];
+    value.transport.subscribe((event) => events.push(event));
+    await value.transport.connect();
+
+    value.emitPlayer({ type: 'turn_terminal', turnId: TURN, status: 'done', atMs: 10 });
+
+    expect(events).not.toContainEqual({
+      type: 'turn_settled',
+      turnId: TURN,
+      status: 'done',
+    });
+    expect(events).toContainEqual({
+      type: 'error',
+      code: 'audited_speech_turn_terminal_conflict',
+    });
+    expect(events).toContainEqual({ type: 'fallback', reason: 'provider_error' });
+  });
+
+  it('déduplique un terminal identique et ferme sur un statut contradictoire', async () => {
+    const value = harness();
+    const events: RealtimeTransportEvent[] = [];
+    value.transport.subscribe((event) => events.push(event));
+    await value.transport.connect();
+    value.uplink.emit({ type: 'user_input_committed', turnId: TURN });
+
+    value.emitPlayer({ type: 'turn_terminal', turnId: TURN, status: 'cancelled', atMs: 10 });
+    value.emitPlayer({ type: 'turn_terminal', turnId: TURN, status: 'cancelled', atMs: 11 });
+    value.emitPlayer({ type: 'turn_terminal', turnId: TURN, status: 'done', atMs: 12 });
+
+    expect(events.filter((event) => event.type === 'turn_settled')).toEqual([
+      { type: 'turn_settled', turnId: TURN, status: 'cancelled' },
+    ]);
+    expect(events).toContainEqual({
+      type: 'error',
+      code: 'audited_speech_turn_terminal_conflict',
+    });
   });
 
   it('ne double pas le watchdog quand finishUserInput relaie aussi le commit autoritatif', async () => {
@@ -384,7 +428,7 @@ describe('RealtimeAuditedConversationTransport', () => {
     }
   });
 
-  it('n’arme rien sur annulation et annule le watchdog courant sur navigation', async () => {
+  it('conserve le watchdog lorsqu’une interruption à vide n’est pas acquise', async () => {
     vi.useFakeTimers();
     try {
       const value = harness();
@@ -409,10 +453,15 @@ describe('RealtimeAuditedConversationTransport', () => {
         type: 'state',
         state: { ...value.uplink.state, phase: 'ready' },
       });
-      expect(vi.getTimerCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(60_000);
 
-      expect(events).not.toContainEqual({
+      expect(events).toContainEqual({
+        type: 'turn_settled',
+        turnId: TURN,
+        status: 'failed',
+      });
+      expect(events).toContainEqual({
         type: 'error',
         code: 'audited_speech_response_timeout',
       });

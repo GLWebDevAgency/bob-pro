@@ -13,6 +13,8 @@ import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters
 export const QUOTE_DRAFT_PAYLOAD_SCHEMA = 'bob.quote-draft' as const;
 export const QUOTE_DRAFT_PAYLOAD_VERSION = 1 as const;
 export const QUOTE_DRAFT_MAX_PAYLOAD_BYTES = 256 * 1024;
+/** Révisions persistées dans des colonnes PostgreSQL `integer`. */
+export const QUOTE_DRAFT_REVISION_MAX = 2_147_483_647;
 
 const MAX_ID_LENGTH = 200;
 const MAX_CUSTOMER_NAME_LENGTH = 300;
@@ -167,7 +169,11 @@ function canonicalSingleLine(value: unknown, max: number, allowEmpty = false): v
 }
 
 function safeRevision(value: unknown, allowZero: boolean): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= (allowZero ? 0 : 1);
+  return (
+    Number.isSafeInteger(value)
+    && (value as number) >= (allowZero ? 0 : 1)
+    && (value as number) <= QUOTE_DRAFT_REVISION_MAX
+  );
 }
 
 function fail(code: QuoteDraftPayloadErrorCode, path: string): QuoteDraftPayloadResult {

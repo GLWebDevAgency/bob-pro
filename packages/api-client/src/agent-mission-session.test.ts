@@ -12,6 +12,7 @@ const MISSION_ID = '11111111-1111-4111-8111-111111111111';
 const CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
 const CREATED_AT = '2026-07-26T08:00:00.000Z';
 const ACKNOWLEDGED_AT = '2026-07-26T08:01:00.000Z';
+const ACK_COMMAND_ID = '55555555-5555-4555-8555-555555555555';
 const DRAFT = Object.freeze({
   sessionId: 'quote-draft-session-1',
   slotRevision: 1,
@@ -24,6 +25,7 @@ function initialMission() {
     companyId: 'company-1',
     ownerUserId: 'user-1',
     createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
     startOutcome: 'no_slot',
     draft: DRAFT,
   });
@@ -53,6 +55,22 @@ function acknowledgedMission() {
     occurredAt: ACKNOWLEDGED_AT,
   });
   if (!result.ok) throw new Error(`ACK fixture invalide: ${result.error.code}`);
+  return result.value.mission;
+}
+
+function selectedMission() {
+  const result = acknowledgedMission().selectCustomer({
+    expectedRevision: 2,
+    source: 'screen_selection',
+    customerId: 'customer-camping',
+    updatedDraft: {
+      sessionId: DRAFT.sessionId,
+      slotRevision: 2,
+      contentRevision: 1,
+    },
+    occurredAt: '2026-07-26T08:02:00.000Z',
+  });
+  if (!result.ok) throw new Error(`Sélection fixture invalide: ${result.error.code}`);
   return result.value.mission;
 }
 
@@ -105,6 +123,7 @@ describe('Realtime AgentMission capability handle', () => {
   it('encapsule le secret, pose seule le header et injecte le vrai realtimeSessionId', async () => {
     const initialView = missionView(initialMission(), CREATED_AT);
     const acknowledgedView = missionView(acknowledgedMission(), ACKNOWLEDGED_AT);
+    const selectedView = missionView(selectedMission(), '2026-07-26T08:02:00.000Z');
     const cancelled = initialMission().cancel({
       expectedRevision: 1,
       reason: 'user_cancelled',
@@ -167,6 +186,7 @@ describe('Realtime AgentMission capability handle', () => {
         expect(JSON.parse(String(init?.body))).toEqual({
           commandId: '44444444-4444-4444-8444-444444444444',
           expectedMissionRevision: 1,
+          reason: 'user_cancelled',
         });
         return new Response(JSON.stringify({
           outcome: 'cancelled',
@@ -186,7 +206,50 @@ describe('Realtime AgentMission capability handle', () => {
         });
         return new Response(JSON.stringify({
           outcome: 'acknowledged',
+          receipt: {
+            ackCommandId: ACK_COMMAND_ID,
+            missionId: MISSION_ID,
+            missionRevisionAfter: 2,
+            realtimeSessionId: SESSION_ID,
+            contextRevision: 3,
+            contextDigest: 'a'.repeat(64),
+            occurredAt: ACKNOWLEDGED_AT,
+          },
           mission: acknowledgedView,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (path === `/agent-missions/${MISSION_ID}/decisions`) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body).not.toHaveProperty('missionId');
+        expect(body).not.toHaveProperty('realtimeSessionId');
+        expect(body).not.toHaveProperty('actor');
+        if (body.action === 'select_screen_customer') {
+          expect(body).toEqual({
+            action: 'select_screen_customer',
+            commandId: '66666666-6666-4666-8666-666666666666',
+            expectedMissionRevision: 2,
+            expectedDraftSessionId: DRAFT.sessionId,
+            expectedDraftSlotRevision: 1,
+            expectedDraftContentRevision: 0,
+            customerId: 'customer-camping',
+          });
+        } else {
+          expect(body).toEqual({
+            action: 'choose_presented_option',
+            commandId: '77777777-7777-4777-8777-777777777777',
+            expectedMissionRevision: 2,
+            expectedDraftSessionId: DRAFT.sessionId,
+            expectedDraftSlotRevision: 1,
+            expectedDraftContentRevision: 0,
+            decisionId: '88888888-8888-4888-8888-888888888888',
+            choiceSetRevision: 2,
+            choiceId: '99999999-9999-4999-8999-999999999999',
+          });
+        }
+        return new Response(JSON.stringify({
+          outcome: 'selected',
+          effect: { kind: 'selected' },
+          mission: selectedView,
         }), { headers: { 'content-type': 'application/json' } });
       }
       throw new Error(`Route inattendue: ${path}`);
@@ -234,12 +297,47 @@ describe('Realtime AgentMission capability handle', () => {
       expectedDraftSlotRevision: 1,
       expectedDraftContentRevision: 0,
     })).resolves.toMatchObject({ ok: true, value: { outcome: 'acknowledged' } });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'select_screen_customer',
+      commandId: '66666666-6666-4666-8666-666666666666',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    })).resolves.toMatchObject({ ok: true, value: { outcome: 'selected' } });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'choose_presented_option',
+      commandId: '77777777-7777-4777-8777-777777777777',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      decisionId: '88888888-8888-4888-8888-888888888888',
+      choiceSetRevision: 2,
+      choiceId: '99999999-9999-4999-8999-999999999999',
+    })).resolves.toMatchObject({ ok: true, value: { outcome: 'selected' } });
 
     const fetchesBeforeDispose = fetchMock.mock.calls.length;
     const tokenReadsBeforeDispose = getToken.mock.calls.length;
     handle.dispose();
     expect(handle.disposed).toBe(true);
     await expect(handle.getCurrentQuoteCreation()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable' },
+    });
+    await expect(handle.decideQuoteCreation({
+      missionId: MISSION_ID,
+      action: 'select_screen_customer',
+      commandId: '66666666-6666-4666-8666-666666666666',
+      expectedMissionRevision: 2,
+      expectedDraftSessionId: DRAFT.sessionId,
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+      customerId: 'customer-camping',
+    })).resolves.toMatchObject({
       ok: false,
       error: { kind: 'unavailable' },
     });

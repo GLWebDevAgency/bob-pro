@@ -56,16 +56,27 @@ export interface RealtimeTransportMetrics {
   packetsLost: number | null;
 }
 
+export type RealtimeTurnSettlementStatus = 'done' | 'cancelled' | 'failed';
+
 export type RealtimeTransportEvent =
   | { type: 'state'; state: RealtimeTransportState }
   | { type: 'connectivity'; state: 'connected' | 'disconnected' }
   | { type: 'user_transcript'; text: string; final: boolean }
   | { type: 'bob_transcript'; text: string; final: boolean }
   /**
-   * Preuve locale autoritative que `turn.commit` a ete envoye. Une fin VAD, une annulation
-   * ou un simple retour a READY ne doivent jamais emettre cet evenement.
+   * Preuve transport autoritative que le commit a été accepté/corrélé (ACK provider ou
+   * `turn_started` serveur). Une fin VAD, une annulation ou READY ne l'émettent jamais.
    */
   | { type: 'user_input_committed'; turnId: string }
+  /**
+   * Terminal autoritatif d'un tour. Le premier statut gagne ; `ready`, transcript et fermeture
+   * de conversation ne peuvent jamais le fabriquer.
+   */
+  | {
+      type: 'turn_settled';
+      turnId: string;
+      status: RealtimeTurnSettlementStatus;
+    }
   | {
       type: 'agent_control_candidate';
       reference:

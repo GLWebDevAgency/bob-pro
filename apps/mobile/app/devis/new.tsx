@@ -53,6 +53,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { randomUUID } from 'expo-crypto';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -124,6 +125,11 @@ import { useCatalogue } from '../../src/data/catalogue';
 import { useBillingPrefs } from '../../src/data/billing-prefs';
 import {
   consumeWizardHint,
+  deriveQuoteCustomerSelectionRows,
+  QuoteCustomerDecisionCoordinator,
+  quoteScreenInstanceId,
+  useAgentMissionRuntimeActions,
+  useQuoteScreenMissionBinding,
   usePublishAgentContext,
   useAgentSession,
   type AgentAffordance,
@@ -131,6 +137,13 @@ import {
   type AgentContext,
   type AgentSurface,
 } from '../../src/agent';
+import {
+  QuoteCustomerListRefreshCoordinator,
+  quoteWizardCanResumeParkedDraft,
+  quoteWizardGlobalBobHidden,
+  quoteWizardInteractionEnabled,
+  quoteWizardNavigationLocked,
+} from '../../src/agent/quote-wizard-interaction';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { shouldAdviseRemoteSignature } from '../../src/lib/embargo-prompt';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
@@ -144,6 +157,10 @@ import { parseDiscountInput } from '../../src/facture-directe/facture-directe-mo
 
 /** Layout FIGÉ hors composant : passé en dépendance d'effet, un littéral inline ferait boucler le rendu. */
 const WIZARD_AGENT_LAYOUT: AgentAccessLayout = Object.freeze({ bottomAvoidance: 90 });
+const WIZARD_AGENT_LAYOUT_HIDDEN: AgentAccessLayout = Object.freeze({
+  bottomAvoidance: 90,
+  hidden: true,
+});
 
 /** Profil de risque du recap (envoi du devis, éventuellement signature) — même palier
  * OUTBOUND que le bouton « Envoyer » de DocumentActions/C20. Ce n'est plus un acte fiscal :
@@ -300,6 +317,7 @@ export default function DevisNew() {
   const navigation = useNavigation();
   const confirm = useConfirm();
   const quoteDraft = useQuoteDraft();
+  const agentSession = useAgentSession();
   const customers = useCustomers();
   const company = useCompanyMe();
   const catalogue = useCatalogue();
@@ -314,7 +332,52 @@ export default function DevisNew() {
 
   // ── Machine RÉELLE @bob/core (C02), portée par le provider racine : une seule vérité ──
   const flow = quoteDraft.state.flow;
+  const missionScreenInstanceId = quoteScreenInstanceId({
+    sessionId: quoteDraft.state.sessionId,
+    slotRevision: quoteDraft.authoritativeReference?.slotRevision ?? null,
+    contentRevision:
+      quoteDraft.authoritativeReference?.contentRevision ?? quoteDraft.state.revision,
+    step: flow.step,
+  });
+  const missionBinding = useQuoteScreenMissionBinding({
+    screenInstanceId: missionScreenInstanceId,
+    authoritativeDraft: quoteDraft.authoritativeReference,
+    persistenceStatus: quoteDraft.persistence.status,
+    hydrateDraft: quoteDraft.hydrateMissionDraft,
+    suspendLiveForManualHandoff: agentSession.suspendForManualHandoff,
+    stopLiveAfterManualHandoff: agentSession.stopAfterManualHandoff,
+  });
+  const [missionResumePending, setMissionResumePending] = useState(false);
+  const [missionResumeFailed, setMissionResumeFailed] = useState(false);
+  const missionActions = useAgentMissionRuntimeActions();
+  const [customerDecisionCoordinator] = useState(
+    () => new QuoteCustomerDecisionCoordinator(randomUUID),
+  );
+  const missionEntryReady =
+    missionBinding.state.phase === 'ready'
+    || missionBinding.state.phase === 'handoff_required'
+    || missionBinding.state.phase === 'handing_off'
+    || missionBinding.state.phase === 'handoff_error'
+    || missionBinding.state.phase === 'handoff'
+    || missionBinding.state.phase === 'manual';
+  const missionOwnsEntry =
+    missionBinding.state.phase === 'ready'
+    || missionBinding.state.phase === 'handoff_required'
+    || missionBinding.state.phase === 'handing_off'
+    || missionBinding.state.phase === 'handoff_error';
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
+  const [customerDecisionPendingId, setCustomerDecisionPendingId] =
+    useState<string | null>(null);
+  const [customerDecisionError, setCustomerDecisionError] =
+    useState<'unavailable' | 'customer_refresh_failed' | null>(null);
+  const [customerListRefreshPending, setCustomerListRefreshPending] = useState(false);
+  const lastCustomerDecision = useRef<
+    Pick<CustomerListItem, 'id' | 'name'> | null
+  >(null);
+  const customerDecisionInFlight = useRef(false);
+  const [customerListRefreshCoordinator] = useState(
+    () => new QuoteCustomerListRefreshCoordinator(),
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** Résultat du DEVIS créé (jamais une facture) — statut réel : signé sur place, ou envoyé
@@ -389,8 +452,26 @@ export default function DevisNew() {
 
   const draft = flow.draft;
   const customer = (customers.data ?? []).find((c) => c.id === draft.customerId) ?? null;
-  const customerName = customer?.name ?? quoteDraft.state.customer?.name ?? 'le client';
-  const contextCustomer = customer ?? quoteDraft.state.customer;
+  // Le snapshot du brouillon est l'autorité de la sélection. La query de liste apporte les
+  // attributs annexes (B2B/B2C), mais ne doit jamais remplacer son nom par une valeur de cache.
+  const contextCustomer = quoteDraft.state.customer ?? customer;
+  const customerName = contextCustomer?.name ?? 'le client';
+  const missionCustomerDecision =
+    missionBinding.state.phase === 'ready'
+    && missionBinding.state.mission.payload.decision?.kind === 'customer'
+      ? missionBinding.state.mission.payload.decision
+      : null;
+  const missionCustomerChoices =
+    missionBinding.state.phase === 'ready'
+      ? missionBinding.state.customerChoices
+      : null;
+  const customerSelectionRows = deriveQuoteCustomerSelectionRows(
+    customers.data ?? [],
+    missionCustomerDecision,
+    missionCustomerChoices,
+  );
+  const customerSelectionBusy =
+    customerDecisionPendingId !== null || customerListRefreshPending;
   // PR-08 — sites proposables : chantiers OUVERTS du tenant, filtrés sur le client choisi
   // (un chantier d'un autre client ne se propose jamais) ; sans chantier ouvert, le picker
   // n'apparaît pas (gating implicite par la donnée réelle — jamais un choix vide).
@@ -424,6 +505,133 @@ export default function DevisNew() {
   // Vue « client » sur navy UNIQUEMENT quand le pad est effectivement montré (mode sur place
   // choisi) — le choix du mode et l'envoi à distance restent sur le thème clair habituel.
   const dark = flow.step === 'signature' && draft.signMode === 'onsite';
+
+  const refreshCustomerList = (): Promise<boolean> => {
+    return customerListRefreshCoordinator.refresh(
+      async () => {
+        const result = await customers.refetch({ cancelRefetch: false });
+        return !result.isError;
+      },
+      setCustomerListRefreshPending,
+    );
+  };
+
+  const selectCustomer = async (
+    selectedCustomer: Pick<CustomerListItem, 'id' | 'name'>,
+  ): Promise<void> => {
+    if (customerDecisionInFlight.current) return;
+    lastCustomerDecision.current = selectedCustomer;
+    setCustomerDecisionError(null);
+
+    if (missionBinding.state.phase === 'manual') {
+      // Hors mission, le wizard historique reste intégralement local et sérialisé par son
+      // provider. Ce chemin n'est jamais utilisé quand Bob possède le brouillon serveur.
+      if (draft.customerId !== selectedCustomer.id) setWizardChantier(null);
+      quoteDraft.applyAtRevision(
+        {
+          type: 'select_customer',
+          customer: { id: selectedCustomer.id, name: selectedCustomer.name },
+        },
+        quoteDraft.state.revision,
+      );
+      setGuardMsg(null);
+      return;
+    }
+    if (missionBinding.state.phase !== 'ready') {
+      setCustomerDecisionError('unavailable');
+      return;
+    }
+
+    customerDecisionInFlight.current = true;
+    setCustomerDecisionPendingId(selectedCustomer.id);
+    try {
+      const result = await customerDecisionCoordinator.select({
+        mission: missionBinding.state.mission,
+        customerId: selectedCustomer.id,
+        expectedScreenInstanceId: missionScreenInstanceId,
+      }, missionActions);
+
+      if (result.status !== 'completed') {
+        if (
+          result.status === 'failed'
+          && result.error.kind === 'conflict'
+          && result.error.entity === 'agent_mission_customer'
+          && result.error.reason === 'unavailable'
+        ) {
+          lastCustomerDecision.current = null;
+          const refreshed = await refreshCustomerList();
+          missionBinding.retry();
+          setCustomerDecisionError(refreshed ? null : 'customer_refresh_failed');
+          return;
+        }
+        // Un conflit signifie généralement qu'un autre canal a gagné : on relit avant tout retry.
+        if (result.status === 'failed' && result.error.kind === 'conflict') {
+          missionBinding.retry();
+        }
+        if (result.status === 'stale' || result.status === 'context_unconfirmed') {
+          missionBinding.retry();
+        }
+        setCustomerDecisionError('unavailable');
+        return;
+      }
+
+      const updatedMission = result.value.mission;
+      const updatedDraft = updatedMission.payload.draft;
+      if (
+        updatedMission.phase === 'awaiting_customer'
+        || result.value.outcome === 'invalidated'
+      ) {
+        // Le candidat a disparu entre l'affichage et le verrou DB : la liste réelle est rechargée,
+        // l'ancien libellé n'est jamais réutilisé et le brouillon reste intact.
+        lastCustomerDecision.current = null;
+        const refreshed = await refreshCustomerList();
+        missionBinding.retry();
+        setCustomerDecisionError(refreshed ? null : 'customer_refresh_failed');
+        return;
+      }
+      if (updatedMission.phase !== 'awaiting_lines' || updatedDraft === null) {
+        missionBinding.retry();
+        setCustomerDecisionError('unavailable');
+        return;
+      }
+
+      const hydrated = await quoteDraft.hydrateMissionDraft(updatedDraft);
+      if (hydrated.status !== 'ready') {
+        missionBinding.retry();
+        setCustomerDecisionError('unavailable');
+        return;
+      }
+
+      // La sélection visible vient désormais exclusivement du slot serveur relu. Les données
+      // d'écran annexes qui dépendaient d'un autre client sont invalidées après ce commit.
+      if (draft.customerId !== selectedCustomer.id) setWizardChantier(null);
+      setGuardMsg(null);
+      missionBinding.retry();
+    } catch {
+      setCustomerDecisionError('unavailable');
+    } finally {
+      customerDecisionInFlight.current = false;
+      setCustomerDecisionPendingId(null);
+    }
+  };
+
+  const retryCustomerSelection = async (): Promise<void> => {
+    if (customerDecisionError === 'customer_refresh_failed') {
+      const refreshed = await refreshCustomerList();
+      if (refreshed) {
+        setCustomerDecisionError(null);
+        missionBinding.retry();
+      }
+      return;
+    }
+    const selectedCustomer = lastCustomerDecision.current;
+    if (selectedCustomer !== null) {
+      await selectCustomer(selectedCustomer);
+      return;
+    }
+    setCustomerDecisionError(null);
+    missionBinding.retry();
+  };
 
   // ── Transitions : écran et voix commandent le MÊME provider sérialisé ──────
   const goNext = (): void => {
@@ -462,8 +670,14 @@ export default function DevisNew() {
   const freshnessApplied = useRef(false);
   const [freshnessReady, setFreshnessReady] = useState(false);
   useEffect(() => {
-    if (freshnessApplied.current) return;
+    if (freshnessApplied.current || !missionEntryReady) return;
     freshnessApplied.current = true;
+    if (missionOwnsEntry) {
+      // La mission a déjà choisi et persisté le slot exact. Toute initialisation locale
+      // (nouvelle session, ancien hint, défaut de facturation) détruirait cette autorité.
+      setFreshnessReady(true);
+      return;
+    }
     if (resumeRequested) {
       // Rien à faire si la session déjà chargée EST le brouillon visé (ex. démarrage à froid,
       // jamais soft-resetée) — sinon, on ramène celui parké par une visite précédente.
@@ -474,13 +688,19 @@ export default function DevisNew() {
       quoteDraft.startFresh();
     }
     setFreshnessReady(true);
-    // Mount uniquement — une seule décision par ouverture d'écran (resumeRequested/quoteDraft
-    // sont lus via refs/valeurs figées à l'ouverture ; les redemander ne doit rien redéclencher).
-  }, []);
+  }, [missionEntryReady, missionOwnsEntry, quoteDraft, resumeRequested]);
   const billingDefaultsApplied = useRef(false);
   const [billingDefaultsReady, setBillingDefaultsReady] = useState(false);
   useEffect(() => {
     if (billingDefaultsApplied.current || !freshnessReady) return;
+    if (missionOwnsEntry) {
+      // Le brouillon mission est une photographie serveur : les defaults ont été décidés dans
+      // le domaine. L'écran ne crée jamais une révision locale avant son ACK.
+      billingDefaultsApplied.current = true;
+      setBillingDefaultsReady(true);
+      return;
+    }
+    if (missionBinding.state.phase !== 'manual') return;
     if (resumeRequested) {
       billingDefaultsApplied.current = true;
       setBillingDefaultsReady(true);
@@ -502,17 +722,30 @@ export default function DevisNew() {
     if (!applied.ok && applied.error.code === 'revision_conflict') return;
     billingDefaultsApplied.current = true;
     setBillingDefaultsReady(true);
-  }, [billingPrefs.prefs, freshnessReady, quoteDraft.state.revision, resumeRequested]);
+  }, [
+    billingPrefs.prefs,
+    freshnessReady,
+    missionBinding.state.phase,
+    missionOwnsEntry,
+    quoteDraft,
+    quoteDraft.state.revision,
+    resumeRequested,
+  ]);
   const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false);
 
   // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
   // les clients RÉELS dès leur chargement — client présélectionné + saut direct aux
   // prestations. Introuvable/ambigu → flux normal étape client (fail-safe, jamais de devinette).
   // Attend la décision fraîcheur ci-dessus : sinon `flowRef` porterait encore l'ancien brouillon.
-  const [wizardHint] = useState(() => consumeWizardHint('devis-new'));
-  const wizardHintRef = useRef(wizardHint);
+  const wizardHintRef =
+    useRef<ReturnType<typeof consumeWizardHint>>(null);
+  const wizardHintConsumed = useRef(false);
   useEffect(() => {
-    if (!freshnessReady) return;
+    if (!freshnessReady || missionBinding.state.phase !== 'manual') return;
+    if (!wizardHintConsumed.current) {
+      wizardHintRef.current = consumeWizardHint('devis-new');
+      wizardHintConsumed.current = true;
+    }
     const hint = wizardHintRef.current;
     const reference = hint?.customerReference;
     if (!reference) return;
@@ -528,7 +761,7 @@ export default function DevisNew() {
       { type: 'select_customer', customer: { id: matched.id, name: matched.name } },
       { type: 'next_step' },
     ]);
-  }, [customers.data, freshnessReady]);
+  }, [customers.data, freshnessReady, missionBinding.state.phase, quoteDraft]);
   const customersRef = useRef(customers.data ?? []);
   customersRef.current = customers.data ?? [];
   const prestationsRef = useRef<readonly VoicePrestation[]>([]);
@@ -995,21 +1228,33 @@ export default function DevisNew() {
     });
   const agentSurface = useMemo<AgentSurface>(
     () => ({
-      ...(greetKey
+      ...(missionBinding.state.phase === 'handoff'
         ? {
             greeting: {
-              key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
-              text: speaksSignatureAdvice
-                ? `${t(greetKey, { personality })} ${t('legal.signatureChannel.voice', { personality })}`
-                : t(greetKey, { personality }),
+              key: `devis-new:mission-handoff:${missionBinding.state.mission.id}:${missionBinding.state.mission.revision}`,
+              text: t('devis.mission.linesHandoff', { personality }),
             },
           }
-        : {}),
-      affordances: voiceAffordances,
+        : missionBinding.state.phase === 'manual' && greetKey
+          ? {
+              greeting: {
+                key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
+                text: speaksSignatureAdvice
+                  ? `${t(greetKey, { personality })} ${t('legal.signatureChannel.voice', { personality })}`
+                  : t(greetKey, { personality }),
+              },
+            }
+          : {}),
+      // Une mission Live active est pilotée par les use cases serveur. Les affordances
+      // historiques restent le repli manuel, mais ne peuvent jamais muter en parallèle le slot
+      // durable pendant que GPT Realtime attend un ACK.
+      affordances:
+        missionBinding.state.phase === 'manual' ? voiceAffordances : [],
     }),
     [
       flow.step,
       greetKey,
+      missionBinding.state.phase,
       personality,
       quoteDraft.state.sessionId,
       speaksSignatureAdvice,
@@ -1020,21 +1265,32 @@ export default function DevisNew() {
     () => ({
       screen: {
         name: '/devis/new',
-        instanceId: `devis-new:${quoteDraft.state.sessionId}:${quoteDraft.state.revision}:${flow.step}`,
+        instanceId: missionScreenInstanceId,
       },
-      entities: contextCustomer
+      // Avant adoption du triplet mission, l'ancien brouillon chargé ne doit jamais être publié
+      // comme contexte de la nouvelle conversation.
+      entities: missionEntryReady && contextCustomer
         ? [{ type: 'customer' as const, id: contextCustomer.id, label: contextCustomer.name }]
         : [],
       capabilities: ['screen.read', 'customer.read'],
     }),
-    [contextCustomer, flow.step, quoteDraft.state.revision, quoteDraft.state.sessionId],
+    [contextCustomer, missionEntryReady, missionScreenInstanceId],
   );
-  usePublishAgentContext(wizardAgentContext, WIZARD_AGENT_LAYOUT, agentSurface);
-  const agentSession = useAgentSession();
+  const wizardAgentLayout = quoteWizardGlobalBobHidden(missionBinding.state.phase)
+    ? WIZARD_AGENT_LAYOUT_HIDDEN
+    : WIZARD_AGENT_LAYOUT;
+  usePublishAgentContext(wizardAgentContext, wizardAgentLayout, agentSurface);
+
+  useEffect(() => {
+    if (missionBinding.state.phase === 'resume_required') return;
+    setMissionResumePending(false);
+    setMissionResumeFailed(false);
+  }, [missionBinding.state.phase]);
 
   // Une reprise de route obtient une nouvelle mission vocale, mais le même sessionId de brouillon.
   // Une proposition expirée reste un diff refusé, jamais une mutation différée.
   useEffect(() => {
+    if (missionBinding.state.phase !== 'manual') return undefined;
     quoteDraft.expireProposal();
     if (quoteStateRef.current.mission.status !== 'active') {
       quoteDraft.startMission({ mode: 'guided_voice', startedFrom: '/devis/new' });
@@ -1042,28 +1298,45 @@ export default function DevisNew() {
     return () => {
       quoteDraft.stopMission('user');
     };
-  }, [quoteDraft.expireProposal, quoteDraft.startMission, quoteDraft.stopMission]);
+  }, [
+    missionBinding.state.phase,
+    quoteDraft.expireProposal,
+    quoteDraft.startMission,
+    quoteDraft.stopMission,
+  ]);
 
   // À chaque (re)entrée sur l'étape signature : pad remonté VIERGE ⇒ capture réinitialisée
   // (ce qui est affiché = ce qui est commité — revenir en arrière exige de re-signer),
   // et nom du signataire pré-rempli avec le client choisi.
   useEffect(() => {
-    if (flow.step !== 'signature') return;
+    if (!billingDefaultsReady || !missionEntryReady || flow.step !== 'signature') return;
     setSignature(null);
     if (signerName === '' && customer !== null) setSignerName(customer.name);
-  }, [flow.step]);
+  }, [
+    billingDefaultsReady,
+    customer,
+    flow.step,
+    missionEntryReady,
+    signerName,
+  ]);
 
   // signerName n'est commité dans la machine QUE si le pad porte un tracé ET un nom
   // valide (≥ 2 caractères — même plancher que SignQuote) : la garde devisNext reste
   // l'unique juge du passage. Le dataURL (signature.dataUrl) part avec signQuote (preuve R4).
   useEffect(() => {
-    if (exitActionInFlight.current) return;
+    if (!billingDefaultsReady || !missionEntryReady || exitActionInFlight.current) return;
     const name = signerName.trim();
     const committed = signature !== null && !signature.isEmpty && name.length >= 2 ? name : null;
     if (quoteStateRef.current.flow.draft.signerName !== committed) {
       quoteDraft.apply({ type: 'set_signer_name', signerName: committed });
     }
-  }, [signature, signerName]);
+  }, [
+    billingDefaultsReady,
+    missionEntryReady,
+    quoteDraft,
+    signature,
+    signerName,
+  ]);
 
   // ── Étape 2 : lignes ───────────────────────────────────────────────────────
   const lineQtyValue = parsePositive(lineQty);
@@ -1375,7 +1648,16 @@ export default function DevisNew() {
 
   // ── Sortie sûre : bouton, back Android et swipe iOS passent par la même décision ──
   const hasUnpersistedSignature = signature !== null && !signature.isEmpty;
-  const needsExitDecision = quoteResult === null
+  const wizardInteractive = quoteWizardInteractionEnabled({
+    billingDefaultsReady,
+    missionPhase: missionBinding.state.phase,
+  });
+  const missionTransitionExitLocked = quoteWizardNavigationLocked({
+    missionPhase: missionBinding.state.phase,
+    missionResumePending,
+  });
+  const needsExitDecision = wizardInteractive
+    && quoteResult === null
     && (
       hasUnsavedQuoteDraftChanges(quoteDraft.state)
       || hasUnpersistedSignature
@@ -1383,9 +1665,14 @@ export default function DevisNew() {
     );
   // Une chaîne partiellement exécutée ne se transforme pas en « brouillon local » : quitter
   // ferait perdre les checkpoints et pourrait provoquer un double envoi/signature au retry.
-  const generationExitLocked = quoteResult === null && flow.step === 'recap';
+  const generationExitLocked =
+    wizardInteractive && quoteResult === null && flow.step === 'recap';
 
   useEffect(() => navigation.addListener('beforeRemove', (event) => {
+    if (missionTransitionExitLocked) {
+      event.preventDefault();
+      return;
+    }
     if (allowNextRemoval.current) {
       allowNextRemoval.current = false;
       return;
@@ -1394,11 +1681,26 @@ export default function DevisNew() {
     event.preventDefault();
     pendingExit.current = () => navigation.dispatch(event.data.action);
     setExitSheetOpen(true);
-  }), [generationExitLocked, navigation, needsExitDecision]);
+  }), [
+    generationExitLocked,
+    missionTransitionExitLocked,
+    navigation,
+    needsExitDecision,
+  ]);
 
   useEffect(() => {
-    navigation.setOptions({ gestureEnabled: !needsExitDecision && !generationExitLocked });
-  }, [generationExitLocked, navigation, needsExitDecision]);
+    navigation.setOptions({
+      gestureEnabled:
+        !missionTransitionExitLocked
+        && !needsExitDecision
+        && !generationExitLocked,
+    });
+  }, [
+    generationExitLocked,
+    missionTransitionExitLocked,
+    navigation,
+    needsExitDecision,
+  ]);
 
   const leave = (action: () => void): void => {
     allowNextRemoval.current = true;
@@ -1408,6 +1710,7 @@ export default function DevisNew() {
   };
 
   const requestClose = (): void => {
+    if (missionTransitionExitLocked) return;
     const action = () => router.back();
     if (!needsExitDecision && !generationExitLocked) {
       leave(action);
@@ -1456,8 +1759,14 @@ export default function DevisNew() {
     setExitActionBusy(false);
   };
 
+  const leaveMissionGate = (): void => {
+    if (missionTransitionExitLocked) return;
+    agentSession.stop();
+    leave(() => router.back());
+  };
+
   // ════════ RECAP (machine: 'recap', devis réel créé — JAMAIS de facture) ═════
-  if (!billingDefaultsReady) {
+  if (missionBinding.state.phase === 'error') {
     return (
       <View
         style={{
@@ -1468,7 +1777,314 @@ export default function DevisNew() {
           justifyContent: 'center',
         }}
       >
-        {billingPrefs.isError ? (
+        <ErrorRetry
+          message={t('devis.mission.error', { personality })}
+          onRetry={missionBinding.retry}
+          secondaryLabel={t('devis.mission.leaveAction', { personality })}
+          onSecondaryAction={leaveMissionGate}
+        />
+      </View>
+    );
+  }
+
+  if (missionBinding.state.phase === 'blocked') {
+    const messageKey: I18nKey = missionBinding.state.reason === 'local_changes'
+      ? 'devis.mission.localChanges'
+      : missionBinding.state.reason === 'mission_expired'
+        ? 'devis.mission.expired'
+        : 'devis.mission.draftDecision';
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 24,
+          paddingBottom: insets.bottom + 24,
+          paddingHorizontal: 18,
+          justifyContent: 'center',
+        }}
+      >
+        <Card style={{ borderColor: semantic.warning, borderWidth: 1 }}>
+          <Text
+            accessibilityRole="alert"
+            style={[font('sub'), { color: colors.ink900, lineHeight: 20 }]}
+          >
+            {t(messageKey, { personality })}
+          </Text>
+          <View style={{ marginTop: 14, alignSelf: 'flex-start' }}>
+            <Button
+              title={t('devis.mission.leaveAction', { personality })}
+              variant="secondary"
+              onPress={leaveMissionGate}
+            />
+          </View>
+        </Card>
+      </View>
+    );
+  }
+
+  if (missionBinding.state.phase === 'resume_required') {
+    const expired = missionBinding.state.recovery.mission.status === 'expired';
+    const resuming = missionResumePending;
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 20,
+          paddingBottom: insets.bottom + 20,
+          paddingHorizontal: 18,
+        }}
+      >
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('devis.close', { personality })}
+            disabled={resuming}
+            onPress={requestClose}
+            hitSlop={6}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: controls.segmentedTrack,
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: resuming ? 0.5 : 1,
+            }}
+          >
+            <CloseIcon color={colors.slate500} size={17} />
+          </Pressable>
+        </View>
+        <ScrollView
+          accessible
+          accessibilityLiveRegion="polite"
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 12,
+            paddingVertical: 20,
+          }}
+        >
+          <View
+            style={{
+              width: 72,
+              height: 72,
+              borderRadius: 36,
+              backgroundColor: semantic.aiBg,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 22,
+            }}
+          >
+            <Ionicons name="sparkles-outline" size={32} color={semantic.ai} />
+          </View>
+          <Text
+            style={[
+              font('screenH1'),
+              { color: colors.ink900, textAlign: 'center', marginBottom: 10 },
+            ]}
+          >
+            {t(
+              expired
+                ? 'devis.mission.resumeExpiredTitle'
+                : 'devis.mission.resumeTitle',
+              { personality },
+            )}
+          </Text>
+          <Text
+            style={[
+              font('body'),
+              {
+                color: colors.ink600,
+                textAlign: 'center',
+                lineHeight: 23,
+                maxWidth: 340,
+              },
+            ]}
+          >
+            {t(
+              expired
+                ? 'devis.mission.resumeExpiredBody'
+                : 'devis.mission.resumeBody',
+              { personality },
+            )}
+          </Text>
+          {missionResumeFailed ? (
+            <Text
+              accessibilityRole="alert"
+              style={[
+                font('sub'),
+                {
+                  color: semantic.danger,
+                  textAlign: 'center',
+                  marginTop: 14,
+                },
+              ]}
+            >
+              {t('live.error', { personality })}
+            </Text>
+          ) : null}
+        </ScrollView>
+        <Button
+          title={t(
+            resuming
+              ? 'devis.mission.resumeLoading'
+              : 'devis.mission.resumeAction',
+            { personality },
+          )}
+          accessibilityLabel={t('devis.mission.resumeAction', { personality })}
+          loading={resuming}
+          disabled={resuming}
+          onPress={() => {
+            if (missionResumePending) return;
+            setMissionResumePending(true);
+            setMissionResumeFailed(false);
+            void agentSession.resumeMissionV1().then(
+              (resumed) => {
+                if (resumed) return;
+                setMissionResumePending(false);
+                setMissionResumeFailed(true);
+              },
+              () => {
+                setMissionResumePending(false);
+                setMissionResumeFailed(true);
+              },
+            );
+          }}
+          variant="aiSolid"
+        />
+      </View>
+    );
+  }
+
+  if (
+    missionBinding.state.phase === 'handoff_required'
+    || missionBinding.state.phase === 'handing_off'
+    || missionBinding.state.phase === 'handoff_error'
+  ) {
+    const handingOff = missionBinding.state.phase === 'handing_off';
+    const handoffFailed = missionBinding.state.phase === 'handoff_error';
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 20,
+          paddingBottom: insets.bottom + 20,
+          paddingHorizontal: 18,
+        }}
+      >
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('devis.close', { personality })}
+            disabled={handingOff}
+            onPress={requestClose}
+            hitSlop={6}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: controls.segmentedTrack,
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: handingOff ? 0.5 : 1,
+            }}
+          >
+            <CloseIcon color={colors.slate500} size={17} />
+          </Pressable>
+        </View>
+        <ScrollView
+          accessible
+          accessibilityLiveRegion="polite"
+          style={{ flex: 1 }}
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 12,
+            paddingVertical: 20,
+          }}
+        >
+          <View
+            style={{
+              width: 72,
+              height: 72,
+              borderRadius: 36,
+              backgroundColor: semantic.aiBg,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 22,
+            }}
+          >
+            <Ionicons name="sparkles-outline" size={32} color={semantic.ai} />
+          </View>
+          <Text
+            style={[
+              font('screenH1'),
+              { color: colors.ink900, textAlign: 'center', marginBottom: 10 },
+            ]}
+          >
+            {t('devis.mission.handoffTitle', { personality })}
+          </Text>
+          <Text
+            style={[
+              font('body'),
+              {
+                color: colors.ink600,
+                textAlign: 'center',
+                lineHeight: 23,
+                maxWidth: 340,
+              },
+            ]}
+          >
+            {t(
+              handoffFailed
+                ? 'devis.mission.handoffError'
+                : 'devis.mission.handoffBody',
+              { personality },
+            )}
+          </Text>
+        </ScrollView>
+        <Button
+          title={t(
+            handingOff
+              ? 'devis.mission.handoffLoading'
+              : 'devis.mission.handoffAction',
+            { personality },
+          )}
+          accessibilityLabel={t('devis.mission.handoffAction', { personality })}
+          loading={handingOff}
+          disabled={handingOff}
+          onPress={() => { void missionBinding.continueManually(); }}
+          variant="aiSolid"
+        />
+      </View>
+    );
+  }
+
+  if (!wizardInteractive) {
+    return (
+      <View
+        accessibilityRole="progressbar"
+        accessibilityLabel={t(
+          missionEntryReady
+            ? 'devis.draftLoad.loading'
+            : 'devis.mission.loading',
+          { personality },
+        )}
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 24,
+          paddingHorizontal: 18,
+          justifyContent: 'center',
+        }}
+      >
+        {missionEntryReady && billingPrefs.isError ? (
           <ErrorRetry
             message={t('reglages.dataError', { personality })}
             onRetry={() => { void billingPrefs.refetch(); }}
@@ -1714,11 +2330,46 @@ export default function DevisNew() {
           />
         </View>
 
+        {missionBinding.state.phase === 'handoff' ? (
+          <View
+            accessible
+            accessibilityLiveRegion="polite"
+            accessibilityLabel={t('devis.mission.linesHandoff', { personality })}
+            style={{
+              marginHorizontal: 18,
+              marginBottom: 8,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: semantic.ai,
+              backgroundColor: semantic.aiBg,
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <Ionicons name="sparkles-outline" size={18} color={semantic.ai} />
+            <Text
+              style={[
+                font('sub', 600),
+                { flex: 1, color: semantic.aiInk, lineHeight: 18 },
+              ]}
+            >
+              {t('devis.mission.linesHandoff', { personality })}
+            </Text>
+          </View>
+        ) : null}
+
         {/* Bannière discrète de reprise (bug fondateur 2026-07-17) : jamais de résurrection
             silencieuse — le wizard démarre vierge, mais un brouillon enregistré parké reste
             proposé, pas imposé. Visible seulement à l'étape client (juste après l'ouverture) et
             tant que rien n'a été saisi dans CETTE session. */}
-        {quoteDraft.pendingResume !== null && !resumeBannerDismissed && flow.step === 'client' && draft.customerId === null ? (
+        {quoteWizardCanResumeParkedDraft(missionBinding.state.phase)
+        && quoteDraft.pendingResume !== null
+        && !resumeBannerDismissed
+        && flow.step === 'client'
+        && draft.customerId === null ? (
           <View style={{ paddingHorizontal: 18, paddingBottom: 4 }}>
             <Pressable
               accessibilityRole="button"
@@ -1772,44 +2423,102 @@ export default function DevisNew() {
               <Text style={[font('sub'), { color: subColor, marginBottom: 4 }]}>
                 {t('devis.clientSub', { personality })}
               </Text>
-              {customers.isLoading ? (
-                <>
-                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
-                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
-                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
-                </>
-              ) : customers.isError ? (
+              {customerDecisionError !== null ? (
                 <ErrorRetry
-                  message={t('devis.dataError', { personality })}
-                  onRetry={() => void customers.refetch()}
-                  retrying={customers.isRefetching}
+                  message={t(
+                    customerDecisionError === 'customer_refresh_failed'
+                      ? 'devis.mission.customerRefreshError'
+                      : 'devis.mission.customerSelectionError',
+                    { personality },
+                  )}
+                  onRetry={() => { void retryCustomerSelection(); }}
+                  retrying={
+                    customerDecisionPendingId !== null
+                    || customerListRefreshPending
+                  }
                 />
-              ) : (customers.data ?? []).length === 0 ? (
-                <Card>
-                  {/* Pas de cta ici : la création client (C40) vit UNIQUEMENT dans une Sheet
-                      locale à (tabs)/clients.tsx (zone d'un autre agent, aucune route dédiée
-                      genre /client/new n'existe) — un cta y pointant serait un chemin fantôme. */}
-                  <EmptyState body={t('devis.noCustomers', { personality })} />
+              ) : null}
+              {missionCustomerDecision !== null ? (
+                <Card radius={16} padding={14} style={{ borderColor: semantic.ai, borderWidth: 1 }}>
+                  <Text style={[font('label'), { color: semantic.aiInk }]}>
+                    {t('devis.mission.customerChoicesTitle', { personality })}
+                  </Text>
+                  <Text style={[font('sub'), { color: colors.ink800, marginTop: 4 }]}>
+                    {t('devis.mission.customerChoicesBody', { personality })}
+                  </Text>
                 </Card>
-              ) : (
-                (customers.data ?? []).map((c) => {
+              ) : null}
+              {customerSelectionRows.length > 0 ? (
+                <View accessibilityRole="radiogroup" style={{ gap: 12 }}>
+                  {customerSelectionRows.map((row) => {
+                  if (row.kind === 'unavailable') {
+                    return (
+                      <View
+                        key={`unavailable:${row.customerId}`}
+                        accessible
+                        accessibilityLabel={t('devis.mission.customerChoiceUnavailableAccessibility', {
+                          personality,
+                          params: { ordinal: row.missionOrdinal },
+                        })}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 12,
+                          minHeight: 58,
+                          backgroundColor: colors.surface,
+                          borderRadius: radius.cardLg,
+                          borderWidth: 1,
+                          borderColor: controls.cardBorder,
+                          paddingVertical: 13,
+                          paddingHorizontal: 14,
+                          opacity: 0.7,
+                        }}
+                      >
+                        <View
+                          style={{
+                            minWidth: 28,
+                            height: 28,
+                            borderRadius: 14,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            backgroundColor: semantic.aiBg,
+                          }}
+                        >
+                          <Text style={[font('meta', 700), { color: semantic.aiInk }]}>
+                            {row.missionOrdinal}
+                          </Text>
+                        </View>
+                        <Text style={[font('sub'), { flex: 1, color: colors.slate500 }]}>
+                          {t('devis.mission.customerChoiceUnavailable', { personality })}
+                        </Text>
+                      </View>
+                    );
+                  }
+                  const c = row.kind === 'authoritative'
+                    ? { id: row.customerId, name: row.label }
+                    : row.customer;
+                  const cachedCustomer = row.kind === 'available' ? row.customer : null;
                   const selected = draft.customerId === c.id;
+                  const missionOrdinal = row.missionOrdinal;
                   return (
                     <Pressable
                       key={c.id}
-                      onPress={() => {
-                        // PR-08 — changer de client invalide un site choisi pour un autre
-                        // client (jamais un rattachement orphelin d'un ancien choix).
-                        if (draft.customerId !== c.id) setWizardChantier(null);
-                        quoteDraft.applyAtRevision(
-                          { type: 'select_customer', customer: { id: c.id, name: c.name } },
-                          quoteDraft.state.revision,
-                        );
-                        setGuardMsg(null);
-                      }}
+                      onPress={() => { void selectCustomer(c); }}
+                      disabled={customerSelectionBusy}
                       accessibilityRole="radio"
-                      accessibilityLabel={c.name}
-                      accessibilityState={{ selected }}
+                      accessibilityLabel={
+                        missionOrdinal === null
+                          ? c.name
+                          : t('devis.mission.customerChoiceAccessibility', {
+                              personality,
+                              params: { ordinal: missionOrdinal, name: c.name },
+                            })
+                      }
+                      accessibilityState={{
+                        selected,
+                        disabled: customerSelectionBusy,
+                        busy: customerDecisionPendingId === c.id,
+                      }}
                       style={{
                         flexDirection: 'row',
                         alignItems: 'center',
@@ -1821,24 +2530,99 @@ export default function DevisNew() {
                         borderColor: selected ? theme.ink : controls.cardBorder,
                         paddingVertical: 13,
                         paddingHorizontal: 14,
+                        opacity:
+                          customerSelectionBusy
+                          && customerDecisionPendingId !== c.id
+                            ? 0.55
+                            : 1,
                         ...shadowNative.e1,
                       }}
                     >
-                      <Avatar name={c.name} size={42} tone={CUSTOMER_TONE[c.type]} />
+                      <Avatar
+                        name={c.name}
+                        size={42}
+                        {...(cachedCustomer === null
+                          ? {}
+                          : { tone: CUSTOMER_TONE[cachedCustomer.type] })}
+                      />
                       <View style={{ flex: 1 }}>
                         <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900 }]}>{c.name}</Text>
-                        {c.siren !== null ? (
+                        {cachedCustomer !== null && cachedCustomer.siren !== null ? (
                           <Text style={[font('meta'), { fontSize: 12.5, color: colors.slate400, marginTop: 1 }]}>
-                            {t('fiche.sirenLabel', { personality, params: { siren: c.siren } })}
+                            {t('fiche.sirenLabel', {
+                              personality,
+                              params: { siren: cachedCustomer.siren },
+                            })}
                           </Text>
                         ) : null}
                       </View>
-                      <StatusBadge label={t(CUSTOMER_BADGE[c.type], { personality })} variant={CUSTOMER_TONE[c.type]} />
-                      {selected ? <CheckIcon color={theme.ink} size={18} strokeWidth={2.4} /> : null}
+                      {missionOrdinal !== null ? (
+                        <View
+                          style={{
+                            minWidth: 28,
+                            height: 28,
+                            borderRadius: 14,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            backgroundColor: semantic.aiBg,
+                          }}
+                        >
+                          <Text style={[font('meta', 700), { color: semantic.aiInk }]}>
+                            {missionOrdinal}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {customerDecisionPendingId === c.id ? (
+                        <ActivityIndicator
+                          accessibilityLabel={t('devis.mission.customerSelectionLoading', { personality })}
+                          color={semantic.ai}
+                          size="small"
+                        />
+                      ) : (
+                        <>
+                          {cachedCustomer === null ? null : (
+                            <StatusBadge
+                              label={t(CUSTOMER_BADGE[cachedCustomer.type], { personality })}
+                              variant={CUSTOMER_TONE[cachedCustomer.type]}
+                            />
+                          )}
+                          {selected ? <CheckIcon color={theme.ink} size={18} strokeWidth={2.4} /> : null}
+                        </>
+                      )}
                     </Pressable>
                   );
-                })
-              )}
+                  })}
+                </View>
+              ) : null}
+              {customers.isLoading ? (
+                <>
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                </>
+              ) : null}
+              {customers.isError ? (
+                <ErrorRetry
+                  message={t(
+                    customerSelectionRows.length > 0
+                      ? 'devis.mission.customerListPartialError'
+                      : 'devis.dataError',
+                    { personality },
+                  )}
+                  onRetry={() => { void refreshCustomerList(); }}
+                  retrying={customerListRefreshPending}
+                />
+              ) : null}
+              {!customers.isLoading
+                && !customers.isError
+                && customerSelectionRows.length === 0 ? (
+                  <Card>
+                    {/* Pas de cta ici : la création client (C40) vit UNIQUEMENT dans une Sheet
+                        locale à (tabs)/clients.tsx (zone d'un autre agent, aucune route dédiée
+                        genre /client/new n'existe) — un cta y pointant serait un chemin fantôme. */}
+                    <EmptyState body={t('devis.noCustomers', { personality })} />
+                  </Card>
+                ) : null}
               {/* PR-08 — rattachement au site/chantier (OPTIONNEL) : chips des chantiers
                   OUVERTS du client choisi — terminologie adaptative (« chantier » pour un
                   maçon, « site » pour un mainteneur). Aucun chantier ouvert → rien à montrer. */}

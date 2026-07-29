@@ -2,6 +2,7 @@ import {
   AGENT_MISSION_KIND,
   AgentMission,
   type AgentMissionTransition,
+  type QuoteMissionStagedCustomerResolutionV1,
   type QuoteMissionDraftReferenceV1,
 } from '../../domain/agent/agent-mission';
 import { isCanonicalAgentMissionUserCommandId } from '../../domain/agent/agent-mission-event';
@@ -27,22 +28,34 @@ import {
 } from '../result';
 import {
   agentMissionDomainError,
-  canonicalAgentMissionCommand,
+  canonicalAgentMissionStartCommand,
   draftReferenceForMission,
   expireAgentMissionInTransaction,
   isCanonicalAgentMissionOwner,
+  isCanonicalAgentMissionUserCommandOrigin,
   recordAgentMissionEvent,
   requireAgentMissionFingerprint,
   toAgentMissionView,
   rejectedAgentMissionCapability,
   unavailableAgentMissionCompany,
   verifyAgentMissionFingerprint,
+  type AgentMissionUserCommandOrigin,
   type AgentMissionViewV1,
 } from './agent-mission-application';
+import {
+  isCanonicalCustomerReference,
+  resolveCustomerReference,
+} from './resolve-customer-reference';
 
 export interface StartQuoteAgentMissionCommand extends AgentMissionOwner {
   readonly commandId: string;
   readonly authority: AgentMissionRealtimeAuthorityProof;
+  readonly origin: AgentMissionUserCommandOrigin;
+  /**
+   * Référence sémantique transitoire : liée au HMAC, résolue sous tenant, jamais persistée.
+   * `null` signifie que le tour n'a pas nommé de client.
+   */
+  readonly customerReference: string | null;
 }
 
 export interface StartQuoteAgentMissionOutput {
@@ -82,6 +95,17 @@ function transitionValue(
   return transition.value;
 }
 
+function sameDraftReference(
+  slot: AgentMissionQuoteDraftSlot,
+  reference: QuoteMissionDraftReferenceV1,
+): boolean {
+  return (
+    slot.payload.draft.sessionId === reference.sessionId
+    && slot.revision === reference.slotRevision
+    && slot.payload.draft.contentRevision === reference.contentRevision
+  );
+}
+
 export class StartQuoteAgentMission {
   constructor(private readonly deps: StartQuoteAgentMissionDeps) {}
 
@@ -100,14 +124,30 @@ export class StartQuoteAgentMission {
         issues: [{ field: 'commandId', message: 'UUID v4 canonique requis.' }],
       });
     }
+    if (!isCanonicalAgentMissionUserCommandOrigin(input.origin)) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'origin', message: 'Provenance de commande invalide.' }],
+      });
+    }
+    if (
+      input.customerReference !== null
+      && !isCanonicalCustomerReference(input.customerReference)
+    ) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'customerReference', message: 'Référence client invalide.' }],
+      });
+    }
     const owner: AgentMissionOwner = {
       companyId: input.companyId,
       ownerUserId: input.ownerUserId,
     };
-    const startCanonical = canonicalAgentMissionCommand({
+    const startCanonical = canonicalAgentMissionStartCommand({
       ...owner,
-      operation: 'start_quote_creation',
       commandId: input.commandId,
+      origin: input.origin,
+      customerReference: input.customerReference,
     });
 
     try {
@@ -116,6 +156,18 @@ export class StartQuoteAgentMission {
         input.authority,
         async (transaction) => {
         const now = await transaction.databaseNow();
+        if (input.origin.correlation !== null) {
+          const appliedContext = transaction.realtime.appliedContext;
+          if (
+            transaction.realtime.realtimeSessionId
+              !== input.origin.correlation.realtimeSessionId
+            || appliedContext === null
+            || appliedContext.revision !== input.origin.correlation.contextRevision
+            || appliedContext.digest !== input.origin.correlation.contextDigest
+          ) {
+            abort(appConflict('agent_mission_command', 'context_stale'));
+          }
+        }
         const consumed = await transaction.events.findByCommandId({
           ...owner,
           commandId: input.commandId,
@@ -165,14 +217,43 @@ export class StartQuoteAgentMission {
           const expired = active.isExpiredAt(now);
           if (!expired.ok) abort(agentMissionDomainError(expired.error));
           if (!expired.value) {
+            const reference = draftReferenceForMission(active);
+            const observedSlot = await transaction.quoteDrafts.getForUpdate(owner);
+            const expectedOwnedByMission = active.payload.draft !== null;
+            if (
+              observedSlot === null
+              || !sameDraftReference(observedSlot, reference)
+              || (
+                expectedOwnedByMission
+                  ? observedSlot.agentMissionId !== active.id
+                  : observedSlot.agentMissionId !== null
+              )
+            ) {
+              abort({
+                kind: 'dependency',
+                port: 'agent_mission_quote_draft',
+                cause: 'active_mission_draft_binding_mismatch',
+              });
+            }
+            let stagedCustomerResolution: QuoteMissionStagedCustomerResolutionV1 | null = null;
+            if (input.customerReference !== null) {
+              const resolved = await resolveCustomerReference({
+                companyId: owner.companyId,
+                query: input.customerReference,
+                customers: transaction.customers,
+                ids: this.deps.ids,
+              });
+              if (!resolved.ok) abort(resolved.error);
+              stagedCustomerResolution = resolved.value;
+            }
             const fingerprint = requireAgentMissionFingerprint(
               this.deps.fingerprints,
               startCanonical,
             );
             if (!fingerprint.ok) abort(fingerprint.error);
-            const reference = draftReferenceForMission(active);
             const joined = transitionValue(active.joinActive({
               expectedRevision: active.revision,
+              stagedCustomerResolution,
               occurredAt: now,
             }));
             const updated = await transaction.missions.updateCas({
@@ -185,12 +266,22 @@ export class StartQuoteAgentMission {
             const event = recordAgentMissionEvent({
               owner,
               transition: joined,
-              actor: 'user_tap',
+              actor: input.origin.actor,
               commandId: input.commandId,
               fingerprint: fingerprint.value,
               ids: this.deps.ids,
               draftBefore: reference,
               draftAfter: reference,
+              ...(input.origin.correlation === null
+                ? {}
+                : {
+                    correlation: {
+                      ...input.origin.correlation,
+                      turnId: input.origin.actor === 'user_voice'
+                        ? input.origin.correlation.turnId
+                        : null,
+                    },
+                  }),
             });
             if (!event.ok) abort(event.error);
             await transaction.events.append(event.value);
@@ -243,6 +334,17 @@ export class StartQuoteAgentMission {
             ? 'draft_conflict'
             : 'empty_slot_adopted';
         }
+        let stagedCustomerResolution: QuoteMissionStagedCustomerResolutionV1 | null = null;
+        if (input.customerReference !== null) {
+          const resolved = await resolveCustomerReference({
+            companyId: owner.companyId,
+            query: input.customerReference,
+            customers: transaction.customers,
+            ids: this.deps.ids,
+          });
+          if (!resolved.ok) abort(resolved.error);
+          stagedCustomerResolution = resolved.value;
+        }
 
         const missionId = this.deps.ids.newId();
         const started = startOutcome === 'draft_conflict'
@@ -250,6 +352,7 @@ export class StartQuoteAgentMission {
               id: missionId,
               ...owner,
               createdAt: now,
+              stagedCustomerResolution,
               startOutcome,
               existingDraft: draftReference(slot),
               decision: {
@@ -262,6 +365,7 @@ export class StartQuoteAgentMission {
               id: missionId,
               ...owner,
               createdAt: now,
+              stagedCustomerResolution,
               startOutcome,
               draft: draftReference(slot),
             });
@@ -289,12 +393,22 @@ export class StartQuoteAgentMission {
         const event = recordAgentMissionEvent({
           owner,
           transition,
-          actor: 'user_tap',
+          actor: input.origin.actor,
           commandId: input.commandId,
           fingerprint: fingerprint.value,
           ids: this.deps.ids,
           draftBefore: startOutcome === 'no_slot' ? null : draftReference(slot),
           draftAfter: draftReference(slot),
+          ...(input.origin.correlation === null
+            ? {}
+            : {
+                correlation: {
+                  ...input.origin.correlation,
+                  turnId: input.origin.actor === 'user_voice'
+                    ? input.origin.correlation.turnId
+                    : null,
+                },
+              }),
         });
         if (!event.ok) abort(event.error);
         await transaction.events.append(event.value);

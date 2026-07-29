@@ -4,6 +4,7 @@ import {
   agentContextSemanticKey,
   composeHandoffSpeech,
   planAgentSessionFallback,
+  planAgentSessionFailedClosed,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldRecoverLegacyListeningSilence,
@@ -62,6 +63,16 @@ describe('agent session runtime fences', () => {
       driver: 'legacy',
       continueVoice: true,
       issue: null,
+    });
+  });
+
+  it('terminalise une rupture Mission en erreur sans pilote legacy ni orbe zombie', () => {
+    expect(planAgentSessionFailedClosed()).toEqual({
+      driver: 'idle',
+      active: false,
+      issue: 'failed',
+      phase: 'error',
+      responseKey: 'live.error',
     });
   });
 

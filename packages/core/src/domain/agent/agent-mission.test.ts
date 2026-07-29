@@ -10,6 +10,7 @@ import {
   type AgentMissionResult,
   type AgentMissionTransition,
   type QuoteMissionDraftReferenceV1,
+  type QuoteMissionStagedCustomerResolutionV1,
 } from './agent-mission';
 
 const MISSION_ID = '00000000-0000-4000-8000-000000000001';
@@ -46,6 +47,7 @@ function noSlotMission(): AgentMission {
     companyId: 'company-1',
     ownerUserId: 'owner-1',
     createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
     startOutcome: 'no_slot',
     draft: draft(),
   })).mission;
@@ -57,6 +59,7 @@ function conflictMission(): AgentMission {
     companyId: 'company-1',
     ownerUserId: 'owner-1',
     createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
     startOutcome: 'draft_conflict',
     existingDraft: draft('existing-session', 7, 3),
     decision: {
@@ -86,6 +89,42 @@ function awaitingCustomer(): AgentMission {
     draftHasCustomer: false,
     occurredAt: at(1),
   })).mission;
+}
+
+function awaitingCustomerWithStaged(
+  stagedCustomerResolution: QuoteMissionStagedCustomerResolutionV1,
+): AgentMission {
+  const started = value(AgentMission.start({
+    id: MISSION_ID,
+    companyId: 'company-1',
+    ownerUserId: 'owner-1',
+    createdAt: CREATED_AT,
+    stagedCustomerResolution,
+    startOutcome: 'no_slot',
+    draft: draft(),
+  })).mission;
+  return value(started.acknowledgeQuoteScreen({
+    expectedRevision: 1,
+    binding: binding(),
+    observedDraft: draft(),
+    draftHasCustomer: false,
+    occurredAt: at(1),
+  })).mission;
+}
+
+function stagedChoices(): Extract<
+  QuoteMissionStagedCustomerResolutionV1,
+  { readonly kind: 'choices' }
+> {
+  return {
+    kind: 'choices',
+    decisionId: DECISION_1,
+    candidates: [
+      { choiceId: CHOICE_1, customerId: 'customer-a' },
+      { choiceId: CHOICE_2, customerId: 'customer-b' },
+      { choiceId: CHOICE_3, customerId: 'customer-c' },
+    ],
+  };
 }
 
 function awaitingChoice(): AgentMission {
@@ -125,6 +164,7 @@ describe('AgentMission — création et enveloppe M1', () => {
         companyId: 'company-1',
         ownerUserId: 'owner-1',
         createdAt: CREATED_AT,
+        stagedCustomerResolution: null,
         startOutcome,
         draft: draft(),
       }));
@@ -187,6 +227,7 @@ describe('AgentMission — création et enveloppe M1', () => {
       companyId: 'company-1',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'no_slot',
       draft: sourceDraft,
     }));
@@ -204,6 +245,91 @@ describe('AgentMission — création et enveloppe M1', () => {
     expect(transition.mission.payload.draft?.sessionId).toBe('quote-session-1');
   });
 
+  it('intègre atomiquement une résolution initiale et la fige profondément', () => {
+    const resolution = stagedChoices();
+    const transition = value(AgentMission.start({
+      id: MISSION_ID,
+      companyId: 'company-1',
+      ownerUserId: 'owner-1',
+      createdAt: CREATED_AT,
+      stagedCustomerResolution: resolution,
+      startOutcome: 'no_slot',
+      draft: draft(),
+    }));
+    (resolution.candidates as unknown as { customerId: string }[])[0]!.customerId = 'mutated-source';
+
+    const staged = transition.mission.payload.stagedCustomerResolution;
+    expect(staged).toEqual(stagedChoices());
+    expect(staged?.kind).toBe('choices');
+    expect(Object.isFrozen(staged)).toBe(true);
+    if (staged?.kind === 'choices') {
+      expect(Object.isFrozen(staged.candidates)).toBe(true);
+      expect(Object.isFrozen(staged.candidates[0])).toBe(true);
+      expect(() => {
+        (staged.candidates[0] as { customerId: string }).customerId = 'mutated-output';
+      }).toThrow();
+    }
+    expect(transition.event.data).toEqual({
+      kind: 'mission_started',
+      startOutcome: 'no_slot',
+    });
+  });
+
+  it('rejette au start une résolution staged ouverte, dupliquée ou trop large', () => {
+    const base = {
+      id: MISSION_ID,
+      companyId: 'company-1',
+      ownerUserId: 'owner-1',
+      createdAt: CREATED_AT,
+      startOutcome: 'no_slot' as const,
+      draft: draft(),
+    };
+    expect(AgentMission.start({
+      ...base,
+      stagedCustomerResolution: {
+        kind: 'exact',
+        customerId: 'customer-a',
+        label: 'halluciné',
+      } as never,
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'payload.stagedCustomerResolution', reason: 'invalid_shape' },
+    });
+    expect(AgentMission.start({
+      ...base,
+      stagedCustomerResolution: {
+        kind: 'choices',
+        decisionId: DECISION_1,
+        candidates: [
+          { choiceId: CHOICE_1, customerId: 'customer-a' },
+          { choiceId: CHOICE_2, customerId: 'customer-a' },
+        ],
+      },
+    })).toMatchObject({
+      ok: false,
+      error: {
+        field: 'payload.stagedCustomerResolution.candidates[1]',
+        reason: 'invalid_value',
+      },
+    });
+    expect(AgentMission.start({
+      ...base,
+      stagedCustomerResolution: {
+        kind: 'choices',
+        decisionId: DECISION_1,
+        candidates: [CHOICE_1, CHOICE_2, CHOICE_3, CHOICE_4, CHOICE_5, CHOICE_6].map(
+          (choiceId, index) => ({ choiceId, customerId: `customer-${index}` }),
+        ),
+      },
+    })).toMatchObject({
+      ok: false,
+      error: {
+        field: 'payload.stagedCustomerResolution.candidates',
+        reason: 'invalid_value',
+      },
+    });
+  });
+
   it.each([
     ['id', { id: 'NOT-A-UUID' }],
     ['companyId', { companyId: ' company-1' }],
@@ -215,6 +341,7 @@ describe('AgentMission — création et enveloppe M1', () => {
       companyId: 'company-1',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'no_slot',
       draft: draft(),
       ...patch,
@@ -228,6 +355,7 @@ describe('AgentMission — création et enveloppe M1', () => {
       companyId: 'company-1',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'draft_conflict',
       existingDraft: draft('existing-session', 7, 3),
       decision: { decisionId: DECISION_1, resumeChoiceId: CHOICE_1, requestDiscardChoiceId: CHOICE_1 },
@@ -238,6 +366,7 @@ describe('AgentMission — création et enveloppe M1', () => {
       companyId: 'company-1',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'no_slot',
       draft: draft(' bad-session'),
     })).toMatchObject({ ok: false, error: { field: 'draft.sessionId' } });
@@ -247,6 +376,7 @@ describe('AgentMission — création et enveloppe M1', () => {
       companyId: 'company\u0085name',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'no_slot',
       draft: draft(),
     })).toMatchObject({ ok: false, error: { field: 'companyId', reason: 'invalid_identifier' } });
@@ -259,6 +389,7 @@ describe('AgentMission — création et enveloppe M1', () => {
         companyId: 'company-1',
         ownerUserId: 'owner-1',
         createdAt: CREATED_AT,
+        stagedCustomerResolution: null,
         startOutcome: 'no_slot',
         draft: invalidDraft,
       })).toMatchObject({ ok: false, error: { field: 'draft', reason: 'inconsistent_state' } });
@@ -360,6 +491,27 @@ describe('AgentMission — hash et parseur exact', () => {
     });
   });
 
+  it('rehydrate un payload N-1 sans stagedCustomerResolution et le normalise vers null', () => {
+    const snapshot = noSlotMission().toSnapshot();
+    const {
+      stagedCustomerResolution: _stagedCustomerResolution,
+      ...legacyPayload
+    } = snapshot.payload;
+    const legacy = value(AgentMission.rehydrate({
+      ...snapshot,
+      payload: legacyPayload,
+    }));
+
+    expect(legacy.payload.stagedCustomerResolution).toBeNull();
+    expect(Object.keys(legacy.payload).sort()).toEqual([
+      'decision',
+      'draft',
+      'schema',
+      'stagedCustomerResolution',
+      'version',
+    ]);
+  });
+
   it('rejette les horodatages non canoniques et les politiques TTL altérées', () => {
     const snapshot = noSlotMission().toSnapshot();
     expect(AgentMission.rehydrate({ ...snapshot, updatedAt: '2026-07-22T10:00:00Z' })).toMatchObject({
@@ -453,6 +605,7 @@ describe('AgentMission — brouillon existant et double confirmation', () => {
       choiceSetRevision: 1,
       choiceId: CHOICE_1,
       observedDraft: draft('existing-session', 7, 3),
+      draftHasCustomer: false,
       occurredAt: at(1),
     }));
 
@@ -567,6 +720,7 @@ describe('AgentMission — brouillon existant et double confirmation', () => {
       choiceSetRevision: 1,
       choiceId: CHOICE_1,
       observedDraft: draft('existing-session', 7, 3),
+      draftHasCustomer: false,
       occurredAt: at(1),
       ...patch,
     });
@@ -585,6 +739,7 @@ describe('AgentMission — brouillon existant et double confirmation', () => {
       choiceSetRevision: 1,
       choiceId: CHOICE_1,
       observedDraft,
+      draftHasCustomer: false,
       occurredAt: at(1),
     })).toMatchObject({ ok: false, error: { reason: 'draft_reference' } });
     expect(mission.requestDraftDiscard({
@@ -684,6 +839,300 @@ describe('AgentMission — ACK écran et résolution client', () => {
       draftHasCustomer: true,
       occurredAt: at(3),
     })).toMatchObject({ ok: false, error: { reason: 'draft_reference' } });
+  });
+
+  it('conserve le staged après ACK sans client et l’efface si le brouillon réel en a déjà un', () => {
+    const stagedCustomerResolution = {
+      kind: 'exact' as const,
+      customerId: 'customer-a',
+    };
+    const started = value(AgentMission.start({
+      id: MISSION_ID,
+      companyId: 'company-1',
+      ownerUserId: 'owner-1',
+      createdAt: CREATED_AT,
+      stagedCustomerResolution,
+      startOutcome: 'no_slot',
+      draft: draft(),
+    })).mission;
+
+    const withoutCustomer = value(started.acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: false,
+      occurredAt: at(1),
+    })).mission;
+    expect(withoutCustomer.payload.stagedCustomerResolution).toEqual(stagedCustomerResolution);
+    expect(withoutCustomer.phase).toBe('awaiting_customer');
+
+    const withCustomer = value(started.acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).mission;
+    expect(withCustomer.payload.stagedCustomerResolution).toBeNull();
+    expect(withCustomer.phase).toBe('awaiting_lines');
+  });
+
+  it('intègre au join une résolution seulement avant l’écran et préserve l’existante avec null', () => {
+    const mission = noSlotMission();
+    const joined = value(mission.joinActive({
+      expectedRevision: 1,
+      stagedCustomerResolution: { kind: 'exact', customerId: 'customer-a' },
+      occurredAt: at(1),
+    }));
+    expect(joined.mission.payload.stagedCustomerResolution).toEqual({
+      kind: 'exact',
+      customerId: 'customer-a',
+    });
+
+    const preserved = value(joined.mission.joinActive({
+      expectedRevision: 2,
+      stagedCustomerResolution: null,
+      occurredAt: at(2),
+    }));
+    expect(preserved.mission.payload.stagedCustomerResolution).toEqual({
+      kind: 'exact',
+      customerId: 'customer-a',
+    });
+
+    const acknowledged = value(preserved.mission.acknowledgeQuoteScreen({
+      expectedRevision: 3,
+      binding: binding(at(3)),
+      observedDraft: draft(),
+      draftHasCustomer: false,
+      occurredAt: at(3),
+    })).mission;
+    expect(acknowledged.joinActive({
+      expectedRevision: 4,
+      stagedCustomerResolution: { kind: 'none' },
+      occurredAt: at(4),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        action: 'join_active',
+      },
+    });
+  });
+
+  it('stage une résolution ultérieure sans écraser la décision brouillon et la journalise sans IDs', () => {
+    const transition = value(conflictMission().stageCustomerResolution({
+      expectedRevision: 1,
+      resolution: stagedChoices(),
+      occurredAt: at(1),
+    }));
+    expectTransition(transition, 1, 2, 'customer_resolution_staged');
+    expect(transition.mission.payload.decision).toEqual(conflictMission().payload.decision);
+    expect(transition.mission.payload.stagedCustomerResolution).toEqual(stagedChoices());
+    expect(transition.event.data).toEqual({
+      kind: 'customer_resolution_staged',
+      result: 'choices',
+      observedCandidateCount: 3,
+    });
+    expect(JSON.stringify(transition.event)).not.toContain('customer-a');
+
+    const acknowledged = awaitingCustomer();
+    expect(acknowledged.stageCustomerResolution({
+      expectedRevision: 2,
+      resolution: { kind: 'none' },
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        action: 'stage_customer_resolution',
+      },
+    });
+  });
+
+  it('reprendre un brouillon réel avec client gagne sur le staged, sinon le staged survit', () => {
+    const started = value(AgentMission.start({
+      id: MISSION_ID,
+      companyId: 'company-1',
+      ownerUserId: 'owner-1',
+      createdAt: CREATED_AT,
+      stagedCustomerResolution: { kind: 'exact', customerId: 'customer-a' },
+      startOutcome: 'draft_conflict',
+      existingDraft: draft('existing-session', 7, 3),
+      decision: {
+        decisionId: DECISION_1,
+        resumeChoiceId: CHOICE_1,
+        requestDiscardChoiceId: CHOICE_2,
+      },
+    })).mission;
+    const base = {
+      expectedRevision: 1,
+      decisionId: DECISION_1,
+      choiceSetRevision: 1,
+      choiceId: CHOICE_1,
+      observedDraft: draft('existing-session', 7, 3),
+      occurredAt: at(1),
+    } as const;
+
+    expect(value(started.resumeExistingDraft({
+      ...base,
+      draftHasCustomer: false,
+    })).mission.payload.stagedCustomerResolution).toEqual({
+      kind: 'exact',
+      customerId: 'customer-a',
+    });
+    expect(value(started.resumeExistingDraft({
+      ...base,
+      draftHasCustomer: true,
+    })).mission.payload.stagedCustomerResolution).toBeNull();
+  });
+
+  it.each([
+    [{ kind: 'none' }, 'none'],
+    [{ kind: 'too_many' }, 'too_many'],
+    [{ kind: 'exact', customerId: 'customer-gone' }, 'none'],
+    [stagedChoices(), 'none'],
+  ] as const)('consomme honnêtement un staged indisponible %#', (resolution, result) => {
+    const mission = awaitingCustomerWithStaged(resolution);
+    const transition = value(mission.consumeStagedCustomerResolution({
+      expectedRevision: 2,
+      outcome: 'not_found',
+      occurredAt: at(2),
+    }));
+
+    expectTransition(transition, 2, 3, 'customer_not_found');
+    expect(transition.event.data).toEqual({
+      kind: 'customer_not_found',
+      result,
+    });
+    expect(transition.mission.payload.stagedCustomerResolution).toBeNull();
+  });
+
+  it('sélectionne uniquement le client exact staged et garde la sélection manuelle prioritaire', () => {
+    const mission = awaitingCustomerWithStaged({
+      kind: 'exact',
+      customerId: 'customer-a',
+    });
+    expect(mission.consumeStagedCustomerResolution({
+      expectedRevision: 2,
+      outcome: 'select_exact',
+      customerId: 'customer-b',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_decision_conflict',
+        reason: 'customer_reference',
+      },
+    });
+    expect(mission.selectCustomer({
+      expectedRevision: 2,
+      source: 'exact_match',
+      customerId: 'customer-a',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        action: 'select_customer',
+      },
+    });
+
+    const selected = value(mission.consumeStagedCustomerResolution({
+      expectedRevision: 2,
+      outcome: 'select_exact',
+      customerId: 'customer-a',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(2),
+    }));
+    expectTransition(selected, 2, 3, 'customer_selected');
+    expect(selected.event.data).toMatchObject({
+      customerId: 'customer-a',
+      source: 'exact_match',
+    });
+
+    const manual = value(mission.selectCustomer({
+      expectedRevision: 2,
+      source: 'screen_selection',
+      customerId: 'customer-b',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(2),
+    }));
+    expect(manual.event.data).toMatchObject({
+      customerId: 'customer-b',
+      source: 'screen_selection',
+    });
+    expect(manual.mission.payload.stagedCustomerResolution).toBeNull();
+  });
+
+  it('promeut seulement un sous-ensemble ordonné des choix staged et refuse toute injection', () => {
+    const mission = awaitingCustomerWithStaged(stagedChoices());
+    const candidates = [
+      { choiceId: CHOICE_1, customerId: 'customer-a' },
+      { choiceId: CHOICE_3, customerId: 'customer-c' },
+    ] as const;
+    const presented = value(mission.consumeStagedCustomerResolution({
+      expectedRevision: 2,
+      outcome: 'present_choices',
+      candidates,
+      occurredAt: at(2),
+    }));
+    expectTransition(presented, 2, 3, 'customer_choice_presented');
+    expect(presented.mission.payload.decision).toMatchObject({
+      kind: 'customer',
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      candidates,
+    });
+    expect(presented.mission.payload.stagedCustomerResolution).toBeNull();
+
+    for (const invalidCandidates of [
+      [
+        { choiceId: CHOICE_3, customerId: 'customer-c' },
+        { choiceId: CHOICE_1, customerId: 'customer-a' },
+      ],
+      [{ choiceId: CHOICE_1, customerId: 'customer-injected' }],
+      [{ choiceId: CHOICE_4, customerId: 'customer-a' }],
+      [
+        { choiceId: CHOICE_1, customerId: 'customer-a' },
+        { choiceId: CHOICE_1, customerId: 'customer-a' },
+      ],
+    ] as const) {
+      expect(mission.consumeStagedCustomerResolution({
+        expectedRevision: 2,
+        outcome: 'present_choices',
+        candidates: invalidCandidates,
+        occurredAt: at(2),
+      })).toMatchObject({
+        ok: false,
+        error: {
+          code: 'agent_mission_decision_conflict',
+          reason: 'customer_reference',
+        },
+      });
+    }
+  });
+
+  it('interdit les transitions directes tant qu’une résolution staged attend sa consommation', () => {
+    const mission = awaitingCustomerWithStaged(stagedChoices());
+    expect(mission.recordCustomerNotFound({
+      expectedRevision: 2,
+      result: 'none',
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: { code: 'agent_mission_invalid_transition' },
+    });
+    expect(mission.presentCustomerChoices({
+      expectedRevision: 2,
+      decisionId: DECISION_2,
+      candidates: [{ choiceId: CHOICE_4, customerId: 'customer-d' }],
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: { code: 'agent_mission_invalid_transition' },
+    });
   });
 
   it.each(['none', 'too_many'] as const)('journalise %s sans inventer ni sélectionner', (result) => {
@@ -792,6 +1241,68 @@ describe('AgentMission — ACK écran et résolution client', () => {
     expect(JSON.stringify(transition)).not.toContain('Camping');
   });
 
+  it('permet de choisir au toucher un client réel hors suggestions et invalide le jeu courant', () => {
+    const transition = value(awaitingChoice().selectCustomer({
+      expectedRevision: 3,
+      source: 'screen_selection',
+      customerId: 'customer-outside-current-choice-set',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+    }));
+
+    expectTransition(transition, 3, 4, 'customer_selected');
+    expect(transition.mission.phase).toBe('awaiting_lines');
+    expect(transition.mission.payload).toMatchObject({
+      draft: draft('quote-session-1', 2, 1),
+      decision: null,
+    });
+    expect(transition.event.data).toEqual({
+      kind: 'customer_selected',
+      customerId: 'customer-outside-current-choice-set',
+      source: 'screen_selection',
+      choiceId: null,
+      choiceSetHash: null,
+    });
+  });
+
+  it('remplace en une transition le jeu courant après une nouvelle référence vocale', () => {
+    const notFound = value(awaitingChoice().recordCustomerNotFound({
+      expectedRevision: 3,
+      result: 'none',
+      occurredAt: at(3),
+    }));
+    expectTransition(notFound, 3, 4, 'customer_not_found');
+    expect(notFound.mission.phase).toBe('awaiting_customer');
+    expect(notFound.mission.payload.decision).toBeNull();
+
+    const replaced = value(awaitingChoice().presentCustomerChoices({
+      expectedRevision: 3,
+      decisionId: DECISION_2,
+      candidates: [
+        { choiceId: CHOICE_3, customerId: 'customer-c' },
+      ],
+      occurredAt: at(3),
+    }));
+    expectTransition(replaced, 3, 4, 'customer_choice_presented');
+    expect(replaced.mission.phase).toBe('awaiting_customer_choice');
+    expect(replaced.mission.payload.decision).toMatchObject({
+      kind: 'customer',
+      decisionId: DECISION_2,
+      candidates: [{ choiceId: CHOICE_3, customerId: 'customer-c' }],
+    });
+
+    const selected = value(awaitingChoice().selectCustomer({
+      expectedRevision: 3,
+      source: 'exact_match',
+      customerId: 'customer-new-exact',
+      updatedDraft: draft('quote-session-1', 2, 1),
+      occurredAt: at(3),
+    }));
+    expectTransition(selected, 3, 4, 'customer_selected');
+    expect(selected.mission.phase).toBe('awaiting_lines');
+    expect(selected.mission.payload.decision).toBeNull();
+  });
+
   it.each(['exact_match', 'screen_selection'] as const)(
     'fait passer la sélection %s par la même transition de brouillon',
     (source) => {
@@ -876,6 +1387,7 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
     const before = mission.toSnapshot();
     const joined = value(mission.joinActive({
       expectedRevision: mission.revision,
+      stagedCustomerResolution: null,
       occurredAt: at(4),
     }));
 
@@ -916,6 +1428,33 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
       reason: 'user_cancelled',
       occurredAt: at(5),
     })).toMatchObject({ ok: false, error: { code: 'agent_mission_terminal', status: 'cancelled' } });
+  });
+
+  it('réserve le handoff manuel à l’étape lignes', () => {
+    expect(noSlotMission().cancel({
+      expectedRevision: 1,
+      reason: 'manual_handoff',
+      occurredAt: at(1),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        phase: 'awaiting_quote_screen',
+      },
+    });
+
+    const lines = value(noSlotMission().acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).mission;
+    expect(value(lines.cancel({
+      expectedRevision: 2,
+      reason: 'manual_handoff',
+      occurredAt: at(2),
+    })).mission.status).toBe('cancelled');
   });
 
   it('expire à la première échéance effective, même si le worker intervient après la seconde', () => {
@@ -978,6 +1517,7 @@ describe('AgentMission — terminalité, horloge et table de transitions', () =>
       choiceSetRevision: 1,
       choiceId: CHOICE_1,
       observedDraft: draft(),
+      draftHasCustomer: false,
       occurredAt: at(1),
     })).toMatchObject({
       ok: false,
@@ -1078,6 +1618,7 @@ describe('AgentMission — bornes de persistance et frontières runtime', () => 
       companyId: 'company-1',
       ownerUserId: 'owner-1',
       createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
       startOutcome: 'draft_conflict',
       existingDraft: draft('existing-session', AGENT_MISSION_INT4_MAX, 3),
       decision: { decisionId: DECISION_1, resumeChoiceId: CHOICE_1, requestDiscardChoiceId: CHOICE_2 },
@@ -1155,7 +1696,10 @@ describe('AgentMission — bornes de persistance et frontières runtime', () => 
       () => (conflictMission().requestDraftDiscard as unknown as (input: unknown) => unknown).call(conflictMission(), null),
       () => (requested.keepExistingDraft as unknown as (input: unknown) => unknown).call(requested, null),
       () => (requested.confirmDraftDiscard as unknown as (input: unknown) => unknown).call(requested, null),
+      () => (noSlotMission().joinActive as unknown as (input: unknown) => unknown).call(noSlotMission(), null),
+      () => (noSlotMission().stageCustomerResolution as unknown as (input: unknown) => unknown).call(noSlotMission(), null),
       () => (noSlotMission().acknowledgeQuoteScreen as unknown as (input: unknown) => unknown).call(noSlotMission(), null),
+      () => (awaitingCustomerWithStaged({ kind: 'none' }).consumeStagedCustomerResolution as unknown as ((input: unknown) => unknown)).call(awaitingCustomerWithStaged({ kind: 'none' }), null),
       () => (awaitingCustomer().recordCustomerNotFound as unknown as (input: unknown) => unknown).call(awaitingCustomer(), null),
       () => (awaitingCustomer().presentCustomerChoices as unknown as (input: unknown) => unknown).call(awaitingCustomer(), null),
       () => (awaitingChoice().invalidateCustomerDecision as unknown as (input: unknown) => unknown).call(awaitingChoice(), null),
@@ -1183,7 +1727,7 @@ describe('AgentMission — bornes de persistance et frontières runtime', () => 
     const calls: readonly (() => AgentMissionResult<unknown>)[] = [
       () => (AgentMission.start as (input: unknown) => AgentMissionResult<unknown>)({
         id: MISSION_ID, companyId: 'company-1', ownerUserId: 'owner-1', createdAt: CREATED_AT,
-        startOutcome: 'no_slot', draft: draft(), extra: true,
+        stagedCustomerResolution: null, startOutcome: 'no_slot', draft: draft(), extra: true,
       }),
       () => AgentMission.rehydrate({ ...noSlotMission().toSnapshot(), extra: true }),
       () => (computeQuoteMissionChoiceSetHash as (input: unknown) => AgentMissionResult<string>)({
@@ -1192,7 +1736,8 @@ describe('AgentMission — bornes de persistance et frontières runtime', () => 
       }),
       () => conflictMission().resumeExistingDraft({
         expectedRevision: 1, decisionId: DECISION_1, choiceSetRevision: 1, choiceId: CHOICE_1,
-        observedDraft: draft('existing-session', 7, 3), occurredAt: at(1), extra: true,
+        observedDraft: draft('existing-session', 7, 3), draftHasCustomer: false,
+        occurredAt: at(1), extra: true,
       } as never),
       () => conflictMission().requestDraftDiscard({
         expectedRevision: 1, decisionId: DECISION_1, choiceSetRevision: 1, choiceId: CHOICE_2,
@@ -1210,9 +1755,18 @@ describe('AgentMission — bornes de persistance et frontières runtime', () => 
         expectedDraft: draft('existing-session', 7, 3), replacementDraft: draft('fresh-session', 8, 0),
         occurredAt: at(2), extra: true,
       } as never),
+      () => noSlotMission().joinActive({
+        expectedRevision: 1, stagedCustomerResolution: null, occurredAt: at(1), extra: true,
+      } as never),
+      () => noSlotMission().stageCustomerResolution({
+        expectedRevision: 1, resolution: { kind: 'none' }, occurredAt: at(1), extra: true,
+      } as never),
       () => noSlotMission().acknowledgeQuoteScreen({
         expectedRevision: 1, binding: binding(), observedDraft: draft(), draftHasCustomer: false,
         occurredAt: at(1), extra: true,
+      } as never),
+      () => awaitingCustomerWithStaged({ kind: 'none' }).consumeStagedCustomerResolution({
+        expectedRevision: 2, outcome: 'not_found', occurredAt: at(2), extra: true,
       } as never),
       () => awaitingCustomer().recordCustomerNotFound({
         expectedRevision: 2, result: 'none', occurredAt: at(2), extra: true,

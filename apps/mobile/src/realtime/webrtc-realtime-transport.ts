@@ -7,6 +7,7 @@ import {
   type RealtimeVoiceNativeSpeechDeliveryInput,
   type RealtimeVoiceSpeechSourcePolicy,
 } from '@bob/api-client';
+import { deriveRealtimeTurnId } from '@bob/core';
 import { randomUUID } from 'expo-crypto';
 import type { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
@@ -29,6 +30,7 @@ import {
   type RealtimeTransportEvent,
   type RealtimeTransportMetrics,
   type RealtimeTransportState,
+  type RealtimeTurnSettlementStatus,
   type VoiceConversationTransport,
 } from './realtime-transport';
 import { loadWebRtcRuntime, type WebRtcRuntime } from './webrtc-runtime';
@@ -39,6 +41,7 @@ const RTP_PROBE_INTERVAL_MS = 100;
 const RTP_PROBE_BUDGET_MS = 2_500;
 const MAX_USER_TEXT_CHARS = 2_000;
 const MAX_PROVIDER_RESPONSES_PER_SESSION = 1_024;
+const MAX_TURNS_PER_SESSION = 60;
 const NATIVE_SPEECH_ACK_MAX_ATTEMPTS = 3;
 const NATIVE_SPEECH_ACK_RETRY_DELAYS_MS = [100, 250] as const;
 const NATIVE_SPEECH_ACK_ELIGIBILITY_TIMEOUT_MS = 3_000;
@@ -52,6 +55,8 @@ const NATIVE_PROVIDER_DRAINED_TAIL_MS = 1_500;
 // secondes préservent ce playout légitime tout en fermant enfin si `stopped` n'arrive jamais.
 const NATIVE_RESPONSE_DONE_WATCHDOG_MS = 5_000;
 const NATIVE_AUDIO_STOPPED_WATCHDOG_MS = 30_000;
+const NATIVE_RESPONSE_START_WATCHDOG_MS = 30_000;
+const NATIVE_RESPONSE_ACTIVITY_WATCHDOG_MS = 45_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_256 = /^[a-f0-9]{64}$/;
 const NATIVE_LOCAL_OBSERVATION = Object.freeze({
@@ -196,7 +201,10 @@ type NativeSpeechAcknowledgementCall =
   | { readonly kind: 'thrown' }
   | { readonly kind: 'aborted' };
 
-type NativeResponseTerminalWatchdog = 'response_done' | 'audio_stopped';
+type NativeResponseTerminalWatchdog =
+  | 'response_activity'
+  | 'response_done'
+  | 'audio_stopped';
 
 export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   readonly capabilities: VoiceConversationTransport['capabilities'];
@@ -230,6 +238,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private responseGenerationDone = false;
   private responseStatus: 'completed' | 'cancelled' | null = null;
   private activeProviderResponseId: string | null = null;
+  private activeResponseTurnId: string | null = null;
   private pendingAgentControlReference: {
     responseId: string;
     reference: RealtimeAgentControlReference;
@@ -259,6 +268,17 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private nativeResponseTerminalResponseId: string | null = null;
   private readonly seenProviderResponseIds = new Set<string>();
   private readonly seenNativeSpeechDeliveryIds = new Set<string>();
+  private readonly seenCommittedInputItems = new Set<string>();
+  private readonly pendingCommittedTurns = new Set<string>();
+  private readonly settledTurns = new Map<string, RealtimeTurnSettlementStatus>();
+  private readonly providerResponseTerminals = new Map<
+    string,
+    'completed' | 'cancelled' | 'failed' | 'incomplete'
+  >();
+  private readonly pendingTurnWatchdogs = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private bootstrapAbort: AbortController | null = null;
   private sessionHandle: string | null = null;
   private agentMissionSession: RealtimeAgentMissionSession | null = null;
@@ -342,6 +362,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.responseGenerationDone = false;
     this.responseStatus = null;
     this.activeProviderResponseId = null;
+    this.activeResponseTurnId = null;
     this.pendingAgentControlReference = null;
     this.remoteAudioActive = false;
     this.expectedAudioTransceiver = null;
@@ -359,6 +380,11 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.resetResponseInterruptionState();
     this.seenProviderResponseIds.clear();
     this.seenNativeSpeechDeliveryIds.clear();
+    this.seenCommittedInputItems.clear();
+    this.pendingCommittedTurns.clear();
+    this.settledTurns.clear();
+    this.providerResponseTerminals.clear();
+    this.clearPendingTurnWatchdogs();
     this.connectivityState = null;
     this.speechSourcePolicy = null;
     this.lastInboundPackets = 0;
@@ -666,6 +692,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     // callbacks du peer. Aucun paquet mis en file ne reste audible pendant le teardown.
     this.cancelNativeProviderDrainedTail(true);
     this.clearNativeResponseTerminalWatchdog();
+    this.clearPendingTurnWatchdogs();
     this.invalidateNativeSpeechObservation();
     ++this.generation;
     this.transition({ type: 'CLOSE' });
@@ -700,6 +727,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.responseGenerationDone = false;
     this.responseStatus = null;
     this.activeProviderResponseId = null;
+    this.activeResponseTurnId = null;
     this.pendingAgentControlReference = null;
     this.remoteAudioActive = false;
     this.responseHadAudio = false;
@@ -994,6 +1022,31 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       case 'session_ready':
         this.metrics.markSessionReady();
         break;
+      case 'input_committed': {
+        const sessionHandle = this.sessionHandle;
+        if (sessionHandle === null || !UUID.test(sessionHandle)) {
+          this.emit({ type: 'error', code: 'input_commit_without_session' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        if (this.seenCommittedInputItems.has(event.providerInputItemId)) break;
+        if (this.seenCommittedInputItems.size >= MAX_TURNS_PER_SESSION) {
+          this.emit({ type: 'error', code: 'turn_budget_exceeded' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        const turnId = deriveRealtimeTurnId(sessionHandle, event.providerInputItemId);
+        if (!UUID.test(turnId)) {
+          this.emit({ type: 'error', code: 'invalid_derived_turn_id' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        this.seenCommittedInputItems.add(event.providerInputItemId);
+        this.pendingCommittedTurns.add(turnId);
+        this.armPendingTurnWatchdog(turnId);
+        this.emit({ type: 'user_input_committed', turnId });
+        break;
+      }
       case 'response_started': {
         const responseId = realtimeProviderResponseId(event);
         if (!responseId) {
@@ -1017,6 +1070,9 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           break;
         }
         const nativeSpeechReference = event.nativeSpeechReference ?? null;
+        const responseTurnId = nativeSpeechReference?.turnId
+          ?? event.controlReference?.turnId
+          ?? null;
         if (
           (this.nativeDownlink && (
             nativeSpeechReference === null
@@ -1025,6 +1081,25 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           || (!this.nativeDownlink && nativeSpeechReference !== null)
         ) {
           this.emit({ type: 'error', code: 'native_speech_context_mismatch' });
+          void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        if (
+          (
+            this.nativeDownlink
+            && (
+              responseTurnId === null
+              || !this.pendingCommittedTurns.has(responseTurnId)
+            )
+          )
+          || (
+            !this.nativeDownlink
+            && responseTurnId !== null
+            && this.pendingCommittedTurns.size > 0
+            && !this.pendingCommittedTurns.has(responseTurnId)
+          )
+        ) {
+          this.emit({ type: 'error', code: 'response_turn_mismatch' });
           void this.degradeAndClose('provider_error', this.currentState.generation);
           break;
         }
@@ -1044,6 +1119,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           this.seenNativeSpeechDeliveryIds.add(nativeSpeechReference.deliveryId);
         }
         this.activeProviderResponseId = responseId;
+        this.activeResponseTurnId = responseTurnId;
         this.responseActive = true;
         this.responseGenerationDone = false;
         this.responseStatus = null;
@@ -1058,6 +1134,10 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.cancelNativeSpeechAcknowledgement();
         this.cancelNativeProviderDrainedTail(true);
         this.clearNativeResponseTerminalWatchdog();
+        if (this.nativeDownlink && responseTurnId !== null) {
+          this.clearPendingTurnWatchdog(responseTurnId);
+          this.armNativeResponseTerminalWatchdog('response_activity');
+        }
         this.resetResponseInterruptionState();
         // Une ancienne queue RTP peut encore contenir quelques échantillons après le signal de
         // drain fournisseur. Le nouveau tour la neutralise avant de rouvrir explicitement la piste
@@ -1132,7 +1212,11 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           ) {
             this.maybeAcknowledgeNativeSpeech();
           } else {
-            this.completeActiveResponse(this.responseStatus === 'completed');
+            const completed = this.responseStatus === 'completed';
+            this.completeActiveResponse(
+              completed ? 'done' : 'cancelled',
+              completed,
+            );
           }
         } else if (this.nativeDownlink && this.responseHadAudio) {
           this.armNativeResponseTerminalWatchdog('response_done');
@@ -1146,10 +1230,19 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         this.setRemoteAudioEnabled(false);
         this.metrics.markAudioCleared();
         this.invalidateNativeSpeechObservation();
-        this.completeActiveResponse(false);
+        this.completeActiveResponse('cancelled', false);
         break;
       case 'response_done':
         if (!this.acceptCurrentResponseEvent(event)) break;
+        {
+          const responseId = realtimeProviderResponseId(event);
+          if (
+            responseId === null
+            || !this.acceptProviderResponseTerminal(responseId, event.status)
+          ) {
+            break;
+          }
+        }
         if (
           this.nativeDownlink
           && (
@@ -1171,8 +1264,23 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           this.setRemoteAudioEnabled(false);
           this.pendingAgentControlReference = null;
           this.invalidateNativeSpeechObservation();
+          this.publishActiveTurnSettlement('failed');
           this.emit({ type: 'error', code: `response_${event.status}` });
           void this.degradeAndClose('provider_error', this.currentState.generation);
+          break;
+        }
+        if (
+          this.nativeDownlink
+          && event.status === 'completed'
+          && !this.responseHadAudio
+        ) {
+          // Une réponse tool-only peut légitimement précéder la réponse parlée. Elle libère le
+          // responseId provider mais ne termine JAMAIS le tour : le commit reste pending et son
+          // watchdog exige une réponse acoustique/une annulation/une erreur autoritative.
+          this.clearNativeResponseTerminalWatchdog();
+          this.pendingAgentControlReference = null;
+          this.invalidateNativeSpeechObservation();
+          this.completeActiveResponse(null, false);
           break;
         }
         this.responseGenerationDone = true;
@@ -1186,7 +1294,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           this.invalidateNativeSpeechObservation();
           // `cancelled` est le terminal de génération. La piste est déjà muette : attendre en
           // plus `stopped` ou `cleared` laisserait le transport bloqué si le provider l'omet.
-          this.completeActiveResponse(false);
+          this.completeActiveResponse('cancelled', false);
           break;
         }
         this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
@@ -1199,7 +1307,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           ) {
             this.maybeAcknowledgeNativeSpeech();
           } else {
-            this.completeActiveResponse(true);
+            this.completeActiveResponse('done', true);
           }
         } else if (this.nativeDownlink && event.status === 'completed') {
           this.armNativeResponseTerminalWatchdog('audio_stopped');
@@ -1248,11 +1356,45 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     if (responseId !== null && responseId === this.activeProviderResponseId) return true;
     // Un événement retardé d'une réponse déjà connue reste inerte. Un identifiant jamais créé
     // sur ce canal signale en revanche une rupture de corrélation et ferme la session.
-    if (responseId !== null && this.seenProviderResponseIds.has(responseId)) return false;
+    if (responseId !== null && this.seenProviderResponseIds.has(responseId)) {
+      if (
+        event.type === 'response_done'
+        && !this.acceptProviderResponseTerminal(responseId, event.status)
+      ) {
+        return false;
+      }
+      return false;
+    }
     this.emit({ type: 'error', code: 'unknown_provider_response' });
     this.invalidateNativeSpeechObservation();
     void this.degradeAndClose('provider_error', this.currentState.generation);
     return false;
+  }
+
+  /**
+   * Premier terminal provider par responseId. Un replay identique est inerte ; toute
+   * contradiction ferme le canal avant qu'elle puisse modifier le terminal du tour.
+   */
+  private acceptProviderResponseTerminal(
+    responseId: string,
+    status: 'completed' | 'cancelled' | 'failed' | 'incomplete',
+  ): boolean {
+    const previous = this.providerResponseTerminals.get(responseId);
+    if (previous !== undefined) {
+      if (previous !== status) {
+        this.emit({ type: 'error', code: 'provider_response_terminal_conflict' });
+        this.invalidateNativeSpeechObservation();
+        void this.degradeAndClose('provider_error', this.currentState.generation);
+      }
+      return false;
+    }
+    if (this.providerResponseTerminals.size >= MAX_TURNS_PER_SESSION) {
+      this.emit({ type: 'error', code: 'turn_budget_exceeded' });
+      void this.degradeAndClose('provider_error', this.currentState.generation);
+      return false;
+    }
+    this.providerResponseTerminals.set(responseId, status);
+    return true;
   }
 
   private sameNativeSpeechReference(
@@ -1359,7 +1501,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         // même après un ACK durable, donnerait à une trame provider le dernier mot sur l'historique.
         // Le reçu valide seulement la livraison ; aucun transcript n'est donc émis ici.
         this.pendingNativeSpeechAcknowledgement = null;
-        this.completeActiveResponse(false, true);
+        this.completeActiveResponse('done', false, true);
         return;
       }
 
@@ -1532,16 +1674,19 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     attempt?: NativeSpeechAcknowledgementAttempt,
   ): void {
     if (attempt !== undefined && !this.isCurrentNativeSpeechAcknowledgement(attempt)) return;
+    this.publishActiveTurnSettlement('failed');
     this.emit({ type: 'error', code });
     this.invalidateNativeSpeechObservation();
     void this.degradeAndClose('provider_error', this.currentState.generation);
   }
 
   private completeActiveResponse(
+    settlementStatus: RealtimeTurnSettlementStatus | null,
     allowControl: boolean,
     preserveNativeProviderDrainedTail = false,
   ): void {
     const responseId = this.activeProviderResponseId;
+    const turnId = this.activeResponseTurnId;
     const controlReference = allowControl
       && this.responseStatus === 'completed'
       && this.pendingAgentControlReference?.responseId === responseId
@@ -1550,11 +1695,19 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     const preserveProviderTail = preserveNativeProviderDrainedTail
       && this.nativeDownlink
       && !this.responseLocallyMuted;
+    if (
+      responseId !== null
+      && settlementStatus === 'cancelled'
+      && !this.providerResponseTerminals.has(responseId)
+    ) {
+      this.providerResponseTerminals.set(responseId, 'cancelled');
+    }
     this.cancelNativeSpeechAcknowledgement();
     this.clearNativeResponseTerminalWatchdog();
     this.responseActive = false;
     this.responseGenerationDone = false;
     this.activeProviderResponseId = null;
+    this.activeResponseTurnId = null;
     this.responseStatus = null;
     this.pendingAgentControlReference = null;
     this.remoteAudioActive = false;
@@ -1568,11 +1721,87 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     if (preserveProviderTail) this.armNativeProviderDrainedTail();
     else this.cancelNativeProviderDrainedTail(true);
     this.resetResponseInterruptionState();
-    this.transition({ type: 'RESPONSE_DONE' });
     this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
     if (controlReference) {
       this.emit({ type: 'agent_control_candidate', reference: controlReference });
     }
+    if (
+      settlementStatus !== null
+      && !this.publishTurnSettlement(turnId, settlementStatus)
+    ) {
+      this.emit({ type: 'error', code: 'turn_terminal_conflict' });
+      void this.degradeAndClose('provider_error', this.currentState.generation);
+      return;
+    }
+    if (settlementStatus === null && turnId !== null) {
+      this.armPendingTurnWatchdog(turnId);
+    }
+    this.transition({ type: 'RESPONSE_DONE' });
+  }
+
+  private publishActiveTurnSettlement(status: RealtimeTurnSettlementStatus): boolean {
+    return this.publishTurnSettlement(this.activeResponseTurnId, status);
+  }
+
+  /**
+   * Ledger de session : le premier terminal gagne. Le serveur borne déjà une session à 60 tours,
+   * donc la Map reste strictement bornée sans éviction susceptible de réautoriser un vieux replay.
+   */
+  private publishTurnSettlement(
+    turnId: string | null,
+    status: RealtimeTurnSettlementStatus,
+  ): boolean {
+    if (!this.nativeDownlink) return true;
+    if (turnId === null || !UUID.test(turnId)) return false;
+    const previous = this.settledTurns.get(turnId);
+    if (previous !== undefined) return previous === status;
+    if (this.settledTurns.size >= MAX_TURNS_PER_SESSION) return false;
+    this.settledTurns.set(turnId, status);
+    this.pendingCommittedTurns.delete(turnId);
+    this.clearPendingTurnWatchdog(turnId);
+    this.emit({ type: 'turn_settled', turnId, status });
+    return true;
+  }
+
+  private settlePendingTurns(status: RealtimeTurnSettlementStatus): void {
+    if (!this.nativeDownlink) return;
+    for (const turnId of [...this.pendingCommittedTurns]) {
+      if (!this.publishTurnSettlement(turnId, status)) {
+        this.emit({ type: 'error', code: 'turn_terminal_conflict' });
+      }
+    }
+  }
+
+  private armPendingTurnWatchdog(turnId: string): void {
+    if (!this.nativeDownlink || this.pendingTurnWatchdogs.has(turnId)) return;
+    const generation = this.currentState.generation;
+    const timer = setTimeout(() => {
+      this.pendingTurnWatchdogs.delete(turnId);
+      if (
+        generation !== this.currentState.generation
+        || !this.pendingCommittedTurns.has(turnId)
+        || this.settledTurns.has(turnId)
+      ) {
+        return;
+      }
+      if (!this.publishTurnSettlement(turnId, 'failed')) {
+        this.emit({ type: 'error', code: 'turn_terminal_conflict' });
+      }
+      this.emit({ type: 'error', code: 'response_start_timeout' });
+      void this.degradeAndClose('provider_error', this.currentState.generation);
+    }, NATIVE_RESPONSE_START_WATCHDOG_MS);
+    this.pendingTurnWatchdogs.set(turnId, timer);
+  }
+
+  private clearPendingTurnWatchdog(turnId: string): void {
+    const timer = this.pendingTurnWatchdogs.get(turnId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.pendingTurnWatchdogs.delete(turnId);
+  }
+
+  private clearPendingTurnWatchdogs(): void {
+    for (const timer of this.pendingTurnWatchdogs.values()) clearTimeout(timer);
+    this.pendingTurnWatchdogs.clear();
   }
 
   private resetResponseInterruptionState(): void {
@@ -1628,9 +1857,11 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.clearNativeResponseTerminalWatchdog();
     const generation = this.generation;
     const epoch = this.nativeResponseTerminalEpoch;
-    const delayMs = kind === 'response_done'
-      ? NATIVE_RESPONSE_DONE_WATCHDOG_MS
-      : NATIVE_AUDIO_STOPPED_WATCHDOG_MS;
+    const delayMs = kind === 'response_activity'
+      ? NATIVE_RESPONSE_ACTIVITY_WATCHDOG_MS
+      : kind === 'response_done'
+        ? NATIVE_RESPONSE_DONE_WATCHDOG_MS
+        : NATIVE_AUDIO_STOPPED_WATCHDOG_MS;
     this.nativeResponseTerminalTimer = setTimeout(() => {
       if (
         generation !== this.generation
@@ -1638,20 +1869,24 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         || responseId !== this.activeProviderResponseId
         || !this.responseActive
       ) return;
-      const terminalStillMissing = kind === 'response_done'
-        ? this.responseAudioStopped && !this.responseGenerationDone
-        : this.responseGenerationDone
-          && this.responseStatus === 'completed'
-          && this.responseHadAudio
-          && !this.responseAudioStopped;
+      const terminalStillMissing = kind === 'response_activity'
+        ? !this.responseGenerationDone
+        : kind === 'response_done'
+          ? this.responseAudioStopped && !this.responseGenerationDone
+          : this.responseGenerationDone
+            && this.responseStatus === 'completed'
+            && this.responseHadAudio
+            && !this.responseAudioStopped;
       if (!terminalStillMissing) return;
       this.nativeResponseTerminalTimer = null;
       this.nativeResponseTerminalKind = null;
       this.nativeResponseTerminalResponseId = null;
       this.failNativeSpeechAcknowledgement(
-        kind === 'response_done'
-          ? 'native_speech_response_done_timeout'
-          : 'native_speech_audio_stopped_timeout',
+        kind === 'response_activity'
+          ? 'native_speech_response_activity_timeout'
+          : kind === 'response_done'
+            ? 'native_speech_response_done_timeout'
+            : 'native_speech_audio_stopped_timeout',
       );
     }, delayMs);
     this.nativeResponseTerminalKind = kind;
@@ -1820,6 +2055,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private async degradeAndClose(reason: RealtimeFallbackReason, generation: number): Promise<void> {
     if (generation !== this.generation) return;
     if (this.currentState.phase === 'closed' || this.currentState.phase === 'closing') return;
+    this.settlePendingTurns('failed');
     this.transition({ type: 'DEGRADED', reason });
     if (generation !== this.generation) return;
     this.emit({ type: 'fallback', reason });

@@ -7,8 +7,10 @@ import type {
   RealtimeVoiceSpeechMimeType,
 } from '@bob/api-client';
 import type { RealtimePublishedContextFence } from './realtime-control-gate';
+import type { RealtimeTurnSettlementStatus } from './realtime-transport';
 
 const MAX_AUDIO_BYTES = 2 * 1024 * 1024;
+const MAX_TURNS_PER_SESSION = 60;
 const DEFAULT_LONG_POLL_MS = 2_500;
 const DEFAULT_IDLE_DELAY_MS = 75;
 const DEFAULT_MAX_FEED_ERRORS = 3;
@@ -91,6 +93,7 @@ export type RealtimeAuditedSpeechErrorCode =
   | 'cancellation_failed'
   | 'identifier_generation_failed'
   | 'control_reference_invalid'
+  | 'turn_terminal_conflict'
   | 'internal_failure';
 
 export type RealtimeAuditedSpeechPlayerEvent =
@@ -99,6 +102,16 @@ export type RealtimeAuditedSpeechPlayerEvent =
   | {
     readonly type: 'control_candidate';
     readonly reference: RealtimeVoiceControlReference;
+    readonly atMs: number;
+  }
+  | {
+    /**
+     * Terminal autoritatif du tour acoustique. Il provient exclusivement d'un ACK durable,
+     * d'une annulation durable ou du feed serveur terminal — jamais d'un transcript/état UI.
+     */
+    readonly type: 'turn_terminal';
+    readonly turnId: string;
+    readonly status: RealtimeTurnSettlementStatus;
     readonly atMs: number;
   }
   | { readonly type: 'error'; readonly code: RealtimeAuditedSpeechErrorCode; readonly atMs: number };
@@ -263,6 +276,7 @@ export class RealtimeAuditedSpeechPlayerController {
   private pauseAbort: AbortController | null = null;
   private operationAbort: AbortController | null = null;
   private active: ActiveArtifact | null = null;
+  private readonly terminalTurns = new Map<string, RealtimeTurnSettlementStatus>();
   private cursor = 0;
   private consecutiveFeedErrors = 0;
   private metrics: RealtimeAuditedSpeechMetrics = {
@@ -431,7 +445,16 @@ export class RealtimeAuditedSpeechPlayerController {
     }
 
     if (feed.status === 'terminal') {
+      const activeAlreadySettled = this.active?.settled === true
+        && this.terminalTurns.has(binding.turnId);
       if (this.active) this.active.settled = true;
+      if (
+        !activeAlreadySettled
+        && !this.publishTurnTerminal(binding.turnId, this.statusForTerminalFeed(feed.reason))
+      ) {
+        this.halt('turn_terminal_conflict');
+        return false;
+      }
       this.cursor = binding.sequence;
       this.active = null;
       this.metrics = { ...this.metrics, cursor: this.cursor };
@@ -571,6 +594,7 @@ export class RealtimeAuditedSpeechPlayerController {
       };
 
       if (!this.contextMatches(active)) {
+        this.publishTurnTerminal(active.turnId, 'done', deliveredAtMs);
         this.reportError('context_stale');
         return;
       }
@@ -578,6 +602,7 @@ export class RealtimeAuditedSpeechPlayerController {
         delivery.controlReference
         && !controlMatches(delivery.controlReference, active, deliveryId)
       ) {
+        this.publishTurnTerminal(active.turnId, 'failed', deliveredAtMs);
         this.halt('control_reference_invalid');
         return;
       }
@@ -593,6 +618,9 @@ export class RealtimeAuditedSpeechPlayerController {
           reference: delivery.controlReference,
           atMs: deliveredAtMs,
         });
+      }
+      if (!this.publishTurnTerminal(active.turnId, 'done', deliveredAtMs)) {
+        this.halt('turn_terminal_conflict');
       }
     } finally {
       if (verified) {
@@ -691,7 +719,15 @@ export class RealtimeAuditedSpeechPlayerController {
           { cancellationId, reason },
           abort.signal,
         );
-        if (result.ok) return;
+        if (result.ok) {
+          active.settled = true;
+          const terminalStatus: RealtimeTurnSettlementStatus =
+            reason === 'playback_error' ? 'failed' : 'cancelled';
+          if (!this.publishTurnTerminal(active.turnId, terminalStatus)) {
+            this.halt('turn_terminal_conflict');
+          }
+          return;
+        }
       } catch {
         // Le code externe n'est jamais propagé ni journalisé.
       }
@@ -772,7 +808,38 @@ export class RealtimeAuditedSpeechPlayerController {
     this.pauseAbort = null;
     this.operationAbort?.abort();
     this.operationAbort = null;
+    const active = this.active;
+    if (active !== null && !active.settled) {
+      active.settled = true;
+      this.publishTurnTerminal(active.turnId, 'failed');
+    }
     this.reportError(code);
+  }
+
+  private statusForTerminalFeed(
+    reason: Extract<RealtimeVoiceSpeechFeed, { status: 'terminal' }>['reason'],
+  ): RealtimeTurnSettlementStatus {
+    if (reason === 'delivered') return 'done';
+    if (reason === 'cancelled') return 'cancelled';
+    return 'failed';
+  }
+
+  /**
+   * Ledger borné par le maximum contractuel de tours d'une session. Le premier terminal gagne ;
+   * un replay identique est idempotent, un statut contradictoire ferme le protocole.
+   */
+  private publishTurnTerminal(
+    turnId: string,
+    status: RealtimeTurnSettlementStatus,
+    atMs = this.now(),
+  ): boolean {
+    if (!UUID_PATTERN.test(turnId)) return false;
+    const previous = this.terminalTurns.get(turnId);
+    if (previous !== undefined) return previous === status;
+    if (this.terminalTurns.size >= MAX_TURNS_PER_SESSION) return false;
+    this.terminalTurns.set(turnId, status);
+    this.emit({ type: 'turn_terminal', turnId, status, atMs });
+    return true;
   }
 
   private stopLocally(): boolean {

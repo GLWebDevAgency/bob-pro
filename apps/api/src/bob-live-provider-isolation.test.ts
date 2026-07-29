@@ -109,6 +109,7 @@ async function runRealtimeTurn(
   const adapter = new RealtimeBobAgentTurnAdapter(persistence, provider, () => service);
   const version = realtimeAgentContextVersion(null);
   const outcome = await adapter.run({
+    turnId: '10000000-0000-4000-8000-000000000001',
     userId: 'user-owner',
     companyId: MERCIER_PROPS.id,
     transcript: 'Tu sais faire quoi ?',

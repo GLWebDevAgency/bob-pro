@@ -7,6 +7,7 @@ import {
   type RealtimeVoiceConfig,
 } from '@bob/api-client';
 import type { RealtimeResilienceEvent } from '../realtime/realtime-resilience-orchestrator';
+import type { AgentMissionRuntimeBridge } from './agent-mission-runtime';
 import {
   RealtimeSessionController,
   type RealtimeOrchestratorLike,
@@ -34,6 +35,7 @@ const NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
 function missionSessionStub(
   log: string[],
   label: string,
+  realtimeSessionId = `realtime-${label}`,
 ): RealtimeAgentMissionSession {
   let disposed = false;
   const unused = async (): Promise<never> => {
@@ -41,7 +43,7 @@ function missionSessionStub(
   };
   return {
     protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
-    realtimeSessionId: `realtime-${label}`,
+    realtimeSessionId,
     get disposed() {
       return disposed;
     },
@@ -85,6 +87,7 @@ function harness(
     ) => Promise<boolean>;
     emitCommitOnFinish?: boolean;
     failAgentMissionNegotiation?: boolean;
+    agentMissionRuntime?: AgentMissionRuntimeBridge;
   } = {},
 ) {
   const log: string[] = input.log ?? [];
@@ -180,6 +183,7 @@ function harness(
     },
     onNavigate: (route) => log.push(`nav:${route}`),
     onFallback: (reason, channel) => log.push(`fallback:${reason}:${channel}`),
+    onFailedClosed: (reason) => log.push(`failed-closed:${reason}`),
     onCompleted: () => log.push('completed'),
     getContextSnapshot: () => CONTEXT,
   };
@@ -234,6 +238,9 @@ function harness(
       }),
       allowMicrophoneActivation: input.allowMicrophoneActivation
         ?? (async () => true),
+      ...(input.agentMissionRuntime === undefined
+        ? {}
+        : { agentMissionRuntime: input.agentMissionRuntime }),
     },
     hooks,
   );
@@ -262,6 +269,90 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(log).toEqual([]);
   });
 
+  it('reprise V1 indisponible : échoue fermée sans jamais appeler le fallback legacy', async () => {
+    const { controller, log } = harness({ available: false });
+
+    await expect(controller.resumeMissionV1()).resolves.toBe('failed_closed');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(log).not.toContain('mic:true');
+  });
+
+  it('reprise V1 ne réussit qu’après capability, contexte confirmé et micro ouvert', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '09000000-0000-4000-8000-000000000001';
+    const runtime: AgentMissionRuntimeBridge = {
+      adopt: () => {
+        log.push('runtime:adopt');
+        return true;
+      },
+      invalidateContext: () => undefined,
+      confirmContext: () => {
+        log.push('runtime:confirm');
+        return true;
+      },
+      settleTurn: () => true,
+      release: () => true,
+    };
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'resume-mission', realtimeSessionId),
+      ],
+      agentMissionRuntime: runtime,
+    });
+
+    const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(pending).resolves.toBe('resumed');
+    expect(log.indexOf('runtime:adopt')).toBeLessThan(log.indexOf('runtime:confirm'));
+    expect(log.indexOf('runtime:confirm')).toBeLessThan(log.indexOf('mic:true'));
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it('reprise V1 sans capability ferme le primaire au lieu de lancer le legacy', async () => {
+    const h = harness({
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(h.log).toContain('orchestrator:stop');
+    expect(h.log).not.toContain('mic:true');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it('reprise V1 interdit aussi le fallback demandé par l’orchestrateur', async () => {
+    const h = harness({ deferStart: true });
+    const pending = h.controller.resumeMissionV1();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await h.external.fallback?.start({
+      reason: 'bootstrap_failed',
+      channel: 'voice',
+    });
+    h.external.resolveStart?.('legacy');
+
+    await expect(pending).resolves.toBe('failed_closed');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log).not.toContain('mic:true');
+  });
+
   it('retourne failed_closed sans boucle legacy si la négociation mission échoue', async () => {
     const { controller, log } = harness({ failAgentMissionNegotiation: true });
 
@@ -286,9 +377,11 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
   it('prend la capability avant le premier await puis la détruit avant le stop transport', async () => {
     const log: string[] = [];
-    const mission = missionSessionStub(log, 'mission-1');
+    const realtimeSessionId = '00000000-0000-4000-8000-000000000042';
+    const mission = missionSessionStub(log, 'mission-1', realtimeSessionId);
     const { controller, emit } = harness({
       log,
+      handle: realtimeSessionId,
       agentMissionSessions: [mission],
     });
     await controller.start();
@@ -296,27 +389,231 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(log.indexOf('mission:take')).toBeLessThan(log.indexOf('publish:h-42:r1'));
-    expect(log.indexOf('publish:h-42:r1')).toBeLessThan(log.indexOf('mic:true'));
+    expect(log.indexOf('mission:take')).toBeLessThan(
+      log.indexOf(`publish:${realtimeSessionId}:r1`),
+    );
+    expect(log.indexOf(`publish:${realtimeSessionId}:r1`))
+      .toBeLessThan(log.indexOf('mic:true'));
 
     await controller.stop('background');
     expect(log.indexOf('mission-1:dispose')).toBeLessThan(log.indexOf('orchestrator:stop'));
     expect(log.filter((entry) => entry === 'mission-1:dispose')).toHaveLength(1);
   });
 
-  it('détruit l ancienne capability avant d adopter puis de réclamer le peer reconnecté', async () => {
+  it('refuse avant adoption une capability liée à un autre handle Realtime', async () => {
     const log: string[] = [];
-    const firstMission = missionSessionStub(log, 'mission-old');
-    const freshMission = missionSessionStub(log, 'mission-fresh');
+    const handle = '00000000-0000-4000-8000-000000000043';
+    const mission = missionSessionStub(
+      log,
+      'mission-mismatch',
+      '00000000-0000-4000-8000-000000000044',
+    );
+    let adoptionAttempts = 0;
+    const { controller, emit } = harness({
+      log,
+      handle,
+      agentMissionSessions: [mission],
+      agentMissionRuntime: {
+        adopt: () => {
+          adoptionAttempts += 1;
+          return true;
+        },
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    await controller.start();
+
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adoptionAttempts).toBe(0);
+    expect(log).not.toContain(`publish:${handle}:r1`);
+    expect(log).not.toContain('mic:true');
+    expect(log.filter((entry) => entry === 'mission-mismatch:dispose')).toHaveLength(1);
+    expect(log).toContain('orchestrator:stop');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it.each([
+    ['refus', (): boolean => false],
+    ['exception', (): boolean => {
+      throw new Error('provider_disposed');
+    }],
+  ] as const)(
+    'échoue fermé et détruit la capability si le provider répond par %s',
+    async (_label, adopt) => {
+      const log: string[] = [];
+      const realtimeSessionId = '00000000-0000-4000-8000-000000000045';
+      const mission = missionSessionStub(log, 'mission-provider-refused', realtimeSessionId);
+      const { controller, emit } = harness({
+        log,
+        handle: realtimeSessionId,
+        agentMissionSessions: [mission],
+        agentMissionRuntime: {
+          adopt,
+          invalidateContext: () => undefined,
+          confirmContext: () => true,
+          settleTurn: () => true,
+          release: () => true,
+        },
+      });
+      await controller.start();
+
+      emit({ type: 'transport', event: { type: 'state', state: readyState } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(log).not.toContain(`publish:${realtimeSessionId}:r1`);
+      expect(log).not.toContain('mic:true');
+      expect(log.filter((entry) => entry === 'mission-provider-refused:dispose')).toHaveLength(1);
+      expect(log).toContain('orchestrator:stop');
+      expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    },
+  );
+
+  it('transfère la capability au provider puis confirme contexte et écran avant le micro', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000001';
+    const mission = missionSessionStub(log, 'mission-owned', realtimeSessionId);
+    const missionRuntime: AgentMissionRuntimeBridge = {
+      adopt: (candidate) => {
+        log.push(`runtime:adopt:${candidate.realtimeSessionId}`);
+        return true;
+      },
+      invalidateContext: (sessionId) => {
+        log.push(`runtime:invalidate:${sessionId}`);
+      },
+      confirmContext: (sessionId, fence, context) => {
+        log.push(
+          `runtime:confirm:${sessionId}:r${fence.contextRevision}:${context.screen.name}`,
+        );
+        return true;
+      },
+      settleTurn: (sessionId, settlement) => {
+        log.push(`runtime:settle:${sessionId}:${settlement.turnId}:${settlement.status}`);
+        return true;
+      },
+      release: () => true,
+    };
+    const { controller, emit } = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [mission],
+      agentMissionRuntime: missionRuntime,
+      updateContextImpl: async (_handle, revision) => ok({
+        revision,
+        contextDigest: 'a'.repeat(64),
+      }),
+    });
+    await controller.start();
+
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(log.indexOf('mission:take')).toBeLessThan(
+      log.indexOf(`runtime:adopt:${realtimeSessionId}`),
+    );
+    expect(log.indexOf(`runtime:adopt:${realtimeSessionId}`)).toBeLessThan(
+      log.indexOf(`publish:${realtimeSessionId}:r1`),
+    );
+    expect(log.indexOf(`publish:${realtimeSessionId}:r1`)).toBeLessThan(
+      log.indexOf(`runtime:confirm:${realtimeSessionId}:r1:${CONTEXT.screen.name}`),
+    );
+    expect(log.indexOf(`runtime:confirm:${realtimeSessionId}:r1:${CONTEXT.screen.name}`))
+      .toBeLessThan(log.indexOf('mic:true'));
+
+    await controller.stop('user');
+    expect(log).not.toContain('mission-owned:dispose');
+    expect(log).toContain(`runtime:invalidate:${realtimeSessionId}`);
+  });
+
+  it('échoue fermé sans ouvrir le micro si le provider perd la propriété avant confirmation', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000002';
+    const mission = missionSessionStub(log, 'mission-lost', realtimeSessionId);
+    const { controller, emit } = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [mission],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => false,
+        settleTurn: () => false,
+        release: () => true,
+      },
+      updateContextImpl: async (_handle, revision) => ok({
+        revision,
+        contextDigest: 'b'.repeat(64),
+      }),
+    });
+    await controller.start();
+
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(log).not.toContain('mic:true');
+    expect(log).toContain('orchestrator:stop');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(mission.disposed).toBe(false);
+  });
+
+  it('interdit le repli legacy demandé après adoption d’une capability Mission', async () => {
+    const log: string[] = [];
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000099';
     const h = harness({
       log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-no-legacy-fallback', realtimeSessionId),
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.log).toContain('mic:true');
+    h.log.length = 0;
+
+    h.emit({
+      type: 'transport',
+      event: { type: 'fallback', reason: 'provider_error' },
+    });
+    await Promise.resolve();
+    await h.external.fallback?.start({
+      reason: 'provider_error',
+      channel: 'voice',
+    });
+
+    expect(h.controller.active).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log).toContain('failed-closed:provider_error');
+  });
+
+  it('détruit l ancienne capability avant d adopter puis de réclamer le peer reconnecté', async () => {
+    const log: string[] = [];
+    const firstSessionId = '10000000-0000-4000-8000-000000000003';
+    const freshSessionId = '10000000-0000-4000-8000-000000000004';
+    const firstMission = missionSessionStub(log, 'mission-old', firstSessionId);
+    const freshMission = missionSessionStub(log, 'mission-fresh', freshSessionId);
+    const h = harness({
+      log,
+      handle: firstSessionId,
       agentMissionSessions: [firstMission, freshMission],
     });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    h.external.reconnect?.('fresh', 'h-fresh');
+    h.external.reconnect?.('fresh', freshSessionId);
 
     expect(log.indexOf('mission-old:dispose')).toBeLessThan(log.indexOf('fresh:mic:false'));
     expect(log).not.toContain('fresh:mission:take');
@@ -327,6 +624,83 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await h.controller.stop('user');
     expect(log.filter((entry) => entry === 'mission-old:dispose')).toHaveLength(1);
     expect(log.filter((entry) => entry === 'mission-fresh:dispose')).toHaveLength(1);
+  });
+
+  it('conserve l’autorité Mission si le peer reconnecté demande un fallback avant ready', async () => {
+    const log: string[] = [];
+    const firstSessionId = '10000000-0000-4000-8000-000000000071';
+    const h = harness({
+      log,
+      handle: firstSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-reconnect-fallback', firstSessionId),
+        null,
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.log).toContain('mic:true');
+    h.log.length = 0;
+
+    h.external.reconnect?.(
+      'fresh',
+      '10000000-0000-4000-8000-000000000072',
+    );
+    await h.external.fallback?.start({
+      reason: 'provider_error',
+      channel: 'voice',
+    });
+
+    expect(h.log).toContain('failed-closed:provider_error');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log).not.toContain('fresh:mic:true');
+    expect(h.controller.active).toBe(false);
+  });
+
+  it('refuse de rouvrir le micro si le peer reconnecté ne rend pas la capability Mission', async () => {
+    const log: string[] = [];
+    const firstSessionId = '10000000-0000-4000-8000-000000000081';
+    const h = harness({
+      log,
+      handle: firstSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-reconnect-missing', firstSessionId),
+        null,
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.external.reconnect?.(
+      'fresh',
+      '10000000-0000-4000-8000-000000000082',
+    );
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain('fresh:mission:take');
+    expect(h.log).not.toContain('fresh:mic:true');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.log).toContain('failed-closed:provider_error');
+    expect(h.log).toContain('orchestrator:stop');
+    expect(h.controller.active).toBe(false);
   });
 
   it('attend le vrai foreground avant le micro Realtime', async () => {
@@ -533,7 +907,19 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   });
 
   it('controle continu : applique la navigation immediatement sans attendre une completion', async () => {
+    const realtimeSessionId = '10000000-0000-4000-8000-000000000005';
+    const log: string[] = [];
     const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [missionSessionStub(log, 'mission-navigation', realtimeSessionId)],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: (sessionId) => log.push(`runtime:invalidate:${sessionId}`),
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => true,
+      },
       gateKind: 'answer',
       gateNavigate: '/cloture',
       completionMode: 'continuous',
@@ -546,9 +932,202 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     h.emit(candidate('continuous-turn'));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(h.log).toContain('nav:/cloture');
+    const microphoneClosed = h.log.indexOf('mic:false');
+    const contextInvalidated = h.log.indexOf(`runtime:invalidate:${realtimeSessionId}`);
+    const navigated = h.log.indexOf('nav:/cloture');
+    expect(microphoneClosed).toBeGreaterThanOrEqual(0);
+    expect(contextInvalidated).toBeGreaterThan(microphoneClosed);
+    expect(navigated).toBeGreaterThan(contextInvalidated);
     expect(h.log).not.toContain('orchestrator:stop');
     expect(h.log).not.toContain('completed');
+  });
+
+  it('attend l’ACK de contrôle du même tour avant de publier son terminal à la mission', async () => {
+    let releaseGate!: () => void;
+    const gateDelay = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const realtimeSessionId = '11000000-0000-4000-8000-000000000001';
+    const turnId = '11000000-0000-4000-8000-000000000002';
+    const log: string[] = [];
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      gateDelay,
+      agentMissionSessions: [missionSessionStub(log, 'mission-settlement', realtimeSessionId)],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: (sessionId, settlement) => {
+          log.push(`runtime:settle:${sessionId}:${settlement.turnId}:${settlement.status}`);
+          return true;
+        },
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate(turnId));
+    h.emit({
+      type: 'transport',
+      event: { type: 'turn_settled', turnId, status: 'done' },
+    });
+    await Promise.resolve();
+    expect(h.log.some((entry) => entry.startsWith('runtime:settle:'))).toBe(false);
+
+    releaseGate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const ackIndex = h.log.indexOf(`ack:${turnId}:fence-r1`);
+    const settlementIndex = h.log.indexOf(
+      `runtime:settle:${realtimeSessionId}:${turnId}:done`,
+    );
+    expect(ackIndex).toBeGreaterThanOrEqual(0);
+    expect(settlementIndex).toBeGreaterThan(ackIndex);
+  });
+
+  it('refuse de solder la mission si le contrôle annoncé ne peut pas être relu', async () => {
+    const realtimeSessionId = '11000000-0000-4000-8000-000000000011';
+    const turnId = '11000000-0000-4000-8000-000000000012';
+    const log: string[] = [];
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      gateRejects: true,
+      agentMissionSessions: [missionSessionStub(log, 'mission-control-lost', realtimeSessionId)],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: (_sessionId, settlement) => {
+          log.push(`runtime:settle:${settlement.turnId}`);
+          return true;
+        },
+        release: () => true,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate(turnId));
+    h.emit({
+      type: 'transport',
+      event: { type: 'turn_settled', turnId, status: 'done' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain(`ack:${turnId}:fence-r1`);
+    expect(h.log).not.toContain(`runtime:settle:${turnId}`);
+    expect(h.log).toContain('orchestrator:stop');
+    expect(h.log.some((entry) => entry.startsWith('nav:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it('applique une navigation rejouée du même tour exactement une fois', async () => {
+    const h = harness({
+      gateKind: 'answer',
+      gateNavigate: '/devis/new',
+      completionMode: 'continuous',
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate('control-replay-turn'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit(candidate('control-replay-turn'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log.filter((entry) => entry === 'nav:/devis/new')).toHaveLength(1);
+    expect(h.log.filter((entry) => entry.startsWith('ack:control-replay-turn:')))
+      .toHaveLength(1);
+  });
+
+  it('suspend le micro, attend le terminal exact puis libère avant le stop manuel', async () => {
+    const realtimeSessionId = '12000000-0000-4000-8000-000000000001';
+    const turnId = '12000000-0000-4000-8000-000000000002';
+    const log: string[] = [];
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-manual-handoff', realtimeSessionId),
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: (_sessionId, settlement) => {
+          log.push(`runtime:settle:${settlement.turnId}:${settlement.status}`);
+          return true;
+        },
+        release: (sessionId) => {
+          log.push(`runtime:release:${sessionId}`);
+          return true;
+        },
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.emit({
+      type: 'transport',
+      event: { type: 'user_input_committed', turnId },
+    });
+    log.length = 0;
+
+    const suspended = h.controller.suspendForManualHandoff();
+    await Promise.resolve();
+    let didSuspend = false;
+    void suspended.then(() => {
+      didSuspend = true;
+    });
+    expect(log.slice(0, 2)).toEqual(['mic:false', 'interrupt:tap']);
+    expect(didSuspend).toBe(false);
+
+    h.emit({
+      type: 'transport',
+      event: { type: 'turn_settled', turnId, status: 'cancelled' },
+    });
+    await expect(suspended).resolves.toBe(true);
+    expect(log).toContain(`runtime:settle:${turnId}:cancelled`);
+
+    await h.controller.stopAfterManualHandoff();
+    expect(log.indexOf(`runtime:release:${realtimeSessionId}`))
+      .toBeLessThan(log.indexOf('orchestrator:stop'));
+  });
+
+  it('refuse d’acquitter la passation si la capability ne peut pas être libérée', async () => {
+    const realtimeSessionId = '13000000-0000-4000-8000-000000000001';
+    const log: string[] = [];
+    const h = harness({
+      log,
+      handle: realtimeSessionId,
+      agentMissionSessions: [
+        missionSessionStub(log, 'mission-release-refused', realtimeSessionId),
+      ],
+      agentMissionRuntime: {
+        adopt: () => true,
+        invalidateContext: () => undefined,
+        confirmContext: () => true,
+        settleTurn: () => true,
+        release: () => false,
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(h.controller.stopAfterManualHandoff())
+      .rejects.toThrow('agent_mission_release_failed');
+    expect(log).toContain('orchestrator:stop');
   });
 
   it('stop pendant ACK one-shot efface la decision terminale sans aucun effet UI tardif', async () => {

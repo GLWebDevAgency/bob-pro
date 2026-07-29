@@ -22,6 +22,7 @@ import {
 } from './realtime.service';
 import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.adapter';
 import type { RealtimeSidebandControl } from './realtime-sideband';
+import { deriveRealtimeTurnId } from './realtime-sideband';
 import type { RealtimeDurableControlPort } from './realtime-control';
 import type { RealtimeAgentTurnPort } from './realtime-agent-turn';
 import {
@@ -146,7 +147,11 @@ function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): Realtim
       if (input.sessionHandle) sessions.set(input.sessionHandle, input.lifecycle);
       if (options.terminateAfterAttach) await input.lifecycle.terminate('user');
     }),
-    contextChanged: vi.fn(),
+    contextChanged: vi.fn(async (input) => ({
+      status: 'applied' as const,
+      revision: input.revision,
+      digest: input.digest,
+    })),
     consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
     closeForPrincipal: vi.fn(async () => undefined),
     fenceAndDetachSession: vi.fn(({ sessionHandle }) => {
@@ -546,6 +551,82 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) {
       await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
     }
+  });
+
+  it('forme l’autorité Mission du tour uniquement depuis la lease et sa preuve serveur', async () => {
+    const capability = `bam1_${Buffer.alloc(32, 76).toString('base64url')}`;
+    const durable = missionCapableAdmission(admission());
+    let attached: Parameters<RealtimeSidebandControl['attach']>[0] | undefined;
+    const baseSideband = sidebandStub();
+    const sideband: RealtimeSidebandControl = {
+      ...baseSideband,
+      attach: vi.fn(async (input) => {
+        attached = input;
+        await baseSideband.attach(input);
+      }),
+    };
+    const runTurn = vi.fn<RealtimeAgentTurnPort['run']>().mockResolvedValue({
+      status: 'failed',
+      canonicalSpeech: 'Test.',
+    });
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      {
+        createCall: successfulProviderCreate('rtc_agent_mission_turn_authority'),
+        hangupCall: vi.fn(async () => undefined),
+      },
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      { run: runTurn },
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      missionGate(capability),
+    );
+
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 1,
+      sdp: OFFER_SDP,
+    }));
+    if (!created.ok) throw new Error('bootstrap Mission attendu');
+    const turnId = '10000000-0000-4000-8000-000000000077';
+    await attached?.turn?.run({
+      turnId,
+      transcript: 'Crée un devis.',
+      history: [],
+      signal: new AbortController().signal,
+    });
+
+    const turnInput = runTurn.mock.calls[0]?.[0];
+    expect(turnInput?.agentMissionAuthority).toEqual({
+      owner: {
+        companyId: 'company-1',
+        ownerUserId: 'user-1',
+      },
+      proof: {
+        subjectHashCandidates: [
+          admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1'),
+        ],
+        principalBindingHash: agentMissionPrincipalBindingHash(
+          'company-1',
+          'user-1',
+        ),
+        capabilityHash: hashRealtimeAgentMissionCapability(capability),
+      },
+      realtimeSessionId: created.value.sessionHandle,
+    });
+    expect(turnInput?.turnId).toBe(turnId);
+    expect(JSON.stringify(turnInput)).not.toContain(capability);
+
+    await runAsPrincipal(() => service.hangup(created.value.sessionHandle));
   });
 
   it.each([
@@ -1020,25 +1101,42 @@ describe('RealtimeVoiceService', () => {
       hangupCall: vi.fn(async () => undefined),
     };
     const sideband = sidebandStub();
-    const issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>(async (input) => ({
-      ok: true,
-      bootstrap: {
+    const durable = admission();
+    const issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>(async (input) => {
+      await durable.bindProvider({
+        ...input,
+        providerId: 'mistral',
+        providerCallId: 'mistral_context_transport_test',
+      });
+      await durable.activate(input);
+      await durable.updateContext({
         companyId: input.companyId,
+        subjectHash: input.subjectHash,
         sessionId: input.sessionId,
-        ticket: 'T'.repeat(43),
-        protocol: 'bob.mistral-pcm.v1',
-        ticketExpiresAt: '2026-07-14T10:00:15.000Z',
-        hardExpiresAt: '2026-07-14T10:15:00.000Z',
-        maxAudioBytes: 28_800_000,
-        contextRevision: input.contextRevision,
-        contextDigest: 'd'.repeat(64),
-      },
-    }));
+        version: input.contextSchemaVersion,
+        revision: input.contextRevision,
+        context: input.context,
+      });
+      return {
+        ok: true,
+        bootstrap: {
+          companyId: input.companyId,
+          sessionId: input.sessionId,
+          ticket: 'T'.repeat(43),
+          protocol: 'bob.mistral-pcm.v1',
+          ticketExpiresAt: '2026-07-14T10:00:15.000Z',
+          hardExpiresAt: '2026-07-14T10:15:00.000Z',
+          maxAudioBytes: 28_800_000,
+          contextRevision: input.contextRevision,
+          contextDigest: 'd'.repeat(64),
+        },
+      };
+    });
     const tickets = { issue } as unknown as MistralRealtimeIngressTicketAuthority;
     const service = new RealtimeVoiceService(
       MISTRAL_SETTINGS,
       provider,
-      admission(),
+      durable,
       sideband,
       new Metrics(),
       loggerStub(),
@@ -1102,6 +1200,24 @@ describe('RealtimeVoiceService', () => {
     }));
     expect(provider.createCall).not.toHaveBeenCalled();
     expect(sideband.attach).not.toHaveBeenCalled();
+    await expect(runAsPrincipal(() => service.updateContext(
+      '00000000-0000-4000-8000-000000000031',
+      {
+        version: 1,
+        revision: 4,
+        context: {
+          ...context.context,
+          screen: { name: '/devis/new', instanceId: 'quote-new-2' },
+        },
+      },
+    ))).resolves.toMatchObject({
+      ok: true,
+      value: {
+        revision: 4,
+        contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(sideband.contextChanged).not.toHaveBeenCalled();
   });
 
   it('émet le bootstrap v2 durable explicite sans traverser le ticket v1', async () => {
@@ -1934,7 +2050,11 @@ describe('RealtimeVoiceService', () => {
       attach: vi.fn(async () => {
         throw new Error('sideband_timeout');
       }),
-      contextChanged: vi.fn(),
+      contextChanged: vi.fn(async (input) => ({
+        status: 'applied' as const,
+        revision: input.revision,
+        digest: input.digest,
+      })),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
       fenceAndDetachSession: vi.fn(() => 'not_found' as const),
@@ -1975,7 +2095,11 @@ describe('RealtimeVoiceService', () => {
     };
     const sideband: RealtimeSidebandControl = {
       attach: vi.fn(async () => undefined),
-      contextChanged: vi.fn(),
+      contextChanged: vi.fn(async (input) => ({
+        status: 'applied' as const,
+        revision: input.revision,
+        digest: input.digest,
+      })),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
       fenceAndDetachSession: vi.fn(() => 'not_found' as const),
@@ -2144,7 +2268,11 @@ describe('RealtimeVoiceService', () => {
         attached.resolve(undefined);
         await finishAttach.promise;
       }),
-      contextChanged: vi.fn(),
+      contextChanged: vi.fn(async (input) => ({
+        status: 'applied' as const,
+        revision: input.revision,
+        digest: input.digest,
+      })),
       consumeAgentControl: vi.fn(async () => ({ status: 'not_found' as const })),
       closeForPrincipal: vi.fn(async () => undefined),
       fenceAndDetachSession: vi.fn(() => {
@@ -2493,8 +2621,15 @@ describe('RealtimeVoiceService', () => {
     )).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
 
     const signal = new AbortController().signal;
-    await attached?.turn?.run({ transcript: 'Résume cette facture.', history: [], signal });
+    const turnId = deriveRealtimeTurnId(handle, 'item-context-turn');
+    await attached?.turn?.run({
+      turnId,
+      transcript: 'Résume cette facture.',
+      history: [],
+      signal,
+    });
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      turnId,
       userId: 'user-1',
       companyId: 'company-1',
       transcript: 'Résume cette facture.',
@@ -2503,6 +2638,7 @@ describe('RealtimeVoiceService', () => {
     }));
     const turnInput = runTurn.mock.calls[0]?.[0];
     if (!turnInput) throw new Error('tour attendu');
+    expect(turnInput).not.toHaveProperty('agentMissionAuthority');
     expect(turnInput.contextFence.expected).toMatchObject({ version: 1, revision: 4 });
     await expect(turnInput.contextFence.revalidate(signal)).resolves.toEqual(
       turnInput.contextFence.expected,
@@ -2524,6 +2660,210 @@ describe('RealtimeVoiceService', () => {
     expect(changedVersion).toMatchObject({ version: 1, revision: 5 });
     expect(changedVersion.digest).not.toBe(turnInput.contextFence.expected.digest);
 
+    await runAsPrincipal(() => service.hangup(handle));
+  });
+
+  it('n’acquitte OpenAI qu’après l’application sideband exacte et ferme toute réponse ambiguë', async () => {
+    const handle = '00000000-0000-4000-8000-000000000021';
+    const durable = admission();
+    const application = deferred<Awaited<
+      ReturnType<RealtimeSidebandControl['contextChanged']>
+    >>();
+    const contextChanged = vi
+      .fn<RealtimeSidebandControl['contextChanged']>()
+      .mockImplementationOnce(() => application.promise);
+    const sideband: RealtimeSidebandControl = {
+      ...sidebandStub(),
+      contextChanged,
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      {
+        createCall: successfulProviderCreate('rtc_context_application'),
+        hangupCall: vi.fn(async () => undefined),
+      },
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    await expect(runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }))).resolves.toMatchObject({ ok: true });
+
+    const context = {
+      screen: { name: '/devis/new', instanceId: 'quote-new-context-1' },
+      entities: [],
+      capabilities: ['screen.read' as const],
+    };
+    const prepared = prepareRealtimeContext({ version: 1, revision: 1, context });
+    if (!prepared) throw new Error('contexte canonique attendu');
+    let settled = false;
+    const pending = runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 1,
+      context,
+    })).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(contextChanged).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    application.resolve({
+      status: 'applied',
+      revision: 1,
+      digest: prepared.digest,
+    });
+    await expect(pending).resolves.toEqual({
+      ok: true,
+      value: { revision: 1, contextDigest: prepared.digest },
+    });
+
+    contextChanged.mockResolvedValueOnce({
+      status: 'applied',
+      revision: 1,
+      digest: prepared.digest,
+    });
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 2,
+      context: {
+        ...context,
+        screen: { name: '/devis/new', instanceId: 'quote-new-context-2' },
+      },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-context-application' },
+    });
+
+    contextChanged.mockRejectedValueOnce(new Error('sideband_unavailable'));
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 3,
+      context: {
+        ...context,
+        screen: { name: '/devis/new', instanceId: 'quote-new-context-3' },
+      },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-context-application' },
+    });
+
+    contextChanged.mockResolvedValueOnce({ status: 'superseded' });
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 4,
+      context: {
+        ...context,
+        screen: { name: '/devis/new', instanceId: 'quote-new-context-4' },
+      },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'conflict', entity: 'realtime_context' },
+    });
+
+    for (const [revision, status] of [
+      [5, 'not_found'],
+      [6, 'rejected'],
+    ] as const) {
+      contextChanged.mockResolvedValueOnce({ status });
+      await expect(runAsPrincipal(() => service.updateContext(handle, {
+        version: 1,
+        revision,
+        context: {
+          ...context,
+          screen: { name: '/devis/new', instanceId: `quote-new-context-${revision}` },
+        },
+      }))).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable', service: 'bob-live-context-application' },
+      });
+    }
+    await runAsPrincipal(() => service.hangup(handle));
+  });
+
+  it('rejoue le même contexte OpenAI après indisponibilité sans fabriquer un ACK', async () => {
+    const handle = '00000000-0000-4000-8000-000000000022';
+    const contextChanged = vi
+      .fn<RealtimeSidebandControl['contextChanged']>()
+      .mockResolvedValueOnce({ status: 'unavailable' });
+    const sideband: RealtimeSidebandControl = {
+      ...sidebandStub(),
+      contextChanged,
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      {
+        createCall: successfulProviderCreate('rtc_context_retry'),
+        hangupCall: vi.fn(async () => undefined),
+      },
+      admission(),
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      sdp: OFFER_SDP,
+      sessionHandle: handle,
+    }));
+    const context = {
+      screen: { name: '/devis/new', instanceId: 'quote-new-retry' },
+      entities: [],
+      capabilities: ['screen.read' as const],
+    };
+    const prepared = prepareRealtimeContext({ version: 1, revision: 1, context });
+    if (!prepared) throw new Error('contexte canonique attendu');
+
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 1,
+      context,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-context-application' },
+    });
+    contextChanged.mockResolvedValueOnce({
+      status: 'applied',
+      revision: 1,
+      digest: prepared.digest,
+    });
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 1,
+      context,
+    }))).resolves.toEqual({
+      ok: true,
+      value: { revision: 1, contextDigest: prepared.digest },
+    });
+    expect(contextChanged).toHaveBeenCalledTimes(2);
+    await expect(runAsPrincipal(() => service.updateContext(handle, {
+      version: 1,
+      revision: 1,
+      context: {
+        ...context,
+        screen: { name: '/devis/new', instanceId: 'quote-new-retry-conflict' },
+      },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'conflict', entity: 'realtime_context' },
+    });
+    expect(contextChanged).toHaveBeenCalledTimes(2);
     await runAsPrincipal(() => service.hangup(handle));
   });
 
@@ -2551,7 +2891,14 @@ describe('RealtimeVoiceService', () => {
     }));
     const sideband: RealtimeSidebandControl = {
       ...baseSideband,
-      contextChanged: vi.fn((input) => { contextDigest = input.digest; }),
+      contextChanged: vi.fn(async (input) => {
+        contextDigest = input.digest;
+        return {
+          status: 'applied' as const,
+          revision: input.revision,
+          digest: input.digest,
+        };
+      }),
     };
     const service = new RealtimeVoiceService(
       SETTINGS,

@@ -6,6 +6,10 @@ import {
   type AgentMissionReadRepositoryPort,
   type AgentMissionRepositoryPort,
 } from './agent-mission-repository';
+import {
+  type CustomerCandidateReadPort,
+  type CustomerCandidateSearchPort,
+} from './customer-candidate-search';
 
 export interface AgentMissionRealtimeAuthorityProof {
   /**
@@ -29,6 +33,14 @@ export type AgentMissionCapabilityRejectionReason =
 
 export interface AgentMissionAuthorizedRealtimeLease {
   readonly realtimeSessionId: string;
+  /**
+   * Contexte réellement appliqué par l'owner sideband courant au moment de la transaction.
+   * `null` ferme toute commande vocale corrélée ; un contexte seulement publié ne suffit pas.
+   */
+  readonly appliedContext: {
+    readonly revision: number;
+    readonly digest: string;
+  } | null;
 }
 
 export interface AgentMissionQuoteScreenFences {
@@ -83,6 +95,7 @@ export interface AgentMissionTransaction {
   readonly events: AgentMissionEventRepositoryPort;
   readonly quoteDrafts: AgentMissionQuoteDraftRepositoryPort;
   readonly quoteScreen: AgentMissionQuoteScreenAuthorityPort;
+  readonly customers: CustomerCandidateSearchPort & CustomerCandidateReadPort;
 }
 
 export type AgentMissionCompanyUnavailableReason = 'missing' | 'closed';

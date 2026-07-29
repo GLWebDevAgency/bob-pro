@@ -5,7 +5,7 @@ import {
   type AgentHistoryTurn,
   type AgentRunKind,
 } from '@bob/ai';
-import type { PlanTier } from '@bob/core';
+import { deriveRealtimeTurnId, type PlanTier } from '@bob/core';
 import WebSocket, { type ClientOptions, type RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
@@ -74,6 +74,8 @@ const NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS = 5_000;
 const NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS = 500;
 const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
+export { deriveRealtimeTurnId };
+
 interface SidebandSocket {
   readonly readyState: number;
   on(event: 'open', listener: () => void): this;
@@ -126,6 +128,7 @@ export interface RealtimeSidebandAttachInput {
   };
   turn?: {
     run(input: {
+      turnId: string;
       transcript: string;
       history: readonly AgentHistoryTurn[];
       signal: AbortSignal;
@@ -176,6 +179,16 @@ export interface RealtimeNativeSpeechDeliveryAcknowledgement {
   readonly contextDigest: string;
 }
 
+export type RealtimeSidebandContextApplication =
+  | {
+      readonly status: 'applied';
+      readonly revision: number;
+      readonly digest: string;
+    }
+  | {
+      readonly status: 'not_found' | 'rejected' | 'superseded' | 'unavailable';
+    };
+
 export interface RealtimeSidebandControl {
   attach(input: RealtimeSidebandAttachInput): Promise<void>;
   contextChanged(input: {
@@ -184,7 +197,7 @@ export interface RealtimeSidebandControl {
     sessionHandle: string;
     revision: number;
     digest: string;
-  }): void;
+  }): Promise<RealtimeSidebandContextApplication>;
   /**
    * Doit être appelé exclusivement après le CAS durable `ready -> delivered`. Son absence garde
    * les contrôles fermés : un turnId deviné avant l'ACK ne peut jamais naviguer ni proposer.
@@ -636,8 +649,15 @@ class ManagedSidebandSession {
   private appliedContext: RealtimeSidebandContextVersion | null = null;
   private contextTransitionPending = false;
   private highestContextRevision = 0;
+  private highestContextDigest: string | null = null;
   private turnGeneration = 0;
   private contextApplicationGeneration = 0;
+  private contextApplication: {
+    revision: number;
+    digest: string;
+    generation: number;
+    promise: Promise<RealtimeSidebandContextApplication>;
+  } | null = null;
   private turns = 0;
   private providerErrors = 0;
 
@@ -665,6 +685,7 @@ class ManagedSidebandSession {
     ) => Promise<RealtimeCallTerminationOutcome>,
     private readonly fenceLeaseLifecycle: () => void,
     private readonly runTurn: (input: {
+      turnId: string;
       transcript: string;
       history: readonly AgentHistoryTurn[];
       signal: AbortSignal;
@@ -865,34 +886,106 @@ class ManagedSidebandSession {
     return true;
   }
 
-  contextChanged(revision: number, digest: string): void {
-    if (!validContext(revision, digest)) return;
-    if (revision <= this.highestContextRevision) return;
-    this.highestContextRevision = revision;
+  contextChanged(
+    revision: number,
+    digest: string,
+  ): Promise<RealtimeSidebandContextApplication> {
+    if (!validContext(revision, digest)) {
+      return Promise.resolve({ status: 'rejected' });
+    }
+    if (this.closed || this.finalized || !this.isReady()) {
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    if (
+      !this.contextTransitionPending
+      && this.appliedContext?.revision === revision
+      && this.appliedContext.digest === digest
+    ) {
+      return Promise.resolve({ status: 'applied', revision, digest });
+    }
+    if (
+      this.contextApplication?.revision === revision
+      && this.contextApplication.digest === digest
+    ) {
+      return this.contextApplication.promise;
+    }
+    if (revision < this.highestContextRevision) {
+      return Promise.resolve({ status: 'superseded' });
+    }
+    if (
+      revision === this.highestContextRevision
+      && this.highestContextDigest !== null
+      && this.highestContextDigest !== digest
+    ) {
+      return Promise.resolve({ status: 'rejected' });
+    }
+    if (revision > this.highestContextRevision) {
+      this.highestContextRevision = revision;
+      this.highestContextDigest = digest;
+    }
     // Ferme la lecture et les contrôles sur l'ancien écran avant la première opération async.
     // Le microphone client doit déjà être fermé jusqu'à l'ACK, mais le serveur ne lui fait jamais
     // confiance pour empêcher un tour lancé dans la fenêtre de changement de contexte.
     this.contextTransitionPending = true;
     this.appliedContext = null;
-    void this.interruptCurrentTurn('context_changed');
-    const owner = this.owner;
-    if (!owner || !this.isReady()) return;
     const generation = ++this.contextApplicationGeneration;
-    void this.ownerPort.applyContext(owner, { revision, digest }).then((result) => {
-      if (generation !== this.contextApplicationGeneration || this.closed || this.finalized) return;
-      if (result.status !== 'applied') {
-        this.onSecurityRejection('context_fence_rejected');
-        void this.close('kill_switch').catch(() => undefined);
-        return;
-      }
-      this.appliedContext = { revision, digest };
-      this.contextTransitionPending = false;
-      this.history = [];
-    }, () => {
-      if (generation !== this.contextApplicationGeneration || this.closed || this.finalized) return;
+    const application = {
+      revision,
+      digest,
+      generation,
+      promise: Promise.resolve<RealtimeSidebandContextApplication>({ status: 'unavailable' }),
+    };
+    application.promise = this.applyChangedContext(revision, digest, generation).finally(() => {
+      if (this.contextApplication === application) this.contextApplication = null;
+    });
+    this.contextApplication = application;
+    return application.promise;
+  }
+
+  private async applyChangedContext(
+    revision: number,
+    digest: string,
+    generation: number,
+  ): Promise<RealtimeSidebandContextApplication> {
+    if (this.closed || this.finalized) return { status: 'unavailable' };
+    if (generation !== this.contextApplicationGeneration) return { status: 'superseded' };
+    const owner = this.owner;
+    if (!owner || !this.isReady()) return { status: 'unavailable' };
+
+    // Le gate est déjà fermé synchroniquement. L'annulation du tour et l'application PostgreSQL
+    // peuvent donc avancer ensemble sans fenêtre de lecture sur l'ancien écran ni additionner
+    // leurs latences.
+    const [, result] = await Promise.all([
+      this.interruptCurrentTurn('context_changed'),
+      boundedCleanup(
+        this.ownerPort.applyContext(owner, { revision, digest }),
+        this.timeoutMs,
+      ),
+    ]);
+    if (this.closed || this.finalized) return { status: 'unavailable' };
+    if (generation !== this.contextApplicationGeneration) return { status: 'superseded' };
+    // Une publication HTTP plus récente peut avoir gagné dans PostgreSQL avant que son appel
+    // manager n'entre dans cette boucle. `stale_context` est alors une supersession normale,
+    // jamais une attaque ni une raison de tuer la session.
+    if (result?.status === 'stale_context') return { status: 'superseded' };
+    if (result === null || result.status === 'unavailable') {
+      return { status: 'unavailable' };
+    }
+    if (result.status === 'lost') {
+      this.onProviderError('owner_lease_lost');
+      void this.close('kill_switch').catch(() => undefined);
+      return { status: 'unavailable' };
+    }
+    if (result?.status !== 'applied') {
       this.onSecurityRejection('context_fence_rejected');
       void this.close('kill_switch').catch(() => undefined);
-    });
+      return { status: 'rejected' };
+    }
+
+    this.appliedContext = { revision, digest };
+    this.contextTransitionPending = false;
+    this.history = [];
+    return { status: 'applied', revision, digest };
   }
 
   speechDelivered(input: Omit<RealtimeSpeechDeliveryAcknowledgement, 'userId' | 'companyId' | 'sessionHandle'>): void {
@@ -1050,6 +1143,7 @@ class ManagedSidebandSession {
         if (applied.status !== 'applied') throw new Error(`sideband_context_${applied.status}`);
         this.appliedContext = acquired.currentContext;
         this.highestContextRevision = acquired.currentContext.revision;
+        this.highestContextDigest = acquired.currentContext.digest;
       }
     } catch (error) {
       if (this.owner) await this.ownerPort.release(this.owner).catch(() => undefined);
@@ -1127,10 +1221,16 @@ class ManagedSidebandSession {
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     const controller = new AbortController();
     this.turnAbort = controller;
+    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
     const brainStartedAt = performance.now();
     let outcome: RealtimeAgentTurnOutcome;
     try {
-      outcome = await this.runTurn({ transcript, history: [...this.history], signal: controller.signal });
+      outcome = await this.runTurn({
+        turnId,
+        transcript,
+        history: [...this.history],
+        signal: controller.signal,
+      });
     } catch {
       outcome = { status: 'failed', canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.' };
     }
@@ -1145,10 +1245,14 @@ class ManagedSidebandSession {
       || generation !== this.turnGeneration
       || outcome.status === 'aborted'
     ) return;
+    if (outcome.status === 'ready' && outcome.turnId !== turnId) {
+      this.onSecurityRejection('context_fence_rejected');
+      return;
+    }
     this.turnAbort = null;
     if (outcome.status === 'failed') this.onProviderError('turn_failed');
     this.pushHistory({ role: 'user', text: transcript });
-    await this.publishOutcome(outcome, transcript, generation);
+    await this.publishOutcome(outcome, transcript, generation, turnId);
   }
 
   private async processTranscriptFailure(inputItemId: string): Promise<void> {
@@ -1165,16 +1269,18 @@ class ManagedSidebandSession {
     const generation = ++this.turnGeneration;
     await this.interruptCurrentTurn('superseded', false);
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
+    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
     await this.publishOutcome({
       status: 'failed',
       canonicalSpeech: "Je n’ai pas bien entendu. Tu peux répéter en une phrase courte ?",
-    }, '', generation);
+    }, '', generation, turnId);
   }
 
   private async publishOutcome(
     outcome: Exclude<RealtimeAgentTurnOutcome, { status: 'aborted' }>,
     userTranscript: string,
     generation: number,
+    turnId: string,
   ): Promise<void> {
     const owner = this.owner;
     const context = speechContext(outcome, this.appliedContext);
@@ -1183,7 +1289,6 @@ class ManagedSidebandSession {
       if (outcome.status === 'ready') this.rejectControlTurn(outcome.turnId);
       return;
     }
-    const turnId = outcome.status === 'ready' ? outcome.turnId : randomUUID();
     if (!UUID.test(turnId)) {
       this.onSecurityRejection('context_fence_rejected');
       return;
@@ -1963,6 +2068,7 @@ class ManagedSidebandSession {
     this.ownerRenewTimer = null;
     this.turnGeneration += 1;
     this.contextApplicationGeneration += 1;
+    this.contextApplication = null;
     this.turnAbort?.abort();
     this.turnAbort = null;
     this.currentSpeech?.controller.abort();
@@ -2117,16 +2223,18 @@ export class RealtimeSidebandManager implements RealtimeSidebandControl, OnAppli
     }
   }
 
-  contextChanged(input: {
+  async contextChanged(input: {
     userId: string;
     companyId: string;
     sessionHandle: string;
     revision: number;
     digest: string;
-  }): void {
+  }): Promise<RealtimeSidebandContextApplication> {
     const session = this.sessionsByPrincipal.get(principalKey(input));
-    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) return;
-    session.contextChanged(input.revision, input.digest);
+    if (!session || session.sessionHandle !== input.sessionHandle.toLowerCase()) {
+      return { status: 'not_found' };
+    }
+    return session.contextChanged(input.revision, input.digest);
   }
 
   speechDelivered(input: RealtimeSpeechDeliveryAcknowledgement): void {

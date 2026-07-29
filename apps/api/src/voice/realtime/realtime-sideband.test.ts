@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentHistoryTurn } from '@bob/ai';
 import type { ClientOptions, RawData } from 'ws';
 import type { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
@@ -21,6 +22,7 @@ import type {
   OpenAiNativeSpeechDeliveryState,
 } from './openai-native-speech-delivery';
 import {
+  deriveRealtimeTurnId,
   RealtimeSidebandManager,
   type RealtimeSidebandAuditedSpeechDependencies,
   type RealtimeSidebandSocketFactory,
@@ -47,6 +49,26 @@ const NATIVE_CLAIM = '00000000-0000-4000-8000-000000000041';
 const NATIVE_RESPONSE = 'resp_native_1';
 const NATIVE_ITEM = 'item_native_1';
 const NATIVE_PROOF_SECRET = 'native-proof-secret-with-more-than-thirty-two-characters';
+
+describe('deriveRealtimeTurnId', () => {
+  it('rend un UUID v4 stable par session et item sans exposer les identifiants sources', () => {
+    const first = deriveRealtimeTurnId(SESSION, 'item_user_42');
+    const replay = deriveRealtimeTurnId(SESSION, 'item_user_42');
+    const next = deriveRealtimeTurnId(SESSION, 'item_user_43');
+    const otherSession = deriveRealtimeTurnId(
+      '00000000-0000-4000-8000-000000000002',
+      'item_user_42',
+    );
+
+    expect(first).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(replay).toBe(first);
+    expect(next).not.toBe(first);
+    expect(otherSession).not.toBe(first);
+    expect(first).not.toContain('item_user_42');
+  });
+});
 
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
@@ -343,7 +365,12 @@ async function attach(
   value: Harness,
   options: {
     callId?: string;
-    turn?: (input: { transcript: string; history: readonly unknown[]; signal: AbortSignal }) => Promise<unknown>;
+    turn?: (input: {
+      turnId: string;
+      transcript: string;
+      history: readonly AgentHistoryTurn[];
+      signal: AbortSignal;
+    }) => Promise<unknown>;
     contextCurrent?: boolean;
   } = {},
 ): Promise<void> {
@@ -363,7 +390,26 @@ async function attach(
       fenceAfterDurableTerminationClaim: vi.fn(),
       terminate: value.terminate,
     },
-    turn: options.turn ? { run: options.turn as never } : undefined,
+    turn: options.turn
+      ? {
+          run: (async (input: {
+            turnId: string;
+            transcript: string;
+            history: readonly AgentHistoryTurn[];
+            signal: AbortSignal;
+          }) => {
+            const outcome = await options.turn!(input);
+            return (
+              typeof outcome === 'object'
+              && outcome !== null
+              && 'status' in outcome
+              && outcome.status === 'ready'
+            )
+              ? { ...outcome, turnId: input.turnId }
+              : outcome;
+          }) as never,
+        }
+      : undefined,
     controlContext: {
       isCurrent: vi.fn(async () => options.contextCurrent ?? true),
     },
@@ -563,6 +609,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     const value = harness();
     const run = vi.fn(async () => readyOutcome());
     await attach(value, { turn: run });
+    const turnId = deriveRealtimeTurnId(SESSION, 'item_1');
     finalTranscript(value.sockets[0]!.socket, 'item_1');
 
     await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
@@ -577,7 +624,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       companyId: 'company-1',
       subjectHash: SUBJECT,
       sessionId: SESSION,
-      turnId: TURN,
+      turnId,
       segmentIndex: 0,
       canonicalSpeech: 'Voici le résumé vérifié.',
       contextRevision: 1,
@@ -629,13 +676,14 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       turn: async () => readyOutcome({ navigate: '/devis/new' }),
       contextCurrent: true,
     });
+    const turnId = deriveRealtimeTurnId(SESSION, 'item_control');
     finalTranscript(value.sockets[0]!.socket, 'item_control');
     await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(value.issueControl).toHaveBeenCalledWith(expect.objectContaining({
       companyId: 'company-1',
       subjectHash: SUBJECT,
       sessionId: SESSION,
-      turnId: TURN,
+      turnId,
       artifactId: ARTIFACT,
       sidebandOwnerEpoch: OWNER.ownerEpoch,
       sidebandOwnerTokenHash: OWNER_TOKEN,
@@ -646,7 +694,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
-      turnId: TURN,
+      turnId,
       contextRevision: 1,
       contextDigest: CONTEXT,
     });
@@ -660,7 +708,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
-      turnId: TURN,
+      turnId,
       artifactId: ARTIFACT,
       acknowledgementId: ACKNOWLEDGEMENT,
       contextRevision: 1,
@@ -671,7 +719,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
-      turnId: TURN,
+      turnId,
       contextRevision: 1,
       contextDigest: CONTEXT,
     })).resolves.toEqual({ status: 'not_found' });
@@ -682,17 +730,18 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     vi.useFakeTimers();
     const value = harness();
     await attach(value, { turn: async () => readyOutcome({ navigate: '/devis/new' }) });
+    const turnId = deriveRealtimeTurnId(SESSION, 'item_false_ack');
     finalTranscript(value.sockets[0]!.socket, 'item_false_ack');
     await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
     value.manager.speechDelivered({
       userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
-      turnId: TURN, artifactId: '00000000-0000-4000-8000-000000000021',
+      turnId, artifactId: '00000000-0000-4000-8000-000000000021',
       acknowledgementId: ACKNOWLEDGEMENT,
       contextRevision: 1, contextDigest: CONTEXT,
     });
     const consumed = value.manager.consumeAgentControl({
       userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
-      turnId: TURN, contextRevision: 1, contextDigest: CONTEXT,
+      turnId, contextRevision: 1, contextDigest: CONTEXT,
     });
     await vi.advanceTimersByTimeAsync(2_001);
     await expect(consumed).resolves.toEqual({ status: 'not_found' });
@@ -702,6 +751,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
   it('barge-in annule l’artefact privé sans aucun message de contrôle provider', async () => {
     const value = harness();
     await attach(value, { turn: async () => readyOutcome() });
+    const turnId = deriveRealtimeTurnId(SESSION, 'item_barge');
     finalTranscript(value.sockets[0]!.socket, 'item_barge');
     await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
     value.sockets[0]!.socket.providerEvent({ type: 'input_audio_buffer.speech_started' });
@@ -709,7 +759,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       companyId: 'company-1',
       subjectHash: SUBJECT,
       sessionId: SESSION,
-      turnId: TURN,
+      turnId,
       artifactId: ARTIFACT,
       reason: 'barge_in',
     })));
@@ -758,7 +808,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     await attach(value, { turn: async () => readyOutcome({ navigate: '/devis/new' }) });
     finalTranscript(value.sockets[0]!.socket, 'item_context');
     await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
-    value.manager.contextChanged({
+    const contextApplication = value.manager.contextChanged({
       userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
       revision: 2, digest: 'e'.repeat(64),
     });
@@ -770,6 +820,11 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
       artifactId: ARTIFACT,
       reason: 'context_changed',
     })));
+    await expect(contextApplication).resolves.toEqual({
+      status: 'applied',
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
     value.manager.speechDelivered({
       userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
       turnId: TURN, artifactId: ARTIFACT, acknowledgementId: ACKNOWLEDGEMENT,
@@ -798,7 +853,7 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     });
     await attach(value, { turn });
 
-    value.manager.contextChanged({
+    const contextApplication = value.manager.contextChanged({
       userId: 'user-1', companyId: 'company-1', sessionHandle: SESSION,
       revision: 2, digest: 'e'.repeat(64),
     });
@@ -808,10 +863,273 @@ describe('RealtimeSidebandManager — cutover sortie auditée', () => {
     expect(turn).not.toHaveBeenCalled();
 
     resolveContext();
-    await vi.waitFor(() => expect(contextApplied).toBe(true));
+    await expect(contextApplication).resolves.toEqual({
+      status: 'applied',
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    expect(contextApplied).toBe(true);
     finalTranscript(value.sockets[0]!.socket, 'item_after_context_transition');
     await vi.waitFor(() => expect(turn).toHaveBeenCalledOnce());
     await value.manager.onApplicationShutdown();
+  });
+
+  it('partage une seule application pour les retries exacts encore en vol', async () => {
+    let resolveContext!: (value: { status: 'applied' }) => void;
+    const contextPending = new Promise<{ status: 'applied' }>((resolve) => {
+      resolveContext = resolve;
+    });
+    const value = harness({
+      ownerApplyContext: async (_owner, context) => (
+        context.revision === 1 ? { status: 'applied' as const } : contextPending
+      ),
+    });
+    await attach(value);
+
+    const first = value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    await vi.waitFor(() => expect(value.owner.applyContext).toHaveBeenCalledTimes(2));
+    const replay = value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    expect(value.owner.applyContext).toHaveBeenCalledTimes(2);
+
+    resolveContext({ status: 'applied' });
+    await expect(Promise.all([first, replay])).resolves.toEqual([
+      { status: 'applied', revision: 2, digest: 'e'.repeat(64) },
+      { status: 'applied', revision: 2, digest: 'e'.repeat(64) },
+    ]);
+    expect(value.owner.applyContext).toHaveBeenCalledTimes(2);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('autorise le retry exact après une indisponibilité sans rouvrir l’ancien contexte', async () => {
+    let revisionTwoAttempts = 0;
+    const turn = vi.fn(async () => readyOutcome());
+    const value = harness({
+      ownerApplyContext: async (_owner, context) => {
+        if (context.revision === 1) return { status: 'applied' as const };
+        revisionTwoAttempts += 1;
+        return revisionTwoAttempts === 1
+          ? { status: 'unavailable' as const }
+          : { status: 'applied' as const };
+      },
+    });
+    await attach(value, { turn });
+    const fence = {
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    };
+
+    await expect(value.manager.contextChanged(fence)).resolves.toEqual({
+      status: 'unavailable',
+    });
+    finalTranscript(value.sockets[0]!.socket, 'item_context_unavailable');
+    await Promise.resolve();
+    expect(turn).not.toHaveBeenCalled();
+    expect(value.terminate).not.toHaveBeenCalled();
+
+    await expect(value.manager.contextChanged(fence)).resolves.toEqual({
+      status: 'applied',
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    expect(revisionTwoAttempts).toBe(2);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('supersède une application lente par la révision la plus récente sans tuer la session', async () => {
+    let resolveRevisionTwo!: (value: { status: 'applied' }) => void;
+    const revisionTwoPending = new Promise<{ status: 'applied' }>((resolve) => {
+      resolveRevisionTwo = resolve;
+    });
+    const value = harness({
+      ownerApplyContext: async (_owner, context) => {
+        if (context.revision === 1 || context.revision === 3) {
+          return { status: 'applied' as const };
+        }
+        return revisionTwoPending;
+      },
+    });
+    await attach(value);
+
+    const obsolete = value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    await vi.waitFor(() => expect(value.owner.applyContext).toHaveBeenCalledTimes(2));
+    await expect(value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 3,
+      digest: 'f'.repeat(64),
+    })).resolves.toEqual({
+      status: 'applied',
+      revision: 3,
+      digest: 'f'.repeat(64),
+    });
+
+    resolveRevisionTwo({ status: 'applied' });
+    await expect(obsolete).resolves.toEqual({ status: 'superseded' });
+    expect(value.terminate).not.toHaveBeenCalled();
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('traite stale_context comme une course normale mais ferme sur perte d’owner', async () => {
+    const stale = harness({
+      ownerApplyContext: async (_owner, context) => (
+        context.revision === 1
+          ? { status: 'applied' as const }
+          : { status: 'stale_context' as const }
+      ),
+    });
+    await attach(stale);
+    await expect(stale.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({ status: 'superseded' });
+    expect(stale.terminate).not.toHaveBeenCalled();
+    await stale.manager.onApplicationShutdown();
+
+    const lost = harness({
+      ownerApplyContext: async (_owner, context) => (
+        context.revision === 1
+          ? { status: 'applied' as const }
+          : { status: 'lost' as const }
+      ),
+    });
+    await attach(lost);
+    await expect(lost.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({ status: 'unavailable' });
+    await vi.waitFor(() => expect(lost.terminate).toHaveBeenCalledWith('kill_switch'));
+  });
+
+  it('refuse les fences ambiguës et les sessions absentes sans toucher l’owner', async () => {
+    const value = harness();
+    await expect(value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 1,
+      digest: CONTEXT,
+    })).resolves.toEqual({ status: 'not_found' });
+    await attach(value);
+    const ownerCallsAfterAttach = value.owner.applyContext.mock.calls.length;
+
+    await expect(value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 1,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({ status: 'rejected' });
+    await expect(value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: '00000000-0000-4000-8000-000000000099',
+      revision: 2,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({ status: 'not_found' });
+    expect(value.owner.applyContext).toHaveBeenCalledTimes(ownerCallsAfterAttach);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('garde le gate fermé sur timeout owner et permet un retry exact', async () => {
+    let revisionTwoAttempts = 0;
+    let resolveFirstAttempt!: (value: { status: 'applied' }) => void;
+    const neverBeforeTimeout = new Promise<{ status: 'applied' }>((resolve) => {
+      resolveFirstAttempt = resolve;
+    });
+    const turn = vi.fn(async () => readyOutcome());
+    const value = harness({
+      ownerApplyContext: async (_owner, context) => {
+        if (context.revision === 1) return { status: 'applied' as const };
+        revisionTwoAttempts += 1;
+        return revisionTwoAttempts === 1
+          ? neverBeforeTimeout
+          : { status: 'applied' as const };
+      },
+    });
+    await attach(value, { turn });
+    const fence = {
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    };
+
+    await expect(value.manager.contextChanged(fence)).resolves.toEqual({
+      status: 'unavailable',
+    });
+    finalTranscript(value.sockets[0]!.socket, 'item_context_timeout');
+    await Promise.resolve();
+    expect(turn).not.toHaveBeenCalled();
+    expect(value.terminate).not.toHaveBeenCalled();
+
+    await expect(value.manager.contextChanged(fence)).resolves.toEqual({
+      status: 'applied',
+      revision: 2,
+      digest: 'e'.repeat(64),
+    });
+    resolveFirstAttempt({ status: 'applied' });
+    expect(revisionTwoAttempts).toBe(2);
+    await value.manager.onApplicationShutdown();
+  });
+
+  it('ne réacquitte jamais un contexte idempotent pendant la fermeture', async () => {
+    let releaseCancellation!: (value: { status: 'cancelled'; idempotent: false }) => void;
+    const cancellationPending = new Promise<{
+      status: 'cancelled';
+      idempotent: false;
+    }>((resolve) => {
+      releaseCancellation = resolve;
+    });
+    const value = harness({
+      cancel: async () => cancellationPending,
+    });
+    await attach(value, { turn: async () => readyOutcome() });
+    finalTranscript(value.sockets[0]!.socket, 'item_context_closing');
+    await vi.waitFor(() => expect(value.publish).toHaveBeenCalledOnce());
+    const closing = value.manager.closeSession({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+    });
+
+    await expect(value.manager.contextChanged({
+      userId: 'user-1',
+      companyId: 'company-1',
+      sessionHandle: SESSION,
+      revision: 1,
+      digest: CONTEXT,
+    })).resolves.toEqual({ status: 'unavailable' });
+    releaseCancellation({ status: 'cancelled', idempotent: false });
+    await expect(closing).resolves.toBe('confirmed');
   });
 
   it('ne lance que le dernier cerveau lorsque deux transcripts arrivent dans le même tick', async () => {
@@ -1011,10 +1329,14 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
 
     finalTranscript(socket, 'native-input-stale', 'Aide-moi.');
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-    value.manager.contextChanged({
+    await expect(value.manager.contextChanged({
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({
+      status: 'applied',
       revision: 2,
       digest: 'e'.repeat(64),
     });
@@ -1062,10 +1384,14 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     await vi.waitFor(() => expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase)
       .toBe('accepted'));
 
-    value.manager.contextChanged({
+    await expect(value.manager.contextChanged({
       userId: 'user-1',
       companyId: 'company-1',
       sessionHandle: SESSION,
+      revision: 2,
+      digest: 'e'.repeat(64),
+    })).resolves.toEqual({
+      status: 'applied',
       revision: 2,
       digest: 'e'.repeat(64),
     });
@@ -1089,6 +1415,7 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     await attach(value, { turn: run });
     const socket = value.sockets[0]!.socket;
 
+    const firstTurnId = deriveRealtimeTurnId(SESSION, 'native-input-ack-1');
     finalTranscript(socket, 'native-input-ack-1', 'Aide-moi.');
     await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
     emitNativeSuccessfulResponse(socket);
@@ -1100,13 +1427,16 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     expect(run).toHaveBeenCalledOnce();
     expect(value.nativeRepository?.states.get(NATIVE_DELIVERY)?.phase).toBe('completed');
 
-    acknowledgeNativeSpeech(value, { contextDigest: 'f'.repeat(64) });
+    acknowledgeNativeSpeech(value, {
+      turnId: firstTurnId,
+      contextDigest: 'f'.repeat(64),
+    });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(run).toHaveBeenCalledOnce();
 
-    await persistNativeAcknowledgement(value);
-    acknowledgeNativeSpeech(value);
-    acknowledgeNativeSpeech(value);
+    await persistNativeAcknowledgement(value, { turnId: firstTurnId });
+    acknowledgeNativeSpeech(value, { turnId: firstTurnId });
+    acknowledgeNativeSpeech(value, { turnId: firstTurnId });
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
     expect(run.mock.calls[1]?.[0].history).toEqual([
       { role: 'user', text: 'Aide-moi.' },
@@ -1125,14 +1455,15 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     await attach(ownerReplica, { turn: run });
     const socket = ownerReplica.sockets[0]!.socket;
 
+    const firstTurnId = deriveRealtimeTurnId(SESSION, 'native-input-cross-replica-1');
     finalTranscript(socket, 'native-input-cross-replica-1', 'Aide-moi.');
     await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
     emitNativeSuccessfulResponse(socket);
     await vi.waitFor(() => expect(repository.states.get(NATIVE_DELIVERY)?.phase).toBe('completed'));
 
-    await persistNativeAcknowledgement(acknowledgementReplica);
+    await persistNativeAcknowledgement(acknowledgementReplica, { turnId: firstTurnId });
     // La notification process-local part sur la mauvaise réplique et doit rester un simple fast-path.
-    acknowledgeNativeSpeech(acknowledgementReplica);
+    acknowledgeNativeSpeech(acknowledgementReplica, { turnId: firstTurnId });
     await new Promise((resolve) => setTimeout(resolve, 150));
     finalTranscript(socket, 'native-input-cross-replica-2', 'Continue.');
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
@@ -1148,6 +1479,7 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
     await attach(value, { turn: async () => nativeReadyOutcome() });
     const socket = value.sockets[0]!.socket;
 
+    const turnId = deriveRealtimeTurnId(SESSION, 'native-input-completed-barge');
     finalTranscript(socket, 'native-input-completed-barge', 'Aide-moi.');
     await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
     emitNativeSuccessfulResponse(socket);
@@ -1163,7 +1495,7 @@ describe('RealtimeSidebandManager — sortie OpenAI native sous autorité durabl
       subjectHmacCandidates: [{ version: 1, subjectHmac: SUBJECT }],
       deliveryId: NATIVE_DELIVERY,
       sessionId: SESSION,
-      turnId: TURN,
+      turnId,
       contextRevision: 1,
       contextDigest: CONTEXT,
       acknowledgementId: ACKNOWLEDGEMENT,

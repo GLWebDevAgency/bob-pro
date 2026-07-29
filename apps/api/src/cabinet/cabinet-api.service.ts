@@ -75,6 +75,13 @@ function domainCode(error: AppError): {
         error.entity === 'cabinet_invitation' ? 'CABINET_INVITATION_INVALID' : 'CABINET_NOT_FOUND',
     };
   }
+  if (error.kind === 'gone') {
+    return {
+      status: HttpStatus.GONE,
+      code: 'CABINET_RESOURCE_GONE',
+      params: { reason: error.reason },
+    };
+  }
   if (error.kind === 'forbidden') {
     return {
       status: HttpStatus.FORBIDDEN,

@@ -10,6 +10,21 @@ const base: CustomerProps = {
 };
 
 describe('Customer', () => {
+  it('canonise les espaces issus de la voix et des anciennes lignes', () => {
+    const result = Customer.of({
+      ...base,
+      name: '  Camping\t Les \n Pins  ',
+    });
+    expect(result.ok && result.value.name).toBe('Camping Les Pins');
+  });
+
+  it('refuse les contrôles Unicode non imprimables sans refuser les espaces vocaux', () => {
+    expect(Customer.of({ ...base, name: 'Camping\u0081Les Pins' })).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'name' },
+    });
+  });
+
   it('b2b exige un SIREN pour e-invoice', () => {
     const r = Customer.of({ ...base, type: 'b2b', name: 'Durand SARL' });
     if (r.ok) expect(r.value.requiresSirenForEinvoice()).toBe(true);

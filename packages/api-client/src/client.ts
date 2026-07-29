@@ -88,6 +88,7 @@ import type {
   CatalogueDeletionView,
   QualifiedBankBalanceWithPosition,
   QuoteDraftPayloadV1,
+  QuoteAgentMissionResumeView,
   PurchaseOrderRef,
   PurchaseOrderRefInput,
   PurchaseOrderMutationView,
@@ -1192,6 +1193,13 @@ export interface InterventionSettingsWriteInput {
 
 export interface BobClient {
   readonly companyId: string;
+  /**
+   * Reprise froide JWT+RLS. Cette lecture ne crée aucune capability et ne débloque jamais une
+   * mutation ; seul `mission:null` autorise le flow manuel après un redémarrage.
+   */
+  getCurrentQuoteAgentMissionResume(
+    signal?: AbortSignal,
+  ): Promise<Result<QuoteAgentMissionResumeView, AppError>>;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
    * l'état honnête. */

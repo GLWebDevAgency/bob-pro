@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   AcknowledgeQuoteScreen,
+  AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
   GetActiveAgentMission,
   StartQuoteAgentMission,
@@ -12,6 +13,7 @@ import {
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AcknowledgeQuoteScreenInput,
+  type AdvanceQuoteAgentMissionInput,
   type CancelQuoteAgentMissionInput,
   type Instant,
   type StartQuoteAgentMissionCommand,
@@ -111,11 +113,16 @@ function start(uow: AgentMissionUnitOfWorkPort) {
   });
   return {
     execute: async (
-      input: Omit<StartQuoteAgentMissionCommand, 'authority'>,
+      input: Omit<
+        StartQuoteAgentMissionCommand,
+        'authority' | 'origin' | 'customerReference'
+      > & Partial<Pick<StartQuoteAgentMissionCommand, 'origin' | 'customerReference'>>,
       authority?: AgentMissionRealtimeAuthorityProof,
     ) => useCase.execute({
       ...input,
       authority: authority ?? await authorizeOwner(input),
+      origin: input.origin ?? { actor: 'user_tap', correlation: null },
+      customerReference: input.customerReference ?? null,
     }),
   };
 }
@@ -142,6 +149,19 @@ function acknowledge(uow: AgentMissionUnitOfWorkPort) {
   return {
     execute: async (
       input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
+    ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
+  };
+}
+
+function advance(uow: AgentMissionUnitOfWorkPort) {
+  const useCase = new AdvanceQuoteAgentMission({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
+  return {
+    execute: async (
+      input: Omit<AdvanceQuoteAgentMissionInput, 'authority'>,
     ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
   };
 }
@@ -195,8 +215,12 @@ function faultAfterWrite(
           create: async (input) => afterWrite(await tx.quoteDrafts.create(input)),
           claim: async (input) => afterWrite(await tx.quoteDrafts.claim(input)),
           release: async (input) => afterWrite(await tx.quoteDrafts.release(input)),
+          selectCustomerCas: async (input) => (
+            afterWrite(await tx.quoteDrafts.selectCustomerCas(input))
+          ),
         },
         quoteScreen: tx.quoteScreen,
+        customers: tx.customers,
       };
       return work(wrapped);
       }),
@@ -226,6 +250,17 @@ describe.skipIf(!RUN_CERT)(
     const companyA = `mission-company-a-${randomUUID()}`;
     const companyB = `mission-company-b-${randomUUID()}`;
     const companyLifecycle = `mission-company-lifecycle-${randomUUID()}`;
+    const exactCustomerId = `customer-camping-les-pins-${randomUUID()}`;
+    const fuzzyCustomerIds = Object.freeze([
+      `customer-ratp-fontaines-bastille-${randomUUID()}`,
+      `customer-ratp-fontaines-nation-${randomUUID()}`,
+      `customer-ratp-fontaines-republique-${randomUUID()}`,
+    ]);
+    const manyCustomerIds = Object.freeze(Array.from(
+      { length: 6 },
+      (_, index) => `customer-entretien-vitrines-${index + 1}-${randomUUID()}`,
+    ));
+    const foreignExactCustomerId = `customer-foreign-camping-${randomUUID()}`;
     let admin: PrismaClient;
     let deployer: PrismaClient;
     let workerA: PrismaService;
@@ -342,11 +377,27 @@ describe.skipIf(!RUN_CERT)(
           )
         `;
       }
+      for (const [id, companyId, name] of [
+        [exactCustomerId, companyA, 'Camping Les Pins'],
+        [fuzzyCustomerIds[0] ?? '', companyA, 'RATP Fontaines Bastille'],
+        [fuzzyCustomerIds[1] ?? '', companyA, 'RATP Fontaines Nation'],
+        [fuzzyCustomerIds[2] ?? '', companyA, 'RATP Fontaines République'],
+        ...manyCustomerIds.map((id, index) => (
+          [id, companyA, `Entretien vitrines secteur ${index + 1}`] as const
+        )),
+        [foreignExactCustomerId, companyB, 'Camping Les Pins'],
+      ] as const) {
+        await admin.$executeRaw`
+          INSERT INTO public.customers ("id", "companyId", "name")
+          VALUES (${id}, ${companyId}, ${name})
+        `;
+      }
     }, 30_000);
 
     async function publishQuoteScreenContext(
       owner: AgentMissionOwner,
       rawContext?: Readonly<Record<string, unknown>>,
+      options: Readonly<{ apply?: boolean }> = {},
     ): Promise<{
       readonly sessionId: string;
       readonly revision: number;
@@ -426,28 +477,99 @@ describe.skipIf(!RUN_CERT)(
             version: { increment: 1 },
           },
         });
-        await transaction.realtimeSessionLease.update({
-          where: {
-            realtime_session_lease_subject: {
-              companyId: owner.companyId,
-              subjectHash,
+        if (options.apply !== false) {
+          await transaction.realtimeSessionLease.update({
+            where: {
+              realtime_session_lease_subject: {
+                companyId: owner.companyId,
+                subjectHash,
+              },
             },
-          },
-          data: {
-            contextAppliedRevision: revision,
-            contextAppliedDigest: prepared.digest,
-            contextAppliedAt: updatedAt,
-            contextAppliedOwnerEpoch: 1,
-            updatedAt,
-            version: { increment: 1 },
-          },
-        });
+            data: {
+              contextAppliedRevision: revision,
+              contextAppliedDigest: prepared.digest,
+              contextAppliedAt: updatedAt,
+              contextAppliedOwnerEpoch: 1,
+              updatedAt,
+              version: { increment: 1 },
+            },
+          });
+        }
       });
       return {
         sessionId: lease.sessionId,
         revision,
         digest: prepared.digest,
       };
+    }
+
+    async function prepareMissionForCancellation(
+      owner: AgentMissionOwner,
+      reason: CancelQuoteAgentMissionInput['reason'],
+    ) {
+      if (reason === 'user_cancelled') {
+        const started = await start(uowA).execute({
+          ...owner,
+          commandId: randomUUID(),
+        });
+        if (!started.ok) {
+          throw new Error(`start cancellation fixture failed:${JSON.stringify(started.error)}`);
+        }
+        return started.value.mission;
+      }
+
+      // `manual_handoff` est volontairement réservé à awaiting_lines : la certification DB
+      // traverse donc le vrai chemin voix → résolution tenantée → ACK écran → continuation,
+      // au lieu de fabriquer une phase ou d'affaiblir l'invariant du domaine.
+      const context = await publishQuoteScreenContext(owner);
+      const turnId = randomUUID();
+      const started = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'Camping Les Pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+      if (!started.ok) {
+        throw new Error(`manual handoff start fixture failed:${JSON.stringify(started)}`);
+      }
+      const mission = started.value.mission;
+      const draft = mission.payload.draft;
+      if (draft === null) {
+        throw new Error('manual handoff start fixture returned no draft');
+      }
+      const acknowledgementCommandId = randomUUID();
+      const acknowledged = await acknowledge(uowA).execute({
+        ...owner,
+        missionId: mission.id,
+        commandId: acknowledgementCommandId,
+        expectedMissionRevision: mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      });
+      if (!acknowledged.ok) {
+        throw new Error(`manual handoff ACK fixture failed:${JSON.stringify(acknowledged.error)}`);
+      }
+      const advanced = await advance(uowA).execute({
+        ...owner,
+        missionId: mission.id,
+        acknowledgementCommandId,
+      });
+      if (!advanced.ok || advanced.value.mission.phase !== 'awaiting_lines') {
+        throw new Error(`manual handoff advance fixture failed:${JSON.stringify(advanced)}`);
+      }
+      return advanced.value.mission;
     }
 
     afterAll(async () => {
@@ -1221,6 +1343,327 @@ describe.skipIf(!RUN_CERT)(
       })).toBe(2);
     });
 
+    it('enchaîne voix → client exact tenanté → ACK → sélection atomique et replay concurrent', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-exact-customer-${randomUUID()}`,
+      };
+      const context = await publishQuoteScreenContext(owner);
+      const turnId = randomUUID();
+      const started = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'camping les pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+      expect(started, JSON.stringify(started)).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'created',
+          mission: {
+            payload: {
+              stagedCustomerResolution: {
+                kind: 'exact',
+                customerId: exactCustomerId,
+              },
+            },
+          },
+        },
+      });
+      if (!started.ok || started.value.mission.payload.draft === null) return;
+      const missionId = started.value.mission.id;
+      const draft = started.value.mission.payload.draft;
+      const startEvent = await admin.agentMissionEvent.findFirstOrThrow({
+        where: { missionId, sequence: 1 },
+      });
+      expect(startEvent).toMatchObject({
+        actor: 'user_voice',
+        realtimeSessionId: context.sessionId,
+        turnId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+      });
+
+      const acknowledgementCommandId = randomUUID();
+      const acknowledged = await acknowledge(uowA).execute({
+        ...owner,
+        missionId,
+        commandId: acknowledgementCommandId,
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      });
+      expect(acknowledged, JSON.stringify(acknowledged)).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'acknowledged',
+          receipt: {
+            ackCommandId: acknowledgementCommandId,
+            missionId,
+            missionRevisionAfter: 2,
+            realtimeSessionId: context.sessionId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+      if (!acknowledged.ok) return;
+
+      const advanceCommand = {
+        ...owner,
+        missionId,
+        acknowledgementCommandId,
+      };
+      const [left, right] = await Promise.all([
+        advance(uowA).execute(advanceCommand),
+        advance(uowB).execute(advanceCommand),
+      ]);
+      expect(left.ok, JSON.stringify(left)).toBe(true);
+      expect(right.ok, JSON.stringify(right)).toBe(true);
+      expect([left, right]
+        .filter((result) => result.ok)
+        .map((result) => result.value.outcome)
+        .sort()).toEqual(['advanced', 'replayed']);
+
+      const slot = await admin.quoteDraftSlot.findUniqueOrThrow({
+        where: {
+          quote_draft_slot_owner: {
+            companyId: owner.companyId,
+            ownerUserId: owner.ownerUserId,
+          },
+        },
+      });
+      expect(slot).toMatchObject({
+        revision: 2,
+        agentMissionId: missionId,
+      });
+      expect(slot.payload).toMatchObject({
+        draft: {
+          contentRevision: 1,
+          step: 'lignes',
+          customer: {
+            id: exactCustomerId,
+            name: 'Camping Les Pins',
+          },
+        },
+      });
+      const mission = await admin.agentMission.findUniqueOrThrow({
+        where: { id: missionId },
+      });
+      expect(mission).toMatchObject({
+        revision: 3,
+        phase: 'awaiting_lines',
+      });
+      expect(mission.payload).toMatchObject({ stagedCustomerResolution: null });
+      const events = await admin.agentMissionEvent.findMany({
+        where: { missionId },
+        orderBy: { sequence: 'asc' },
+      });
+      expect(events).toHaveLength(3);
+      expect(events[2]).toMatchObject({
+        eventType: 'customer_selected',
+        actor: 'system',
+        realtimeSessionId: context.sessionId,
+        turnId: null,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        data: {
+          kind: 'customer_selected',
+          customerId: exactCustomerId,
+          source: 'exact_match',
+        },
+      });
+      expect(events[2]?.commandId[14]).toBe('8');
+
+      const replayedAck = await acknowledge(uowA).execute({
+        ...owner,
+        missionId,
+        commandId: acknowledgementCommandId,
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      });
+      expect(replayedAck).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'replayed',
+          receipt: acknowledged.value.receipt,
+          mission: { revision: 3 },
+        },
+      });
+      expect(await admin.agentMissionEvent.count({ where: { missionId } })).toBe(3);
+    });
+
+    it('refuse le tour voix avant contexte réellement appliqué sans aucune écriture métier', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-context-not-applied-${randomUUID()}`,
+      };
+      const context = await publishQuoteScreenContext(owner, undefined, { apply: false });
+      const turnId = randomUUID();
+
+      const rejected = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'camping les pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+
+      expect(rejected).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_command',
+          reason: 'context_stale',
+        },
+      });
+      expect(await admin.agentMission.count({ where: owner })).toBe(0);
+      expect(await admin.agentMissionEvent.count({ where: owner })).toBe(0);
+      expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
+    });
+
+    it.each([
+      {
+        label: 'zéro candidat',
+        query: 'Client réellement absent 74f8a6',
+        stagedKind: 'none',
+        nextPhase: 'awaiting_customer',
+        eventType: 'customer_not_found',
+        eventResult: 'none',
+      },
+      {
+        label: 'plus de cinq candidats',
+        query: 'Entretien vitrines',
+        stagedKind: 'too_many',
+        nextPhase: 'awaiting_customer',
+        eventType: 'customer_not_found',
+        eventResult: 'too_many',
+      },
+      {
+        label: 'plusieurs candidats ordonnés',
+        query: 'RATP Fontaines',
+        stagedKind: 'choices',
+        nextPhase: 'awaiting_customer_choice',
+        eventType: 'customer_choice_presented',
+        eventResult: null,
+      },
+    ])(
+      'résout $label par la recherche PostgreSQL puis poursuit après ACK',
+      async ({
+        query,
+        stagedKind,
+        nextPhase,
+        eventType,
+        eventResult,
+      }) => {
+        const owner = {
+          companyId: companyA,
+          ownerUserId: `owner-customer-resolution-${stagedKind}-${randomUUID()}`,
+        };
+        const started = await start(uowA).execute({
+          ...owner,
+          commandId: randomUUID(),
+          customerReference: query,
+        });
+        expect(started.ok, JSON.stringify(started)).toBe(true);
+        if (!started.ok || started.value.mission.payload.draft === null) return;
+        expect(started.value.mission.payload.stagedCustomerResolution)
+          .toMatchObject({ kind: stagedKind });
+        if (stagedKind === 'choices') {
+          const staged = started.value.mission.payload.stagedCustomerResolution;
+          expect(staged?.kind).toBe('choices');
+          if (staged?.kind === 'choices') {
+            expect(staged.candidates.map((candidate) => candidate.customerId))
+              .toEqual(fuzzyCustomerIds);
+            expect(staged.candidates.map((candidate) => candidate.customerId))
+              .not.toContain(foreignExactCustomerId);
+          }
+        }
+        const draft = started.value.mission.payload.draft;
+        const context = await publishQuoteScreenContext(owner);
+        const acknowledgementCommandId = randomUUID();
+        expect(await acknowledge(uowA).execute({
+          ...owner,
+          missionId: started.value.mission.id,
+          commandId: acknowledgementCommandId,
+          expectedMissionRevision: started.value.mission.revision,
+          realtimeSessionId: context.sessionId,
+          contextRevision: context.revision,
+          contextDigest: context.digest,
+          draftSessionId: draft.sessionId,
+          expectedDraftSlotRevision: draft.slotRevision,
+          expectedDraftContentRevision: draft.contentRevision,
+        })).toMatchObject({ ok: true });
+
+        const advanced = await advance(uowA).execute({
+          ...owner,
+          missionId: started.value.mission.id,
+          acknowledgementCommandId,
+        });
+        expect(advanced, JSON.stringify(advanced)).toMatchObject({
+          ok: true,
+          value: {
+            outcome: 'advanced',
+            mission: {
+              phase: nextPhase,
+              payload: { stagedCustomerResolution: null },
+            },
+          },
+        });
+        const continuation = await admin.agentMissionEvent.findFirstOrThrow({
+          where: { missionId: started.value.mission.id, sequence: 3 },
+        });
+        expect(continuation).toMatchObject({
+          eventType,
+          actor: 'system',
+          turnId: null,
+        });
+        if (eventResult !== null) {
+          expect(continuation.data).toMatchObject({ result: eventResult });
+        }
+        const slot = await admin.quoteDraftSlot.findUniqueOrThrow({
+          where: {
+            quote_draft_slot_owner: {
+              companyId: owner.companyId,
+              ownerUserId: owner.ownerUserId,
+            },
+          },
+        });
+        expect(slot).toMatchObject({ revision: 1 });
+        expect(slot.payload).toMatchObject({
+          draft: {
+            step: 'client',
+            customer: null,
+            contentRevision: 0,
+          },
+        });
+      },
+    );
+
     it('ACK écran refuse un payload contexte projetable mais non canonique sans écrire', async () => {
       const owner = {
         companyId: companyA,
@@ -1874,18 +2317,16 @@ describe.skipIf(!RUN_CERT)(
           companyId: companyA,
           ownerUserId: `owner-${reason}-${randomUUID()}`,
         };
-        const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
-        expect(started.ok).toBe(true);
-        if (!started.ok) return;
+        const mission = await prepareMissionForCancellation(owner, reason);
         const before = await admin.quoteDraftSlot.findUniqueOrThrow({
           where: { quote_draft_slot_owner: owner },
         });
 
         const cancelled = await cancel(uowA).execute({
           ...owner,
-          missionId: started.value.mission.id,
+          missionId: mission.id,
           commandId: randomUUID(),
-          expectedRevision: 1,
+          expectedRevision: mission.revision,
           reason,
           actor: 'user_tap',
         });
@@ -1966,26 +2407,29 @@ describe.skipIf(!RUN_CERT)(
             companyId: companyB,
             ownerUserId: `owner-${reason}-rollback-${failAtWrite}-${randomUUID()}`,
           };
-          const started = await start(uowA).execute({ ...owner, commandId: randomUUID() });
-          expect(started.ok, JSON.stringify(started)).toBe(true);
-          if (!started.ok) continue;
+          const mission = await prepareMissionForCancellation(owner, reason);
           const slotBefore = await admin.quoteDraftSlot.findUniqueOrThrow({
             where: { quote_draft_slot_owner: owner },
+          });
+          const eventCountBefore = await admin.agentMissionEvent.count({
+            where: { missionId: mission.id },
           });
 
           await expect(cancel(faultAfterWrite(uowA, failAtWrite)).execute({
             ...owner,
-            missionId: started.value.mission.id,
+            missionId: mission.id,
             commandId: randomUUID(),
-            expectedRevision: 1,
+            expectedRevision: mission.revision,
             reason,
             actor: 'user_tap',
           })).rejects.toThrow(`injected-write-${failAtWrite}`);
 
           expect(await admin.agentMission.findUniqueOrThrow({
-            where: { id: started.value.mission.id },
-          })).toMatchObject({ status: 'active', revision: 1 });
-          expect(await admin.agentMissionEvent.count({ where: owner })).toBe(1);
+            where: { id: mission.id },
+          })).toMatchObject({ status: 'active', revision: mission.revision });
+          expect(await admin.agentMissionEvent.count({
+            where: { missionId: mission.id },
+          })).toBe(eventCountBefore);
           expect(await admin.quoteDraftSlot.findUniqueOrThrow({
             where: { quote_draft_slot_owner: owner },
           })).toEqual(slotBefore);
