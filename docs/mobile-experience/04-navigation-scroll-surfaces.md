@@ -240,7 +240,7 @@ de notre couleur de fond, **déjà livré** dans `packages/ui/src/components/bot
 
 | Paramètre | Valeur normative |
 | --- | --- |
-| Écran entrant | opacité 0 → 1 et échelle **0,985 → 1** en **220 ms**, courbe `easing.enter` |
+| Écran entrant | opacité 0 → 1 et échelle **0,985 → 1** en **280 ms** = `motionSemantic.replace`, courbe `easing.enter` |
 | Écran sortant | **aucune animation** : masqué instantanément — jamais deux écrans animés qui se croisent |
 | Premier rendu | le tout premier écran au lancement n'est pas animé |
 | Reduced Motion | **durée 0**, via `useReduceMotion()` |
@@ -250,6 +250,23 @@ Cette référence **confirme** l'exigence commune : chez elle non plus les écra
 La seule lacune à corriger est qu'elle **n'écoute pas Reduce Motion** ; notre version passe par
 `packages/ui/src/hooks/use-reduce-motion.ts`. La courbe est notre `easing.enter`, pas une bézier
 recopiée inline.
+
+> **Amendé A12 · 2026-07-29 — la durée du fade-through n'est plus un chiffre libre.** Un
+> fade-through est exactement le cas d'usage de `motionSemantic.replace`, que
+> [03 § Livrés — à consommer tels quels](03-motion-interaction-system.md#livrés--à-consommer-tels-quels)
+> désigne mot pour mot : « Fade-through, segment, filtre ». La valeur **livrée** de ce token est
+> **280 ms** — `packages/tokens/src/index.ts` l. 209, gelée par `packages/tokens/src/index.test.ts`
+> l. 98 (`expect(motionSemantic.replace).toBe(280)`) et par
+> `packages/ui/src/components/motion-presence.test.ts` l. 24. Elle reste sous le plafond
+> « transition fréquente ≤ 300 ms » de [10 — Performance](10-performance-observability.md).
+> Conformément à la [règle d'additivité](03-motion-interaction-system.md#règle-dadditivité), le
+> dossier **consomme** ce token, il ne le revalorise pas.
+>
+> *Rédaction A3 (supersédée) : « 220 ms ». Cette durée n'était adossée à aucun token ; elle
+> coïncide avec `motion.base` (`packages/tokens/src/index.ts` l. 186), qui appartient au registre
+> **historique** réservé aux écrans existants et ne régit pas les destinations sœurs. Le dossier
+> portait donc deux durées différentes — 280 ms en [03](03-motion-interaction-system.md) et
+> 220 ms ici et au [19 — Glossaire](19-glossary.md) — pour une seule et même transition.*
 
 ### 6. Teinte icône/label pilotée par le highlight, pas par le focus
 

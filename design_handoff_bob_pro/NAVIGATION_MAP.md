@@ -157,16 +157,22 @@ components/
 
 ## 6. Règles de transition
 
-- **(amendé 2026-07-29)** **Onglets** : **fade-through**, pas un « cross-fade instantané ». La
-  formulation précédente était fausse deux fois — ce n'est ni instantané, ni un cross-fade.
-  L'écran **entrant** monte en opacité 0 → 1 avec une échelle 0,985 → 1 sur **220 ms**
-  (`easing.enter`) ; l'écran **sortant** est masqué **immédiatement**, de sorte que jamais deux
-  écrans animés ne se croisent — c'est précisément ce qu'un cross-fade ferait. Le tout premier
-  écran au lancement n'est pas animé, et la durée tombe à **0** sous Reduce Motion. **Toujours pas
-  de slide entre onglets** : cette moitié de la règle est confirmée. En revanche l'**indicateur**
-  de sélection, lui, **voyage** — il ne saute pas. État préservé par onglet.
+- **(amendé 2026-07-29 ; durée corrigée A12)** **Onglets** : **fade-through**, pas un « cross-fade
+  instantané ». La formulation précédente était fausse deux fois — ce n'est ni instantané, ni un
+  cross-fade. L'écran **entrant** monte en opacité 0 → 1 avec une échelle 0,985 → 1 sur **280 ms**
+  = `motionSemantic.replace` (`easing.enter`) ; l'écran **sortant** est masqué **immédiatement**,
+  de sorte que jamais deux écrans animés ne se croisent — c'est précisément ce qu'un cross-fade
+  ferait. Le tout premier écran au lancement n'est pas animé, et la durée tombe à **0** sous Reduce
+  Motion. **Toujours pas de slide entre onglets** : cette moitié de la règle est confirmée. En
+  revanche l'**indicateur** de sélection, lui, **voyage** — il ne saute pas. État préservé par
+  onglet.
   *Rédaction initiale (supersédée) : « pas d'animation de slide entre onglets (cross-fade
   instantané) ».*
+  *Rédaction A11 (supersédée par A12) : « 220 ms » — durée sans token. La valeur normative est
+  celle du token livré `motionSemantic.replace` = **280 ms** (`packages/tokens/src/index.ts`
+  l. 209, gelée par `packages/tokens/src/index.test.ts` l. 98), dont
+  [03 § Tokens temporels](../docs/mobile-experience/03-motion-interaction-system.md#livrés--à-consommer-tels-quels)
+  nomme l'usage : « Fade-through, segment, filtre ».*
   **Arbitrage** : directive 1 du fondateur — le comportement de `davidmokos/expo-glass-tabs`
   (`fading-tab-slot.tsx`) fait foi. Spécification normative :
   [04 § 5](../docs/mobile-experience/04-navigation-scroll-surfaces.md#5-slot-décran-qui-sefface-fade-through)
