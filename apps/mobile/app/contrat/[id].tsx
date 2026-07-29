@@ -9,12 +9,15 @@
  *  · « Préparer la facture annuelle » = BROUILLON en un tap (« rien n'est envoyé ») ; si la
  *    TVA re-suggérée diverge du contrat (bascule de régime — amélioration 2), le bloc
  *    « TVA recalculée » affiche l'écart honnêtement AVANT d'ouvrir le brouillon ;
- *  · préavis : LegalHint AFFICHÉ, jamais bloquant (la résiliation subie est actée, tracée).
+ *  · préavis : LegalHint AFFICHÉ, jamais bloquant (la résiliation subie est actée, tracée) ;
+ *  · « Renommer » : le geste que la garde du libellé PROMET (« un nom de contrat imparfait DANS
+ *    L'APPLICATION se corrige d'un tap sur la fiche »). Sans lui, un nom mal compris à la dictée
+ *    serait définitif — et toute la doctrine du train Contrats reposerait sur une promesse vide.
  */
 import { useMemo, useState } from 'react';
 import { AccessibilityInfo, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { t } from '@bob/i18n';
+import { t, type Personality } from '@bob/i18n';
 import {
   BobSurface,
   Button,
@@ -27,7 +30,7 @@ import {
   font,
   useTheme,
 } from '@bob/ui';
-import { formatEURWhole, type Totals } from '@bob/core';
+import { MAX_CONTRACT_LABEL_LENGTH, formatEURWhole, type Totals } from '@bob/core';
 import {
   appErrorMessage,
   useActivateMaintenanceContract,
@@ -35,6 +38,7 @@ import {
   useDeleteDraftMaintenanceContract,
   useMaintenanceContract,
   usePrepareContractAnnualInvoice,
+  useRenameMaintenanceContract,
   useTerminateMaintenanceContract,
 } from '../../src/data/hooks';
 import { ScreenHeader } from '../../src/components/screen-header';
@@ -43,12 +47,19 @@ import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
   contractEventDay,
   contractHistoryEntries,
+  contractRenameAllowed,
+  contractRenameSubmission,
   frContractDate,
   inclusivePeriodOf,
+  isContractRevisionConflict,
+  type ContractRenameBlock,
 } from '../../src/components/contract-fiche.logic';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Seuil d'apparition du compteur de caractères du renommage — les derniers 20 % de la borne. */
+const RENAME_COUNTER_FROM = Math.floor(MAX_CONTRACT_LABEL_LENGTH * 0.8);
 
 /** Bloc « TVA recalculée » (amélioration 2) — l'écart contrat/brouillon, jamais réécrit en
  * silence. Conservé à l'écran tant que la fiche est ouverte (l'utilisateur choisit d'ouvrir). */
@@ -56,6 +67,22 @@ interface VatDivergenceNotice {
   invoiceId: string;
   totals: Totals;
   contractTotals: Totals;
+}
+
+/** Ce que la feuille « Renommer » DIT quand le geste ne peut pas partir — jamais un bouton
+ *  gris sans explication. `'unchanged'` n'est pas une erreur : c'est un bouton qui attend, on
+ *  ne l'affiche donc qu'en indice d'accessibilité (voir plus bas). */
+function renameBlockSaid(
+  block: Exclude<ContractRenameBlock, 'unchanged'>,
+  personality: Personality,
+): string {
+  if (block === 'vide') return t('contrat.labelRequired', { personality });
+  if (block === 'trop_long')
+    return t('contrat.renameTooLong', {
+      personality,
+      params: { max: String(MAX_CONTRACT_LABEL_LENGTH) },
+    });
+  return t('contrat.renameControlChars', { personality });
 }
 
 export default function FicheContrat() {
@@ -74,12 +101,24 @@ export default function FicheContrat() {
   const terminate = useTerminateMaintenanceContract();
   const deleteDraft = useDeleteDraftMaintenanceContract();
   const prepare = usePrepareContractAnnualInvoice();
+  const rename = useRenameMaintenanceContract();
 
   const [terminateOpen, setTerminateOpen] = useState(false);
   const [terminateDate, setTerminateDate] = useState('');
   const [terminateNote, setTerminateNote] = useState('');
   const [terminateError, setTerminateError] = useState<string | null>(null);
   const [vatNotice, setVatNotice] = useState<VatDivergenceNotice | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  /** Conflit de révision : la feuille se FIGE et propose de recharger — jamais de reprise
+   *  automatique, qui écraserait en silence ce que l'autre appareil vient d'écrire. */
+  const [renameStale, setRenameStale] = useState(false);
+
+  // Nom de RÉFÉRENCE du renommage : celui de la vue chargée. Le brouillon en part à l'ouverture
+  // et n'est plus jamais réécrit sous les doigts du pro — si la fiche bouge ailleurs entre-temps,
+  // c'est la révision qui le dira au moment d'écrire, pas un champ qui change tout seul.
+  const currentLabel = contract?.label ?? '';
 
   usePublishAgentContext(
     useMemo<AgentContext>(
@@ -216,6 +255,52 @@ export default function FicheContrat() {
     }
   };
 
+  // « Renommer » — le remède promis par la garde du libellé. Le champ part du nom COURANT (on
+  // corrige un nom, on n'en réécrit pas un de zéro) et le geste se juge sur la logique pure
+  // `contractRenameSubmission` : même verdict à l'écran et dans son test.
+  const renameSubmission = contractRenameSubmission({
+    current: currentLabel,
+    typed: renameDraft,
+  });
+
+  const openRename = (): void => {
+    setRenameDraft(currentLabel);
+    setRenameError(null);
+    setRenameStale(false);
+    setRenameOpen(true);
+  };
+
+  const submitRename = async (): Promise<void> => {
+    if (renameSubmission.label === null) {
+      // `'unchanged'` n'est pas une faute : le bouton est déjà désactivé, rien à reprocher.
+      if (renameSubmission.blocked !== null && renameSubmission.blocked !== 'unchanged')
+        setRenameError(renameBlockSaid(renameSubmission.blocked, personality));
+      return;
+    }
+    setRenameError(null);
+    try {
+      await rename.mutateAsync({
+        contractId: contract.id,
+        // La révision de la vue DÉJÀ CHARGÉE — jamais une relecture juste avant l'appel, qui
+        // ferait passer la garde CAS du serveur pour une formalité.
+        expectedRevision: contract.revision,
+        label: renameSubmission.label,
+      });
+      setRenameOpen(false);
+      AccessibilityInfo.announceForAccessibility(t('contrat.renameDone', { personality }));
+    } catch (error) {
+      if (isContractRevisionConflict(error)) {
+        // La fiche a changé ailleurs entre son chargement et ce tap : Bob le DIT et s'arrête.
+        // Pas de réessai avec la révision fraîche — ce serait écraser en silence le nom que
+        // l'autre appareil vient d'écrire, exactement ce que la révision existe pour empêcher.
+        setRenameStale(true);
+        setRenameError(t('contrat.renameConflict', { personality }));
+        return;
+      }
+      setRenameError(appErrorMessage(error));
+    }
+  };
+
   const submitTerminate = async (): Promise<void> => {
     const note = terminateNote.trim();
     if (note === '') {
@@ -261,6 +346,19 @@ export default function FicheContrat() {
           onBack={() => router.back()}
           eyebrow={t('contrat.eyebrow', { personality })}
           title={contract.label}
+          // L'affordance vit SUR le titre — c'est lui qu'on corrige. Résilié = « lecture seule »
+          // côté domaine : le CTA est alors ABSENT, jamais grisé (§3.1).
+          action={
+            contractRenameAllowed(contract.status) ? (
+              <Button
+                title={t('contrat.renameCta', { personality })}
+                variant="secondary"
+                size="compact"
+                accessibilityLabel={`${t('contrat.renameCta', { personality })} — ${contract.label}`}
+                onPress={openRename}
+              />
+            ) : undefined
+          }
         />
         <View style={{ paddingHorizontal: 16, gap: 12 }}>
           {/* Héros — BobSurface marine (matière Bob, jamais la transparence iOS). */}
@@ -543,6 +641,106 @@ export default function FicheContrat() {
           ) : null}
         </View>
       </ScrollView>
+
+      {/* Renommer — champ PRÉ-REMPLI du nom courant, borné par le domaine
+          (MAX_CONTRACT_LABEL_LENGTH), validation DÉSACTIVÉE tant que rien n'a changé. Le nom
+          tapé n'est PAS soumis à la garde des noms DÉDUITS d'une dictée : ce geste EST le remède
+          qu'elle promet, l'y soumettre le rendrait circulaire. */}
+      <Sheet
+        visible={renameOpen}
+        onClose={() => {
+          if (!rename.isPending) setRenameOpen(false);
+        }}
+        accessibilityLabel={t('contrat.renameTitle', { personality })}
+      >
+        <Text
+          accessibilityRole="header"
+          style={[font('section'), { color: colors.ink800, marginBottom: 10 }]}
+        >
+          {t('contrat.renameTitle', { personality })}
+        </Text>
+        <View style={{ gap: 10 }}>
+          <TextInput
+            value={renameDraft}
+            onChangeText={(value) => {
+              setRenameError(null);
+              setRenameDraft(value);
+            }}
+            // Borne du DOMAINE, jamais une copie : le champ ne peut pas laisser taper un nom
+            // que `MaintenanceContract.record` refuserait ensuite.
+            maxLength={MAX_CONTRACT_LABEL_LENGTH}
+            editable={!rename.isPending && !renameStale}
+            placeholder={t('contrat.renameField', { personality })}
+            placeholderTextColor={colors.slate400}
+            accessibilityLabel={t('contrat.renameField', { personality })}
+            accessibilityHint={t('contrat.renameHint', { personality })}
+            autoFocus
+            autoCapitalize="sentences"
+            autoCorrect
+            returnKeyType="done"
+            onSubmitEditing={() => void submitRename()}
+            style={[
+              font('body'),
+              {
+                minHeight: 44,
+                borderWidth: 1,
+                borderColor: renameError !== null ? semantic.danger : controls.cardBorder,
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                color: colors.ink800,
+                backgroundColor: colors.surface,
+              },
+            ]}
+          />
+          {/* Compteur affiché SEULEMENT à l'approche de la borne : permanent, il ferait du bruit
+              sur un nom de trois mots ; absent, la limite se découvrirait au moment de buter. */}
+          {renameDraft.length >= RENAME_COUNTER_FROM ? (
+            <Text
+              style={[
+                font('meta'),
+                { color: colors.slate400, textAlign: 'right', fontVariant: ['tabular-nums'] },
+              ]}
+            >
+              {`${renameDraft.length}/${MAX_CONTRACT_LABEL_LENGTH}`}
+            </Text>
+          ) : null}
+          {/* Ce que ce nom fait — et surtout ce qu'il NE fait PAS : la ligne de la facture
+              annuelle reste composée par le domaine. Promettre l'inverse serait mentir. */}
+          <Text style={[font('sub', 500), { color: colors.slate500 }]}>
+            {t('contrat.renameHint', { personality })}
+          </Text>
+          {renameError !== null ? (
+            <Text accessibilityRole="alert" style={[font('sub', 600), { color: semantic.danger }]}>
+              {renameError}
+            </Text>
+          ) : null}
+          {renameStale ? (
+            // Conflit de révision : le SEUL chemin honnête est de repartir du nom à jour.
+            <Button
+              title={t('contrat.renameReload', { personality })}
+              variant="secondary"
+              onPress={() => {
+                setRenameOpen(false);
+                setRenameStale(false);
+                setRenameError(null);
+                void query.refetch();
+              }}
+            />
+          ) : (
+            <Button
+              title={t('contrat.renameConfirm', { personality })}
+              loading={rename.isPending}
+              disabled={renameSubmission.label === null}
+              accessibilityLabel={
+                renameSubmission.blocked === 'unchanged'
+                  ? `${t('contrat.renameConfirm', { personality })} — ${t('contrat.renameUnchanged', { personality })}`
+                  : t('contrat.renameConfirm', { personality })
+              }
+              onPress={() => void submitRename()}
+            />
+          )}
+        </View>
+      </Sheet>
 
       {/* Résilier… — date d'effet DÉFAUT = prochain anniversaire CALCULÉ, motif obligatoire ;
           préavis expliqué (LegalHint), JAMAIS bloquant. */}

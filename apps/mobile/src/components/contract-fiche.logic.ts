@@ -11,7 +11,14 @@
  *  · l'historique mêle FAITS STOCKÉS (activatedAt, terminatedAt+motif) et reconductions
  *    DÉRIVÉES arithmétiquement, toujours suffixées « (calculé) » (revue P10).
  */
-import { addDays, parisDateOnly, type ContractPeriod, type MaintenanceContractProps } from '@bob/core';
+import {
+  addDays,
+  contractLabelRefusal,
+  parisDateOnly,
+  type ContractLabelRefusal,
+  type ContractPeriod,
+  type MaintenanceContractProps,
+} from '@bob/core';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -109,4 +116,70 @@ export function contractPrimaryCta(view: {
   if (view.status === 'draft') return 'activate';
   if (view.status === 'active' && view.billingDue !== null) return 'prepare_annual_invoice';
   return null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// RENOMMER — le remède que la garde du libellé PROMET
+// ────────────────────────────────────────────────────────────────────────────────────────────
+//
+// La doctrine du train Contrats repose sur une promesse écrite noir sur blanc dans le code
+// (`annual-invoice-designation.ts`, `contract-label-guard.ts`) : « un nom de contrat imparfait
+// DANS L'APPLICATION se corrige d'un tap sur la fiche ». C'est CE geste. Deux conséquences que
+// la logique ci-dessous porte, et qui expliquent pourquoi elle ne ressemble à aucune autre
+// validation de champ du produit :
+//
+//  · le nom TAPÉ ne repasse PAS par `inspectContractLabel`. Cette garde existe pour les noms
+//    que Bob DÉDUIT d'une dictée ; l'appliquer au remède le transformerait en cul-de-sac —
+//    le nom qu'elle vient de refuser serait précisément celui que le pro ne pourrait plus
+//    écrire. Ici, c'est l'artisan qui a tapé le nom et qui le relit : il est sa propre garde.
+//  · il reste borné par le DOMAINE (`contractLabelRefusal`, @bob/core) : vide, trop long,
+//    caractères de contrôle. La même règle que `record`, lue AVANT l'appel — l'écran DIT ce qui
+//    coince pendant la frappe au lieu de l'apprendre au pro par un refus serveur.
+
+/** Ce qui empêche le renommage de partir — jamais un booléen muet : l'écran DIT lequel. */
+export type ContractRenameBlock = 'unchanged' | ContractLabelRefusal;
+
+export interface ContractRenameSubmission {
+  /** Nom TRIMÉ prêt à partir, ou `null` quand le geste ne peut pas partir. */
+  label: string | null;
+  /** La raison EXACTE du blocage — `null` quand le geste peut partir. */
+  blocked: ContractRenameBlock | null;
+}
+
+/**
+ * État du champ « Renommer ». `'unchanged'` est évalué EN PREMIER : un champ pré-rempli et
+ * intact n'est pas une erreur, c'est un bouton qui attend — afficher « nom requis » sur une
+ * feuille qu'on vient d'ouvrir serait reprocher au pro de ne pas encore avoir tapé. Un nom
+ * seulement re-espacé compte comme intact : le renvoyer ferait tourner la révision pour rien.
+ */
+export function contractRenameSubmission(input: {
+  current: string;
+  typed: string;
+}): ContractRenameSubmission {
+  const typed = input.typed.trim();
+  if (typed === input.current.trim()) return { label: null, blocked: 'unchanged' };
+  const refusal = contractLabelRefusal(typed);
+  if (refusal !== null) return { label: null, blocked: refusal };
+  return { label: typed, blocked: null };
+}
+
+/**
+ * Le renommage n'existe QUE là où le domaine l'autorise : `MaintenanceContract.update` refuse
+ * un contrat résilié (« lecture seule »). Une transition interdite est un CTA ABSENT, jamais
+ * grisé (§3.1) — proposer « Renommer » sur une fiche résiliée serait promettre un refus.
+ */
+export function contractRenameAllowed(status: MaintenanceContractProps['status']): boolean {
+  return status !== 'terminated';
+}
+
+/**
+ * CONFLIT DE RÉVISION — la fiche a changé ailleurs entre son chargement et le tap. L'écran le
+ * DIT et s'arrête là : il ne réessaie JAMAIS avec la révision fraîche, ce qui écraserait en
+ * silence ce que l'autre appareil vient d'écrire. La révision est une question, pas un obstacle
+ * à contourner.
+ */
+export function isContractRevisionConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { kind?: unknown; entity?: unknown };
+  return candidate.kind === 'conflict' && candidate.entity === 'maintenance_contract';
 }
