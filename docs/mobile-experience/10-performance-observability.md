@@ -108,6 +108,7 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 | PERF-10 | Bob Live 5 min | Audio input/output, amplitude, transcript, tool card, barge-in. |
 | PERF-11 | Background/foreground × 10 | Cleanup loops, session, restauration. |
 | PERF-12 | Dynamic Type 200 % | Layout, reflow, scroll et sheets. |
+| PERF-13 **(ajouté A3)** | Tab bar : scroll long avec repli/dépli répétés, tab-hopping rapide, scrub au doigt d'un bout à l'autre | Animation de layout de la barre, highlight transform-only, worklet de scroll, ticks haptiques et retombée de bord simultanés. Mesurer aussi la **latence du tick** par rapport au franchissement. |
 
 ## Méthode
 
@@ -130,6 +131,12 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 
 - Pas de `setState` React par frame d'amplitude ou de scroll.
 - Pas d'animation de `width/height/top/left` par frame si transform/draw convient.
+  **Exception nommée (A3 · 2026-07-29)** : le **repli/dépli de la tab bar** anime `height` et
+  `marginHorizontal` — c'est la géométrie même du comportement demandé, une pilule qui rétrécit
+  dans les deux dimensions, qu'aucun `transform` ne reproduit sans déformer le contenu. Conditions
+  de l'exception : ressort **critique-amorti** (380 ms, `dampingRatio` 1) pour n'avoir ni overshoot
+  ni queue de stabilisation, animation pilotée par un **worklet** sans `setState`, et profilage
+  `PERF-13` joint. Aucune autre animation de layout par frame n'est autorisée par cette exception.
 - Les layout transitions de liste sont bornées aux éléments visibles/affectés.
 - Les images utilisent tailles et cache adaptés ; pas de re-décodage pendant morph.
 - **(amendé A2 · 2026-07-29)** Trois cas distincts, là où le texte du 2026-07-23 n'en connaissait
