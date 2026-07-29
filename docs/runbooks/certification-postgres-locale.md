@@ -124,9 +124,18 @@ rm -rf "$PGROOT"
 
 - **Socket trop long** : `could not create Unix-domain socket … is too long (maximum 103 bytes)`
   → `unix_socket_directories` doit pointer un chemin court.
-- **SQL brut refusé = transaction avortée** : dans une transaction interactive, un refus de
-  trigger sur `$executeRaw` avorte la transaction (`25P02`) et tout ce qui suit échoue pour la
-  mauvaise raison. Chaque refus attendu se prouve dans **sa** transaction.
+- **Refus attendu = transaction avortée** : dans une transaction interactive, TOUT refus —
+  trigger, `CHECK`, FK, et par un modèle Prisma autant que par `$executeRaw` — avorte la
+  transaction (`25P02 current transaction is aborted`) ; tout ce qui suit échoue pour la mauvaise
+  raison sans jamais atteindre la base. Chaque refus attendu se prouve dans **sa** transaction.
+- **Cadre de code Prisma = faux vert local** (leçon 29/07, gate staging rouge sur `c366c6e8`) :
+  hors `NODE_ENV=production`, Prisma préfixe l'erreur d'un **cadre de code** citant les lignes
+  voisines du fichier de test. Un `rejects.toThrow(/RÈGLE/)` peut alors matcher le texte source
+  de l'assertion précédente et rester vert sur un `25P02` — vert en local, rouge au gate, qui
+  tourne lui en `NODE_ENV=production`. Deux parades, appliquées ensemble dans
+  `interventions.postgres.test.ts` : `errorFormat: 'minimal'` sur les clients de la
+  certification, et un refus = une unité de travail (`expectRefused`). Pour rejouer le gate à
+  l'identique sur un poste : préfixer la commande de certification par `NODE_ENV=production`.
 - **Le nettoyage d'une certification doit lever ses propres verrous** : le verrou post-signature
   §3.4 empêche aussi le `afterAll` de retirer les traces d'une fiche signée. La cert dé-signe
   explicitement ses fixtures (retour `completed`, preuve retirée) avant de supprimer — jamais un
