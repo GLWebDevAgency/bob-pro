@@ -1,47 +1,52 @@
+import { extractInterventionSummary } from './intervention-summary';
+
 /**
- * §3.7 — CONSIGNE COMPOSITE de fiche de passage : « c'est terminé, facture ce passage ».
+ * §3.7 — LA CONSIGNE DE PASSAGE, LUE PAR LE CHEMIN DÉTERMINISTE.
  *
- * [Revue de vérification 29/07 — LECTURE CLAUSE PAR CLAUSE, PUIS ROUTAGE PAR L'ÉTAT]
+ * ┌─ PARTAGE DES RÔLES (à ne plus jamais élargir) ──────────────────────────────────────────┐
+ * │                                                                                          │
+ * │  `classifyWithLlm`  → PLUSIEURS étapes. C'est LUI qui DÉCOMPOSE une consigne composite   │
+ * │                       en autant de gestes qu'elle en porte. Chemin de la production.     │
+ * │                                                                                          │
+ * │  `classifyWithRegex` → UNE consigne, UN geste, de façon fiable. Ce module en est la      │
+ * │                       lecture pour la fiche de passage. Il n'arbitre JAMAIS entre        │
+ * │                       plusieurs gestes dictés dans la même phrase.                       │
+ * └──────────────────────────────────────────────────────────────────────────────────────────┘
  *
- * Cinq passes ont tenté d'arbitrer « terminer » CONTRE « envoyer / facturer ». Chacune a
- * DÉPLACÉ l'impasse au lieu de la supprimer :
+ * SIX PASSES ont tenté d'arbitrer « terminer » CONTRE « envoyer / facturer » à coups
+ * d'expressions régulières. Chacune a DÉPLACÉ l'impasse au lieu de la supprimer : gardes
+ * croisées dans `intent.ts`, puis les mêmes gardes ici sur le MESSAGE ENTIER, puis la même
+ * exclusion devenue INTRA-clause. La dernière vérification l'a chiffrée : 113 cas fautifs sur
+ * 343, 78 clauses éteintes. La cause n'était pas le motif — c'était le PÉRIMÈTRE : on demandait
+ * à des expressions régulières un travail de décomposition qui n'est pas le leur.
  *
- *   · passes 3 & 4 — gardes lexicales croisées dans `intent.ts` : « fin + envoyer » (puis
- *     « fin + facturer ») partait au geste aval sur une fiche qui n'existait pas encore ;
- *   · passe 5 — les gardes ont été retirées d'`intent.ts` et REMISES ici, appliquées au
- *     MESSAGE ENTIER. Un mot d'une clause éteignait alors l'autre clause : « envoie la fiche de
- *     passage ET FACTURE ce passage » perdait l'envoi (le mot « facture » de la 2ᵉ clause) ;
- *     « j'ai fini la visite ANNUELLE, facture ce passage » perdait la facturation (un mot du
- *     LIBELLÉ) ; « c'est terminé, facture ce passage, 0 € DE PIÈCES » aussi (un fait de terrain).
- *     Et le routage par l'état, INCONDITIONNEL, détournait « c'est terminé, ENVOIE LA FACTURE au
- *     client » vers la complétion d'un passage dont il n'était pas question.
+ * LA RÈGLE, DÉSORMAIS — le doute ne produit ni geste faux, ni silence :
  *
- * LA CAUSE COMMUNE : on appliquait des expressions régulières au MESSAGE ENTIER pour arbitrer
- * entre des gestes qui vivent dans des CLAUSES différentes. Le patron qui a résolu proprement la
- * même pathologie pour le résumé de passage (`intervention-summary.ts`) est appliqué ici :
+ *   1. UN SEUL GESTE DICTÉ  → comportement d'avant (fiable, déjà prouvé) : on l'exécute.
+ *   2. PLUSIEURS GESTES     → on ne devine pas. On retient CELUI QU'ON IDENTIFIE AVEC
+ *                             CERTITUDE — le PREMIER geste impératif clairement identifié —
+ *                             et on DIT le reste VERBATIM (`asides`, kind `reporte`). Rien
+ *                             n'est détourné, rien n'est éteint.
+ *   3. AUCUN GESTE CERTAIN  → `needsClarification` : on pose une question.
  *
- *   1. la dictée est DÉCOUPÉE sur ses coordinations (virgule, « et », « puis », « ensuite »,
- *      « après »), et sur l'enchaînement au fil (« c'est terminé envoie la fiche ») ;
- *   2. CHAQUE CLAUSE est classée SÉPARÉMENT : annonce de fin, démarrage, geste de fiche,
- *      demande qui porte AILLEURS, ou simple fait de terrain ;
- *   3. plus AUCUNE expression régulière d'arbitrage ne voit le message entier. Une clause ne
- *      peut donc plus en éteindre une autre. La seule chose qu'une clause transmet aux autres
- *      est l'ANCRE « une fin de passage a été annoncée » — un fait qui ACTIVE des lectures
- *      (« envoie-LA », « prépare LA FACTURE »), jamais une garde qui en éteint.
+ * CE QUI REND UN GESTE CERTAIN : son verbe est en TÊTE DE CLAUSE, c.-à-d. employé comme un
+ * ORDRE. C'est la seule chose qu'une expression régulière sache trancher en français, où le
+ * participe est homographe de l'impératif une fois les accents repliés (« rangé/range »,
+ * « classé/classe », « marqué/marque », « archivé/archive »). Un déterminant devant le mot en
+ * fait un NOM ou un PARTICIPE — jamais un ordre : « l'archive est à jour » ne demande rien.
  *
- * Ce qui reste vrai : l'arbitrage entre TERMINER et le geste aval appartient à l'ÉTAT RÉEL du
- * passage (`resolveInterventionGesture`), jamais au lexique —
+ * L'ANNONCE DE FIN n'est pas un geste, c'est un FAIT sur le passage (« c'est terminé »). Elle
+ * accompagne le geste retenu : l'ÉTAT RÉEL du passage (`resolveInterventionGesture`) décide
+ * ensuite si l'on termine d'abord puis on enchaîne, ou si l'on exécute directement.
  *
  *   passage `in_progress`            → on TERMINE, puis on annonce le geste aval ;
  *   passage `completed` / `signed`   → « c'est terminé » n'est qu'un RAPPEL : on exécute
  *                                      DIRECTEMENT le geste aval ;
  *   aucun passage au bon état        → on dit honnêtement ce qui manque.
  *
- * Ce qui est nouveau : ce routage est BORNÉ AUX GESTES DE PASSAGE. Si la clause aval demande
- * autre chose (envoyer/encaisser/émettre une FACTURE, la trésorerie, une dépense, une visite à
- * programmer), l'annonce de fin ne capte RIEN — chaque clause garde son intent d'origine. Et
- * rien n'est jamais jeté en silence : ce que Bob comprend sans pouvoir le faire, et ce qu'il ne
- * comprend pas du tout, sont RENDUS à l'appelant (`asides`) pour être DITS dans la même carte.
+ * BORNE : quand la consigne porte une demande CERTAINE qui vit ailleurs (un ordre en tête de
+ * clause, une question, une demande nominale) et aucun geste de passage, l'annonce de fin ne
+ * capte rien — chaque clause garde son intent d'origine.
  */
 
 /** Geste AVAL d'une consigne composite — ce que l'artisan enchaîne après la fin du passage. */
@@ -51,43 +56,48 @@ export type InterventionDownstream = 'sign' | 'send' | 'bill';
 export type InterventionGesture = 'start' | 'complete' | InterventionDownstream;
 
 /**
- * Ce qu'une clause demande SANS que cela porte sur le passage. `ailleurs` = un geste identifié
- * qui vit ailleurs (facture, trésorerie, dépense, planning) ; `incompris` = une demande dont Bob
- * n'a pas su faire quoi que ce soit. Les deux se DISENT — le silence sur la moitié d'une
+ * Ce qu'une clause demande sans que le tour s'en occupe. `ailleurs` = un geste identifié qui vit
+ * ailleurs (facture, trésorerie, dépense, planning) ; `reporte` = un geste de passage DE PLUS,
+ * que le déterministe refuse d'arbitrer et redit tel quel ; `incompris` = une demande dont Bob
+ * n'a pas su faire quoi que ce soit. Les trois se DISENT — le silence sur la moitié d'une
  * consigne est interdit.
  */
-export type InterventionAsideKind = 'ailleurs' | 'incompris';
+export type InterventionAsideKind = 'ailleurs' | 'reporte' | 'incompris';
 
-/** Une demande de la consigne qui ne porte pas sur le passage — citée VERBATIM. */
+/** Une demande de la consigne que ce tour ne traite pas — citée VERBATIM. */
 export interface InterventionAside {
   /** Tranche du message ORIGINAL (aucune retranscription) : Bob cite ce qui a été dit. */
   readonly text: string;
   readonly kind: InterventionAsideKind;
 }
 
-/** Lecture CLAUSE PAR CLAUSE de la consigne : ce qui est dit, jamais qui l'emporte sur quoi. */
+/** Lecture d'UNE consigne : le geste certain, et tout ce qui n'entre pas dans ce tour. */
 export interface InterventionDirective {
   /** « démarre l'intervention chez Carrefour » — ouverture du passage. */
   readonly startsPassage: boolean;
-  /** « c'est terminé », « j'ai fini », « le passage est terminé » — ANNONCE de fin. */
+  /** « c'est terminé », « j'ai fini », « le passage est terminé » — ANNONCE de fin (un FAIT). */
   readonly announcesCompletion: boolean;
-  /** PREMIER geste de fiche demandé, dans l'ordre dicté — `null` quand il n'y en a aucun. */
+  /** LE geste aval retenu — jamais deux : les suivants sont RENDUS en `asides`. */
   readonly downstream: InterventionDownstream | null;
-  /** TOUS les gestes de fiche demandés, dans l'ordre dicté, sans doublon. */
+  /** Le même, en liste (0 ou 1 élément) — la forme qu'attend le routage par l'état. */
   readonly downstreams: readonly InterventionDownstream[];
   /** Ce que la consigne demande d'autre — jamais jeté en silence. */
   readonly asides: readonly InterventionAside[];
-  /** Au moins une clause demande un geste IDENTIFIÉ qui ne porte pas sur le passage. */
+  /** Au moins une clause porte une demande CERTAINE qui ne parle pas du passage. */
   readonly divertsElsewhere: boolean;
+  /** Le geste que le déterministe ORIENTE — `null` quand il n'oriente rien vers le passage. */
+  readonly gesture: InterventionGesture | null;
+  /** Un geste de passage est demandé sous une forme INCERTAINE : Bob pose une question. */
+  readonly needsClarification: boolean;
 }
 
 /** Demande RÉELLE portée par le tour : le geste classé, enrichi de ce que dit la phrase. */
 export interface InterventionRequest {
   readonly starts: boolean;
   readonly completes: boolean;
-  /** Gestes de fiche demandés, DANS L'ORDRE DICTÉ — jamais réduits à un seul. */
+  /** Geste aval du tour — 0 ou 1 : le déterministe n'en porte jamais deux. */
   readonly downstreams: readonly InterventionDownstream[];
-  /** Demandes de la consigne qui portent ailleurs — l'appelant DOIT les dire. */
+  /** Demandes de la consigne que ce tour ne traite pas — l'appelant DOIT les dire. */
   readonly asides: readonly InterventionAside[];
 }
 
@@ -114,6 +124,26 @@ export interface InterventionResolution {
 }
 
 /**
+ * MARQUEUR DES COMMANDES CANONIQUES — posé par BOB LUI-MÊME sur les commandes qu'il rejoue
+ * après une désambiguïsation, jamais dicté par un humain (« # » ne se prononce pas).
+ *
+ * [Bloquant du CHEMIN DE L'ARGENT] La passe précédente faisait primer une référence de langage
+ * (« le passage », « la visite ») pour rejouer ces commandes. Conséquence mesurée : « Facture
+ * 380 € à Mme Girard POUR LA VISITE » — une facture DIRECTE dictée avec un montant, le chemin
+ * de l'argent — partait vers `facturer_intervention`, parce que cette précédence faisait sauter
+ * la garde du montant. Une phrase d'utilisateur ne peut PAS servir de marqueur : seul un
+ * marqueur que Bob pose lui-même le peut.
+ */
+export const INTERVENTION_COMMAND_MARKER = '#passage';
+
+/** Appose le marqueur sur une commande canonique — la seule façon de la rejouer. */
+export function markInterventionCommand(command: string): string {
+  return `${command} ${INTERVENTION_COMMAND_MARKER}`;
+}
+
+const MARQUEUR_DE_COMMANDE = /#passage\b/u;
+
+/**
  * Repli d'accents/apostrophes à LONGUEUR CONSTANTE : les index calculés sur le texte replié
  * découpent le texte ORIGINAL. Un repli qui change la longueur (NFD global) décalerait les
  * bornes et Bob citerait une demande mutilée en disant ce qu'il ne fait pas.
@@ -131,9 +161,10 @@ function fold(value: string): string {
 // ── DÉCOUPE EN CLAUSES ───────────────────────────────────────────────────────────────────────
 
 /**
- * Coordinations de la dictée — MÊME découpe que le résumé de passage : c'est là que la consigne
- * suivante commence, quand elle commence. La fin de phrase coupe aussi : au-delà, on ne parle
- * plus de la même chose.
+ * Coordinations de la dictée — c'est là que la consigne suivante commence, quand elle commence.
+ * « avec » et « ainsi que » en font partie : ils introduisent une SECONDE demande dans la même
+ * respiration (« envoie-lui la fiche de passage AVEC LA FACTURE »). Sans cette coupe, l'objet
+ * de la seconde demande éteignait la première — l'exclusion croisée était devenue intra-clause.
  *
  * La virgule et le point ENTRE DEUX CHIFFRES sont une décimale, jamais une coordination :
  * « facture 380,50 € » doit rester UNE clause, sinon le montant part dans la clause suivante et
@@ -142,7 +173,7 @@ function fold(value: string): string {
  * « émets la facture 2026-014. » suit bien un chiffre, et il coupe.
  */
 const COORDINATION =
-  /(?:(?<!\d)|(?![.,]\d))\s*[,;.!?…]+\s*|\s+(?:et|puis|ensuite|apres|donc|alors|enfin)\s+/gu;
+  /(?:(?<!\d)|(?![.,]\d))\s*[,;.!?…]+\s*|\s+(?:et|puis|ensuite|apres|donc|alors|enfin|avec|ainsi que)\s+/gu;
 
 /**
  * Filet quand la dictée ENCHAÎNE sans coordination (« c'est terminé envoie la fiche ») : un
@@ -256,7 +287,30 @@ function annonceDeFin(clause: string): boolean {
   return !SUJET_HORS_TERRAIN.test(clause) || ANCRE_DE_PASSAGE.test(clause);
 }
 
-// ── GESTES (lus sur UNE clause) ──────────────────────────────────────────────────────────────
+// ── TÊTE DE CLAUSE : ce qui distingue un ORDRE d'un fait de terrain ──────────────────────────
+
+/**
+ * Une consigne OCCUPE son propre morceau et s'OUVRE par son verbe, éventuellement précédé d'un
+ * enchaînement ou d'une formule de politesse. AUCUN déterminant ni pronom antéposé : en
+ * français, l'impératif ne se précède pas d'un clitique (« range-le », jamais « le range »).
+ * C'est ce qui rend « L'ARCHIVE est à jour », « LA CLASSE énergétique est correcte », « c'est
+ * RANGÉ » définitivement muets : le mot y est un NOM ou un PARTICIPE, jamais un ordre.
+ */
+const TETE_DE_CLAUSE =
+  `^(?:et\\s+|puis\\s+|ensuite\\s+|apres\\s+|enfin\\s+|maintenant\\s+|alors\\s+|donc\\s+|` +
+  `tu\\s+peux\\s+|peux[- ]tu\\s+|pourrais[- ]tu\\s+|merci\\s+de\\s+|s'il\\s+te\\s+plait\\s+|` +
+  `tu\\s+|il\\s+faut\\s+|faut\\s+|faudrait\\s+|vas[- ]y\\s+|allez\\s+)*`;
+
+/**
+ * Ce verbe ouvre-t-il la clause — c.-à-d. est-il employé comme un ORDRE ? Rend la longueur de la
+ * tête consommée (pour lire le COMPLÉMENT qui suit), ou `null` quand la clause n'ordonne rien.
+ */
+function ordreEnTete(clause: string, verbes: string): number | null {
+  const found = new RegExp(`${TETE_DE_CLAUSE}(?:${verbes})\\b`, 'u').exec(clause);
+  return found === null ? null : found[0].length;
+}
+
+// ── GESTES DE FICHE (lus sur UNE clause, en TÊTE) ────────────────────────────────────────────
 
 /** Une négation ne déclenche JAMAIS un geste — ni avant le verbe, ni juste après. */
 function nie(clause: string, verbes: string): boolean {
@@ -277,39 +331,43 @@ const ENVOI_PRONOMINAL =
 
 const VERBES_SIGNATURE = 'signe|signes|signer|signature';
 const GESTE_SIGNATURE =
-  /\b(?:fais(?:-| )?(?:le |la )?signer|faire signer|fais(?:-| )?moi signer|prends? la signature|prendre la signature|(?:le |la )?client signe|signature (?:du|de la) client)\b/u;
+  `(?:fais(?:-| )?(?:le |la )?signer|faire signer|fais(?:-| )?moi signer|prends? la signature|prendre la signature|(?:le |la )?client signe|signature (?:du|de la) client)`;
 /** Un devis / un contrat signé garde son intent : la signature de fiche n'y touche jamais. */
 const SIGNATURE_HORS_FICHE = /\b(?:devis|factures?|contrats?|bons? de commande)\b/u;
 
 const VERBES_FACTURATION = 'facture|factures|facturer|facturez|factureras';
 /**
- * « facture » est d'abord un NOM. Précédé d'un déterminant (« envoie LA FACTURE »), il désigne
- * une PIÈCE ; sans déterminant, c'est le GESTE. C'est cette distinction — et non la présence
- * d'un démonstratif — qui autorise « facture-moi ça » et « facture le client ».
+ * Un verbe de CRÉATION porte le geste de facturation même devant un déterminant (« prépare LA
+ * facture ») : une pièce qui n'existe pas encore ne peut pas être l'objet d'une création. La
+ * lecture reste bornée par les gardes ci-dessous (montant dit, devis, situation, pièce numérotée).
  */
-const DETERMINANT_AVANT_FACTURE =
-  /(?:\b(?:la|une|ma|ta|sa|notre|votre|leur|leurs|cette|les|des|mes|tes|ses|nos|vos|aux?|du|de|d')\s+|\bd')$/u;
+const VERBES_CREATION_FACTURE =
+  'prepare|prepares|preparez|preparer|fais|faites|faire|etablis|etablit|etablissez|etablir|' +
+  'monte|montes|montez|monter|redige|rediges|redigez|rediger|genere|generes|generez|generer|' +
+  'cree|crees|creez|creer';
+const COMPLEMENT_DE_FACTURE = /^(?:[- ](?:moi|nous|lui))?\s+(?:la|une|ma|sa|leur|cette|l')\s*factur\w*/u;
+
 /**
- * [Revue de vérification 29/07 — E4/E5/E6 × C12] « prépare LA facture » restait classé PIÈCE par
- * la règle du déterminant : « j'ai fini le boulot, prépare la facture » ne facturait donc RIEN,
- * et Bob répondait « plus rien à terminer ». Le déterminant ne dit pas tout : un verbe de
- * CRÉATION (« prépare », « fais », « établis ») ne peut pas porter sur une pièce qui n'existe
- * pas encore — sur un passage, c'est LE geste de facturation. La lecture reste bornée : ni
- * montant dit, ni devis, ni situation, ni référence de pièce dans la MÊME clause.
+ * Un MONTANT dit fait de la consigne une FACTURE DIRECTE (B1) — jamais un passage à facturer.
+ * La borne exclut les fragments d'identifiant : dans un uuid (« a1b2-123e-4567 »), « 123e » n'a
+ * jamais été un montant. Sans cette borne, la commande canonique rejouée après désambiguïsation
+ * s'éteignait toute seule et la question « Quel passage ? » rebouclait sur elle-même.
  */
-const CREATION_DE_FACTURE =
-  /\b(?:prepare|prepares|preparez|preparer|fais|faites|faire|etablis|etablit|etablissez|etablir|monte|montes|montez|monter|redige|rediges|redigez|rediger|genere|generes|generez|generer|cree|crees|creez|creer)\b(?:[- ](?:moi|nous|lui))?\s+(?:la|une|ma|sa|leur|cette|l')\s*factur\w*/u;
-/** Un MONTANT dit fait de la consigne une facture directe (B1) — jamais un passage à facturer. */
-const MONTANT_DIT = /(?:€|\beuros?\b|\bht\b|\bttc\b|\btva\b|\b\d+\s*(?:e|eur)\b)/u;
-/** Facturation contractuelle / de situation : d'autres gestes, jamais la fiche de passage. */
-const FACTURATION_HORS_PASSAGE = /\b(?:annuelle?s?|contrats?|situations?|acomptes?|soldes?)\b/u;
+const MONTANT_DIT = /(?:€|\beuros?\b|\bht\b|\bttc\b|\btva\b|(?<![\w-])\d+(?:[.,]\d+)?\s*(?:e|eur)(?![\w-]))/u;
+/**
+ * Facturation qui porte un AUTRE geste, jamais la fiche de passage : contractuelle, situation de
+ * travaux, acompte/solde d'un devis — et la FACTURE DIRECTE (B1), que l'artisan nomme lui-même
+ * (« facture directe de 2 jours de régie ») : elle vit sur le chemin de l'argent.
+ */
+const FACTURATION_HORS_PASSAGE =
+  /\bfactures?\s+directes?\b|\b(?:annuelle?s?|contrats?|situations?|acomptes?|soldes?)\b/u;
 /**
  * Une pièce NUMÉROTÉE existe déjà : « prépare la facture 2026-014 » n'est pas un passage à
  * facturer. Le numéro doit être ADJACENT à la pièce — un identifiant de passage plus loin dans
  * la phrase (« Facture le passage 4d1c…-112233445566 ») n'a jamais nommé de facture.
  */
 const PIECE_NUMEROTEE = /\bfactur\w*\s+(?:n[°o]\s*)?[a-z]*\d{3,}/u;
-/** Référence DÉMONSTRATIVE au passage — suffit à elle seule, sans annonce de fin. */
+/** L'OBJET du geste est le passage : « facture ce passage », « facture cette intervention ». */
 const REFERENCE_PASSAGE =
   /\b(?:ce passage|cette intervention|cette visite|ce depannage|le passage|la visite|l'intervention de)\b/u;
 
@@ -317,32 +375,7 @@ const VERBES_DEMARRAGE = 'demarre|demarrer|demarres|commence|commencer|commences
 const OBJET_DEMARRAGE = /\b(?:interventions?|passages?|visites?|chantier|depannage)\b/u;
 const DEMARRAGE_HORS_FICHE = /\b(?:devis|factures?|relances?|scan)\b/u;
 
-/** Première position d'un motif dans la clause — l'ordre dicté est l'ordre du parcours. */
-function premierePosition(clause: string, motif: RegExp): number {
-  const found = new RegExp(motif.source, 'u').exec(clause);
-  return found ? found.index : Number.MAX_SAFE_INTEGER;
-}
-
-/** Le verbe de facturation est-il employé comme GESTE (et non comme nom de pièce) ? */
-function gesteDeFacturation(clause: string): number {
-  for (const match of clause.matchAll(new RegExp(`\\b(?:${VERBES_FACTURATION})\\b`, 'gu'))) {
-    if (match.index === undefined) continue;
-    if (!DETERMINANT_AVANT_FACTURE.test(clause.slice(0, match.index))) return match.index;
-  }
-  return Number.MAX_SAFE_INTEGER;
-}
-
 // ── DEMANDES QUI PORTENT AILLEURS (lues sur UNE clause) ──────────────────────────────────────
-
-/**
- * Une consigne OCCUPE son propre morceau : elle s'ouvre par son verbe (éventuellement précédé
- * d'un enchaînement ou d'un pronom). Lire la TÊTE de clause — et non le message — évite de
- * prendre un participe pour un ordre : dans « la pression était basse mais c'est réglé »,
- * « réglé » n'a jamais demandé de régler quoi que ce soit.
- */
-const TETE_DE_CLAUSE =
-  `^(?:et\\s+|puis\\s+|ensuite\\s+|apres\\s+|enfin\\s+|maintenant\\s+|tu\\s+|il\\s+faut\\s+|faut\\s+|vas[- ]y\\s+|allez\\s+)*` +
-  `(?:me\\s+|te\\s+|lui\\s+|leur\\s+|nous\\s+|les\\s+|le\\s+|la\\s+|l')?`;
 
 /**
  * Verbes qui ne portent JAMAIS sur une fiche de passage : leur objet vit ailleurs (encaissement,
@@ -357,7 +390,7 @@ const VERBES_AILLEURS =
   'renomme|renommes|renommez|renommer|cherche|cherches|cherchez|chercher|retrouve|retrouves|retrouvez|' +
   'retrouver|montre|montres|montrez|montrer|affiche|affiches|affichez|afficher|liste|listes|listez|' +
   'lister|ajoute|ajoutes|ajoutez|ajouter|impute|imputes|imputez|imputer|declare|declares|declarez|' +
-  'declarer|marque|marques|marquez|marquer|resume|resumes|resumez|resumer|calcule|calcules|calculez|calculer';
+  'declarer|marque|marques|marquez|marquer|calcule|calcules|calculez|calculer';
 
 /**
  * Verbes AMBIGUS : ils peuvent servir un geste de fiche. Ils ne comptent comme « ailleurs » que
@@ -368,148 +401,232 @@ const VERBES_AMBIGUS =
   'envoie|envoies|envoyez|envoyer|transmets|transmettez|transmettre|adresse|adresses|adressez|adresser|' +
   'expedie|expedies|expediez|expedier|facture|factures|facturez|facturer|prepare|prepares|preparez|preparer|' +
   'fais|faites|faire|genere|generes|generez|generer|etablis|etablit|etablissez|etablir|cree|crees|creez|creer|' +
-  'note|notes|notez|noter|enregistre|enregistres|enregistrez|enregistrer|signe|signes|signez|signer|' +
+  'enregistre|enregistres|enregistrez|enregistrer|signe|signes|signez|signer|' +
   'valide|valides|validez|valider|lie|lies|liez|lier|attache|attaches|attachez|attacher';
 
 /** Objets qui vivent AILLEURS que sur la fiche de passage. */
-const OBJET_AILLEURS =
-  /\b(?:devis|factures?|avoirs?|relances?|situations?|acomptes?|soldes?|tresorerie|depenses?|tickets?|recus?|justificatifs?|notifications?|contrats?|bons? de commande|equipements?|parc|rendez[- ]vous|rdv|catalogue|echeances?|cloture)\b/u;
+const OBJET_AILLEURS_SOURCE =
+  'devis|factures?|avoirs?|relances?|situations?|acomptes?|soldes?|tresorerie|depenses?|tickets?|' +
+  'recus?|justificatifs?|notifications?|contrats?|bons? de commande|equipements?|parc|rendez[- ]vous|' +
+  'rdv|catalogue|echeances?|cloture';
+const OBJET_AILLEURS = new RegExp(`\\b(?:${OBJET_AILLEURS_SOURCE})\\b`, 'u');
 
 const TETE_AILLEURS = new RegExp(`${TETE_DE_CLAUSE}(?:${VERBES_AILLEURS})\\b`, 'u');
 const TETE_AMBIGUE = new RegExp(`${TETE_DE_CLAUSE}(?:${VERBES_AMBIGUS})\\b`, 'u');
+
+/**
+ * Une demande n'a pas besoin d'un verbe pour en être une. Sans ces deux lectures, la borne ne
+ * s'armait que sur une liste de verbes en tête : « c'est terminé, COMBIEN JE GAGNE ? » et
+ * « c'est terminé, MA TRÉSORERIE ? » repartaient vers le passage — le routage par l'état
+ * redevenait inconditionnel dès qu'on ne dictait pas un impératif.
+ */
+const DEMANDE_INTERROGATIVE = new RegExp(
+  `${TETE_DE_CLAUSE}(?:combien|comment|pourquoi|quand|ou|qui|quels?|quelles?|est[- ]ce que|qu'est[- ]ce)\\b`,
+  'u',
+);
+const DEMANDE_NOMINALE = new RegExp(
+  `${TETE_DE_CLAUSE}(?:le|la|les|l'|mon|ma|mes|ton|ta|tes|son|sa|ses|notre|nos|votre|vos|leurs?|` +
+    `ce|cet|cette|ces|un|une|des|du|de la)\\s*(?:${OBJET_AILLEURS_SOURCE})\\b`,
+  'u',
+);
+
+/**
+ * Geste de passage demandé sous une forme NON impérative (« la fiche de passage est À ENVOYER »,
+ * « le passage Carrefour, À FACTURER »). Ce n'est pas une certitude : Bob pose une question
+ * plutôt que de deviner un geste — et plutôt que de se taire.
+ */
+const DEMANDE_INFINITIVE =
+  /\b(?:a|pour|de)\s+(?:envoyer|facturer|faire signer|signer|terminer|cloturer|demarrer|commencer)\b/u;
 
 // ── CLASSEMENT D'UNE CLAUSE ──────────────────────────────────────────────────────────────────
 
 interface ClauseReading {
   readonly announces: boolean;
   readonly starts: boolean;
-  /** Gestes de fiche demandés PAR CETTE CLAUSE, dans l'ordre où ils y apparaissent. */
-  readonly downstreams: readonly InterventionDownstream[];
+  /** LE geste de fiche demandé par cette clause — au plus un, celui dont le verbe est en tête. */
+  readonly downstream: InterventionDownstream | null;
   readonly aside: InterventionAsideKind | null;
+  /** Un geste de passage y est demandé, mais sans certitude : il faut poser la question. */
+  readonly uncertain: boolean;
+}
+
+/** La clause commande-t-elle un ENVOI de fiche ? (verbe en tête, objet fiche, jamais nié) */
+function demandeEnvoi(clause: string, ancre: boolean): boolean {
+  return (
+    ordreEnTete(clause, VERBES_ENVOI) !== null &&
+    !PIECE_COMPTABLE.test(clause) &&
+    !nie(clause, VERBES_ENVOI) &&
+    (OBJET_FICHE.test(clause) || (ancre && ENVOI_PRONOMINAL.test(clause)))
+  );
+}
+
+/**
+ * La clause commande-t-elle une FACTURATION de passage ? Le verbe NU en tête (« facture ce
+ * passage ») ou un verbe de CRÉATION suivi de son complément (« prépare la facture ») : une
+ * pièce qui n'existe pas encore ne peut pas être l'objet d'une création. Le déterminant ne
+ * classe plus rien — c'est la position en TÊTE qui dit l'ordre.
+ */
+function demandeFacturation(clause: string, ancre: boolean, marquee: boolean): boolean {
+  const teteCreation = ordreEnTete(clause, VERBES_CREATION_FACTURE);
+  const ordonne =
+    ordreEnTete(clause, VERBES_FACTURATION) !== null ||
+    (teteCreation !== null && COMPLEMENT_DE_FACTURE.test(clause.slice(teteCreation)));
+  return (
+    ordonne &&
+    !FACTURATION_HORS_PASSAGE.test(clause) &&
+    !PIECE_COMPTABLE.test(clause.replace(/\bfactur\w*/gu, ' ')) &&
+    !nie(clause, VERBES_FACTURATION) &&
+    // GARDE DU CHEMIN DE L'ARGENT : un montant dit ou une pièce numérotée sortent la consigne du
+    // passage. Seul le marqueur que BOB a posé lui-même peut en dispenser — jamais « la visite ».
+    (marquee || (!MONTANT_DIT.test(clause) && !PIECE_NUMEROTEE.test(clause))) &&
+    (marquee || REFERENCE_PASSAGE.test(clause) || ancre)
+  );
+}
+
+/** La clause commande-t-elle la SIGNATURE de la fiche ? */
+function demandeSignature(clause: string): boolean {
+  return (
+    ordreEnTete(clause, GESTE_SIGNATURE) !== null &&
+    !SIGNATURE_HORS_FICHE.test(clause) &&
+    !nie(clause, VERBES_SIGNATURE)
+  );
 }
 
 /**
  * Classe UNE clause, isolément. Le seul fait venu des autres clauses est `announced` — l'ancre
- * « une fin de passage a été annoncée ». Elle ACTIVE des lectures (« envoie-la », « prépare la
+ * « une fin de passage a été annoncée ». Elle ACTIVE des lectures (« envoie-LA », « prépare LA
  * facture ») ; elle n'en éteint aucune. Aucune clause ne peut donc en neutraliser une autre.
  */
-function readClause(clause: string, announced: boolean): ClauseReading {
+function readClause(clause: string, announced: boolean, marquee: boolean): ClauseReading {
   const announces = annonceDeFin(clause);
   const ancre = announced || announces;
 
   const starts =
-    new RegExp(`\\b(?:${VERBES_DEMARRAGE})\\b`, 'u').test(clause) &&
+    ordreEnTete(clause, VERBES_DEMARRAGE) !== null &&
     OBJET_DEMARRAGE.test(clause) &&
     !DEMARRAGE_HORS_FICHE.test(clause) &&
     !nie(clause, VERBES_DEMARRAGE);
 
-  const positionEnvoi =
-    new RegExp(`\\b(?:${VERBES_ENVOI})\\b`, 'u').test(clause) &&
-    !PIECE_COMPTABLE.test(clause) &&
-    !nie(clause, VERBES_ENVOI) &&
-    (OBJET_FICHE.test(clause) || (ancre && ENVOI_PRONOMINAL.test(clause)))
-      ? premierePosition(clause, new RegExp(`\\b(?:${VERBES_ENVOI})\\b`))
-      : Number.MAX_SAFE_INTEGER;
+  // Une clause ne porte qu'UN geste : celui que son verbe de TÊTE commande. L'ordre départage
+  // les tournures où deux motifs voient la même tête (« fais signer » vs la création « fais »).
+  const downstream: InterventionDownstream | null = demandeSignature(clause)
+    ? 'sign'
+    : demandeEnvoi(clause, ancre)
+      ? 'send'
+      : demandeFacturation(clause, ancre, marquee)
+        ? 'bill'
+        : null;
 
-  const gesteFacture = gesteDeFacturation(clause);
-  const creationFacture =
-    gesteFacture === Number.MAX_SAFE_INTEGER ? CREATION_DE_FACTURE.exec(clause) : null;
-  const positionFactureBrute =
-    gesteFacture !== Number.MAX_SAFE_INTEGER
-      ? gesteFacture
-      : (creationFacture?.index ?? Number.MAX_SAFE_INTEGER);
-  // Une référence EXPLICITE au passage (« ce passage », « le passage », « cette intervention »)
-  // est un signal plus fort qu'un nombre : c'est elle que porte la commande canonique rejouée
-  // après une désambiguïsation (« Facture le passage <id> »). Sans cette précédence, un
-  // identifiant de fiche suffisait à éteindre le geste — et la question « Quel passage ? »
-  // rebouclait indéfiniment sur elle-même. La NATURE de la facturation (contrat, situation,
-  // acompte), elle, reste décisive dans tous les cas : ce n'est pas un nombre, c'est un geste.
-  const referenceExplicite = REFERENCE_PASSAGE.test(clause);
-  const positionFacture =
-    positionFactureBrute !== Number.MAX_SAFE_INTEGER &&
-    !FACTURATION_HORS_PASSAGE.test(clause) &&
-    !PIECE_COMPTABLE.test(clause.replace(/\bfactur\w*/gu, ' ')) &&
-    !nie(clause, VERBES_FACTURATION) &&
-    (referenceExplicite || (!MONTANT_DIT.test(clause) && !PIECE_NUMEROTEE.test(clause))) &&
-    (referenceExplicite || ancre)
-      ? positionFactureBrute
-      : Number.MAX_SAFE_INTEGER;
-
-  const positionSignature =
-    GESTE_SIGNATURE.test(clause) && !SIGNATURE_HORS_FICHE.test(clause) && !nie(clause, VERBES_SIGNATURE)
-      ? premierePosition(clause, GESTE_SIGNATURE)
-      : Number.MAX_SAFE_INTEGER;
-
-  const downstreams = ([
-    ['sign', positionSignature],
-    ['send', positionEnvoi],
-    ['bill', positionFacture],
-  ] as readonly [InterventionDownstream, number][])
-    .filter(([, position]) => position !== Number.MAX_SAFE_INTEGER)
-    .sort((left, right) => left[1] - right[1])
-    .map(([geste]) => geste);
-
-  if (announces || starts || downstreams.length > 0)
-    return { announces, starts, downstreams, aside: null };
+  if (announces || starts || downstream !== null)
+    return { announces, starts, downstream, aside: null, uncertain: false };
 
   // La clause ne porte pas sur le passage : demande-t-elle quand même quelque chose ?
-  if (TETE_AILLEURS.test(clause)) return { announces, starts, downstreams, aside: 'ailleurs' };
+  const uncertain =
+    DEMANDE_INFINITIVE.test(clause) && (OBJET_FICHE.test(clause) || REFERENCE_PASSAGE.test(clause));
+  if (uncertain) return { announces, starts, downstream, aside: null, uncertain };
+  if (TETE_AILLEURS.test(clause))
+    return { announces, starts, downstream, aside: 'ailleurs', uncertain };
   if (TETE_AMBIGUE.test(clause))
     return {
       announces,
       starts,
-      downstreams,
+      downstream,
       aside: OBJET_AILLEURS.test(clause) ? 'ailleurs' : 'incompris',
+      uncertain,
     };
+  // Une demande sans verbe reste une demande : « ma trésorerie ? », « combien je gagne ? ».
+  if (DEMANDE_INTERROGATIVE.test(clause) && !ANCRE_DE_PASSAGE.test(clause))
+    return { announces, starts, downstream, aside: 'ailleurs', uncertain };
+  if (DEMANDE_NOMINALE.test(clause))
+    return { announces, starts, downstream, aside: 'ailleurs', uncertain };
   // Ni annonce, ni geste, ni demande : un fait de terrain (« 0 € de pièces »). Rien à dire.
-  return { announces, starts, downstreams, aside: null };
+  return { announces, starts, downstream, aside: null, uncertain };
 }
 
 /**
- * Lecture CLAUSE PAR CLAUSE de la consigne. Aucun arbitrage lexical ne s'applique au message
- * entier : chaque clause est classée seule, et l'arbitrage entre les gestes retenus a lieu sur
- * l'ÉTAT du passage (`resolveInterventionGesture`).
+ * Lecture d'UNE consigne. Chaque clause est classée SEULE ; le tour retient LE geste certain et
+ * REND le reste. Aucun arbitrage entre plusieurs gestes : c'est le travail du chemin LLM.
  */
 export function readInterventionDirective(message: string): InterventionDirective {
   const folded = fold(message);
+  const marquee = MARQUEUR_DE_COMMANDE.test(folded);
   const clauses = splitClauses(folded);
 
   // Passe 1 — l'ANCRE : une fin de passage a-t-elle été annoncée quelque part dans la dictée ?
   const announcesCompletion = clauses.some((clause) => annonceDeFin(clause.folded));
 
+  // Le RÉSUMÉ dicté part sur la FICHE (pièce de preuve) : le texte qu'il capte n'est donc PAS
+  // une demande incomprise. Une seule lecture du même texte — la réconciliation se fait ici,
+  // à la source, plutôt que dans deux cartes qui se contredisent.
+  const resume = extractInterventionSummary(message);
+  const resumeFolded = resume === null ? null : fold(resume);
+
   // Passe 2 — chaque clause est classée SÉPARÉMENT, avec cette seule ancre pour contexte.
-  const downstreams: InterventionDownstream[] = [];
   const asides: InterventionAside[] = [];
   let startsPassage = false;
+  let downstream: InterventionDownstream | null = null;
+  let needsClarification = false;
+  const citation = (clause: Clause): string =>
+    message
+      .slice(clause.start, clause.end)
+      .trim()
+      .replace(/[\s,;.!?…]+$/u, '');
   for (const clause of clauses) {
-    const reading = readClause(clause.folded, announcesCompletion);
-    if (reading.starts) startsPassage = true;
-    for (const geste of reading.downstreams) if (!downstreams.includes(geste)) downstreams.push(geste);
-    if (reading.aside !== null) {
-      // Citation VERBATIM (tranche du message d'origine), débarrassée de la seule ponctuation
-      // de liaison : Bob cite ce qui a été dit, jamais un fragment orné d'une virgule pendante.
-      const text = message
-        .slice(clause.start, clause.end)
-        .trim()
-        .replace(/[\s,;.!?…]+$/u, '');
-      if (text.length > 0) asides.push({ text, kind: reading.aside });
+    const reading = readClause(clause.folded, announcesCompletion, marquee);
+    // Le PREMIER geste certain est retenu ; tout geste de plus est RENDU, jamais arbitré.
+    if (reading.starts && !startsPassage && downstream === null) {
+      startsPassage = true;
+      continue;
     }
+    if (reading.downstream !== null && downstream === null && !startsPassage) {
+      downstream = reading.downstream;
+      continue;
+    }
+    if (reading.starts || reading.downstream !== null) {
+      const text = citation(clause);
+      if (text.length > 0) asides.push({ text, kind: 'reporte' });
+      continue;
+    }
+    if (reading.uncertain) {
+      needsClarification = true;
+      continue;
+    }
+    if (reading.aside === null) continue;
+    const text = citation(clause);
+    if (text.length === 0) continue;
+    // Le texte capté comme RÉSUMÉ est écrit sur la fiche : il n'est pas « incompris ».
+    const inclus = fold(text);
+    if (resumeFolded !== null && (inclus.includes(resumeFolded) || resumeFolded.includes(inclus)))
+      continue;
+    asides.push({ text, kind: reading.aside });
   }
+
+  const divertsElsewhere = asides.some((aside) => aside.kind === 'ailleurs');
+  const certain = startsPassage || downstream !== null;
+  const gesture: InterventionGesture | null = startsPassage
+    ? 'start'
+    : announcesCompletion && (certain || !divertsElsewhere)
+      ? 'complete'
+      : downstream;
 
   return {
     startsPassage,
     announcesCompletion,
-    downstream: downstreams[0] ?? null,
-    downstreams,
+    downstream,
+    downstreams: downstream === null ? [] : [downstream],
     asides,
-    divertsElsewhere: asides.some((aside) => aside.kind === 'ailleurs'),
+    divertsElsewhere,
+    gesture,
+    // On ne pose la question que si RIEN n'est certain : le doute ne produit ni geste faux, ni
+    // silence — mais il ne prend jamais le pas sur une consigne qui, elle, est claire.
+    needsClarification: needsClarification && gesture === null,
   };
 }
 
 /**
- * Demande RÉELLE du tour : le geste principal issu du classement, complété par ce que dit la
- * phrase. Le classement peut venir d'un modèle (classifieur LLM) : la directive reste lue sur le
- * texte, si bien qu'une consigne composite garde TOUS ses gestes aval, même mal classée.
+ * Demande RÉELLE du tour : le geste classé, complété par ce que dit la phrase. Le classement
+ * peut venir d'un modèle : la directive reste lue sur le texte, mais le tour ne porte JAMAIS
+ * plus d'un geste aval — les autres ont été rendus (`asides`) à la lecture.
  */
 export function interventionRequestFor(
   gesture: InterventionGesture,
@@ -517,11 +634,8 @@ export function interventionRequestFor(
 ): InterventionRequest {
   if (gesture === 'start')
     return { starts: true, completes: false, downstreams: [], asides: directive.asides };
-  const dictes = directive.downstreams;
-  const downstreams =
-    gesture === 'complete'
-      ? [...dictes]
-      : [gesture, ...dictes.filter((geste) => geste !== gesture)];
+  const downstreams: readonly InterventionDownstream[] =
+    gesture === 'complete' ? directive.downstreams : [gesture];
   return {
     starts: false,
     completes: gesture === 'complete' || directive.announcesCompletion,
@@ -562,14 +676,15 @@ export function acceptsGesture(view: InterventionStateView, gesture: Interventio
 
 /**
  * Ce que la consigne laisse pour APRÈS le geste courant : le prochain geste possible, et le
- * premier geste COMPRIS mais impossible — celui-là sera DIT, jamais tu.
+ * geste COMPRIS mais impossible — celui-là sera DIT, jamais tu. La liste ne contient qu'UN geste
+ * (le déterministe n'en porte pas deux) : rien ne peut donc être perdu entre `then` et `withheld`.
  */
 function planDownstream(
   view: InterventionStateView,
   gestures: readonly InterventionDownstream[],
 ): { then: InterventionDownstream | null; withheld: InterventionDownstream | null } {
   const then = gestures.find((geste) => acceptsGesture(view, geste)) ?? null;
-  const withheld = gestures.find((geste) => geste !== then && !acceptsGesture(view, geste)) ?? null;
+  const withheld = gestures.find((geste) => geste !== then) ?? null;
   return { then, withheld };
 }
 
@@ -667,21 +782,30 @@ export function explainInterventionBlock(
 
 /**
  * Ce que Bob NE fait PAS dans ce tour, dit dans la MÊME carte. Le silence sur la moitié d'une
- * consigne est interdit : ce qui porte ailleurs est cité VERBATIM, ce qui n'a pas été compris
- * est avoué tel quel.
+ * consigne est interdit : un geste de passage EN TROP est reporté et redit tel quel, ce qui
+ * porte ailleurs est cité VERBATIM, ce qui n'a pas été compris est avoué tel quel.
  */
 export function explainInterventionAsides(asides: readonly InterventionAside[]): string {
   if (asides.length === 0) return '';
-  const ailleurs = asides.filter((aside) => aside.kind === 'ailleurs').map((aside) => aside.text);
-  const incompris = asides.filter((aside) => aside.kind === 'incompris').map((aside) => aside.text);
+  const cite = (textes: readonly string[], liaison: string): string =>
+    textes.map((texte) => `« ${texte} »`).join(liaison);
+  const de = (kind: InterventionAsideKind): string[] =>
+    asides.filter((aside) => aside.kind === kind).map((aside) => aside.text);
+  const reporte = de('reporte');
+  const ailleurs = de('ailleurs');
+  const incompris = de('incompris');
   const phrases: string[] = [];
+  if (reporte.length > 0)
+    phrases.push(
+      `Je ne traite pas ${cite(reporte, ' ni ')} dans ce tour — redis-le-moi et je m’en occupe.`,
+    );
   if (ailleurs.length > 0)
     phrases.push(
-      `Je ne touche pas à ${ailleurs.map((texte) => `« ${texte} »`).join(' ni à ')} dans ce tour — c’est un autre geste : redis-le-moi et je m’en occupe.`,
+      `Je ne touche pas à ${cite(ailleurs, ' ni à ')} dans ce tour — c’est un autre geste : redis-le-moi et je m’en occupe.`,
     );
   if (incompris.length > 0)
     phrases.push(
-      `Je n’ai pas su quoi faire de ${incompris.map((texte) => `« ${texte} »`).join(' ni de ')} — reformule-le et je m’en occupe.`,
+      `Je n’ai pas su quoi faire de ${cite(incompris, ' ni de ')} — reformule-le et je m’en occupe.`,
     );
   return phrases.join(' ');
 }

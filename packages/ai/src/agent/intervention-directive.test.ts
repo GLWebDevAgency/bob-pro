@@ -2,38 +2,44 @@ import { describe, expect, it } from 'vitest';
 import { detectIntent } from './intent';
 import {
   acceptsGesture,
+  explainInterventionAsides,
   explainInterventionBlock,
   explainWithheldDownstream,
   interventionRequestFor,
+  markInterventionCommand,
   readInterventionDirective,
   requestedGesture,
   resolveInterventionGesture,
   type InterventionDownstream,
   type InterventionStateView,
 } from './intervention-directive';
+import { extractInterventionSummary } from './intervention-summary';
 
 /**
- * [Revue de vérification 29/07 — LECTURE CLAUSE PAR CLAUSE, ROUTAGE BORNÉ]
+ * [Revue architecturale 29/07 — LE PÉRIMÈTRE DU CHEMIN DÉTERMINISTE]
  *
- * Trois régressions mesurées, une seule cause : des expressions régulières d'arbitrage
- * appliquées au MESSAGE ENTIER pour trancher entre des gestes qui vivent dans des CLAUSES
- * différentes.
+ * Six passes ont demandé à des expressions régulières d'arbitrer entre PLUSIEURS gestes dictés
+ * dans la même phrase. Ce n'est pas leur travail : c'est celui du chemin LLM, qui rend
+ * `steps[]`. Chaque passe a déplacé l'impasse (113 cas fautifs sur 343 à la dernière mesure).
  *
- *   (1) le routage par état était INCONDITIONNEL : toute annonce de fin capturait le tour,
- *       même quand le geste demandé n'avait rien à voir avec le passage ;
- *   (2) l'arbitrage lexical croisé n'avait pas été supprimé mais DÉPLACÉ : un mot d'une clause
- *       éteignait l'autre clause ;
- *   (3) le classement se faisait sur le DÉTERMINANT (« prépare LA facture ») : le périmètre
- *       restait LEXICAL, seule la clé avait changé.
+ * Ces tests mesurent le PÉRIMÈTRE, pas les motifs :
  *
- * Ces tests mesurent l'invariant qui les couvre toutes : AUCUNE CLAUSE NE PEUT EN ÉTEINDRE UNE
- * AUTRE, et l'annonce de fin ne capte que ce qui porte sur le passage.
+ *   · UN geste dicté       → il s'exécute (comportement d'avant, déjà prouvé) ;
+ *   · PLUSIEURS gestes     → le PREMIER geste certain est retenu, le reste est DIT verbatim ;
+ *   · AUCUN geste certain  → une question, jamais un geste faux ni un silence ;
+ *   · CERTITUDE            → un verbe en TÊTE DE CLAUSE. Un déterminant devant le mot en fait un
+ *                            NOM ou un PARTICIPE (« l'archive », « la classe », « c'est rangé »).
  */
 
 // ── Matière de mesure : clauses réelles, classées séparément ─────────────────────────────────
 
 /** Annonces de fin telles qu'on les dit sur le terrain. */
-const ANNONCES = ['C’est terminé', 'J’ai fini', 'Le passage est terminé'] as const;
+const ANNONCES = [
+  'C’est terminé',
+  'J’ai fini',
+  'Le passage est terminé',
+  'Termine ce passage',
+] as const;
 
 /** Gestes qui PORTENT sur le passage — chacun se tient debout seul. */
 const GESTES_DE_PASSAGE: readonly { clause: string; geste: InterventionDownstream }[] = [
@@ -42,7 +48,11 @@ const GESTES_DE_PASSAGE: readonly { clause: string; geste: InterventionDownstrea
   { clause: 'fais signer', geste: 'sign' },
 ];
 
-/** Gestes qui vivent AILLEURS — l'annonce de fin ne doit JAMAIS les capter. */
+/**
+ * Demandes qui vivent AILLEURS — l'annonce de fin ne doit JAMAIS les capter. Les trois dernières
+ * n'ont AUCUN verbe impératif : c'est une QUESTION et deux GROUPES NOMINAUX. La borne ne les
+ * voyait pas, et le routage par l'état redevenait inconditionnel sur toute la famille.
+ */
 const GESTES_AILLEURS = [
   'envoie la facture au client',
   'encaisse la facture',
@@ -50,13 +60,25 @@ const GESTES_AILLEURS = [
   'programme la prochaine visite lundi',
   'ajoute une dépense de 40 € chez Point P',
   'émets la facture 2026-014',
+  'combien je gagne ?',
+  'ma trésorerie ?',
+  'et le devis Durand ?',
 ] as const;
 
-/** Faits de terrain : ils ne demandent rien et ne doivent RIEN éteindre. */
+/**
+ * Faits de terrain : ils ne demandent rien et ne doivent RIEN éteindre. Les quatre derniers sont
+ * des HOMOGRAPHES du mode impératif une fois les accents repliés (« rangé/range »,
+ * « archivé/archive », « classé/classe », « marqué/marque ») : c'est sur eux que la borne
+ * d'« ailleurs » s'armait, et une fin de chantier finissait en « je n'ai pas compris ».
+ */
 const FAITS = [
   '0 € de pièces',
   'la pression était basse mais c’est réglé',
   'j’y suis resté deux heures',
+  'tout est rangé',
+  'l’archive est à jour',
+  'la classe énergétique est correcte',
+  'c’est marqué sur la fiche',
 ] as const;
 
 const PASSAGE_DE_BASE: InterventionStateView = {
@@ -74,19 +96,22 @@ const vue = (over: Partial<InterventionStateView>): InterventionStateView => ({
 // ── LIVRABLE 2 — le routage par état est BORNÉ aux gestes de passage ─────────────────────────
 
 describe('§3.7 — l’annonce de fin ne capte QUE ce qui porte sur le passage', () => {
-  it('les 18 phrases mesurées gardent l’intent du geste réellement demandé', () => {
+  it('les phrases mesurées gardent l’intent du geste réellement demandé', () => {
     const echecs: string[] = [];
+    let mesurees = 0;
     for (const annonce of ANNONCES) {
       for (const geste of GESTES_AILLEURS) {
+        mesurees += 1;
         const seul = detectIntent(geste);
         const compose = detectIntent(`${annonce}, ${geste}`);
         if (compose !== seul)
           echecs.push(`« ${annonce}, ${geste} » → ${compose} (seul : ${seul})`);
       }
     }
-    expect(echecs.length === 0 ? '' : `${echecs.length}/18 détournées :\n${echecs.join('\n')}`).toBe(
-      '',
-    );
+    expect(mesurees).toBeGreaterThanOrEqual(36);
+    expect(
+      echecs.length === 0 ? '' : `${echecs.length}/${mesurees} détournées :\n${echecs.join('\n')}`,
+    ).toBe('');
   });
 
   it('mais un geste de FICHE rend l’autorité à l’annonce (on termine, puis on enchaîne)', () => {
@@ -138,8 +163,14 @@ describe('§3.7 — lecture CLAUSE PAR CLAUSE : aucune clause n’en éteint une
             // L'annonce de fin ne dépend pas non plus des voisines.
             if (annonce.length > 0 && !directive.announcesCompletion)
               raisons.push('annonce de fin perdue');
-            // La demande qui porte ailleurs est toujours restituée VERBATIM.
-            if (ailleurs.length > 0 && !directive.asides.some((aside) => aside.text === ailleurs))
+            // La demande qui porte ailleurs est toujours restituée VERBATIM (la ponctuation de
+            // liaison, elle, appartient à la découpe — jamais à la citation).
+            if (
+              ailleurs.length > 0 &&
+              !directive.asides.some(
+                (aside) => aside.text.length > 3 && ailleurs.startsWith(aside.text),
+              )
+            )
               raisons.push(`demande « ${ailleurs} » jetée en silence`);
             // Un fait de terrain ne demande rien : il ne doit jamais devenir une demande.
             if (fait.length > 0 && directive.asides.some((aside) => aside.text === fait))
@@ -149,16 +180,19 @@ describe('§3.7 — lecture CLAUSE PAR CLAUSE : aucune clause n’en éteint une
         }
       }
     }
-    expect(mesurees).toBeGreaterThanOrEqual(300);
+    expect(mesurees).toBeGreaterThanOrEqual(1000);
     expect(
       echecs.length === 0 ? '' : `${echecs.length}/${mesurees} en échec :\n${echecs.slice(0, 12).join('\n')}`,
     ).toBe('');
   });
 
-  it('les trois phrases de l’arbitrage croisé rendent LES DEUX gestes', () => {
-    expect(
-      readInterventionDirective('Envoie la fiche de passage et facture ce passage').downstreams,
-    ).toEqual(['send', 'bill']);
+  it('DEUX gestes dictés : le premier est retenu, le second est DIT (jamais arbitré)', () => {
+    const deux = readInterventionDirective('Envoie la fiche de passage et facture ce passage');
+    expect(deux.downstreams).toEqual(['send']);
+    expect(deux.asides).toEqual([{ text: 'facture ce passage', kind: 'reporte' }]);
+    expect(explainInterventionAsides(deux.asides)).toContain(
+      'Je ne traite pas « facture ce passage » dans ce tour',
+    );
     const annuelle = readInterventionDirective('J’ai fini la visite annuelle, facture ce passage');
     expect(annuelle.announcesCompletion).toBe(true);
     expect(annuelle.downstreams).toEqual(['bill']);
@@ -215,7 +249,9 @@ describe('§3.7 — lecture CLAUSE PAR CLAUSE : aucune clause n’en éteint une
         [`Envoie la fiche de passage ${id}`, 'envoyer_fiche_passage'],
         [`Facture le passage ${id}`, 'facturer_intervention'],
       ];
-      for (const [commande, attendu] of attendus) {
+      for (const [nue, attendu] of attendus) {
+        // Ces commandes ne sont JAMAIS rejouées nues : Bob y appose son marqueur.
+        const commande = markInterventionCommand(nue);
         const obtenu = detectIntent(commande);
         if (obtenu !== attendu) echecs.push(`« ${commande} » → ${obtenu} (attendu ${attendu})`);
       }
@@ -406,9 +442,172 @@ describe('§3.7 — le geste NOMMÉ dans un refus est celui que la consigne dema
     expect(de('Facture ce passage', 'bill')).toBe('bill');
     expect(de('Envoie la fiche de passage', 'send')).toBe('send');
     expect(de('Fais signer le client', 'sign')).toBe('sign');
-    // Classement du modèle en désaccord avec le texte : le geste dicté reste porté.
+    // Classement du modèle en désaccord avec le texte : le tour ne porte QU'UN geste — celui du
+    // classement. Deux gestes concurrents ne sont jamais empilés dans la même demande.
     expect(
       interventionRequestFor('send', readInterventionDirective('Facture ce passage')).downstreams,
-    ).toEqual(['send', 'bill']);
+    ).toEqual(['send']);
+  });
+});
+
+// ── LE PÉRIMÈTRE, MESURÉ ─────────────────────────────────────────────────────────────────────
+
+describe('périmètre — un FAIT de terrain n’éteint plus rien (homographes participe/impératif)', () => {
+  /**
+   * Une fois les accents repliés, le participe est le sosie de l'impératif : « rangé/range »,
+   * « classé/classe », « marqué/marque », « archivé/archive ». La borne d'« ailleurs » s'armait
+   * dessus et éteignait l'annonce de fin — un constat de fin de chantier faisait répondre
+   * « je n'ai pas compris » à Bob. Le déterminant tranche : il n'y a pas d'impératif derrière lui.
+   */
+  it('les huit constats mesurés laissent la fin de passage intacte', () => {
+    const constats = [
+      'tout est rangé',
+      'l’archive est à jour',
+      'la classe énergétique est correcte',
+      'c’est marqué sur la fiche',
+      'le local est classé ERP',
+      'les pièces sont archivées',
+      'la marque du compresseur est Atlas',
+      'la note de service est affichée',
+    ];
+    const echecs: string[] = [];
+    for (const constat of constats) {
+      const phrase = `C’est terminé, ${constat}`;
+      const directive = readInterventionDirective(phrase);
+      if (!directive.announcesCompletion) echecs.push(`« ${phrase} » : annonce de fin perdue`);
+      if (directive.gesture !== 'complete')
+        echecs.push(`« ${phrase} » : geste ${directive.gesture ?? '∅'} (attendu complete)`);
+      if (detectIntent(phrase) !== 'terminer_intervention')
+        echecs.push(`« ${phrase} » → ${detectIntent(phrase)}`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+});
+
+describe('périmètre — la borne s’arme aussi sur une demande INTERROGATIVE ou NOMINALE', () => {
+  /**
+   * La borne ne regardait qu'une liste de verbes en tête : dès que la seconde demande était une
+   * QUESTION ou un simple GROUPE NOMINAL, le routage par l'état redevenait inconditionnel et
+   * détournait la demande vers le passage.
+   */
+  it('« c’est terminé, combien je gagne ? » n’est pas une fin de passage', () => {
+    const sansPassage = [
+      'combien je gagne ?',
+      'ma trésorerie ?',
+      'et la facture Durand ?',
+      'où en est mon devis ?',
+      'mes échéances ?',
+    ];
+    const echecs: string[] = [];
+    for (const demande of sansPassage) {
+      const phrase = `C’est terminé, ${demande}`;
+      const directive = readInterventionDirective(phrase);
+      if (directive.gesture !== null)
+        echecs.push(`« ${phrase} » : geste ${directive.gesture} (le passage capte le tour)`);
+      if (!directive.divertsElsewhere) echecs.push(`« ${phrase} » : demande non vue`);
+      if (detectIntent(phrase) === 'terminer_intervention') echecs.push(`« ${phrase} » → passage`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+
+  it('… mais une question SUR LE PASSAGE ne détourne rien', () => {
+    const directive = readInterventionDirective('C’est terminé, combien de passages aujourd’hui ?');
+    expect(directive.gesture).toBe('complete');
+  });
+});
+
+describe('périmètre — l’exclusion INTRA-clause a disparu (le complément ouvre sa clause)', () => {
+  it('« envoie-lui la fiche de passage avec la facture » envoie la FICHE et DIT le reste', () => {
+    const directive = readInterventionDirective('Envoie-lui la fiche de passage avec la facture');
+    expect(directive.downstreams).toEqual(['send']);
+    expect(directive.asides).toEqual([{ text: 'la facture', kind: 'ailleurs' }]);
+    expect(detectIntent('Envoie-lui la fiche de passage avec la facture')).toBe(
+      'envoyer_fiche_passage',
+    );
+  });
+});
+
+describe('périmètre — aucun geste certain : Bob POSE UNE QUESTION', () => {
+  it('une tournure qui n’ORDONNE rien ne déclenche aucune mutation', () => {
+    for (const phrase of [
+      'la fiche de passage est à envoyer',
+      'le passage Carrefour est à facturer',
+      'la fiche de passage serait à faire signer',
+    ]) {
+      const directive = readInterventionDirective(phrase);
+      expect(directive.gesture, phrase).toBeNull();
+      expect(directive.needsClarification, phrase).toBe(true);
+      expect(directive.downstreams, phrase).toEqual([]);
+    }
+  });
+
+  it('… et une consigne CLAIRE ne pose jamais la question', () => {
+    expect(readInterventionDirective('Envoie la fiche de passage').needsClarification).toBe(false);
+    expect(readInterventionDirective('C’est terminé').needsClarification).toBe(false);
+  });
+});
+
+// ── LE CHEMIN DE L’ARGENT ────────────────────────────────────────────────────────────────────
+
+describe('argent — une facture DIRECTE dictée avec un montant reste une facture directe', () => {
+  /**
+   * BLOQUANT MESURÉ : la précédence donnée à « le passage » / « la visite » pour rejouer les
+   * commandes canoniques faisait sauter la garde du montant. « Facture 380 € à Mme Girard pour
+   * la visite » partait vers `facturer_intervention` : le chemin de l'argent, détourné par un
+   * mot. Seul un marqueur posé par BOB peut dispenser de cette garde.
+   */
+  it('les dix phrases du chemin de l’argent gardent leur geste', () => {
+    const phrases = [
+      'Facture 380 € à Mme Girard pour la visite',
+      'Facture 380 € à Mme Girard pour le passage',
+      'Facture 380 € à Mme Girard pour cette intervention',
+      'Facture 250 € pour le dépannage',
+      'Facture 1 200 € TTC à la SCI Bellevue pour la visite',
+      'Fais une facture de 380 € pour la visite chez Mme Girard',
+      'Facture 380,50 € pour le passage',
+      'Facture 90 € HT pour la visite de contrôle',
+      'Prépare la facture de 380 € pour la visite',
+      'Facture directe de 2 jours de régie pour la visite',
+    ];
+    const echecs: string[] = [];
+    for (const phrase of phrases) {
+      const intent = detectIntent(phrase);
+      if (intent === 'facturer_intervention') echecs.push(`« ${phrase} » → DÉTOURNÉ vers le passage`);
+      if (readInterventionDirective(phrase).downstreams.length > 0)
+        echecs.push(`« ${phrase} » : geste de passage lu`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+    expect(detectIntent('Facture 380 € à Mme Girard pour la visite')).toBe('facture_directe');
+  });
+
+  it('la commande canonique MARQUÉE, elle, facture bien le passage (id à chiffres compris)', () => {
+    for (const id of ['itv-1', 'a1b2-123e-4567-89ab-000111222333']) {
+      const commande = markInterventionCommand(`Facture le passage ${id}`);
+      expect(detectIntent(commande), commande).toBe('facturer_intervention');
+    }
+  });
+
+  it('le marqueur n’est jamais prononçable : sans lui, la même phrase reste une facture directe', () => {
+    expect(detectIntent('Facture le passage 380 €')).not.toBe('facturer_intervention');
+  });
+});
+
+// ── COHÉRENCE DES CARTES ─────────────────────────────────────────────────────────────────────
+
+describe('cartes — un texte capté comme RÉSUMÉ n’est jamais déclaré « incompris »', () => {
+  it('« note-le : la pression était basse » part sur la fiche, et rien ne le contredit', () => {
+    const phrase = 'C’est terminé, note-le : la pression était basse';
+    expect(extractInterventionSummary(phrase)).toBe('la pression était basse');
+    const directive = readInterventionDirective(phrase);
+    expect(directive.asides).toEqual([]);
+    expect(explainInterventionAsides(directive.asides)).toBe('');
+    expect(directive.gesture).toBe('complete');
+  });
+
+  it('… mais une demande qui n’est PAS le résumé reste avouée', () => {
+    const directive = readInterventionDirective('C’est terminé, prépare le matériel pour demain');
+    expect(directive.asides).toEqual([
+      { text: 'prépare le matériel pour demain', kind: 'incompris' },
+    ]);
   });
 });

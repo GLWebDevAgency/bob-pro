@@ -1,5 +1,24 @@
-import { readInterventionDirective } from './intervention-directive';
+import { type InterventionGesture, readInterventionDirective } from './intervention-directive';
 
+/**
+ * PARTAGE DES RÔLES ENTRE LES DEUX CHEMINS DE CLASSIFICATION — à ne plus jamais élargir.
+ *
+ *   `classifyWithLlm`   → rend PLUSIEURS étapes (une par appel d'outil). C'est LUI, et lui seul,
+ *                         qui DÉCOMPOSE une consigne composite en autant de gestes qu'elle en
+ *                         porte. C'est le chemin de la PRODUCTION.
+ *
+ *   `classifyWithRegex` → `detectIntent` + `extractReference` : UNE consigne, UN geste, de façon
+ *                         fiable. TOUJOURS UNE SEULE ÉTAPE. Repli hors-ligne, LLM indisponible,
+ *                         ou geste que le LLM ne sait pas nommer.
+ *
+ * CE QUE `detectIntent` NE FAIT PLUS (et ne doit jamais refaire) : arbitrer entre PLUSIEURS
+ * gestes dictés dans la même phrase. Six passes s'y sont épuisées à coups d'expressions
+ * régulières croisées ; la dernière vérification l'a chiffré (113 cas fautifs sur 343, 78
+ * clauses éteintes). Quand une consigne porte plusieurs gestes, le déterministe retient celui
+ * qu'il identifie AVEC CERTITUDE et REND le reste verbatim, pour que Bob le DISE
+ * (`intervention-directive.ts`, `explainInterventionAsides`). Quand rien n'est certain, il pose
+ * une question. Le doute ne produit ni geste faux, ni silence.
+ */
 export type BobIntent =
   | 'contexte_ecran' // lire l'entite affichee : « cette facture », « ou suis-je ? »
   | 'payout'
@@ -59,6 +78,18 @@ export type BobIntent =
   | 'abonnement' // « où en est mon abonnement / mon essai ? » — lecture seule, pilier 2 (jamais d'achat vocal)
   | 'aide' // « aide », « tu sais faire quoi ? » — catalogue parlé des capacités (découvrabilité, jamais un refus)
   | 'unknown';
+
+/**
+ * Geste de fiche → intent, SOURCE UNIQUE (le handler la réutilise). Le geste vient de l'état du
+ * passage ; l'intent restitué doit toujours être celui du geste réellement résolu.
+ */
+export const INTENT_BY_GESTURE: Record<InterventionGesture, BobIntent> = {
+  start: 'commencer_intervention',
+  complete: 'terminer_intervention',
+  sign: 'faire_signer_intervention',
+  send: 'envoyer_fiche_passage',
+  bill: 'facturer_intervention',
+};
 
 function normalizeIntent(message: string): string {
   return message
@@ -183,26 +214,16 @@ export function detectIntent(message: string): BobIntent {
   // envoyer_facture/facture_directe (« envoie », « facture » y collisionnent). Le NOM de la
   // fiche est résolu contre les passages RÉELS dans le handler — jamais un id deviné.
   //
-  // [Revue de vérification 29/07 — ROUTAGE PAR L'ÉTAT, BORNÉ AUX GESTES DE PASSAGE] La consigne
-  // est lue CLAUSE PAR CLAUSE (cf. `intervention-directive.ts`) : aucune garde lexicale ne voit
-  // le message entier, aucune clause n'en éteint une autre. Ici on ne fait qu'ORIENTER vers le
-  // bon handler ; l'arbitrage réel d'une consigne composite appartient à l'ÉTAT du passage,
-  // résolu dans le handler contre les fiches réelles.
+  // ICI, ON NE FAIT QU'ORIENTER. La consigne est lue par `intervention-directive.ts`, qui rend
+  // UN geste — celui qu'il identifie avec CERTITUDE — et RESTITUE le reste pour que Bob le dise.
+  // L'arbitrage entre « terminer » et le geste aval n'est pas lexical : il appartient à l'ÉTAT
+  // RÉEL du passage, résolu dans le handler contre les fiches réelles.
   //
-  // L'annonce de fin ne capte le tour QUE si la consigne ne demande rien d'autre qu'un geste de
-  // passage. « C'est terminé, envoie la facture au client » n'est PAS une fin de passage : c'est
-  // un envoi de facture — la clause aval garde son intent d'origine et le geste demandé
-  // s'exécute. Sans cette borne, toute annonce de fin détournait la trésorerie, les dépenses,
-  // les visites à programmer et l'émission de facture vers un passage dont il n'était pas
-  // question. En revanche, dès qu'un geste de FICHE est demandé (envoyer la fiche, facturer ce
-  // passage), l'annonce reprend l'autorité : le handler termine puis enchaîne.
+  // La question de clarification (`needsClarification`) passe elle aussi par le handler : c'est
+  // lui qui a les passages sous la main. Elle n'ouvre aucune mutation.
   const passage = readInterventionDirective(message);
-  if (passage.announcesCompletion && !(passage.downstream === null && passage.divertsElsewhere))
-    return 'terminer_intervention';
-  if (passage.downstream === 'send') return 'envoyer_fiche_passage';
-  if (passage.downstream === 'bill') return 'facturer_intervention';
-  if (passage.downstream === 'sign') return 'faire_signer_intervention';
-  if (passage.startsPassage) return 'commencer_intervention';
+  if (passage.gesture !== null) return INTENT_BY_GESTURE[passage.gesture];
+  if (passage.needsClarification) return 'terminer_intervention';
   // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
   // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
   // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement
