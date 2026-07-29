@@ -4,6 +4,7 @@ import {
   ModelRouter,
   pendingToInvocations,
   purchaseOrderLinkedRun,
+  withAnnouncedChain,
   intentForTool,
   // B1/B2/B4 — parité de la confirmation locale : mêmes refus honnêtes et mêmes cartes que
   // BobAgent.confirm et que le serveur pour les outils de facturation terrain.
@@ -5261,19 +5262,44 @@ export class LocalBobClient implements BobClient {
         },
       });
     }
-    return ok({
-      kind: 'done',
-      // L'intent reflète l'outil confirmé (parité BobAgent.confirm) — jamais figé sur un geste.
-      intent: intentForTool(pending.batch?.[0]?.tool ?? pending.tool),
-      model: 'agent-runtime',
-      plan: record.outcomes.map((o) => o.label),
-      card: {
-        title: 'Fait ✓',
-        body: isBatch
-          ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n')
-          : `${pending.label} — c’est noté.`,
-      },
-    });
+    // PR-15 — le passage terminé confirmé : MÊME carte et MÊME enchaînement que
+    // BobAgent.confirm (parité des hôtes). La promesse « ensuite je te propose … » est tenue
+    // ici aussi — le geste aval est PROPOSÉ, avec sa propre confirmation, jamais exécuté.
+    const passageOutcome = record.outcomes.find(
+      (o) => o.tool === 'terminer_intervention' && o.status === 'executed',
+    );
+    if (!isBatch && passageOutcome) {
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: 'terminer_intervention',
+            model: 'agent-runtime',
+            plan: record.outcomes.map((o) => o.label),
+            card: { title: 'Passage terminé ✓', body: `${pending.label} — c’est fait.` },
+          },
+          pending.chain,
+        ),
+      );
+    }
+    return ok(
+      withAnnouncedChain(
+        {
+          kind: 'done',
+          // L'intent reflète l'outil confirmé (parité BobAgent.confirm) — jamais figé sur un geste.
+          intent: intentForTool(pending.batch?.[0]?.tool ?? pending.tool),
+          model: 'agent-runtime',
+          plan: record.outcomes.map((o) => o.label),
+          card: {
+            title: 'Fait ✓',
+            body: isBatch
+              ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n')
+              : `${pending.label} — c’est noté.`,
+          },
+        },
+        isBatch ? undefined : pending.chain,
+      ),
+    );
   }
 
   /** GET /ai/runs/:runId/journal local : entrées d'audit du run (journal mémoire append-only). */

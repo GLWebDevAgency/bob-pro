@@ -337,6 +337,10 @@ import {
   FACTURATION_TERRAIN_TOOLS,
   CONTRACT_LIFECYCLE_TOOLS,
   intentForTool,
+  // PR-15/16 — parité des hôtes : l'enchaînement ANNONCÉ est tenu par le chemin serveur comme
+  // par BobAgent.confirm et LocalBobClient.confirmBob (une seule fonction pour les trois).
+  withAnnouncedChain,
+  type AgentChainOffer,
   redactPII,
   accountingJournalLabel,
   chantierStatusLabel,
@@ -1036,6 +1040,23 @@ interface OwnedAgentProposal {
   readonly proposalId: string;
   readonly planned: readonly JournalEntry[];
   readonly expiresAt: string;
+  /**
+   * PR-15/16 — enchaînement ANNONCÉ au moment de la proposition (« ensuite je te propose … »).
+   * `/ai/confirm` ne reçoit qu'un `proposalId` opaque : sans cette preuve durable, la promesse
+   * faite à l'artisan restait sans suite sur le chemin SERVEUR — donc en production.
+   */
+  readonly chain?: AgentChainOffer;
+}
+
+/** Lecture DÉFENSIVE de l'enchaînement persisté : trois libellés, sinon rien (jamais un objet deviné). */
+function readPersistedChain(args: Record<string, unknown>): AgentChainOffer | null {
+  const raw = args.chain;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { followUp, label, question } = raw as Record<string, unknown>;
+  if (typeof followUp !== 'string' || typeof label !== 'string' || typeof question !== 'string')
+    return null;
+  if (followUp.length === 0 || label.length === 0 || question.length === 0) return null;
+  return { followUp, label, question };
 }
 // Fermé par défaut : n'ajouter un outil qu'après câblage serveur ET test agent → outbox.
 // · envoyer_devis — sendQuote enfile dans l'outbox NotificationDelivery (worker idempotent).
@@ -5083,7 +5104,13 @@ export class BackendService {
           phase: 'executed',
           tool: AGENT_PROPOSAL_OWNER_TOOL,
           label: 'Propriétaire de la proposition agent',
-          args: { userId: principal.userId },
+          // L'enchaînement ANNONCÉ voyage avec la propriété de la proposition : `/ai/confirm`
+          // ne reçoit qu'un id opaque, c'est donc ici — et seulement ici — que la promesse
+          // devient durable. Aucun effet sur l'exécution : ces args ne sont jamais rejoués.
+          args: {
+            userId: principal.userId,
+            ...(r.value.pending.chain ? { chain: { ...r.value.pending.chain } } : {}),
+          },
           mutating: false,
           outbound: false,
           compliance: 'high',
@@ -5435,10 +5462,12 @@ export class BackendService {
           },
         };
       }
+      const chain = readPersistedChain(owner.args);
       return ok({
         proposalId,
         planned,
         expiresAt: new Date(proposedAt + AGENT_PROPOSAL_TTL_MS).toISOString(),
+        ...(chain ? { chain } : {}),
       });
     } catch (error) {
       return {
@@ -5497,7 +5526,7 @@ export class BackendService {
       const companyId = this.companyId();
       const loaded = await this.loadOwnedAgentProposal(input.proposalId);
       if (!loaded.ok) return loaded;
-      const { proposalId, planned } = loaded.value;
+      const { proposalId, planned, chain } = loaded.value;
 
       // Autorisation fermée : un outil sortant n'est exécutable que si son adapter a été audité
       // outbox commitée + worker idempotent. Toute future capability outbound est bloquée par
@@ -5823,6 +5852,28 @@ export class BackendService {
           },
         });
       }
+      // PR-15/16 — PARITÉ DES HÔTES (revue de vérification 29/07, finding 5) : le passage
+      // terminé confirmé mérite sa carte ET son intent ici AUSSI. Ce chemin est celui de la
+      // PRODUCTION ; sans cette branche, l'artisan mobile lisait « Fait ✓ » avec un intent
+      // `unknown`, et l'enchaînement annoncé (« ensuite je te propose la facture ») restait
+      // sans suite — là où le runtime local et BobAgent.confirm le tenaient.
+      const passageOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'terminer_intervention' && outcome.status === 'executed',
+      );
+      if (!isBatch && passageOutcome) {
+        return ok(
+          withAnnouncedChain(
+            {
+              kind: 'done',
+              intent: 'terminer_intervention',
+              model: 'agent-runtime',
+              plan: record.outcomes.map((outcome) => outcome.label),
+              card: { title: 'Passage terminé ✓', body: `${planned[0]!.label} — c’est fait.` },
+            },
+            chain,
+          ),
+        );
+      }
       if (!isBatch && quoteDeliveryStatus === 'queued') {
         return ok({
           kind: 'done',
@@ -5907,16 +5958,24 @@ export class BackendService {
           },
         });
       }
-      return ok({
-        kind: 'done',
-        intent: 'unknown',
-        model: 'agent-runtime',
-        plan: record.outcomes.map((o) => o.label),
-        card: {
-          title: 'Fait ✓',
-          body: `${planned[0]!.label} — c’est noté.`,
-        },
-      });
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            // PARITÉ : l'intent reflète l'OUTIL confirmé, comme BobAgent.confirm et
+            // LocalBobClient.confirmBob — jamais figé sur `unknown`, sinon la télémétrie des
+            // confirmations serveur (donc de la production) ne dit rien de ce qui a été fait.
+            intent: intentForTool(planned[0]!.tool),
+            model: 'agent-runtime',
+            plan: record.outcomes.map((o) => o.label),
+            card: {
+              title: 'Fait ✓',
+              body: `${planned[0]!.label} — c’est noté.`,
+            },
+          },
+          chain,
+        ),
+      );
     } catch (e) {
       this.logger.audit('ai.confirm', {
         proposalId: proposalIdForAudit,

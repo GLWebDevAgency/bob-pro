@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Chantier,
   Company,
@@ -60,6 +60,13 @@ function makeService(options: { withRenderer?: boolean } = {}) {
   const renderer = (
     options.withRenderer === false ? ({} as PdfRendererPort) : new PdfRenderer()
   ) as PdfRendererPort;
+  // Compteurs IA réels du service (askBob les incrémente) : un double muet suffit, mais il doit
+  // EXISTER — sinon le chemin vocal serveur ne peut pas être exercé depuis ce harness.
+  const metrics = {
+    aiRequests: { inc: vi.fn() },
+    aiDuration: { observe: vi.fn() },
+    aiGuardViolations: { inc: vi.fn() },
+  } as unknown as Metrics;
   const service = new BackendService(
     p,
     {} as PaymentGatewayPort,
@@ -67,7 +74,7 @@ function makeService(options: { withRenderer?: boolean } = {}) {
     {} as OcrPort,
     admin,
     notificationDelivery,
-    {} as Metrics,
+    metrics,
     logger,
     undefined,
     storage,
@@ -977,6 +984,75 @@ describe('fiche de passage PDF — archive immuable, envoi confirmé, CTA factur
     if (!created.ok) throw new Error('fiche non créée');
     const generated = await run(() => env.service.generateInterventionReport(created.value.id));
     expect(generated).toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+  });
+});
+
+/**
+ * [Revue de vérification 29/07 — finding 5] PARITÉ DES HÔTES. `BobAgent.confirm` et
+ * `LocalBobClient.confirmBob` rendaient la carte « Passage terminé ✓ » avec l'intent
+ * `terminer_intervention` et tenaient l'enchaînement annoncé. `BackendService.confirmBob` — le
+ * chemin SERVEUR, donc celui de la PRODUCTION — n'avait pas de branche : l'artisan y lisait
+ * « Fait ✓ » avec un intent `unknown`, et « ensuite je te propose la facture » restait sans
+ * suite. Ce test mesure la carte, l'intent ET la promesse tenue sur le chemin serveur.
+ */
+describe('fiche de passage à la voix — parité du chemin SERVEUR (/ai/ask → /ai/confirm)', () => {
+  beforeEach(() => {
+    // Le routeur reste en configuration live : la consigne §3.7 est résolue par les règles
+    // DÉTERMINISTES bien avant que l'adapter HTTP puisse se servir de cette clé sentinelle.
+    vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('« c’est terminé, facture ce passage » : carte, intent et enchaînement identiques au local', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedChantier(p, 'site-bastille', companyId);
+    await seedCustomer(p, 'cust-ratp', companyId);
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+
+    const created = await run(() =>
+      service.createIntervention('site-bastille', {
+        customerId: 'cust-ratp',
+        kind: 'Visite d’entretien',
+        plannedAt: '2026-08-04T09:00:00.000Z',
+      }),
+    );
+    if (!created.ok) throw new Error('fixture: createIntervention KO');
+    const started = await run(() =>
+      service.startIntervention({ interventionId: created.value.id, expectedRevision: 1 }),
+    );
+    if (!started.ok) throw new Error('fixture: startIntervention KO');
+
+    const proposed = await run(() =>
+      service.askBob({ message: 'C’est terminé, facture ce passage', autonomy: 'confirm_all' }),
+    );
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error)); expect(proposed.value.kind).toBe("proposed");
+    if (!proposed.ok || !proposed.value.pending) throw new Error('fixture: proposition KO');
+    expect(proposed.value.intent).toBe('terminer_intervention');
+    expect(proposed.value.pending.tool).toBe('terminer_intervention');
+    // L'enchaînement est ANNONCÉ avant la confirmation — il devra être TENU après.
+    expect(proposed.value.pending.chain?.followUp).toContain(created.value.id);
+
+    const confirmation = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending!.proposalId }),
+    );
+    expect(confirmation.ok).toBe(true);
+    if (!confirmation.ok) return;
+    // MÊME carte et MÊME intent que BobAgent.confirm / LocalBobClient.confirmBob.
+    expect(confirmation.value.intent).toBe('terminer_intervention');
+    expect(confirmation.value.card.title).toBe('Passage terminé ✓');
+    // … et la promesse est TENUE : la commande de suivi est proposée, jamais exécutée seule.
+    expect(confirmation.value.choices?.[0]?.value).toBe(
+      proposed.value.pending.chain?.followUp,
+    );
+    expect(confirmation.value.spokenPrompt).toBe(proposed.value.pending.chain?.question);
+
+    // Le passage est RÉELLEMENT terminé (même use case que l'écran), rien n'est facturé.
+    const fiche = await run(() => service.getIntervention(created.value.id));
+    expect(fiche.ok && fiche.value.status).toBe('completed');
+    expect(fiche.ok ? fiche.value.billedInvoiceId : 'non-lu').toBeNull();
   });
 });
 

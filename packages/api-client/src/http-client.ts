@@ -1,5 +1,6 @@
 import {
   isAllowedAgentNavigationRoute,
+  withAnnouncedChain,
   type AgentRun,
   type JournalEntry,
   type MistralConversationSessionEndReason,
@@ -3592,14 +3593,19 @@ export class HttpBobClient implements BobClient {
       AGENT_TURN_TIMEOUT_MS,
     );
   }
-  confirmBob(pending: PendingAction) {
+  async confirmBob(pending: PendingAction) {
     // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
     // tool/args/label restent utiles à l'aperçu UI, mais ne retraversent jamais la frontière.
     // TRANSITION version-skew : un serveur déployé AVANT les propositions opaques ne fournit
     // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
     // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
     const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
-    return this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+    const run = await this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+    // L'ENCHAÎNEMENT ANNONCÉ appartient à la proposition que TIENT le client : le serveur ne la
+    // reçoit pas (seul l'identifiant opaque traverse) et n'en a pas besoin — la commande de
+    // suivi repassera par /ai/ask, qui refait toute l'autorité. Sans cette reprise, la promesse
+    // « ensuite je te propose … » resterait sans suite sur le chemin HTTP.
+    return run.ok ? { ok: true as const, value: withAnnouncedChain(run.value, pending.chain) } : run;
   }
   getRunJournal(runId: string) {
     return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);
