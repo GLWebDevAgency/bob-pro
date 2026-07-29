@@ -257,8 +257,10 @@ recopiée inline.
 > désigne mot pour mot : « Fade-through, segment, filtre ». La valeur **livrée** de ce token est
 > **280 ms** — `packages/tokens/src/index.ts` l. 209, gelée par `packages/tokens/src/index.test.ts`
 > l. 98 (`expect(motionSemantic.replace).toBe(280)`) et par
-> `packages/ui/src/components/motion-presence.test.ts` l. 24. Elle reste sous le plafond
-> « transition fréquente ≤ 300 ms » de [10 — Performance](10-performance-observability.md).
+> `packages/ui/src/components/motion-presence.test.ts` l. 24. Le plan P1 du fondateur
+> ([`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md)
+> §1.4) énonce la même valeur — trois autorités concordantes, aucune ne dit 220. Elle reste sous le
+> plafond « transition fréquente ≤ 300 ms » de [10 — Performance](10-performance-observability.md).
 > Conformément à la [règle d'additivité](03-motion-interaction-system.md#règle-dadditivité), le
 > dossier **consomme** ce token, il ne le revalorise pas.
 >
