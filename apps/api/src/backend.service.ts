@@ -126,6 +126,8 @@ import {
   AttachPurchaseOrderToQuote,
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
+  UpdateInvoiceServicePeriod,
+  type UpdateInvoiceServicePeriodOutput,
   ListInvoiceableQuotes,
   requiresFrenchOperationCategoryAtIssuance,
   // B2 — avancement PROPOSÉ d'une situation (consultatif, jamais imposé) : règle PURE du
@@ -178,6 +180,21 @@ import {
   buildQuoteDuplicationInput,
   type DuplicateQuoteOutput,
   CreateEquipment,
+  CreateIntervention,
+  StartIntervention,
+  CompleteIntervention,
+  CancelIntervention,
+  UpdateIntervention,
+  SignIntervention,
+  GenerateInterventionReport,
+  SendInterventionReport,
+  PrepareInterventionInvoiceDraft,
+  UpdateCompanyInterventionSettings,
+  effectiveInterventionSettings,
+  deriveInterventionBillingDue,
+  type CompanyInterventionSettings,
+  type InterventionBillingDueFact,
+  type UpdateCompanyInterventionSettingsInput,
   UpdateEquipment,
   RetireEquipment,
   ReactivateEquipment,
@@ -188,6 +205,36 @@ import {
   type EquipmentProps,
   type EquipmentHistoryEntry,
   type RetireEquipmentOutput,
+  CreateMaintenanceContract,
+  UpdateMaintenanceContract,
+  ActivateContract,
+  TerminateContract,
+  DeleteDraftContract,
+  PrepareAnnualInvoiceDraft,
+  contractAnnualTotals,
+  currentPeriod,
+  periodCoverage,
+  deriveContractLifecycleFacts,
+  deriveAnnualBillingDue,
+  deriveRenewalAlerts,
+  type CreateMaintenanceContractInput,
+  type ContractLineInput,
+  type UpdateMaintenanceContractInput,
+  type MaintenanceContractProps,
+  type ContractInvoiceProjection,
+  type ContractPeriod,
+  type ContractLifecycleFacts,
+  type AnnualBillingDue,
+  type RenewalAlert,
+  type PrepareAnnualInvoiceDraftOutput,
+  type CreateInterventionInput,
+  type InterventionPatch,
+  type ChecklistItem,
+  type InterventionReportRendererPort,
+  type GenerateInterventionReportOutput,
+  type SendInterventionReportOutput,
+  type PrepareInterventionInvoiceDraftOutput,
+  type InterventionProps,
   type Scenario,
   type Horizon,
   type CashflowProjection,
@@ -288,7 +335,12 @@ import {
   // B1/B2/B4 — parité de la confirmation HTTP : mêmes refus honnêtes et mêmes intents que
   // BobAgent.confirm local pour les outils de facturation terrain.
   FACTURATION_TERRAIN_TOOLS,
+  CONTRACT_LIFECYCLE_TOOLS,
   intentForTool,
+  // PR-15/16 — parité des hôtes : l'enchaînement ANNONCÉ est tenu par le chemin serveur comme
+  // par BobAgent.confirm et par le client local (confirmBob) — une seule fonction pour les trois.
+  withAnnouncedChain,
+  type AgentChainOffer,
   redactPII,
   accountingJournalLabel,
   chantierStatusLabel,
@@ -319,6 +371,8 @@ import { PDF_RENDERER } from './documents/pdf-renderer';
 import { inspectInvoicePdfRepresentation } from './documents/pdfa3';
 import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
 import {
+  generatedInterventionReportDocumentId,
+  generatedInterventionReportVersionId,
   generatedInvoiceDocumentId,
   generatedInvoiceDocumentVersionId,
   generatedQuoteDocumentId,
@@ -361,6 +415,16 @@ import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 import { ExpenseCreationCoordinator } from './expenses/expense-creation-coordinator';
 import { RepositoryDocumentLinkTargets } from './documents/document-link-targets';
 import { QuoteCreationCoordinator } from './quotes/quote-creation-coordinator';
+
+/**
+ * §3.1/§3.5 — passage à facturer, ENRICHI des noms lisibles (site, client) pour l'écran et la
+ * voix. Le FAIT lui-même reste la dérivation pure `deriveInterventionBillingDue` : la couche
+ * serveur ne fait qu'y coller des libellés, jamais une règle d'éligibilité parallèle.
+ */
+export interface InterventionBillingDueView extends InterventionBillingDueFact {
+  chantierNom: string;
+  customerNom: string | null;
+}
 
 export interface QuoteView {
   id: string;
@@ -431,6 +495,29 @@ export interface InvoiceView {
   emailDeliveredAt?: string | null;
   /** PR-08 — site/chantier de rattachement de la pièce ; null = pièce hors site. */
   chantierId: string | null;
+  /** PR-12b — contrat de maintenance facturé (brouillon annuel) ; null = pièce hors contrat. */
+  maintenanceContractId: string | null;
+  /** A7/PR-12b — période de service portée par la pièce (bornes humaines, fin inclusive) ;
+   * AUTORITÉ de la garde d'émission pour une facture de contrat. Null = non renseignée. */
+  servicePeriod: { start: string; end: string | null } | null;
+}
+
+/** PR-12b — vue contrat servie au client : agrégat + FAITS DÉRIVÉS (période arithmétique,
+ * couverture par factures réelles, alerte renouvellement) — l'écran constate, ne réinterprète
+ * jamais (écrans §3.1). */
+export interface MaintenanceContractView {
+  contract: MaintenanceContractProps;
+  customerName: string | null;
+  chantierNom: string | null;
+  /** Σ lignes VIVANTE (jamais persistée). */
+  annualTotals: Totals;
+  currentPeriod: ContractPeriod | null;
+  /** Couverture de la période courante — « Facturée ✓ — F-… » ou « déclarée avant Bob ». */
+  currentPeriodCoveredBy: { by: 'invoice' | 'import'; number: string | null } | null;
+  lifecycle: ContractLifecycleFacts;
+  /** « Facture annuelle à émettre » (erratum n° 3) — null = rien à proposer aujourd'hui. */
+  billingDue: AnnualBillingDue | null;
+  renewalAlert: RenewalAlert | null;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -953,6 +1040,23 @@ interface OwnedAgentProposal {
   readonly proposalId: string;
   readonly planned: readonly JournalEntry[];
   readonly expiresAt: string;
+  /**
+   * PR-15/16 — enchaînement ANNONCÉ au moment de la proposition (« ensuite je te propose … »).
+   * `/ai/confirm` ne reçoit qu'un `proposalId` opaque : sans cette preuve durable, la promesse
+   * faite à l'artisan restait sans suite sur le chemin SERVEUR — donc en production.
+   */
+  readonly chain?: AgentChainOffer;
+}
+
+/** Lecture DÉFENSIVE de l'enchaînement persisté : trois libellés, sinon rien (jamais un objet deviné). */
+function readPersistedChain(args: Record<string, unknown>): AgentChainOffer | null {
+  const raw = args.chain;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { followUp, label, question } = raw as Record<string, unknown>;
+  if (typeof followUp !== 'string' || typeof label !== 'string' || typeof question !== 'string')
+    return null;
+  if (followUp.length === 0 || label.length === 0 || question.length === 0) return null;
+  return { followUp, label, question };
 }
 // Fermé par défaut : n'ajouter un outil qu'après câblage serveur ET test agent → outbox.
 // · envoyer_devis — sendQuote enfile dans l'outbox NotificationDelivery (worker idempotent).
@@ -1174,6 +1278,11 @@ export class BackendService {
       quote: this.p.quotes,
       expense: this.p.expenses,
       chantier: this.p.chantiers,
+      // PR-16 — le parc est tenant-scopé par contrat de port : l'id du tenant courant est
+      // celui du contexte RLS ouvert par runWithTenant, jamais un paramètre déclaratif.
+      equipment: {
+        findById: async (id: string) => this.p.equipments.findById(this.companyId(), id),
+      },
     });
     return {
       exists: (input) => this.p.runWithTenant(input.companyId, () => targets.exists(input)),
@@ -1183,7 +1292,11 @@ export class BackendService {
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
-    @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
+    // PR-16 — le rendu de fiche de passage est une capacité ADDITIVE du même adapter :
+    // absente (double de test, adapter dégradé), la génération répond « indisponible »,
+    // jamais un PDF vide ni un rendu de secours fabriqué.
+    @Inject(PDF_RENDERER)
+    private readonly pdf: PdfRendererPort & Partial<InterventionReportRendererPort>,
     @Inject(OCR_PORT) private readonly ocr: OcrPort,
     @Inject(SUPABASE_ADMIN) private readonly supabaseAdmin: SupabaseAdminPort,
     private readonly notificationDelivery: NotificationDeliveryService,
@@ -1266,6 +1379,9 @@ export class BackendService {
       issuedAt: i.issuedAt,
       // PR-08 : site de rattachement — null honnête (jamais inventé).
       chantierId: i.chantierId,
+      // PR-12b : contrat facturé + période de service portée par la pièce (autorité brouillon).
+      maintenanceContractId: i.maintenanceContractId,
+      servicePeriod: i.servicePeriod,
       // PR-02 : livraison EMAIL constatée (outbox) — le champ n'est TRANSPORTÉ que quand
       // l'appelant a réellement interrogé l'outbox (fail-closed : absent = inconnu, jamais
       // « pas envoyée » affirmé depuis une projection muette).
@@ -2105,7 +2221,13 @@ export class BackendService {
   async deleteDraftInvoice(invoiceId: string) {
     if (!(await this.ownedInvoice(invoiceId)))
       return { ok: false as const, error: appNotFound('invoice', invoiceId) };
-    const r = await new DeleteDraftInvoice({ invoices: this.p.invoices, uow: this.p }).execute({
+    const r = await new DeleteDraftInvoice({
+      invoices: this.p.invoices,
+      uow: this.p,
+      // PR-16 (audit consommateur) — la fiche de passage liée au brouillon supprimé est
+      // DÉTACHÉE dans la même transaction : « Facturer ce passage » se rallume par l'état réel.
+      interventionBillingLinks: this.p.interventions,
+    }).execute({
       invoiceId,
     });
     if (r.ok) this.logger.audit('invoice.draft_deleted', { invoiceId });
@@ -2175,6 +2297,30 @@ export class BackendService {
     if (r.ok)
       this.logger.audit('quote.purchase_order_detached', {
         quoteId: input.quoteId,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
+  /** Écrans §6.5 — période de service d'une facture de CONTRAT « éditable en brouillon » :
+   * le geste que la garde d'émission promet (« modifie le brouillon, jamais l'émission »).
+   * Même patron transactionnel que le bon de commande (lockById + CAS révision). */
+  async updateInvoiceServicePeriod(input: {
+    invoiceId: string;
+    expectedRevision: number;
+    servicePeriod: { start: string; end: string };
+  }): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>> {
+    const r = await new UpdateInvoiceServicePeriod({
+      invoices: {
+        findById: (id) => this.p.invoices.lockById(id),
+        save: (i) => this.p.invoices.save(i),
+      },
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('invoice.service_period_updated', {
+        invoiceId: input.invoiceId,
+        servicePeriod: r.value.servicePeriod,
         revision: r.value.revision,
       });
     return r;
@@ -2317,6 +2463,10 @@ export class BackendService {
           clock: this.clock,
           audit: this.embargoOverrideAudit(),
           purchaseOrderAudit: this.purchaseOrderOverrideAudit(),
+          // PR-12b [direction 1] — garde d'émission des factures de CONTRAT : verrou contrat
+          // + relecture de couverture DANS la même transaction que le compteur.
+          contracts: this.p.maintenanceContracts,
+          contractInvoices: this.p.contractInvoices,
         }).execute(issueInput);
         if (!issued.ok) {
           const missingTerms =
@@ -4069,6 +4219,11 @@ export class BackendService {
           contractWarning: r.value.contractWarning,
         });
       },
+      // [Amélioration 4] — couverture contractuelle lue AVANT la proposition de retrait :
+      // MÊME lecture que GET /equipments/:id/contract-coverage (ConfirmSheet écran et
+      // proposition vocale disent le même avertissement, avant le geste).
+      getEquipmentContractCoverage: async (input) =>
+        this.equipmentContractCoverage(input.equipmentId),
       getEquipmentHistory: async (input) => {
         const r = await this.getEquipmentHistory(input.equipmentId);
         if (!r.ok) return r;
@@ -4088,6 +4243,255 @@ export class BackendService {
                     ? `${entry.label} (${entry.status})`
                     : entry.filename,
           })),
+        });
+      },
+      // PR-12c — contrats de maintenance À LA VOIX (parité §2.7) : MÊMES vues dérivées que
+      // l'écran (listMaintenanceContracts sert la fiche, la liste ET Bob — une seule vérité),
+      // MÊME use case PrepareAnnualInvoiceDraft que POST /contracts/:id/annual-invoice.
+      listMaintenanceContracts: async () => {
+        const views = await this.listMaintenanceContracts();
+        if (!views.ok) return views;
+        return ok(
+          views.value.map((view) => ({
+            id: view.contract.id,
+            label: view.contract.label,
+            status: view.contract.status,
+            customerName: view.customerName,
+            chantierNom: view.chantierNom,
+            tacitRenewal: view.contract.tacitRenewal,
+            noticeDays: view.contract.noticeDays,
+            // §2.7 — l'anniversaire est DIT à l'activation vocale (ce que le geste fige).
+            anniversaryDate: view.contract.anniversaryDate,
+            annualTotalHtCents: view.annualTotals.ht,
+            currentPeriod: view.currentPeriod,
+            currentPeriodCoveredBy: view.currentPeriodCoveredBy,
+            billingDue:
+              view.billingDue === null
+                ? null
+                : {
+                    periodStart: view.billingDue.period.start,
+                    periodEnd: view.billingDue.period.end,
+                    cancelledCoveringNumber: view.billingDue.cancelledCoveringNumber,
+                  },
+            renewalAlert: view.renewalAlert,
+            expiredSince: view.lifecycle.expired?.since ?? null,
+            terminatedCoverageUntil: view.lifecycle.terminatedCoverage?.until ?? null,
+          })),
+        );
+      },
+      prepareContractAnnualInvoice: async (input) => {
+        const r = await this.prepareContractAnnualInvoice(input.contractId);
+        if (!r.ok) return r;
+        return ok({
+          invoiceId: r.value.invoiceId,
+          periodStart: r.value.servicePeriod.start,
+          periodEnd: r.value.servicePeriod.end,
+          totalTtcCents: r.value.totals.ttc,
+          contractTotalTtcCents: r.value.contractTotals.ttc,
+          vatDivergence: r.value.vatDivergence,
+        });
+      },
+      // §2.7 — GESTES de cycle de vie du contrat À LA VOIX : MÊMES use cases que l'API et la
+      // fiche (CreateMaintenanceContract / ActivateContract / TerminateContract — parité
+      // humain↔Bob). La RÉVISION courante est résolue ici : le geste vocal n'a pas de vue
+      // optimiste ; les refus du domaine (Chatel b2c, site clôturé, transition interdite)
+      // remontent tels quels et sont restitués verbatim par l'agent.
+      createMaintenanceContract: async (input) => {
+        const created = await this.createMaintenanceContract({
+          customerId: input.customerId,
+          label: input.label,
+          anniversaryDate: input.anniversaryDate,
+          ...(input.chantierId !== undefined ? { chantierId: input.chantierId } : {}),
+          ...(input.visitsPerYear !== undefined ? { visitsPerYear: input.visitsPerYear } : {}),
+          ...(input.tacitRenewal !== undefined ? { tacitRenewal: input.tacitRenewal } : {}),
+          ...(input.lines !== undefined
+            ? { lines: input.lines.map((line) => ({ ...line, vatRate: line.vatRate as ContractLineInput['vatRate'] })) }
+            : {}),
+          ...(input.equipmentIds !== undefined ? { equipmentIds: input.equipmentIds } : {}),
+        });
+        if (!created.ok) return created;
+        const contract = await this.p.maintenanceContracts.findById(this.companyId(), created.value.id);
+        if (!contract) return err(appNotFound('maintenance_contract', created.value.id));
+        const props = contract.toProps();
+        return ok({
+          contractId: props.id,
+          label: props.label,
+          status: props.status,
+          anniversaryDate: props.anniversaryDate,
+          terminationEffectiveDate: props.terminationEffectiveDate,
+        });
+      },
+      activateMaintenanceContract: async (input) => {
+        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
+        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
+        const r = await this.activateMaintenanceContract({
+          contractId: input.contractId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        return ok({
+          contractId: r.value.id,
+          label: r.value.label,
+          status: r.value.status,
+          anniversaryDate: r.value.anniversaryDate,
+          terminationEffectiveDate: r.value.terminationEffectiveDate,
+        });
+      },
+      terminateMaintenanceContract: async (input) => {
+        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
+        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
+        const r = await this.terminateMaintenanceContract({
+          contractId: input.contractId,
+          expectedRevision: current.revision,
+          note: input.note,
+          ...(input.effectiveDate !== undefined ? { effectiveDate: input.effectiveDate } : {}),
+        });
+        if (!r.ok) return r;
+        return ok({
+          contractId: r.value.id,
+          label: r.value.label,
+          status: r.value.status,
+          anniversaryDate: r.value.anniversaryDate,
+          terminationEffectiveDate: r.value.terminationEffectiveDate,
+        });
+      },
+      // PR-15/16 (parité papa vocal §3.7) — fiche de passage : les adapters délèguent aux MÊMES
+      // use cases que les endpoints (Start/Complete/Send/PrepareInvoice) ; la révision courante
+      // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.
+      listInterventions: async () => {
+        const companyId = this.companyId();
+        const [interventions, chantiers, customers, invoices] = await Promise.all([
+          this.p.interventions.listByCompany(companyId),
+          this.p.chantiers.listByCompany(companyId),
+          this.p.customers.listByCompany(companyId),
+          this.p.invoices.listByCompany(companyId),
+        ]);
+        const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+        const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+        // Statut RÉEL de la pièce liée : une facture ANNULÉE ne couvre plus le passage — la
+        // voix doit voir exactement ce que voit le use case (parité humain↔Bob).
+        const invoiceStatuses = new Map(invoices.map((invoice) => [invoice.id, invoice.status]));
+        return ok(
+          interventions.map((intervention) => {
+            const props = intervention.toProps();
+            return {
+              id: props.id,
+              kind: props.kind,
+              status: props.status,
+              chantierId: props.chantierId,
+              chantierNom: chantierNames.get(props.chantierId) ?? props.chantierId,
+              customerNom: customerNames.get(props.customerId) ?? props.customerId,
+              plannedAt: props.plannedAt,
+              contractId: props.contractId,
+              reportDocumentId: props.reportDocumentId,
+              billedInvoiceId: props.billedInvoiceId,
+              billedInvoiceStatus:
+                props.billedInvoiceId === null
+                  ? null
+                  : (invoiceStatuses.get(props.billedInvoiceId) ?? null),
+              revision: props.revision,
+            };
+          }),
+        );
+      },
+      startIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.startIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
+      completeIntervention: async (input) => {
+        const current = await this.p.interventions.findById(this.companyId(), input.interventionId);
+        if (!current || current.companyId !== this.companyId())
+          return err(appNotFound('intervention', input.interventionId));
+        const r = await this.completeIntervention({
+          interventionId: input.interventionId,
+          expectedRevision: current.revision,
+          ...(input.summary !== undefined && input.summary !== null ? { summary: input.summary } : {}),
+        });
+        if (!r.ok) return r;
+        const chantier = await this.p.chantiers.findById(r.value.chantierId);
+        return ok({
+          interventionId: r.value.id,
+          status: r.value.status,
+          kind: r.value.kind,
+          chantierNom: chantier?.name ?? r.value.chantierId,
+        });
+      },
+      // Sortant : la fiche est ARCHIVÉE (idempotent) puis envoyée — l'archive n'est jamais
+      // re-rendue, et l'envoi reste un geste confirmé côté agent (outil `outbound`).
+      sendInterventionReport: async (input) => {
+        const archived = await this.generateInterventionReport(input.interventionId);
+        if (!archived.ok) return archived;
+        const sent = await this.sendInterventionReport(input.interventionId);
+        if (!sent.ok) return sent;
+        return ok({
+          interventionId: input.interventionId,
+          recipient: sent.value.recipient,
+          deliveryStatus: sent.value.deliveryStatus,
+        });
+      },
+      prepareInterventionInvoice: async (input) => {
+        const r = await this.prepareInterventionInvoiceDraft(input.interventionId);
+        if (!r.ok) return r;
+        return ok({
+          interventionId: input.interventionId,
+          invoiceId: r.value.invoiceId,
+          totalTtcCents: r.value.totals.ttc,
+        });
+      },
+      // §3.1/§3.5 — « qu'est-ce qu'il me reste à facturer ? » : MÊME dérivation pure que
+      // l'endpoint /interventions/billing-due (aucune règle d'éligibilité parallèle).
+      listInterventionsToBill: async () => {
+        const r = await this.listInterventionsToBill();
+        if (!r.ok) return r;
+        return ok(
+          r.value.map((fact) => ({
+            interventionId: fact.interventionId,
+            kind: fact.kind,
+            chantierId: fact.chantierId,
+            chantierNom: fact.chantierNom,
+            customerNom: fact.customerNom,
+            finishedAt: fact.finishedAt,
+          })),
+        );
+      },
+      // PR-16 §3.2/§4.5 — réglages de fiche : MÊME use case que l'écran Réglages ; la révision
+      // (CAS) est résolue ICI, jamais devinée par l'agent (aucune vue optimiste à la voix).
+      getInterventionSettings: async () => {
+        const r = await this.getInterventionSettings();
+        if (!r.ok) return r;
+        return ok({
+          effectiveReportTitle: r.value.effectiveReportTitle,
+          reportTitle: r.value.reportTitle,
+          templatedKinds: Object.keys(r.value.checklistTemplates),
+          revision: r.value.revision,
+        });
+      },
+      updateInterventionSettings: async (input) => {
+        const current = await this.getInterventionSettings();
+        if (!current.ok) return current;
+        const r = await this.updateInterventionSettings({
+          ...input,
+          expectedRevision: current.value.revision,
+        });
+        if (!r.ok) return r;
+        return ok({
+          effectiveReportTitle: r.value.effectiveReportTitle,
+          reportTitle: r.value.reportTitle,
+          templatedKinds: Object.keys(r.value.checklistTemplates),
+          revision: r.value.revision,
         });
       },
       // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
@@ -4700,7 +5104,13 @@ export class BackendService {
           phase: 'executed',
           tool: AGENT_PROPOSAL_OWNER_TOOL,
           label: 'Propriétaire de la proposition agent',
-          args: { userId: principal.userId },
+          // L'enchaînement ANNONCÉ voyage avec la propriété de la proposition : `/ai/confirm`
+          // ne reçoit qu'un id opaque, c'est donc ici — et seulement ici — que la promesse
+          // devient durable. Aucun effet sur l'exécution : ces args ne sont jamais rejoués.
+          args: {
+            userId: principal.userId,
+            ...(r.value.pending.chain ? { chain: { ...r.value.pending.chain } } : {}),
+          },
           mutating: false,
           outbound: false,
           compliance: 'high',
@@ -5052,10 +5462,12 @@ export class BackendService {
           },
         };
       }
+      const chain = readPersistedChain(owner.args);
       return ok({
         proposalId,
         planned,
         expiresAt: new Date(proposedAt + AGENT_PROPOSAL_TTL_MS).toISOString(),
+        ...(chain ? { chain } : {}),
       });
     } catch (error) {
       return {
@@ -5114,7 +5526,7 @@ export class BackendService {
       const companyId = this.companyId();
       const loaded = await this.loadOwnedAgentProposal(input.proposalId);
       if (!loaded.ok) return loaded;
-      const { proposalId, planned } = loaded.value;
+      const { proposalId, planned, chain } = loaded.value;
 
       // Autorisation fermée : un outil sortant n'est exécutable que si son adapter a été audité
       // outbox commitée + worker idempotent. Toute future capability outbound est bloquée par
@@ -5219,7 +5631,10 @@ export class BackendService {
         // `domain:CODE message` (describeError) : le message est extrait, verbatim.
         const domainMessage =
           planned.length === 1
-          && FACTURATION_TERRAIN_TOOLS.has(planned[0]!.tool)
+          && (FACTURATION_TERRAIN_TOOLS.has(planned[0]!.tool)
+            // PR-12c §2.7 — gestes de contrat : même restitution HONNÊTE (LegalHint Chatel,
+            // site clôturé, transition interdite) — jamais un code technique brut.
+            || CONTRACT_LIFECYCLE_TOOLS.has(planned[0]!.tool))
           && typeof blocked.reason === 'string'
             ? (/^domain:[A-Z_]*\s+([\s\S]+)$/.exec(blocked.reason)?.[1] ?? null)
             : null;
@@ -5437,6 +5852,28 @@ export class BackendService {
           },
         });
       }
+      // PR-15/16 — PARITÉ DES HÔTES (revue de vérification 29/07, finding 5) : le passage
+      // terminé confirmé mérite sa carte ET son intent ici AUSSI. Ce chemin est celui de la
+      // PRODUCTION ; sans cette branche, l'artisan mobile lisait « Fait ✓ » avec un intent
+      // `unknown`, et l'enchaînement annoncé (« ensuite je te propose la facture ») restait
+      // sans suite — là où le runtime local et BobAgent.confirm le tenaient.
+      const passageOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'terminer_intervention' && outcome.status === 'executed',
+      );
+      if (!isBatch && passageOutcome) {
+        return ok(
+          withAnnouncedChain(
+            {
+              kind: 'done',
+              intent: 'terminer_intervention',
+              model: 'agent-runtime',
+              plan: record.outcomes.map((outcome) => outcome.label),
+              card: { title: 'Passage terminé ✓', body: `${planned[0]!.label} — c’est fait.` },
+            },
+            chain,
+          ),
+        );
+      }
       if (!isBatch && quoteDeliveryStatus === 'queued') {
         return ok({
           kind: 'done',
@@ -5521,16 +5958,24 @@ export class BackendService {
           },
         });
       }
-      return ok({
-        kind: 'done',
-        intent: 'unknown',
-        model: 'agent-runtime',
-        plan: record.outcomes.map((o) => o.label),
-        card: {
-          title: 'Fait ✓',
-          body: `${planned[0]!.label} — c’est noté.`,
-        },
-      });
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            // PARITÉ : l'intent reflète l'OUTIL confirmé, comme BobAgent.confirm et
+            // le client local (confirmBob) — jamais figé sur `unknown`, sinon la télémétrie des
+            // confirmations serveur (donc de la production) ne dit rien de ce qui a été fait.
+            intent: intentForTool(planned[0]!.tool),
+            model: 'agent-runtime',
+            plan: record.outcomes.map((o) => o.label),
+            card: {
+              title: 'Fait ✓',
+              body: `${planned[0]!.label} — c’est noté.`,
+            },
+          },
+          chain,
+        ),
+      );
     } catch (e) {
       this.logger.audit('ai.confirm', {
         proposalId: proposalIdForAudit,
@@ -5872,7 +6317,7 @@ export class BackendService {
 
   async addChantierNote(
     chantierId: string,
-    input: { text: string; equipmentId?: string | null },
+    input: { text: string; equipmentId?: string | null; interventionId?: string | null },
   ): Promise<Result<{ id: string }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -5885,6 +6330,8 @@ export class BackendService {
       clock: this.clock,
       // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant persistance.
       equipments: this.p.equipments,
+      // PR-15 — le tag fiche est PROUVÉ (même site, fiche encore ouverte aux traces).
+      interventions: this.p.interventions,
     }).execute({
       companyId: this.companyId(),
       chantierId,
@@ -5893,6 +6340,7 @@ export class BackendService {
       // multi-utilisateur (cabinet, salariés) sans migration ni changement de contrat.
       authorLabel: company.name,
       ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      ...(input.interventionId !== undefined ? { interventionId: input.interventionId } : {}),
     });
     if (r.ok) this.logger.audit('chantier.note.added', { companyId: this.companyId(), chantierId });
     return r;
@@ -5959,8 +6407,10 @@ export class BackendService {
     const r = await new RetireEquipment({
       equipments: this.p.equipments,
       clock: this.clock,
-      // Port contrat absent tant que le Bloc B (contrats) n'est pas livré : aucun
-      // avertissement inventé — le câblage arrivera avec MaintenanceContractEquipment.
+      // PR-12b — couverture contractuelle RÉELLE (table de liaison MaintenanceContractEquipment) :
+      // l'avertissement honnête cesse d'être null — il est aussi lisible AVANT la confirmation
+      // via GET /equipments/:id/contract-coverage (écran ET voix le disent avant le geste).
+      contractCoverage: this.p.equipmentContractCoverage,
     }).execute({ companyId: this.companyId(), ...input });
     if (r.ok)
       this.logger.audit('equipment.retired', {
@@ -6023,6 +6473,663 @@ export class BackendService {
     return ok({ equipment: equipment.toProps(), entries });
   }
 
+  // ── PR-12b — contrats de maintenance (Bloc B, C2) : mêmes use cases écran/API/voix ──
+
+  /** Vue contrat SERVIE au client : agrégat + faits DÉRIVÉS (période arithmétique, couverture
+   * par les factures réelles, alerte de renouvellement) — jamais un statut inventé. */
+  private contractView(
+    contract: MaintenanceContractProps,
+    projections: ContractInvoiceProjection[],
+    names: { customerName: string | null; chantierNom: string | null },
+    today: string,
+  ): MaintenanceContractView {
+    const schedule = {
+      status: contract.status,
+      anniversaryDate: contract.anniversaryDate,
+      tacitRenewal: contract.tacitRenewal,
+      importCoveredUntil: contract.importCoveredUntil,
+      terminationEffectiveDate: contract.terminationEffectiveDate,
+    };
+    const period = currentPeriod(schedule, today);
+    const coverage = period === null ? null : periodCoverage(schedule, period, projections);
+    return {
+      contract,
+      customerName: names.customerName,
+      chantierNom: names.chantierNom,
+      annualTotals: contractAnnualTotals(contract.lines),
+      currentPeriod: period,
+      currentPeriodCoveredBy:
+        coverage !== null && coverage.kind === 'covered'
+          ? { by: coverage.by, number: coverage.number }
+          : null,
+      lifecycle: deriveContractLifecycleFacts(schedule, today),
+      billingDue: deriveAnnualBillingDue(schedule, projections, today),
+      renewalAlert: deriveRenewalAlerts(schedule, today),
+    };
+  }
+
+  /** [Annexe erratum n° 8] — les projections de TOUS les contrats viennent d'UNE requête
+   * batchée (listContractInvoicesByCompany), jamais N lectures par contrat. */
+  async listMaintenanceContracts(): Promise<Result<MaintenanceContractView[], AppError>> {
+    const companyId = this.companyId();
+    const [contracts, projectionsByContract, customers, chantiers] = await Promise.all([
+      this.p.maintenanceContracts.listByCompany(companyId),
+      this.p.contractInvoices.listContractInvoicesByCompany(companyId),
+      this.p.customers.listByCompany(companyId),
+      this.p.chantiers.listByCompany(companyId),
+    ]);
+    const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+    const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+    const today = parisDateOnly(this.clock.now());
+    return ok(
+      contracts.map((contract) => {
+        const props = contract.toProps();
+        return this.contractView(props, projectionsByContract.get(contract.id) ?? [], {
+          customerName: customerNames.get(props.customerId) ?? null,
+          chantierNom: props.chantierId === null ? null : chantierNames.get(props.chantierId) ?? null,
+        }, today);
+      }),
+    );
+  }
+
+  async getMaintenanceContract(
+    contractId: string,
+  ): Promise<Result<MaintenanceContractView, AppError>> {
+    const companyId = this.companyId();
+    const contract = await this.p.maintenanceContracts.findById(companyId, contractId);
+    if (!contract || contract.companyId !== companyId)
+      return err(appNotFound('maintenance_contract', contractId));
+    const [projections, customer, chantier] = await Promise.all([
+      this.p.contractInvoices.listByMaintenanceContract(companyId, contractId),
+      this.p.customers.findById(contract.customerId),
+      contract.chantierId === null
+        ? Promise.resolve(null)
+        : this.p.chantiers.findById(contract.chantierId),
+    ]);
+    return ok(
+      this.contractView(contract.toProps(), projections, {
+        customerName: customer?.name ?? null,
+        chantierNom: chantier?.name ?? null,
+      }, parisDateOnly(this.clock.now())),
+    );
+  }
+
+  async createMaintenanceContract(
+    input: Omit<CreateMaintenanceContractInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const r = await new CreateMaintenanceContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      equipments: this.p.equipments,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.created', {
+        companyId: this.companyId(),
+        id: r.value.id,
+      });
+    return r;
+  }
+
+  async updateMaintenanceContract(
+    input: Omit<UpdateMaintenanceContractInput, 'companyId'>,
+  ): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new UpdateMaintenanceContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      equipments: this.p.equipments,
+      ids: this.ids,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.updated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async activateMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+  }): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new ActivateContract({
+      contracts: this.p.maintenanceContracts,
+      customers: this.p.customers,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.activated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async terminateMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+    effectiveDate?: string | null;
+    note: string;
+  }): Promise<Result<MaintenanceContractProps, AppError>> {
+    const r = await new TerminateContract({
+      contracts: this.p.maintenanceContracts,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.terminated', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  async deleteDraftMaintenanceContract(input: {
+    contractId: string;
+    expectedRevision: number;
+  }): Promise<Result<{ deleted: true }, AppError>> {
+    const r = await new DeleteDraftContract({ contracts: this.p.maintenanceContracts }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.draft_deleted', {
+        companyId: this.companyId(),
+        id: input.contractId,
+      });
+    return r;
+  }
+
+  /** §2.6 — « Prépare la facture annuelle » : BROUILLON en un tap (jamais émis, jamais envoyé
+   * seul) — l'émission reste le geste séparé existant, garde transactionnelle comprise. */
+  async prepareContractAnnualInvoice(
+    contractId: string,
+  ): Promise<Result<PrepareAnnualInvoiceDraftOutput, AppError>> {
+    const r = await new PrepareAnnualInvoiceDraft({
+      contracts: this.p.maintenanceContracts,
+      contractInvoices: this.p.contractInvoices,
+      compose: new ComposeStandaloneInvoice({
+        invoices: this.p.invoices,
+        companies: this.p.companies,
+        customers: this.p.customers,
+        ids: this.ids,
+        clock: this.clock,
+        chantierTargets: this.documentLinkTargets(),
+        contracts: this.p.maintenanceContracts,
+      }),
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), contractId });
+    if (r.ok)
+      this.logger.audit('maintenance_contract.annual_invoice_prepared', {
+        companyId: this.companyId(),
+        contractId,
+        invoiceId: r.value.invoiceId,
+      });
+    return r;
+  }
+
+  /** [Amélioration 4] — couverture contractuelle d'un équipement, dite AVANT la confirmation
+   * de retrait (ConfirmSheet et voix interrogent CE point avant le geste). */
+  async equipmentContractCoverage(
+    equipmentId: string,
+  ): Promise<Result<{ activeContractLabels: string[] }, AppError>> {
+    const companyId = this.companyId();
+    const equipment = await this.p.equipments.findById(companyId, equipmentId);
+    if (!equipment || equipment.companyId !== companyId)
+      return err(appNotFound('equipment', equipmentId));
+    const labels = await this.p.equipmentContractCoverage.activeContractLabels(
+      companyId,
+      equipmentId,
+    );
+    return ok({ activeContractLabels: labels });
+  }
+
+  // ── PR-15 — fiche de passage (Bloc C, C3) : gate module IDENTIQUE au parc/notes/photos ──
+
+  /** Fiches d'un site — la liste du terrain (« qu'est-ce qu'on a fait ici ? »). */
+  async listChantierInterventions(
+    chantierId: string,
+  ): Promise<Result<InterventionProps[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const chantier = await this.p.chantiers.findById(chantierId);
+    if (!chantier || chantier.companyId !== this.companyId())
+      return { ok: false, error: appNotFound('chantier', chantierId) };
+    const list = await this.p.interventions.listByChantier(this.companyId(), chantierId);
+    return ok(list.map((intervention) => intervention.toProps()));
+  }
+
+  async getIntervention(interventionId: string): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const intervention = await this.p.interventions.findById(this.companyId(), interventionId);
+    if (!intervention || intervention.companyId !== this.companyId())
+      return { ok: false, error: appNotFound('intervention', interventionId) };
+    return ok(intervention.toProps());
+  }
+
+  /** `id` optionnel = id CLIENT (offline-first §3.6, uuid v4 strict) ; absent, le serveur génère. */
+  async createIntervention(
+    chantierId: string,
+    input: Omit<CreateInterventionInput, 'companyId' | 'chantierId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CreateIntervention({
+      interventions: this.p.interventions,
+      chantiers: this.p.chantiers,
+      customers: this.p.customers,
+      ids: this.ids,
+      clock: this.clock,
+      equipments: this.p.equipments,
+      interventionSettings: this.p.interventionSettings,
+    }).execute({ companyId: this.companyId(), chantierId, ...input });
+    if (r.ok)
+      this.logger.audit('intervention.created', {
+        companyId: this.companyId(),
+        chantierId,
+        id: r.value.id,
+      });
+    return r;
+  }
+
+  async startIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    startedAt?: string;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new StartIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.started', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async completeIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    finishedAt?: string;
+    checklist?: ChecklistItem[];
+    summary?: string | null;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CompleteIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.completed', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async cancelIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new CancelIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.cancelled', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  async updateIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    patch: InterventionPatch;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new UpdateIntervention({
+      interventions: this.p.interventions,
+      uow: this.p,
+      equipments: this.p.equipments,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('intervention.updated', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  /**
+   * §3.5 — signature de la fiche : le tracé du pad arrive en `proofDataUrl`, le serveur en
+   * calcule le SHA-256 (patron signQuote, R4 — le client ne fournit JAMAIS le hash) et ne
+   * stocke pas le dataURL. Après ce geste, la fiche est VERROUILLÉE (§3.4).
+   */
+  async signIntervention(input: {
+    interventionId: string;
+    expectedRevision: number;
+    signerName: string;
+    proofDataUrl: string;
+    /** Heure du GESTE déclarée par l'appareil (capture hors-ligne) — jamais `capturedAt`. */
+    capturedAtDevice?: string;
+  }): Promise<Result<InterventionProps, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new SignIntervention({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      interventionId: input.interventionId,
+      expectedRevision: input.expectedRevision,
+      signerName: input.signerName,
+      proofSha256: sha256Hex(input.proofDataUrl),
+      ...(input.capturedAtDevice !== undefined ? { capturedAtDevice: input.capturedAtDevice } : {}),
+    });
+    if (r.ok)
+      // Jamais le tracé ni le nom du signataire dans les journaux techniques.
+      this.logger.audit('intervention.signed', {
+        companyId: this.companyId(),
+        id: input.interventionId,
+      });
+    return r;
+  }
+
+  /**
+   * §3.1/§3.5 « Facturer sans délai » — passages TERMINÉS/SIGNÉS hors contrat que RIEN ne
+   * couvre : dérivation PURE `deriveInterventionBillingDue` (@bob/core), aucun statut inventé.
+   * Fail-closed : une pièce liée non transportée n'allume jamais le fait ; l'annulation de la
+   * facture liée le RALLUME (extinction par l'état réel). MÊME source pour l'écran et la voix.
+   */
+  async listInterventionsToBill(): Promise<Result<InterventionBillingDueView[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const [interventions, invoices, chantiers, customers] = await Promise.all([
+      this.p.interventions.listByCompany(companyId),
+      this.p.invoices.listByCompany(companyId),
+      this.p.chantiers.listByCompany(companyId),
+      this.p.customers.listByCompany(companyId),
+    ]);
+    const chantierNames = new Map(chantiers.map((chantier) => [chantier.id, chantier.name]));
+    const props = interventions.map((intervention) => intervention.toProps());
+    const customerOf = new Map(props.map((row) => [row.id, row.customerId]));
+    const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+    const due = deriveInterventionBillingDue(
+      props.map((row) => ({
+        id: row.id,
+        status: row.status,
+        contractId: row.contractId,
+        billedInvoiceId: row.billedInvoiceId,
+        kind: row.kind,
+        chantierId: row.chantierId,
+        finishedAt: row.finishedAt,
+      })),
+      new Map(invoices.map((invoice) => [invoice.id, { id: invoice.id, status: invoice.status }])),
+    );
+    return ok(
+      due.map((fact) => {
+        const customerId = customerOf.get(fact.interventionId) ?? null;
+        return {
+          ...fact,
+          chantierNom: chantierNames.get(fact.chantierId) ?? fact.chantierId,
+          customerNom:
+            customerId === null ? null : (customerNames.get(customerId) ?? customerId),
+        };
+      }),
+    );
+  }
+
+  // ── PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES par société (titre + templates) ──
+
+  /**
+   * Réglages EFFECTIFS (défaut produit compris) — jamais un titre vide : sans réglage posé,
+   * `effectiveReportTitle` vaut « Fiche de passage » et `revision` vaut 0 (première écriture).
+   */
+  async getInterventionSettings(): Promise<
+    Result<CompanyInterventionSettings & { effectiveReportTitle: string }, AppError>
+  > {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const stored = await this.p.interventionSettings.find(companyId);
+    return ok(effectiveInterventionSettings(companyId, stored));
+  }
+
+  /** Écriture des réglages — CAS explicite : deux appareils ne s'écrasent jamais en silence. */
+  async updateInterventionSettings(
+    input: Omit<UpdateCompanyInterventionSettingsInput, 'companyId'>,
+  ): Promise<Result<CompanyInterventionSettings & { effectiveReportTitle: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const companyId = this.companyId();
+    const r = await new UpdateCompanyInterventionSettings({
+      interventionSettings: this.p.interventionSettings,
+    }).execute({ companyId, ...input });
+    if (!r.ok) return r;
+    this.logger.audit('intervention.settings_updated', {
+      companyId,
+      revision: r.value.revision,
+      titled: r.value.reportTitle !== null,
+      templates: Object.keys(r.value.checklistTemplates).length,
+    });
+    return ok(effectiveInterventionSettings(companyId, r.value));
+  }
+
+  // ── PR-16 — fiche de passage PDF : rendue PUIS ARCHIVÉE IMMUABLE, envoi confirmé, CTA facturer ──
+
+  /**
+   * Rend la fiche de passage et l'ARCHIVE (StoredDocument `intervention_report`, patron A8) :
+   * une archive par ÉTAT de fiche (`completed`, puis au plus `signed`), JAMAIS re-rendue —
+   * un second appel sert l'archive existante (`alreadyArchived`). La fiche archivée suit
+   * l'ÉQUIPEMENT du passage quand il en vise un, sinon le site (historique parc/site).
+   */
+  async generateInterventionReport(
+    interventionId: string,
+  ): Promise<Result<GenerateInterventionReportOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const renderInterventionReport = this.pdf.renderInterventionReport?.bind(this.pdf);
+    if (renderInterventionReport === undefined) {
+      // Fail-closed honnête : jamais un PDF de secours, jamais une archive fabriquée.
+      return { ok: false, error: appUnavailable('intervention-report-renderer') };
+    }
+    const companyId = this.companyId();
+    const r = await new GenerateInterventionReport({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      notes: this.p.chantierNotes,
+      media: this.p.worksiteMedia,
+      equipments: this.p.equipments,
+      interventionSettings: this.p.interventionSettings,
+      renderer: { renderInterventionReport },
+      documents: {
+        insertInitialOrConfirmExact: (document) =>
+          this.p.runWithTenant(companyId, () =>
+            this.p.documents.insertInitialOrConfirmExact(document),
+          ),
+        findById: (scopedCompanyId, documentId) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documents.findById(scopedCompanyId, documentId),
+          ),
+      },
+      folders: {
+        findById: (scopedCompanyId, folderId) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documentFolders.findById(scopedCompanyId, folderId),
+          ),
+      },
+      linkTargets: this.documentLinkTargets(),
+      storage: this.documentStorage,
+      documentIds: {
+        documentId: generatedInterventionReportDocumentId,
+        versionId: generatedInterventionReportVersionId,
+      },
+      hash: { sha256HexOfBytes: (bytes) => documentSha256(bytes) },
+      clock: this.clock,
+      // [Revue adversariale 28/07 — finding 1] La pose de la référence d'archive est une
+      // mutation de fiche : elle passe par la MÊME transaction + verrou de ligne + CAS que
+      // les autres (une signature concurrente ne peut plus être écrasée au retour du rendu).
+      uow: this.p,
+    }).execute({ companyId, interventionId });
+    if (r.ok)
+      this.logger.audit('intervention.report_archived', {
+        companyId,
+        interventionId,
+        documentId: r.value.documentId,
+        state: r.value.state,
+        alreadyArchived: r.value.alreadyArchived,
+      });
+    return r;
+  }
+
+  /**
+   * Envoi e-mail de la fiche ARCHIVÉE — geste CONFIRMÉ (jamais un effet de bord de la
+   * génération) : le PDF joint est l'ORIGINAL relu et vérifié (octets + sha256), l'outbox
+   * durable `intervention-report` livre (worker cron), l'expéditeur perçu est la société.
+   */
+  async sendInterventionReport(
+    interventionId: string,
+    input?: { recipientEmail?: string },
+  ): Promise<Result<SendInterventionReportOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new SendInterventionReport({
+      interventions: this.p.interventions,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      chantiers: this.p.chantiers,
+      interventionSettings: this.p.interventionSettings,
+      // MÊME source d'ids déterministes que la génération : l'archive jointe est prouvée
+      // être celle de l'ÉTAT COURANT (jamais le PDF d'avant la signature).
+      documentIds: { documentId: generatedInterventionReportDocumentId },
+      archive: {
+        loadArchivedReportPdf: async (companyId, documentId) => {
+          const document = await this.p.runWithTenant(companyId, () =>
+            this.p.documents.findById(companyId, documentId),
+          );
+          if (!document) return err(appUnavailable('intervention-report-archive'));
+          const archive = document.toProps();
+          if (archive.status !== 'active' || archive.kind !== 'intervention_report') {
+            return err(appUnavailable('intervention-report-archive'));
+          }
+          if (archive.mimeType !== 'application/pdf') {
+            return err(appUnavailable('intervention-report-archive'));
+          }
+          const stored = await loadVerifiedStoredObject(this.documentStorage, {
+            companyId,
+            key: archive.storageKey,
+            sizeBytes: archive.byteSize,
+            sha256: archive.sha256,
+            contentType: archive.mimeType,
+          });
+          // Archive absente/corrompue = indisponibilité à réparer, JAMAIS un re-rendu.
+          if (!stored.ok) return err(appUnavailable('intervention-report-archive'));
+          return ok({
+            attachment: {
+              filename: archive.filename,
+              mimeType: archive.mimeType,
+              contentBase64: Buffer.from(stored.value.bytes).toString('base64'),
+            },
+            sha256: archive.sha256,
+          });
+        },
+      },
+      outbox: {
+        enqueue: async (order) => {
+          const job = await this.notificationDelivery.enqueue(order);
+          return { jobId: job.id, status: job.status === 'cancelled' ? 'failed' : job.status };
+        },
+      },
+    }).execute({
+      companyId: this.companyId(),
+      interventionId,
+      ...(input?.recipientEmail !== undefined ? { recipientEmail: input.recipientEmail } : {}),
+    });
+    if (r.ok)
+      // Jamais le contenu ni l'adresse dans les journaux — corrélation technique seulement.
+      this.logger.audit('intervention.report_email_queued', {
+        companyId: this.companyId(),
+        interventionId,
+        jobId: r.value.jobId,
+        deliveryStatus: r.value.deliveryStatus,
+      });
+    return r;
+  }
+
+  /**
+   * CTA « Facturer ce passage » — BROUILLON de facture directe pré-rempli depuis la fiche
+   * (client, site, référence du passage en libellé de ligne) via ComposeStandaloneInvoice :
+   * TOUS les invariants (garde B2C sans urgence qualifiée, international, TVA) sont repassés,
+   * aucun chemin parallèle. Rien n'est émis, rien n'est envoyé.
+   */
+  async prepareInterventionInvoiceDraft(
+    interventionId: string,
+    input?: {
+      lines?: LineInput[];
+      urgentOnSiteRepair?: boolean;
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    },
+  ): Promise<Result<PrepareInterventionInvoiceDraftOutput, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new PrepareInterventionInvoiceDraft({
+      interventions: this.p.interventions,
+      invoices: this.p.invoices,
+      chantiers: this.p.chantiers,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      equipments: this.p.equipments,
+      // Le geste entier (verrou fiche → composition → rattachement) est UNE transaction.
+      uow: this.p,
+      compose: {
+        execute: (composeInput) =>
+          this.composeStandaloneInvoice({
+            customerId: composeInput.customerId,
+            lines: composeInput.lines,
+            ...(composeInput.chantierId !== undefined ? { chantierId: composeInput.chantierId } : {}),
+            ...(composeInput.urgentOnSiteRepair !== undefined
+              ? { urgentOnSiteRepair: composeInput.urgentOnSiteRepair }
+              : {}),
+            ...(composeInput.context !== undefined ? { context: composeInput.context } : {}),
+          }),
+      },
+    }).execute({
+      companyId: this.companyId(),
+      interventionId,
+      ...(input?.lines !== undefined ? { lines: input.lines } : {}),
+      ...(input?.urgentOnSiteRepair !== undefined
+        ? { urgentOnSiteRepair: input.urgentOnSiteRepair }
+        : {}),
+      ...(input?.context !== undefined ? { context: input.context } : {}),
+    });
+    if (r.ok)
+      this.logger.audit('intervention.invoice_drafted', {
+        companyId: this.companyId(),
+        interventionId,
+        invoiceId: r.value.invoiceId,
+      });
+    return r;
+  }
+
   /** [Revue A12] — réponse au refus actionnable « site clôturé » : rouvrir le site. */
   async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
@@ -6045,7 +7152,14 @@ export class BackendService {
 
   async uploadWorksitePhoto(
     chantierId: string,
-    input: { contentBase64: string; mimeType: string; filename: string; equipmentId?: string | null },
+    input: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      equipmentId?: string | null;
+      interventionId?: string | null;
+      phase?: 'before' | 'after' | null;
+    },
   ): Promise<Result<WorksiteMediaItem, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
@@ -6070,6 +7184,8 @@ export class BackendService {
       clock: this.clock,
       // PR-11 — le tag équipement est PROUVÉ (même site, même tenant) avant tout octet stocké.
       equipments: this.p.equipments,
+      // PR-15 — la fiche est PROUVÉE (même site) et encore OUVERTE aux traces (avant `signed`).
+      interventions: this.p.interventions,
     }).execute({
       companyId: this.companyId(),
       chantierId,
@@ -6077,6 +7193,8 @@ export class BackendService {
       contentType: input.mimeType,
       filename: input.filename,
       ...(input.equipmentId !== undefined ? { equipmentId: input.equipmentId } : {}),
+      ...(input.interventionId !== undefined ? { interventionId: input.interventionId } : {}),
+      ...(input.phase !== undefined ? { phase: input.phase } : {}),
     });
     if (r.ok)
       this.logger.audit('chantier.photo.uploaded', {
@@ -6109,13 +7227,34 @@ export class BackendService {
     return ok({ url, expiresInSeconds: ttlSeconds });
   }
 
-  async deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>> {
+  /**
+   * ERRATUM 6 (annexe re-revue 27/07) — `resolutionNote` : quand une photo de fiche est retirée
+   * après un échec définitif de synchronisation, la note automatique de résolution est portée
+   * par CE geste (elle prend la PLACE de l'entrée photo retirée, AVANT le `sign` resté en file).
+   */
+  async deleteWorksitePhoto(
+    photoId: string,
+    input?: { resolutionNote?: string },
+  ): Promise<Result<void, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     const r = await new DeleteWorksitePhoto({
       media: this.p.worksiteMedia,
       storage: this.documentStorage,
-    }).execute({ companyId: this.companyId(), id: photoId });
+      // PR-15 — le verrou post-signature est PROUVÉ avant de toucher une photo de fiche.
+      interventions: this.p.interventions,
+      notes: this.p.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      id: photoId,
+      ...(input?.resolutionNote !== undefined
+        ? { resolutionNote: { text: input.resolutionNote, authorLabel: company.name } }
+        : {}),
+    });
     if (r.ok)
       this.logger.audit('chantier.photo.deleted', { companyId: this.companyId(), id: photoId });
     return r;

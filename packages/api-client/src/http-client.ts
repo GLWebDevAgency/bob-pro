@@ -1,5 +1,6 @@
 import {
   isAllowedAgentNavigationRoute,
+  withAnnouncedChain,
   type AgentRun,
   type JournalEntry,
   type MistralConversationSessionEndReason,
@@ -20,6 +21,9 @@ import type {
   EquipmentPatch,
   EquipmentProps,
   RetireEquipmentOutput,
+  MaintenanceContractProps,
+  PrepareAnnualInvoiceDraftOutput,
+  UpdateInvoiceServicePeriodOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -75,6 +79,11 @@ import type {
   BobClient,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
+  MaintenanceContractClientView,
+  CreateContractClientInput,
+  UpdateContractClientInput,
+  InterventionSettingsView,
+  InterventionSettingsWriteInput,
   QuoteView,
   InvoiceView,
   PaymentView,
@@ -159,6 +168,7 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
   PurchaseOrderMutationView,
   CustomerContactView,
   CustomerContactWriteInput,
@@ -3420,10 +3430,81 @@ export class HttpBobClient implements BobClient {
       `/equipments/${encodeURIComponent(equipmentId)}/history`,
     );
   }
+  // ── PR-16 — réglages de fiche de passage (titre du PDF, templates de checklist) ──
+  getInterventionSettings() {
+    return this.req<InterventionSettingsView>('GET', '/interventions/settings');
+  }
+  updateInterventionSettings(input: InterventionSettingsWriteInput) {
+    return this.req<InterventionSettingsView>('PUT', '/interventions/settings', input);
+  }
   reopenChantier(chantierId: string) {
     return this.req<{ changed: boolean }>(
       'POST',
       `/chantiers/${encodeURIComponent(chantierId)}/reopen`,
+    );
+  }
+  // ── PR-12b/12c — contrats de maintenance (mêmes endpoints que la voix, parité stricte) ──
+  listMaintenanceContracts() {
+    return this.req<MaintenanceContractClientView[]>('GET', '/contracts');
+  }
+  getMaintenanceContract(contractId: string) {
+    return this.req<MaintenanceContractClientView>(
+      'GET',
+      `/contracts/${encodeURIComponent(contractId)}`,
+    );
+  }
+  createMaintenanceContract(input: CreateContractClientInput) {
+    return this.req<{ id: string }>('POST', '/contracts', input);
+  }
+  updateMaintenanceContract(contractId: string, input: UpdateContractClientInput) {
+    return this.req<MaintenanceContractProps>(
+      'PUT',
+      `/contracts/${encodeURIComponent(contractId)}`,
+      input,
+    );
+  }
+  activateMaintenanceContract(contractId: string, input: { expectedRevision: number }) {
+    return this.req<MaintenanceContractProps>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/activate`,
+      input,
+    );
+  }
+  terminateMaintenanceContract(
+    contractId: string,
+    input: { expectedRevision: number; note: string; effectiveDate?: string | null },
+  ) {
+    return this.req<MaintenanceContractProps>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/terminate`,
+      input,
+    );
+  }
+  deleteDraftMaintenanceContract(contractId: string, input: { expectedRevision: number }) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      `/contracts/${encodeURIComponent(contractId)}`,
+      input,
+    );
+  }
+  prepareContractAnnualInvoice(contractId: string) {
+    return this.req<PrepareAnnualInvoiceDraftOutput>(
+      'POST',
+      `/contracts/${encodeURIComponent(contractId)}/annual-invoice`,
+    );
+  }
+  equipmentContractCoverage(equipmentId: string) {
+    return this.req<{ activeContractLabels: string[] }>(
+      'GET',
+      `/equipments/${encodeURIComponent(equipmentId)}/contract-coverage`,
+    );
+  }
+  /** §6.5 — période de service d'une facture de CONTRAT, éditable en BROUILLON. */
+  updateInvoiceServicePeriod(input: UpdateInvoiceServicePeriodClientInput) {
+    return this.req<UpdateInvoiceServicePeriodOutput>(
+      'PUT',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/service-period`,
+      { expectedRevision: input.expectedRevision, servicePeriod: input.servicePeriod },
     );
   }
   worksitePhotoViewUrl(photoId: string) {
@@ -3434,6 +3515,13 @@ export class HttpBobClient implements BobClient {
   }
   deleteWorksitePhoto(photoId: string) {
     return this.req<void>('DELETE', `/chantiers/photos/${encodeURIComponent(photoId)}`);
+  }
+  removeWorksitePhoto(photoId: string, input: { resolutionNote: string }) {
+    return this.req<void>(
+      'POST',
+      `/chantiers/photos/${encodeURIComponent(photoId)}/retirer`,
+      input,
+    );
   }
   listCustomers() {
     return this.req<CustomerListItem[]>(
@@ -3505,14 +3593,19 @@ export class HttpBobClient implements BobClient {
       AGENT_TURN_TIMEOUT_MS,
     );
   }
-  confirmBob(pending: PendingAction) {
+  async confirmBob(pending: PendingAction) {
     // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
     // tool/args/label restent utiles à l'aperçu UI, mais ne retraversent jamais la frontière.
     // TRANSITION version-skew : un serveur déployé AVANT les propositions opaques ne fournit
     // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
     // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
     const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
-    return this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+    const run = await this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
+    // L'ENCHAÎNEMENT ANNONCÉ appartient à la proposition que TIENT le client : le serveur ne la
+    // reçoit pas (seul l'identifiant opaque traverse) et n'en a pas besoin — la commande de
+    // suivi repassera par /ai/ask, qui refait toute l'autorité. Sans cette reprise, la promesse
+    // « ensuite je te propose … » resterait sans suite sur le chemin HTTP.
+    return run.ok ? { ok: true as const, value: withAnnouncedChain(run.value, pending.chain) } : run;
   }
   getRunJournal(runId: string) {
     return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);

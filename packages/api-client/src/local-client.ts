@@ -4,6 +4,7 @@ import {
   ModelRouter,
   pendingToInvocations,
   purchaseOrderLinkedRun,
+  withAnnouncedChain,
   intentForTool,
   // B1/B2/B4 — parité de la confirmation locale : mêmes refus honnêtes et mêmes cartes que
   // BobAgent.confirm et que le serveur pour les outils de facturation terrain.
@@ -29,6 +30,8 @@ import {
   RetireEquipment,
   ReactivateEquipment,
   ReopenChantier,
+  UpdateCompanyInterventionSettings,
+  effectiveInterventionSettings,
   deriveEquipmentHistory,
   SendQuote,
   SignQuote,
@@ -44,6 +47,8 @@ import {
   AttachPurchaseOrderToQuote,
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
+  UpdateInvoiceServicePeriod,
+  type UpdateInvoiceServicePeriodOutput,
   ListInvoiceableQuotes,
   requiresFrenchOperationCategoryAtIssuance,
   UpdateQuoteLine,
@@ -231,6 +236,7 @@ import {
   InMemoryChantierNoteRepository,
   InMemoryWorksiteMediaStorage,
   InMemoryEquipmentRepository,
+  InMemoryCompanyInterventionSettingsRepository,
   InMemoryDocumentStorage,
   InMemoryAccountingEntryRepository,
   InMemoryChartOfAccountsRepository,
@@ -322,9 +328,12 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
   PurchaseOrderMutationView,
   CreateEquipmentClientInput,
   EquipmentHistoryView,
+  InterventionSettingsView,
+  InterventionSettingsWriteInput,
 } from './client';
 import { documentAnalysisSummaryView, documentExtractionSummaryView } from './document-codecs';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
@@ -569,6 +578,7 @@ export class LocalBobClient implements BobClient {
   };
   private readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
   private readonly equipments = new InMemoryEquipmentRepository();
+  private readonly interventionSettings = new InMemoryCompanyInterventionSettingsRepository();
   private readonly worksitePhotoBytes = new InMemoryDocumentStorage();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
@@ -1110,6 +1120,10 @@ export class LocalBobClient implements BobClient {
         )?.createdAt ?? null,
       // PR-08 : parité serveur — site de rattachement (null = pièce hors site).
       chantierId: i.chantierId,
+      // PR-12b : parité serveur — contrat facturé + période de service portée par la pièce
+      // (écrans §6.5 : le brouillon annuel MONTRE le contrat et sa période).
+      maintenanceContractId: i.maintenanceContractId,
+      servicePeriod: i.servicePeriod,
     };
   }
 
@@ -3334,6 +3348,23 @@ export class LocalBobClient implements BobClient {
     return ok({ equipment: equipment.toProps(), entries });
   }
 
+  // ── PR-16 §3.2/§4.5 — réglages de fiche : MÊME use case @bob/core que le serveur. ──
+
+  async getInterventionSettings(): Promise<Result<InterventionSettingsView, AppError>> {
+    const stored = await this.interventionSettings.find(this.companyId);
+    return ok(effectiveInterventionSettings(this.companyId, stored));
+  }
+
+  async updateInterventionSettings(
+    input: InterventionSettingsWriteInput,
+  ): Promise<Result<InterventionSettingsView, AppError>> {
+    const r = await new UpdateCompanyInterventionSettings({
+      interventionSettings: this.interventionSettings,
+    }).execute({ companyId: this.companyId, ...input });
+    if (!r.ok) return r;
+    return ok(effectiveInterventionSettings(this.companyId, r.value));
+  }
+
   async reopenChantier(chantierId: string): Promise<Result<{ changed: boolean }, AppError>> {
     return new ReopenChantier({ chantiers: this.chantiers }).execute({
       companyId: this.companyId,
@@ -3355,6 +3386,30 @@ export class LocalBobClient implements BobClient {
       media: this.worksiteMedia,
       storage: this.worksitePhotoBytes,
     }).execute({ companyId: this.companyId, id: photoId });
+  }
+
+  async removeWorksitePhoto(
+    photoId: string,
+    input: { resolutionNote: string },
+  ): Promise<Result<void, AppError>> {
+    const company = await this.companies.findById(this.companyId);
+    // Le mode local/démo n'a pas de fiches de passage (PR-17) : une photo n'y est jamais
+    // taguée, donc le port `interventions` n'est pas requis — le use case reste fail-closed
+    // s'il rencontrait malgré tout une photo taguée.
+    return new DeleteWorksitePhoto({
+      media: this.worksiteMedia,
+      storage: this.worksitePhotoBytes,
+      notes: this.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      id: photoId,
+      resolutionNote: {
+        text: input.resolutionNote,
+        authorLabel: company?.name ?? 'Bob Pro',
+      },
+    });
   }
 
   // Écritures billing : barrière this.ready (le seed démo doit être ENTIÈREMENT posé avant
@@ -3877,6 +3932,18 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<PurchaseOrderMutationView, AppError>> {
     await this.ready;
     return new AttachPurchaseOrderToInvoice({
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  /** §6.5 — PUT /invoices/:id/service-period (miroir local) : période d'une facture de
+   * CONTRAT, brouillon uniquement — même use case core que l'API (parité stricte). */
+  async updateInvoiceServicePeriod(
+    input: UpdateInvoiceServicePeriodClientInput,
+  ): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>> {
+    await this.ready;
+    return new UpdateInvoiceServicePeriod({
       invoices: this.invoices,
       clock: this.clock,
     }).execute({ companyId: this.companyId, ...input });
@@ -5195,19 +5262,44 @@ export class LocalBobClient implements BobClient {
         },
       });
     }
-    return ok({
-      kind: 'done',
-      // L'intent reflète l'outil confirmé (parité BobAgent.confirm) — jamais figé sur un geste.
-      intent: intentForTool(pending.batch?.[0]?.tool ?? pending.tool),
-      model: 'agent-runtime',
-      plan: record.outcomes.map((o) => o.label),
-      card: {
-        title: 'Fait ✓',
-        body: isBatch
-          ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n')
-          : `${pending.label} — c’est noté.`,
-      },
-    });
+    // PR-15 — le passage terminé confirmé : MÊME carte et MÊME enchaînement que
+    // BobAgent.confirm (parité des hôtes). La promesse « ensuite je te propose … » est tenue
+    // ici aussi — le geste aval est PROPOSÉ, avec sa propre confirmation, jamais exécuté.
+    const passageOutcome = record.outcomes.find(
+      (o) => o.tool === 'terminer_intervention' && o.status === 'executed',
+    );
+    if (!isBatch && passageOutcome) {
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: 'terminer_intervention',
+            model: 'agent-runtime',
+            plan: record.outcomes.map((o) => o.label),
+            card: { title: 'Passage terminé ✓', body: `${pending.label} — c’est fait.` },
+          },
+          pending.chain,
+        ),
+      );
+    }
+    return ok(
+      withAnnouncedChain(
+        {
+          kind: 'done',
+          // L'intent reflète l'outil confirmé (parité BobAgent.confirm) — jamais figé sur un geste.
+          intent: intentForTool(pending.batch?.[0]?.tool ?? pending.tool),
+          model: 'agent-runtime',
+          plan: record.outcomes.map((o) => o.label),
+          card: {
+            title: 'Fait ✓',
+            body: isBatch
+              ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n')
+              : `${pending.label} — c’est noté.`,
+          },
+        },
+        isBatch ? undefined : pending.chain,
+      ),
+    );
   }
 
   /** GET /ai/runs/:runId/journal local : entrées d'audit du run (journal mémoire append-only). */

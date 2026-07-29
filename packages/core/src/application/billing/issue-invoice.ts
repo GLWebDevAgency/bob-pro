@@ -35,6 +35,8 @@ import {
   type CustomerRepository,
   type QuoteRepository,
 } from '../ports/repositories';
+import { type MaintenanceContract } from '../../domain/contract/maintenance-contract';
+import { type ContractInvoicesReadPort } from '../contracts/maintenance-contract-repository';
 import {
   type SequenceCounterPort,
   type ClockPort,
@@ -108,6 +110,14 @@ export interface IssueInvoiceDeps {
    * (port absent → `purchaseOrderOverride` refusé comme la garde ordinaire).
    */
   purchaseOrderAudit?: PurchaseOrderOverrideAuditPort;
+  /**
+   * PR-12b [direction 1] — verrou du CONTRAT de maintenance (FOR UPDATE) pour la garde
+   * d'émission de la facture annuelle : sérialise les émissions concurrentes du même contrat.
+   * FAIL-CLOSED : facture de contrat rencontrée sans ces ports → émission refusée (jamais une
+   * couverture non vérifiée). Optionnels pour les appelants sans contrats (compat).
+   */
+  contracts?: { lockById(companyId: string, id: string): Promise<MaintenanceContract | null> };
+  contractInvoices?: Pick<ContractInvoicesReadPort, 'listByMaintenanceContract'>;
 }
 
 /** Sentinelle applicative : force le rollback UoW tout en préservant le contrat AppError exact. */
@@ -481,6 +491,102 @@ export class IssueInvoice {
             });
             if (!vatClosure.ok) throw new TxDomainError(vatClosure.error);
           }
+        }
+
+        // PR-12b [direction 1, annexe erratum n° 2] — garde d'émission FAIL-CLOSED d'une
+        // facture de CONTRAT, DANS la transaction du compteur. Ordre GLOBAL des verrous
+        // ÉTENDU, jamais inversé (deadlock sinon, vigilance §7.7.3) :
+        // Company SHARE → Invoice UPDATE → Quote UPDATE (si devis parent) →
+        // MaintenanceContract UPDATE (lockById) → compteur.
+        if (invoice.maintenanceContractId !== null && invoice.kind !== 'credit_note') {
+          // (a) AUTORITÉ = colonnes du BROUILLON : une période absente est refusée AVANT tout
+          // compteur ; un input divergent est refusé (Invoice.issue revérifie à l'identique).
+          const draftPeriod = invoice.servicePeriod;
+          if (draftPeriod === null || draftPeriod.end === null) {
+            throw new TxDomainError({
+              code: 'VALIDATION',
+              field: 'servicePeriod',
+              message:
+                'Facture de contrat sans période de service : renseigne la période avant d’émettre.',
+            });
+          }
+          if (
+            input.servicePeriod !== undefined
+            && (input.servicePeriod.start !== draftPeriod.start
+              || (input.servicePeriod.end ?? null) !== draftPeriod.end)
+          ) {
+            throw new TxDomainError({
+              code: 'VALIDATION',
+              field: 'servicePeriod',
+              message:
+                'La période de service d’une facture de contrat est portée par le brouillon : ' +
+                'modifie le brouillon, jamais l’émission.',
+            });
+          }
+          if (this.deps.contracts === undefined || this.deps.contractInvoices === undefined) {
+            throw new TxAppError({
+              kind: 'dependency',
+              port: 'MaintenanceContractRepository',
+              cause:
+                'Facture de contrat sans ports contrats câblés : émission refusée (couverture non vérifiable).',
+            });
+          }
+          // (b) contrat verrouillé (FOR UPDATE) et prouvé dans le tenant.
+          const contract = await this.deps.contracts.lockById(
+            company.id,
+            invoice.maintenanceContractId,
+          );
+          if (!contract || contract.companyId !== company.id) {
+            throw new TxDomainError({
+              code: 'VALIDATION',
+              field: 'maintenanceContractId',
+              message: 'Contrat de maintenance introuvable : émission refusée.',
+            });
+          }
+          // (c) SOUS le verrou : relecture des factures ÉMISES non annulées du contrat — un
+          // chevauchement de période avec CELLE-CI est refusé avec le numéro réel. Deux
+          // brouillons concurrents (2 appareils, voix + UI, double tap) ne s'émettent JAMAIS
+          // tous les deux : le second attend le verrou, relit, et reçoit ce refus — la
+          // transaction s'annule, AUCUN numéro consommé (problème P1 clos).
+          const sisters = await this.deps.contractInvoices.listByMaintenanceContract(
+            company.id,
+            contract.id,
+          );
+          for (const sister of sisters) {
+            if (sister.id === invoice.id) continue;
+            if (sister.kind === 'credit_note') continue;
+            // Fail-closed : une projection MUETTE (statut/période non transportés) interdit de
+            // prouver l'absence de chevauchement — émission refusée plutôt qu'un doublon.
+            if (sister.status === undefined) {
+              throw new TxAppError({
+                kind: 'dependency',
+                port: 'ContractInvoicesReadPort',
+                cause: 'Projection de facture de contrat sans statut : émission refusée.',
+              });
+            }
+            if (sister.status === 'draft' || sister.status === 'cancelled') continue;
+            if (sister.servicePeriodStart === undefined || sister.servicePeriodEnd === undefined) {
+              throw new TxAppError({
+                kind: 'dependency',
+                port: 'ContractInvoicesReadPort',
+                cause: 'Projection de facture de contrat sans période : émission refusée.',
+              });
+            }
+            if (sister.servicePeriodStart === null) continue;
+            const sisterEnd = sister.servicePeriodEnd ?? sister.servicePeriodStart;
+            // Deux périodes de service INCLUSIVES se chevauchent ssi débuts ≤ fins croisés.
+            if (sister.servicePeriodStart <= draftPeriod.end && draftPeriod.start <= sisterEnd) {
+              throw new TxDomainError({
+                code: 'VALIDATION',
+                field: 'servicePeriod',
+                message:
+                  `Période déjà facturée par ${sister.number ?? 'une facture émise'} — ` +
+                  'annule-la (avoir) ou ajuste la période.',
+              });
+            }
+          }
+          // (d) AUCUNE écriture sur le contrat : la couverture est DÉRIVÉE, le verrou ne sert
+          // qu'à sérialiser les émissions concurrentes du même contrat.
         }
 
         // Ferme aussi les anciens brouillons : la garde de génération empêche les nouveaux

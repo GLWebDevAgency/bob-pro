@@ -100,6 +100,7 @@ import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } fro
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
 import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
 import { CustomerContactsCard } from '../../src/components/CustomerContactsCard';
+import { CustomerContractsCard } from '../../src/components/CustomerContractsCard';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -1496,6 +1497,11 @@ export default function ClientDetail() {
                       destinataire à l'envoi d'une pièce vit dans la feuille d'envoi. */}
                   {customer !== null && customerFresh ? (
                     <CustomerContactsCard customerId={customer.id} />
+                  ) : null}
+                  {/* PR-12c — contrats de maintenance du client (écrans §6.3) : badges DÉRIVÉS,
+                      montant/an = Σ lignes vivante ; b2c sans CTA (périmètre V1, Chatel). */}
+                  {customer !== null && customerFresh ? (
+                    <CustomerContractsCard customerId={customer.id} customerType={customer.type} />
                   ) : null}
                   {/* B4 + canal : conditions de paiement (LegalHint L441-10) et « comment ce
                       client reçoit ses factures » — visibles uniquement sur données fraîches

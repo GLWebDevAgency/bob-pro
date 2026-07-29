@@ -42,6 +42,8 @@ import type {
   DetachQuotePurchaseOrderClientInput,
   AttachInvoicePurchaseOrderClientInput,
   DetachInvoicePurchaseOrderClientInput,
+  UpdateInvoiceServicePeriodClientInput,
+  CreateContractClientInput,
 } from '@bob/api-client';
 import type { AppError } from '@bob/core';
 import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
@@ -435,6 +437,140 @@ export function useReopenChantier() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantiers'] }),
+  });
+}
+
+// ── PR-12c — contrats de maintenance (Bloc B) : mêmes endpoints que la voix (parité §2.7).
+// La vue serveur porte les FAITS DÉRIVÉS (période arithmétique, couverture par factures
+// réelles, alerte renouvellement) — l'écran constate, il ne réinterprète jamais. ──
+
+function requireContractCapability<T>(value: T | undefined): T {
+  if (!value) throw { kind: 'unavailable', service: 'contracts' } satisfies AppError;
+  return value;
+}
+
+export function useMaintenanceContracts(enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['contracts'],
+    enabled,
+    queryFn: async () => {
+      const r = await requireContractCapability(client.listMaintenanceContracts?.bind(client))();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useMaintenanceContract(contractId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['contract', contractId],
+    enabled: enabled && contractId.length > 0,
+    queryFn: async () => {
+      const r = await requireContractCapability(client.getMaintenanceContract?.bind(client))(
+        contractId,
+      );
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useCreateMaintenanceContract() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateContractClientInput) => {
+      const r = await requireContractCapability(client.createMaintenanceContract?.bind(client))(
+        input,
+      );
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['contracts'] }),
+  });
+}
+
+function invalidateContract(qc: ReturnType<typeof useQueryClient>, contractId: string): void {
+  void qc.invalidateQueries({ queryKey: ['contracts'] });
+  void qc.invalidateQueries({ queryKey: ['contract', contractId] });
+}
+
+export function useActivateMaintenanceContract() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { contractId: string; expectedRevision: number }) => {
+      const r = await requireContractCapability(client.activateMaintenanceContract?.bind(client))(
+        input.contractId,
+        { expectedRevision: input.expectedRevision },
+      );
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => invalidateContract(qc, input.contractId),
+  });
+}
+
+export function useTerminateMaintenanceContract() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      contractId: string;
+      expectedRevision: number;
+      note: string;
+      effectiveDate?: string | null;
+    }) => {
+      const r = await requireContractCapability(client.terminateMaintenanceContract?.bind(client))(
+        input.contractId,
+        {
+          expectedRevision: input.expectedRevision,
+          note: input.note,
+          ...(input.effectiveDate !== undefined ? { effectiveDate: input.effectiveDate } : {}),
+        },
+      );
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => invalidateContract(qc, input.contractId),
+  });
+}
+
+export function useDeleteDraftMaintenanceContract() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { contractId: string; expectedRevision: number }) => {
+      const r = await requireContractCapability(
+        client.deleteDraftMaintenanceContract?.bind(client),
+      )(input.contractId, { expectedRevision: input.expectedRevision });
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => invalidateContract(qc, input.contractId),
+  });
+}
+
+/** §2.6 — brouillon annuel en un tap (jamais émis, jamais envoyé seul) : la facture créée
+ * PORTE contrat + période + site, et la couverture restera DÉRIVÉE de son émission réelle. */
+export function usePrepareContractAnnualInvoice() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (contractId: string) => {
+      const r = await requireContractCapability(
+        client.prepareContractAnnualInvoice?.bind(client),
+      )(contractId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, contractId) => {
+      invalidateContract(qc, contractId);
+      // Le brouillon créé apparaît dans Ventes — même invalidation que la facture directe.
+      void qc.invalidateQueries({ queryKey: ['invoices'] });
+    },
   });
 }
 
@@ -1692,6 +1828,26 @@ export function useAttachInvoicePurchaseOrder() {
     mutationFn: async (input: AttachInvoicePurchaseOrderClientInput) => {
       if (!client.attachInvoicePurchaseOrder) throw purchaseOrderUnavailable();
       const r = await client.attachInvoicePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
+    },
+  });
+}
+
+/** Écrans §6.5 — PUT /invoices/:id/service-period : période d'une facture de CONTRAT,
+ * « éditable en brouillon, figée à l'émission » (le remède indiqué par la garde d'émission). */
+export function useUpdateInvoiceServicePeriod() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateInvoiceServicePeriodClientInput) => {
+      if (!client.updateInvoiceServicePeriod)
+        throw { kind: 'unavailable', service: 'invoices' } satisfies AppError;
+      const r = await client.updateInvoiceServicePeriod(input);
       if (!r.ok) throw r.error;
       return r.value;
     },

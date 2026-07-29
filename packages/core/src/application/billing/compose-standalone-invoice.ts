@@ -11,6 +11,8 @@ import {
   type CompanyRepository,
   type CustomerRepository,
 } from '../ports/repositories';
+import { type MaintenanceContractRepository } from '../contracts/maintenance-contract-repository';
+import { isAnnualInvoiceDesignation } from '../../domain/contract/annual-invoice-designation';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { validateLineInputs } from './line-input-validation';
@@ -50,6 +52,17 @@ export interface ComposeStandaloneInvoiceInput {
    * persistance (anti-IDOR fail-closed, patron RecordExpense.chantierId).
    */
   chantierId?: string | null;
+  /**
+   * PR-12b [direction 4] — brouillon ANNUEL d'un contrat de maintenance (posé par
+   * PrepareAnnualInvoiceDraft, jamais par l'écran facture directe) : le brouillon PORTE
+   * contrat + période de service (bornes HUMAINES inclusives) dès la composition — colonnes
+   * AUTORITÉ de la garde d'émission (annexe erratum n° 2). Absent = comportement historique
+   * inchangé au bit près (snapshot testé).
+   */
+  contractAttachment?: {
+    maintenanceContractId: string;
+    servicePeriod: { start: string; end: string };
+  } | null;
 }
 
 export interface ComposeStandaloneInvoiceOutput {
@@ -69,6 +82,12 @@ export interface ComposeStandaloneInvoiceDeps {
    * fourni — fail-closed sinon.
    */
   chantierTargets?: DocumentLinkTargetPort;
+  /**
+   * PR-12b — preuve d'existence tenant-scoped du contrat visé (anti-IDOR, défense en
+   * profondeur derrière PrepareAnnualInvoiceDraft). OPTIONNELLE (compat), REQUISE dès qu'un
+   * `contractAttachment` est fourni — fail-closed sinon.
+   */
+  contracts?: Pick<MaintenanceContractRepository, 'findById'>;
 }
 
 /**
@@ -137,6 +156,52 @@ export class ComposeStandaloneInvoice {
       );
     }
 
+    // PR-12b — contrat de rattachement PROUVÉ dans le tenant et VIVANT avant toute écriture
+    // (fail-closed : attachment sans port câblé = refus ; contrat d'un autre tenant = 404).
+    const attachment = input.contractAttachment ?? null;
+    if (attachment !== null) {
+      if (!this.deps.contracts) {
+        return err({
+          kind: 'dependency',
+          port: 'MaintenanceContractRepository',
+          cause:
+            'contractAttachment fourni sans port de vérification tenant (contracts) : rattachement refusé.',
+        });
+      }
+      const contract = await this.deps.contracts.findById(
+        input.companyId,
+        attachment.maintenanceContractId,
+      );
+      if (!contract || contract.companyId !== input.companyId)
+        return err(appNotFound('maintenance_contract', attachment.maintenanceContractId));
+      if (contract.status !== 'active')
+        return err(
+          appDomain({
+            code: 'VALIDATION',
+            field: 'contractAttachment',
+            message: 'Seul un contrat ACTIF porte une facture annuelle.',
+          }),
+        );
+      // GARDE STRUCTURELLE — porte UNIQUE de toute pièce rattachée à un contrat. Ce qui
+      // s'imprime sur la ligne d'une facture annuelle est COMPOSÉ par le domaine (nature de la
+      // prestation + période de la pièce, nom du contrat filtré par la forme sûre) : aucun
+      // texte dicté ne peut l'atteindre. Un chemin qui recopierait un nom parlé — le use case
+      // de préparation, la voix, l'écran, ou un chemin écrit demain — est refusé ICI, avant
+      // toute écriture, jamais rattrapé par une relecture humaine.
+      for (const line of input.lines) {
+        if (!isAnnualInvoiceDesignation(line.label, attachment.servicePeriod))
+          return err(
+            appDomain({
+              code: 'VALIDATION',
+              field: 'lines',
+              message:
+                'La désignation d’une ligne de facture de contrat est composée par le domaine ' +
+                '(nature de la prestation et période couverte) : un libellé libre ne s’imprime jamais.',
+            }),
+          );
+      }
+    }
+
     const at = this.deps.clock.now();
     const composed = Invoice.composeStandalone({
       id: this.deps.ids.newId(),
@@ -145,6 +210,7 @@ export class ComposeStandaloneInvoice {
       // Horodaté SERVEUR à la composition — la trace qui fonde l'exception L221-10, al. 2.
       urgentRepair: input.urgentOnSiteRepair === true ? { requestedAt: at } : null,
       chantierId: input.chantierId ?? null,
+      contractAttachment: attachment,
     });
     if (!composed.ok) return err(appDomain(composed.error));
     const invoice = composed.value;

@@ -11,6 +11,8 @@ function mediaFromRow(row: {
   storageKey: string;
   createdAt: Date;
   equipmentId: string | null;
+  interventionId: string | null;
+  phase: string | null;
 }): WorksiteMediaItem {
   return {
     id: row.id,
@@ -23,6 +25,9 @@ function mediaFromRow(row: {
     createdAt: row.createdAt.toISOString(),
     // PR-11 — tag équipement additif (null = photo du site, lignes historiques comprises).
     equipmentId: row.equipmentId,
+    // PR-15 — tag fiche de passage + phase avant/après (null = photo hors passage).
+    interventionId: row.interventionId,
+    phase: row.phase === 'before' || row.phase === 'after' ? row.phase : null,
   };
 }
 
@@ -46,6 +51,10 @@ export class PrismaWorksiteMediaStorage implements WorksiteMediaStorage {
         storageKey: item.storageKey,
         createdAt: new Date(item.createdAt),
         equipmentId: item.equipmentId ?? null,
+        // PR-15 — le tag fiche (prouvé par le use case) atteint la base ; le trigger
+        // intervention_scope_coherence re-vérifie site ET verrou post-signature.
+        interventionId: item.interventionId ?? null,
+        phase: item.phase ?? null,
       },
     });
   }

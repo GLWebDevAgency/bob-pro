@@ -928,4 +928,215 @@ describe('vague Encaisser (PR-01/02/05/06) — capacités optionnelles, profils 
     // Le destinataire (PII) ne traverse jamais la projection publique du runtime.
     expect(t.projectPublicResult?.(run.value)).toEqual({ deliveryStatus: 'queued' });
   });
+
+  it('regler_fiche_passage : parité §3.2 — capacité optionnelle, plancher de confirmation', async () => {
+    const written: unknown[] = [];
+    // Hôte legacy sans la capacité : l'outil n'existe pas (jamais une promesse creuse).
+    expect(tool(baseActions, 'regler_fiche_passage')).toBeUndefined();
+    expect(tool(baseActions, 'reglages_fiche_passage')).toBeUndefined();
+
+    const actions: BobActions = {
+      ...baseActions,
+      getInterventionSettings: async () =>
+        ok({
+          effectiveReportTitle: 'Fiche de passage',
+          reportTitle: null,
+          templatedKinds: [],
+          revision: 0,
+        }),
+      updateInterventionSettings: async (input) => {
+        written.push(input);
+        return ok({
+          effectiveReportTitle: input.reportTitle ?? 'Fiche de passage',
+          reportTitle: input.reportTitle ?? null,
+          templatedKinds: Object.keys(input.checklistTemplates ?? {}),
+          revision: 1,
+        });
+      },
+    };
+    const read = tool(actions, 'reglages_fiche_passage')!;
+    expect(read.mutating).toBe(false);
+    expect(requiresConfirmation(read, 'confirm_all')).toBe(false);
+
+    const write = tool(actions, 'regler_fiche_passage')!;
+    // Le titre devient l'identité d'un document de preuve sortant : jamais en silence.
+    expect(isSafetyFloor(write)).toBe(true);
+    expect(write.parse({}).ok).toBe(false);
+    expect(write.parse({ reportTitle: 42 }).ok).toBe(false);
+    expect(write.parse({ checklistTemplates: { 'Visite': 'Détartrage' } }).ok).toBe(false);
+    const parsed = write.parse({ reportTitle: 'Certificat sanitaire' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await write.run(parsed.value);
+    expect(run.ok).toBe(true);
+    expect(written).toEqual([{ reportTitle: 'Certificat sanitaire' }]);
+  });
+});
+
+
+describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / résilier)', () => {
+  const lifecycleActions: BobActions = {
+    ...baseActions,
+    createMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'draft' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: null,
+      }),
+    activateMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'active' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: null,
+      }),
+    terminateMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Fontaines RATP',
+        status: 'terminated' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: '2027-10-01',
+      }),
+  };
+
+  it('absents de l’hôte legacy, exposés dès que l’hôte fournit les MÊMES use cases que l’écran', () => {
+    const legacy = buildBobTools(baseActions).map((t) => t.name);
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      expect(legacy).not.toContain(name);
+    }
+    const names = buildBobTools(lifecycleActions).map((t) => t.name);
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      expect(names).toContain(name);
+    }
+  });
+
+  it('les trois gestes sont au PLANCHER de sécurité : confirmés même en autonomie « auto »', () => {
+    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+      const t = tool(lifecycleActions, name)!;
+      expect(t.mutating).toBe(true);
+      expect(t.outbound).toBe(false);
+      expect(isSafetyFloor(t)).toBe(true);
+      expect(requiresConfirmation(t, 'auto')).toBe(true);
+      expect(riskTierOf(t)).toBe('reversible');
+    }
+  });
+
+  it('creer_contrat_maintenance : arguments strictement validés (anti-hallucination)', () => {
+    const t = tool(lifecycleActions, 'creer_contrat_maintenance')!;
+    // Chaque refus doit tomber sur LE défaut qu'il nomme : le libellé est donc toujours
+    // irréprochable ici, sinon la garde fail-closed refuserait la première et ces assertions
+    // deviendraient vraies sans rien prouver (« X » est un moignon, il refuse à lui seul).
+    const OK_LABEL = 'Entretien vitrines';
+    expect(t.parse({ label: OK_LABEL, anniversaryDate: '2026-10-01' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: '', anniversaryDate: '2026-10-01' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '01/10/2026' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '2026-02-31' }).ok).toBe(false);
+    expect(
+      t.parse({ customerId: 'c', label: OK_LABEL, anniversaryDate: '2026-10-01', visitsPerYear: 99 })
+        .ok,
+    ).toBe(false);
+    expect(
+      t.parse({
+        customerId: 'c',
+        label: OK_LABEL,
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 7 }],
+      }).ok,
+    ).toBe(false);
+    const parsed = t.parse({
+      customerId: 'cus-1',
+      label: 'Fontaines RATP',
+      chantierId: 'site-1',
+      anniversaryDate: '2026-10-01',
+      visitsPerYear: 2,
+      tacitRenewal: false,
+      lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      equipmentIds: ['eq-1'],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toEqual({
+      customerId: 'cus-1',
+      label: 'Fontaines RATP',
+      chantierId: 'site-1',
+      anniversaryDate: '2026-10-01',
+      visitsPerYear: 2,
+      tacitRenewal: false,
+      lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      equipmentIds: ['eq-1'],
+    });
+  });
+
+  /**
+   * CHEMIN DU MODÈLE — la garde fail-closed du libellé (`contract-label-guard.ts`) est posée au
+   * POINT DE CONVERGENCE des deux chemins qui peuvent produire un contrat : l'extraction
+   * déterministe (l'agent construit ces arguments, cf. `bob-agent-contracts.test.ts`) et CELUI-CI,
+   * où un modèle remplit `label` lui-même. Un modèle n'a aucune raison structurelle de séparer le
+   * nom des faits : il recopie volontiers la phrase du pro. Ce test prouve que le registre ne lui
+   * fait pas confiance — sans lui, la garde ne couvrirait qu'une moitié du problème.
+   */
+  it('GARDE : le libellé rempli PAR LE MODÈLE traverse la même garde (jamais un fait sur la ligne)', () => {
+    const t = tool(lifecycleActions, 'creer_contrat_maintenance')!;
+    const base = { customerId: 'cus-1', anniversaryDate: '2026-10-01' };
+    // Les formes que quatre revues ont vues échapper à l'extraction — refusées ICI par la garde,
+    // quelle que soit la façon dont elles sont arrivées dans l'argument.
+    const refuses: readonly string[] = [
+      'Entretien vitrines à 1.200 € par an',
+      'Entretien vitrines à deux mille euros',
+      'Entretien vitrines 12 k€',
+      'Entretien vitrines à partir du 01/10/2026',
+      'Entretien vitrines le 1er octobre',
+      'Entretien vitrines pour le compte de RATP',
+      'Entretien vitrines au nom de Carrefour',
+      'Entretien vitrines pour la SARL Dupont',
+      'Entretien vitrines pour',
+      'de la',
+    ];
+    const passes = refuses.filter((label) => t.parse({ ...base, label }).ok);
+    expect(passes.join(' | '), 'libellés qui auraient dû être refusés par la garde').toBe('');
+    // Le refus est DIT en français au point de décision, jamais rendu en code technique.
+    const refused = t.parse({ ...base, label: 'Entretien vitrines à 1.200 € par an' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    // Le refus parle du NOM affiché sur le contrat, jamais de la facture : la ligne de la facture
+    // annuelle ne reprend plus ce nom (le domaine compose sa désignation, @bob/core).
+    expect(JSON.stringify(refused.error)).toContain('montant');
+    expect(JSON.stringify(refused.error)).not.toContain('facture');
+    // La LIGNE du contrat passe par la MÊME garde, sans raccourci…
+    expect(
+      t.parse({
+        ...base,
+        label: 'Entretien vitrines',
+        lines: [
+          { label: '1 200 € par an', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 },
+        ],
+      }).ok,
+    ).toBe(false);
+    // …et un nom de contrat parfaitement légitime reste possible (la garde n'est pas un mur).
+    expect(
+      t.parse({
+        ...base,
+        label: 'Entretien annuel hall A',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('resilier_contrat : le MOTIF est exigé (trace légale) et la date d’effet reste optionnelle', () => {
+    const t = tool(lifecycleActions, 'resilier_contrat')!;
+    expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', note: '   ' }).ok).toBe(false);
+    // Caractère de CONTRÔLE dans le motif : refusé ici comme par le domaine.
+    expect(t.parse({ contractId: 'c-1', note: 'motif\u0007' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', note: 'motif', effectiveDate: 'le 1er juin' }).ok).toBe(false);
+    const parsed = t.parse({ contractId: 'c-1', note: ' le client déménage ' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // Sans date dite, aucune date n’est envoyée : le domaine calcule le prochain anniversaire.
+    expect(parsed.value).toEqual({ contractId: 'c-1', note: 'le client déménage' });
+  });
 });

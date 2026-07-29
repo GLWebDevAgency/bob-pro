@@ -40,7 +40,7 @@ export type DbDocKind = 'quote' | 'invoice' | 'deposit_invoice' | 'credit_note' 
 export function invoiceKindToDocKind(k: InvoiceKind): DbDocKind {
   return k === 'final' ? 'invoice' : k === 'deposit' ? 'deposit_invoice' : k;
 }
-function docKindToInvoiceKind(d: string): InvoiceKind {
+export function docKindToInvoiceKind(d: string): InvoiceKind {
   return d === 'invoice' ? 'final' : d === 'deposit_invoice' ? 'deposit' : (d as InvoiceKind);
 }
 
@@ -731,6 +731,8 @@ interface InvoiceRow {
   purchaseOrderDocumentId: string | null;
   /** PR-08 — site/chantier de rattachement. NULL = pièce hors site (jamais rétro-rempli). */
   chantierId: string | null;
+  /** PR-12b — contrat de maintenance facturé. NULL = pièce hors contrat (jamais rétro-rempli). */
+  maintenanceContractId: string | null;
   revision: number;
   lines: LineRow[];
   precedingInvoices: InvoicePredecessorRow[];
@@ -844,6 +846,8 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     purchaseOrder: purchaseOrderFromRow(row),
     // PR-08 : site de rattachement — NULL honnête (jamais inventé à la relecture).
     chantierId: row.chantierId,
+    // PR-12b : contrat facturé — NULL honnête (jamais inventé à la relecture).
+    maintenanceContractId: row.maintenanceContractId,
     revision: row.revision,
   };
 }

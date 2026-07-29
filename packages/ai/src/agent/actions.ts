@@ -601,6 +601,17 @@ export interface RetireEquipmentActionOutput {
   contractWarning: string | null;
 }
 
+/** [Amélioration 4] — couverture contractuelle lue AVANT la confirmation de retrait :
+ * MÊME lecture que GET /equipments/:id/contract-coverage (une seule vérité écran/voix). */
+export interface EquipmentContractCoverageActionInput {
+  equipmentId: string;
+}
+
+export interface EquipmentContractCoverageActionOutput {
+  /** Labels des contrats ACTIFS couvrant l'équipement — vide = aucune couverture connue. */
+  activeContractLabels: string[];
+}
+
 /** Outil historique_equipement (PR-11) : MÊME dérivation deriveEquipmentHistory que
  * GET /equipments/:id/history — lecture pure, entrées réelles uniquement. */
 export interface EquipmentHistoryActionInput {
@@ -619,6 +630,204 @@ export interface EquipmentHistoryActionOutput {
   label: string;
   status: 'active' | 'retired';
   entries: EquipmentHistoryActionEntry[];
+}
+
+/** PR-15/16 — fiche de passage RÉELLE du tenant : matière de résolution par nom parlé
+ * (site + client) des outils de la fiche. Lecture pure, jamais une fiche inventée. */
+export interface AgentIntervention {
+  id: string;
+  /** Libellé LIBRE (« Visite d'entretien ») — descriptif, jamais un discriminant. */
+  kind: string;
+  status: 'scheduled' | 'in_progress' | 'completed' | 'signed' | 'cancelled';
+  chantierId: string;
+  chantierNom: string;
+  customerNom: string;
+  plannedAt: string | null;
+  /** SEUL discriminant d'une visite contractuelle (direction 6) — jamais `kind`. */
+  contractId: string | null;
+  /** Archive de fiche déjà produite (PR-16) — null = à générer avant tout envoi. */
+  reportDocumentId: string | null;
+  /** Facture liée par « Facturer ce passage » — null = passage encore à facturer. */
+  billedInvoiceId: string | null;
+  /**
+   * [Revue adversariale 28/07 — finding 4] Statut RÉEL de la pièce liée — `null` quand aucune
+   * pièce n'est liée OU que la pièce est introuvable dans le tenant. Le droit de facturer
+   * s'éteint par l'ÉTAT RÉEL, jamais par la simple présence du lien : une facture `cancelled`
+   * (avoir) RALLUME le geste, exactement comme le use case et `deriveInterventionBillingDue`.
+   * Sans ce fait transporté, Bob répondait « Aucun passage à facturer » — une affirmation
+   * FAUSSE — là où le doigt pouvait encore le faire.
+   */
+  billedInvoiceStatus: string | null;
+  revision: number;
+}
+
+export interface InterventionActionInput {
+  /** Fiche RÉSOLUE contre la liste réelle par l'agent — jamais un id récité. */
+  interventionId: string;
+}
+
+export interface CompleteInterventionActionInput extends InterventionActionInput {
+  /** Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé »). */
+  summary?: string | null;
+}
+
+export interface InterventionActionOutput {
+  interventionId: string;
+  status: 'scheduled' | 'in_progress' | 'completed' | 'signed' | 'cancelled';
+  kind: string;
+  chantierNom: string;
+}
+
+/** Outil envoyer_fiche_passage (PR-16) : MÊME chaîne que le bouton — génération de l'archive
+ * (idempotente) puis envoi CONFIRMÉ par l'outbox `intervention-report`. */
+export interface SendInterventionReportActionOutput {
+  interventionId: string;
+  recipient: string;
+  deliveryStatus: 'queued' | 'sent';
+}
+
+/** Outil facturer_intervention (PR-16) : MÊME ComposeStandaloneInvoice que le CTA — brouillon
+ * pré-rempli, tous les invariants d'émission repassés (garde B2C comprise). */
+export interface PrepareInterventionInvoiceActionOutput {
+  interventionId: string;
+  invoiceId: string;
+  totalTtcCents: number;
+}
+
+/**
+ * PR-12c — contrat de maintenance projeté pour la voix (Bloc B §2.7) : l'agrégat + les FAITS
+ * DÉRIVÉS par le serveur (période arithmétique, couverture par factures réelles, alerte de
+ * renouvellement). Bob CONSTATE ces faits et les dit — il ne les recalcule ni ne les invente.
+ */
+export interface AgentContract {
+  id: string;
+  label: string;
+  status: 'draft' | 'active' | 'terminated';
+  customerName: string | null;
+  chantierNom: string | null;
+  tacitRenewal: boolean;
+  noticeDays: number;
+  /** Σ lignes HT vivante (centimes) — jamais persistée. */
+  annualTotalHtCents: number;
+  /** Période courante CALCULÉE (bornes EXCLUSIVES domaine) — null si résilié échu/non-tacite échu. */
+  currentPeriod: { start: string; end: string } | null;
+  /** Couverture de la période courante — « Facturée ✓ — F-… » / « déclarée avant Bob ». */
+  currentPeriodCoveredBy: { by: 'invoice' | 'import'; number: string | null } | null;
+  /** « Facture annuelle à émettre » (annexe erratum n° 3) — null : rien à proposer. */
+  billingDue: {
+    periodStart: string;
+    periodEnd: string;
+    cancelledCoveringNumber: string | null;
+  } | null;
+  renewalAlert: {
+    palier: 'j60' | 'j30';
+    anniversary: string;
+    daysUntil: number;
+    tacit: boolean;
+  } | null;
+  /** [P14] non-tacite échu depuis cette date — « à renouveler ou résilier ». */
+  expiredSince: string | null;
+  terminatedCoverageUntil: string | null;
+  /** §2.7 — date anniversaire du contrat : DITE à l'activation (« l'anniversaire sera figé au
+   * … ») pour que le geste vocal montre ce qu'il fige, exactement comme la fiche. */
+  anniversaryDate: string;
+}
+
+/**
+ * Outil `creer_contrat_maintenance` (§2.7) : MÊME use case CreateMaintenanceContract (@bob/core)
+ * que le wizard de la fiche — client PROUVÉ b2b/b2g (le refus Chatel du domaine est restitué
+ * VERBATIM, jamais reformulé), site `open` s'il est lié, équipements du MÊME site fail-closed.
+ * L'activation reste un SECOND geste confirmé — jamais fusionnée ici.
+ */
+export interface CreateMaintenanceContractActionInput {
+  /** Client RÉSOLU contre la liste réelle par l'agent — jamais un id inventé ni récité. */
+  customerId: string;
+  label: string;
+  /** Site RÉSOLU (resolveSpokenChantier) ; absent/null = contrat sans site. */
+  chantierId?: string | null;
+  anniversaryDate: string;
+  visitsPerYear?: number;
+  tacitRenewal?: boolean;
+  /** Ligne(s) du contrat — le montant ANNUEL dit devient la ligne unique (catalogue libre). */
+  lines?: readonly { label: string; quantity: number; unitPriceHtCents: number; vatRate: number }[];
+  /** Équipements du parc RÉEL résolus par nom parlé, tous du site du contrat. */
+  equipmentIds?: readonly string[];
+}
+
+/** Outils `activer_contrat` / `resilier_contrat` (§2.7) : MÊMES use cases ActivateContract et
+ * TerminateContract que la fiche — l'hôte résout la révision courante côté serveur (le geste
+ * vocal n'a pas de vue optimiste). Le préavis est AFFICHÉ, jamais bloquant. */
+export interface ActivateContractActionInput {
+  contractId: string;
+}
+
+export interface TerminateContractActionInput {
+  contractId: string;
+  /** Absente/null → le use case retient le PROCHAIN anniversaire calculé (jamais un floor). */
+  effectiveDate?: string | null;
+  /** Trace légale de la décision — exigée par le domaine. */
+  note: string;
+}
+
+/** Retour COMMUN des gestes de cycle de vie : les faits que Bob RÉCITE après le geste (jamais
+ * recalculés — la date d'effet réelle vient du domaine, y compris quand elle n'a pas été dite). */
+export interface ContractLifecycleActionOutput {
+  contractId: string;
+  label: string;
+  status: 'draft' | 'active' | 'terminated';
+  anniversaryDate: string;
+  terminationEffectiveDate: string | null;
+}
+
+export interface PrepareContractAnnualInvoiceActionInput {
+  contractId: string;
+}
+
+export interface PrepareContractAnnualInvoiceActionOutput {
+  invoiceId: string;
+  /** Période de service écrite au brouillon (bornes HUMAINES inclusives). */
+  periodStart: string;
+  periodEnd: string;
+  totalTtcCents: number;
+  contractTotalTtcCents: number;
+  /** Amélioration 2 — l'écart de TVA contrat/brouillon est DIT, jamais silencieux. */
+  vatDivergence: boolean;
+}
+
+/**
+ * PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : le titre du PDF (« Certificat sanitaire »)
+ * et les modèles de checklist par type de passage. La révision (CAS) est résolue par l'hôte —
+ * le geste vocal n'a pas de vue optimiste, il ne devine jamais un numéro de révision.
+ */
+export interface InterventionSettingsActionInput {
+  /** Absent = inchangé ; `null` ou vide = retour au défaut produit (« Fiche de passage »). */
+  reportTitle?: string | null;
+  /** Absent = inchangé ; fourni = remplacement complet des modèles par type de passage. */
+  checklistTemplates?: Record<string, string[]>;
+}
+
+/**
+ * §3.1/§3.5 — passage À FACTURER (dérivation pure `deriveInterventionBillingDue`) : terminé ou
+ * signé, HORS contrat, sans pièce liée vivante. Fail-closed sur projection absente ; l'annulation
+ * de la facture liée RALLUME le fait. Lecture pure — Bob ne facture jamais tout seul.
+ */
+export interface InterventionBillingDueAction {
+  interventionId: string;
+  kind: string;
+  chantierId: string;
+  chantierNom: string;
+  customerNom: string | null;
+  finishedAt: string | null;
+}
+
+export interface InterventionSettingsActionOutput {
+  /** Titre RÉELLEMENT imprimé sur la fiche (défaut produit compris) — jamais vide. */
+  effectiveReportTitle: string;
+  /** Titre propre à la société, `null` quand c'est le défaut produit qui s'applique. */
+  reportTitle: string | null;
+  /** Types de passage disposant d'un modèle de checklist. */
+  templatedKinds: string[];
+  revision: number;
 }
 
 /**
@@ -833,8 +1042,78 @@ export interface BobActions {
   retireEquipment?(
     input: RetireEquipmentActionInput,
   ): Promise<Result<RetireEquipmentActionOutput, AppError>>;
+  /** [Amélioration 4] — couverture contractuelle ACTIVE d'un équipement, lue AVANT la
+   * proposition de retrait : l'avertissement du domaine est DIT dans la confirmation (écran
+   * ET voix), jamais seulement après le geste. MÊME lecture que
+   * GET /equipments/:id/contract-coverage. Optionnelle : hôte antérieur → l'avertissement
+   * post-exécution du use case reste le filet. */
+  getEquipmentContractCoverage?(
+    input: EquipmentContractCoverageActionInput,
+  ): Promise<Result<EquipmentContractCoverageActionOutput, AppError>>;
   /** PR-11 — « l'historique de la fontaine de l'accueil » : MÊME dérivation que l'écran. */
   getEquipmentHistory?(
     input: EquipmentHistoryActionInput,
   ): Promise<Result<EquipmentHistoryActionOutput, AppError>>;
+  /** PR-12c — contrats RÉELS du tenant avec leurs FAITS DÉRIVÉS (période, couverture,
+   * renouvellement) : la matière du statut parlé, des renouvellements et de la résolution
+   * par nom (« la facture annuelle de Carrefour »). Lecture pure, jamais un contrat inventé. */
+  listMaintenanceContracts?(): Promise<Result<AgentContract[], AppError>>;
+  /** PR-12c — « prépare la facture annuelle du contrat Bastille » : MÊME use case
+   * PrepareAnnualInvoiceDraft que POST /contracts/:id/annual-invoice et la fiche (brouillon
+   * en un tap, jamais émis, jamais envoyé seul ; refus actionnables restitués verbatim). */
+  prepareContractAnnualInvoice?(
+    input: PrepareContractAnnualInvoiceActionInput,
+  ): Promise<Result<PrepareContractAnnualInvoiceActionOutput, AppError>>;
+  /** §2.7 — « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » : MÊME use case
+   * CreateMaintenanceContract que le wizard (parité humain↔Bob). Les refus du domaine (Chatel
+   * b2c, site clôturé, équipement d'un autre site) sont restitués VERBATIM. */
+  createMaintenanceContract?(
+    input: CreateMaintenanceContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** §2.7 — « active le contrat Bastille » : MÊME use case ActivateContract que la fiche
+   * (revalide b2b/b2g sur la fiche RELUE, fige l'anniversaire). Geste DISTINCT de la création. */
+  activateMaintenanceContract?(
+    input: ActivateContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** §2.7 — « le client résilie au 1er juin » : MÊME use case TerminateContract que la fiche —
+   * préavis AFFICHÉ jamais bloquant, date d'effet par défaut = prochain anniversaire CALCULÉ
+   * par le domaine (jamais par Bob), motif porté en trace. */
+  terminateMaintenanceContract?(
+    input: TerminateContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** PR-15 — fiches de passage RÉELLES du tenant : matière de résolution par nom parlé
+   * (« démarre l'intervention chez Carrefour »). Lecture pure, jamais une fiche inventée. */
+  listInterventions?(): Promise<Result<AgentIntervention[], AppError>>;
+  /** PR-15 — « démarre l'intervention chez Carrefour » : MÊME use case StartIntervention que
+   * l'écran (la révision courante est résolue par l'hôte — le geste vocal n'a pas de vue
+   * optimiste). */
+  startIntervention?(
+    input: InterventionActionInput,
+  ): Promise<Result<InterventionActionOutput, AppError>>;
+  /** PR-15 — « c'est terminé » : MÊME use case CompleteIntervention ; la checklist est FIGÉE
+   * par ce geste et le résumé dicté est posé dans la même confirmation groupée. */
+  completeIntervention?(
+    input: CompleteInterventionActionInput,
+  ): Promise<Result<InterventionActionOutput, AppError>>;
+  /** PR-16 — « envoie la fiche de passage » : génération de l'archive (idempotente) PUIS envoi
+   * CONFIRMÉ — jamais un sortant automatique. */
+  sendInterventionReport?(
+    input: InterventionActionInput,
+  ): Promise<Result<SendInterventionReportActionOutput, AppError>>;
+  /** PR-16 — « facture cette intervention » : MÊME CTA que l'écran — BROUILLON pré-rempli,
+   * jamais une émission, jamais un envoi. */
+  prepareInterventionInvoice?(
+    input: InterventionActionInput,
+  ): Promise<Result<PrepareInterventionInvoiceActionOutput, AppError>>;
+  /** §3.1/§3.5 — « qu'est-ce qu'il me reste à facturer sur mes passages ? » : MÊME dérivation
+   * `deriveInterventionBillingDue` que l'écran (fail-closed, réallumage par l'état réel). */
+  listInterventionsToBill?(): Promise<Result<InterventionBillingDueAction[], AppError>>;
+  /** PR-16 §3.2 — « comment s'appelle ma fiche de passage ? » : lecture pure des réglages. */
+  getInterventionSettings?(): Promise<Result<InterventionSettingsActionOutput, AppError>>;
+  /** PR-16 §3.2/§4.5 — « appelle ma fiche Certificat sanitaire » : MÊME use case
+   * UpdateCompanyInterventionSettings que l'écran Réglages (parité humain↔Bob). L'hôte résout
+   * la révision courante (CAS) — le geste vocal n'a pas de vue optimiste. */
+  updateInterventionSettings?(
+    input: InterventionSettingsActionInput,
+  ): Promise<Result<InterventionSettingsActionOutput, AppError>>;
 }

@@ -7,7 +7,11 @@ import {
 type TenantOwnedTarget = { readonly companyId: string };
 type CompanyTarget = { readonly id: string };
 type TenantLinkedEntityType = Exclude<DocumentLinkedEntityType, 'company'>;
-const TENANT_LINKED_ENTITY_TYPES = new Set<TenantLinkedEntityType>(['invoice', 'quote', 'expense', 'chantier']);
+// PR-16 — `equipment` rejoint les cibles tenantées : la fiche de passage archivée suit
+// l'équipement du parc quand le passage en vise un (historique par équipement, PR-11).
+const TENANT_LINKED_ENTITY_TYPES = new Set<TenantLinkedEntityType>([
+  'invoice', 'quote', 'expense', 'chantier', 'equipment',
+]);
 
 interface Lookup<T> {
   findById(id: string): Promise<T | null>;

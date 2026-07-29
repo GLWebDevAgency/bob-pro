@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, CONTRACT_B2C_REFUSED_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -8,11 +8,12 @@ import { type AgentDocument, type AgentExpense, type BillableCustomer, type BobA
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
-import { type BobIntent, detectIntent } from './intent';
+import { type BobIntent, detectIntent, INTENT_BY_GESTURE } from './intent';
 import {
   classifyWithLlm,
   classifyWithRegex,
   DETERMINISTIC_CLASSIFIER_MODEL,
+  INTENTS_HORS_OUTILLAGE_LLM,
 } from './classifier';
 import {
   AgentRuntime,
@@ -27,6 +28,25 @@ import {
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
 import { extractSpokenWarranty } from './equipment-warranty';
+import {
+  extractSpokenContractFacts,
+  extractSpokenEquipmentCount,
+  extractSpokenStartDate,
+  extractSpokenTerminationNote,
+} from './contract-command';
+import { contractLabelRefusalSaid, inspectContractLabel } from './contract-label-guard';
+import {
+  explainInterventionAsides,
+  explainInterventionBlock,
+  explainWithheldDownstream,
+  interventionRequestFor,
+  markInterventionCommand,
+  readInterventionDirective,
+  requestedGesture,
+  resolveInterventionGesture,
+  type InterventionDownstream,
+  type InterventionGesture,
+} from './intervention-directive';
 import {
   type AgentAskPayload,
   type AgentCapability,
@@ -244,6 +264,14 @@ export interface PendingAction {
   expiresAt?: string;
   /** Pour un plan multi-étapes : la suite d'actions à exécuter en lot après confirmation. */
   batch?: BatchItem[];
+  /**
+   * ENCHAÎNEMENT ANNONCÉ à la proposition (« ensuite je te propose le brouillon de facture »).
+   * Il voyage avec la proposition parce que c'est CELUI QUI LA TIENT qui doit tenir la promesse :
+   * une fois la mutation confirmée, la carte propose la commande de suivi. Aucune autorité n'y
+   * est déléguée — la commande repasse par ask() et refait toute la résolution, avec SA propre
+   * confirmation. Absent = Bob n'a rien promis, et ne propose donc rien.
+   */
+  chain?: AgentChainOffer;
 }
 
 /** Choix proposé en cas d'ambiguïté (rendu comme boutons / modale côté UI). */
@@ -998,6 +1026,142 @@ function resolveSpokenEquipment<E extends { id: string; label: string }>(input: 
   };
 }
 
+/** Mots du GESTE contrat (PR-12c) — neutralisés avant le ciblage par jetons : dans « prépare
+ * la facture annuelle du contrat Carrefour », seuls « carrefour » (label ou client) ciblent —
+ * jamais « facture », « annuelle » ni « contrat ». Même doctrine que EQUIPMENT_GESTURE_WORDS. */
+const CONTRACT_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'contrat', 'contrats', 'maintenance', 'facture', 'factures', 'annuelle', 'annuelles', 'annuel',
+  'prepare', 'preparer', 'prepares', 'fais', 'faire', 'genere', 'generer', 'cree', 'creer',
+  'lance', 'lancer', 'etablis', 'etablir', 'statut', 'statuts', 'etat', 'etats', 'moment',
+  'periode', 'periodes', 'couverte', 'couvert', 'renouveler', 'renouvellement', 'echeance',
+  'reconduit', 'reconduction', 'site', 'sites', 'chantier', 'chantiers', 'client', 'clients',
+  'chez', 'pour', 'dans', 'sur', 'avec', 'sans', 'montre', 'montrer', 'dis', 'dire', 'parle',
+  'parler', 'resume', 'resumer', 'bob', 'peux', 'veux', 'voudrais', 'faut', 'merci', 'bonjour',
+  'salut', 'stp', 'plait', 'cest', 'est', 'elle', 'elles', 'nous', 'vous', 'mon', 'mes', 'ton',
+  // Pronoms du GESTE : « fais-MOI le contrat fontaines RATP » (phrase canonique §2.7). Sans
+  // eux, le refus honnête récite « moi fontaines ratp » comme nom dit et paraît n'avoir rien
+  // compris — deux autres ensembles de ce fichier les neutralisent déjà, oubli isolé ici.
+  'moi', 'toi', 'lui',
+  'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'tout', 'tous', 'toute', 'toutes', 'aussi',
+  'alors', 'donc', 'bien', 'voila', 'quand', 'comment', 'combien',
+  // §2.7 — vocabulaire des GESTES de cycle de vie (création/activation/résiliation) et des
+  // FAITS dictés autour (date d'effet, montant, périodicité, motif) : « le client résilie au
+  // 1er juin » ne doit cibler AUCUN contrat par « résilie » ni par « juin » — sinon le seul
+  // contrat actif deviendrait « introuvable » alors que rien n'a été nommé.
+  'resilie', 'resilies', 'resilier', 'resiliee', 'resiliees', 'resiliation', 'resiliations',
+  'arrete', 'arreter', 'arretes', 'stoppe', 'stopper', 'active', 'actives', 'activer', 'actif',
+  'activation', 'demarre', 'demarres', 'demarrer', 'demarrage', 'lance', 'lances', 'lancer',
+  'service', 'motif', 'motifs', 'raison', 'raisons', 'preavis', 'effet', 'date', 'dates',
+  'partir', 'visite', 'visites', 'passage', 'passages', 'machine', 'machines', 'equipement',
+  'equipements', 'par', 'ans', 'annee', 'annees', 'euro', 'euros', 'eur', 'ttc', 'hors', 'taxe',
+  'tva', 'nouveau', 'nouvelle', 'fais', 'faites', 'faire', 'etablis', 'etablir', 'monte',
+  'monter', 'enregistre', 'enregistrer', 'ouvre', 'ouvrir', 'signe', 'signer', 'mets', 'mettre',
+  'place', 'ajoute', 'ajouter', 'oui', 'non', 'janvier', 'fevrier', 'mars', 'avril', 'mai',
+  'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre',
+]);
+
+/**
+ * PR-12c — résolution du CONTRAT dicté contre les données réelles (« la facture annuelle de
+ * Carrefour », « le contrat Bastille ») — patron resolveSpokenEquipment : jamais un id
+ * inventé ; `byId` (followUps des questions) prime ; `strong` = tous les jetons significatifs
+ * du LABEL dits, OU tous ceux du NOM DU CLIENT (« de Carrefour » résout le contrat du client
+ * Carrefour) ; deux contrats du même client restent une VRAIE ambiguïté — question posée,
+ * jamais un choix silencieux.
+ */
+function resolveSpokenContract<
+  C extends { id: string; label: string; customerName: string | null; chantierNom: string | null },
+>(input: { conversation: string; contracts: readonly C[] }): {
+  byId: C[];
+  strong: C[];
+  loose: C[];
+  saidTokens: string[];
+} {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  // Un jeton commençant par un CHIFFRE n'est jamais un nom de contrat (« 1er juin », « 1200 »,
+  // « 2026 ») : sans ce filtre, une date dite ferait passer un contrat existant pour introuvable.
+  const saidTokens = [...conversationTokens].filter(
+    (word) => !CONTRACT_GESTURE_WORDS.has(word) && !/^\d/.test(word),
+  );
+  // Ids EMBOÎTÉS (« contract-fontaines » est un préfixe de jetons de
+  // « contract-fontaines-quai ») : le PLUS LONG l'emporte — sans ce départage, le followUp d'une
+  // question d'ambiguïté rematcherait les deux contrats et la question reboucherait à l’infini.
+  const idMatches = input.contracts.filter(
+    (contract) =>
+      normalized(contract.id).length >= 3 &&
+      containsExactTokens(normalizedConversation, normalized(contract.id)),
+  );
+  const longestId = idMatches.reduce((max, contract) => Math.max(max, contract.id.length), 0);
+  const byId = idMatches.filter((contract) => contract.id.length === longestId);
+  const byLabel = input.contracts.filter((contract) => {
+    const tokens = destinationNameTokens(contract.label).filter(
+      (word) => !CONTRACT_GESTURE_WORDS.has(word),
+    );
+    return tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  });
+  const byCustomer = input.contracts.filter((contract) => {
+    if (contract.customerName === null) return false;
+    const tokens = destinationNameTokens(contract.customerName).filter(
+      (word) => !CONTRACT_GESTURE_WORDS.has(word),
+    );
+    return tokens.length > 0 && tokens.every((word) => conversationTokens.has(word));
+  });
+  // Le LABEL entièrement dit prime (départage en inclusion — « Entretien fontaines » vs
+  // « Entretien fontaines 2026 ») ; sinon le CLIENT entièrement dit propose SES contrats.
+  const labelPreferred = preferMostSpecificChantiers(
+    byLabel.map((contract) => ({ id: contract.id, nom: contract.label })),
+    normalizedConversation,
+  );
+  const labelIds = new Set(labelPreferred.map((entry) => entry.id));
+  const strong =
+    byLabel.length > 0
+      ? byLabel.filter((contract) => labelIds.has(contract.id))
+      : byCustomer;
+  // « Le contrat Bastille » : AU MOINS un jeton significatif du label/client/site dit — un
+  // match UNIQUE résout (départage naturel), plusieurs restent une question, zéro un refus.
+  const loose = input.contracts.filter((contract) =>
+    [contract.label, contract.customerName ?? '', contract.chantierNom ?? '']
+      .flatMap((name) => destinationNameTokens(name))
+      .some((word) => conversationTokens.has(word) && !CONTRACT_GESTURE_WORDS.has(word)),
+  );
+  return { byId, strong, loose, saidTokens };
+}
+
+/**
+ * PR-12c §2.7 — résolution du CLIENT d'un contrat dicté (« fais-moi le contrat fontaines
+ * RATP ») contre les clients RÉELS du tenant — patron resolveSpokenContract : `byId` (porté par
+ * les followUps des questions) PRIME et converge (à ids emboîtés, le PLUS LONG gagne : « cus-ratp »
+ * est un préfixe de jetons de « cus-ratp-cap ») ; sinon tous les mots significatifs du nom
+ * doivent avoir été dits. Deux clients aux noms INCLUSIFS (« RATP » / « RATP CAP ») restent une
+ * VRAIE ambiguïté : question posée avec des followUps par ID — jamais un client deviné.
+ */
+function resolveSpokenContractCustomer(input: {
+  conversation: string;
+  customers: readonly BillableCustomer[];
+}): { byId: BillableCustomer[]; matched: BillableCustomer[]; saidTokens: string[] } {
+  const normalizedConversation = normalized(input.conversation);
+  const conversationTokens = new Set(
+    normalizedConversation.split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+  );
+  const saidTokens = [...conversationTokens].filter(
+    (word) => !CONTRACT_GESTURE_WORDS.has(word) && !/^\d/.test(word),
+  );
+  const idMatches = input.customers.filter(
+    (customer) =>
+      normalized(customer.id).length >= 3 &&
+      containsExactTokens(normalizedConversation, normalized(customer.id)),
+  );
+  const longest = idMatches.reduce((max, customer) => Math.max(max, customer.id.length), 0);
+  const byId = idMatches.filter((customer) => customer.id.length === longest);
+  const matched = input.customers.filter((customer) => {
+    const words = significantNameWords(normalized(customer.name));
+    return words.length > 0 && words.every((word) => conversationTokens.has(word));
+  });
+  return { byId, matched, saidTokens };
+}
+
 /** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
  * m'a envoyé un bon de commande » ne doit cibler que par « ratp », jamais par « commande ». */
 const PURCHASE_ORDER_GESTURE_WORDS: ReadonlySet<string> = new Set([
@@ -1109,6 +1273,151 @@ export function purchaseOrderLinkedRun(input: {
     },
     choices: [{ label: 'Oui — crée la facture', value: `Fais la facture du devis ${ref}` }],
     spokenPrompt: 'C’est noté. Je crée la facture avec ce bon de commande ?',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR-15/16 — FICHE DE PASSAGE : le geste RÉEL est décidé par l'ÉTAT du passage
+// (`intervention-directive.ts`), jamais par le lexique de la consigne. Ces
+// tables traduisent le geste résolu en outil, en intent, en verbe parlé et en
+// commande canonique — une source unique, aucune chaîne recopiée.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const INTERVENTION_GESTURE_BY_INTENT: Partial<Record<BobIntent, InterventionGesture>> = {
+  commencer_intervention: 'start',
+  terminer_intervention: 'complete',
+  faire_signer_intervention: 'sign',
+  envoyer_fiche_passage: 'send',
+  facturer_intervention: 'bill',
+};
+
+/** Source UNIQUE, partagée avec `detectIntent` : l'orientation et la restitution ne divergent pas. */
+const INTERVENTION_INTENT_BY_GESTURE = INTENT_BY_GESTURE;
+
+const INTERVENTION_TOOL_BY_GESTURE: Record<InterventionGesture, string> = {
+  start: 'commencer_intervention',
+  complete: 'terminer_intervention',
+  // La signature n'a pas d'outil : le tracé ne se dicte jamais — Bob ouvre le pad.
+  sign: 'faire_signer_intervention',
+  send: 'envoyer_fiche_passage',
+  bill: 'facturer_intervention',
+};
+
+/** Verbe du geste, tel que Bob le DIT (« aucun passage à facturer »). */
+const INTERVENTION_GESTURE_LABEL: Record<InterventionGesture, string> = {
+  start: 'démarrer',
+  complete: 'terminer',
+  sign: 'faire signer',
+  send: 'envoyer la fiche',
+  bill: 'facturer',
+};
+
+/**
+ * Commande CANONIQUE d'un geste sur un passage. Rejouée VERBATIM par ask(), qui refait TOUTE
+ * l'autorité : résolution contre les passages réels, routage par l'état, confirmation propre.
+ *
+ * Elle porte le MARQUEUR que Bob pose lui-même (`markInterventionCommand`) : c'est LUI, et non
+ * une tournure d'utilisateur (« le passage », « la visite »), qui autorise la lecture « passage »
+ * malgré un montant ou un numéro dans la phrase. Sans ce marqueur, « Facture 380 € à Mme Girard
+ * pour LA VISITE » — une facture directe, le chemin de l'argent — se faisait détourner.
+ *
+ * Une consigne composite ne perd pas sa suite en passant par une question de désambiguïsation :
+ * le geste aval éventuel est redit dans la commande.
+ */
+function interventionCommand(
+  gesture: InterventionGesture,
+  id: string,
+  then: InterventionDownstream | null = null,
+): string {
+  const suite =
+    then === null
+      ? ''
+      : then === 'sign'
+        ? ' et fais signer ce passage'
+        : then === 'send'
+          ? ' et envoie la fiche de passage'
+          : ' et facture ce passage';
+  const commande =
+    gesture === 'start'
+      ? `Démarre l'intervention ${id}`
+      : gesture === 'complete'
+        ? `Termine l'intervention ${id}${suite}`
+        : gesture === 'sign'
+          ? `Fais signer l'intervention ${id}`
+          : gesture === 'send'
+            ? `Envoie la fiche de passage ${id}`
+            : `Facture le passage ${id}`;
+  return markInterventionCommand(commande);
+}
+
+/**
+ * ENCHAÎNEMENT ANNONCÉ — « ensuite je te propose … ». La promesse est TENUE par celui qui tient
+ * la proposition : une fois la mutation confirmée, la carte propose la commande de suivi.
+ * Rien n'est délégué et rien n'est exécuté d'avance : la commande repasse par ask(), avec SA
+ * propre confirmation (une confirmation SÉPARÉE par mutation, jamais deux gestes fusionnés).
+ */
+export interface AgentChainOffer {
+  /** Commande canonique du geste suivant — rejouée verbatim par ask(). */
+  readonly followUp: string;
+  /** Libellé du bouton de suivi. */
+  readonly label: string;
+  /** Question posée à l'écran ET à la voix, une fois le geste courant exécuté. */
+  readonly question: string;
+}
+
+/**
+ * Tient la promesse sur un run TERMINÉ. Sans enchaînement annoncé, le run passe intact ; un run
+ * qui propose déjà quelque chose n'est jamais écrasé. Exportée pour que TOUT hôte qui confirme
+ * par son propre runtime (client local, /ai/confirm HTTP) rende le MÊME parcours.
+ */
+export function withAnnouncedChain(run: AgentRun, chain: AgentChainOffer | undefined): AgentRun {
+  if (chain === undefined || run.kind !== 'done' || (run.choices?.length ?? 0) > 0) return run;
+  return {
+    ...run,
+    card: { ...run.card, body: `${run.card.body}\n${chain.question}` },
+    choices: [{ label: chain.label, value: chain.followUp }],
+    spokenPrompt: chain.question,
+  };
+}
+
+/**
+ * Ce que Bob ANNONCE avant confirmation et ce qu'il PROPOSERA après : une source unique pour les
+ * deux — la promesse ne peut pas diverger du geste réellement offert.
+ */
+function interventionChainOffer(
+  then: InterventionDownstream,
+  id: string,
+): { offer: AgentChainOffer; announcement: string } {
+  if (then === 'sign')
+    return {
+      offer: {
+        followUp: interventionCommand('sign', id),
+        label: 'Oui — passe la signature',
+        question: 'Je te passe la signature du client ? Elle se trace, elle ne se dicte pas.',
+      },
+      announcement:
+        ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.',
+    };
+  if (then === 'send')
+    return {
+      offer: {
+        followUp: interventionCommand('send', id),
+        label: 'Oui — envoie la fiche',
+        question:
+          'J’envoie la fiche de passage au client ? L’envoi a sa PROPRE confirmation : rien ne part sans elle.',
+      },
+      announcement:
+        ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.',
+    };
+  return {
+    offer: {
+      followUp: interventionCommand('bill', id),
+      label: 'Oui — prépare le brouillon',
+      question:
+        'Je prépare le brouillon de facture de ce passage ? Rien n’est émis, rien n’est envoyé sans toi.',
+    },
+    announcement:
+      ' Ensuite je te propose le brouillon de facture — il aura sa PROPRE confirmation, rien n’est émis sans elle.',
   };
 }
 
@@ -1299,6 +1608,16 @@ export const FACTURATION_TERRAIN_TOOLS: ReadonlySet<string> = new Set([
   'marquer_facture_transmise',
 ]);
 
+/** PR-12c §2.7 — gestes de CYCLE DE VIE d'un contrat dont les refus du domaine se restituent
+ * VERBATIM à la proposition ET à la confirmation (l'état a pu changer entre les deux : client
+ * passé b2c, site clôturé, contrat déjà activé). Exporté : l'hôte HTTP (/ai/confirm, runtime
+ * journalisé) applique la MÊME restitution — une seule vérité écran/voix. */
+export const CONTRACT_LIFECYCLE_TOOLS: ReadonlySet<string> = new Set([
+  'creer_contrat_maintenance',
+  'activer_contrat',
+  'resilier_contrat',
+]);
+
 /** % par défaut de la « Situation n°1 » (repli acompte pro, décision fondateur 25/07) — même
  * valeur que ADVANCE_FALLBACK_DEFAULT_PERCENT du Sheet mobile. Une PROPOSITION : le montant
  * reste le choix de l'artisan (la commande canonique passe par facturer_situation, modifiable). */
@@ -1460,6 +1779,12 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'retirer_equipement') return 'retirer_equipement';
   if (tool === 'parc_du_site') return 'parc_equipements';
   if (tool === 'historique_equipement') return 'historique_equipement';
+  if (tool === 'preparer_facture_annuelle') return 'preparer_facture_annuelle';
+  if (tool === 'statut_contrat') return 'statut_contrat';
+  if (tool === 'contrats_a_renouveler') return 'contrats_a_renouveler';
+  if (tool === 'creer_contrat_maintenance') return 'creer_contrat_maintenance';
+  if (tool === 'activer_contrat') return 'activer_contrat';
+  if (tool === 'resilier_contrat') return 'resilier_contrat';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -1571,7 +1896,17 @@ export class BobAgent {
     signal?.throwIfAborted();
     if (this.deps.llm && routedModel !== 'unavailable') {
       try {
-        return await classifyWithLlm(this.deps.llm, message, history, context, signal);
+        const plan = await classifyWithLlm(this.deps.llm, message, history, context, signal);
+        signal?.throwIfAborted();
+        if (plan.steps.length > 0) return plan;
+        // Le modèle n'a nommé AUCUN outil. Deux causes possibles, une seule sûre : la demande
+        // porte un geste qu'AUCUN outil ne lui expose (fiche de passage, parc d'équipements).
+        // Dans ce cas SEULEMENT, le déterministe reprend la main — hors de là, l'abstention du
+        // modèle reste le garde-fou de périmètre (une blague ne devient pas une commande).
+        const secours = classifyWithRegex(message);
+        const geste = secours.steps[0]?.intent;
+        if (geste !== undefined && INTENTS_HORS_OUTILLAGE_LLM.has(geste)) return secours;
+        return plan;
       } catch {
         // Un barge-in n'est jamais une indisponibilité LLM : ne surtout pas poursuivre par regex.
         signal?.throwIfAborted();
@@ -3984,6 +4319,940 @@ export class BobAgent {
     }
 
     if (
+      intent === 'statut_contrat' ||
+      intent === 'contrats_a_renouveler' ||
+      intent === 'preparer_facture_annuelle'
+    ) {
+      // PR-12c — contrats de maintenance À LA VOIX (parité §2.7) : les FAITS DÉRIVÉS par le
+      // serveur (période arithmétique, couverture par les factures réelles, alerte J-60/J-30)
+      // sont DITS tels quels — jamais recalculés ni inventés. Résolution du contrat par NOM
+      // PARLÉ (label OU client — patron resolveSpokenEquipment), refus honnête, questions à
+      // followUps par ID qui convergent. Confirmation à la SEULE mutation (le brouillon).
+      const listContracts = this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+      if (!listContracts) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Contrats de maintenance',
+            body: 'Je ne peux pas lire les contrats depuis cet appareil. Rien n’a été modifié — passe par la fiche client.',
+          },
+        });
+      }
+      const contractsResult = await listContracts();
+      if (!contractsResult.ok) return err(contractsResult.error);
+      const contracts = contractsResult.value;
+      const humanPeriod = (period: { start: string; end: string }): string =>
+        // Fin EXCLUSIVE domaine → la VEILLE à l'affichage (bornes incluses lisibles).
+        `${frDate(period.start)} → ${frDate(addDaysOnly(period.end, -1))}`;
+
+      if (intent === 'contrats_a_renouveler') {
+        // Tacites (J-60/J-30) ET non-tacites échus (fait `expired`) — alerte INTERNE.
+        const due = contracts.filter(
+          (contract) => contract.renewalAlert !== null || contract.expiredSince !== null,
+        );
+        if (due.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Dériver les échéances réelles'],
+            card: {
+              title: 'Renouvellements',
+              body:
+                contracts.length === 0
+                  ? 'Aucun contrat de maintenance enregistré pour l’instant.'
+                  : 'Aucun contrat à renouveler dans les 60 prochains jours — tout est calme.',
+            },
+          });
+        }
+        const lines = due
+          .slice(0, 6)
+          .map((contract) => {
+            if (contract.expiredSince !== null)
+              return `• ${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''} — échu le ${frDate(contract.expiredSince)} : à renouveler ou résilier`;
+            const alert = contract.renewalAlert!;
+            return `• ${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''} — ${
+              alert.tacit
+                ? `se reconduit dans ${alert.daysUntil} jours`
+                : `arrive à échéance dans ${alert.daysUntil} jours`
+            } (${frDate(alert.anniversary)})`;
+          })
+          .join('\n');
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Dériver les échéances réelles (J-60/J-30)'],
+          card: { title: 'Contrats à renouveler', body: lines },
+        });
+      }
+
+      // Cible CONTRAT (statut / facture annuelle) : label OU client entièrement dit.
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const resolution = resolveSpokenContract({ conversation, contracts });
+      const pool =
+        intent === 'preparer_facture_annuelle'
+          ? contracts.filter((contract) => contract.status === 'active')
+          : contracts;
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : resolution.strong.length === 0 && resolution.loose.length === 1
+              ? resolution.loose[0]!
+              : resolution.strong.length === 0 &&
+                  resolution.loose.length === 0 &&
+                  resolution.saidTokens.length === 0 &&
+                  pool.length === 1
+                ? pool[0]!
+                : null;
+
+      if (target === null) {
+        if (contracts.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les contrats réels'],
+            card: {
+              title: 'Aucun contrat',
+              body: 'Aucun contrat de maintenance enregistré pour l’instant. Rien n’a été modifié.',
+            },
+          });
+        }
+        // Nom dit mais introuvable → refus HONNÊTE ; sinon vraie ambiguïté → question ciblée
+        // (followUps par ID : le tour suivant résout par byId, la question ne reboucle jamais).
+        const named =
+          resolution.saidTokens.length > 0 &&
+          resolution.strong.length === 0 &&
+          resolution.loose.length === 0;
+        const options = (
+          resolution.strong.length > 1
+            ? resolution.strong
+            : resolution.loose.length > 1
+              ? resolution.loose
+              : pool
+        ).slice(0, 4);
+        const commandOf = (contract: { id: string }): string =>
+          intent === 'preparer_facture_annuelle'
+            ? `Prépare la facture annuelle du contrat ${contract.id}`
+            : `Statut du contrat ${contract.id}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named ? ['Vérifier le contrat contre les données réelles'] : ['Lever l’ambiguïté du contrat'],
+          card: named
+            ? {
+                title: 'Contrat introuvable',
+                body: `Je ne trouve aucun contrat correspondant à « ${resolution.saidTokens.join(' ')} ». Rien n’a été modifié — choisis dans la liste :`,
+              }
+            : {
+                title: 'Quel contrat ?',
+                body:
+                  intent === 'preparer_facture_annuelle'
+                    ? 'La facture annuelle de quel contrat veux-tu préparer ?'
+                    : 'De quel contrat veux-tu le statut ?',
+              },
+          choices: options.map((contract) => ({
+            label: `${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''}`,
+            value: commandOf(contract),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.contrat`,
+              question:
+                intent === 'preparer_facture_annuelle'
+                  ? 'Quel contrat facturer ?'
+                  : 'Quel contrat ?',
+              header: 'Contrat',
+              items: options.map((contract) => ({
+                value: contract.id,
+                label: contract.label,
+                description: contract.customerName ?? '',
+                followUp: commandOf(contract),
+              })),
+            }),
+          ],
+        });
+      }
+
+      // Statut PARLÉ — les faits dérivés, dits comme la fiche les affiche (§3.1/§3.2).
+      const statusLine =
+        target.status === 'draft'
+          ? 'Brouillon — active-le pour démarrer la couverture.'
+          : target.status === 'terminated'
+            ? `Résilié${target.terminatedCoverageUntil ? ` — couvert jusqu’au ${frDate(addDaysOnly(target.terminatedCoverageUntil, -1))}` : ''}.`
+            : target.expiredSince !== null
+              ? `Échu le ${frDate(target.expiredSince)} — à renouveler ou résilier.`
+              : 'Actif.';
+      const coverageLine =
+        target.currentPeriod === null
+          ? null
+          : `Période en cours : ${humanPeriod(target.currentPeriod)} — ${
+              target.currentPeriodCoveredBy !== null
+                ? target.currentPeriodCoveredBy.by === 'invoice'
+                  ? `facturée (${target.currentPeriodCoveredBy.number ?? 'facture émise'})`
+                  : 'déjà facturée avant Bob (déclaré à la création)'
+                : 'pas encore facturée'
+            }.`;
+      const renewalLine =
+        target.renewalAlert !== null
+          ? target.renewalAlert.tacit
+            ? `Se reconduit tacitement dans ${target.renewalAlert.daysUntil} jours (${frDate(target.renewalAlert.anniversary)}).`
+            : `Arrive à échéance dans ${target.renewalAlert.daysUntil} jours (${frDate(target.renewalAlert.anniversary)}).`
+          : null;
+
+      if (intent === 'statut_contrat') {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Dire les faits dérivés (période, couverture, échéance)'],
+          card: {
+            title: `${target.label}${target.customerName ? ` — ${target.customerName}` : ''}`,
+            body: [statusLine, coverageLine, renewalLine, `Préavis : ${target.noticeDays} jours (affiché, jamais bloquant).`]
+              .filter((line): line is string => line !== null)
+              .join('\n'),
+          },
+        });
+      }
+
+      // preparer_facture_annuelle — enchaînement composite : le STATUT est dit, puis la
+      // proposition n'arrive QUE si la dérivation est vraie (sinon réponse honnête avec le
+      // numéro couvrant — « si c'est le moment » respecté à la lettre).
+      if (target.billingDue === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Vérifier la couverture réelle'],
+          card: {
+            title: `${target.label} — rien à facturer`,
+            body: [
+              statusLine,
+              coverageLine ?? 'Aucune période facturable aujourd’hui (fenêtre −30 jours avant chaque échéance).',
+              'Rien n’a été préparé.',
+            ].join('\n'),
+          },
+        });
+      }
+      const prepareTool = this.tool('preparer_facture_annuelle');
+      if (!prepareTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Facture annuelle',
+            body: 'Je ne peux pas préparer la facture annuelle depuis cet appareil. Rien n’a été créé — passe par la fiche contrat.',
+          },
+        });
+      }
+      const dueArgs = { contractId: target.id };
+      const parsedDue = prepareTool.parse(dueArgs);
+      if (!parsedDue.ok) return err(parsedDue.error);
+      const duePeriod = humanPeriod({
+        start: target.billingDue.periodStart,
+        end: target.billingDue.periodEnd,
+      });
+      const dueLabel = `Préparer le brouillon de la facture annuelle ${target.label}${target.customerName ? ` (${target.customerName})` : ''} — période ${duePeriod}`;
+      const rebill =
+        target.billingDue.cancelledCoveringNumber !== null
+          ? ` La facture ${target.billingDue.cancelledCoveringNumber} a été annulée : la période est à re-facturer.`
+          : '';
+      if (requiresConfirmation(prepareTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Vérifier la couverture réelle', 'Attendre ta confirmation'],
+          card: {
+            title: 'Facture annuelle à préparer',
+            body: `La période ${duePeriod} n’est pas facturée.${rebill} ${dueLabel}. Rien ne sera émis ni envoyé — je prépare le brouillon ?`,
+          },
+          pending: { tool: prepareTool.name, args: dueArgs, label: dueLabel },
+          spokenPrompt: buildSpokenConfirmation(dueLabel),
+        });
+      }
+      const dueRun = await prepareTool.run(parsedDue.value);
+      if (!dueRun.ok) {
+        const guard = domainGuardCard(dueRun.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(dueRun.error);
+      }
+      const prepared = dueRun.value as { vatDivergence?: unknown; totalTtcCents?: unknown; contractTotalTtcCents?: unknown };
+      const divergence =
+        prepared.vatDivergence === true &&
+        typeof prepared.totalTtcCents === 'number' &&
+        typeof prepared.contractTotalTtcCents === 'number'
+          ? ` TVA recalculée au régime actuel : total ${formatEUR(prepared.totalTtcCents)} au lieu de ${formatEUR(prepared.contractTotalTtcCents)}.`
+          : '';
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Préparer le brouillon annuel'],
+        card: {
+          title: 'Brouillon prêt ✓',
+          body: `${dueLabel} — le brouillon est prêt.${divergence} Rien n’est émis ni envoyé : l’émission reste ton geste.`,
+        },
+      });
+    }
+
+    if (intent === 'activer_contrat' || intent === 'resilier_contrat') {
+      // §2.7 — ACTIVER / RÉSILIER À LA VOIX : MÊMES use cases ActivateContract/TerminateContract
+      // que la fiche. Résolution du contrat par NOM PARLÉ (jamais un id récité à l'humain),
+      // questions à followUps par ID qui CONVERGENT, UNE confirmation groupée (safetyFloor) qui
+      // récite le geste, refus du domaine restitués VERBATIM. Le préavis est DIT, jamais bloquant.
+      const listContracts = this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+      const tool = this.tool(intent === 'activer_contrat' ? 'activer_contrat' : 'resilier_contrat');
+      if (!listContracts || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: intent === 'activer_contrat' ? 'Activation indisponible' : 'Résiliation indisponible',
+            body: `Je ne peux pas ${intent === 'activer_contrat' ? 'activer' : 'résilier'} un contrat depuis cet appareil. Rien n’a été modifié — passe par la fiche du contrat.`,
+          },
+        });
+      }
+      const contractsResult = await listContracts();
+      if (!contractsResult.ok) return err(contractsResult.error);
+      // Le geste ne vit que depuis l'état qui l'autorise (machine §2.4) : un brouillon s'active,
+      // un contrat actif se résilie — le reste n'entre jamais dans le pool ciblable.
+      const pool = contractsResult.value.filter((contract) =>
+        intent === 'activer_contrat' ? contract.status === 'draft' : contract.status === 'active',
+      );
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const resolution = resolveSpokenContract({ conversation, contracts: pool });
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const effectiveDate =
+        intent === 'resilier_contrat' ? extractSpokenStartDate(message, today) : null;
+      const spokenNote =
+        intent === 'resilier_contrat' ? extractSpokenTerminationNote(message) : null;
+      const commandOf = (contract: { id: string }): string =>
+        intent === 'activer_contrat'
+          ? `Active le contrat ${contract.id}`
+          : `Résilie le contrat ${contract.id}${effectiveDate ? ` au ${frDate(effectiveDate)}` : ''}${
+              spokenNote ? ` — motif : ${spokenNote}` : ''
+            }`;
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : resolution.strong.length === 0 && resolution.loose.length === 1
+              ? resolution.loose[0]!
+              : resolution.strong.length === 0 &&
+                  resolution.loose.length === 0 &&
+                  resolution.saidTokens.length === 0 &&
+                  pool.length === 1
+                ? pool[0]!
+                : null;
+      if (target === null) {
+        if (pool.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les contrats réels'],
+            card: {
+              title: intent === 'activer_contrat' ? 'Aucun contrat à activer' : 'Aucun contrat actif',
+              body:
+                intent === 'activer_contrat'
+                  ? 'Aucun contrat en brouillon à activer. Rien n’a été modifié — crée d’abord le contrat (« fais-moi le contrat … »).'
+                  : 'Aucun contrat actif à résilier. Rien n’a été modifié.',
+            },
+          });
+        }
+        // Nom dit mais introuvable → refus HONNÊTE ; sinon vraie ambiguïté → question ciblée
+        // dont les followUps portent l'ID (le tour suivant résout par byId, jamais de boucle).
+        const named =
+          resolution.saidTokens.length > 0 &&
+          resolution.strong.length === 0 &&
+          resolution.loose.length === 0;
+        const options = (
+          resolution.strong.length > 1
+            ? resolution.strong
+            : resolution.loose.length > 1
+              ? resolution.loose
+              : pool
+        ).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named
+            ? ['Vérifier le contrat contre les données réelles']
+            : ['Lever l’ambiguïté du contrat'],
+          card: named
+            ? {
+                title: 'Contrat introuvable',
+                body: `Je ne trouve aucun contrat ${intent === 'activer_contrat' ? 'en brouillon' : 'actif'} correspondant à « ${resolution.saidTokens.join(' ')} ». Rien n’a été modifié — choisis dans la liste :`,
+              }
+            : {
+                title: 'Quel contrat ?',
+                body:
+                  intent === 'activer_contrat'
+                    ? 'Quel contrat veux-tu activer ?'
+                    : 'Quel contrat veux-tu résilier ?',
+              },
+          choices: options.map((contract) => ({
+            label: `${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''}`,
+            value: commandOf(contract),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.contrat`,
+              question: intent === 'activer_contrat' ? 'Quel contrat activer ?' : 'Quel contrat résilier ?',
+              header: 'Contrat',
+              items: options.map((contract) => ({
+                value: contract.id,
+                label: contract.label,
+                description: contract.customerName ?? '',
+                followUp: commandOf(contract),
+              })),
+            }),
+          ],
+        });
+      }
+
+      const who = target.customerName ? ` (${target.customerName})` : '';
+      if (intent === 'activer_contrat') {
+        const args = { contractId: target.id };
+        const parsed = tool.parse(args);
+        if (!parsed.ok) return err(parsed.error);
+        const label = `Activer le contrat « ${target.label} »${who}`;
+        // Ce que l'activation FIGE est dit AVANT le geste (parité avec la fiche) : la date
+        // anniversaire cesse d'être modifiable, la couverture et les échéances démarrent.
+        const frozen = ` La date anniversaire du ${frDate(target.anniversaryDate)} sera figée : la couverture et les échéances démarrent.`;
+        if (requiresConfirmation(tool, autonomy)) {
+          return ok({
+            kind: 'proposed',
+            intent,
+            model,
+            plan: ['Résoudre le contrat', 'Dire ce que l’activation fige', 'Attendre ta confirmation'],
+            card: { title: 'Activation à confirmer', body: `${label}.${frozen} Je confirme ?` },
+            pending: { tool: tool.name, args, label },
+            spokenPrompt: buildSpokenConfirmation(`${label} —${frozen}`),
+          });
+        }
+        const run = await tool.run(parsed.value);
+        if (!run.ok) {
+          const guard = domainGuardCard(run.error);
+          if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+          return err(run.error);
+        }
+        const activated = run.value as { anniversaryDate?: unknown };
+        const anniversary =
+          typeof activated?.anniversaryDate === 'string' ? activated.anniversaryDate : target.anniversaryDate;
+        return ok({
+          kind: 'done',
+          intent,
+          model,
+          plan: ['Activer le contrat'],
+          card: {
+            title: 'Contrat activé ✓',
+            body: `${label} — c’est fait. Anniversaire figé au ${frDate(anniversary)}.`,
+          },
+        });
+      }
+
+      // resilier_contrat — le motif est la TRACE de la décision : ce que le pro a dit en tient
+      // lieu ; sans phrase exploitable, Bob demande le motif plutôt que d'en inventer un.
+      if (spokenNote === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Demander le seul manque : le motif'],
+          card: {
+            title: 'Pourquoi cette résiliation ?',
+            body: `Le motif reste en trace de la décision sur « ${target.label} »${who}. Redis-moi « Résilie le contrat ${target.id}${effectiveDate ? ` au ${frDate(effectiveDate)}` : ''} — motif : … ». Rien n’a été modifié.`,
+          },
+        });
+      }
+      const args = {
+        contractId: target.id,
+        note: spokenNote,
+        ...(effectiveDate !== null ? { effectiveDate } : {}),
+      };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      // Sans date dite, la date d'effet est celle que le DOMAINE calcule (prochain anniversaire) :
+      // Bob l'annonce comme telle et la RÉCITE après le geste — il ne la recalcule jamais.
+      const when = effectiveDate !== null ? `au ${frDate(effectiveDate)}` : 'à la prochaine échéance du contrat';
+      const label = `Résilier le contrat « ${target.label} »${who} ${when}`;
+      const notice = ` Préavis contractuel : ${target.noticeDays} jours — affiché, jamais bloquant : une résiliation subie est actée et tracée.`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Expliquer le préavis', 'Attendre ta confirmation'],
+          card: {
+            title: 'Résiliation à confirmer',
+            body: `${label}. Motif : ${spokenNote}.${notice} La couverture restante reste due jusqu’à la date d’effet. Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(`${label} — motif : ${spokenNote}.${notice}`),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      const terminated = run.value as { terminationEffectiveDate?: unknown };
+      const decided =
+        typeof terminated?.terminationEffectiveDate === 'string'
+          ? ` Couvert jusqu’au ${frDate(addDaysOnly(terminated.terminationEffectiveDate, -1))}.`
+          : '';
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Résilier le contrat'],
+        card: {
+          title: 'Contrat résilié ✓',
+          body: `${label} — c’est fait, motif tracé.${decided}${notice}`,
+        },
+      });
+    }
+
+    if (intent === 'creer_contrat_maintenance') {
+      // §2.7 — CRÉER UN CONTRAT À LA VOIX : consigne composite désordonnée acceptée. Bob lit en
+      // UNE passe le libellé, le client, le montant annuel, la périodicité, le site et les
+      // équipements dits ; il pose une question ciblée sur le SEUL manque (le followUp REDIT
+      // tout : aucun fait énoncé n'est redemandé) ; UNE confirmation groupée RÉCITE ce qui va
+      // être créé avant la SEULE mutation (CreateMaintenanceContract). L'activation reste un
+      // second geste distinct — jamais fusionnée ici.
+      const listCustomers = this.deps.actions.listBillableCustomers?.bind(this.deps.actions);
+      const createTool = this.tool('creer_contrat_maintenance');
+      if (!listCustomers || !createTool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Création de contrat',
+            body: 'Je ne peux pas créer de contrat de maintenance depuis cet appareil. Rien n’a été créé — passe par la fiche client.',
+          },
+        });
+      }
+      const customersResult = await listCustomers();
+      if (!customersResult.ok) return err(customersResult.error);
+      const customers = customersResult.value;
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      // Les noms des clients RÉELS sont donnés au lecteur PUR : sans eux, « pour RATP » (sans le
+      // mot « client ») reste indevinable et le nom du client se collerait au libellé — donc à la
+      // LIGNE de la facture annuelle. Le module ne résout rien, il reconnaît juste la charnière.
+      const facts = extractSpokenContractFacts(message, today, {
+        customerNames: customers.map((candidate) => candidate.name),
+      });
+
+      // ── GARDE FAIL-CLOSED DU LIBELLÉ ──────────────────────────────────────────────────────
+      // Cinq revues ont conclu la même chose : l'analyse d'énoncés libres par règles
+      // déterministes ne sera jamais exhaustive — perfectionner l'extracteur est un puits sans
+      // fond, et une garde qui ÉNUMÈRE les formes interdites en est un aussi (elle a les mêmes
+      // trous que ce qu'elle surveille). La garde est donc écrite à l'ENVERS : elle n'accepte
+      // qu'une FORME SÛRE — des mots, de petits nombres, une poignée de connecteurs —, ensemble
+      // FINI, et refuse tout le reste. On ne garantit plus que l'extraction est PARFAITE, mais
+      // qu'une extraction DOUTEUSE ne produit JAMAIS une pièce fausse : le doute devient une
+      // QUESTION, pas une donnée.
+      //
+      // Le libellé retenu est persisté comme libellé du contrat ET de sa LIGNE UNIQUE, donc
+      // repris tel quel comme LIGNE de la facture annuelle : il s'imprime sur une pièce légale
+      // archivée immuable. Un libellé douteux n'est donc NI proposé, NI RÉCITÉ (le pro
+      // n'entendrait que sa propre phrase et validerait) : il est mis de côté et Bob demande
+      // le nom. La sévérité vient de la PROVENANCE, jamais d'un choix d'appelant : ce que le
+      // pro a NOMMÉ entre guillemets est pris tel quel, ce que Bob a DÉDUIT est questionné au
+      // moindre indice.
+      const labelVerdict = inspectContractLabel(facts.label, {
+        customerNames: customers.map((candidate) => candidate.name),
+        mode: facts.labelProvenance === 'nomme' ? 'nomme' : 'extrait',
+      });
+      const safeLabel = labelVerdict.accepted ? facts.label : null;
+
+      const customerResolution = resolveSpokenContractCustomer({ conversation, customers });
+      const customer =
+        customerResolution.byId.length === 1
+          ? customerResolution.byId[0]!
+          : customerResolution.matched.length === 1
+            ? customerResolution.matched[0]!
+            : null;
+      // La commande CANONIQUE : chaque followUp la REDIT en entier — le client y est porté par
+      // son ID (résolu par byId au tour suivant : la question ne reboucle jamais), le libellé
+      // guillemeté (relu tel quel), les montants et la date en forme non ambiguë.
+      //
+      // Elle ne redit QUE le libellé que la garde a laissé passer : recopier un libellé douteux
+      // dans le followUp le ferait revenir GUILLEMETÉ au tour suivant, donc lu comme « nommé par
+      // le pro » — Bob blanchirait ainsi sa propre erreur en mettant les mots dans la bouche du
+      // pro. Le nom douteux est CITÉ dans la question, jamais pré-rempli dans la réponse.
+      const restate = (over: { customerId?: string; label?: string | null } = {}): string => {
+        const label = over.label !== undefined ? over.label : safeLabel;
+        const customerId = over.customerId ?? customer?.id ?? null;
+        return (
+          `Crée le contrat${label ? ` « ${label} »` : ''}` +
+          (customerId ? ` pour le client ${customerId}` : '') +
+          (facts.annualAmountCents !== null ? ` à ${facts.annualAmountCents / 100} € par an` : '') +
+          (facts.visitsPerYear !== null ? `, ${facts.visitsPerYear} visites par an` : '') +
+          (facts.tacitRenewal === false ? ', sans reconduction tacite' : '') +
+          (facts.startDate !== null ? `, à partir du ${frDate(facts.startDate)}` : '')
+        );
+      };
+
+      if (customers.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier les clients réels'],
+          card: {
+            title: 'Aucun client',
+            body: 'Je ne vois aucun client dans ton fichier — rien n’a été créé. Crée d’abord le client, puis redis-moi le contrat.',
+          },
+        });
+      }
+
+      // LE DOUTE DEVIENT UNE QUESTION — un libellé REFUSÉ par la garde est questionné TOUT DE
+      // SUITE, avant même le client : c'est le seul fait que Bob vient d'entendre et qu'il ne
+      // redira pas dans ses followUps (voir `restate`), donc le seul qu'il perdrait en le
+      // remettant à plus tard. La question CITE ce que Bob a entendu et EXPLIQUE pourquoi ce nom
+      // ne peut pas s'imprimer ; tous les autres faits déjà lus sont redits dans la commande
+      // canonique, si bien que rien n'est perdu et que rien n'est créé.
+      if (facts.label !== null && safeLabel === null) {
+        const secondRefus = facts.labelProvenance === 'nomme';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Refuser un nom qui s’imprimerait faux sur la facture', 'Demander le nom du contrat'],
+          card: {
+            title: 'Quel nom pour ce contrat ?',
+            body:
+              (secondRefus
+                ? `« ${facts.label} » ne peut pas devenir le nom du contrat. `
+                : `J’ai entendu « ${facts.label} » comme nom du contrat. `) +
+              `${contractLabelRefusalSaid(labelVerdict)} Rien n’a été créé — ` +
+              `donne-moi un nom sans cette partie (ex. « Entretien fontaines ») : ` +
+              `redis-moi « ${restate({ label: '{nom}' })} ».`,
+          },
+        });
+      }
+
+      if (customer === null) {
+        const named = customerResolution.saidTokens.length > 0 && customerResolution.matched.length === 0;
+        const options = (
+          customerResolution.matched.length > 1 ? customerResolution.matched : customers
+        ).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named
+            ? ['Vérifier le client contre le fichier réel']
+            : ['Extraire les faits énoncés', 'Demander le seul manque : le client'],
+          card: named
+            ? {
+                title: 'Client introuvable',
+                body: `Je ne trouve aucun client correspondant à « ${customerResolution.saidTokens.join(' ')} ». Rien n’a été créé — choisis dans ton fichier :`,
+              }
+            : {
+                title: 'Pour quel client ?',
+                body: `Pour quel client j’établis ${safeLabel ? `le contrat « ${safeLabel} »` : 'ce contrat'} ?`,
+              },
+          choices: options.map((candidate) => ({
+            label: candidate.name,
+            value: restate({ customerId: candidate.id }),
+          })),
+          ask: [
+            askToPick({
+              id: 'creer_contrat_maintenance.client',
+              question: 'Pour quel client ce contrat ?',
+              header: 'Client',
+              items: options.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.name,
+                followUp: restate({ customerId: candidate.id }),
+              })),
+            }),
+          ],
+        });
+      }
+      if (customer.type === 'b2c') {
+        // Pédagogie légale AU POINT DE DÉCISION : le message du DOMAINE (LegalHint Chatel) est
+        // dit VERBATIM — même substance qu'à l'écran, jamais reformulée — et rien n'est créé.
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier le client', 'Expliquer la règle Chatel'],
+          card: {
+            title: 'Contrat impossible avec un particulier',
+            body: `${customer.name} est un particulier. ${CONTRACT_B2C_REFUSED_MESSAGE} Rien n’a été créé.`,
+          },
+        });
+      }
+
+      // SITE dicté (« ils ont 3 machines à Bastille », « sur le site Bastille ») — même
+      // résolution que les pièces : le marqueur scope, l'inclusion de nom départage, un site
+      // NOMMÉ mais introuvable n'est jamais remplacé en silence. Capacité optionnelle.
+      let site: { id: string; nom: string } | null = null;
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      if (listDestinations) {
+        const destinations = await listDestinations();
+        if (destinations.ok) {
+          const siteResolution = resolveSpokenChantier({
+            conversation,
+            currentTurn: `${message} ${reference ?? ''}`,
+            chantiers: destinations.value.chantiers,
+            customerName: customer.name,
+          });
+          if (!siteResolution.declined && siteResolution.matched.length === 1) {
+            site = siteResolution.matched[0]!;
+          } else if (!siteResolution.declined && siteResolution.matched.length > 1) {
+            const options = siteResolution.matched.slice(0, 4);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Lever l’ambiguïté du site'],
+              card: { title: 'Quel site ?', body: 'Plusieurs sites correspondent pour ce contrat — lequel ?' },
+              choices: options.map((chantier) => ({
+                label: chantier.nom,
+                value: `${restate()}, sur le site ${chantier.nom}`,
+              })),
+              ask: [
+                askToPick({
+                  id: 'creer_contrat_maintenance.site',
+                  question: 'Sur quel site porte ce contrat ?',
+                  header: 'Site',
+                  items: options.map((chantier) => ({
+                    value: chantier.id,
+                    label: chantier.nom,
+                    followUp: `${restate()}, sur le site ${chantier.nom}`,
+                  })),
+                }),
+              ],
+            });
+          } else if (!siteResolution.declined && siteResolution.explicit) {
+            const options = destinations.value.chantiers.slice(0, 3);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Vérifier le site contre la liste réelle'],
+              card: {
+                title: 'Site introuvable',
+                body: `Je ne trouve aucun site ouvert correspondant à « ${siteResolution.saidName ?? 'ce site'} ». Rien n’a été créé — choisis un site ouvert, ou continue sans site.`,
+              },
+              choices: [
+                ...options.map((chantier) => ({
+                  label: `Site ${chantier.nom}`,
+                  value: `${restate()}, sur le site ${chantier.nom}`,
+                })),
+                { label: 'Continuer sans site', value: `${restate()} — sans site` },
+              ],
+              ask: [
+                askToPick({
+                  id: 'creer_contrat_maintenance.site_introuvable',
+                  question: 'Sur quel site porte ce contrat ?',
+                  header: 'Site',
+                  items: [
+                    ...options.map((chantier) => ({
+                      value: chantier.id,
+                      label: chantier.nom,
+                      followUp: `${restate()}, sur le site ${chantier.nom}`,
+                    })),
+                    {
+                      value: 'sans-site',
+                      label: 'Sans site',
+                      description: 'Le contrat couvrira le client, sans rattachement de site.',
+                      followUp: `${restate()} — sans site`,
+                    },
+                  ],
+                }),
+              ],
+            });
+          }
+        }
+      }
+
+      // Questions ciblées sur les SEULS manques REQUIS par le domaine — dans l'ordre où elles se
+      // disent naturellement ; chaque followUp redit tout ce qui a déjà été énoncé.
+      if (safeLabel === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : le libellé'],
+          card: {
+            title: 'Comment s’appelle ce contrat ?',
+            body: `Donne-moi son nom (ex. « Entretien fontaines ») : redis-moi « ${restate({ label: '{nom}' })} ».`,
+          },
+        });
+      }
+      if (facts.annualAmountCents === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : le montant annuel'],
+          card: {
+            title: 'Combien par an ?',
+            body: `Le contrat « ${safeLabel} » de ${customer.name} vaut combien par an ? Redis-moi « ${restate()} à {montant} € par an ».`,
+          },
+        });
+      }
+      if (facts.startDate === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le seul manque : la date de démarrage'],
+          card: {
+            title: 'Il démarre quand ?',
+            body: `La date de démarrage devient la date anniversaire du contrat (elle rythme les échéances). Redis-moi « ${restate()}, à partir du {JJ/MM/AAAA} ».`,
+          },
+        });
+      }
+
+      // Équipements dits (« 3 fontaines ») résolus contre le parc RÉEL du site — jamais un
+      // équipement inventé ; l'écart entre ce qui est dit et ce que le parc porte est DIT
+      // honnêtement à la confirmation, jamais corrigé en silence.
+      let coveredEquipments: { id: string; label: string }[] = [];
+      // Vocabulaire RÉEL du parc du site — il corrobore positivement le nombre d'équipements
+      // annoncé (« 3 machines ») au lieu d'une liste noire d'unités et d'argot : hors cadre de
+      // parc et hors vocabulaire réel, aucun nombre n'est promu comptage.
+      let parkVocabulary: string[] = [];
+      const listEquipments = this.deps.actions.listEquipments?.bind(this.deps.actions);
+      if (site !== null && listEquipments) {
+        const equipmentsResult = await listEquipments();
+        if (equipmentsResult.ok) {
+          const stem = (word: string): string => word.replace(/s$/, '');
+          parkVocabulary = equipmentsResult.value
+            .filter((equipment) => equipment.chantierId === site!.id && equipment.status === 'active')
+            .map((equipment) => equipment.label);
+          const spoken = new Set(
+            normalized(conversation)
+              .split(/[^a-z0-9]+/)
+              .filter((word) => word.length >= 3)
+              .map(stem),
+          );
+          coveredEquipments = equipmentsResult.value
+            .filter(
+              (equipment) =>
+                equipment.chantierId === site!.id &&
+                equipment.status === 'active' &&
+                destinationNameTokens(equipment.label).some(
+                  (word) => !EQUIPMENT_GESTURE_WORDS.has(word) && spoken.has(stem(word)),
+                ),
+            )
+            .map((equipment) => ({ id: equipment.id, label: equipment.label }));
+        }
+      }
+      // Relecture du comptage avec le parc RÉEL en main : le vocabulaire du site corrobore un
+      // nombre que la seule phrase ne suffisait pas à qualifier. En l'absence de corroboration,
+      // le comptage reste `null` — Bob préfère ne rien dire à dire un nombre faux.
+      const spokenEquipmentCount =
+        parkVocabulary.length > 0
+          ? extractSpokenEquipmentCount(message, { today, parkVocabulary })
+          : facts.equipmentCount;
+
+      const args = {
+        customerId: customer.id,
+        label: safeLabel,
+        anniversaryDate: facts.startDate,
+        ...(site !== null ? { chantierId: site.id } : {}),
+        ...(facts.visitsPerYear !== null ? { visitsPerYear: facts.visitsPerYear } : {}),
+        ...(facts.tacitRenewal === false ? { tacitRenewal: false } : {}),
+        // Le montant ANNUEL dit devient la ligne unique du contrat — TVA au taux normal comme
+        // le wizard ; elle sera de toute façon re-jugée au jour du brouillon annuel (§2.6).
+        lines: [
+          { label: safeLabel, quantity: 1, unitPriceHtCents: facts.annualAmountCents, vatRate: 20 },
+        ],
+        ...(coveredEquipments.length > 0
+          ? { equipmentIds: coveredEquipments.map((equipment) => equipment.id) }
+          : {}),
+      };
+      const parsed = createTool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const summary =
+        `Créer le contrat « ${safeLabel} » pour ${customer.name}` +
+        (site !== null ? ` sur le site ${site.nom}` : '') +
+        ` · ${formatEUR(facts.annualAmountCents)} HT par an` +
+        (facts.visitsPerYear !== null ? ` · ${facts.visitsPerYear} passage(s) par an` : '') +
+        ` · démarrage le ${frDate(facts.startDate)}` +
+        (facts.tacitRenewal === false ? ' · sans reconduction tacite' : '') +
+        (coveredEquipments.length > 0
+          ? ` · couvre ${coveredEquipments.map((equipment) => equipment.label).join(', ')}`
+          : '');
+      // Un écart entre le nombre d'équipements ANNONCÉ et ce que le parc réel porte est DIT —
+      // jamais rattrapé par un équipement inventé, jamais tu.
+      const equipmentGap =
+        spokenEquipmentCount !== null && spokenEquipmentCount !== coveredEquipments.length
+          ? site === null
+            ? ` Tu as parlé de ${spokenEquipmentCount} machine(s) : sans site rattaché, je ne peux en couvrir aucune — ajoute-les depuis la fiche.`
+            : ` Tu as parlé de ${spokenEquipmentCount} machine(s) et j’en retrouve ${coveredEquipments.length} au parc du site ${site.nom} — complète depuis la fiche si besoin.`
+          : '';
+      const draftNote =
+        ' Il naîtra en BROUILLON : l’activation reste un second geste, que tu confirmeras.';
+      if (requiresConfirmation(createTool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Extraire les faits énoncés', 'Résoudre client, site et équipements', 'Attendre ta confirmation'],
+          card: { title: 'Contrat à confirmer', body: `${summary}.${equipmentGap}${draftNote} Je confirme ?` },
+          pending: { tool: createTool.name, args, label: summary },
+          spokenPrompt: buildSpokenConfirmation(`${summary}.${equipmentGap}${draftNote}`),
+        });
+      }
+      const run = await createTool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Créer le contrat de maintenance'],
+        card: {
+          title: 'Contrat créé ✓',
+          body: `${summary} — c’est fait.${equipmentGap}${draftNote}`,
+        },
+      });
+    }
+
+    if (
       intent === 'parc_equipements' ||
       intent === 'historique_equipement' ||
       intent === 'retirer_equipement' ||
@@ -4242,7 +5511,10 @@ export class BobAgent {
         }
 
         // retirer_equipement — mutation : TOUJOURS proposée à confirmation (jamais un retrait
-        // silencieux) ; l'avertissement contrat éventuel est DIT dans la carte de résultat.
+        // silencieux). [Amélioration 4, domaine §1.5-1.6] l'avertissement de couverture
+        // contractuelle est LU puis DIT AVANT la confirmation — la proposition le porte,
+        // comme la ConfirmSheet de l'écran ; la carte de résultat le redit (filet honnête si
+        // la lecture a échoué ou en autonomie sans confirmation). Info, jamais un blocage.
         const tool = this.tool('retirer_equipement');
         if (!tool) {
           return ok({
@@ -4261,17 +5533,28 @@ export class BobAgent {
         if (!parsed.ok) return err(parsed.error);
         const label = `Retirer « ${target.label} » du parc du site ${target.chantierNom}`;
         if (requiresConfirmation(tool, autonomy)) {
+          // Couverture lue AVANT le geste — fail-open : une lecture indisponible ne bloque
+          // jamais le retrait (la réalité du terrain prime), le filet post-ACK subsiste.
+          const readCoverage = this.deps.actions.getEquipmentContractCoverage?.bind(this.deps.actions);
+          let coverageWarning = '';
+          if (readCoverage) {
+            const coverage = await readCoverage({ equipmentId: target.id });
+            if (coverage.ok) {
+              const warning = equipmentContractCoverageWarning(coverage.value.activeContractLabels);
+              if (warning !== null) coverageWarning = ` ${warning}`;
+            }
+          }
           return ok({
             kind: 'proposed',
             intent,
             model,
-            plan: ['Résoudre l’équipement', 'Attendre ta confirmation'],
+            plan: ['Résoudre l’équipement', 'Lire la couverture contractuelle', 'Attendre ta confirmation'],
             card: {
               title: 'Retrait à confirmer',
-              body: `${label}. L’historique reste lisible et la réactivation possible. Je confirme ?`,
+              body: `${label}.${coverageWarning} L’historique reste lisible et la réactivation possible. Je confirme ?`,
             },
             pending: { tool: tool.name, args, label },
-            spokenPrompt: buildSpokenConfirmation(label),
+            spokenPrompt: buildSpokenConfirmation(`${label}${coverageWarning ? ` —${coverageWarning}` : ''}`),
           });
         }
         const run = await tool.run(parsed.value);
@@ -4470,6 +5753,391 @@ export class BobAgent {
         plan: ['Ajouter l’équipement au parc'],
         card: { title: 'Équipement ajouté ✓', body: `${summary} — c’est fait.${warrantyNote}` },
       });
+    }
+
+
+    if (
+      intent === 'commencer_intervention' ||
+      intent === 'terminer_intervention' ||
+      intent === 'faire_signer_intervention' ||
+      intent === 'envoyer_fiche_passage' ||
+      intent === 'facturer_intervention'
+    ) {
+      // PR-15/16 — fiche de passage À LA VOIX (§3.7) : MÊMES use cases que l'écran fiche.
+      // La fiche est RÉSOLUE contre les passages réels (site dicté via resolveSpokenChantier,
+      // sinon état du flux) — jamais un id inventé ; une VRAIE ambiguïté pose une question
+      // ciblée dont les followUps portent l'id (le tour suivant ne reboucle jamais).
+      // Confirmations : groupées aux mutations de fiche, et TOUJOURS séparée pour le sortant.
+      const listInterventions = this.deps.actions.listInterventions?.bind(this.deps.actions);
+      // UNE SEULE LECTURE DU RÉSUMÉ : les passages RÉELS sont chargés AVANT la lecture de la
+      // consigne, parce que ce sont eux qui portent les CHARNIÈRES (sites, clients) qui bornent
+      // le résumé. La directive lit donc le message une fois, avec ces charnières, et ce qu'elle
+      // rend (`summary`) est EXACTEMENT ce qui partira sur la fiche signée : la carte ne peut
+      // plus déclarer « incompris » un texte que la pièce de preuve, elle, aurait écrit. Sans
+      // hôte capable de lister, il n'y a ni charnière ni pièce de preuve à écrire : la même
+      // lecture tourne à vide, et la branche de capacité répond juste après.
+      const chargement = listInterventions ? await listInterventions() : null;
+      if (chargement !== null && !chargement.ok) return err(chargement.error);
+      const passages = chargement !== null && chargement.ok ? chargement.value : [];
+      const directive = readInterventionDirective(message, {
+        siteNames: passages.map((intervention) => intervention.chantierNom),
+        customerNames: passages.map((intervention) => intervention.customerNom),
+      });
+      // §3.7 — RIEN N'EST JETÉ EN SILENCE : ce que la consigne demande d'autre (un geste de
+      // passage EN TROP que le déterministe refuse d'arbitrer, un geste qui vit ailleurs, ou une
+      // demande que Bob n'a pas su lire) est DIT dans la MÊME carte, quel que soit le chemin.
+      const asideNote = explainInterventionAsides(directive.asides);
+      const withAside = (body: string): string => (asideNote === '' ? body : `${body} ${asideNote}`);
+      // La DEMANDE est lue sur le texte : UN geste certain + ce que la phrase déclare (annonce de
+      // fin). C'est l'ÉTAT RÉEL du passage qui tranche ensuite — passage en cours → on termine
+      // PUIS on enchaîne ; passage déjà terminé ou signé → le « c'est terminé » n'est qu'un
+      // rappel, on exécute DIRECTEMENT le geste aval.
+      const request = interventionRequestFor(
+        INTERVENTION_GESTURE_BY_INTENT[intent] ?? 'complete',
+        directive,
+      );
+      // L'intent RESTITUÉ est celui du geste DEMANDÉ, sur TOUTES les branches — y compris celles
+      // qui répondent avant d'avoir résolu la moindre fiche (capacité de l'hôte, question de
+      // clarification). Sans cela, la télémétrie des refus mentait sur la moitié des chemins.
+      const requestedIntent = INTERVENTION_INTENT_BY_GESTURE[requestedGesture(request)];
+      if (!listInterventions) {
+        return ok({
+          kind: 'answer',
+          intent: requestedIntent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Fiche de passage indisponible',
+            body: withAside(
+              'Je ne peux pas piloter les passages depuis cet appareil. Rien n’a été modifié — passe par la fiche.',
+            ),
+          },
+        });
+      }
+      // AUCUN GESTE CERTAIN : le déterministe ne devine pas. Il pose la question — jamais une
+      // mutation sur une tournure qui n'ordonne rien (« la fiche de passage est à envoyer »).
+      if (directive.needsClarification) {
+        const gestesProposes: readonly { readonly label: string; readonly commande: string }[] = [
+          { label: 'Terminer le passage', commande: 'C’est terminé' },
+          { label: 'Envoyer la fiche', commande: 'Envoie la fiche de passage' },
+          { label: 'Préparer la facture', commande: 'Facture ce passage' },
+        ];
+        return ok({
+          kind: 'answer',
+          intent: requestedIntent,
+          model,
+          plan: ['Lever le doute sur le geste demandé'],
+          card: {
+            title: 'Qu’est-ce que je fais sur ce passage ?',
+            body: withAside(
+              'Je préfère te le demander plutôt que de deviner : rien n’a été modifié.',
+            ),
+          },
+          choices: gestesProposes.map((geste) => ({ label: geste.label, value: geste.commande })),
+          ask: [
+            askToPick({
+              id: `${intent}.geste`,
+              question: 'Qu’est-ce que je fais sur ce passage ?',
+              header: 'Geste',
+              items: gestesProposes.map((geste) => ({
+                value: geste.commande,
+                label: geste.label,
+                followUp: geste.commande,
+              })),
+            }),
+          ],
+        });
+      }
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+
+      // Un passage est ÉLIGIBLE dès qu'un des deux gestes de la consigne lui est possible :
+      // c'est la même autorité qui filtrera ensuite le geste exact sur la fiche retenue.
+      const eligible = passages.filter(
+        (intervention) => resolveInterventionGesture(request, intervention) !== null,
+      );
+
+      // Site dicté (« chez Carrefour ») résolu contre les sites RÉELS des passages éligibles.
+      const siteResolution = resolveSpokenChantier({
+        conversation,
+        currentTurn: message,
+        chantiers: [
+          ...new Map(
+            passages.map((intervention) => [
+              intervention.chantierId,
+              { id: intervention.chantierId, nom: intervention.chantierNom },
+            ]),
+          ).values(),
+        ],
+        customerName: null,
+      });
+      // Le client peut aussi être nommé (« chez RATP ») : filtre supplémentaire honnête.
+      const conversationTokens = new Set(
+        normalized(conversation)
+          .split(/[^a-z0-9]+/)
+          .filter((word) => word.length >= 3),
+      );
+      // MÊME cadrage (site dit, client dit, id dit) appliqué aux passages éligibles ET à TOUS
+      // les passages : sans le second, Bob ne saurait pas dire pourquoi rien n'est éligible.
+      const scope = <T extends { id: string; chantierId: string; customerNom: string }>(
+        list: readonly T[],
+      ): T[] => {
+        const siteScoped =
+          siteResolution.matched.length === 1
+            ? list.filter(
+                (intervention) => intervention.chantierId === siteResolution.matched[0]!.id,
+              )
+            : [...list];
+        const byCustomer = siteScoped.filter((intervention) =>
+          destinationNameTokens(intervention.customerNom).some((word) =>
+            conversationTokens.has(word),
+          ),
+        );
+        const byId = siteScoped.filter(
+          (intervention) =>
+            normalized(intervention.id).length >= 3 &&
+            containsExactTokens(normalized(conversation), normalized(intervention.id)),
+        );
+        return byId.length > 0
+          ? byId
+          : siteResolution.matched.length === 1 || byCustomer.length === 0
+            ? siteScoped
+            : byCustomer;
+      };
+      const pool = scope(eligible);
+      const target = pool.length === 1 ? pool[0]! : null;
+      // Le geste RÉEL, décidé sur l'état du passage retenu — jamais sur le lexique du tour.
+      const resolution = target ? resolveInterventionGesture(request, target) : null;
+      // Sans passage résolu, le geste nommé est celui que la CONSIGNE demande — jamais celui que
+      // l'intent détecté suggère : c'est ce qui rend l'intent restitué (et donc la télémétrie
+      // des refus) identique entre les branches avec cible et sans cible (finding 7).
+      const gesture: InterventionGesture = resolution?.gesture ?? requestedGesture(request);
+      const gestureLabel = INTERVENTION_GESTURE_LABEL[gesture];
+      const effectiveIntent = INTERVENTION_INTENT_BY_GESTURE[gesture];
+
+      if (!target) {
+        if (pool.length === 0) {
+          // Rien d'éligible : Bob DIT pourquoi, en citant l'ÉTAT RÉEL des passages qu'il a bien
+          // sous la main — jamais « Aucun passage concerné » quand il y en a un, jamais muet.
+          const candidats = scope(passages);
+          return ok({
+            kind: 'answer',
+            intent: effectiveIntent,
+            model,
+            plan: ['Lire l’état réel des passages'],
+            card: {
+              title: candidats.length === 0 ? 'Aucun passage concerné' : 'Rien à faire sur ce passage',
+              body: withAside(
+                candidats.length === 0
+                  ? `Aucun passage à ${gestureLabel}${siteResolution.matched.length === 1 ? ` sur le site ${siteResolution.matched[0]!.nom}` : ''} pour l’instant. Rien n’a été modifié.`
+                  : `${candidats
+                      .slice(0, 3)
+                      .map((intervention) =>
+                        explainInterventionBlock(
+                          intervention,
+                          request,
+                          `Le passage « ${intervention.kind} » (${intervention.chantierNom})`,
+                        ),
+                      )
+                      .join('\n')}\nRien n’a été modifié.`,
+              ),
+            },
+          });
+        }
+        const options = pool.slice(0, 4);
+        // Chaque option repart du geste que SON état rend possible, suite comprise : une
+        // désambiguïsation ne perd jamais le geste aval de la consigne composite.
+        const commandOf = (intervention: (typeof options)[number]): string => {
+          const own = resolveInterventionGesture(request, intervention);
+          return interventionCommand(
+            own?.gesture ?? gesture,
+            intervention.id,
+            own?.then ?? null,
+          );
+        };
+        return ok({
+          kind: 'answer',
+          intent: effectiveIntent,
+          model,
+          plan: ['Lever l’ambiguïté du passage'],
+          card: {
+            title: 'Quel passage ?',
+            body: withAside(
+              `Plusieurs passages peuvent être ${
+                gesture === 'send' ? 'envoyés' : 'concernés'
+              } — dis-moi lequel. Rien n’a été modifié.`,
+            ),
+          },
+          choices: options.map((intervention) => ({
+            label: `${intervention.kind} — ${intervention.chantierNom} (${intervention.customerNom})`,
+            value: commandOf(intervention),
+          })),
+          ask: [
+            askToPick({
+              id: `${intent}.passage`,
+              question: `Quel passage veux-tu ${gestureLabel} ?`,
+              header: 'Passage',
+              items: options.map((intervention) => ({
+                value: intervention.id,
+                label: `${intervention.kind} — ${intervention.chantierNom}`,
+                description: intervention.customerNom,
+                followUp: commandOf(intervention),
+              })),
+            }),
+          ],
+        });
+      }
+
+      // « fais signer » : le tracé ne se DICTE jamais — Bob ouvre le pad (micro suspendu).
+      // Le geste vient de l'ÉTAT : « c'est terminé, fais signer » sur un passage DÉJÀ terminé
+      // ouvre le pad tout de suite, au lieu de chercher à terminer ce qui l'est déjà.
+      if (gesture === 'sign') {
+        return ok({
+          kind: 'answer',
+          intent: effectiveIntent,
+          model,
+          plan: ['Résoudre le passage', 'Ouvrir le pad de signature'],
+          card: {
+            title: 'Signature sur place',
+            body: withAside(
+              `J’ouvre la signature du passage « ${target.kind} » (${target.chantierNom}). Passe le téléphone au client : une signature se trace, elle ne se dicte pas. Valeur probante : signature simple (eIDAS).`,
+            ),
+          },
+          navigate: `intervention/${target.id}?action=sign`,
+        });
+      }
+
+      const tool = this.tool(INTERVENTION_TOOL_BY_GESTURE[gesture]);
+      if (!tool) {
+        return ok({
+          kind: 'answer',
+          intent: effectiveIntent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Geste indisponible',
+            body: withAside(
+              `Je ne peux pas ${gestureLabel} ce passage depuis cet appareil. Rien n’a été modifié — passe par la fiche.`,
+            ),
+          },
+        });
+      }
+
+      // Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé, note-le »)
+      // — extrait de la phrase courante, jamais réinventé au tour suivant. [finding 4] Il part
+      // sur une PIÈCE DE PREUVE : c'est LA lecture de la directive, bornée par les charnières
+      // factuelles des passages réels — jamais une SECONDE lecture qui pourrait dire autre chose
+      // que ce que la carte, elle, tient pour compris.
+      const summary = gesture === 'complete' ? directive.summary : null;
+      const args =
+        summary !== null ? { interventionId: target.id, summary } : { interventionId: target.id };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+
+      // §3.7 — consigne composite : le geste aval que l'ÉTAT laisse en attente (« c'est terminé,
+      // facture ce passage » sur un passage en cours). Il n'est JAMAIS fusionné : Bob l'annonce
+      // ici, et le PROPOSE réellement une fois la mutation confirmée — avec SA propre
+      // confirmation. Une seule source pour l'annonce et pour la proposition : elles ne peuvent
+      // pas diverger, donc la promesse ne peut pas rester sans suite.
+      const chained = resolution?.then ? interventionChainOffer(resolution.then, target.id) : null;
+      // §3.7 — RIEN N'EST JETÉ EN SILENCE : un geste aval COMPRIS mais impossible même après
+      // celui-ci (visite contractuelle, passage déjà facturé) est DIT ici, avec sa raison. Bob
+      // ne propose plus la complétion en taisant la seconde moitié de la consigne (finding 4).
+      const withheldNote = resolution?.withheld
+        ? ` ${explainWithheldDownstream(
+            target,
+            resolution.withheld,
+            `le passage « ${target.kind} » (${target.chantierNom})`,
+          )}`
+        : '';
+      const suite = `${chained?.announcement ?? ''}${withheldNote}${asideNote === '' ? '' : ` ${asideNote}`}`;
+      const label =
+        gesture === 'start'
+          ? `Démarrer le passage « ${target.kind} » sur le site ${target.chantierNom}`
+          : gesture === 'complete'
+            ? `Terminer le passage « ${target.kind} » sur le site ${target.chantierNom}${summary !== null ? ` avec le résumé « ${summary} »` : ''}`
+            : gesture === 'send'
+              ? `Envoyer la fiche de passage « ${target.kind} » (${target.chantierNom}) à ${target.customerNom}`
+              : `Préparer le brouillon de facture du passage « ${target.kind} » (${target.chantierNom})`;
+
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent: effectiveIntent,
+          model,
+          plan: ['Résoudre le passage', 'Attendre ta confirmation'],
+          card: {
+            title:
+              gesture === 'send'
+                ? 'Envoi à confirmer'
+                : gesture === 'bill'
+                  ? 'Brouillon à confirmer'
+                  : 'Passage à confirmer',
+            body:
+              gesture === 'send'
+                ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti.${suite} Je confirme ?`
+                : gesture === 'bill'
+                  ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé.${suite} Je confirme ?`
+                  : `${label}.${suite} Je confirme ?`,
+          },
+          pending: {
+            tool: tool.name,
+            args,
+            label,
+            ...(chained ? { chain: chained.offer } : {}),
+          },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        // Refus du domaine (fiche verrouillée, visite contractuelle, garde B2C) : VERBATIM.
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent: effectiveIntent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      const output = run.value as { recipient?: unknown; invoiceId?: unknown };
+      const done = `${
+        gesture === 'send' && typeof output?.recipient === 'string'
+          ? `${label} — c’est parti (destinataire : ${output.recipient}).`
+          : gesture === 'bill' && typeof output?.invoiceId === 'string'
+            ? `${label} — le brouillon est prêt. Relis-le, puis émets-le quand tu veux.`
+            : `${label} — c’est fait.`
+      }${withheldNote}${asideNote === '' ? '' : ` ${asideNote}`}`;
+      // Exécution DIRECTE (autonomie haute) : l'enchaînement annoncé est proposé tout de suite —
+      // le geste aval garde SA confirmation, il n'est jamais exécuté dans la foulée.
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: effectiveIntent,
+            model,
+            plan: [
+              gesture === 'send'
+                ? 'Archiver puis envoyer la fiche'
+                : gesture === 'bill'
+                  ? 'Préparer le brouillon de facture'
+                  : 'Enregistrer le geste sur la fiche',
+            ],
+            card: {
+              title:
+                gesture === 'start'
+                  ? 'Passage démarré ✓'
+                  : gesture === 'complete'
+                    ? 'Passage terminé ✓'
+                    : gesture === 'send'
+                      ? 'Fiche envoyée ✓'
+                      : 'Brouillon prêt ✓',
+              body: done,
+            },
+          },
+          chained?.offer,
+        ),
+      );
     }
 
     if (intent === 'envoyer_devis') {
@@ -7360,6 +9028,21 @@ export class BobAgent {
       // PR-11 — parc d'équipements : l'état a pu changer entre la proposition et la
       // confirmation (site clôturé, révision bougée à deux appareils) — le refus du DOMAINE
       // est restitué verbatim (« Ce site est clôturé — rouvre-le… »), jamais un code brut.
+      if (CONTRACT_LIFECYCLE_TOOLS.has(pending.tool)) {
+        // PR-12c §2.7 — gestes de contrat : l'état a pu changer entre la proposition et la
+        // confirmation (client passé b2c, site clôturé, contrat déjà activé/résilié) — le refus
+        // du DOMAINE est restitué VERBATIM (LegalHint Chatel compris), jamais un code brut.
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Restituer le refus du domaine'],
+            card: guard,
+          });
+        }
+      }
       if (pending.tool === 'ajouter_equipement' || pending.tool === 'retirer_equipement') {
         const guard = domainGuardCard(run.error);
         if (guard) {
@@ -7542,13 +9225,36 @@ export class BobAgent {
         card: { title: 'Conditions enregistrées ✓', body: `${pending.label} — c’est noté pour les prochaines factures.` },
       });
     }
-    return ok({
-      kind: 'done',
-      intent: intentForTool(pending.tool),
-      model,
-      plan: ['Exécuter l’action confirmée'],
-      card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },
-    });
+    // PR-15 — le passage terminé confirmé mérite sa carte, et l'ENCHAÎNEMENT ANNONCÉ est TENU :
+    // le geste aval (signature, envoi de fiche, brouillon de facture) est réellement PROPOSÉ
+    // ici, avec SA propre confirmation. Sans cela, « ensuite je te propose … » ne serait suivi
+    // de rien — une promesse en l'air à la place d'un enchaînement.
+    if (pending.tool === 'terminer_intervention') {
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: 'terminer_intervention',
+            model,
+            plan: ['Terminer le passage confirmé'],
+            card: { title: 'Passage terminé ✓', body: `${pending.label} — c’est fait.` },
+          },
+          pending.chain,
+        ),
+      );
+    }
+    return ok(
+      withAnnouncedChain(
+        {
+          kind: 'done',
+          intent: intentForTool(pending.tool),
+          model,
+          plan: ['Exécuter l’action confirmée'],
+          card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },
+        },
+        pending.chain,
+      ),
+    );
   }
 
   private requireEngine(): AgentRuntime {

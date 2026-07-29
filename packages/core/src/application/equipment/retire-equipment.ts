@@ -31,6 +31,17 @@ export interface RetireEquipmentDeps {
   contractCoverage?: EquipmentContractCoveragePort;
 }
 
+/**
+ * [Amélioration 4] — LE message d'avertissement de couverture contractuelle, unique pour les
+ * trois surfaces qui le disent AVANT confirmation (ConfirmSheet écran, proposition vocale) et
+ * dans la sortie du use case : une seule vérité de copy, jamais trois variantes qui divergent.
+ * `null` = aucune couverture connue, rien à dire.
+ */
+export function equipmentContractCoverageWarning(labels: readonly string[]): string | null {
+  if (labels.length === 0) return null;
+  return `Couvert par le contrat ${labels.join(', ')} : la couverture (et son prix) continue jusqu'à modification du contrat.`;
+}
+
 /** Bloc A §1.5 — retrait LOGIQUE (« la vitrine froide est déposée ») : `retiredAt` posé,
  * historique intact, avertissement contrat dit AVANT confirmation (écran ET voix). */
 export class RetireEquipment {
@@ -56,9 +67,7 @@ export class RetireEquipment {
         input.companyId,
         input.equipmentId,
       );
-      if (labels.length > 0) {
-        contractWarning = `Couvert par le contrat ${labels.join(', ')} : la couverture (et son prix) continue jusqu'à modification du contrat.`;
-      }
+      contractWarning = equipmentContractCoverageWarning(labels);
     }
     return ok({ equipment: equipment.toProps(), contractWarning });
   }

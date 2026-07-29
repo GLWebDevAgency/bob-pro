@@ -23,6 +23,10 @@ import {
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
+  contractLabelRefusalSaid,
+  inspectContractLabel,
+} from '../agent/contract-label-guard';
+import {
   type AcknowledgeDocumentActionInput,
   type AcknowledgeDocumentActionOutput,
   type AssignExpenseChantierActionInput,
@@ -32,6 +36,21 @@ import {
   type CreateEquipmentActionInput,
   type EquipmentHistoryActionInput,
   type EquipmentHistoryActionOutput,
+  type PrepareContractAnnualInvoiceActionInput,
+  type PrepareContractAnnualInvoiceActionOutput,
+  type CreateMaintenanceContractActionInput,
+  type ActivateContractActionInput,
+  type TerminateContractActionInput,
+  type ContractLifecycleActionOutput,
+  type AgentIntervention,
+  type InterventionActionInput,
+  type InterventionActionOutput,
+  type CompleteInterventionActionInput,
+  type SendInterventionReportActionOutput,
+  type PrepareInterventionInvoiceActionOutput,
+  type InterventionBillingDueAction,
+  type InterventionSettingsActionInput,
+  type InterventionSettingsActionOutput,
   type RetireEquipmentActionInput,
   type RetireEquipmentActionOutput,
   type FileDocumentActionInput,
@@ -1544,6 +1563,467 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => equipmentHistoryAction(input),
     };
     tools.push(historiqueEquipement as AnyTool);
+  }
+
+  // —— PR-12c — contrats de maintenance (Bloc B §2.7) : MÊMES use cases que l'écran. ——
+  const listContractsAction = actions.listMaintenanceContracts?.bind(actions);
+  if (listContractsAction) {
+    const statutContrat: Tool<{ contractId?: string }, unknown> = {
+      name: 'statut_contrat',
+      description:
+        'Statut RÉEL d’un contrat de maintenance (état, période courante calculée, couverture par les factures, renouvellement) — mêmes faits dérivés que la fiche. Lecture pure.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<{ contractId?: string }, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (r?.contractId !== undefined && (typeof r.contractId !== 'string' || r.contractId.length === 0))
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ ...(typeof r?.contractId === 'string' ? { contractId: r.contractId } : {}) });
+      },
+      run: async (input) => {
+        const all = await listContractsAction();
+        if (!all.ok) return all;
+        return ok(
+          input.contractId === undefined
+            ? all.value
+            : all.value.filter((contract) => contract.id === input.contractId),
+        );
+      },
+    };
+    tools.push(statutContrat as AnyTool);
+
+    const contratsARenouveler: Tool<Record<string, never>, unknown> = {
+      name: 'contrats_a_renouveler',
+      description:
+        'Contrats à renouveler (alerte J-60/J-30 dérivée, tacites ET non-tacites échus) — même dérivation deriveRenewalAlerts que la fiche et le cron. Lecture pure, alerte INTERNE.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: async () => {
+        const all = await listContractsAction();
+        if (!all.ok) return all;
+        return ok(
+          all.value.filter(
+            (contract) => contract.renewalAlert !== null || contract.expiredSince !== null,
+          ),
+        );
+      },
+    };
+    tools.push(contratsARenouveler as AnyTool);
+  }
+
+  const prepareAnnualAction = actions.prepareContractAnnualInvoice?.bind(actions);
+  if (prepareAnnualAction) {
+    const preparerFactureAnnuelle: Tool<
+      PrepareContractAnnualInvoiceActionInput,
+      PrepareContractAnnualInvoiceActionOutput
+    > = {
+      name: 'preparer_facture_annuelle',
+      description:
+        'Prépare le BROUILLON de la facture annuelle d’un contrat (« prépare la facture annuelle du contrat Bastille ») — même use case PrepareAnnualInvoiceDraft que la fiche : jamais émis, jamais envoyé seul ; période déjà couverte → refus actionnable avec le numéro.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Conception vocale §2.7 : la proposition (« je prépare le brouillon ? ») est TOUJOURS
+      // confirmée — un brouillon reste réversible (DeleteDraftInvoice), d'où le palier draft.
+      safetyFloor: true,
+      riskTier: 'draft',
+      parse: (raw): Result<PrepareContractAnnualInvoiceActionInput, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ contractId: r.contractId });
+      },
+      run: (input) => prepareAnnualAction(input),
+    };
+    tools.push(preparerFactureAnnuelle as AnyTool);
+  }
+
+  // —— §2.7 — GESTES de cycle de vie du contrat À LA VOIX : MÊMES use cases que la fiche
+  //    (CreateMaintenanceContract / ActivateContract / TerminateContract). Chacun est une
+  //    mutation : plancher de confirmation (safetyFloor) — jamais un contrat créé, activé ou
+  //    résilié en silence, même en autonomie 'auto'. ——
+  const createContractAction = actions.createMaintenanceContract?.bind(actions);
+  if (createContractAction) {
+    const creerContrat: Tool<CreateMaintenanceContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'creer_contrat_maintenance',
+      description:
+        'Crée le BROUILLON d’un contrat de maintenance (« fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an ») — même use case CreateMaintenanceContract que le wizard : client professionnel exigé (refus Chatel restitué tel quel), site ouvert, équipements du même site. L’activation reste un geste distinct.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<CreateMaintenanceContractActionInput, AppError> => {
+        const r = raw as {
+          customerId?: unknown;
+          label?: unknown;
+          chantierId?: unknown;
+          anniversaryDate?: unknown;
+          visitsPerYear?: unknown;
+          tacitRenewal?: unknown;
+          lines?: unknown;
+          equipmentIds?: unknown;
+        };
+        if (typeof r?.customerId !== 'string' || r.customerId.trim().length === 0)
+          return err(appValidation('customerId', 'Client du contrat manquant.'));
+        if (typeof r?.label !== 'string' || r.label.trim().length === 0 || r.label.length > 200)
+          return err(appValidation('label', 'Libellé de contrat manquant (200 caractères maximum).'));
+        // GARDE FAIL-CLOSED — POINT DE CONVERGENCE des DEUX chemins : celui de l'extraction
+        // déterministe (l'agent construit ces arguments) et celui du modèle (qui remplit `label`
+        // lui-même via ce registre). Le libellé s'imprime sur la LIGNE de la facture annuelle :
+        // le geste est refusé ICI dès qu'un mot du nom sort de la FORME SÛRE (un mot, un petit
+        // nombre, un connecteur, une lettre de désignation — rien d'autre), jamais rattrapé plus
+        // loin. Sévérité `'nomme'` : quelqu'un a délibérément écrit ce nom, la forme s'applique
+        // toujours (aucun montant, aucune date n'entre par cette porte) mais les mots que le
+        // métier emploie légitimement cessent de refuser — sinon un nom légitime (« Entretien
+        // annuel ») deviendrait un cul-de-sac. Un modèle, lui, n'a aucune raison structurelle de
+        // séparer le nom des faits : il recopie volontiers la phrase du pro.
+        const labelVerdict = inspectContractLabel(r.label, { mode: 'nomme' });
+        if (!labelVerdict.accepted)
+          return err(appValidation('label', contractLabelRefusalSaid(labelVerdict)));
+        if (typeof r?.anniversaryDate !== 'string' || !isValidDateOnly(r.anniversaryDate))
+          return err(appValidation('anniversaryDate', 'Date de démarrage attendue (AAAA-MM-JJ).'));
+        if (
+          r.chantierId !== undefined &&
+          r.chantierId !== null &&
+          (typeof r.chantierId !== 'string' || r.chantierId.trim().length === 0)
+        )
+          return err(appValidation('chantierId', 'Site du contrat invalide.'));
+        if (
+          r.visitsPerYear !== undefined &&
+          (typeof r.visitsPerYear !== 'number' ||
+            !Number.isSafeInteger(r.visitsPerYear) ||
+            r.visitsPerYear < 0 ||
+            r.visitsPerYear > 52)
+        )
+          return err(appValidation('visitsPerYear', 'Nombre de passages par an invalide (0 à 52).'));
+        if (r.tacitRenewal !== undefined && typeof r.tacitRenewal !== 'boolean')
+          return err(appValidation('tacitRenewal', 'Reconduction tacite invalide.'));
+        const lines: CreateMaintenanceContractActionInput['lines'] = [];
+        if (r.lines !== undefined) {
+          if (!Array.isArray(r.lines) || r.lines.length === 0 || r.lines.length > 100)
+            return err(appValidation('lines', 'Lignes du contrat invalides (1 à 100).'));
+          for (const [index, rawLine] of r.lines.entries()) {
+            const line = rawLine as {
+              label?: unknown;
+              quantity?: unknown;
+              unitPriceHtCents?: unknown;
+              vatRate?: unknown;
+            };
+            if (typeof line?.label !== 'string' || line.label.trim().length === 0 || line.label.length > 200)
+              return err(appValidation(`lines.${index}.label`, 'Libellé de ligne manquant.'));
+            // La LIGNE est ce qui s'imprime littéralement sur la facture annuelle : elle passe
+            // par la MÊME garde que le libellé du contrat, sans exception ni raccourci.
+            const lineVerdict = inspectContractLabel(line.label, { mode: 'nomme' });
+            if (!lineVerdict.accepted)
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalSaid(lineVerdict)));
+            if (typeof line?.quantity !== 'number' || !(line.quantity > 0))
+              return err(appValidation(`lines.${index}.quantity`, 'Quantité invalide.'));
+            if (
+              typeof line?.unitPriceHtCents !== 'number' ||
+              !Number.isSafeInteger(line.unitPriceHtCents) ||
+              line.unitPriceHtCents < 0
+            )
+              return err(appValidation(`lines.${index}.unitPriceHtCents`, 'Prix unitaire HT invalide.'));
+            if (typeof line?.vatRate !== 'number' || !isVatRate(line.vatRate))
+              return err(appValidation(`lines.${index}.vatRate`, 'Taux de TVA invalide.'));
+            (lines as { label: string; quantity: number; unitPriceHtCents: number; vatRate: number }[]).push({
+              label: line.label.trim(),
+              quantity: line.quantity,
+              unitPriceHtCents: line.unitPriceHtCents,
+              vatRate: line.vatRate,
+            });
+          }
+        }
+        const equipmentIds: string[] = [];
+        if (r.equipmentIds !== undefined) {
+          if (!Array.isArray(r.equipmentIds) || r.equipmentIds.length > 100)
+            return err(appValidation('equipmentIds', 'Équipements couverts invalides.'));
+          for (const [index, id] of r.equipmentIds.entries()) {
+            if (typeof id !== 'string' || id.trim().length === 0)
+              return err(appValidation(`equipmentIds.${index}`, 'Équipement couvert invalide.'));
+            equipmentIds.push(id.trim());
+          }
+        }
+        return ok({
+          customerId: r.customerId.trim(),
+          label: r.label.trim(),
+          anniversaryDate: r.anniversaryDate,
+          ...(typeof r.chantierId === 'string' ? { chantierId: r.chantierId.trim() } : {}),
+          ...(typeof r.visitsPerYear === 'number' ? { visitsPerYear: r.visitsPerYear } : {}),
+          ...(typeof r.tacitRenewal === 'boolean' ? { tacitRenewal: r.tacitRenewal } : {}),
+          ...(lines.length > 0 ? { lines } : {}),
+          ...(equipmentIds.length > 0 ? { equipmentIds } : {}),
+        });
+      },
+      run: (input) => createContractAction(input),
+    };
+    tools.push(creerContrat as AnyTool);
+  }
+
+  const activateContractAction = actions.activateMaintenanceContract?.bind(actions);
+  if (activateContractAction) {
+    const activerContrat: Tool<ActivateContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'activer_contrat',
+      description:
+        'Active un contrat de maintenance en brouillon (« active le contrat Bastille ») — même use case ActivateContract que la fiche : le client professionnel est revalidé et la date anniversaire figée. Geste DISTINCT de la création.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<ActivateContractActionInput, AppError> => {
+        const r = raw as { contractId?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        return ok({ contractId: r.contractId });
+      },
+      run: (input) => activateContractAction(input),
+    };
+    tools.push(activerContrat as AnyTool);
+  }
+
+  const terminateContractAction = actions.terminateMaintenanceContract?.bind(actions);
+  if (terminateContractAction) {
+    const resilierContrat: Tool<TerminateContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'resilier_contrat',
+      description:
+        'Résilie un contrat de maintenance actif (« le client résilie au 1er juin ») — même use case TerminateContract que la fiche : le préavis est AFFICHÉ, jamais bloquant ; sans date dite, le domaine retient le prochain anniversaire calculé. Le motif est porté en trace.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<TerminateContractActionInput, AppError> => {
+        const r = raw as { contractId?: unknown; effectiveDate?: unknown; note?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        if (typeof r?.note !== 'string' || r.note.trim().length === 0 || r.note.length > 2000)
+          return err(appValidation('note', 'Motif de résiliation requis (trace de la décision).'));
+        if (hasAsciiControlCharacter(r.note))
+          return err(appValidation('note', 'Motif invalide (caractères de contrôle interdits).'));
+        if (
+          r.effectiveDate !== undefined &&
+          r.effectiveDate !== null &&
+          (typeof r.effectiveDate !== 'string' || !isValidDateOnly(r.effectiveDate))
+        )
+          return err(appValidation('effectiveDate', 'Date d’effet attendue (AAAA-MM-JJ).'));
+        return ok({
+          contractId: r.contractId,
+          note: r.note.trim(),
+          ...(typeof r.effectiveDate === 'string' ? { effectiveDate: r.effectiveDate } : {}),
+        });
+      },
+      run: (input) => terminateContractAction(input),
+    };
+    tools.push(resilierContrat as AnyTool);
+  }
+
+  // —— PR-15/16 — fiche de passage : MÊMES use cases que l'écran fiche (parité §3.7). ——
+  const parseInterventionId = (raw: unknown): Result<InterventionActionInput, AppError> => {
+    const r = raw as { interventionId?: unknown };
+    if (typeof r?.interventionId !== 'string' || r.interventionId.length === 0)
+      return err(appValidation('interventionId', 'Fiche de passage ciblée invalide.'));
+    return ok({ interventionId: r.interventionId });
+  };
+
+  const listInterventionsAction = actions.listInterventions?.bind(actions);
+  if (listInterventionsAction) {
+    const passagesDuJour: Tool<{ chantierId?: string }, AgentIntervention[]> = {
+      name: 'passages_du_site',
+      description:
+        'Liste les fiches de passage réelles (par site, ou tout le tenant) — lecture pure, jamais une fiche inventée.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (raw): Result<{ chantierId?: string }, AppError> => {
+        const r = raw as { chantierId?: unknown };
+        if (r?.chantierId !== undefined && (typeof r.chantierId !== 'string' || r.chantierId.length === 0))
+          return err(appValidation('chantierId', 'Site ciblé invalide.'));
+        return ok({ ...(typeof r?.chantierId === 'string' ? { chantierId: r.chantierId } : {}) });
+      },
+      run: async (input) => {
+        const all = await listInterventionsAction();
+        if (!all.ok) return all;
+        return ok(
+          input.chantierId === undefined
+            ? all.value
+            : all.value.filter((intervention) => intervention.chantierId === input.chantierId),
+        );
+      },
+    };
+    tools.push(passagesDuJour as AnyTool);
+  }
+
+  const startInterventionAction = actions.startIntervention?.bind(actions);
+  if (startInterventionAction) {
+    const commencerIntervention: Tool<InterventionActionInput, InterventionActionOutput> = {
+      name: 'commencer_intervention',
+      description:
+        'Démarre un passage planifié (« démarre l’intervention chez Carrefour ») — même use case StartIntervention que le bouton « Démarrer le passage ».',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // §3.7 — mutation de fiche : confirmation, jamais un chrono lancé en silence.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: parseInterventionId,
+      run: (input) => startInterventionAction(input),
+    };
+    tools.push(commencerIntervention as AnyTool);
+  }
+
+  const completeInterventionAction = actions.completeIntervention?.bind(actions);
+  if (completeInterventionAction) {
+    const terminerIntervention: Tool<CompleteInterventionActionInput, InterventionActionOutput> = {
+      name: 'terminer_intervention',
+      description:
+        'Termine le passage (« c’est terminé ») — même use case CompleteIntervention : la checklist est FIGÉE et le résumé dicté posé dans le même geste.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<CompleteInterventionActionInput, AppError> => {
+        const base = parseInterventionId(raw);
+        if (!base.ok) return base;
+        const r = raw as { summary?: unknown };
+        if (r?.summary !== undefined && r.summary !== null) {
+          if (typeof r.summary !== 'string' || r.summary.trim().length === 0 || r.summary.length > 2000)
+            return err(appValidation('summary', 'Résumé invalide (2000 caractères maximum).'));
+          return ok({ ...base.value, summary: r.summary.trim() });
+        }
+        return ok(base.value);
+      },
+      run: (input) => completeInterventionAction(input),
+    };
+    tools.push(terminerIntervention as AnyTool);
+  }
+
+  const sendInterventionReportAction = actions.sendInterventionReport?.bind(actions);
+  if (sendInterventionReportAction) {
+    const envoyerFichePassage: Tool<InterventionActionInput, SendInterventionReportActionOutput> = {
+      name: 'envoyer_fiche_passage',
+      description:
+        'Envoie la fiche de passage ARCHIVÉE au client (« envoie la fiche de passage ») — geste CONFIRMÉ, jamais un effet de bord ; la fiche est archivée avant d’être envoyée.',
+      mutating: true,
+      // SORTANT : sa confirmation est TOUJOURS la sienne, jamais fusionnée avec les mutations
+      // locales du flux (§3.7 — « annuler = rien n'est parti »).
+      outbound: true,
+      compliance: 'medium',
+      safetyFloor: true,
+      riskTier: 'outbound',
+      parse: parseInterventionId,
+      run: (input) => sendInterventionReportAction(input),
+    };
+    tools.push(envoyerFichePassage as AnyTool);
+  }
+
+  const prepareInterventionInvoiceAction = actions.prepareInterventionInvoice?.bind(actions);
+  if (prepareInterventionInvoiceAction) {
+    const facturerIntervention: Tool<
+      InterventionActionInput,
+      PrepareInterventionInvoiceActionOutput
+    > = {
+      name: 'facturer_intervention',
+      description:
+        'Prépare le BROUILLON de facture d’un passage (« facture cette intervention ») — même ComposeStandaloneInvoice que le CTA : tous les invariants d’émission repassent, rien n’est émis ni envoyé.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      safetyFloor: true,
+      riskTier: 'draft',
+      parse: parseInterventionId,
+      run: (input) => prepareInterventionInvoiceAction(input),
+    };
+    tools.push(facturerIntervention as AnyTool);
+  }
+
+  // —— §3.1/§3.5 « facturer sans délai » — dérivation PURE partagée avec l'écran. ——
+  const interventionsToBillAction = actions.listInterventionsToBill?.bind(actions);
+  if (interventionsToBillAction) {
+    const passagesAFacturer: Tool<Record<string, never>, InterventionBillingDueAction[]> = {
+      name: 'passages_a_facturer',
+      description:
+        'Liste les passages terminés ou signés, hors contrat, qu’aucune facture vivante ne couvre (« qu’est-ce qu’il me reste à facturer ? ») — dérivation pure, jamais un statut inventé.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: () => interventionsToBillAction(),
+    };
+    tools.push(passagesAFacturer as AnyTool);
+  }
+
+  // —— PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : parité stricte avec l'écran. ——
+  const readInterventionSettingsAction = actions.getInterventionSettings?.bind(actions);
+  if (readInterventionSettingsAction) {
+    const reglagesFichePassage: Tool<Record<string, never>, InterventionSettingsActionOutput> = {
+      name: 'reglages_fiche_passage',
+      description:
+        'Lit les réglages de la fiche de passage (titre du PDF, modèles de checklist par type) — lecture pure.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      riskTier: 'read',
+      parse: (): Result<Record<string, never>, AppError> => ok({}),
+      run: () => readInterventionSettingsAction(),
+    };
+    tools.push(reglagesFichePassage as AnyTool);
+  }
+
+  const writeInterventionSettingsAction = actions.updateInterventionSettings?.bind(actions);
+  if (writeInterventionSettingsAction) {
+    const reglerFichePassage: Tool<
+      InterventionSettingsActionInput,
+      InterventionSettingsActionOutput
+    > = {
+      name: 'regler_fiche_passage',
+      description:
+        'Change le titre de la fiche de passage (« appelle ma fiche Certificat sanitaire ») ou ses modèles de checklist — même use case UpdateCompanyInterventionSettings que l’écran Réglages.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Le titre devient l'identité d'un document de preuve sortant : jamais en silence.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<InterventionSettingsActionInput, AppError> => {
+        const r = raw as { reportTitle?: unknown; checklistTemplates?: unknown };
+        const parsed: InterventionSettingsActionInput = {};
+        if (r?.reportTitle !== undefined) {
+          if (r.reportTitle !== null && typeof r.reportTitle !== 'string')
+            return err(appValidation('reportTitle', 'Titre de fiche invalide.'));
+          parsed.reportTitle = r.reportTitle as string | null;
+        }
+        if (r?.checklistTemplates !== undefined) {
+          if (
+            typeof r.checklistTemplates !== 'object' ||
+            r.checklistTemplates === null ||
+            Array.isArray(r.checklistTemplates)
+          )
+            return err(appValidation('checklistTemplates', 'Modèles de checklist invalides.'));
+          const templates: Record<string, string[]> = {};
+          for (const [kind, labels] of Object.entries(r.checklistTemplates)) {
+            if (!Array.isArray(labels) || labels.some((label) => typeof label !== 'string'))
+              return err(appValidation('checklistTemplates', 'Liste de points invalide.'));
+            templates[kind] = labels as string[];
+          }
+          parsed.checklistTemplates = templates;
+        }
+        if (parsed.reportTitle === undefined && parsed.checklistTemplates === undefined)
+          return err(appValidation('settings', 'Rien à modifier dans les réglages de fiche.'));
+        return ok(parsed);
+      },
+      run: (input) => writeInterventionSettingsAction(input),
+    };
+    tools.push(reglerFichePassage as AnyTool);
   }
 
   return tools;

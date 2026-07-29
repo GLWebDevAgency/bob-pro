@@ -1,3 +1,24 @@
+import { type InterventionGesture, readInterventionDirective } from './intervention-directive';
+
+/**
+ * PARTAGE DES RÔLES ENTRE LES DEUX CHEMINS DE CLASSIFICATION — à ne plus jamais élargir.
+ *
+ *   `classifyWithLlm`   → rend PLUSIEURS étapes (une par appel d'outil). C'est LUI, et lui seul,
+ *                         qui DÉCOMPOSE une consigne composite en autant de gestes qu'elle en
+ *                         porte. C'est le chemin de la PRODUCTION.
+ *
+ *   `classifyWithRegex` → `detectIntent` + `extractReference` : UNE consigne, UN geste, de façon
+ *                         fiable. TOUJOURS UNE SEULE ÉTAPE. Repli hors-ligne, LLM indisponible,
+ *                         ou geste que le LLM ne sait pas nommer.
+ *
+ * CE QUE `detectIntent` NE FAIT PLUS (et ne doit jamais refaire) : arbitrer entre PLUSIEURS
+ * gestes dictés dans la même phrase. Six passes s'y sont épuisées à coups d'expressions
+ * régulières croisées ; la dernière vérification l'a chiffré (113 cas fautifs sur 343, 78
+ * clauses éteintes). Quand une consigne porte plusieurs gestes, le déterministe retient celui
+ * qu'il identifie AVEC CERTITUDE et REND le reste verbatim, pour que Bob le DISE
+ * (`intervention-directive.ts`, `explainInterventionAsides`). Quand rien n'est certain, il pose
+ * une question. Le doute ne produit ni geste faux, ni silence.
+ */
 export type BobIntent =
   | 'contexte_ecran' // lire l'entite affichee : « cette facture », « ou suis-je ? »
   | 'payout'
@@ -25,6 +46,17 @@ export type BobIntent =
   | 'parc_equipements' // « montre-moi le parc du site Bastille » — lecture du parc (PR-11)
   | 'historique_equipement' // « l'historique de la fontaine de l'accueil » — historique dérivé (PR-11)
   | 'retirer_equipement' // « la vitrine froide est déposée, retire-la du parc » — retrait logique (PR-11)
+  | 'preparer_facture_annuelle' // « prépare la facture annuelle du contrat Bastille » — brouillon en un tap (PR-12c)
+  | 'statut_contrat' // « le contrat Carrefour, ça en est où ? » — statut parlé dérivé (PR-12c)
+  | 'contrats_a_renouveler' // « quels contrats à renouveler ? » — alertes J-60/J-30 dérivées (PR-12c)
+  | 'creer_contrat_maintenance' // « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » — CreateMaintenanceContract (§2.7)
+  | 'activer_contrat' // « active le contrat Bastille » — ActivateContract, geste distinct de la création (§2.7)
+  | 'resilier_contrat' // « le client résilie au 1er juin » — TerminateContract, préavis expliqué jamais bloquant (§2.7)
+  | 'commencer_intervention' // « démarre l'intervention chez Carrefour » — StartIntervention (PR-15)
+  | 'terminer_intervention' // « c'est terminé » — CompleteIntervention, checklist figée (PR-15)
+  | 'faire_signer_intervention' // « fais signer » — ouvre le pad de signature (PR-15)
+  | 'envoyer_fiche_passage' // « envoie la fiche de passage » — sortant CONFIRMÉ (PR-16)
+  | 'facturer_intervention' // « facture cette intervention » — brouillon pré-rempli (PR-16)
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
@@ -46,6 +78,18 @@ export type BobIntent =
   | 'abonnement' // « où en est mon abonnement / mon essai ? » — lecture seule, pilier 2 (jamais d'achat vocal)
   | 'aide' // « aide », « tu sais faire quoi ? » — catalogue parlé des capacités (découvrabilité, jamais un refus)
   | 'unknown';
+
+/**
+ * Geste de fiche → intent, SOURCE UNIQUE (le handler la réutilise). Le geste vient de l'état du
+ * passage ; l'intent restitué doit toujours être celui du geste réellement résolu.
+ */
+export const INTENT_BY_GESTURE: Record<InterventionGesture, BobIntent> = {
+  start: 'commencer_intervention',
+  complete: 'terminer_intervention',
+  sign: 'faire_signer_intervention',
+  send: 'envoyer_fiche_passage',
+  bill: 'facturer_intervention',
+};
 
 function normalizeIntent(message: string): string {
   return message
@@ -103,6 +147,83 @@ export function detectIntent(message: string): BobIntent {
     /^\s*(aide|aide[- ]moi|de l.{0,3}aide|help|au secours)\s*[!?.…]*\s*$/.test(normalizedMessage)
   )
     return 'aide';
+  // PR-12c — GESTES DE CYCLE DE VIE D'UN CONTRAT (§2.7 : creer/activer/resilier) : AVANT le
+  // parc d'équipements (« crée … chez Carrefour » y collisionne) et AVANT la famille facture.
+  // Toute la famille « facture annuelle » est EXCLUE d'emblée : elle appartient à
+  // preparer_facture_annuelle. La résolution du client/contrat par NOM PARLÉ se fait ensuite
+  // contre les données réelles dans le handler (patron resolveSpokenContract).
+  const annualInvoiceAsked = /\bfactures? annuelles?\b/.test(normalizedMessage);
+  const contractPaperwork =
+    /\b(devis|factures?|bons? de commande|bc\b|documents?|tickets?|recus?|justificatifs?|notes?|depenses?)\b/.test(
+      normalizedMessage,
+    );
+  // Résiliation : « le client résilie au 1er juin », « résilie le contrat Bastille ». Le mot
+  // « contrat » n'est PAS exigé — en gestion de maintenance « résilier » ne désigne rien
+  // d'autre ; l'abonnement Bob lui-même est explicitement EXCLU (jamais un acte vocal sur le
+  // compte, SPEC décision 10). Négation ⇒ rien.
+  if (
+    !annualInvoiceAsked &&
+    /\bresili(?:e|es|er|ent|ee|ees|ation|ations)\b/.test(normalizedMessage) &&
+    !/\b(abonnement|abonnements|essai|souscription|formule)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\bresili/.test(normalizedMessage) &&
+    !/\bresili\w*\b.{0,30}\bpas\b/.test(normalizedMessage)
+  )
+    return 'resilier_contrat';
+  if (!annualInvoiceAsked && !contractPaperwork && /\bcontrats?\b/.test(normalizedMessage)) {
+    // Un verbe de CRÉATION présent désambiguïse « ça démarre au 1er octobre » (fait de la
+    // consigne de création) d'un « démarre le contrat » (activation) : seul le lexique
+    // d'activation NON équivoque (« active », « en service ») prime sur la création.
+    const contractCreationVerb =
+      /\b(cree|crees|creer|creation|nouveau|nouvelle|fais|faites|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|prepares|preparer|enregistre|enregistrer|mets en place|ouvre|ouvrir|signe|signer)\b/.test(
+        normalizedMessage,
+      );
+    const explicitActivation =
+      /\b(active|actives|activer|activation|rends actif|passe en actif)\b/.test(normalizedMessage) ||
+      // « mets le contrat Bastille en service » : le verbe et le complément peuvent être séparés
+      // par la cible — un « en service » SANS verbe reste une question d'état (statut_contrat).
+      /\b(mets|met|mettre|passe|passer|remets|remettre)\b[^.!?]{0,40}\ben service\b/.test(
+        normalizedMessage,
+      );
+    const softStart = /\b(demarre|demarres|demarrer|demarrage|lance|lances|lancer)\b/.test(
+      normalizedMessage,
+    );
+    // Activation : « active le contrat Bastille », « démarre le contrat », « mets le contrat
+    // en service ». Négation ⇒ rien.
+    if (
+      (explicitActivation || (softStart && !contractCreationVerb)) &&
+      !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(active|activer|demarre|demarrer|lance|lancer)\b/.test(
+        normalizedMessage,
+      ) &&
+      !/\b(active|activer|demarre|demarrer|lance|lancer)\b.{0,30}\bpas\b/.test(normalizedMessage)
+    )
+      return 'activer_contrat';
+    // Création : « fais-moi le contrat fontaines RATP, 1 200 € par an », « crée le contrat
+    // RATP CAP Bastille, 2 visites par an », « nouveau contrat de maintenance ». Négation ⇒ rien.
+    if (
+      contractCreationVerb &&
+      !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(cree|creer|fais|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|preparer|enregistre|enregistrer|ouvre|ouvrir)\b/.test(
+        normalizedMessage,
+      ) &&
+      !/\b(cree|creer|fais|faire|etablis|etablir|ajoute|ajouter|monte|monter|prepare|preparer|enregistre|enregistrer|ouvre|ouvrir)\b.{0,30}\bpas\b/.test(
+        normalizedMessage,
+      )
+    )
+      return 'creer_contrat_maintenance';
+  }
+  // PR-15/16 — FICHE DE PASSAGE : AVANT le parc (« chez », « site » y collisionnent), AVANT
+  // envoyer_facture/facture_directe (« envoie », « facture » y collisionnent). Le NOM de la
+  // fiche est résolu contre les passages RÉELS dans le handler — jamais un id deviné.
+  //
+  // ICI, ON NE FAIT QU'ORIENTER. La consigne est lue par `intervention-directive.ts`, qui rend
+  // UN geste — celui qu'il identifie avec CERTITUDE — et RESTITUE le reste pour que Bob le dise.
+  // L'arbitrage entre « terminer » et le geste aval n'est pas lexical : il appartient à l'ÉTAT
+  // RÉEL du passage, résolu dans le handler contre les fiches réelles.
+  //
+  // La question de clarification (`needsClarification`) passe elle aussi par le handler : c'est
+  // lui qui a les passages sous la main. Elle n'ouvre aucune mutation.
+  const passage = readInterventionDirective(message);
+  if (passage.gesture !== null) return INTENT_BY_GESTURE[passage.gesture];
+  if (passage.needsClarification) return 'terminer_intervention';
   // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
   // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
   // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement
@@ -175,6 +296,43 @@ export function detectIntent(message: string): BobIntent {
     )
   )
     return 'ajouter_equipement';
+  // PR-12c — CONTRATS DE MAINTENANCE : AVANT toute la famille facture (« facture annuelle »
+  // contient « facture » : generer_facture/facture_directe/emettre_facture y collisionnent)
+  // et AVANT les gestes documentaires. La résolution du contrat par NOM se fait contre les
+  // données réelles dans le handler (patron resolveSpokenEquipment).
+  // Brouillon annuel : « prépare la facture annuelle du contrat Bastille », « fais la facture
+  // annuelle de Carrefour », « si c'est le moment prépare la facture annuelle ». Négation ⇒ rien.
+  if (
+    /\bfactures? annuelles?\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(prepare|preparer|fais|faire|genere|generer|cree|creer|lance|lancer|etablis|etablir)\b|\b(prepare|preparer|fais|faire|genere|generer|cree|creer|lance|lancer|etablis|etablir)\b.{0,40}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'preparer_facture_annuelle';
+  // Renouvellements : « quels contrats à renouveler ? », « des contrats qui expirent ? » —
+  // pluriel/liste ; un contrat NOMMÉ avec une question d'état reste statut_contrat.
+  if (
+    /\bcontrats?\b/.test(normalizedMessage) &&
+    /\b(a renouveler|renouvellements?|renouvelle[rnt]?|expirent?|arrivent? a echeance|a echeance|se reconduisent)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'contrats_a_renouveler';
+  // Statut parlé d'un contrat : « le contrat Carrefour, ça en est où ? », « statut du contrat
+  // Bastille », « parle-moi du contrat RATP » — lecture pure ; les GESTES (création,
+  // activation, résiliation — §2.7, détectés plus haut) ne retombent jamais ici : leurs verbes
+  // sont exclus, la lecture ne capture donc pas une mutation.
+  if (
+    /\bcontrats?\b/.test(normalizedMessage) &&
+    /\b(statuts?|etats?|ou en est|en est ou|ca en est|parle[- ]?moi|dis[- ]?moi|montre|resume|couvert|couverte|facture|facturee)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(cree|creer|crees|nouveau|nouvelle|ajoute|ajouter|resilie|resilier|active|activer|supprime|supprimer)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(bons? de commande|bc[- ]?\d)\b/.test(normalizedMessage)
+  )
+    return 'statut_contrat';
   // M3 — imputation d'une dépense EXISTANTE à un chantier (« mets la dépense Aldi sur le
   // chantier Durand », « impute la dépense gasoil au chantier Sèvres ») : AVANT la dépense
   // dictée (« mets » y collisionne), AVANT payer_depense/classer_document/voir_chantiers

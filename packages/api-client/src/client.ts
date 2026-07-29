@@ -17,6 +17,15 @@ import type {
   EquipmentPatch,
   EquipmentProps,
   RetireEquipmentOutput,
+  MaintenanceContractProps,
+  MaintenanceContractPatch,
+  ContractLineInput,
+  ContractPeriod,
+  ContractLifecycleFacts,
+  AnnualBillingDue,
+  RenewalAlert,
+  PrepareAnnualInvoiceDraftOutput,
+  UpdateInvoiceServicePeriodOutput,
   IssueInvoiceInput,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
@@ -174,6 +183,12 @@ export interface InvoiceView {
   /** PR-08 — site/chantier de rattachement de la pièce. Nullable ET optionnel (fail-closed) :
    *  absent (serveur antérieur) ⇒ jamais compté sur un site ; null = pièce hors site. */
   chantierId?: string | null;
+  /** PR-12b — contrat de maintenance facturé (brouillon annuel). Nullable ET optionnel
+   *  (fail-closed) : absent ⇒ jamais compté comme pièce de contrat ; null = hors contrat. */
+  maintenanceContractId?: string | null;
+  /** PR-12b/A7 — période de service portée par la pièce (bornes humaines, fin inclusive) —
+   *  AUTORITÉ de la garde d'émission d'une facture de contrat. Absent ⇒ non renseignée. */
+  servicePeriod?: { start: string; end: string | null } | null;
 }
 
 /** PR-09 — contact multiple d'un client (miroir de CustomerContactProps @bob/core). */
@@ -253,6 +268,14 @@ export interface AttachQuotePurchaseOrderClientInput {
 export interface DetachQuotePurchaseOrderClientInput {
   quoteId: string;
   expectedRevision: number;
+}
+
+/** §6.5 — PUT /invoices/:id/service-period : période d'une facture de CONTRAT, brouillon
+ * uniquement (figée à l'émission par la garde + le trigger SQL). Bornes HUMAINES inclusives. */
+export interface UpdateInvoiceServicePeriodClientInput {
+  invoiceId: string;
+  expectedRevision: number;
+  servicePeriod: { start: string; end: string };
 }
 
 /** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
@@ -1109,6 +1132,64 @@ export interface EquipmentHistoryView {
   entries: EquipmentHistoryEntry[];
 }
 
+/** PR-12b — vue contrat de maintenance servie par le serveur : agrégat + FAITS DÉRIVÉS
+ * (période arithmétique, couverture par factures réelles, alerte de renouvellement). L'écran
+ * CONSTATE ces faits, il ne les réinterprète jamais (écrans §3.1). */
+export interface MaintenanceContractClientView {
+  contract: MaintenanceContractProps;
+  customerName: string | null;
+  chantierNom: string | null;
+  annualTotals: Totals;
+  currentPeriod: ContractPeriod | null;
+  currentPeriodCoveredBy: { by: 'invoice' | 'import'; number: string | null } | null;
+  lifecycle: ContractLifecycleFacts;
+  billingDue: AnnualBillingDue | null;
+  renewalAlert: RenewalAlert | null;
+}
+
+/** PR-12b — corps de création d'un contrat (le wizard convertit la saisie INCLUSIVE de
+ * « déjà facturé jusqu'au » en borne EXCLUSIVE importCoveredUntil AVANT l'appel — erratum 4). */
+export interface CreateContractClientInput {
+  customerId: string;
+  label: string;
+  chantierId?: string | null;
+  anniversaryDate: string;
+  noticeDays?: number;
+  visitsPerYear?: number;
+  tacitRenewal?: boolean;
+  importCoveredUntil?: string | null;
+  notes?: string | null;
+  lines?: readonly ContractLineInput[];
+  equipmentIds?: readonly string[];
+}
+
+export interface UpdateContractClientInput {
+  expectedRevision: number;
+  patch?: MaintenanceContractPatch;
+  lines?: readonly ContractLineInput[];
+  equipmentIds?: readonly string[];
+}
+
+/**
+ * PR-16 §3.2/§4.5 — réglages de fiche de passage d'une société. `effectiveReportTitle` porte
+ * TOUJOURS une identité imprimable (défaut produit « Fiche de passage » quand rien n'est posé) ;
+ * `revision` vaut 0 tant qu'aucun réglage n'existe — c'est la révision à renvoyer en écriture.
+ */
+export interface InterventionSettingsView {
+  companyId: string;
+  reportTitle: string | null;
+  effectiveReportTitle: string;
+  checklistTemplates: Record<string, string[]>;
+  revision: number;
+}
+
+/** Écriture partielle : champ absent = inchangé ; `reportTitle: null` = retour au défaut. */
+export interface InterventionSettingsWriteInput {
+  reportTitle?: string | null;
+  checklistTemplates?: Record<string, string[]>;
+  expectedRevision?: number;
+}
+
 export interface BobClient {
   readonly companyId: string;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
@@ -1440,10 +1521,65 @@ export interface BobClient {
   getEquipmentHistory?(
     equipmentId: string,
   ): Promise<Result<EquipmentHistoryView, AppError>>;
+  // ── PR-16 §3.2/§4.5 — réglages de fiche de passage PARAMÉTRABLES (titre du PDF, templates
+  // de checklist par `kind`) : MÊME use case que la voix. OPTIONNELLES (compat transports
+  // existants) — HttpBobClient et LocalBobClient les implémentent tous les deux. ──
+  getInterventionSettings?(): Promise<Result<InterventionSettingsView, AppError>>;
+  updateInterventionSettings?(
+    input: InterventionSettingsWriteInput,
+  ): Promise<Result<InterventionSettingsView, AppError>>;
   /** [Revue A12] — réponse au refus actionnable « site clôturé — rouvre-le » (idempotent). */
   reopenChantier?(chantierId: string): Promise<Result<{ changed: boolean }, AppError>>;
+  // ── PR-12b/12c — contrats de maintenance (Bloc B) : MÊMES use cases que la voix.
+  // OPTIONNELLES (compat transports existants) — le mobile passe par le transport HTTP
+  // (runtime exclusivement distant, conception §3.6). ──
+  listMaintenanceContracts?(): Promise<Result<MaintenanceContractClientView[], AppError>>;
+  getMaintenanceContract?(
+    contractId: string,
+  ): Promise<Result<MaintenanceContractClientView, AppError>>;
+  createMaintenanceContract?(
+    input: CreateContractClientInput,
+  ): Promise<Result<{ id: string }, AppError>>;
+  updateMaintenanceContract?(
+    contractId: string,
+    input: UpdateContractClientInput,
+  ): Promise<Result<MaintenanceContractProps, AppError>>;
+  activateMaintenanceContract?(
+    contractId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<MaintenanceContractProps, AppError>>;
+  terminateMaintenanceContract?(
+    contractId: string,
+    input: { expectedRevision: number; note: string; effectiveDate?: string | null },
+  ): Promise<Result<MaintenanceContractProps, AppError>>;
+  deleteDraftMaintenanceContract?(
+    contractId: string,
+    input: { expectedRevision: number },
+  ): Promise<Result<{ deleted: true }, AppError>>;
+  /** §2.6 — brouillon annuel en un tap (jamais émis, jamais envoyé seul). */
+  prepareContractAnnualInvoice?(
+    contractId: string,
+  ): Promise<Result<PrepareAnnualInvoiceDraftOutput, AppError>>;
+  /** §6.5 — période de service d'une facture de CONTRAT : « éditable en brouillon, figée à
+   * l'émission » (le remède indiqué par la garde d'émission). Bornes HUMAINES inclusives. */
+  updateInvoiceServicePeriod?(
+    input: UpdateInvoiceServicePeriodClientInput,
+  ): Promise<Result<UpdateInvoiceServicePeriodOutput, AppError>>;
+  /** [Amélioration 4] — couverture contractuelle dite AVANT la confirmation de retrait. */
+  equipmentContractCoverage?(
+    equipmentId: string,
+  ): Promise<Result<{ activeContractLabels: string[] }, AppError>>;
   worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
   deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>>;
+  /**
+   * ERRATUM 6 — retrait TRACÉ d'une photo (« 1 photo n'a pas pu être jointe ») : geste
+   * canonique de la file FIFO offline, porté par un POST — un corps de DELETE peut être
+   * dépouillé par un proxy et la note serait perdue en silence.
+   */
+  removeWorksitePhoto?(
+    photoId: string,
+    input: { resolutionNote: string },
+  ): Promise<Result<void, AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   /** Crée une fiche client — même use case pour l'UI (C12) et l'outil agent creer_client (C40). */
   createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;

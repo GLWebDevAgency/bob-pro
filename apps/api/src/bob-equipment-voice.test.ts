@@ -217,4 +217,52 @@ describe('voix ↔ serveur — parc d’équipements de bout en bout (PR-11c)', 
     expect(after?.status).toBe('retired');
     expect(after?.retiredAt).not.toBeNull();
   });
+
+  it('[amélioration 4] équipement sous contrat ACTIF : la PROPOSITION de retrait DIT l’avertissement de couverture AVANT la confirmation (lecture réelle, rien de retiré)', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedSite(p, 'site-bastille', 'RATP Bastille', companyId);
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const customer = await run(() =>
+      service.createCustomer({
+        type: 'b2g',
+        name: 'RATP CAP',
+        siren: '789220118',
+        address: { line1: '1 rue du Dépôt', zip: '75012', city: 'Paris' },
+      }),
+    );
+    if (!customer.ok) throw new Error('customer');
+    const equipment = await run(() =>
+      service.createEquipment('site-bastille', { label: 'Fontaine accueil R+2' }),
+    );
+    if (!equipment.ok) throw new Error('equipment');
+    const contract = await run(() =>
+      service.createMaintenanceContract({
+        customerId: customer.value.id,
+        label: 'Entretien fontaines 2026',
+        chantierId: 'site-bastille',
+        anniversaryDate: '2025-10-12',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 40_000, vatRate: 20 }],
+        equipmentIds: [equipment.value.id],
+      }),
+    );
+    if (!contract.ok) throw new Error('contract');
+    const activated = await run(() =>
+      service.activateMaintenanceContract({ contractId: contract.value.id, expectedRevision: 1 }),
+    );
+    expect(activated.ok).toBe(true);
+
+    const agent = makeAgent(service);
+    const proposed = await run(() => agent.ask('Retire la fontaine de l’accueil du parc'));
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    // L'avertissement du DOMAINE est dit AVANT le geste — même lecture que la ConfirmSheet
+    // (GET /equipments/:id/contract-coverage) ; et rien n'a été retiré.
+    expect(proposed.value.card.body).toContain('Couvert par le contrat Entretien fontaines 2026');
+    expect(proposed.value.spokenPrompt).toContain('Entretien fontaines 2026');
+    const still = await p.equipments.findById(companyId, equipment.value.id);
+    expect(still?.status).toBe('active');
+  });
 });

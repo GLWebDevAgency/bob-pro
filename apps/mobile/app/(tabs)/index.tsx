@@ -29,6 +29,7 @@
 import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -66,13 +67,20 @@ import {
   useTheme,
 } from '@bob/ui';
 import {
+  appErrorMessage,
   useCashflow,
   useCompanyMe,
   useInvoices,
   useLatestBankBalance,
+  useMaintenanceContracts,
   useNotificationsFeed,
+  usePrepareContractAnnualInvoice,
   useTodayPriorities,
 } from '../../src/data/hooks';
+import {
+  frContractDate,
+  inclusivePeriodOf,
+} from '../../src/components/contract-fiche.logic';
 import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
 import { Badge } from '../../src/components/ui';
 import { useConfirm } from '../../src/components/ConfirmSheet';
@@ -119,7 +127,43 @@ interface DraftQuotePriority {
   readonly id: string;
   readonly customerName: string | null;
 }
-type DisplayPriority = TodayPriority | DraftQuotePriority;
+/**
+ * PR-12c « Le métier » — « facture annuelle à émettre » (Bloc B) : carte DÉRIVÉE du fait
+ * serveur `billingDue` (deriveAnnualBillingDue @bob/core : période arithmétique + couverture
+ * par les factures NON annulées, fenêtre −30 j vivante toutes les années). Extinction ET
+ * réallumage par l'état réel uniquement — l'annulation d'une facture annuelle RALLUME la
+ * carte sans aucun code d'écran.
+ */
+interface ContractInvoicePriority {
+  readonly kind: 'contrat_facture_annuelle';
+  readonly id: string;
+  readonly contractId: string;
+  readonly label: string;
+  /** Bornes INCLUSES lisibles (la fin exclusive du domaine est convertie à l'affichage). */
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  /** Facture ANNULÉE qui couvrait — copy honnête « F-… annulée : à re-facturer ». */
+  readonly cancelledCoveringNumber: string | null;
+}
+/**
+ * PR-13 — renouvellement J-60/J-30 (rappel INTERNE, jamais un envoi client) : carte dérivée
+ * du fait serveur `renewalAlert` (deriveRenewalAlerts — UN palier, le plus récent). Éteinte
+ * si résilié (le fait devient null tout seul). Tacite : « se reconduit » ; non-tacite :
+ * « arrive à échéance ».
+ */
+interface ContractRenewalPriority {
+  readonly kind: 'contrat_renouvellement';
+  readonly id: string;
+  readonly contractId: string;
+  readonly label: string;
+  readonly daysUntil: number;
+  readonly tacit: boolean;
+}
+type DisplayPriority =
+  | TodayPriority
+  | DraftQuotePriority
+  | ContractInvoicePriority
+  | ContractRenewalPriority;
 
 /** Sobriété (fondateur 2026-07-17) : jamais pendant que la personne travaille dessus — un
  * brouillon tout juste enregistré ne remonte qu'après ~1 h, ou dès la réouverture de l'app. */
@@ -256,6 +300,8 @@ function TodayPriorityCard({
   const router = useRouter();
   const quoteDraft = useQuoteDraft();
   const confirm = useConfirm();
+  // PR-12c — brouillon annuel en un tap depuis la carte (même use case que fiche + voix).
+  const prepareAnnual = usePrepareContractAnnualInvoice();
   const [draftDeleteBusy, setDraftDeleteBusy] = useState(false);
 
   switch (priority.kind) {
@@ -541,6 +587,115 @@ function TodayPriorityCard({
           }
         />
       );
+    case 'contrat_facture_annuelle': {
+      // PR-12c — brouillon en UN TAP (jamais émis, jamais envoyé seul) : MÊME use case
+      // PrepareAnnualInvoiceDraft que la fiche contrat et la voix (parité §2.7). Si la TVA
+      // re-suggérée diverge du contrat (bascule de régime), l'écart est DIT avant d'ouvrir.
+      return (
+        <PriorityCard
+          status="marine"
+          title={t('today.prioContractInvoiceTitle', {
+            personality,
+            params: { label: priority.label },
+          })}
+          subtitle={
+            priority.cancelledCoveringNumber !== null
+              ? t('today.prioContractRebillHint', {
+                  personality,
+                  params: {
+                    number: priority.cancelledCoveringNumber,
+                    start: frContractDate(priority.periodStart),
+                    end: frContractDate(priority.periodEnd),
+                  },
+                })
+              : t('today.prioContractInvoiceHint', {
+                  personality,
+                  params: {
+                    start: frContractDate(priority.periodStart),
+                    end: frContractDate(priority.periodEnd),
+                  },
+                })
+          }
+          badge={
+            <StatusBadge
+              label={t('today.prioContractInvoiceBadge', { personality }).toUpperCase()}
+              variant="b2b"
+            />
+          }
+          cta={
+            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start' }}>
+              <Button
+                title={t('today.ctaPrepareContractDraft', { personality })}
+                variant="primary"
+                size="compact"
+                radius={11}
+                loading={prepareAnnual.isPending}
+                icon={<Feather name="file-plus" size={15} color={colors.surface} />}
+                onPress={() =>
+                  void (async () => {
+                    try {
+                      const prepared = await prepareAnnual.mutateAsync(priority.contractId);
+                      if (prepared.vatDivergence) {
+                        // Amélioration 2 — l'écart contrat/brouillon est DIT, jamais silencieux.
+                        Alert.alert(
+                          t('today.ctaPrepareContractDraft', { personality }),
+                          t('contrat.vatDivergence', {
+                            personality,
+                            params: {
+                              actual: formatEURWhole(prepared.totals.ttc),
+                              expected: formatEURWhole(prepared.contractTotals.ttc),
+                            },
+                          }),
+                        );
+                      }
+                      router.push(`/facture/${prepared.invoiceId}`);
+                    } catch (error) {
+                      // Refus actionnables du domaine (« déjà couverte par F-… ») tels quels.
+                      Alert.alert('Oups', appErrorMessage(error));
+                    }
+                  })()
+                }
+              />
+              <Button
+                title={t('today.ctaSeeContract', { personality })}
+                variant="secondary"
+                size="compact"
+                radius={11}
+                onPress={() => router.push(`/contrat/${priority.contractId}`)}
+              />
+            </View>
+          }
+        />
+      );
+    }
+    case 'contrat_renouvellement':
+      // PR-13 — rappel (warning) SANS checkbox : le renouvellement est un fait calendaire
+      // dérivé, pas une tâche cochable ; extinction par l'état réel (résilié → disparaît).
+      return (
+        <PriorityCard
+          status="brouillon"
+          title={t(
+            priority.tacit ? 'today.prioRenewalTacitTitle' : 'today.prioRenewalNonTacitTitle',
+            { personality, params: { days: String(priority.daysUntil), label: priority.label } },
+          )}
+          subtitle={t('contrat.noticeLegal', { personality })}
+          badge={
+            <StatusBadge
+              label={t('today.prioRenewalBadge', { personality }).toUpperCase()}
+              variant="warning"
+            />
+          }
+          cta={
+            <Button
+              title={t('today.ctaSeeContract', { personality })}
+              variant="secondary"
+              size="compact"
+              radius={11}
+              onPress={() => router.push(`/contrat/${priority.contractId}`)}
+            />
+          }
+        />
+      );
     case 'devis_brouillon': {
       // Rappel local (jamais côté serveur) : jamais de checkbox — puce warning, CTA Continuer +
       // corbeille. Suppression TOUJOURS derrière une ConfirmSheet, même depuis cette carte
@@ -638,6 +793,9 @@ export default function Aujourdhui() {
     [bankBalance.data, personality],
   );
   const today = useTodayPriorities();
+  // PR-12c — contrats du tenant (faits dérivés serveur) : indépendant du reste du briefing,
+  // une erreur ici n'efface JAMAIS les autres priorités (et inversement).
+  const contracts = useMaintenanceContracts();
   const quoteDraft = useQuoteDraft();
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
   // relance a besoin de la facture RÉELLE pour encaisser avec les invariants du domaine.
@@ -681,11 +839,45 @@ export default function Aujourdhui() {
         customerName: persistedDraft.customer?.name ?? null,
       }
     : null;
+  // PR-12c — « facture annuelle à émettre » : fait serveur `billingDue` (dérivation pure
+  // @bob/core, lecture BATCHÉE erratum n° 8 côté API). Fail-closed : capacité absente ou
+  // requête en erreur → AUCUNE carte (jamais une alerte fabriquée) ; l'annulation d'une
+  // facture couvrante rallume la carte toute seule (état réel, zéro code d'écran).
+  const contractPriorities: ContractInvoicePriority[] = (contracts.data ?? [])
+    .filter((view) => view.billingDue !== null)
+    .map((view) => {
+      const due = view.billingDue!;
+      const period = inclusivePeriodOf(due.period);
+      return {
+        kind: 'contrat_facture_annuelle' as const,
+        id: `contrat-annuelle-${view.contract.id}`,
+        contractId: view.contract.id,
+        label: view.contract.label,
+        periodStart: period.start,
+        periodEnd: period.end,
+        cancelledCoveringNumber: due.cancelledCoveringNumber,
+      };
+    });
+  // PR-13 — renouvellement J-60/J-30 (interne) : dérivé du fait serveur `renewalAlert` —
+  // UN palier (le plus récent), éteint si résilié. Rappel calendaire, après l'actionnable.
+  const renewalPriorities: ContractRenewalPriority[] = (contracts.data ?? [])
+    .filter((view) => view.contract.status === 'active' && view.renewalAlert !== null)
+    .map((view) => ({
+      kind: 'contrat_renouvellement' as const,
+      id: `contrat-renouvellement-${view.contract.id}`,
+      contractId: view.contract.id,
+      label: view.contract.label,
+      daysUntil: view.renewalAlert!.daysUntil,
+      tacit: view.renewalAlert!.tacit,
+    }));
   // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
   // urgence (relance en retard, facture finale à émettre).
-  const allPriorities: DisplayPriority[] = draftPriority
-    ? [...today.priorities, draftPriority]
-    : today.priorities;
+  const allPriorities: DisplayPriority[] = [
+    ...today.priorities,
+    ...contractPriorities,
+    ...renewalPriorities,
+    ...(draftPriority ? [draftPriority] : []),
+  ];
 
   const displayed = allPriorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.length;
