@@ -79,6 +79,7 @@ export * from './domain/banking/bank-balance-snapshot';
 export * from './domain/banking/bank-balance-freshness';
 export * from './domain/agent/agent-mission';
 export * from './domain/agent/agent-mission-event';
+export * from './domain/agent/mission-kind';
 
 // Domaine Cabinet — tenant, memberships, invitations, RBAC et release flags
 export * from './domain/cabinet/cabinet-permissions';
