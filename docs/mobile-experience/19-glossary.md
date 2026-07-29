@@ -31,7 +31,7 @@ usage dans le programme d'expérience.
 | Voice Trace | Autorité de mesure des événements et SLO vocaux, corrélée au renderer sans contenu vocal. |
 | SLO | Objectif mesurable de niveau de service, par exemple latence voix ou interruption. Une moyenne visuelle ne le remplace pas. |
 | Streaming par blocs | Regroupement de deltas de réponse en phrases/blocs pour limiter les rendus ; exclut l'effet machine à écrire caractère par caractère. |
-| Capability | Capacité optionnelle détectée et encapsulée, telle que Glass, Blur, haptique ou Zoom ; elle possède un fallback fonctionnel. |
+| Capability | Capacité optionnelle détectée et encapsulée, telle que haptique, Zoom ou le port `renderBlurLayer` ; elle possède un fallback fonctionnel. **(amendé A1 · 2026-07-29 : Glass retiré de cette liste — ce n'est pas une capability du produit, c'est une matière hors doctrine. La MATIÈRE n'est jamais une capability : elle est identique sur tous les OS.)** |
 | Fallback | Comportement sûr et complet utilisé quand une API, un OS, une préférence ou un budget ne permet pas l'enrichissement. |
 | Progressive enhancement | Ajout d'un effet sur plateforme capable sans en faire une dépendance du parcours ou du sens. |
 | Legacy | Implémentation actuelle conservée temporairement comme fallback pendant une migration bornée. Ce terme ne signifie pas « cassé ». |
