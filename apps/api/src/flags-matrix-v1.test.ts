@@ -111,8 +111,20 @@ const EXPECTED_API_FLAG_NAMES = [
 ] as const;
 
 // LOI environnements (fondateur 25/07) : seuls les builds PRODUCTION pointent la prod ;
-// preview/dev pointent staging. API_URL et SUPABASE_URL sont donc figés PAR PROFIL.
-const EXPECTED_MOBILE_FLAG_NAMES = [
+// preview/dev pointent staging. Toutes les cibles externes sont donc figées PAR PROFIL.
+//
+// Les trois URL sign-web ont longtemps vécu ici, en scope « mobile » — c'est-à-dire avec la MEME
+// valeur de production dans les deux profils. Le fondateur l'a releve le 29/07/2026 : « pour le
+// staging, ce n'est pas pour la prod, c'est deux choses differentes ». Elles pointent desormais
+// le deploiement dedie bob-pro-sign-web-staging, et sont figees par profil comme le reste.
+// Le scope « mobile » (valeur commune aux deux profils) reste declare mais VIDE : y remettre une
+// cible externe reintroduirait exactement le melange que la loi interdit.
+const EXPECTED_MOBILE_FLAG_NAMES = [] as const;
+
+/** Cibles externes qui doivent DIFFERER entre preview et production, sans exception. */
+const CIBLES_SEPAREES_PAR_ENVIRONNEMENT = [
+  'EXPO_PUBLIC_API_URL',
+  'EXPO_PUBLIC_SUPABASE_URL',
   'EXPO_PUBLIC_TERMS_URL',
   'EXPO_PUBLIC_PRIVACY_URL',
   'EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL',
@@ -331,11 +343,24 @@ describe('MATRICE FLAGS V1 — verrouillage anti-drift (scope mobile, eas.json)'
   it('LOI environnements : le profil preview ne pointe JAMAIS la production', () => {
     const preview = eas.build?.preview?.env;
     const production = eas.build?.production?.env;
-    for (const name of ['EXPO_PUBLIC_API_URL', 'EXPO_PUBLIC_SUPABASE_URL'] as const) {
+    for (const name of CIBLES_SEPAREES_PAR_ENVIRONNEMENT) {
       expect(
         preview?.[name],
         `${name} : preview partage la cible production — violation de la loi des environnements (fondateur 25/07)`,
       ).not.toBe(production?.[name]);
+    }
+  });
+
+  it('LOI environnements : aucune cible externe ne redevient commune aux deux profils', () => {
+    // Garde de structure : le scope « mobile » signifie « meme valeur dans les deux profils ».
+    // Une cible externe qui y reapparaitrait echapperait au test ci-dessus, qui ne compare que
+    // les noms qu'on lui donne — c'est exactement ainsi que les trois URL sign-web ont traverse
+    // la creation du projet Supabase de staging sans que rien ne rougisse.
+    for (const flag of mobileFlags) {
+      expect(
+        String(flag.v1Value),
+        `${flag.name} est fige en scope « mobile » avec une URL : une cible externe doit etre figee PAR PROFIL`,
+      ).not.toMatch(/^https?:\/\//u);
     }
   });
 });

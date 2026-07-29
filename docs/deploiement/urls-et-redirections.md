@@ -28,10 +28,12 @@ Correctif code (2026-07-18) :
 
 ## 2. À CONFIGURER DANS LE DASHBOARD SUPABASE (action humaine)
 
-**Cette configuration est à poser sur CHAQUE projet Supabase, sans exception** —
-production `cvdkqjczgqoeshputacl` **et** staging `afywrrzjjuyznewzvpmk`. Un projet neuf
-naît avec `http://localhost:3000` en Site URL et une allowlist vide : il reproduit le bug
-à l'identique. Dans chaque projet → **Authentication → URL Configuration** :
+**Cette configuration est à poser sur CHAQUE projet Supabase, avec des valeurs PROPRES à son
+environnement.** Un projet neuf naît avec `http://localhost:3000` en Site URL et une allowlist
+vide : il reproduit le bug à l'identique. Dans chaque projet → **Authentication → URL
+Configuration**.
+
+**Projet PRODUCTION `cvdkqjczgqoeshputacl`** :
 
 | Champ | Valeur exacte à saisir |
 | --- | --- |
@@ -39,7 +41,22 @@ naît avec `http://localhost:3000` en Site URL et une allowlist vide : il reprod
 | **Redirect URLs** (une ligne chacune) | `bobpro://auth/callback` |
 | | `bobpro://auth/recovery` |
 | | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
-| | *(optionnel, previews Vercel)* `https://bob-pro-sign-web-*-glwebdevagencys-projects.vercel.app/auth/confirme` |
+
+**Projet STAGING `afywrrzjjuyznewzvpmk`** :
+
+| Champ | Valeur exacte à saisir |
+| --- | --- |
+| **Site URL** | `https://bob-pro-sign-web-staging.vercel.app/auth/confirme` |
+| **Redirect URLs** (une ligne chacune) | `bobpro://auth/callback` |
+| | `bobpro://auth/recovery` |
+| | `https://bob-pro-sign-web-staging.vercel.app/auth/confirme` |
+
+> **Ne jamais croiser les deux colonnes.** Le fondateur l'a rappelé le 29/07/2026 : « pour le
+> staging, ce n'est pas pour la prod, c'est deux choses différentes ». Le projet Vercel
+> `bob-pro-sign-web-staging` a été créé ce jour-là pour cela ; son `NEXT_PUBLIC_API_URL` vise
+> l'API staging, et l'API staging a suivi (`SIGN_WEB_BASE_URL`, `CORS_ORIGINS`). Les
+> déploiements de branche Vercel ne conviennent PAS comme relais : ils sont protégés par SSO
+> (302 vers `vercel.com/sso-api`), donc inaccessibles à un client.
 
 Pourquoi la Site URL pointe la page relais : c'est le **filet de sécurité** — tout
 `redirect_to` refusé/absent retombe dessus, et la page sait relayer confirmation **et**
@@ -97,7 +114,8 @@ erreurs (`ERROR_REPORTER_WEBHOOK_URL`), sidecar audit loopback.
 | --- | --- | --- | --- |
 | `EXPO_PUBLIC_API_URL` | `http://<ip-locale>:3000` | `https://bob-pro-api-staging.up.railway.app` | `https://bob-pro-api-production.up.railway.app` |
 | `EXPO_PUBLIC_SUPABASE_URL` | `https://cvdkqjczgqoeshputacl.supabase.co` | `https://afywrrzjjuyznewzvpmk.supabase.co` (projet staging distinct) | `https://cvdkqjczgqoeshputacl.supabase.co` |
-| `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` | *(vide → deep link direct)* | `https://bob-pro-sign-web.vercel.app/auth/confirme` | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
+| `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` | *(vide → deep link direct)* | `https://bob-pro-sign-web-staging.vercel.app/auth/confirme` | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
+| `EXPO_PUBLIC_TERMS_URL` / `EXPO_PUBLIC_PRIVACY_URL` | *(pages locales)* | `https://bob-pro-sign-web-staging.vercel.app/legal/…` | `https://bob-pro-sign-web.vercel.app/legal/…` |
 | Deep links retour auth | `bobpro://auth/callback` + `bobpro://auth/recovery` (dev client, scheme `bobpro` d'app.json) | idem | idem |
 
 ### API (Railway)
