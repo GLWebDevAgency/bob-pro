@@ -19,7 +19,11 @@ npm i zustand
 ```
 
 - **expo-router** → cf. `NAVIGATION_MAP.md` (arborescence §4).
-- **Reanimated** pour toutes les animations (jamais `Animated` legacy).
+- **Reanimated** pour toutes les animations (jamais `Animated` legacy). **(caveat A16 · 2026-07-29)**
+  Vaut pour du **neuf**. Sur l'app livrée, le motion actuel est en `Animated` RN avec
+  `useNativeDriver`, et le choix de runtime appartient à
+  [UX-ADR-001](../docs/mobile-experience/adr/UX-ADR-001-motion-runtime.md), encore `Proposed` :
+  ce guide ne le tranche pas, et aucun écran livré n'est réécrit pour lui (directive 5).
 - **@gorhom/bottom-sheet** pour les feuilles (`create`, `profile`, `catalogue`, `new-client`, `doc`).
 - **Skia** optionnel (courbe de trésorerie, anneau de score) — sinon `react-native-svg` suffit.
 - **(amendé 2026-07-29 ; commande corrigée A15)** **`expo-blur` n'est pas une dépendance du
@@ -181,17 +185,29 @@ Le `marginTop:-30` **après** le dégradé fait chevaucher la couture (le header
 
 ## 8. Animations (Reanimated) — durées & courbes figées
 
+> **Amendé A16 · 2026-07-29 — trois lignes recalées sur le code livré.** Ce tableau annonce des
+> « durées figées » : elles doivent donc être celles du kit, pas celles du proto web. Les valeurs
+> normatives de press vivent en
+> [03 § Press states](../docs/mobile-experience/03-motion-interaction-system.md#press-states).
+
 | Élément | Anim | Détail |
 |---|---|---|
-| FAB / Pressable | scale press | `withTiming(0.94, {duration:90})` + `expo-haptics` `Light` |
+| Boutons pleins (`Button`, `FAB`) | scale press | **(corrigé A16)** échelle **0,94 instantanée**, sans durée — `BUTTON_PRESSED_SCALE` (`packages/ui/src/components/button.logic.ts` l. 46) |
+| Toute autre surface interactive (`PressableScale`) | scale + opacity | **(corrigé A16)** échelle **0,98** + opacité **0,9**, **90 ms** in / **150 ms** out — `pressable-scale.logic.ts` ; cible tactile ≥ **44 pt**. Haptique **seulement** sur un geste significatif accepté, jamais sur chaque ouverture de row (table haptique de 03) |
 | Feuille bottom | spring entrée | `@gorhom/bottom-sheet` ; snap `[0.6, 0.95]`, `damping:50` |
 | Anneau de score (diagnostic) | strokeDashoffset | `withTiming(target, {duration:900, easing: Easing.out(Easing.cubic)})` |
 | Onde vocale | boucle | 5 barres `withRepeat(withTiming(h,{duration:420}),-1,true)`, déphasées |
-| Balayage OCR (scan) | ligne translateY | `withRepeat(withTiming(H,{duration:1400}),-1,false)` |
+| Balayage OCR (scan) | ligne translateY | **(corrigé A16)** aller **1 100 ms**, retour idem (`SCAN_SWEEP_DURATION_MS`, `apps/mobile/src/scan/scan-reading-motion.ts`) ; en reduced-motion, **aucun déplacement** : battement d'opacité 0,35 → 0,9 sur `motion.ambient` = **1 500 ms** |
 | Écran succès | scale+fade check | `withSpring(1,{damping:9})` sur le cercle vert |
 | « Bob écrit… » | 3 points | opacity `withRepeat`, décalage 160 ms |
-| Toast | translateY+opacity | entrée `withالسpring`, sortie auto à 2,4 s |
+| Toast | translateY+opacity | **(corrigé A16)** entrée `withSpring`, `bottom: 122`, sortie auto à **2,4 s** (`AUTO_DISMISS_MS = 2400`, `packages/ui/src/components/toast.tsx`) |
 | Entrée de liste | **aucune** au repos | ⚠ jamais `opacity:0` initial sur du contenu affiché (règle d'or) |
+
+*Rédactions supersédées par A16 : « FAB / Pressable — `withTiming(0.94, {duration:90})` +
+`expo-haptics` `Light` » mélangeait l'échelle du `Button` (0,94, instantanée) avec la durée du
+`PressableScale` (90 ms) et prescrivait 0,94 à toute surface pressable, là où le kit livre 0,98 ;
+« Balayage OCR — `duration:1400` » contredisait `SCAN_SWEEP_DURATION_MS = 1100` ; et la ligne Toast
+portait un identifiant corrompu, `withالسpring`, qui ne compile pas.*
 
 ---
 
