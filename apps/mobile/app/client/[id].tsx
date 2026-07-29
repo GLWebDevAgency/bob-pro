@@ -100,6 +100,7 @@ import { useBobClient } from '../../src/data/client';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
+import { formatSiret } from '../../src/components/CompanyFicheCard';
 import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
 import { CustomerContactsCard } from '../../src/components/CustomerContactsCard';
 import {
@@ -467,6 +468,7 @@ export default function ClientDetail() {
 
   // Coordonnées et métriques qualifiées. `null` reste « inconnu », jamais transformé en zéro.
   const siren = customer?.siren ?? null;
+  const siret = customer?.siret ?? null;
   const tvaIntracom = customer?.tvaIntracom ?? null;
   const email = customer?.email ?? null;
   const phone = customer?.phone ?? null;
@@ -541,6 +543,9 @@ export default function ClientDetail() {
     if (!customer) return [] as { key: I18nKey; value: string }[];
     return [
       { key: 'fiche.infoType' as I18nKey, value: t(TYPE_KEY[customer.type], { personality }) },
+      ...(siret
+        ? [{ key: 'auth.companySiretLabel' as I18nKey, value: formatSiret(siret) }]
+        : []),
       ...(siren ? [{ key: 'fiche.infoSiren' as I18nKey, value: formatSiren(siren) }] : []),
       ...(tvaIntracom
         ? [{ key: 'auth.companyTvaLabel' as I18nKey, value: tvaIntracom }]
@@ -562,7 +567,7 @@ export default function ClientDetail() {
           ]
         : []),
     ];
-  }, [customer, siren, tvaIntracom, email, phone, avgDelayDays, personality]);
+  }, [customer, siret, siren, tvaIntracom, email, phone, avgDelayDays, personality]);
 
   // Préremplissage de l'édition (fiche.editCta) — prénom/nom reconstitués depuis `name` (le
   // domaine n'a qu'un seul champ, cf. chaîne complète C13/C40 TODO partagé) : premier mot =
@@ -577,6 +582,7 @@ export default function ClientDetail() {
       lastName: customer.type === 'b2c' ? rest.join(' ') : '',
       companyName: customer.type === 'b2c' ? '' : customer.name,
       siren: siren,
+      siret,
       tvaIntracom,
       contactName: customer.contactName ?? '',
       email: email ?? '',
@@ -586,7 +592,7 @@ export default function ClientDetail() {
         ? `${customer.address.line1}, ${customer.address.zip} ${customer.address.city}`
         : '',
     };
-  }, [customer, siren, tvaIntracom, email, phone]);
+  }, [customer, siren, siret, tvaIntracom, email, phone]);
 
   // Ouverture du chantier/projet : adresse PRÉ-REMPLIE depuis la fiche client (arbitrage fondateur).
   const openChantierCreate = (): void => {

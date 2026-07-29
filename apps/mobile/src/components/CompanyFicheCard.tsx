@@ -56,6 +56,24 @@ export function CompanyFicheCard({ company }: { company: CompanyLookupResult }) 
           </View>
         ) : null}
       </View>
+      {company.etatAdministratif === 'F' ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={{
+            borderWidth: 1,
+            borderColor: semantic.warning,
+            borderRadius: 10,
+            backgroundColor: semantic.warningBg,
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+          }}
+        >
+          <Text style={[font('sub'), { color: colors.ink800, lineHeight: 19 }]}>
+            {say('auth.companyClosedWarning')}
+          </Text>
+        </View>
+      ) : null}
       {rows
         .filter((row): row is { label: string; value: string } => row.value !== null)
         .map((row, i) => (

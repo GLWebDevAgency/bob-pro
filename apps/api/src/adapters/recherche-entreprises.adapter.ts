@@ -125,24 +125,37 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
     if (!/^\d{9}$/u.test(officialSiren) || !/^\d{14}$/u.test(officialSiret)) {
       throw new CompanyLookupUnavailableError('Réponse amont incomplète : identité officielle absente.');
     }
-    // Un établissement tiré de `matching_etablissements` est une NOUVELLE surface de confiance
-    // (le siège, lui, vient du même objet que le SIREN annoncé) : on exige qu'il appartienne bien
-    // à l'entreprise renvoyée. Une réponse qui se contredit est une panne amont NOMMÉE, pas un
-    // « introuvable » silencieux.
-    if (secondaire && !officialSiret.startsWith(officialSiren)) {
+    // Toute identité renvoyée doit être cohérente, y compris le siège. Une réponse amont qui
+    // associe un SIRET à un autre SIREN est une panne NOMMÉE, jamais un « introuvable » ni une
+    // identité appliquée à la fiche.
+    if (!officialSiret.startsWith(officialSiren)) {
       throw new CompanyLookupUnavailableError('Réponse amont incohérente : établissement hors du SIREN annoncé.');
     }
-    const denomination = (r.nom_complet ?? r.nom_raison_sociale ?? '').trim();
+    const denominationCandidate =
+      typeof r.nom_complet === 'string'
+        ? r.nom_complet
+        : typeof r.nom_raison_sociale === 'string'
+          ? r.nom_raison_sociale
+          : '';
+    const denomination = denominationCandidate.trim();
     if (!denomination) {
       throw new CompanyLookupUnavailableError('Réponse amont incomplète : raison sociale absente.');
     }
-    const naf = r.activite_principale ?? null;
+    // L'activité est celle de l'ÉTABLISSEMENT retenu. L'unité légale peut porter un NAF très
+    // différent (ex. holding/commerçant vs établissement immobilier) : son NAF n'est qu'un
+    // repli explicite lorsque l'amont omet celui de l'établissement.
+    const nafCandidate = etablissement.activite_principale ?? r.activite_principale;
+    const naf =
+      typeof nafCandidate === 'string' && nafCandidate.trim() !== ''
+        ? nafCandidate.trim()
+        : null;
     // L'ADRESSE SUIT L'ÉTABLISSEMENT retenu : servir celle du siège pour un établissement
     // secondaire ferait facturer à la mauvaise adresse, en silence. Si l'amont ne publie pas
     // l'adresse de CET établissement, on rend `null` — on ne la remplace pas par celle du siège.
     const address = addressOf(etablissement);
     const siren = officialSiren;
-    const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
+    const firstTva = Array.isArray(r.tva) ? r.tva[0] : r.tva;
+    const tva = typeof firstTva === 'string' && firstTva.trim() !== '' ? firstTva.trim() : null;
     // Fiche société COMPLÈTE (C24b) : nature_juridique (code INSEE, ex. 5710) + date_creation
     // (ISO) sont renvoyés par l'API réelle — on les remonte, mappés prudemment (code inconnu →
     // null, l'utilisateur choisit). PAS de dirigeants : minimisation RGPD, inutile pour facturer.
@@ -181,20 +194,30 @@ function nowMs(): number {
   return new Date().getTime();
 }
 
-function digitsOf(raw: string | undefined): string {
-  return raw?.replace(/\s/gu, '') ?? '';
+function digitsOf(raw: unknown): string {
+  return typeof raw === 'string' ? raw.replace(/\s/gu, '') : '';
 }
 
 /** Adresse d'un établissement quelconque (siège ou secondaire) — même forme amont, même lecture. */
 function addressOf(e: RechercheEntreprisesEtablissement): { line1: string; zip: string; city: string } | null {
-  if (!e.code_postal || !e.libelle_commune) return null;
-  const structured = [e.numero_voie, e.type_voie, e.libelle_voie].filter(Boolean).join(' ').trim();
+  const zip = typeof e.code_postal === 'string' ? e.code_postal.trim() : '';
+  const city = typeof e.libelle_commune === 'string' ? e.libelle_commune.trim() : '';
+  if (!zip || !city) return null;
+  const structured = [e.numero_voie, e.type_voie, e.libelle_voie]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .join(' ')
+    .trim();
   // Le siège publie les champs de voie structurés ; `matching_etablissements`, NON — il ne donne
   // que `adresse`, une chaîne qui contient DÉJÀ le code postal et la commune. La recopier telle
   // quelle dans line1 imprimerait « 280 RUE DE PARIS 93100 MONTREUIL » PUIS « 93100 MONTREUIL »
   // sur la facture : on retire le suffixe redondant.
-  const line1 = structured || withoutZipCity(e.adresse ?? '', e.code_postal, e.libelle_commune);
-  return { line1, zip: e.code_postal, city: e.libelle_commune };
+  const line1 =
+    structured ||
+    withoutZipCity(typeof e.adresse === 'string' ? e.adresse : '', zip, city);
+  // Un code postal et une commune ne constituent pas une adresse de facturation. Retourner une
+  // line1 vide ferait passer une adresse incomplète pour une adresse officielle disponible.
+  if (!line1) return null;
+  return { line1, zip, city };
 }
 
 /** Retire le « <cp> <commune> » final d'une adresse à plat, sans rien inventer si absent. */
@@ -204,9 +227,9 @@ function withoutZipCity(adresse: string, zip: string, city: string): string {
   return raw.toUpperCase().endsWith(suffix.toUpperCase()) ? raw.slice(0, raw.length - suffix.length).trim() : raw;
 }
 
-/** 'A' actif · 'C' fermé · null si la source ne le dit pas (on n'invente pas un état). */
-function etatAdministratifOf(e: RechercheEntreprisesEtablissement): 'A' | 'C' | null {
-  return e.etat_administratif === 'A' || e.etat_administratif === 'C' ? e.etat_administratif : null;
+/** 'A' actif · 'F' fermé · null si la source ne le dit pas (on n'invente pas un état). */
+function etatAdministratifOf(e: RechercheEntreprisesEtablissement): 'A' | 'F' | null {
+  return e.etat_administratif === 'A' || e.etat_administratif === 'F' ? e.etat_administratif : null;
 }
 
 /**
@@ -222,7 +245,9 @@ interface RechercheEntreprisesEtablissement {
   numero_voie?: string;
   type_voie?: string;
   libelle_voie?: string;
-  /** 'A' = actif · 'C' = cessé (établissement fermé). */
+  /** Activité principale de CET établissement, distincte de celle de l'unité légale. */
+  activite_principale?: string;
+  /** 'A' = actif · 'F' = fermé. */
   etat_administratif?: string;
 }
 

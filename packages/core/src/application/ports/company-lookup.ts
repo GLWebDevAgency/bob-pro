@@ -31,15 +31,15 @@ export interface CompanyLookupResult {
   tvaIntracom: string | null;
   /**
    * État administratif de l'établissement retenu, tel que l'annuaire le déclare :
-   * 'A' = actif · 'C' = fermé (cessé) · null = la source ne le dit pas.
+   * 'A' = actif · 'F' = fermé · null = la source ne le dit pas.
    *
    * On le REMONTE au lieu de refuser l'établissement : un établissement fermé reste
    * légitimement facturable (facture finale, avoir, litige) et le refuser serait
    * indiscernable d'un « introuvable ». En contrepartie, l'appelant DOIT avertir avant
-   * d'enregistrer un client sur un établissement 'C' — un fermé présenté comme valide
+   * d'enregistrer un client sur un établissement 'F' — un fermé présenté comme valide
    * serait un piège comptable.
    */
-  etatAdministratif: 'A' | 'C' | null;
+  etatAdministratif: 'A' | 'F' | null;
   /** Qualification RGE active (utile Pack BTP). */
   rge: boolean;
 }

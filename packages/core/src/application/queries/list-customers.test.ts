@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Customer } from '../../domain/customer/customer';
+import { Customer, type CustomerProps } from '../../domain/customer/customer';
 import { Invoice, type InvoiceSnapshot } from '../../domain/billing/invoice/invoice';
 import { Payment } from '../../domain/payment/payment';
 import type {
@@ -9,13 +9,14 @@ import type {
 } from '../ports/repositories';
 import { ListCustomers } from './list-customers';
 
-function customer(id = 'customer-a') {
+function customer(id = 'customer-a', overrides: Partial<CustomerProps> = {}) {
   const result = Customer.of({
     id,
     companyId: 'company-a',
     type: 'b2b',
     name: 'Client réel',
     address: { line1: '', zip: '', city: '' },
+    ...overrides,
   });
   if (!result.ok) throw new Error('client de test invalide');
   return result.value;
@@ -105,6 +106,22 @@ describe('ListCustomers — métriques financières exclusivement dérivées', (
       settledInvoiceCount: 0,
     });
     expect(result.value[0]).not.toHaveProperty('outstanding');
+  });
+
+  it('projette le SIRET exact sans en fabriquer pour les fiches historiques', async () => {
+    const known = customer('customer-known', {
+      siren: '451321335',
+      siret: '45132133501021',
+    });
+    const result = await useCase({
+      customers: [known, customer('customer-legacy')],
+    }).execute({ companyId: 'company-a' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.map(({ id, siret }) => ({ id, siret }))).toEqual([
+      { id: 'customer-known', siret: '45132133501021' },
+      { id: 'customer-legacy', siret: null },
+    ]);
   });
 
   it('projette l’encours réel depuis le net à payer et les encaissements de la facture', async () => {

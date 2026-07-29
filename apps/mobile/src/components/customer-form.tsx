@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { Siret, validateFrenchVatId, type Address, type CustomerType } from '@bob/core';
 import type { CreateCustomerClientInput } from '@bob/api-client';
@@ -6,6 +6,7 @@ import { t, type Personality } from '@bob/i18n';
 import { Button, Chip, Skeleton, font, useTheme } from '@bob/ui';
 import { useLookupCompany, useSearchAddress } from '../data/hooks';
 import { formatSiret } from './CompanyFicheCard';
+import { decideSiretLookupResult } from './customer-form-siret.logic';
 
 const SEARCH_DEBOUNCE_MS = 350;
 const TYPES: readonly CustomerType[] = ['b2c', 'b2b', 'b2g'];
@@ -24,6 +25,7 @@ export interface CustomerFormInitial {
   lastName: string;
   companyName: string;
   siren: string | null;
+  siret: string | null;
   tvaIntracom: string | null;
   contactName: string;
   email: string;
@@ -38,6 +40,7 @@ const EMPTY_INITIAL: CustomerFormInitial = {
   lastName: '',
   companyName: '',
   siren: null,
+  siret: null,
   tvaIntracom: null,
   contactName: '',
   email: '',
@@ -135,12 +138,15 @@ export function CustomerForm({
   // recherche sur le texte affiché tant que l'utilisateur ne retape pas lui-même.
   const [addressLocked, setAddressLocked] = useState(base.address !== null);
 
-  const [siret, setSiret] = useState('');
+  const [siret, setSiret] = useState(base.siret ?? '');
+  const siretRef = useRef(base.siret ?? '');
+  const lookupRequestIdRef = useRef(0);
   const [siretError, setSiretError] = useState(false);
   const [siretFound, setSiretFound] = useState<string | null>(null);
-  // État administratif de l'ÉTABLISSEMENT retenu par l'annuaire ('C' = fermé). Un établissement
+  // État administratif de l'ÉTABLISSEMENT retenu par l'annuaire ('F' = fermé). Un établissement
   // fermé n'est pas refusé — il reste facturable (facture finale, avoir) — mais il est annoncé.
   const [siretClosed, setSiretClosed] = useState(false);
+  const [siretAddressMissing, setSiretAddressMissing] = useState(false);
   const [siretCandidateUnverified, setSiretCandidateUnverified] = useState(false);
   const lookup = useLookupCompany();
   const search = useSearchAddress();
@@ -156,29 +162,55 @@ export function CustomerForm({
   }, [addressQuery, addressLocked]);
 
   const searchSiret = (): void => {
+    const requestId = ++lookupRequestIdRef.current;
     setSiretError(false);
     setSiretFound(null);
     setSiretClosed(false);
+    setSiretAddressMissing(false);
     const v = Siret.of(siret);
     if (!v.ok) {
       setSiretError(true);
       return;
     }
-    lookup.mutate(v.value.value, {
+    const requestedSiret = v.value.value;
+    lookup.mutate(requestedSiret, {
       onSuccess: (result) => {
-        setCompanyName(result.denomination);
-        setSiren(result.siren);
-        setTvaIntracom(result.tvaIntracom ?? '');
-        setSiretFound(result.denomination);
-        setSiretClosed(result.etatAdministratif === 'C');
+        const decision = decideSiretLookupResult({
+          requestId,
+          latestRequestId: lookupRequestIdRef.current,
+          requestedSiret,
+          currentSiret: siretRef.current,
+          result,
+        });
+        if (decision.kind === 'stale') return;
+        if (decision.kind === 'identity_mismatch') {
+          setSiretError(true);
+          setSiretCandidateUnverified(true);
+          return;
+        }
+        siretRef.current = decision.siret;
+        setSiret(decision.siret);
+        setCompanyName(decision.denomination);
+        setSiren(decision.siren);
+        setTvaIntracom(decision.tvaIntracom);
+        setSiretFound(decision.denomination);
+        setSiretClosed(decision.closed);
+        setSiretAddressMissing(decision.addressMissing);
         setSiretCandidateUnverified(false);
-        if (result.address) {
-          setSelectedAddress(result.address);
-          setAddressQuery(`${result.address.line1}, ${result.address.zip} ${result.address.city}`);
-          setAddressLocked(true);
+        // Toujours remplacer les trois états d'adresse ensemble : `null` efface explicitement
+        // l'adresse précédente et rouvre la saisie, jamais de repli silencieux.
+        setSelectedAddress(decision.address);
+        setAddressQuery(decision.addressLabel);
+        setAddressLocked(decision.addressLocked);
+      },
+      onError: () => {
+        if (
+          requestId === lookupRequestIdRef.current &&
+          siretRef.current === requestedSiret
+        ) {
+          setSiretError(true);
         }
       },
-      onError: () => setSiretError(true),
     });
   };
 
@@ -207,6 +239,7 @@ export function CustomerForm({
       ...(email.trim() ? { email: email.trim() } : {}),
       ...(phone.trim() ? { phone: phone.trim() } : {}),
       ...(type !== 'b2c' && siren ? { siren } : {}),
+      ...(type !== 'b2c' && siret ? { siret } : {}),
       ...(type !== 'b2c' && normalizedVat?.ok === true
         ? { tvaIntracom: normalizedVat.value }
         : {}),
@@ -279,6 +312,9 @@ export function CustomerForm({
               value={formatSiret(siret)}
               onChangeText={(raw) => {
                 const next = raw.replace(/\D/g, '').slice(0, 14);
+                // Toute frappe invalide immédiatement la réponse en vol, sans bloquer le champ.
+                lookupRequestIdRef.current += 1;
+                siretRef.current = next;
                 setSiret(next);
                 // Une saisie de recherche ne remplace jamais la fiche persistée avant succès.
                 // Tant qu'elle n'est pas vérifiée, on bloque Enregistrer plutôt que d'effacer
@@ -286,6 +322,7 @@ export function CustomerForm({
                 setSiretCandidateUnverified(next.length > 0);
                 setSiretFound(null);
                 setSiretClosed(false);
+                setSiretAddressMissing(false);
                 setSiretError(false);
               }}
               placeholder={t('clients.createSiretPlaceholder', { personality })}
@@ -320,20 +357,46 @@ export function CustomerForm({
               <Skeleton height={13} width="70%" radius={6} />
             </View>
           ) : siretError ? (
-            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 8 }]}>
+            <Text
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              style={[font('sub'), { color: semantic.danger, marginTop: 8 }]}
+            >
               {t('clients.createSiretError', { personality })}
             </Text>
           ) : siretFound !== null ? (
             <>
-              <Text style={[font('sub'), { color: semantic.success, marginTop: 8 }]}>
+              <Text
+                accessibilityLiveRegion="polite"
+                style={[font('sub'), { color: semantic.success, marginTop: 8 }]}
+              >
                 {t('clients.createSiretFound', { personality, params: { name: siretFound } })}
               </Text>
               {siretClosed ? (
-                <Text
+                <View
                   accessibilityRole="alert"
-                  style={[font('sub'), { color: semantic.warning, marginTop: 6 }]}
+                  accessibilityLiveRegion="polite"
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: semantic.warning,
+                    borderRadius: 10,
+                    backgroundColor: semantic.warningBg,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                  }}
                 >
-                  {t('clients.createSiretClosed', { personality })}
+                  <Text style={[font('sub'), { color: colors.ink800, lineHeight: 19 }]}>
+                    {t('clients.createSiretClosed', { personality })}
+                  </Text>
+                </View>
+              ) : null}
+              {siretAddressMissing ? (
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 8 }]}
+                >
+                  {t('clients.createSiretAddressMissing', { personality })}
                 </Text>
               ) : null}
             </>

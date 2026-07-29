@@ -575,11 +575,13 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
 /** B4/B6/B7 — champs ADDITIFS de la fiche (serveurs antérieurs : absents ⇒ normalisés). */
 const CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS = [
   'tvaIntracom',
+  'siret',
   'paymentTerms',
   'billingChannel',
   'isInternational',
   'paymentTermsLabel',
   'isSubcontractingBtp',
+  'requiresPurchaseOrder',
 ] as const;
 
 /** Clés de base toutes présentes + uniquement des clés connues (base ∪ optionnelles). */
@@ -642,6 +644,111 @@ function isCustomerAddress(value: unknown): value is { line1: string; zip: strin
     typeof value.zip === 'string' &&
     typeof value.city === 'string'
   );
+}
+
+const COMPANY_LOOKUP_BASE_FIELDS = [
+  'siren',
+  'siret',
+  'denomination',
+  'nafApe',
+  'trade',
+  'natureJuridiqueCode',
+  'legalForm',
+  'dateCreation',
+  'address',
+  'tvaIntracom',
+  'rge',
+] as const;
+const COMPANY_LOOKUP_OPTIONAL_FIELDS = ['etatAdministratif'] as const;
+const COMPANY_LOOKUP_TRADES = new Set<NonNullable<CompanyLookupResult['trade']>>([
+  'plombier',
+  'electricien',
+  'macon',
+  'peintre',
+  'paysagiste',
+  'consultant',
+  'freelance_it',
+  'photographe',
+  'coach',
+  'autre',
+]);
+const COMPANY_LOOKUP_LEGAL_FORMS = new Set<NonNullable<CompanyLookupResult['legalForm']>>([
+  'EI',
+  'micro',
+  'EURL',
+  'SARL',
+  'SAS',
+  'SASU',
+]);
+
+function isIsoDateOnly(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+/** Frontière de confiance de GET /company/lookup. L'absence du champ d'état est la seule
+ * compatibilité N-1 ; toute identité ou valeur présente difforme échoue fermée. */
+function decodeCompanyLookupResult(value: unknown): CompanyLookupResult | null {
+  if (
+    !isRecord(value) ||
+    !hasBaseKeysWithOptional(value, COMPANY_LOOKUP_BASE_FIELDS, COMPANY_LOOKUP_OPTIONAL_FIELDS) ||
+    typeof value.siren !== 'string' ||
+    !/^\d{9}$/u.test(value.siren) ||
+    typeof value.siret !== 'string' ||
+    !/^\d{14}$/u.test(value.siret) ||
+    !value.siret.startsWith(value.siren) ||
+    typeof value.denomination !== 'string' ||
+    value.denomination.trim().length === 0 ||
+    (value.nafApe !== null && typeof value.nafApe !== 'string') ||
+    (value.trade !== null &&
+      (typeof value.trade !== 'string' ||
+        !COMPANY_LOOKUP_TRADES.has(value.trade as NonNullable<CompanyLookupResult['trade']>))) ||
+    (value.natureJuridiqueCode !== null && typeof value.natureJuridiqueCode !== 'string') ||
+    (value.legalForm !== null &&
+      (typeof value.legalForm !== 'string' ||
+        !COMPANY_LOOKUP_LEGAL_FORMS.has(
+          value.legalForm as NonNullable<CompanyLookupResult['legalForm']>,
+        ))) ||
+    (value.dateCreation !== null && !isIsoDateOnly(value.dateCreation)) ||
+    (value.address !== null &&
+      (!isCustomerAddress(value.address) ||
+        value.address.line1.trim().length === 0 ||
+        value.address.zip.trim().length === 0 ||
+        value.address.city.trim().length === 0)) ||
+    (value.tvaIntracom !== null && typeof value.tvaIntracom !== 'string') ||
+    (value.etatAdministratif !== undefined &&
+      value.etatAdministratif !== null &&
+      value.etatAdministratif !== 'A' &&
+      value.etatAdministratif !== 'F') ||
+    typeof value.rge !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    siren: value.siren,
+    siret: value.siret,
+    denomination: value.denomination,
+    nafApe: value.nafApe as string | null,
+    trade: value.trade as CompanyLookupResult['trade'],
+    natureJuridiqueCode: value.natureJuridiqueCode as string | null,
+    legalForm: value.legalForm as CompanyLookupResult['legalForm'],
+    dateCreation: value.dateCreation as string | null,
+    address:
+      value.address === null
+        ? null
+        : {
+            line1: value.address.line1,
+            zip: value.address.zip,
+            city: value.address.city,
+          },
+    tvaIntracom: value.tvaIntracom as string | null,
+    etatAdministratif:
+      value.etatAdministratif === 'A' || value.etatAdministratif === 'F'
+        ? value.etatAdministratif
+        : null,
+    rge: value.rge,
+  };
 }
 
 function decodeCustomerListItem(value: unknown): CustomerListItem | null {
@@ -711,6 +818,14 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   if (value.tvaIntracom !== undefined && value.tvaIntracom !== null && typeof value.tvaIntracom !== 'string')
     return null;
   if (
+    value.siret !== undefined &&
+    value.siret !== null &&
+    (typeof value.siret !== 'string' || !/^\d{14}$/u.test(value.siret))
+  )
+    return null;
+  if (value.requiresPurchaseOrder !== undefined && typeof value.requiresPurchaseOrder !== 'boolean')
+    return null;
+  if (
     value.paymentTermsLabel !== undefined &&
     value.paymentTermsLabel !== null &&
     typeof value.paymentTermsLabel !== 'string'
@@ -724,6 +839,8 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
     paymentTerms,
     billingChannel,
     tvaIntracom: (value.tvaIntracom as string | null | undefined) ?? null,
+    siret: (value.siret as string | null | undefined) ?? null,
+    requiresPurchaseOrder: value.requiresPurchaseOrder === true,
     isInternational: value.isInternational === true,
     paymentTermsLabel: (value.paymentTermsLabel as string | null | undefined) ?? null,
     isSubcontractingBtp: value.isSubcontractingBtp === true,
@@ -751,6 +868,7 @@ function customerClientBody(
     name: input.name,
     address: { ...input.address },
     ...(input.siren !== undefined ? { siren: input.siren } : {}),
+    ...(input.siret !== undefined ? { siret: input.siret } : {}),
     ...(input.tvaIntracom !== undefined ? { tvaIntracom: input.tvaIntracom } : {}),
     ...(input.email !== undefined ? { email: input.email } : {}),
     ...(input.phone !== undefined ? { phone: input.phone } : {}),
@@ -2391,6 +2509,9 @@ export class HttpBobClient implements BobClient {
     return this.req<CompanyLookupResult>(
       'GET',
       `/company/lookup?siret=${encodeURIComponent(siret)}`,
+      undefined,
+      undefined,
+      decodeCompanyLookupResult,
     );
   }
   /** C24b : le serveur décide l'id (provisioning déterministe company-<userId>) — jamais d'id envoyé. */

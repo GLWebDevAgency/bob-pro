@@ -93,25 +93,41 @@ describe('RechercheEntreprisesAdapter', () => {
       siren: '451321335',
       siret: '45132133501021', // et surtout PAS 45132133500023 (le siège)
       denomination: 'CARREFOUR HYPERMARCHES',
+      // L'unité légale porte 47.11F dans la fixture : le lookup rend bien l'activité de
+      // l'établissement sélectionné, pas celle de l'entreprise.
+      nafApe: '68.20B',
       etatAdministratif: 'A',
     });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('fait suivre l ADRESSE de l établissement demandé, jamais celle du siège', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => CARREFOUR_RESPONSE()));
-
-    const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
-      '45132133501021',
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        upstream({
+          ...CARREFOUR,
+          matching_etablissements: [
+            {
+              ...CARREFOUR.matching_etablissements[0],
+              siret: '45132133501039',
+            },
+          ],
+        }),
+      ),
     );
 
-    // Le siège est à MASSY (91300) : facturer l'établissement du HAVRE à cette adresse serait
-    // une erreur d'adressage silencieuse. Et `line1` ne doit PAS répéter « 76620 LE HAVRE », que
+    const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
+      '45132133501039',
+    );
+
+    // Le siège est à MASSY (91300) : facturer l'établissement de MONTREUIL à cette adresse serait
+    // une erreur d'adressage silencieuse. Et `line1` ne doit PAS répéter « 93100 MONTREUIL », que
     // la facture imprime déjà sur la ligne suivante.
     expect(result?.address).toEqual({
-      line1: '1 RUE DU GRAND HAVRE',
-      zip: '76620',
-      city: 'LE HAVRE',
+      line1: '280 RUE DE PARIS',
+      zip: '93100',
+      city: 'MONTREUIL',
     });
   });
 
@@ -123,17 +139,41 @@ describe('RechercheEntreprisesAdapter', () => {
           ...CARREFOUR,
           matching_etablissements: [
             // L'amont connaît l'établissement mais ne publie ni code postal ni commune.
-            { siret: '45132133502540', etat_administratif: 'A', est_siege: false },
+            { siret: '45132133501054', etat_administratif: 'A', est_siege: false },
           ],
         }),
       ),
     );
 
     const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
-      '45132133502540',
+      '45132133501054',
     );
 
-    expect(result).toMatchObject({ siret: '45132133502540' });
+    expect(result).toMatchObject({ siret: '45132133501054' });
+    expect(result?.address).toBeNull();
+  });
+
+  it('rend une adresse nulle quand code postal et commune existent sans ligne de voie', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        upstream({
+          ...CARREFOUR,
+          matching_etablissements: [
+            {
+              siret: '45132133501062',
+              code_postal: '69001',
+              libelle_commune: 'LYON',
+              etat_administratif: 'A',
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
+      '45132133501062',
+    );
     expect(result?.address).toBeNull();
   });
 
@@ -145,11 +185,11 @@ describe('RechercheEntreprisesAdapter', () => {
           ...CARREFOUR,
           matching_etablissements: [
             {
-              siret: '45132133503084',
+              siret: '45132133501047',
               code_postal: '59000',
               libelle_commune: 'LILLE',
               adresse: '3 RUE FERMEE 59000 LILLE',
-              etat_administratif: 'C',
+              etat_administratif: 'F',
               est_siege: false,
             },
           ],
@@ -158,13 +198,36 @@ describe('RechercheEntreprisesAdapter', () => {
     );
 
     const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
-      '45132133503084',
+      '45132133501047',
     );
 
     // Décision assumée : on REMONTE plutôt que de refuser. Un établissement fermé reste
     // facturable (facture finale, avoir, litige) ; le refuser serait indiscernable d'un
     // « introuvable » et l'appelant ne pourrait plus avertir.
-    expect(result).toMatchObject({ siret: '45132133503084', etatAdministratif: 'C' });
+    expect(result).toMatchObject({ siret: '45132133501047', etatAdministratif: 'F' });
+  });
+
+  it('ne confond pas le C de cessation d unité légale avec l état F d un établissement', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        upstream({
+          ...CARREFOUR,
+          matching_etablissements: [
+            {
+              ...CARREFOUR.matching_etablissements[0],
+              siret: '45132133501070',
+              etat_administratif: 'C',
+            },
+          ],
+        }),
+      ),
+    );
+
+    const result = await new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret(
+      '45132133501070',
+    );
+    expect(result?.etatAdministratif).toBeNull();
   });
 
   it('refuse (null) un SIRET absent du siège ET de matching_etablissements — jamais d à-peu-près', async () => {
@@ -193,6 +256,28 @@ describe('RechercheEntreprisesAdapter', () => {
     ).rejects.toBeInstanceOf(CompanyLookupUnavailableError);
   });
 
+  it('refuse aussi un siège dont le SIRET contredit le SIREN annoncé', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        upstream({
+          siren: '451321335',
+          nom_complet: 'Réponse incohérente',
+          siege: {
+            siret: '73282932000074',
+            adresse: '1 RUE TEST 75001 PARIS',
+            code_postal: '75001',
+            libelle_commune: 'PARIS',
+          },
+        }),
+      ),
+    );
+
+    await expect(
+      new RechercheEntreprisesAdapter('https://annuaire.example').lookupBySiret('73282932000074'),
+    ).rejects.toThrow('établissement hors du SIREN annoncé');
+  });
+
   it('remonte l état administratif du SIÈGE quand c est lui qui est demandé', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => CARREFOUR_RESPONSE()));
 
@@ -209,9 +294,9 @@ describe('RechercheEntreprisesAdapter', () => {
 });
 
 /**
- * Réponse amont réaliste (recherche-entreprises.api.gouv.fr, `/search?q=45132133501021`) :
- * total_results = 1, le siège 45132133500023 (MASSY) ET l'établissement réellement demandé
- * 45132133501021 (LE HAVRE) dans `matching_etablissements`.
+ * Fixture contractuelle calquée sur la forme publique de Recherche d'entreprises : le siège et
+ * l'établissement demandé sont distincts, de même que leurs adresses et activités. Ce n'est pas
+ * un snapshot destiné à affirmer que ces données resteront identiques dans l'annuaire.
  */
 const CARREFOUR = {
   siren: '451321335',
@@ -221,7 +306,7 @@ const CARREFOUR = {
   nature_juridique: '5710',
   date_creation: '2000-01-03',
   etat_administratif: 'A',
-  tva: 'FR03451321335',
+  tva: 'FR90451321335',
   siege: {
     siret: '45132133500023',
     numero_voie: '93',
@@ -238,9 +323,10 @@ const CARREFOUR = {
   matching_etablissements: [
     {
       siret: '45132133501021',
-      adresse: '1 RUE DU GRAND HAVRE 76620 LE HAVRE',
-      code_postal: '76620',
-      libelle_commune: 'LE HAVRE',
+      adresse: '280 RUE DE PARIS 93100 MONTREUIL',
+      code_postal: '93100',
+      libelle_commune: 'MONTREUIL',
+      activite_principale: '68.20B',
       etat_administratif: 'A',
       est_siege: false,
     },

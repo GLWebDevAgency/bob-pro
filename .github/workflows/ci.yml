@@ -200,6 +200,10 @@ jobs:
             END IF;
           END $$;
           SQL
+      - name: Certify customer SIRET expand, N-1 writer and FORCE RLS
+        env:
+          RUN_CUSTOMER_SIRET_POSTGRES_CERT: 'true'
+        run: node --test apps/api/scripts/customer-siret.postgres.test.mjs
       - name: Provision the ephemeral Supabase Storage metadata contract
         run: |
           # Test-only vendor surface: production already owns this schema. Creating it before

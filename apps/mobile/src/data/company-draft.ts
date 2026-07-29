@@ -1,10 +1,12 @@
 import type { Session } from '@supabase/supabase-js';
-import type {
-  CompanyLookupResult,
-  CompanyRegistrationInput,
-  LegalForm,
-  Trade,
-  VatRegime,
+import {
+  Siren,
+  Siret,
+  type CompanyLookupResult,
+  type CompanyRegistrationInput,
+  type LegalForm,
+  type Trade,
+  type VatRegime,
 } from '@bob/core';
 
 /**
@@ -47,6 +49,15 @@ export function readCompanySnapshot(session: Session | null): CompanyLookupResul
   if (typeof s['siren'] !== 'string' || typeof s['siret'] !== 'string' || typeof s['denomination'] !== 'string') {
     return null;
   }
+  const parsedSiren = Siren.of(s['siren']);
+  const parsedSiret = Siret.of(s['siret']);
+  if (
+    !parsedSiren.ok ||
+    !parsedSiret.ok ||
+    !parsedSiret.value.value.startsWith(parsedSiren.value.value)
+  ) {
+    return null;
+  }
   const address = s['address'];
   const addr =
     address && typeof address === 'object' &&
@@ -56,8 +67,8 @@ export function readCompanySnapshot(session: Session | null): CompanyLookupResul
       ? (address as { line1: string; zip: string; city: string })
       : null;
   return {
-    siren: s['siren'],
-    siret: s['siret'],
+    siren: parsedSiren.value.value,
+    siret: parsedSiret.value.value,
     denomination: s['denomination'],
     nafApe: typeof s['nafApe'] === 'string' ? s['nafApe'] : null,
     trade: isTrade(s['trade']) ? s['trade'] : null,
@@ -68,7 +79,7 @@ export function readCompanySnapshot(session: Session | null): CompanyLookupResul
     tvaIntracom: typeof s['tvaIntracom'] === 'string' ? s['tvaIntracom'] : null,
     // Les snapshots écrits avant que l'annuaire ne remonte l'état administratif ne le portent
     // pas : on rend `null` (« inconnu ») plutôt que de supposer un établissement actif.
-    etatAdministratif: s['etatAdministratif'] === 'A' || s['etatAdministratif'] === 'C' ? s['etatAdministratif'] : null,
+    etatAdministratif: s['etatAdministratif'] === 'A' || s['etatAdministratif'] === 'F' ? s['etatAdministratif'] : null,
     rge: s['rge'] === true,
   };
 }

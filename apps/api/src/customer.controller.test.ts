@@ -46,6 +46,23 @@ describe('CustomersController — aucune métrique fournie par le client', () =>
     await expect(value.create(withContact)).resolves.toEqual({ id: 'customer-1' });
     expect(createCustomer).toHaveBeenCalledWith(withContact);
   });
+
+  it('transmet le SIRET exact à la création sans le réduire au SIREN', async () => {
+    const createCustomer = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 'customer-1' },
+    }));
+    const value = controller({ createCustomer } as never);
+    const establishment = {
+      ...valid,
+      type: 'b2b' as const,
+      name: 'CARREFOUR HYPERMARCHES',
+      siren: '451321335',
+      siret: '45132133501021',
+    };
+    await expect(value.create(establishment)).resolves.toEqual({ id: 'customer-1' });
+    expect(createCustomer).toHaveBeenCalledWith(establishment);
+  });
 });
 
 describe('CustomersController — édition post-création (C13/C40 TODO partagé)', () => {
@@ -63,5 +80,22 @@ describe('CustomersController — édition post-création (C13/C40 TODO partagé
       status: 422,
     });
     expect(updateCustomer).not.toHaveBeenCalled();
+  });
+
+  it('conserve le SIRET dans le remplacement complet', async () => {
+    const updateCustomer = vi.fn(async () => ({
+      ok: true as const,
+      value: { id: 'customer-1' },
+    }));
+    const value = controller({ updateCustomer } as never);
+    const establishment = {
+      ...valid,
+      type: 'b2b' as const,
+      name: 'CARREFOUR HYPERMARCHES',
+      siren: '451321335',
+      siret: '45132133501021',
+    };
+    await value.update('customer-1', establishment);
+    expect(updateCustomer).toHaveBeenCalledWith('customer-1', establishment);
   });
 });
