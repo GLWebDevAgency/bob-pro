@@ -456,9 +456,9 @@ BEGIN
 END;
 $agent_mission_k2_n1_writer$;
 
-\if :writer_enabled
+\\if :writer_enabled
 SET CONSTRAINTS ALL IMMEDIATE;
-\endif
+\\endif
 
 ROLLBACK;
 `;

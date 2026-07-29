@@ -695,6 +695,10 @@ test('le workflow route K2 sans aucun chemin vers une release ou un activateur',
     source,
     /agent_mission_fingerprint_key_writer_disabled[\s\S]*?disabled-fence/u,
   );
+  assert.match(
+    source,
+    /\\\\if :writer_enabled[\s\S]*?SET CONSTRAINTS ALL IMMEDIATE;[\s\S]*?\\\\endif/u,
+  );
   assert.match(source, /FROM public\.release_flag_subjects AS subject/u);
   assert.match(
     source,
