@@ -1,6 +1,8 @@
 # SPEC — Agent Missions Jarvis M2-A : ligne de devis durable, catalogue réel et parité voix ↔ toucher
 
-**Statut : specified**
+**Statut global : specified**
+
+**Train M2-A-0 : implemented dans `4c844111`, flag public OFF ; non certified**
 
 **Date : 29 juillet 2026**
 
@@ -735,6 +737,27 @@ lire. Il ne reçoit jamais une capability M2-A et ne peut pas ouvrir la mission 
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
+
+### 15.2 Preuves du train M2-A-0
+
+Le commit `4c844111` porte la spec et l'implémentation atomique. Les preuves locales
+reproductibles du 29 juillet 2026 sont :
+
+- certificat PostgreSQL 17 complet sous déployeur/runtime non-superuser : exit `0`, tests Prisma
+  `53/53` ;
+- writer et reader `QuoteDraftPayloadV1` N-1 avant expand, après expand, après validate et après
+  cutover ;
+- RLS owner et cross-tenant, capability mission, parent terminal/cross-kind, cascade, savepoint,
+  CAS et ACL/Data API réels ;
+- suite `@bob/core` complète : `2 809/2 809` ;
+- contrats migrations/release : `40/40` ;
+- tests API ciblés : `26/26` ;
+- typechecks et lint core/API, générateur `--check`, builds core/AI/API et gardes d'artefact verts ;
+- trois reviews adversariales en lecture seule : aucun P0/P1 ouvert.
+
+Ces preuves donnent à M2-A-0 le statut `implemented`, pas `certified`. La certification Supabase
+staging exact-SHA et les preuves produit voix/toucher/appareil restent dues dans les trains
+suivants ; aucune capacité M2-A n'est activée en public par ce commit.
 
 ## 16. Observabilité M2-A
 
