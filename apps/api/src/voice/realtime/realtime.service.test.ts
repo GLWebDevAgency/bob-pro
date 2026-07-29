@@ -22,6 +22,7 @@ import {
 } from './realtime.service';
 import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.adapter';
 import type { RealtimeSidebandControl } from './realtime-sideband';
+import { deriveRealtimeTurnId } from './realtime-sideband';
 import type { RealtimeDurableControlPort } from './realtime-control';
 import type { RealtimeAgentTurnPort } from './realtime-agent-turn';
 import {
@@ -546,6 +547,82 @@ describe('RealtimeVoiceService', () => {
     if (result.ok) {
       await runAsPrincipal(() => service.hangup(result.value.sessionHandle));
     }
+  });
+
+  it('forme l’autorité Mission du tour uniquement depuis la lease et sa preuve serveur', async () => {
+    const capability = `bam1_${Buffer.alloc(32, 76).toString('base64url')}`;
+    const durable = missionCapableAdmission(admission());
+    let attached: Parameters<RealtimeSidebandControl['attach']>[0] | undefined;
+    const baseSideband = sidebandStub();
+    const sideband: RealtimeSidebandControl = {
+      ...baseSideband,
+      attach: vi.fn(async (input) => {
+        attached = input;
+        await baseSideband.attach(input);
+      }),
+    };
+    const runTurn = vi.fn<RealtimeAgentTurnPort['run']>().mockResolvedValue({
+      status: 'failed',
+      canonicalSpeech: 'Test.',
+    });
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      {
+        createCall: successfulProviderCreate('rtc_agent_mission_turn_authority'),
+        hangupCall: vi.fn(async () => undefined),
+      },
+      durable,
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      { run: runTurn },
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      undefined,
+      undefined,
+      missionGate(capability),
+    );
+
+    const created = await runAsPrincipal(() => service.createCall({
+      ...AUDITED_BOOTSTRAP_BINDING,
+      agentMissionProtocolVersion: 1,
+      sdp: OFFER_SDP,
+    }));
+    if (!created.ok) throw new Error('bootstrap Mission attendu');
+    const turnId = '10000000-0000-4000-8000-000000000077';
+    await attached?.turn?.run({
+      turnId,
+      transcript: 'Crée un devis.',
+      history: [],
+      signal: new AbortController().signal,
+    });
+
+    const turnInput = runTurn.mock.calls[0]?.[0];
+    expect(turnInput?.agentMissionAuthority).toEqual({
+      owner: {
+        companyId: 'company-1',
+        ownerUserId: 'user-1',
+      },
+      proof: {
+        subjectHashCandidates: [
+          admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1'),
+        ],
+        principalBindingHash: agentMissionPrincipalBindingHash(
+          'company-1',
+          'user-1',
+        ),
+        capabilityHash: hashRealtimeAgentMissionCapability(capability),
+      },
+      realtimeSessionId: created.value.sessionHandle,
+    });
+    expect(turnInput?.turnId).toBe(turnId);
+    expect(JSON.stringify(turnInput)).not.toContain(capability);
+
+    await runAsPrincipal(() => service.hangup(created.value.sessionHandle));
   });
 
   it.each([
@@ -2493,8 +2570,15 @@ describe('RealtimeVoiceService', () => {
     )).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
 
     const signal = new AbortController().signal;
-    await attached?.turn?.run({ transcript: 'Résume cette facture.', history: [], signal });
+    const turnId = deriveRealtimeTurnId(handle, 'item-context-turn');
+    await attached?.turn?.run({
+      turnId,
+      transcript: 'Résume cette facture.',
+      history: [],
+      signal,
+    });
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      turnId,
       userId: 'user-1',
       companyId: 'company-1',
       transcript: 'Résume cette facture.',
@@ -2503,6 +2587,7 @@ describe('RealtimeVoiceService', () => {
     }));
     const turnInput = runTurn.mock.calls[0]?.[0];
     if (!turnInput) throw new Error('tour attendu');
+    expect(turnInput).not.toHaveProperty('agentMissionAuthority');
     expect(turnInput.contextFence.expected).toMatchObject({ version: 1, revision: 4 });
     await expect(turnInput.contextFence.revalidate(signal)).resolves.toEqual(
       turnInput.contextFence.expected,

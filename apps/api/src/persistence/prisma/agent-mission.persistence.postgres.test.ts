@@ -397,6 +397,7 @@ describe.skipIf(!RUN_CERT)(
     async function publishQuoteScreenContext(
       owner: AgentMissionOwner,
       rawContext?: Readonly<Record<string, unknown>>,
+      options: Readonly<{ apply?: boolean }> = {},
     ): Promise<{
       readonly sessionId: string;
       readonly revision: number;
@@ -476,22 +477,24 @@ describe.skipIf(!RUN_CERT)(
             version: { increment: 1 },
           },
         });
-        await transaction.realtimeSessionLease.update({
-          where: {
-            realtime_session_lease_subject: {
-              companyId: owner.companyId,
-              subjectHash,
+        if (options.apply !== false) {
+          await transaction.realtimeSessionLease.update({
+            where: {
+              realtime_session_lease_subject: {
+                companyId: owner.companyId,
+                subjectHash,
+              },
             },
-          },
-          data: {
-            contextAppliedRevision: revision,
-            contextAppliedDigest: prepared.digest,
-            contextAppliedAt: updatedAt,
-            contextAppliedOwnerEpoch: 1,
-            updatedAt,
-            version: { increment: 1 },
-          },
-        });
+            data: {
+              contextAppliedRevision: revision,
+              contextAppliedDigest: prepared.digest,
+              contextAppliedAt: updatedAt,
+              contextAppliedOwnerEpoch: 1,
+              updatedAt,
+              version: { increment: 1 },
+            },
+          });
+        }
       });
       return {
         sessionId: lease.sessionId,
@@ -1280,7 +1283,7 @@ describe.skipIf(!RUN_CERT)(
       const turnId = randomUUID();
       const started = await start(uowA).execute({
         ...owner,
-        commandId: randomUUID(),
+        commandId: turnId,
         customerReference: 'camping les pins',
         origin: {
           actor: 'user_voice',
@@ -1436,6 +1439,42 @@ describe.skipIf(!RUN_CERT)(
         },
       });
       expect(await admin.agentMissionEvent.count({ where: { missionId } })).toBe(3);
+    });
+
+    it('refuse le tour voix avant contexte réellement appliqué sans aucune écriture métier', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-context-not-applied-${randomUUID()}`,
+      };
+      const context = await publishQuoteScreenContext(owner, undefined, { apply: false });
+      const turnId = randomUUID();
+
+      const rejected = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'camping les pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      });
+
+      expect(rejected).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_command',
+          reason: 'context_stale',
+        },
+      });
+      expect(await admin.agentMission.count({ where: owner })).toBe(0);
+      expect(await admin.agentMissionEvent.count({ where: owner })).toBe(0);
+      expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
     });
 
     it.each([

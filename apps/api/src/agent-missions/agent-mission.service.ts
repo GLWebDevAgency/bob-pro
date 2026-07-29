@@ -30,6 +30,10 @@ import { AGENT_MISSION_FINGERPRINTS } from './agent-mission-fingerprint.provider
 import type { AgentMissionHttpAuthorization } from './agent-mission-http-authority';
 import type { AgentMissionCapabilityMetricOperation } from './agent-mission-http-authority';
 
+export type AgentMissionServiceAuthorization = Readonly<
+Pick<AgentMissionHttpAuthorization, 'owner' | 'proof'>
+>;
+
 function observeCapabilityRejection<T>(
   execution: AgentMissionReadExecution<T> | AgentMissionWriteExecution<T>,
   metrics: Pick<Metrics, 'agentMissionCapabilityRejections'>,
@@ -142,7 +146,7 @@ export class AgentMissionService {
   ) {}
 
   getCurrent(
-    authorization: AgentMissionHttpAuthorization,
+    authorization: AgentMissionServiceAuthorization,
   ): Promise<Result<{ readonly mission: AgentMissionViewV1 | null }, AppError>> {
     const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
     if (persistedUnitOfWork === null) {
@@ -161,8 +165,47 @@ export class AgentMissionService {
   }
 
   start(input: {
-    readonly authorization: AgentMissionHttpAuthorization;
+    readonly authorization: AgentMissionServiceAuthorization;
     readonly commandId: string;
+  }): Promise<Result<StartQuoteAgentMissionOutput, AppError>> {
+    return this.executeStart({
+      authorization: input.authorization,
+      commandId: input.commandId,
+      origin: { actor: 'user_tap', correlation: null },
+      customerReference: null,
+    });
+  }
+
+  startFromVoiceTurn(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly realtimeSessionId: string;
+    readonly turnId: string;
+    readonly contextRevision: number;
+    readonly contextDigest: string;
+    readonly customerReference: string | null;
+  }): Promise<Result<StartQuoteAgentMissionOutput, AppError>> {
+    return this.executeStart({
+      authorization: input.authorization,
+      // Une seule identité traverse compréhension, commande idempotente, événement et contrôle.
+      commandId: input.turnId,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: input.realtimeSessionId,
+          turnId: input.turnId,
+          contextRevision: input.contextRevision,
+          contextDigest: input.contextDigest,
+        },
+      },
+      customerReference: input.customerReference,
+    });
+  }
+
+  private executeStart(input: {
+    readonly authorization: AgentMissionServiceAuthorization;
+    readonly commandId: string;
+    readonly origin: Parameters<StartQuoteAgentMission['execute']>[0]['origin'];
+    readonly customerReference: string | null;
   }): Promise<Result<StartQuoteAgentMissionOutput, AppError>> {
     const persistedUnitOfWork = this.persistence.createAgentMissionUnitOfWork();
     if (persistedUnitOfWork === null) {
@@ -183,8 +226,8 @@ export class AgentMissionService {
       ...owner,
       authority: input.authorization.proof,
       commandId: input.commandId,
-      origin: { actor: 'user_tap', correlation: null },
-      customerReference: null,
+      origin: input.origin,
+      customerReference: input.customerReference,
     }).then((result) => {
       if (result.ok && result.value.outcome === 'created') {
         this.logger.audit('agent_mission.started', {

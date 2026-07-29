@@ -74,6 +74,35 @@ const NATIVE_DELIVERY_RECONCILIATION_MAX_WINDOW_MS = 5_000;
 const NATIVE_DELIVERY_RECONCILIATION_READ_TIMEOUT_MS = 500;
 const PLAN_TIERS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
+/**
+ * Produit la clé de commande utilisateur stable d'un item provider. Le format UUID v4 reste celui
+ * admis par le domaine, tandis que le hash de namespace garantit qu'un replay du même item dans la
+ * même session ne peut pas démarrer une seconde mission. L'identifiant provider n'est pas
+ * persisté.
+ */
+export function deriveRealtimeTurnId(
+  sessionHandle: string,
+  providerInputItemId: string,
+): string {
+  const bytes = createHash('sha256')
+    .update('bob-pro:realtime-turn:v1\u0000', 'utf8')
+    .update(sessionHandle, 'utf8')
+    .update('\u0000', 'utf8')
+    .update(providerInputItemId, 'utf8')
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 interface SidebandSocket {
   readonly readyState: number;
   on(event: 'open', listener: () => void): this;
@@ -126,6 +155,7 @@ export interface RealtimeSidebandAttachInput {
   };
   turn?: {
     run(input: {
+      turnId: string;
       transcript: string;
       history: readonly AgentHistoryTurn[];
       signal: AbortSignal;
@@ -665,6 +695,7 @@ class ManagedSidebandSession {
     ) => Promise<RealtimeCallTerminationOutcome>,
     private readonly fenceLeaseLifecycle: () => void,
     private readonly runTurn: (input: {
+      turnId: string;
       transcript: string;
       history: readonly AgentHistoryTurn[];
       signal: AbortSignal;
@@ -1127,10 +1158,16 @@ class ManagedSidebandSession {
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
     const controller = new AbortController();
     this.turnAbort = controller;
+    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
     const brainStartedAt = performance.now();
     let outcome: RealtimeAgentTurnOutcome;
     try {
-      outcome = await this.runTurn({ transcript, history: [...this.history], signal: controller.signal });
+      outcome = await this.runTurn({
+        turnId,
+        transcript,
+        history: [...this.history],
+        signal: controller.signal,
+      });
     } catch {
       outcome = { status: 'failed', canonicalSpeech: 'Je rencontre un souci temporaire. Rien n’a été exécuté.' };
     }
@@ -1145,10 +1182,14 @@ class ManagedSidebandSession {
       || generation !== this.turnGeneration
       || outcome.status === 'aborted'
     ) return;
+    if (outcome.status === 'ready' && outcome.turnId !== turnId) {
+      this.onSecurityRejection('context_fence_rejected');
+      return;
+    }
     this.turnAbort = null;
     if (outcome.status === 'failed') this.onProviderError('turn_failed');
     this.pushHistory({ role: 'user', text: transcript });
-    await this.publishOutcome(outcome, transcript, generation);
+    await this.publishOutcome(outcome, transcript, generation, turnId);
   }
 
   private async processTranscriptFailure(inputItemId: string): Promise<void> {
@@ -1165,16 +1206,18 @@ class ManagedSidebandSession {
     const generation = ++this.turnGeneration;
     await this.interruptCurrentTurn('superseded', false);
     if (this.closed || this.finalized || generation !== this.turnGeneration) return;
+    const turnId = deriveRealtimeTurnId(this.sessionHandle, inputItemId);
     await this.publishOutcome({
       status: 'failed',
       canonicalSpeech: "Je n’ai pas bien entendu. Tu peux répéter en une phrase courte ?",
-    }, '', generation);
+    }, '', generation, turnId);
   }
 
   private async publishOutcome(
     outcome: Exclude<RealtimeAgentTurnOutcome, { status: 'aborted' }>,
     userTranscript: string,
     generation: number,
+    turnId: string,
   ): Promise<void> {
     const owner = this.owner;
     const context = speechContext(outcome, this.appliedContext);
@@ -1183,7 +1226,6 @@ class ManagedSidebandSession {
       if (outcome.status === 'ready') this.rejectControlTurn(outcome.turnId);
       return;
     }
-    const turnId = outcome.status === 'ready' ? outcome.turnId : randomUUID();
     if (!UUID.test(turnId)) {
       this.onSecurityRejection('context_fence_rejected');
       return;

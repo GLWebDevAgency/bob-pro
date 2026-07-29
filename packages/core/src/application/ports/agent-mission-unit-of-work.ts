@@ -33,6 +33,14 @@ export type AgentMissionCapabilityRejectionReason =
 
 export interface AgentMissionAuthorizedRealtimeLease {
   readonly realtimeSessionId: string;
+  /**
+   * Contexte réellement appliqué par l'owner sideband courant au moment de la transaction.
+   * `null` ferme toute commande vocale corrélée ; un contexte seulement publié ne suffit pas.
+   */
+  readonly appliedContext: {
+    readonly revision: number;
+    readonly digest: string;
+  } | null;
 }
 
 export interface AgentMissionQuoteScreenFences {

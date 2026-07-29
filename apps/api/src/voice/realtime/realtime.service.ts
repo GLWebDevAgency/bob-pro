@@ -986,6 +986,22 @@ export class RealtimeVoiceService {
     }
 
     const lease = admission.lease;
+    const agentMissionAuthority = admission.agentMissionProof === null
+      ? undefined
+      : Object.freeze({
+          owner: Object.freeze({
+            companyId: principal.companyId,
+            ownerUserId: principal.userId,
+          }),
+          proof: Object.freeze({
+            subjectHashCandidates: Object.freeze([
+              ...reserveInput.subjectHashCandidates,
+            ]),
+            principalBindingHash: reserveInput.principalBindingHash,
+            capabilityHash: admission.agentMissionProof.capabilityHash,
+          }),
+          realtimeSessionId: lease.sessionId,
+        });
     let agentMissionBinding: ReturnType<typeof realtimeAgentMissionBootstrapBinding>;
     try {
       agentMissionBinding = realtimeAgentMissionBootstrapBinding(
@@ -1085,7 +1101,7 @@ export class RealtimeVoiceService {
         session,
         lifecycle,
         turn: {
-          run: async ({ transcript, history, signal: turnSignal }) => {
+          run: async ({ turnId, transcript, history, signal: turnSignal }) => {
             const contextIdentity = {
               companyId: principal.companyId!,
               subjectHash: lease.subjectHash,
@@ -1101,11 +1117,15 @@ export class RealtimeVoiceService {
             }
             const expectedContext = realtimeAgentContextVersion(stored.snapshot);
             return this.agentTurns.run({
+              turnId,
               userId: principal.userId,
               companyId: principal.companyId!,
               transcript,
               history,
               ...(stored.snapshot?.context === undefined ? {} : { context: stored.snapshot.context }),
+              ...(agentMissionAuthority === undefined
+                ? {}
+                : { agentMissionAuthority }),
               contextFence: {
                 expected: expectedContext,
                 revalidate: async (signal) => {

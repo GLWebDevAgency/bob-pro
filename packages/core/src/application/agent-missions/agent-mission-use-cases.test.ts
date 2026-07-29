@@ -19,6 +19,7 @@ import {
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
 import {
+  type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionReadExecution,
   type AgentMissionReadTransaction,
   type AgentMissionRealtimeAuthorityProof,
@@ -142,6 +143,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   customerSearches = 0;
   customerByIdOverride: CustomerCandidateReference | null | undefined;
   customersByIdsOverride: readonly CustomerCandidateReference[] | undefined;
+  appliedContext: AgentMissionAuthorizedRealtimeLease['appliedContext'] = {
+    revision: 4,
+    digest: 'f'.repeat(64),
+  };
 
   snapshot(): MemoryState {
     return cloneState(this.state);
@@ -175,7 +180,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     const state = this.state;
     const value = await work({
       databaseNow: async () => this.now,
-      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
+      realtime: {
+        realtimeSessionId: REALTIME_SESSION_ID,
+        appliedContext: this.appliedContext,
+      },
       missions: {
         findActive: async ({ kind }) => this.findActive(state, owner, kind),
         findById: async ({ missionId }) => {
@@ -210,7 +218,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     );
     const transaction: AgentMissionTransaction = {
       databaseNow: async () => this.now,
-      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
+      realtime: {
+        realtimeSessionId: REALTIME_SESSION_ID,
+        appliedContext: this.appliedContext,
+      },
       missions: {
         findActive: async ({ kind }) => this.findActive(nextState, owner, kind),
         findById: async ({ missionId }) => {
@@ -1028,6 +1039,48 @@ describe('AgentMission application M1-A', () => {
     });
     expect(unitOfWork.snapshot().missions.size).toBe(0);
   });
+
+  it.each([
+    ['non appliqué', null],
+    ['révision périmée', { revision: 3, digest: 'f'.repeat(64) }],
+    ['digest périmé', { revision: 4, digest: 'e'.repeat(64) }],
+  ] as const)(
+    'refuse un contexte voix %s dans la transaction avant toute recherche',
+    async (_label, appliedContext) => {
+      const { unitOfWork, start } = useCases();
+      unitOfWork.appliedContext = appliedContext;
+      unitOfWork.setCustomers([
+        { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
+      ]);
+
+      const result = await start.execute({
+        ...OWNER,
+        commandId: START_COMMAND,
+        customerReference: 'Camping les Pins',
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: REALTIME_SESSION_ID,
+            turnId: TURN_ID,
+            contextRevision: 4,
+            contextDigest: 'f'.repeat(64),
+          },
+        },
+      });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_command',
+          reason: 'context_stale',
+        },
+      });
+      expect(unitOfWork.customerSearches).toBe(0);
+      expect(unitOfWork.snapshot()).toMatchObject({ events: [], slot: null });
+      expect(unitOfWork.snapshot().missions.size).toBe(0);
+    },
+  );
 
   it('enchaîne exact staged → ACK réel → sélection client atomique et rejouable', async () => {
     const { unitOfWork, start, acknowledge, advance } = useCases();

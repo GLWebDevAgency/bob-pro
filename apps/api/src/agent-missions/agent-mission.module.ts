@@ -20,5 +20,6 @@ import { AgentMissionService } from './agent-mission.service';
     agentMissionHttpAuthorityProvider,
     agentMissionFingerprintProvider,
   ],
+  exports: [AgentMissionService],
 })
 export class AgentMissionModule {}

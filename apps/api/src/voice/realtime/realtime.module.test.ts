@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FactoryProvider, Provider } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ModuleRef } from '@nestjs/core';
+import { AgentMissionService } from '../../agent-missions/agent-mission.service';
 import { loadEnv, type Env } from '../../config/env';
 import type { Persistence } from '../../persistence/persistence';
 import { PERSISTENCE } from '../../persistence/persistence-token';
@@ -733,6 +734,7 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
         PERSISTENCE,
         REALTIME_VOICE_SETTINGS,
         ModuleRef,
+        AgentMissionService,
       ]);
 
       const persistence = {} as Persistence;
@@ -741,11 +743,13 @@ describe('RealtimeVoiceModule — composition du cerveau Bob Live', () => {
         persistence: Persistence,
         settings: RealtimeVoiceSettings,
         moduleRef: ModuleRef,
+        missions: AgentMissionService,
       ) => RealtimeBobAgentTurnAdapter) | undefined;
       const adapter = factory?.(
         persistence,
         { provider } as RealtimeVoiceSettings,
         moduleRef,
+        {} as AgentMissionService,
       );
 
       expect(adapter).toBeInstanceOf(RealtimeBobAgentTurnAdapter);

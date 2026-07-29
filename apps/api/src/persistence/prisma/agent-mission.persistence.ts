@@ -847,10 +847,65 @@ implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
   }
 }
 
+interface CanonicalAppliedRealtimeContext {
+  readonly revision: number;
+  readonly digest: string;
+  readonly screenName: string;
+  readonly screenInstanceId: string;
+}
+
+function canonicalAppliedRealtimeContext(
+  lease: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
+): CanonicalAppliedRealtimeContext | null {
+  if (
+    Number.isNaN(databaseNow.getTime())
+    || lease.contextSchemaVersion !== 1
+    || lease.contextRevision === null
+    || lease.contextAppliedRevision !== lease.contextRevision
+    || lease.contextDigest === null
+    || lease.contextAppliedDigest !== lease.contextDigest
+    || !(lease.contextUpdatedAt instanceof Date)
+    || !(lease.contextAppliedAt instanceof Date)
+    || lease.contextAppliedOwnerEpoch !== lease.sidebandOwnerEpoch
+    || lease.sidebandOwnerLeaseExpiresAt === null
+    || lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
+    || lease.contextPayload === null
+  ) {
+    return null;
+  }
+  const prepared = prepareRealtimeContext({
+    version: lease.contextSchemaVersion,
+    revision: lease.contextRevision,
+    context: lease.contextPayload,
+  });
+  if (
+    prepared === null
+    || !isDeepStrictEqual(lease.contextPayload, prepared.snapshot.context)
+    || prepared.digest !== lease.contextDigest
+    || prepared.digest !== lease.contextAppliedDigest
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    revision: lease.contextRevision,
+    digest: prepared.digest,
+    screenName: prepared.snapshot.context.screen.name,
+    screenInstanceId: prepared.snapshot.context.screen.instanceId,
+  });
+}
+
 function authorizedRealtimeLease(
   lease: AgentMissionAuthorityLeaseRow,
+  databaseNow: Date,
 ): AgentMissionAuthorizedRealtimeLease {
-  return Object.freeze({ realtimeSessionId: lease.sessionId });
+  const applied = canonicalAppliedRealtimeContext(lease, databaseNow);
+  return Object.freeze({
+    realtimeSessionId: lease.sessionId,
+    appliedContext: applied === null
+      ? null
+      : Object.freeze({ revision: applied.revision, digest: applied.digest }),
+  });
 }
 
 class PrismaAgentMissionQuoteScreenAuthority
@@ -865,36 +920,13 @@ implements AgentMissionQuoteScreenAuthorityPort {
     fences: AgentMissionQuoteScreenFences,
   ): Promise<AgentMissionQuoteScreenObservation> {
     const databaseNow = new Date(fences.databaseNow);
+    const appliedContext = canonicalAppliedRealtimeContext(this.lease, databaseNow);
     if (
-      Number.isNaN(databaseNow.getTime())
+      appliedContext === null
       || fences.realtimeSessionId !== this.lease.sessionId
-      || this.lease.contextSchemaVersion !== 1
-      || this.lease.contextRevision !== fences.contextRevision
-      || this.lease.contextAppliedRevision !== fences.contextRevision
-      || this.lease.contextDigest !== fences.contextDigest
-      || !(this.lease.contextUpdatedAt instanceof Date)
-      || this.lease.contextAppliedDigest !== fences.contextDigest
-      || !(this.lease.contextAppliedAt instanceof Date)
-      || this.lease.contextAppliedOwnerEpoch !== this.lease.sidebandOwnerEpoch
-      || this.lease.sidebandOwnerLeaseExpiresAt === null
-      || this.lease.sidebandOwnerLeaseExpiresAt.getTime() <= databaseNow.getTime()
-      || this.lease.contextPayload === null
-    ) {
-      return { status: 'rejected', reason: 'context_stale' };
-    }
-
-    const prepared = prepareRealtimeContext({
-      version: this.lease.contextSchemaVersion,
-      revision: this.lease.contextRevision,
-      context: this.lease.contextPayload,
-    });
-    if (
-      prepared === null
-      || !isDeepStrictEqual(this.lease.contextPayload, prepared.snapshot.context)
-      || prepared.digest !== this.lease.contextDigest
-      || prepared.digest !== this.lease.contextAppliedDigest
-      || prepared.digest !== fences.contextDigest
-      || prepared.snapshot.context.screen.name !== '/devis/new'
+      || appliedContext.revision !== fences.contextRevision
+      || appliedContext.digest !== fences.contextDigest
+      || appliedContext.screenName !== '/devis/new'
     ) {
       return { status: 'rejected', reason: 'context_stale' };
     }
@@ -926,9 +958,9 @@ implements AgentMissionQuoteScreenAuthorityPort {
     return {
       status: 'ready',
       realtimeSessionId: this.lease.sessionId,
-      contextRevision: this.lease.contextAppliedRevision,
-      contextDigest: this.lease.contextAppliedDigest,
-      screenInstanceId: prepared.snapshot.context.screen.instanceId,
+      contextRevision: appliedContext.revision,
+      contextDigest: appliedContext.digest,
+      screenInstanceId: appliedContext.screenInstanceId,
       draft: {
         sessionId: draft.payload.draft.sessionId,
         slotRevision: draft.revision,
@@ -947,7 +979,7 @@ function createWriteTransaction(
   const instant = databaseNow.toISOString();
   return {
     databaseNow: async () => instant,
-    realtime: authorizedRealtimeLease(lease),
+    realtime: authorizedRealtimeLease(lease, databaseNow),
     missions: new PrismaAgentMissionRepository(transaction),
     events: new PrismaAgentMissionEventRepository(transaction),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
@@ -984,7 +1016,10 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
         status: 'executed',
         value: await work({
           databaseNow: async () => instant,
-          realtime: authorizedRealtimeLease(resolution.lease),
+          realtime: authorizedRealtimeLease(
+            resolution.lease,
+            resolution.databaseNow,
+          ),
           missions,
         }),
       } as const;

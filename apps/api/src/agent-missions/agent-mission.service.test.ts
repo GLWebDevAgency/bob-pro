@@ -10,6 +10,7 @@ import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
   AgentMission,
+  StartQuoteAgentMission,
   toAgentMissionView,
 } from '@bob/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -325,5 +326,42 @@ describe('AgentMissionService metrics', () => {
     });
     expect(screenAckInc).toHaveBeenCalledOnce();
     expect(screenAckInc).toHaveBeenCalledWith({ outcome: 'accepted' });
+  });
+
+  it('réutilise le turnId comme commandId et construit seule la provenance voix', async () => {
+    vi.spyOn(StartQuoteAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'sentinel', message: 'test' }],
+      },
+    });
+    const { service } = harness(new RejectingUnitOfWork('state'));
+    const turnId = '10000000-0000-4000-8000-000000000005';
+
+    await service.startFromVoiceTurn({
+      authorization: authorization('start_quote_creation'),
+      realtimeSessionId: REALTIME_SESSION_ID,
+      turnId,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      customerReference: 'Camping les Pins',
+    });
+
+    expect(StartQuoteAgentMission.prototype.execute).toHaveBeenCalledWith({
+      ...OWNER,
+      authority: PROOF,
+      commandId: turnId,
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId,
+          contextRevision: 4,
+          contextDigest: 'f'.repeat(64),
+        },
+      },
+      customerReference: 'Camping les Pins',
+    });
   });
 });

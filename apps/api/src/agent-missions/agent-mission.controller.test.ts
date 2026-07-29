@@ -127,7 +127,7 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   ): Promise<AgentMissionReadExecution<T>> {
     const value = await work({
       databaseNow: async () => DATABASE_NOW,
-      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID, appliedContext: null },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
         findById: async ({ missionId }) => {
@@ -147,7 +147,7 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     this.transactions += 1;
     const value = await work({
       databaseNow: async () => DATABASE_NOW,
-      realtime: { realtimeSessionId: REALTIME_SESSION_ID },
+      realtime: { realtimeSessionId: REALTIME_SESSION_ID, appliedContext: null },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
         findById: async ({ missionId }) => {

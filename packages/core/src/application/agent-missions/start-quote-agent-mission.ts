@@ -156,12 +156,17 @@ export class StartQuoteAgentMission {
         input.authority,
         async (transaction) => {
         const now = await transaction.databaseNow();
-        if (
-          input.origin.correlation !== null
-          && transaction.realtime.realtimeSessionId
-            !== input.origin.correlation.realtimeSessionId
-        ) {
-          abort(appConflict('agent_mission_command', 'context_stale'));
+        if (input.origin.correlation !== null) {
+          const appliedContext = transaction.realtime.appliedContext;
+          if (
+            transaction.realtime.realtimeSessionId
+              !== input.origin.correlation.realtimeSessionId
+            || appliedContext === null
+            || appliedContext.revision !== input.origin.correlation.contextRevision
+            || appliedContext.digest !== input.origin.correlation.contextDigest
+          ) {
+            abort(appConflict('agent_mission_command', 'context_stale'));
+          }
         }
         const consumed = await transaction.events.findByCommandId({
           ...owner,
