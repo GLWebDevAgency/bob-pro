@@ -881,23 +881,29 @@ function decodeSchemaState(value) {
   return state;
 }
 
-function assertIndex(index, columns, expectedOwner) {
-  if (
-    index === null
-    || typeof index !== 'object'
-    || Array.isArray(index)
-    || index.owner !== expectedOwner
-    || index.accessMethod !== 'btree'
-    || index.unique !== true
-    || index.valid !== true
-    || index.ready !== true
-    || index.live !== true
-    || index.keyAttributeCount !== columns.length
-    || index.attributeCount !== columns.length
-    || JSON.stringify(index.keyColumns) !== JSON.stringify(columns)
-    || index.predicate !== "status='active'::text"
-  ) {
-    fail('foreground index definition drifted');
+function assertIndex(index, indexName, columns, expectedOwner) {
+  if (index === null || typeof index !== 'object' || Array.isArray(index)) {
+    fail(`foreground index definition drifted:${indexName}:missing`);
+  }
+  const drift = [];
+  if (index.owner !== expectedOwner) drift.push('owner');
+  if (index.accessMethod !== 'btree') drift.push('access-method');
+  if (index.unique !== true) drift.push('unique');
+  if (index.valid !== true) drift.push('valid');
+  if (index.ready !== true) drift.push('ready');
+  if (index.live !== true) drift.push('live');
+  if (index.keyAttributeCount !== columns.length) drift.push('key-count');
+  if (index.attributeCount !== columns.length) drift.push('attribute-count');
+  if (JSON.stringify(index.keyColumns) !== JSON.stringify(columns)) {
+    drift.push(
+      `columns=${JSON.stringify(index.keyColumns).slice(0, 256)}`,
+    );
+  }
+  if (index.predicate !== "status='active'::text") {
+    drift.push(`predicate=${JSON.stringify(index.predicate).slice(0, 256)}`);
+  }
+  if (drift.length > 0) {
+    fail(`foreground index definition drifted:${indexName}:${drift.join(',')}`);
   }
 }
 
@@ -931,6 +937,7 @@ export function assertK2SchemaState(value, phase) {
   }
   assertIndex(
     state.indexes.agent_missions_one_active_owner_kind_key,
+    'agent_missions_one_active_owner_kind_key',
     ['"companyId"', '"ownerUserId"', '"kind"'],
     state.tableOwner,
   );
@@ -942,6 +949,7 @@ export function assertK2SchemaState(value, phase) {
   } else {
     assertIndex(
       globalIndex,
+      'agent_missions_one_active_owner_key',
       ['"companyId"', '"ownerUserId"'],
       state.tableOwner,
     );
