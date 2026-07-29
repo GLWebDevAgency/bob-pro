@@ -169,6 +169,10 @@ export function describeError(error: unknown): string {
         return `domain:${String(de.code ?? '')}${de.message ? ` ${String(de.message)}` : ''}`.trim();
       }
       if (e.kind === 'not_found') return `not_found:${String(e.entity ?? '')}`;
+      if (e.kind === 'conflict')
+        return `conflict:${String(e.entity ?? '')}${
+          e.reason ? ` ${String(e.reason)}` : ''
+        }`.trim();
       if (e.kind === 'forbidden') return `forbidden:${String(e.reason ?? '')}`.trim();
       if (e.kind === 'validation') return 'validation';
       if (e.kind === 'dependency') return `dependency:${String(e.port ?? '')}`;

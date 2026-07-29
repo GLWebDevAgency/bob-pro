@@ -8,6 +8,15 @@ import { describe, expect, it } from 'vitest';
  * Patron des contrats de source déjà en place (`screen-authoritative-data-contract.test.ts`).
  */
 const source = readFileSync(new URL('../../app/contrat/[id].tsx', import.meta.url), 'utf8');
+const clientSource = readFileSync(new URL('../../app/client/[id].tsx', import.meta.url), 'utf8');
+const contractsCardSource = readFileSync(
+  new URL('./CustomerContractsCard.tsx', import.meta.url),
+  'utf8',
+);
+const contractsCardStateSource = readFileSync(
+  new URL('./customer-contracts-card-state.ts', import.meta.url),
+  'utf8',
+);
 
 describe('feuille « Renommer » — ce que l’écran DIT, et à qui', () => {
   it('l’explication du bouton désactivé est VISIBLE, pas réservée au lecteur d’écran', () => {
@@ -33,18 +42,108 @@ describe('feuille « Renommer » — ce que l’écran DIT, et à qui', () => {
     expect(source).not.toContain("accessibilityHint={t('contrat.renameHint'");
   });
 
-  it('toutes les portes de sortie d’un conflit passent par le rechargement', () => {
+  it('toutes les portes de sortie d’un conflit passent par un rechargement prouvé avant fermeture', () => {
     // `contractRenameCloseEffect` décide, et la feuille ET le bouton « Recharger la fiche »
     // sortent par la MÊME porte : fermer une feuille périmée ne peut pas laisser la vue
     // afficher un nom que le serveur a déjà remplacé.
     expect(source).toContain('contractRenameCloseEffect({');
     expect(source).toContain('onClose={closeRename}');
     expect(source).toContain('onPress={closeRename}');
-    expect(source).toContain("effect === 'close_and_reload'");
-    expect(source).toContain('void query.refetch()');
-    // Le rechargement s'ANNONCE : sans cela, seul un voyant sait que la fiche a bougé.
-    expect(source).toContain("t('contrat.renameReloaded'");
+    expect(source).toContain('renameMutationInFlight.current');
+    expect(source).toContain('renameReloadCoordinator.isRunning');
+    expect(source).toContain('renameTerminalCloseInFlight.current');
+    expect(source).toContain("effect === 'reload_before_close'");
+    expect(source).toContain('renameReloadCoordinator.reload({');
+    expect(source).toContain("if (outcome.kind === 'unavailable')");
+    expect(source).not.toMatch(
+      /effect === 'reload_before_close'[\s\S]{0,160}void query\.refetch\(\)/u,
+    );
+    // Le rechargement ne s'annonce qu'après la preuve `reloaded` : jamais au départ du réseau.
+    expect(source).toContain(
+      "t(target.mode === 'committed' ? 'contrat.renameDone' : 'contrat.renameReloaded'",
+    );
+    expect(source.indexOf("if (outcome.kind === 'unavailable')")).toBeLessThan(
+      source.indexOf("t(target.mode === 'committed' ? 'contrat.renameDone' : 'contrat.renameReloaded'"),
+    );
     // L'ancienne sortie muette (fermeture conditionnée au seul `isPending`) a disparu.
     expect(source).not.toContain('if (!rename.isPending) setRenameOpen(false)');
+  });
+
+  it('un succès de mutation reste dans la feuille jusqu’à la relecture serveur', () => {
+    expect(source).toContain('const renamed = await rename.mutateAsync({');
+    expect(source).toContain("mode: 'committed'");
+    expect(source).toContain('minimumRevision: renamed.revision');
+    expect(source).toContain('await reloadRename(target)');
+    expect(source).not.toContain(
+      "setRenameOpen(false);\\n      AccessibilityInfo.announceForAccessibility(t('contrat.renameDone'",
+    );
+  });
+
+  it('l’exception au gate d’erreur ne masque que la reprise de renommage contrôlée', () => {
+    expect(source).toContain('(query.isError && renameReloadTarget === null)');
+    expect(source).not.toContain('if (view === null || contract === null)');
+  });
+
+  it('un contrat supprimé ailleurs est terminal : fermeture, retour puis message honnête', () => {
+    expect(source).toContain("if (outcome.kind === 'missing')");
+    expect(source).toContain("kind: 'contract_missing'");
+    expect(source).toContain("if (effect.kind === 'contract_missing')");
+    expect(source).toContain("pathname: '/client/[id]'");
+    expect(source).toContain("tab: 'contracts'");
+    expect(source).toContain('issueContractDeletedNotice({');
+    expect(source).toContain('noticeToken,');
+    expect(source).toContain("queryClient.setQueryData<MaintenanceContractClientView[]>");
+    expect(source).toContain("queryKey: ['contracts'], exact: true");
+    expect(source).toContain("queryKey: ['contract', contract.id], exact: true");
+    // Le not_found peut arriver AVANT l'écriture comme pendant le refetch : même terminal.
+    expect(source).toContain('isMaintenanceContractNotFound(error, contract.id)');
+    expect(source.match(/beginMissingContractExit\(\)/gu)).toHaveLength(2);
+    // La navigation attend la fin de la Sheet : jamais une route qui change sous une modale.
+    expect(source.indexOf("if (outcome.kind === 'missing')")).toBeLessThan(
+      source.indexOf('const handleRenameDidClose = (): void =>'),
+    );
+    expect(source.indexOf("if (effect.kind === 'contract_missing')")).toBeLessThan(
+      source.indexOf("pathname: '/client/[id]'"),
+    );
+    const terminalHandler = source.slice(
+      source.indexOf("if (effect.kind === 'contract_missing')"),
+      source.indexOf("Alert.alert(t('contrat.renameTitle'"),
+    );
+    expect(terminalHandler).not.toContain('Alert.alert');
+
+    // Le feedback appartient à la destination montée : onglet des contrats + Toast live-region.
+    expect(clientSource).toContain("const contractsRequested = params.tab === 'contracts'");
+    expect(clientSource).toContain('consumeContractDeletedNotice(contractDeletedNoticeToken, id)');
+    expect(clientSource).toContain("contractsRequested ? 'infos' : 'activity'");
+    expect(clientSource).toContain("contractsSectionState === 'loading'");
+    expect(clientSource).toContain('router.setParams({ noticeToken: undefined })');
+    expect(clientSource).toContain('scrollTo({ y: Math.max(0, top - 16), animated: false })');
+    expect(clientSource).toContain('AccessibilityInfo.setAccessibilityFocus(headerHandle)');
+    expect(clientSource).toContain('ensureVisible={contractsRequested}');
+    expect(clientSource).toContain("'fiche.contractDeletedToast'");
+    expect(clientSource).toContain("ficheToastKind === 'success'");
+    expect(contractsCardStateSource).toContain(
+      "CustomerContractsCardState = 'loading' | 'ready' | 'error'",
+    );
+    expect(contractsCardStateSource).toContain('input.ensureVisible && input.isFetching');
+    expect(contractsCardSource).toContain('onStateChange?.(state)');
+    expect(contractsCardSource).toContain('<SkeletonRow');
+    expect(contractsCardSource).toContain('<ErrorRetry');
+    expect(contractsCardSource).toContain("t('contrat.clientDataError'");
+  });
+
+  it('le message superseded attend la fin de la Sheet : jamais deux modales concurrentes', () => {
+    expect(source).toContain("kind: 'alert'");
+    expect(source).toContain("message: t('contrat.renameSuperseded'");
+    expect(source).toContain('onDidClose={handleRenameDidClose}');
+    expect(source).toContain('const handleRenameDidClose = (): void =>');
+    const setMessage = source.indexOf("message: t('contrat.renameSuperseded'");
+    const handler = source.indexOf('const handleRenameDidClose = (): void =>');
+    const alert = source.indexOf(
+      "Alert.alert(t('contrat.renameTitle', { personality }), effect.message);",
+    );
+    expect(setMessage).toBeGreaterThan(-1);
+    expect(handler).toBeGreaterThan(setMessage);
+    expect(alert).toBeGreaterThan(handler);
   });
 });

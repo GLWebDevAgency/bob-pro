@@ -491,7 +491,24 @@ export class MaintenanceContract {
     };
     const validated = MaintenanceContract.record(candidate);
     if (!validated.ok) return validated;
-    Object.assign(this.p, validated.value.toProps(), { revision: this.p.revision + 1 });
+    const next = validated.value.toProps();
+    // Invariant NO-OP : la normalisation du domaine fait autorité. Un patch qui ne change
+    // finalement aucun fait (par exemple le même nom entouré d'espaces) ne doit ni faire
+    // tourner la révision, ni forcer les appelants à persister une fausse modification.
+    const changed =
+      (patch.label !== undefined && next.label !== this.p.label)
+      || (patch.chantierId !== undefined && next.chantierId !== this.p.chantierId)
+      || (patch.anniversaryDate !== undefined && next.anniversaryDate !== this.p.anniversaryDate)
+      || (patch.noticeDays !== undefined && next.noticeDays !== this.p.noticeDays)
+      || (patch.visitsPerYear !== undefined && next.visitsPerYear !== this.p.visitsPerYear)
+      || (patch.tacitRenewal !== undefined && next.tacitRenewal !== this.p.tacitRenewal)
+      || (
+        patch.importCoveredUntil !== undefined
+        && next.importCoveredUntil !== this.p.importCoveredUntil
+      )
+      || (patch.notes !== undefined && next.notes !== this.p.notes);
+    if (!changed) return ok(undefined);
+    Object.assign(this.p, next, { revision: this.p.revision + 1 });
     return ok(undefined);
   }
 

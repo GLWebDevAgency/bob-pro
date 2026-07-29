@@ -23,6 +23,7 @@ const NOW = '2026-09-20T10:00:00.000Z';
 
 function contractOf(over: Partial<AgentContract> & Pick<AgentContract, 'id' | 'label'>): AgentContract {
   return {
+    revision: 1,
     status: 'active',
     customerName: null,
     chantierNom: null,
@@ -757,7 +758,10 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(r.value.intent).toBe('activer_contrat');
     expect(r.value.kind).toBe('proposed');
     expect(activated).toEqual([]);
-    expect(r.value.pending?.args).toEqual({ contractId: 'contract-fontaines' });
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      expectedRevision: 1,
+    });
     expect(r.value.card.body).toContain('12/10/2026');
     expect(r.value.card.body).toContain('figée');
   });
@@ -779,7 +783,10 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.value.kind).toBe('proposed');
-    expect(second.value.pending?.args).toEqual({ contractId: 'contract-fontaines-quai' });
+    expect(second.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines-quai',
+      expectedRevision: 1,
+    });
   });
 
   /**
@@ -848,6 +855,7 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(terminated).toEqual([]);
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-bastille',
+      expectedRevision: 1,
       note: 'le client déménage',
       effectiveDate: '2027-06-01',
     });
@@ -883,6 +891,7 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     // Aucune date dite ⇒ aucune date envoyée : le domaine calcule le prochain anniversaire.
     expect(proposed.value.pending?.args).toEqual({
       contractId: 'contract-bastille',
+      expectedRevision: 1,
       note: 'le client déménage',
     });
     expect(proposed.value.card.body).toContain('prochaine échéance');
@@ -890,7 +899,162 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe('done');
-    expect(terminated).toEqual([{ contractId: 'contract-bastille', note: 'le client déménage' }]);
+    expect(terminated).toEqual([{
+      contractId: 'contract-bastille',
+      expectedRevision: 1,
+      note: 'le client déménage',
+    }]);
+  });
+
+  it('CAS activation local : l’ancienne confirmation refuse, relit, puis la reprise scelle N+1', async () => {
+    const contracts = [{ ...DRAFT_A }];
+    const attempts: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        listMaintenanceContracts: async () => ok(contracts),
+        activateMaintenanceContract: async (input) => {
+          attempts.push(input);
+          const current = contracts.find((contract) => contract.id === input.contractId);
+          if (!current || current.revision !== input.expectedRevision) {
+            return err({
+              kind: 'conflict' as const,
+              entity: 'maintenance_contract',
+              reason: 'stale_revision',
+            });
+          }
+          const next = { ...current, revision: current.revision + 1, status: 'active' as const };
+          contracts.splice(0, 1, next);
+          return ok({
+            contractId: next.id,
+            label: next.label,
+            status: next.status,
+            anniversaryDate: next.anniversaryDate,
+            terminationEffectiveDate: null,
+          });
+        },
+      },
+      contracts,
+    );
+
+    const proposed = await agent.ask('Active le contrat fontaines');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || proposed.value.kind !== 'proposed') return;
+    expect(proposed.value.pending?.args).toMatchObject({ expectedRevision: 1 });
+
+    contracts.splice(0, 1, {
+      ...contracts[0]!,
+      revision: 2,
+      label: 'Entretien fontaines — équipe B',
+    });
+
+    const stale = await agent.confirm(proposed.value.pending!);
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect(contracts[0]).toMatchObject({ revision: 2, status: 'draft' });
+    expect(attempts).toEqual([{
+      contractId: 'contract-fontaines',
+      expectedRevision: 1,
+    }]);
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toBe('Active le contrat contract-fontaines');
+    const reproposed = await agent.ask(retryCommand!);
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed') return;
+    expect(reproposed.value.pending?.args).toMatchObject({ expectedRevision: 2 });
+
+    const done = await agent.confirm(reproposed.value.pending!);
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect(contracts[0]).toMatchObject({ revision: 3, status: 'active' });
+  });
+
+  it('CAS résiliation local : la reprise conserve date et motif, mais rescellée à N+1', async () => {
+    const contracts = [{ ...BASTILLE_DUE }];
+    const attempts: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        listMaintenanceContracts: async () => ok(contracts),
+        terminateMaintenanceContract: async (input) => {
+          attempts.push(input);
+          const current = contracts.find((contract) => contract.id === input.contractId);
+          if (!current || current.revision !== input.expectedRevision) {
+            return err({
+              kind: 'conflict' as const,
+              entity: 'maintenance_contract',
+              reason: 'stale_revision',
+            });
+          }
+          const next = {
+            ...current,
+            revision: current.revision + 1,
+            status: 'terminated' as const,
+          };
+          contracts.splice(0, 1, next);
+          return ok({
+            contractId: next.id,
+            label: next.label,
+            status: next.status,
+            anniversaryDate: next.anniversaryDate,
+            terminationEffectiveDate: input.effectiveDate ?? '2027-10-12',
+          });
+        },
+      },
+      contracts,
+    );
+
+    const proposed = await agent.ask(
+      'Résilie le contrat Bastille au 01/06/2027 — motif : le client déménage',
+    );
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || proposed.value.kind !== 'proposed') return;
+    expect(proposed.value.pending?.args).toMatchObject({
+      expectedRevision: 1,
+      effectiveDate: '2027-06-01',
+      note: 'le client déménage',
+    });
+
+    contracts.splice(0, 1, {
+      ...contracts[0]!,
+      revision: 2,
+      label: 'Entretien fontaines Bastille — équipe B',
+    });
+
+    const stale = await agent.confirm(proposed.value.pending!);
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines Bastille — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect(contracts[0]).toMatchObject({ revision: 2, status: 'active' });
+    expect(attempts).toEqual([{
+      contractId: 'contract-bastille',
+      expectedRevision: 1,
+      effectiveDate: '2027-06-01',
+      note: 'le client déménage',
+    }]);
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toContain('contract-bastille au 2027-06-01');
+    expect(retryCommand).toContain('motif : le client déménage');
+    const reproposed = await agent.ask(retryCommand!);
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed') return;
+    expect(reproposed.value.pending?.args).toMatchObject({
+      expectedRevision: 2,
+      effectiveDate: '2027-06-01',
+      note: 'le client déménage',
+    });
+
+    const done = await agent.confirm(reproposed.value.pending!);
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect(contracts[0]).toMatchObject({ revision: 3, status: 'terminated' });
   });
 
   it('aucun contrat actif : refus honnête, rien n’est modifié', async () => {
@@ -950,6 +1114,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(recorded).toEqual([]);
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-bastille',
+      expectedRevision: 1,
       label: 'Entretien des ascenseurs',
     });
     expect(r.value.card.body).toContain('Entretien fontaines Bastille');
@@ -962,7 +1127,11 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     if (!done.ok) return;
     expect(done.value.kind).toBe('done');
     expect(recorded).toEqual([
-      { contractId: 'contract-bastille', label: 'Entretien des ascenseurs' },
+      {
+        contractId: 'contract-bastille',
+        expectedRevision: 1,
+        label: 'Entretien des ascenseurs',
+      },
     ]);
   });
 
@@ -977,6 +1146,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     // renommé le mauvais contrat en croyant obéir.
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-bastille',
+      expectedRevision: 1,
       label: 'Entretien vitrines Bastille',
     });
   });
@@ -1005,6 +1175,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(second.value.kind).toBe('proposed');
     expect(second.value.pending?.args).toEqual({
       contractId: 'contract-fontaines-quai',
+      expectedRevision: 1,
       label: 'Entretien des ascenseurs',
     });
   });
@@ -1084,6 +1255,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(cased.value.kind).toBe('proposed');
     expect(cased.value.pending?.args).toEqual({
       contractId: 'contract-fontaines',
+      expectedRevision: 1,
       label: 'entretien fontaines',
     });
   });
@@ -1114,6 +1286,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(r.value.kind).toBe('proposed');
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-fontaines',
+      expectedRevision: 1,
       label: 'Entretien annuel',
     });
   });
@@ -1167,6 +1340,84 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(r.value.card.body).toContain('Contrat résilié : lecture seule.');
   });
 
+  it('CAS entre proposition et confirmation : refuse l’ancienne décision puis repropose depuis la révision relue', async () => {
+    const contracts = [{ ...FONTAINES }];
+    const attempts: unknown[] = [];
+    const agent = lifecycleAgent(
+      {
+        listMaintenanceContracts: async () => ok(contracts),
+        renameMaintenanceContract: async (input) => {
+          attempts.push(input);
+          const current = contracts.find((contract) => contract.id === input.contractId);
+          if (!current || current.revision !== input.expectedRevision) {
+            return err({
+              kind: 'conflict' as const,
+              entity: 'maintenance_contract',
+              id: input.contractId,
+              reason: 'stale_revision',
+            });
+          }
+          const next = {
+            ...current,
+            revision: current.revision + 1,
+            label: input.label,
+          };
+          contracts.splice(0, 1, next);
+          return ok({
+            contractId: next.id,
+            label: next.label,
+            status: next.status,
+            anniversaryDate: next.anniversaryDate,
+            terminationEffectiveDate: null,
+          });
+        },
+      },
+      contracts,
+    );
+
+    const proposed = await agent.ask(
+      'Renomme le contrat fontaines en « Entretien des ascenseurs »',
+    );
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || proposed.value.kind !== 'proposed') return;
+    expect(proposed.value.pending?.args).toMatchObject({ expectedRevision: 1 });
+
+    // Un autre appareil écrit entre la proposition et le consentement.
+    contracts.splice(0, 1, {
+      ...contracts[0]!,
+      revision: 2,
+      label: 'Entretien fontaines — équipe B',
+    });
+
+    const stale = await agent.confirm(proposed.value.pending!);
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect(attempts).toEqual([{
+      contractId: 'contract-fontaines',
+      expectedRevision: 1,
+      label: 'Entretien des ascenseurs',
+    }]);
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toContain('Renomme le contrat contract-fontaines');
+    const reproposed = await agent.ask(retryCommand!);
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed') return;
+    expect(reproposed.value.pending?.args).toMatchObject({ expectedRevision: 2 });
+
+    const done = await agent.confirm(reproposed.value.pending!);
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect(contracts[0]).toMatchObject({
+      revision: 3,
+      label: 'Entretien des ascenseurs',
+    });
+  });
+
   it('capacité hôte absente : réponse honnête qui renvoie à la fiche, jamais une erreur brute', async () => {
     const agent = new BobAgent({
       router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
@@ -1192,6 +1443,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(r.value.kind).toBe('proposed');
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-fontaines-quai',
+      expectedRevision: 1,
       label: 'Entretien des ascenseurs',
     });
   });
@@ -1220,6 +1472,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(r.value.kind).toBe('proposed');
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-fontaines',
+      expectedRevision: 1,
       label: 'Entretien des ascenseurs',
     });
   });
@@ -1251,6 +1504,7 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     // l'application — un nom que personne n'a voulu et que le pro devrait re-corriger.
     expect(r.value.pending?.args).toEqual({
       contractId: 'contract-fontaines',
+      expectedRevision: 1,
       label: 'Entretien des ascenseurs',
     });
   });

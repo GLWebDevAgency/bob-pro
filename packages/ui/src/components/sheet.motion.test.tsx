@@ -81,6 +81,36 @@ function renderSheet(visible: boolean): ReactTestRenderer {
 }
 
 describe('Sheet — reduce motion', () => {
+  it('annonce le vrai effet du bouton de fermeture quand l’appelant le surcharge', async () => {
+    isReduceMotionEnabled.mockResolvedValue(false);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <ThemeProvider>
+          <Sheet
+            visible
+            onClose={() => {}}
+            closeAccessibilityHint="Recharge la version à jour avant de fermer."
+            closeBusy
+          >
+            <></>
+          </Sheet>
+        </ThemeProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const closeButton = renderer.root.findAll(
+      (node) =>
+        (node.type as unknown) === 'Pressable' && node.props.accessibilityRole === 'button',
+    )[0];
+    expect(closeButton?.props.accessibilityHint).toBe(
+      'Recharge la version à jour avant de fermer.',
+    );
+    expect(closeButton?.props.accessibilityState).toEqual({ busy: true, disabled: true });
+    expect(closeButton?.props.disabled).toBe(true);
+  });
+
   it('anime le slide/fondu sur DURATION_MS quand la préférence système est normale', async () => {
     isReduceMotionEnabled.mockResolvedValue(false);
     await act(async () => {

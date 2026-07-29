@@ -701,6 +701,9 @@ export interface PrepareInterventionInvoiceActionOutput {
  */
 export interface AgentContract {
   id: string;
+  /** Révision relue avec la projection. Toute proposition mutante la scelle et la rejoue telle
+   * quelle : l'hôte ne la remplace jamais par une révision plus récente à la confirmation. */
+  revision: number;
   label: string;
   status: 'draft' | 'active' | 'terminated';
   customerName: string | null;
@@ -755,14 +758,16 @@ export interface CreateMaintenanceContractActionInput {
 }
 
 /** Outils `activer_contrat` / `resilier_contrat` (§2.7) : MÊMES use cases ActivateContract et
- * TerminateContract que la fiche — l'hôte résout la révision courante côté serveur (le geste
- * vocal n'a pas de vue optimiste). Le préavis est AFFICHÉ, jamais bloquant. */
+ * TerminateContract que la fiche. La projection réelle fournit la révision, scellée dans la
+ * proposition puis rejouée telle quelle. Le préavis est AFFICHÉ, jamais bloquant. */
 export interface ActivateContractActionInput {
   contractId: string;
+  expectedRevision: number;
 }
 
 export interface TerminateContractActionInput {
   contractId: string;
+  expectedRevision: number;
   /** Absente/null → le use case retient le PROCHAIN anniversaire calculé (jamais un floor). */
   effectiveDate?: string | null;
   /** Trace légale de la décision — exigée par le domaine. */
@@ -772,11 +777,13 @@ export interface TerminateContractActionInput {
 /**
  * Outil `renommer_contrat` (§2.7) : MÊME use case UpdateMaintenanceContract que la fiche —
  * un patch d'un SEUL champ, jamais un remplacement (lignes, équipements et conditions ne sont
- * pas renvoyés, donc pas réécrits). L'hôte résout la révision courante côté serveur : le geste
- * vocal n'a pas de vue optimiste, il ne devine jamais un numéro de révision.
+ * pas renvoyés, donc pas réécrits). La révision issue de la projection réelle est SCELLÉE dans
+ * la proposition : l'hôte ne peut pas relire une version plus récente pour faire passer une
+ * ancienne confirmation.
  */
 export interface RenameContractActionInput {
   contractId: string;
+  expectedRevision: number;
   /** Nouveau nom, déjà passé par la garde du libellé en sévérité `'nomme'` (registre d'outils). */
   label: string;
 }

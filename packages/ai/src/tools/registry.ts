@@ -1786,10 +1786,16 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       safetyFloor: true,
       riskTier: 'reversible',
       parse: (raw): Result<ActivateContractActionInput, AppError> => {
-        const r = raw as { contractId?: unknown };
+        const r = raw as { contractId?: unknown; expectedRevision?: unknown };
         if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
           return err(appValidation('contractId', 'Contrat ciblé invalide.'));
-        return ok({ contractId: r.contractId });
+        if (
+          typeof r?.expectedRevision !== 'number'
+          || !Number.isSafeInteger(r.expectedRevision)
+          || r.expectedRevision < 1
+        )
+          return err(appValidation('expectedRevision', 'Révision du contrat invalide.'));
+        return ok({ contractId: r.contractId, expectedRevision: r.expectedRevision });
       },
       run: (input) => activateContractAction(input),
     };
@@ -1808,9 +1814,20 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       safetyFloor: true,
       riskTier: 'reversible',
       parse: (raw): Result<TerminateContractActionInput, AppError> => {
-        const r = raw as { contractId?: unknown; effectiveDate?: unknown; note?: unknown };
+        const r = raw as {
+          contractId?: unknown;
+          expectedRevision?: unknown;
+          effectiveDate?: unknown;
+          note?: unknown;
+        };
         if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
           return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        if (
+          typeof r?.expectedRevision !== 'number'
+          || !Number.isSafeInteger(r.expectedRevision)
+          || r.expectedRevision < 1
+        )
+          return err(appValidation('expectedRevision', 'Révision du contrat invalide.'));
         if (typeof r?.note !== 'string' || r.note.trim().length === 0 || r.note.length > 2000)
           return err(appValidation('note', 'Motif de résiliation requis (trace de la décision).'));
         if (hasAsciiControlCharacter(r.note))
@@ -1823,6 +1840,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           return err(appValidation('effectiveDate', 'Date d’effet attendue (AAAA-MM-JJ).'));
         return ok({
           contractId: r.contractId,
+          expectedRevision: r.expectedRevision,
           note: r.note.trim(),
           ...(typeof r.effectiveDate === 'string' ? { effectiveDate: r.effectiveDate } : {}),
         });
@@ -1849,9 +1867,15 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       safetyFloor: true,
       riskTier: 'reversible',
       parse: (raw): Result<RenameContractActionInput, AppError> => {
-        const r = raw as { contractId?: unknown; label?: unknown };
+        const r = raw as { contractId?: unknown; expectedRevision?: unknown; label?: unknown };
         if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
           return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        if (
+          typeof r?.expectedRevision !== 'number'
+          || !Number.isSafeInteger(r.expectedRevision)
+          || r.expectedRevision < 1
+        )
+          return err(appValidation('expectedRevision', 'Révision du contrat invalide.'));
         if (typeof r?.label !== 'string')
           return err(appValidation('label', `Nouveau nom manquant (${MAX_CONTRACT_LABEL_LENGTH} caractères maximum).`));
         // BORNE DU DOMAINE d'abord (vide, longueur, caractères de contrôle) — la MÊME que
@@ -1868,7 +1892,11 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         // refus fermerait le seul remède que la garde elle-même promet.
         const verdict = inspectContractLabel(r.label, { mode: 'nomme' });
         if (!verdict.accepted) return err(appValidation('label', contractLabelRefusalSaid(verdict)));
-        return ok({ contractId: r.contractId, label: r.label.trim() });
+        return ok({
+          contractId: r.contractId,
+          expectedRevision: r.expectedRevision,
+          label: r.label.trim(),
+        });
       },
       run: (input) => renameContractAction(input),
     };

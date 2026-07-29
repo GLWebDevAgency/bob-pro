@@ -215,6 +215,9 @@ model MaintenanceContract {
 ### 2.3 Agrégat core & VOs (`domain/contract/maintenance-contract.ts`)
 - VOs : `MaintenanceContractStatus`, `ContractPeriod {start; end}` (end exclusive), `ContractLine` (règles monétaires LineItem).
 - Invariants : label non vide ; `noticeDays ≥ 0` ; `visitsPerYear ≥ 0` ; montant annuel = `contractAnnualTotals(lines)` via `computeLineBases`, JAMAIS persisté ; `activate(customer)` exige ≥ 1 ligne + `anniversaryDate` + client `b2b|b2g` (refus actionnable + LegalHint Chatel sinon) et FIGE `anniversaryDate` + `importCoveredUntil` ; `terminate(decidedAt, effectiveDate, note)` : uniquement depuis `active`, TOUJOURS possible, `effectiveDate` défaut = prochain anniversaire CALCULÉ, préavis affiché non bloquant ; lignes/équipements modifiables en `draft` et `active` (CAS), figés en `terminated` ; transitions `CONTRACT_TRANSITIONS = { draft: ['active'], active: ['terminated'], terminated: [] }`.
+- **Invariant no-op (O6)** : un patch qui, après normalisation du domaine, ne change aucune
+  propriété ne tourne pas la révision et ne déclenche ni sauvegarde ni audit. Cette garde vit dans
+  l'agrégat puis est respectée par le use case ; l'UI, Bob et l'API directe ne peuvent pas diverger.
 - **Aucune méthode `renew()`** : la reconduction n'existe pas comme mutation.
 
 ### 2.4 Machine à états (ajustée — direction 2)
@@ -252,7 +255,7 @@ stateDiagram-v2
 ### 2.6 Use cases + ports (`application/contracts/`)
 
 - Port `MaintenanceContractRepository` : `findById`, `lockById`, `listByCompany`, `listByCustomer`, `save`, `saveLines`, `saveEquipments` ; + `InvoiceRepository.listByMaintenanceContract(companyId, contractId)` (projections de couverture, index partiel §2.2).
-- `CreateMaintenanceContract` (b2c refusé, site `open` exigé si lié, équipements du même site fail-closed, `importCoveredUntil` déclarable), `UpdateContract` (CAS ; `anniversaryDate`/`importCoveredUntil` immuables après activation), `ActivateContract` (revalide b2b/b2g), `TerminateContract`, `DeleteDraftContract`. **`RecordContractRenewal` : SUPPRIMÉ** (direction 2).
+- `CreateMaintenanceContract` (b2c refusé, site `open` exigé si lié, équipements du même site fail-closed, `importCoveredUntil` déclarable), `UpdateContract` (CAS ; `anniversaryDate`/`importCoveredUntil` immuables après activation ; sauvegarde et audit seulement si la révision a réellement avancé), `ActivateContract` (revalide b2b/b2g), `TerminateContract`, `DeleteDraftContract`. **`RecordContractRenewal` : SUPPRIMÉ** (direction 2).
 - **`PrepareAnnualInvoiceDraft`** — patron proposition :
   1. gardes : contrat `active` ; ≥ 1 ligne ; `deriveAnnualBillingDue` vraie (refus actionnable sinon : « Période {start}→{end} déjà couverte par {number} » — avec le numéro réel, actionnable) ;
   2. délègue à **`ComposeStandaloneInvoice` ÉTENDU ADDITIVEMENT** (direction 4 — vérifié : le code actuel n'accepte ni période ni site ni contrat) : input optionnel `contractAttachment?: { maintenanceContractId, servicePeriod: {start, end}, chantierId? }` persisté AU BROUILLON. Comportement existant inchangé au bit près quand absent (snapshot tests). Client b2b/b2g garanti par le contrat — la garde B2C existante n'est jamais rencontrée NI contournée ;
@@ -271,17 +274,34 @@ stateDiagram-v2
 | Outil | Use case | Exemple vocal |
 |---|---|---|
 | `creer_contrat_maintenance` | CreateMaintenanceContract | « Crée le contrat RATP CAP Bastille, 2 visites par an » (client particulier → Bob explique le refus + le chemin devis annuel) |
-| `activer_contrat` / `resilier_contrat` | Activate/TerminateContract | « Le client résilie au 1er juin » (préavis expliqué, jamais bloquant) |
+| `activer_contrat` / `resilier_contrat` | Activate/TerminateContract | « Le client résilie au 1er juin » (préavis expliqué, jamais bloquant ; `expectedRevision` réelle scellée dans la proposition) |
+| `renommer_contrat` | UpdateMaintenanceContract | « Renomme le contrat Bastille en Entretien des ascenseurs » — le contrat ciblé ET sa `expectedRevision` réelle sont scellés dans la proposition ; si la fiche change avant confirmation, Bob n'écrase rien et exige une nouvelle confirmation sur la version fraîche |
 | `contrats_a_renouveler` | deriveRenewalAlerts | « Quels contrats à renouveler ? » (tacites ET non-tacites échus) |
 | `preparer_facture_annuelle` | PrepareAnnualInvoiceDraft | « Prépare la facture annuelle du contrat Bastille » (brouillon ; émission = geste séparé existant) |
 | `planifier_visites_contrat` | proposeVisitDates + PlanContractVisits | « Planifie les 2 passages de l'année » |
 
 **Conception vocale propre** : consigne composite désordonnée — « fais-moi le contrat fontaines RATP, 400 balles par machine, ils ont 3 machines à Bastille, ça démarre au 1er octobre, 2 passages » → extraction en une passe : client, site, 3 équipements (liés au parc si trouvés), ligne 400 € × 3, `anniversaryDate`, `visitsPerYear` ; questions ciblées SEULEMENT pour l'ambigu (« Les 3 fontaines du parc Bastille ? » si homonymes) ; UNE confirmation groupée récapitulant tout AVANT `CreateMaintenanceContract` (seule mutation) ; l'activation reste un second geste confirmé distinct — jamais fusionné silencieusement. Lectures et dérivations : zéro confirmation.
 
+**Mutations continues et honnêtes (O4/O6)** : la projection vocale transporte la révision lue avec
+le nom réel. Chaque proposition de cycle de vie scelle son `expectedRevision` avec ses autres
+arguments ; l'adapter ne relit jamais une révision plus récente pour faire passer une ancienne
+décision. Pour le renommage, cela donne exactement `{ contractId, expectedRevision, label }`. Un
+conflit entre proposition et confirmation ne modifie rien : Bob exige une nouvelle confirmation
+sur la version fraîche. Côté écran, après mutation ou conflit, la feuille
+reste gelée jusqu'à une relecture autoritative réussie ; une panne réseau affiche une erreur et un
+retry, sans fermer la feuille ni annoncer un succès. Un `not_found` exact du même contrat est au
+contraire terminal : la feuille se ferme, puis remplace la route par la fiche du client ouverte sur
+sa liste de contrats ; la liste en cache est d'abord filtrée de l'identifiant prouvé absent puis
+revalidée. Cette destination montée possède un feedback éphémère, lié au client et consommable une
+fois, qu'elle ne délivre qu'après la fin de cette revalidation (`isFetching=false`) : succès et
+échec réseau ne peuvent donc pas partager le même message. Aucune boucle de retry, aucun deep link
+ne peut rejouer le feedback et aucune alerte n'est lancée pendant une transition. Le titre n'est
+annoncé comme à jour qu'après le succès réel de cette relecture.
+
 ### 2.8 Plan de tests
-- Domaine : matrice transitions (terminate depuis draft refusé, aucune transition depuis terminated) ; Σ lignes au centime ; clamp 29/02 ; triple fait résiliation ; b2c refusé création+activation ; immuabilité anniversaryDate/importCoveredUntil post-activation.
+- Domaine : matrice transitions (terminate depuis draft refusé, aucune transition depuis terminated) ; Σ lignes au centime ; clamp 29/02 ; triple fait résiliation ; b2c refusé création+activation ; immuabilité anniversaryDate/importCoveredUntil post-activation ; patch normalisé inchangé = même révision, zéro sauvegarde et zéro audit.
 - Dérivations : périodes arithmétiques années 1..5 (fenêtre −30 j VIVANTE chaque année) ; non-tacite : période unique puis `expired` + alerte échéance ; couverture par factures (émise couvre, brouillon ne couvre pas, **annulée ne couvre plus → réallumage**, chevauchements partiels/à cheval) ; `importCoveredUntil` éteint les périodes migrées ; visites dues (couverture par `contractId` seul, un `kind` fantaisiste ne casse rien ; bornage `activatedAt` ; `terminationEffectiveDate` au-delà de `period.end` couvert) ; rattrapage cron (palier le plus récent seulement) ; snapshot priorités existantes INCHANGÉES.
-- Application : garde d'émission — période absente → refus ; concurrence (2 brouillons, émissions séquentielles sous verrou → 2ᵉ refusée avec le numéro de la 1ʳᵉ) ; annulation → re-préparation possible ; TVA re-suggérée au brouillon (bascule franchise → refus actionnable testé) ; comportement `ComposeStandaloneInvoice` SANS `contractAttachment` inchangé (snapshot) ; dedupe NotificationJob ; AUCUN envoi client.
+- Application : garde d'émission — période absente → refus ; concurrence (2 brouillons, émissions séquentielles sous verrou → 2ᵉ refusée avec le numéro de la 1ʳᵉ) ; chacun des trois gestes vocaux activation/résiliation/renommage proposé à révision N puis fiche modifiée à N+1 → confirmation locale ET opaque HTTP refusée, ancienne proposition consommée, relecture réelle puis nouvelle proposition scellée, jamais d'écrasement ; rechargement écran réussi → fermeture + annonce, rechargement échoué → feuille gelée + retry + aucune annonce de succès, contrat supprimé ailleurs → fermeture terminale + fiche client/contrats déterministe + Toast possédé par la destination ; annulation → re-préparation possible ; TVA re-suggérée au brouillon (bascule franchise → refus actionnable testé) ; comportement `ComposeStandaloneInvoice` SANS `contractAttachment` inchangé (snapshot) ; dedupe NotificationJob ; AUCUN envoi client.
 - Migrations : writer N-1 `invoices` sous chaque état du trigger redéfini ; cert RLS ×3 ; trigger BEFORE DELETE draft-only.
 
 ### 2.9 Découpage PR (raffine PR-12/PR-13)
@@ -562,4 +582,3 @@ avant tout code du bloc visé) :
 7. **[mineure] Bloc D — Course de préparation / brouillon provider orphelin** — §4.3 affirme « deux préparations en course → la 2e échoue proprement : JAMAIS deux brouillons dans la boîte réelle », mais la séquence de PrepareEmailInMailbox (§4.5) est createDraft PROVIDER puis insert intent (dedupe DB). En course, les DEUX createDraft réussissent chez Gmail (deux brouillons réels), puis un seul insert passe : l'index unique partiel ne protège que la ligne DB, pas la boîte. Spécifier la compensation du perdant : suppression best-effort de son brouillon provider (échec loggé, jamais bloquant — même politique que l'orphelin de l'amélioration 13), et reformuler la garantie (« jamais deux INTENTS actifs ; brouillon provider surnuméraire nettoyé best-effort »).
 
 8. **[mineure] Bloc B — Performance de la dérivation de couverture (réponse à la question posée)** — La dérivation est correctement indexée : l'index partiel invoices_contract_period_idx (companyId, maintenanceContractId, servicePeriodStart) WHERE maintenanceContractId IS NOT NULL épouse la forme de la requête, la cardinalité par contrat est minuscule (≈1-2 factures/an, filtres status/chevauchement en mémoire acceptables), et le cache est explicitement différé — sain. Résidu N+1 : le port ne définit que listByMaintenanceContract(companyId, contractId) PAR CONTRAT, alors que les priorités Aujourd'hui et le cron 6 h doivent évaluer deriveAnnualBillingDue pour TOUS les contrats actifs → N requêtes par société (et par tenant au cron). Le préfixe (companyId) de l'index sert déjà une lecture batchée : spécifier un listContractInvoicesByCompany(companyId) (une requête, projections groupées par contrat) pour PR-13 — anodin en bêta Fly Services, mais autant le fixer au port dès la conception.
-

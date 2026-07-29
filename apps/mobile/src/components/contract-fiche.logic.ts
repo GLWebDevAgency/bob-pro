@@ -181,12 +181,16 @@ export function contractRenameAllowed(status: MaintenanceContractProps['status']
  */
 export function isContractRevisionConflict(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  const candidate = error as { kind?: unknown; entity?: unknown };
-  return candidate.kind === 'conflict' && candidate.entity === 'maintenance_contract';
+  const candidate = error as { kind?: unknown; entity?: unknown; reason?: unknown };
+  return (
+    candidate.kind === 'conflict'
+    && candidate.entity === 'maintenance_contract'
+    && candidate.reason === 'stale_revision'
+  );
 }
 
 /** Ce que la fermeture de la feuille « Renommer » doit ENTRAÎNER. */
-export type ContractRenameCloseEffect = 'stay' | 'close' | 'close_and_reload';
+export type ContractRenameCloseEffect = 'stay' | 'close' | 'reload_before_close';
 
 /**
  * SORTIR d'un conflit — par n'importe quelle porte, jamais sur une vue périmée. Un conflit de
@@ -204,7 +208,7 @@ export function contractRenameCloseEffect(input: {
   stale: boolean;
 }): ContractRenameCloseEffect {
   if (input.pending) return 'stay';
-  return input.stale ? 'close_and_reload' : 'close';
+  return input.stale ? 'reload_before_close' : 'close';
 }
 
 /** Clefs i18n des phrases que la feuille affiche sous le champ (existence vérifiée à la

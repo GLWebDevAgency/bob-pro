@@ -194,6 +194,16 @@ describe('MaintenanceContract — machine à états (§2.4)', () => {
 });
 
 describe('MaintenanceContract — immuabilité post-activation (§2.1/§2.6)', () => {
+  it('un patch normalisé inchangé est un no-op : la révision ne tourne jamais pour rien', () => {
+    const contract = draft();
+    const before = contract.toProps();
+
+    expect(contract.update({ label: `  ${before.label}  ` }).ok).toBe(true);
+
+    expect(contract.toProps()).toEqual(before);
+    expect(contract.revision).toBe(before.revision);
+  });
+
   it('fige anniversaryDate, importCoveredUntil et le site après activation', () => {
     const contract = draft({ importCoveredUntil: '2026-10-12' });
     expect(contract.update({ anniversaryDate: '2025-11-01' }).ok).toBe(true); // draft : libre

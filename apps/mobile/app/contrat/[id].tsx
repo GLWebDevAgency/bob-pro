@@ -14,9 +14,20 @@
  *    L'APPLICATION se corrige d'un tap sur la fiche »). Sans lui, un nom mal compris à la dictée
  *    serait définitif — et toute la doctrine du train Contrats reposerait sur une promesse vide.
  */
-import { useMemo, useState } from 'react';
-import { AccessibilityInfo, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  Alert,
+  InteractionManager,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { t } from '@bob/i18n';
 import {
   BobSurface,
@@ -31,6 +42,7 @@ import {
   useTheme,
 } from '@bob/ui';
 import { MAX_CONTRACT_LABEL_LENGTH, formatEURWhole, type Totals } from '@bob/core';
+import type { MaintenanceContractClientView } from '@bob/api-client';
 import {
   appErrorMessage,
   useActivateMaintenanceContract,
@@ -55,7 +67,12 @@ import {
   inclusivePeriodOf,
   isContractRevisionConflict,
 } from '../../src/components/contract-fiche.logic';
+import {
+  ContractRenameReloadCoordinator,
+  isMaintenanceContractNotFound,
+} from '../../src/components/contract-rename-reload';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
+import { issueContractDeletedNotice } from '../../src/lib/navigation-notice';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -70,10 +87,21 @@ interface VatDivergenceNotice {
   contractTotals: Totals;
 }
 
+interface RenameReloadTarget {
+  readonly mode: 'conflict' | 'committed';
+  readonly minimumRevision: number;
+  readonly expectedLabel: string | null;
+}
+
+type RenamePostCloseEffect =
+  | { readonly kind: 'alert'; readonly message: string }
+  | { readonly kind: 'contract_missing' };
+
 export default function FicheContrat() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { personality, colors, controls, semantic } = useTheme();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const scrollInsets = useBobAwareScrollInsets();
   const confirm = useConfirm();
 
@@ -96,9 +124,19 @@ export default function FicheContrat() {
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
   const [renameError, setRenameError] = useState<string | null>(null);
-  /** Conflit de révision : la feuille se FIGE et propose de recharger — jamais de reprise
-   *  automatique, qui écraserait en silence ce que l'autre appareil vient d'écrire. */
-  const [renameStale, setRenameStale] = useState(false);
+  /** Dès que l'écriture est incertaine ou que la vue est périmée, la feuille se FIGE jusqu'à
+   *  une relecture serveur prouvée. Même règle après succès : on n'annonce jamais « terminé »
+   *  sur la seule réponse de mutation. */
+  const [renameReloadTarget, setRenameReloadTarget] = useState<RenameReloadTarget | null>(null);
+  const [renameReloadPending, setRenameReloadPending] = useState(false);
+  const [renameReloadCoordinator] = useState(() => new ContractRenameReloadCoordinator());
+  /** Fence impérative : couvre le tour JS entre le départ de mutateAsync et le prochain commit
+   * React. Les states seuls laisseraient une ancienne closure fermer la feuille dans cet interstice. */
+  const renameMutationInFlight = useRef(false);
+  const renameTerminalCloseInFlight = useRef(false);
+  const [renamePostCloseEffect, setRenamePostCloseEffect] =
+    useState<RenamePostCloseEffect | null>(null);
+  const renameStale = renameReloadTarget !== null;
 
   // Nom de RÉFÉRENCE du renommage : celui de la vue chargée. Le brouillon en part à l'ouverture
   // et n'est plus jamais réécrit sous les doigts du pro — si la fiche bouge ailleurs entre-temps,
@@ -135,7 +173,11 @@ export default function FicheContrat() {
       </View>
     );
   }
-  if (query.isError || view === null || contract === null) {
+  if (
+    (query.isError && renameReloadTarget === null)
+    || view === null
+    || contract === null
+  ) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <ScreenHeader
@@ -254,56 +296,178 @@ export default function FicheContrat() {
   const openRename = (): void => {
     setRenameDraft(currentLabel);
     setRenameError(null);
-    setRenameStale(false);
+    setRenameReloadTarget(null);
+    setRenamePostCloseEffect(null);
     setRenameOpen(true);
+  };
+
+  /** Un not_found exact est une preuve terminale. On retire immédiatement cet ID de la liste
+   *  cachée (sinon le staleTime global peut rendre une ligne fantôme encore tappable), puis on
+   *  invalide la collection. La fiche détail est purgée après la transition de navigation. */
+  const beginMissingContractExit = (): void => {
+    if (renameTerminalCloseInFlight.current) return;
+    queryClient.setQueryData<MaintenanceContractClientView[]>(
+      ['contracts'],
+      (cached) => cached?.filter((item) => item.contract.id !== contract.id),
+    );
+    void queryClient.invalidateQueries({ queryKey: ['contracts'], exact: true });
+    renameTerminalCloseInFlight.current = true;
+    setRenamePostCloseEffect({ kind: 'contract_missing' });
+    setRenameError(null);
+    setRenameOpen(false);
+  };
+
+  /** Une mutation réussie n'est pas encore une vue fiable. La feuille ne se ferme qu'après
+   *  avoir relu le même contrat à une révision au moins égale à celle attendue. */
+  const reloadRename = async (target: RenameReloadTarget): Promise<void> => {
+    if (renameReloadCoordinator.isRunning) return;
+    setRenameReloadPending(true);
+    setRenameError(null);
+    const outcome = await renameReloadCoordinator.reload({
+      contractId: contract.id,
+      minimumRevision: target.minimumRevision,
+      refetch: () => query.refetch({ cancelRefetch: true }),
+    });
+    setRenameReloadPending(false);
+    if (outcome.kind === 'missing') {
+      // État terminal : réessayer ne fera jamais réapparaître un brouillon supprimé ailleurs.
+      // On attend la fin visuelle de la Sheet avant de remplacer la route. La destination
+      // possède le feedback : aucun Alert lancé par l'écran en cours de démontage.
+      beginMissingContractExit();
+      return;
+    }
+    if (outcome.kind === 'unavailable') {
+      const message =
+        target.mode === 'committed'
+          ? t('contrat.renameCommittedReloadError', { personality })
+          : t('contrat.renameReloadError', { personality });
+      setRenameReloadTarget(target);
+      setRenameError(message);
+      AccessibilityInfo.announceForAccessibility(message);
+      return;
+    }
+
+    setRenameOpen(false);
+    setRenameReloadTarget(null);
+    setRenameError(null);
+    if (target.mode === 'committed' && outcome.contract.label !== target.expectedLabel) {
+      // Jamais deux modales : le message attend `Sheet.onDidClose`, après les 220 ms de sortie.
+      setRenamePostCloseEffect({
+        kind: 'alert',
+        message: t('contrat.renameSuperseded', { personality }),
+      });
+      return;
+    }
+    AccessibilityInfo.announceForAccessibility(
+      t(target.mode === 'committed' ? 'contrat.renameDone' : 'contrat.renameReloaded', {
+        personality,
+      }),
+    );
   };
 
   /** LA seule sortie de la feuille — bouton « Recharger la fiche », scrim, geste de fermeture :
    *  après un conflit, toutes rechargent. Une porte qui laisserait la vue périmée rendrait le
    *  chemin honnête contournable, donc décoratif. */
   const closeRename = (): void => {
+    // Fence synchrone : protège aussi l'interstice avant que `isPending` / state React soit
+    // visible par une nouvelle closure.
+    if (
+      renameMutationInFlight.current
+      || renameReloadCoordinator.isRunning
+      || renameTerminalCloseInFlight.current
+    ) return;
     const effect = contractRenameCloseEffect({
-      pending: rename.isPending,
+      pending: rename.isPending || renameReloadPending,
       stale: renameStale,
     });
     if (effect === 'stay') return;
-    setRenameOpen(false);
-    setRenameStale(false);
-    setRenameError(null);
-    if (effect === 'close_and_reload') {
-      void query.refetch();
-      AccessibilityInfo.announceForAccessibility(t('contrat.renameReloaded', { personality }));
+    if (effect === 'reload_before_close' && renameReloadTarget !== null) {
+      void reloadRename(renameReloadTarget);
+      return;
     }
+    setRenameOpen(false);
+    setRenameReloadTarget(null);
+    setRenameError(null);
   };
 
   const submitRename = async (): Promise<void> => {
-    if (renameSubmission.label === null) {
+    if (
+      renameSubmission.label === null
+      || renameMutationInFlight.current
+      || renameReloadCoordinator.isRunning
+    ) {
       // Rien à ajouter : ce qui bloque est DÉJÀ écrit sous le champ (`renameNotice`), et le
       // bouton est désactivé. Le redire en rouge ferait d'une attente une faute.
       return;
     }
+    renameMutationInFlight.current = true;
     setRenameError(null);
     try {
-      await rename.mutateAsync({
+      const renamed = await rename.mutateAsync({
         contractId: contract.id,
         // La révision de la vue DÉJÀ CHARGÉE — jamais une relecture juste avant l'appel, qui
         // ferait passer la garde CAS du serveur pour une formalité.
         expectedRevision: contract.revision,
         label: renameSubmission.label,
       });
-      setRenameOpen(false);
-      AccessibilityInfo.announceForAccessibility(t('contrat.renameDone', { personality }));
+      const target: RenameReloadTarget = {
+        mode: 'committed',
+        minimumRevision: renamed.revision,
+        expectedLabel: renamed.label,
+      };
+      setRenameReloadTarget(target);
+      await reloadRename(target);
     } catch (error) {
+      if (isMaintenanceContractNotFound(error, contract.id)) {
+        // Suppression inter-appareil AVANT le tap : même terminal que le not_found du refetch.
+        // Jamais une erreur générique suivie d'un bouton qui réessaierait pour toujours.
+        beginMissingContractExit();
+        return;
+      }
       if (isContractRevisionConflict(error)) {
         // La fiche a changé ailleurs entre son chargement et ce tap : Bob le DIT et s'arrête.
         // Pas de réessai avec la révision fraîche — ce serait écraser en silence le nom que
         // l'autre appareil vient d'écrire, exactement ce que la révision existe pour empêcher.
-        setRenameStale(true);
+        setRenameReloadTarget({
+          mode: 'conflict',
+          minimumRevision: contract.revision + 1,
+          expectedLabel: null,
+        });
         setRenameError(t('contrat.renameConflict', { personality }));
         return;
       }
       setRenameError(appErrorMessage(error));
+    } finally {
+      renameMutationInFlight.current = false;
     }
+  };
+
+  const handleRenameDidClose = (): void => {
+    if (renamePostCloseEffect === null) return;
+    const effect = renamePostCloseEffect;
+    setRenamePostCloseEffect(null);
+    if (effect.kind === 'contract_missing') {
+      renameTerminalCloseInFlight.current = false;
+      const noticeToken = issueContractDeletedNotice({
+        customerId: contract.customerId,
+        contractId: contract.id,
+      });
+      router.replace({
+        pathname: '/client/[id]',
+        params: {
+          id: contract.customerId,
+          tab: 'contracts',
+          noticeToken,
+        },
+      });
+      // Le détail prouvé absent ne doit pas survivre dans le cache. Attendre la fin des
+      // interactions évite de faire flasher le skeleton de la route qui est en train de sortir.
+      void InteractionManager.runAfterInteractions(() => {
+        queryClient.removeQueries({ queryKey: ['contract', contract.id], exact: true });
+      });
+      return;
+    }
+    Alert.alert(t('contrat.renameTitle', { personality }), effect.message);
   };
 
   const submitTerminate = async (): Promise<void> => {
@@ -655,6 +819,11 @@ export default function FicheContrat() {
         visible={renameOpen}
         onClose={closeRename}
         accessibilityLabel={t('contrat.renameTitle', { personality })}
+        closeAccessibilityHint={
+          renameStale ? t('contrat.renameReloadCloseHint', { personality }) : undefined
+        }
+        closeBusy={rename.isPending || renameReloadPending}
+        onDidClose={handleRenameDidClose}
       >
         <Text
           accessibilityRole="header"
@@ -672,7 +841,7 @@ export default function FicheContrat() {
             // Borne du DOMAINE, jamais une copie : le champ ne peut pas laisser taper un nom
             // que `MaintenanceContract.record` refuserait ensuite.
             maxLength={MAX_CONTRACT_LABEL_LENGTH}
-            editable={!rename.isPending && !renameStale}
+            editable={!rename.isPending && !renameReloadPending && !renameStale}
             placeholder={t('contrat.renameField', { personality })}
             placeholderTextColor={colors.slate400}
             // Pas d'accessibilityHint : la MÊME phrase est AFFICHÉE juste sous le champ (plus
@@ -745,6 +914,7 @@ export default function FicheContrat() {
             <Button
               title={t('contrat.renameReload', { personality })}
               variant="secondary"
+              loading={renameReloadPending}
               onPress={closeRename}
             />
           ) : (

@@ -1814,6 +1814,26 @@ const legacyFr = {
     pro: 'Recharger la fiche',
     direct: 'Recharger',
   },
+  'contrat.renameReloadCloseHint': {
+    pote: 'Recharge la version à jour avant de fermer cette fenêtre.',
+    pro: 'Recharge la version serveur à jour avant de fermer cette fenêtre.',
+    direct: 'Recharge avant de fermer.',
+  },
+  'contrat.renameReloadError': {
+    pote: 'Je n’arrive pas à recharger la fiche. La fenêtre reste ouverte — réessaie.',
+    pro: 'Impossible de recharger la version à jour. La fenêtre reste ouverte ; réessayez.',
+    direct: 'Rechargement impossible. La fenêtre reste ouverte.',
+  },
+  'contrat.renameCommittedReloadError': {
+    pote: 'Le nouveau nom est bien enregistré, mais je n’arrive pas à recharger la fiche. Réessaie sans renommer à nouveau.',
+    pro: 'Le nouvel intitulé est enregistré, mais la fiche n’a pas pu être rechargée. Réessayez sans renommer à nouveau.',
+    direct: 'Nom enregistré. Fiche non rechargée — réessaie.',
+  },
+  'contrat.renameSuperseded': {
+    pote: 'Le nom a encore changé sur un autre appareil. Je t’affiche la version la plus récente.',
+    pro: 'L’intitulé a de nouveau été modifié sur un autre appareil. La version la plus récente est affichée.',
+    direct: 'Nom modifié ailleurs. Version la plus récente affichée.',
+  },
   // Le rechargement suit TOUTE sortie d'un conflit (bouton comme scrim) : il s'annonce, sinon
   // seul un voyant saurait que la fiche affichée derrière vient de changer.
   'contrat.renameReloaded': {
@@ -2024,6 +2044,11 @@ const legacyFr = {
     pote: 'Aucun contrat pour ce client.',
     pro: 'Aucun contrat de maintenance pour ce client.',
     direct: 'Aucun contrat.',
+  },
+  'contrat.clientDataError': {
+    pote: 'Je n’arrive pas à charger les contrats. Réessaie — je ne vais rien inventer.',
+    pro: 'Les contrats n’ont pas pu être chargés. Réessayez.',
+    direct: 'Contrats indisponibles. Réessaie.',
   },
   'contrat.newCta': {
     pote: '+ Nouveau contrat',
@@ -2518,6 +2543,16 @@ const legacyFr = {
     pote: '{name} est prêt — tu peux y rattacher devis et factures.',
     pro: '{name} a été créé.',
     direct: '{name} créé.',
+  },
+  'fiche.contractDeletedToast': {
+    pote: 'Ce contrat a été supprimé sur un autre appareil. Voici les contrats qui restent — rien n’a été écrasé.',
+    pro: 'Ce contrat a été supprimé depuis un autre appareil. Les contrats restants sont affichés ; aucune modification n’a été écrasée.',
+    direct: 'Contrat supprimé ailleurs. Contrats restants affichés.',
+  },
+  'fiche.contractDeletedListErrorToast': {
+    pote: 'Ce contrat a été supprimé ailleurs. Je n’arrive pas à charger les autres — réessaie juste ici.',
+    pro: 'Ce contrat a été supprimé ailleurs. La liste n’a pas pu être chargée ; réessayez dans cette section.',
+    direct: 'Contrat supprimé ailleurs. Liste indisponible — réessaie ici.',
   },
   'fiche.docsEmpty': {
     pote: 'Aucun document classé ici pour l’instant.',

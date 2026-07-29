@@ -85,6 +85,40 @@ function isLegacyExpensePaymentConflict(error: AppError): boolean {
   return error.kind === 'conflict' && error.entity === 'expense_payment_legacy';
 }
 
+/** CAS d'un contrat entre proposition et confirmation : l'ancienne décision ne doit jamais
+ * être rejouée contre une révision relue plus tard. */
+function isMaintenanceContractRevisionConflict(error: AppError): boolean {
+  return (
+    error.kind === 'conflict'
+    && error.entity === 'maintenance_contract'
+    && error.reason === 'stale_revision'
+  );
+}
+
+/** Commande de reprise explicite après un CAS périmé. Elle repasse par ask(), relit la projection
+ * réelle puis crée une nouvelle proposition opaque : l'ancienne confirmation n'est jamais
+ * recyclée avec une révision fraîche. */
+export function contractLifecycleRetryCommand(
+  tool: string,
+  args: Record<string, unknown>,
+): string | null {
+  const contractId = typeof args.contractId === 'string' ? args.contractId : null;
+  if (contractId === null) return null;
+  if (tool === 'activer_contrat') return `Active le contrat ${contractId}`;
+  if (tool === 'resilier_contrat') {
+    const note = typeof args.note === 'string' ? args.note : null;
+    if (note === null) return null;
+    const effectiveDate =
+      typeof args.effectiveDate === 'string' ? ` au ${args.effectiveDate}` : '';
+    return `Résilie le contrat ${contractId}${effectiveDate} — motif : ${note}`;
+  }
+  if (tool === 'renommer_contrat') {
+    const label = typeof args.label === 'string' ? args.label : null;
+    return label === null ? null : `Renomme le contrat ${contractId} en « ${label} »`;
+  }
+  return null;
+}
+
 /**
  * Parité vocale de la régularisation : au lieu de l'erreur sèche, Bob explique l'état legacy et
  * oriente vers le geste qui existe (écran Dépenses → « Payée — à justifier » → régularisation).
@@ -4813,7 +4847,7 @@ export class BobAgent {
 
       const who = target.customerName ? ` (${target.customerName})` : '';
       if (intent === 'activer_contrat') {
-        const args = { contractId: target.id };
+        const args = { contractId: target.id, expectedRevision: target.revision };
         const parsed = tool.parse(args);
         if (!parsed.ok) return err(parsed.error);
         const label = `Activer le contrat « ${target.label} »${who}`;
@@ -4868,6 +4902,7 @@ export class BobAgent {
       }
       const args = {
         contractId: target.id,
+        expectedRevision: target.revision,
         note: spokenNote,
         ...(effectiveDate !== null ? { effectiveDate } : {}),
       };
@@ -5085,7 +5120,14 @@ export class BobAgent {
         });
       }
 
-      const args = { contractId: target.id, label: spoken.newName };
+      // La proposition scelle la projection exacte qui a été lue. Sans expectedRevision ici,
+      // l'adapter pourrait relire N+1 à la confirmation et écraser silencieusement un changement
+      // concurrent effectué après cette conversation.
+      const args = {
+        contractId: target.id,
+        expectedRevision: target.revision,
+        label: spoken.newName,
+      };
       const parsed = tool.parse(args);
       if (!parsed.ok) {
         const guard = domainGuardCard(parsed.error);
@@ -9228,6 +9270,91 @@ export class BobAgent {
     if (!parsed.ok) return err(parsed.error);
     const run = await tool.run(parsed.value);
     if (!run.ok) {
+      // CONTRAT — la fiche a changé après la proposition. L'ancienne confirmation est consommée
+      // sans effet. Bob relit la projection réelle et propose une commande de reprise explicite :
+      // elle repassera par ask() et exigera une NOUVELLE confirmation scellée.
+      if (
+        CONTRACT_LIFECYCLE_TOOLS.has(pending.tool)
+        && isMaintenanceContractRevisionConflict(run.error)
+      ) {
+        const contractId =
+          typeof pending.args.contractId === 'string' ? pending.args.contractId : null;
+        const retryCommand = contractLifecycleRetryCommand(pending.tool, pending.args);
+        const listContracts =
+          this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+        if (contractId === null || retryCommand === null || !listContracts) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Refuser la confirmation périmée'],
+            card: {
+              title: 'Le contrat a changé',
+              body:
+                'Il a été modifié depuis ta demande. Rien n’a été écrasé. '
+                + 'Relance l’action depuis la fiche à jour.',
+            },
+          });
+        }
+        const refreshed = await listContracts();
+        if (!refreshed.ok) return err(refreshed.error);
+        const current = refreshed.value.find((contract) => contract.id === contractId);
+        const retryStillAllowed =
+          current !== undefined
+          && (
+            (pending.tool === 'activer_contrat' && current.status === 'draft')
+            || (pending.tool === 'resilier_contrat' && current.status === 'active')
+            || (pending.tool === 'renommer_contrat' && current.status !== 'terminated')
+          );
+        if (!retryStillAllowed) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Refuser la confirmation périmée', 'Relire le contrat réel'],
+            card: {
+              title: 'Le contrat a changé',
+              body:
+                current === undefined
+                  ? 'Le contrat n’est plus disponible. Rien n’a été écrasé.'
+                  : `Son état actuel est « ${current.status} ». L’ancienne action n’a pas été rejouée et rien n’a été écrasé.`,
+            },
+          });
+        }
+        const desiredLabel =
+          pending.tool === 'renommer_contrat' && typeof pending.args.label === 'string'
+            ? pending.args.label
+            : null;
+        if (desiredLabel !== null && current.label.trim() === desiredLabel.trim()) {
+          return ok({
+            kind: 'answer',
+            intent: 'renommer_contrat',
+            model,
+            plan: ['Refuser la confirmation périmée', 'Constater le nom réel'],
+            card: {
+              title: `« ${current.label} »`,
+              body: 'Le contrat porte déjà ce nom. Rien n’a été modifié.',
+            },
+          });
+        }
+        return ok({
+          kind: 'answer',
+          intent: intentForTool(pending.tool),
+          model,
+          plan: [
+            'Refuser la confirmation périmée',
+            'Relire le contrat réel',
+            'Proposer de repartir de la version fraîche',
+          ],
+          card: {
+            title: 'Le contrat a changé',
+            body:
+              `Il s’appelle maintenant « ${current.label} ». Rien n’a été écrasé. `
+              + 'Relis la version à jour avant de confirmer à nouveau.',
+          },
+          choices: [{ label: 'Relire et reproposer', value: retryCommand }],
+        });
+      }
       // Une confirmation qui frappe une ligne historique sans preuve (état changé entre la
       // proposition et l'exécution) reçoit la même orientation que le flux direct.
       if (pending.tool === 'enregistrer_reglement_depense' && isLegacyExpensePaymentConflict(run.error)) {
