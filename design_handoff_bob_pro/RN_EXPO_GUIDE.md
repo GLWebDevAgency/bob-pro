@@ -8,9 +8,9 @@ Comment reproduire **exactement** Bob Pro en RN/Expo. À lire avant d'écrire un
 
 ```bash
 npx create-expo-app bob-pro -t tabs   # expo-router déjà câblé
-# UI / rendu fidèle
+# UI / rendu fidèle — PAS d'expo-blur : le défaut Bob est sans flou (voir note ci-dessous)
 npx expo install react-native-reanimated react-native-svg expo-linear-gradient \
-  expo-blur react-native-safe-area-context @gorhom/bottom-sheet expo-haptics \
+  react-native-safe-area-context @gorhom/bottom-sheet expo-haptics \
   react-native-gesture-handler @shopify/react-native-skia
 # fonts
 npx expo install expo-font @expo-google-fonts/schibsted-grotesk @expo-google-fonts/hanken-grotesk
@@ -22,10 +22,16 @@ npm i zustand
 - **Reanimated** pour toutes les animations (jamais `Animated` legacy).
 - **@gorhom/bottom-sheet** pour les feuilles (`create`, `profile`, `catalogue`, `new-client`, `doc`).
 - **Skia** optionnel (courbe de trésorerie, anneau de score) — sinon `react-native-svg` suffit.
-- **(amendé 2026-07-29)** **`expo-blur` n'est pas une dépendance du produit** et n'est déclaré nulle
-  part dans le dépôt. Le défaut Bob est **sans flou**. Il ne peut entrer que par le port injecté
-  `renderBlurLayer` de `ProgressiveBlurBob`, depuis `apps/mobile`, et jamais par `@bob/ui` — voir
-  §4 ci-dessous et [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+- **(amendé 2026-07-29 ; commande corrigée A15)** **`expo-blur` n'est pas une dépendance du
+  produit** et n'est déclaré nulle part dans le dépôt. Le défaut Bob est **sans flou**. Il ne peut
+  entrer que par le port injecté `renderBlurLayer` de `ProgressiveBlurBob`, depuis `apps/mobile`,
+  et jamais par `@bob/ui` — voir §4 ci-dessous et
+  [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+  *Rédaction A10 (supersédée) : la note était juste, mais la commande `npx expo install` trois
+  lignes plus haut installait toujours `expo-blur`. Une commande exécutable qui contredit sa propre
+  note est pire qu'une phrase fausse — quelqu'un la lance, et la dépendance entre par la porte que
+  la doctrine ferme. `expo-blur` est retiré de la commande ; s'il devient un jour nécessaire, c'est
+  une décision de `D08` et une installation **dans `apps/mobile` seulement**, derrière le port.*
 
 ---
 
