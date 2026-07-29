@@ -257,6 +257,9 @@ déjà consommés par les écrans Équipements. Aucune spécification de ce doss
 token existant ni proposer une matière concurrente ; elle peut seulement s'y ajouter. **En cas de
 divergence entre un document et le code du kit, le code fait foi.**
 
+Chemins exacts et périmètre du kit :
+[17 § Autorités normatives](17-references.md#autorités-normatives).
+
 ## Bob Live
 
 Décision proposée par `UX-ADR-003` :

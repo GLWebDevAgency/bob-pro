@@ -3,7 +3,12 @@
 Statut : **Proposed**
 Couverture : **77 exigences uniques sur 77**
 Propriétaires pressentis : Product Design, Mobile, QA, Accessibilité, Produit
-Dernière mise à jour : 2026-07-23
+Dernière mise à jour : 2026-07-29
+
+> **Amendement A6 — 2026-07-29.** Les lignes `G11` et `G20` voient leur énoncé précisé et leur
+> preuve binaire renforcée, ainsi que deux lignes de la table des décisions exigées. **La couverture
+> reste 77/77** : aucun identifiant n'est ajouté, supprimé, recyclé ni déplacé d'epic. Voir le
+> [journal des amendements](README.md#journal-des-amendements).
 
 ## 1. Contrat de traçabilité
 
@@ -48,7 +53,7 @@ donnée métier sensible.
 | G17 | Réduction de densité par progressive disclosure. | E04 · WP-0401 | [Écrans](./06-screen-by-screen-spec.md) | Revue avant/après `conclusion→raison→action`, toutes preuves métier, légales et techniques restant accessibles. |
 | G18 | Consolidation des primitives UI en une source cohérente. | E02 · WP-0209 | [Architecture](./09-technical-architecture.md) | Inventaire de migration, contrôle statique des imports dépréciés, aucun nouveau doublon Button/Row/Field/Sheet/Toast. |
 | G19 | Adaptation iPad, grandes fenêtres et split view. | E01 · WP-0106, WP-0406 | [Accessibilité](./08-accessibility-adaptive-design.md) | iPad portrait/paysage/split-screen : largeur plafonnée, grille/master-detail, aucune colonne téléphone simplement étirée. |
-| G20 | Matières blur/verre réservées à la couche fonctionnelle. | E03 · WP-0307 | [Navigation](./04-navigation-scroll-surfaces.md) | Fonds extrêmes, Reduce Transparency, contraste, trace GPU et fallback opaque fonctionnel. |
+| G20 | ~~Matières blur/verre réservées à la couche fonctionnelle.~~ **(amendé A1/A2 · 2026-07-29)** Matière unique et opaque (« matière Bob ») sur tous les plans ; le flou est réservé à la retombée de bord non interactive, et son défaut est sans flou. | E03 · WP-0307 | [Navigation § Matières](./04-navigation-scroll-surfaces.md#matières) et [§ Retombée de bord](./04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob) | **(A1/A2)** Contrôle statique : zéro import `expo-glass-effect`, zéro `rgba` translucide dans une surface porteuse d'information. Captures Reduce Transparency **identiques** avant/après. Si le mode flouté est activé : fonds extrêmes, contraste, trace GPU sous scroll continu (médiane et pire run) et repli opaque unique démontré. |
 | G21 | Runtime motion et budgets de performance mesurés en release. | E02 · WP-0201, WP-0210 | [Performance](./10-performance-observability.md) | Traces avant/après sur appareils cibles 60/120 Hz selon capacité, sans régression frame, mémoire, démarrage, audio ou batterie. |
 | G22 | Reduced Motion sans perte d'information. | E01 · WP-0104, WP-0210 | [Accessibilité](./08-accessibility-adaptive-design.md) | Préférence changée sur appareil : aucune boucle/zoom/parallaxe/blur animé ; mêmes statuts, contenus et actions. |
 
@@ -156,7 +161,7 @@ date cible et WP bloqués. La table ci-dessous donne seulement la lecture par ex
 | Observabilité | G21 | Accepter UX-ADR-005 et l'artefact de calibration D12. |
 | Haptique | G06 | Accepter UX-ADR-006 et sa certification acoustique. |
 | Tab bar | G11 | **(amendé A3 · 2026-07-29)** Le comportement est déjà arbitré par la directive du fondateur : les cinq comportements normatifs sont exigés, avec notre matière. Reste à décider **où** les porter — le composant Bob est le seul candidat conforme, `UITabBar` iOS 26 s'effondrant sur une seule icône au repli. |
-| Verre/blur | G20 | Rester progressif ; jamais une dépendance fonctionnelle ; fallback opaque obligatoire. |
+| Matière | G20 | **(amendé A1/A2 · 2026-07-29)** La matière est décidée : surface teintée opaque (`surfaceTint`/`BobSurface`), verre système hors doctrine. Il ne reste qu'une décision bornée, D08 : activer ou non le **mode flouté** de la retombée de bord sur fond photographique, sachant que le mode teinté est le défaut livrable. |
 | Taux de rafraîchissement | G21 | Mesurer la cible réellement supportée ; 60/120 Hz ne sont pas deux promesses universelles. |
 | Amplitude audio | V03, V06 | Si entrée/sortie native manque, documenter un fallback borné qui ne prétend pas être audio-réactif. |
 | Outils voix | V05 | N'afficher une phase outil que si un événement runtime fiable existe. |

@@ -26,6 +26,9 @@ spécification d'expérience. C'est déjà la règle de la
 [gouvernance des tokens](13-delivery-governance.md#gouvernance-des-tokens) ; elle est rappelée ici
 parce que ce document l'avait enfreinte trois fois.
 
+Inventaire des tokens et composants déjà livrés, avec leurs chemins :
+[17 § Autorités normatives](17-references.md#autorités-normatives).
+
 ## Objectif
 
 Fournir une grammaire unique afin qu'un builder n'invente ni durée, ni easing, ni haptique dans un

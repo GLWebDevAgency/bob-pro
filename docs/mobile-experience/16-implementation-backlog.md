@@ -3,7 +3,14 @@
 Statut : **Proposed — non autorisé à l'implémentation tant que la gate de publication n'est pas levée**
 Source : audit et spécifications `docs/mobile-experience/`
 Propriétaires pressentis : Produit, Product Design, Mobile, QA, Accessibilité, Plateforme
-Dernière mise à jour : 2026-07-23
+Dernière mise à jour : 2026-07-29
+
+> **Amendement A6 — 2026-07-29.** Les livrables et preuves de sortie de `WP-0303` (tab bar) et
+> `WP-0307` (matière) sont précisés par A1 à A3. **Aucun `WP` n'est ajouté, supprimé, renuméroté ni
+> déplacé d'epic ; aucune gate ni dépendance ne change.** `GATE-NAV-DATA` conserve sa formulation :
+> `WP-0307` reste optionnel — ce qui devient optionnel n'est plus « le verre » mais le **mode
+> flouté** de la retombée de bord, le mode teinté étant livrable sans décision. Voir le
+> [journal des amendements](README.md#journal-des-amendements).
 
 ## 1. Mode d'emploi
 
@@ -142,7 +149,7 @@ E00 est un epic transverse, pas une phase calendaire : `WP-0001` à `WP-0008` s'
 | WP-0304 | P0 | L | G01, G12 | Créer grand/compact header, sticky subheader et synchronisation barre système au scroll. | WP-0102, WP-0202. | Vidéos scroll lent/rapide/interrompu, pas de saut, flash ou contenu recouvert. |
 | WP-0305 | P1 | L | G07 | Implémenter la Sheet retenue : detents, drag 1:1, velocity, clavier, focus trap, dismissal, contenu scrollable et alternative accessible. | UX-ADR-002 Accepted, dépendance directe acceptée si tierce. | E2E geste/clavier/a11y/iOS/Android, stress test nested scroll. |
 | WP-0306 | P1 | M | G16 | Contrat Search : focus, debounce/cancel, requêtes obsolètes, récents, groupes, clavier, résultats et restauration. | WP-0301, API existante. | E2E complet et traces de rendu/réseau sans spinner pleine page. |
-| WP-0307 | P2 | M | G20 | Introduire blur/verre uniquement si D08 l'accepte, sur chrome utile, avec contraste, Reduce Transparency, fallback opaque et budget GPU ; sinon certifier l'absence de dépendance fonctionnelle au matériau. | UX-ADR-004 Accepted, D08 résolue, WP-0101, WP-0002. | Si Accepted : captures, trace GPU, lisibilité et plateforme ancienne. Si Rejected : audit du fallback opaque et disposition signée de WP/G20. |
+| WP-0307 | P2 | M | G20 | **(amendé A1/A2 · 2026-07-29)** Livrer la **retombée de bord** `ProgressiveBlurBob` : mode teinté sans flou par défaut (valeurs `patterns.bottomTabBar`), port injecté `renderBlurLayer`, repli opaque unique. N'activer le **mode flouté** que si D08 l'accepte, sur fond photographique uniquement, avec contraste et budget GPU tenus. **Aucune introduction de verre système** : `expo-glass-effect` ne sera pas adopté. | UX-ADR-004 Accepted (algorithme A1), D08 résolue, WP-0101, WP-0002. | **(A1/A2)** Contrôle statique zéro import `expo-glass-effect` ; captures Reduce Transparency identiques avant/après. Si le mode flouté est Accepted : trace GPU **sous scroll continu** (médiane et pire run), lisibilité sur fonds extrêmes, plateforme ancienne, repli opaque unique démontré. Si Rejected : audit du mode teinté et disposition signée de WP/G20. |
 | WP-0308 | P0 | M | G10, G11, G16 | Centraliser restauration route/scroll/focus/filtres/onglet, deep links chauds/froids et comportements back. | WP-0301 à WP-0306. | E2E interruption, background, lien externe, session expirée et retour multi-niveaux. |
 
 ## 6. E04 — Densité, listes et visualisation de données

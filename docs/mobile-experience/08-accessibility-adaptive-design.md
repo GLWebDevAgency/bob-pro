@@ -7,7 +7,8 @@
 > correspondante du tableau des préférences. Source : directive du fondateur du 2026-07-29 ;
 > autorité `packages/tokens/src/index.ts` (`surfaceTint`) + `packages/ui/src/components/`
 > `bob-surface.tsx`. Aucune exigence d'accessibilité n'est affaiblie : la garantie passe d'un
-> fallback à exercer à une propriété structurelle de la matière.
+> fallback à exercer à une propriété structurelle de la matière. Chemins exacts du kit :
+> [17 § Autorités normatives](17-references.md#autorités-normatives).
 
 ## Principe
 

@@ -3,7 +3,14 @@
 Statut : **Proposed — initialisé, aucune preuve d'implémentation**
 Couverture : **77 lignes sur 77**
 Owner de registre attendu : QA owner · **personne à affecter avant Accepted**
-Dernière mise à jour : 2026-07-23
+Dernière mise à jour : 2026-07-29
+
+> **Amendement A6 — 2026-07-29.** Les amendements A1 à A5 modifient **ce qu'il faut prouver** pour
+> `G11` et `G20` (voir la [matrice de traçabilité](15-traceability-matrix.md)), pas **qui** le
+> prouve ni **comment** on l'enregistre. Aucune ligne n'est ajoutée, supprimée ou renumérotée : la
+> couverture reste **77/77**, tous les verdicts restent `NOT RUN` et tous les owners restent **à
+> affecter**. Le format de manifest, les données interdites et la politique de partage sont
+> inchangés.
 
 ## 1. Rôle
 
