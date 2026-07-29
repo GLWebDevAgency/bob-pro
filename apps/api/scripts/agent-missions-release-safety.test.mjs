@@ -701,6 +701,11 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
     /AGENT_MISSION_M2A_READER_N1_DRIFT[\s\S]*?CATALOGUE_M2A_SEARCH_KEY_PARITY_DRIFT[\s\S]*?catalogue_prestations_company_search_prefix_idx[\s\S]*?AGENT_MISSION_M2A_MISSING_CAPABILITY_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_ACTIVE_PARENT_FENCE_NOT_PROVEN[\s\S]*?AGENT_MISSION_M2A_PARTIAL_PROPOSAL_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_STALE_CAS_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_OWNER_WRITE_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_TENANT_WRITE_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_TERMINAL_PARENT_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_KIND_PARENT_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CASCADE_DELETE_FAILED/u,
   );
   assert.match(
+    localCertificate,
+    /set_config\('app\.current_agent_mission_id', '', true\);[\s\S]*?DELETE FROM public\.agent_missions[\s\S]*?AGENT_MISSION_M2A_CASCADE_DELETE_FAILED/u,
+    'La cascade de rétention doit être prouvée sans capability mission résiduelle.',
+  );
+  assert.match(
     rls,
     /'agent_mission_quote_line_work'[\s\S]*?DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_select[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_select[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_insert[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_update[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_delete/u,
   );

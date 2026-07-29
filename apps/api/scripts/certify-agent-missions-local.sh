@@ -2934,6 +2934,7 @@ INSERT INTO public.agent_mission_quote_line_work (
   clock_timestamp(),
   clock_timestamp()
 );
+SELECT set_config('app.current_agent_mission_id', '', true);
 DELETE FROM public.agent_missions
  WHERE "id" = 'd5000000-0000-4000-8000-000000000001'::UUID;
 DO $quote_line_cascade$
