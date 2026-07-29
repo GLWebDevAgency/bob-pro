@@ -180,14 +180,19 @@ function validateLine(
 
 /**
  * Montant annuel = Σ lignes via le MOTEUR UNIQUE computeTotals (assiette de TVA par taux,
- * arrondis identiques aux pièces) — JAMAIS stocké (§2.1). Catégorie 'subscription' :
- * ces lignes deviennent celles du brouillon annuel sans aucune conversion monétaire.
+ * arrondis identiques aux pièces) — JAMAIS stocké (§2.1).
  */
 export function contractAnnualTotals(lines: readonly MaintenanceContractLine[]): Totals {
   return computeTotals(contractLinesToLineInputs(lines));
 }
 
-/** Projection EXACTE des lignes du contrat vers le patron LineInput (brouillon annuel §2.6). */
+/**
+ * Projection ARITHMÉTIQUE des lignes du contrat vers le patron LineInput : elle sert au CALCUL
+ * du montant annuel, JAMAIS à une pièce. Le libellé qu'elle recopie est le nom saisi/dicté —
+ * ce qui s'imprime sur une facture est COMPOSÉ par le domaine (`annual-invoice-designation.ts`,
+ * `annualInvoiceLineInputs`), et ComposeStandaloneInvoice refuse structurellement toute ligne
+ * de contrat qui n'aurait pas cette forme.
+ */
 export function contractLinesToLineInputs(
   lines: readonly MaintenanceContractLine[],
 ): LineInput[] {

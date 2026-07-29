@@ -12,6 +12,7 @@ import {
   type CustomerRepository,
 } from '../ports/repositories';
 import { type MaintenanceContractRepository } from '../contracts/maintenance-contract-repository';
+import { isAnnualInvoiceDesignation } from '../../domain/contract/annual-invoice-designation';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { validateLineInputs } from './line-input-validation';
@@ -181,6 +182,24 @@ export class ComposeStandaloneInvoice {
             message: 'Seul un contrat ACTIF porte une facture annuelle.',
           }),
         );
+      // GARDE STRUCTURELLE — porte UNIQUE de toute pièce rattachée à un contrat. Ce qui
+      // s'imprime sur la ligne d'une facture annuelle est COMPOSÉ par le domaine (nature de la
+      // prestation + période de la pièce, nom du contrat filtré par la forme sûre) : aucun
+      // texte dicté ne peut l'atteindre. Un chemin qui recopierait un nom parlé — le use case
+      // de préparation, la voix, l'écran, ou un chemin écrit demain — est refusé ICI, avant
+      // toute écriture, jamais rattrapé par une relecture humaine.
+      for (const line of input.lines) {
+        if (!isAnnualInvoiceDesignation(line.label, attachment.servicePeriod))
+          return err(
+            appDomain({
+              code: 'VALIDATION',
+              field: 'lines',
+              message:
+                'La désignation d’une ligne de facture de contrat est composée par le domaine ' +
+                '(nature de la prestation et période couverte) : un libellé libre ne s’imprime jamais.',
+            }),
+          );
+      }
     }
 
     const at = this.deps.clock.now();

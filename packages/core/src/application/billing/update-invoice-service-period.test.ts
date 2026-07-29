@@ -4,6 +4,7 @@ import { ComposeStandaloneInvoice } from './compose-standalone-invoice';
 import { IssueInvoice } from './issue-invoice';
 import { UpdateInvoiceServicePeriod } from './update-invoice-service-period';
 import { MaintenanceContract } from '../../domain/contract/maintenance-contract';
+import { composeAnnualInvoiceDesignation } from '../../domain/contract/annual-invoice-designation';
 import { type MaintenanceContractRepository } from '../contracts/maintenance-contract-repository';
 
 /**
@@ -61,7 +62,19 @@ async function composeContractDraft(env: Env): Promise<string> {
   const composed = await compose.execute({
     companyId: env.company.id,
     customerId: 'cust-martin',
-    lines: [{ label: 'Forfait', category: 'subscription', qty: 1, unitPriceHT: 160_000, vatRate: 20 }],
+    // La ligne d'une pièce de contrat ne porte QUE la désignation composée par le domaine.
+    lines: [
+      {
+        label: composeAnnualInvoiceDesignation({
+          servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+          contractName: 'Entretien fontaines',
+        }),
+        category: 'subscription',
+        qty: 1,
+        unitPriceHT: 160_000,
+        vatRate: 20,
+      },
+    ],
     contractAttachment: {
       maintenanceContractId: 'contract-fontaines',
       servicePeriod: { start: '2025-10-12', end: '2026-10-11' },

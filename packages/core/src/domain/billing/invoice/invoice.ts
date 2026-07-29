@@ -34,6 +34,10 @@ import {
   isFrenchBillingMode,
   type FrenchBillingMode,
 } from '../../compliance/french-billing-mode';
+import {
+  isAnnualInvoiceDesignation,
+  reperiodAnnualInvoiceDesignation,
+} from '../../contract/annual-invoice-designation';
 
 export type InvoiceKind = 'final' | 'deposit' | 'credit_note' | 'situation';
 export type CreditedInvoiceKind = Exclude<InvoiceKind, 'credit_note'>;
@@ -827,6 +831,13 @@ export class Invoice extends AggregateRoot<string> {
     if (this._servicePeriod?.start === period.start && this._servicePeriod?.end === period.end)
       return ok(undefined);
     this._servicePeriod = { start: period.start, end: period.end };
+    // La DÉSIGNATION imprimée annonce la période : elle suit la période, sinon la ligne dirait
+    // une couverture que les colonnes de la pièce contredisent — le fait faux qu'on supprime.
+    // Un libellé qui n'est pas une désignation composée revient intact (pièces antérieures).
+    this._lines = this._lines.map((line) => ({
+      ...line,
+      label: reperiodAnnualInvoiceDesignation(line.label, period),
+    }));
     this._revision += 1;
     this.record({ type: 'InvoiceContractServicePeriodUpdated', occurredAt: at, version: 1 });
     return ok(undefined);
@@ -847,6 +858,26 @@ export class Invoice extends AggregateRoot<string> {
         code: 'VALIDATION',
         field: 'lines',
         message: 'Les lignes d’une situation sont dérivées du devis — elles ne s’éditent pas.',
+      });
+    // CE QUI S'IMPRIME SUR UNE PIÈCE DE CONTRAT EST COMPOSÉ PAR LE DOMAINE. L'invariant vit
+    // DANS l'agrégat, pas seulement dans le use case de composition : un chemin écrit demain qui
+    // ajouterait une ligne à ce brouillon — voix, écran, import — n'a aucun moyen d'y glisser un
+    // libellé libre. La désignation dit la nature de la prestation et la période PORTÉE PAR LA
+    // PIÈCE, le nom du contrat n'y entrant que filtré (annual-invoice-designation.ts).
+    // (Une pièce de contrat porte TOUJOURS une période bornée : `composeStandalone` exige début
+    // ET fin. Le `end` nullable du type général ne peut donc pas se présenter ici — et s'il se
+    // présentait, l'absence de fin ferait refuser, ce qui est le bon sens de la garde.)
+    const periode = this._servicePeriod;
+    if (
+      this._maintenanceContractId !== null
+      && (periode?.end == null || !isAnnualInvoiceDesignation(line.label, { start: periode.start, end: periode.end }))
+    )
+      return err({
+        code: 'VALIDATION',
+        field: 'lines',
+        message:
+          'La désignation d’une ligne de facture de contrat est composée par le domaine '
+          + '(nature de la prestation et période couverte) : un libellé libre ne s’imprime jamais.',
       });
     const q = Quantity.of(line.qty);
     if (!q.ok) return q;

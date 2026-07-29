@@ -5,6 +5,10 @@ import { IssueInvoice } from '../billing/issue-invoice';
 import { Invoice } from '../../domain/billing/invoice/invoice';
 import { MaintenanceContract } from '../../domain/contract/maintenance-contract';
 import {
+  composeAnnualInvoiceDesignation,
+  isAnnualInvoiceDesignation,
+} from '../../domain/contract/annual-invoice-designation';
+import {
   type ContractInvoicesReadPort,
   type MaintenanceContractRepository,
 } from './maintenance-contract-repository';
@@ -146,6 +150,84 @@ describe('PrepareAnnualInvoiceDraft — brouillon en un tap (§2.6)', () => {
     expect(draft!.maintenanceContractId).toBe('contract-fontaines');
     expect(draft!.servicePeriod).toEqual({ start: '2025-10-12', end: '2026-10-11' });
     expect(draft!.lines.every((line) => line.category === 'subscription')).toBe(true);
+  });
+
+  /**
+   * AUCUN CHEMIN NE CONTOURNE. Le contrat du harnais s'appelle « Entretien fontaines 2026 » et sa
+   * ligne « Forfait entretien annuel » : deux libellés qu'un pro a pu dicter, et qui portent tous
+   * deux un mot que la forme sûre refuse (le millésime, la cadence). Ce qui S'IMPRIME n'est ni
+   * l'un ni l'autre — c'est la NATURE de la prestation et la PÉRIODE de la pièce, avec le nom
+   * seulement filtré. Et la garde vit dans l'AGRÉGAT : un libellé libre est refusé même si on
+   * court-circuite le use case de préparation.
+   */
+  it('la ligne imprimée est COMPOSÉE, et aucun chemin — même direct — n’y glisse un libellé libre', async () => {
+    const env = makeEnv();
+    const contract = contractOf(env);
+    const { prepare, ports } = prepareUseCase(env, contract);
+    const prepared = await prepare.execute({ companyId: env.company.id, contractId: contract.id });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const draft = await env.invoiceRepo.findById(prepared.value.invoiceId);
+    // Le nom dit ne s'imprime pas : le millésime et la cadence sont tombés, la période est celle
+    // que le domaine a calculée, pas celle qu'on a entendue.
+    expect(draft!.lines.map((line) => line.label)).toEqual([
+      'Contrat de maintenance — Forfait entretien — période du 12/10/2025 au 11/10/2026',
+    ]);
+    for (const line of draft!.lines) {
+      expect(isAnnualInvoiceDesignation(line.label, prepared.value.servicePeriod)).toBe(true);
+    }
+
+    // (1) CHEMIN APPLICATIF — la porte unique refuse une désignation non composée…
+    const composed = await composeUseCase(env, ports.contracts).execute({
+      companyId: env.company.id,
+      customerId: 'cust-martin',
+      lines: [
+        { label: 'Entretien fontaines à 1 200 € par an', category: 'subscription', qty: 1, unitPriceHT: 80_000, vatRate: 20 },
+      ],
+      contractAttachment: {
+        maintenanceContractId: contract.id,
+        servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+      },
+    });
+    expect(composed.ok).toBe(false);
+    if (!composed.ok) expect(JSON.stringify(composed.error)).toContain('composée par le domaine');
+
+    // (2) CHEMIN DIRECT SUR L'AGRÉGAT — sans passer par aucun use case : refusé aussi. C'est
+    //     l'invariant, pas la discipline d'un appelant, qui tient la promesse.
+    const nu = Invoice.composeStandalone({
+      id: 'inv-direct',
+      companyId: env.company.id,
+      customerId: 'cust-martin',
+      contractAttachment: {
+        maintenanceContractId: contract.id,
+        servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+      },
+    });
+    expect(nu.ok).toBe(true);
+    if (!nu.ok) return;
+    const libre = nu.value.addLine({
+      id: 'l-libre',
+      label: 'Entretien fontaines à 1 200 € par an',
+      category: 'subscription',
+      qty: 1,
+      unitPriceHT: 80_000,
+      vatRate: 20,
+    });
+    expect(libre.ok).toBe(false);
+    // …et la désignation composée, elle, entre sans réserve.
+    expect(
+      nu.value.addLine({
+        id: 'l-composee',
+        label: composeAnnualInvoiceDesignation({
+          servicePeriod: { start: '2025-10-12', end: '2026-10-11' },
+          contractName: contract.label,
+        }),
+        category: 'subscription',
+        qty: 1,
+        unitPriceHT: 80_000,
+        vatRate: 20,
+      }).ok,
+    ).toBe(true);
   });
 
   it('refus actionnable AVEC le numéro couvrant quand la période est déjà facturée', async () => {

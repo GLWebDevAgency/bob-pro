@@ -4,9 +4,9 @@ import { type DateOnly, addDays, parisDateOnly } from '../../shared-kernel/time'
 import { type Totals } from '../../domain/billing/shared/totals';
 import {
   contractAnnualTotals,
-  contractLinesToLineInputs,
   type ContractPeriod,
 } from '../../domain/contract/maintenance-contract';
+import { annualInvoiceLineInputs } from '../../domain/contract/annual-invoice-designation';
 import {
   currentPeriod,
   deriveAnnualBillingDue,
@@ -54,6 +54,11 @@ export interface PrepareAnnualInvoiceDraftOutput {
  * suggestVatRate AU JOUR DU BROUILLON (bascule de régime → refus actionnable propagé, jamais
  * un taux réécrit en silence). L'idempotence de PÉRIODE vit dans IssueInvoice (verrou contrat,
  * direction 1) — deux brouillons peuvent coexister, deux ÉMISSIONS jamais.
+ *
+ * CE QUI S'IMPRIME NE VIENT PLUS DE LA DICTÉE : la désignation de chaque ligne est COMPOSÉE par
+ * le domaine (nature de la prestation + période déjà calculée), le nom du contrat n'y entrant
+ * que filtré par la forme sûre. Ce use case est un chemin, pas LA garde : la garde est
+ * structurelle et vit dans ComposeStandaloneInvoice, porte unique de toute pièce de contrat.
  */
 export class PrepareAnnualInvoiceDraft {
   constructor(private readonly deps: PrepareAnnualInvoiceDraftDeps) {}
@@ -132,8 +137,13 @@ export class PrepareAnnualInvoiceDraft {
     const composed = await this.deps.compose.execute({
       companyId: input.companyId,
       customerId: contract.customerId,
-      // Catégorie 'subscription' posée sur CHAQUE ligne (contractLinesToLineInputs) — PR-14.
-      lines: contractLinesToLineInputs(contract.lines),
+      // DÉSIGNATION COMPOSÉE PAR LE DOMAINE — jamais le nom brut du contrat : nature de la
+      // prestation + période DÉJÀ calculée et DÉJÀ figée sur la pièce, le nom seulement filtré
+      // (annual-invoice-designation.ts). Catégorie 'subscription' posée sur CHAQUE ligne.
+      lines: annualInvoiceLineInputs(contract.lines, {
+        servicePeriod,
+        contractLabel: contract.label,
+      }),
       ...(contract.chantierId !== null ? { chantierId: contract.chantierId } : {}),
       contractAttachment: {
         maintenanceContractId: contract.id,

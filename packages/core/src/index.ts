@@ -56,6 +56,8 @@ export * from './domain/chantier/chantier';
 export * from './domain/chantier/chantier-note';
 export * from './domain/equipment/equipment';
 export * from './domain/contract/maintenance-contract';
+export * from './domain/contract/printable-words';
+export * from './domain/contract/annual-invoice-designation';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
 export * from './domain/compliance/diagnostic';
