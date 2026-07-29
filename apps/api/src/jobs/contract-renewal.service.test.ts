@@ -56,6 +56,7 @@ function contract(input: {
   status?: 'draft' | 'active' | 'terminated';
   anniversaryDate?: string;
   tacitRenewal?: boolean;
+  label?: string;
 }): MaintenanceContract {
   const status = input.status ?? 'active';
   const anniversaryDate = input.anniversaryDate ?? ANNIVERSARY;
@@ -64,7 +65,7 @@ function contract(input: {
     companyId: COMPANY,
     customerId: 'cus-ratp',
     chantierId: null,
-    label: `Entretien ${input.id}`,
+    label: input.label ?? `Entretien ${input.id}`,
     status,
     anniversaryDate,
     noticeDays: 30,
@@ -243,6 +244,41 @@ describe('ContractRenewalService — cron 6 h (alerte INTERNE, jamais un envoi c
     expect(renewal).toContain(formatDateOnlyFr(NEXT_ANNIVERSARY));
     expect(annual).toContain(formatDateOnlyFr(NEXT_ANNIVERSARY));
     for (const body of bodies) expect(body).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  /**
+   * MENTION PERSISTÉE — ce rappel est archivé en file de notification puis ENVOYÉ. C'est donc un
+   * endroit où un texte issu de la dictée « sort » et « reste » : la même règle que la ligne de
+   * facture s'y applique. Ce qui part est composé ici, le nom du contrat n'y entrant que filtré ;
+   * et quand il n'en reste rien, l'ANNIVERSAIRE — un fait déjà validé, dont le rappel parle de
+   * toute façon — identifie le contrat, jamais un fragment de phrase.
+   */
+  it('le nom dicté n’entre dans le rappel ARCHIVÉ que filtré — sinon l’anniversaire identifie', async () => {
+    /** Les DEUX rappels (renouvellement + facture annuelle) tels qu'ils partent réellement. */
+    const textes = async (label: string): Promise<string[]> => {
+      const { service, delivery, notifier } = await makeService({
+        contracts: [contract({ id: `c-${label.length}`, label })],
+      });
+      expect(await service.runForCompany(COMPANY)).toEqual({ queued: 2, deduplicated: 0 });
+      expect((await delivery.runForCompany(COMPANY)).sent).toBe(2);
+      return (notifier.send as ReturnType<typeof vi.fn>).mock.calls.flatMap((call) => {
+        const sent = call[0] as { subject: string; body: string };
+        return [sent.subject, sent.body];
+      });
+    };
+
+    for (const texte of await textes('Entretien vitrines à 1 200 € par an')) {
+      expect(texte).toContain('Entretien vitrines');
+      expect(texte).not.toMatch(/1\s?200|€/u);
+    }
+    // Rien d'exploitable dans le nom : le contrat est identifié par sa date d'anniversaire.
+    for (const texte of await textes('à 1 200 € par an')) {
+      // « Contrat de maintenance du … » en objet, « Le contrat de maintenance du … » en corps.
+      expect(texte.toLowerCase()).toContain(
+        `contrat de maintenance du ${formatDateOnlyFr(ANNIVERSARY)}`,
+      );
+      expect(texte).not.toMatch(/1\s?200|€/u);
+    }
   });
 
   it('non-tacite : « arrive à échéance », jamais « se reconduit »', async () => {
