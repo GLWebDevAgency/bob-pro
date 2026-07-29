@@ -66,6 +66,9 @@ export function readCompanySnapshot(session: Session | null): CompanyLookupResul
     dateCreation: typeof s['dateCreation'] === 'string' ? s['dateCreation'] : null,
     address: addr,
     tvaIntracom: typeof s['tvaIntracom'] === 'string' ? s['tvaIntracom'] : null,
+    // Les snapshots écrits avant que l'annuaire ne remonte l'état administratif ne le portent
+    // pas : on rend `null` (« inconnu ») plutôt que de supposer un établissement actif.
+    etatAdministratif: s['etatAdministratif'] === 'A' || s['etatAdministratif'] === 'C' ? s['etatAdministratif'] : null,
     rge: s['rge'] === true,
   };
 }

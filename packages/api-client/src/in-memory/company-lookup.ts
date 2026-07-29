@@ -14,6 +14,7 @@ const FIXTURES: Record<string, CompanyLookupResult> = {
     dateCreation: '2015-03-01',
     address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
     tvaIntracom: 'FR44732829320',
+    etatAdministratif: 'A',
     rge: true,
   },
 };
@@ -38,6 +39,8 @@ export class DemoCompanyLookupAdapter implements CompanyLookupPort {
       dateCreation: null,
       address: null,
       tvaIntracom: null,
+      // La démo n'a pas d'annuaire : elle ne peut pas affirmer qu'un établissement est actif.
+      etatAdministratif: null,
       rge: false,
     };
   }

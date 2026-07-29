@@ -13,6 +13,7 @@ const lookup: CompanyLookupResult = {
   dateCreation: '2024-01-01',
   address: { line1: '1 rue Réelle', zip: '75001', city: 'Paris' },
   tvaIntracom: null,
+  etatAdministratif: 'A',
   rge: false,
 };
 

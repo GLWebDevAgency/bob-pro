@@ -15,6 +15,7 @@ const PROFILE: CompanyLookupResult = {
   dateCreation: '1991-01-01',
   address: { line1: '9 rue du Colonel Pierre Avia', zip: '75015', city: 'Paris' },
   tvaIntracom: 'FR39356000000',
+  etatAdministratif: 'A',
   rge: false,
 };
 
