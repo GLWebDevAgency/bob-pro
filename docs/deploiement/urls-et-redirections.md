@@ -28,7 +28,10 @@ Correctif code (2026-07-18) :
 
 ## 2. À CONFIGURER DANS LE DASHBOARD SUPABASE (action humaine)
 
-Projet `bob-pro` (`cvdkqjczgqoeshputacl`) → **Authentication → URL Configuration** :
+**Cette configuration est à poser sur CHAQUE projet Supabase, sans exception** —
+production `cvdkqjczgqoeshputacl` **et** staging `afywrrzjjuyznewzvpmk`. Un projet neuf
+naît avec `http://localhost:3000` en Site URL et une allowlist vide : il reproduit le bug
+à l'identique. Dans chaque projet → **Authentication → URL Configuration** :
 
 | Champ | Valeur exacte à saisir |
 | --- | --- |
@@ -43,6 +46,23 @@ Pourquoi la Site URL pointe la page relais : c'est le **filet de sécurité** �
 recovery (`type=recovery`) vers le bon deep link. Plus jamais localhost.
 
 Rappel : « Leaked Password Protection » reste aussi à activer (Auth → dashboard, WARN advisor).
+
+### Vérifier au lieu de croire — `pnpm --filter @bob/mobile verifie:redirections-auth`
+
+Cette configuration vit dans un dashboard, hors du dépôt : ni la revue ni la CI ne la voient,
+et c'est précisément ce qui a permis au bug de revenir le **29/07/2026** sur le projet de
+staging créé par db53eb67, six jours après avoir été corrigé sur la production.
+
+`apps/mobile/scripts/verifie-redirections-auth.mjs` rend cet état lisible. Il envoie à
+`/auth/v1/verify` un jeton volontairement invalide assorti de chaque `redirect_to` attendu :
+GoTrue n'honore la cible que si elle est allowlistée, sinon il retombe sur la Site URL — la
+redirection renvoyée dit donc la configuration réelle du projet. Rien n'est écrit, rien n'est
+consommé, aucun jeton d'administration n'est requis. Le script sort non nul et **nomme** ce qui
+manque (`SITE_URL_LOCALHOST`, `RETOUR_LOCALHOST`, `CIBLE_NON_AUTORISEE`, `REDIRECTION_ABSENTE`).
+
+**À lancer après toute création de projet Supabase, et avant tout build EAS destiné à un
+testeur** : un binaire distribué avec une allowlist incomplète rend l'inscription impossible
+sans qu'aucun test du dépôt ne s'en aperçoive.
 
 ## 3. Inventaire des URLs sortantes (audit ②)
 

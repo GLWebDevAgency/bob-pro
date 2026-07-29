@@ -9,7 +9,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts && node --test scripts/verifie-redirections-auth.test.mjs",
+    "verifie:redirections-auth": "node scripts/verifie-redirections-auth.mjs"
   },
   "dependencies": {
     "@bob/ai": "workspace:*",
