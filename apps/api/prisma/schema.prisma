@@ -823,6 +823,8 @@ model MaintenanceContract {
   lines                    MaintenanceContractLine[]
   equipments               MaintenanceContractEquipment[]
   invoices                 Invoice[] @relation("MaintenanceContractInvoices")
+  /// Visites rattachées au contrat (couture des deux trains P1, 20260729080000).
+  interventions            Intervention[] @relation("MaintenanceContractInterventions")
 
   @@unique([id, companyId], name: "uniq_maintenance_contract_id_company", map: "uniq_maintenance_contract_id_company")
   @@index([companyId, status, anniversaryDate], map: "maintenance_contracts_company_status_anniversary_idx")
@@ -881,9 +883,12 @@ model Intervention {
   chantier         Chantier        @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   customerId       String
   customer         Customer        @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
-  /// Visite contractuelle (train Contrats) — colonne ADDITIVE sans FK tant que
-  /// `maintenance_contracts` n'existe pas : CreateIntervention ne l'accepte jamais.
+  /// Visite contractuelle — FK composite anti-IDOR posée à la couture des deux trains P1
+  /// (20260729080000). La colonne était ADDITIVE sans FK tant que `maintenance_contracts`
+  /// n'existait pas ; elle est vide par construction (CreateIntervention refusait toute
+  /// valeur), donc aucun backfill. NULL = visite hors contrat.
   contractId       String?
+  contract         MaintenanceContract? @relation("MaintenanceContractInterventions", fields: [contractId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   equipmentId      String?
   equipment        Equipment?      @relation(fields: [equipmentId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   /// Libellé LIBRE (« Visite contractuelle », « Dépannage fontaine ») — JAMAIS une machine.
