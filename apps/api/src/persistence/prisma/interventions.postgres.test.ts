@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { INTERVENTION_TRANSITIONS, Intervention, type InterventionProps } from '@bob/core';
 import { PrismaInterventionRepository } from './interventions.repository';
@@ -25,6 +25,12 @@ const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_INTERVENTION_CERT === 'true';
  *  • writer N-1 : la forme de ligne SANS interventionId/phase traverse intacte (notes ET photos).
  * Doctrine certs (leçon 28/07) : AUCUN .catch avaleur dans l'afterAll (échec VISIBLE),
  * SIREN aléatoires DÉDIÉS à la suite, sociétés jamais clôturées (DELETE direct légitime).
+ *
+ * LEÇON 29/07 (gate staging rouge, run 30424163601) : une erreur PostgreSQL ATTENDUE avorte sa
+ * transaction et laisse la session inutilisable jusqu'à la fin du bloc — en connexion directe
+ * comme derrière le pooler, toute commande suivante reçoit `25P02 current transaction is aborted`
+ * sans jamais atteindre la règle qu'elle prétend prouver — donc UNE unité de travail par erreur
+ * attendue (`expectRefused`) et `errorFormat: 'minimal'` sur tous les clients.
  */
 describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification PostgreSQL tenantée', () => {
   const companyA = `intervention-cert-a-${randomUUID()}`;
@@ -136,13 +142,41 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     await repo.save(loaded!);
   }
 
+  /**
+   * UNE unité de travail par refus attendu — le seul geste autorisé pour prouver un refus ici.
+   *
+   * `withTenant` ouvre une transaction interactive. Le premier refus (trigger ou CHECK) avorte le
+   * bloc PostgreSQL : la commande SUIVANTE ne reçoit plus la règle qu'elle vise mais
+   * `25P02 current transaction is aborted, commands ignored until end of transaction block`, et
+   * n'atteint jamais la base. Ouvrir une transaction PAR refus rend l'ordre des preuves
+   * indifférent : une preuve ajoutée demain ne peut plus être avalée par celle qui la précède.
+   *
+   * `rule` est OBLIGATOIRE : un `rejects.toThrow()` nu se contenterait d'une transaction avortée
+   * et cesserait silencieusement de prouver quoi que ce soit. Chaque refus nomme donc le trigger
+   * ou la contrainte qui l'a produit.
+   */
+  async function expectRefused(
+    worker: PrismaService,
+    companyId: string,
+    rule: RegExp,
+    mutation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+  ): Promise<void> {
+    await expect(worker.withTenant(companyId, mutation)).rejects.toThrow(rule);
+  }
+
   beforeAll(async () => {
     if (!runtimeUrl || !directUrl) {
       throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
     }
-    admin = new PrismaClient({ datasourceUrl: directUrl });
-    workerA = new PrismaService({ datasourceUrl: runtimeUrl });
-    workerB = new PrismaService({ datasourceUrl: runtimeUrl });
+    // `errorFormat: 'minimal'` — SANS lui, Prisma préfixe chaque erreur d'un CADRE DE CODE qui
+    // cite les lignes voisines de CE fichier : un `rejects.toThrow(/RÈGLE/)` peut alors matcher
+    // le texte source de l'assertion PRÉCÉDENTE et rester vert sur une erreur qui n'a rien à
+    // voir (c'est ce masque qui a laissé passer le verrou §3.4 en local le 29/07). Le gate tourne
+    // avec NODE_ENV=production, où Prisma n'émet PAS ce cadre : cette ligne fait donc dire au
+    // poste de travail exactement ce que dira la release.
+    admin = new PrismaClient({ datasourceUrl: directUrl, errorFormat: 'minimal' });
+    workerA = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
+    workerB = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
     await Promise.all([admin.$connect(), workerA.$connect(), workerB.$connect()]);
     await admin.company.createMany({ data: [company(companyA, sirenA), company(companyB, sirenB)] });
     await admin.chantier.createMany({
@@ -224,14 +258,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
 
   it('refuse un site ou un client d’un AUTRE tenant (FK composites anti-IDOR)', async () => {
     const repoA = new PrismaInterventionRepository(workerA);
-    await workerA.withTenant(companyA, async () => {
-      await expect(
-        repoA.create(intervention(randomUUID(), companyA, chantierB, customerA)),
-      ).rejects.toThrow();
-      await expect(
-        repoA.create(intervention(randomUUID(), companyA, chantierA, customerB)),
-      ).rejects.toThrow();
-    });
+    // Deux refus = deux transactions, et chacun NOMME la FK composite qui a refusé : le second
+    // ne peut plus être satisfait par la transaction que le premier a avortée.
+    await expectRefused(workerA, companyA, /interventions_chantier_company_fkey/, () =>
+      repoA.create(intervention(randomUUID(), companyA, chantierB, customerA)),
+    );
+    await expectRefused(workerA, companyA, /interventions_customer_company_fkey/, () =>
+      repoA.create(intervention(randomUUID(), companyA, chantierA, customerB)),
+    );
   });
 
   it('le CHECK status est GÉNÉRÉ depuis la source TS (garde anti-drift)', async () => {
@@ -253,45 +287,43 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
   });
 
   it('refuse un id hors uuid v4 et les demi-états (chronologie, signature, statut)', async () => {
-    await workerA.withTenant(companyA, async () => {
-      const base = {
-        companyId: companyA,
-        chantierId: chantierA,
-        customerId: customerA,
-        kind: 'Dépannage',
-        updatedAt: new Date(),
-      };
-      await expect(
-        workerA.client().intervention.create({ data: { id: 'pas-un-uuid', ...base } }),
-      ).rejects.toThrow();
-      await expect(
-        workerA.client().intervention.create({
-          data: { id: randomUUID(), ...base, status: 'completed' },
-        }),
-      ).rejects.toThrow();
-      await expect(
-        workerA.client().intervention.create({
-          data: {
-            id: randomUUID(),
-            ...base,
-            status: 'in_progress',
-            startedAt: new Date('2026-08-04T09:00:00.000Z'),
-            finishedAt: new Date('2026-08-04T08:00:00.000Z'),
-          },
-        }),
-      ).rejects.toThrow();
-      await expect(
-        workerA.client().intervention.create({
-          data: {
-            id: randomUUID(),
-            ...base,
-            status: 'signed',
-            startedAt: new Date('2026-08-04T07:00:00.000Z'),
-            finishedAt: new Date('2026-08-04T08:00:00.000Z'),
-          },
-        }),
-      ).rejects.toThrow();
-    });
+    const base = {
+      companyId: companyA,
+      chantierId: chantierA,
+      customerId: customerA,
+      kind: 'Dépannage',
+      updatedAt: new Date(),
+    };
+    // Quatre demi-états, quatre transactions, quatre CHECK nommés : avant, les trois derniers
+    // refus étaient absorbés par la transaction avortée du premier et ne prouvaient plus rien.
+    await expectRefused(workerA, companyA, /interventions_id_uuid_v4_check/, (tx) =>
+      tx.intervention.create({ data: { id: 'pas-un-uuid', ...base } }),
+    );
+    await expectRefused(workerA, companyA, /interventions_finished_coherence_check/, (tx) =>
+      tx.intervention.create({ data: { id: randomUUID(), ...base, status: 'completed' } }),
+    );
+    await expectRefused(workerA, companyA, /interventions_chronology_check/, (tx) =>
+      tx.intervention.create({
+        data: {
+          id: randomUUID(),
+          ...base,
+          status: 'in_progress',
+          startedAt: new Date('2026-08-04T09:00:00.000Z'),
+          finishedAt: new Date('2026-08-04T08:00:00.000Z'),
+        },
+      }),
+    );
+    await expectRefused(workerA, companyA, /interventions_signed_coherence_check/, (tx) =>
+      tx.intervention.create({
+        data: {
+          id: randomUUID(),
+          ...base,
+          status: 'signed',
+          startedAt: new Date('2026-08-04T07:00:00.000Z'),
+          finishedAt: new Date('2026-08-04T08:00:00.000Z'),
+        },
+      }),
+    );
   });
 
   it('trigger : une trace taguée vise une fiche du MÊME site (mismatch refusé)', async () => {
@@ -299,39 +331,37 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     const repoA = new PrismaInterventionRepository(workerA);
     await workerA.withTenant(companyA, async () => {
       await repoA.create(intervention(id, companyA, chantierA, customerA));
-      await expect(
-        workerA.client().chantierNote.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            // Note du site A2 taguée à une fiche du site A : incohérence de SITE.
-            chantierId: chantierA2,
-            text: 'Note incohérente',
-            authorLabel: 'Certification',
-            interventionId: id,
-          },
-        }),
-      ).rejects.toThrow(/INTERVENTION_SCOPE_CHANTIER_MISMATCH/);
     });
+    await expectRefused(workerA, companyA, /INTERVENTION_SCOPE_CHANTIER_MISMATCH/, (tx) =>
+      tx.chantierNote.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          // Note du site A2 taguée à une fiche du site A : incohérence de SITE.
+          chantierId: chantierA2,
+          text: 'Note incohérente',
+          authorLabel: 'Certification',
+          interventionId: id,
+        },
+      }),
+    );
   });
 
   it('la phase avant/après EXIGE la fiche (jamais un demi-état de photo)', async () => {
-    await workerA.withTenant(companyA, async () => {
-      await expect(
-        workerA.client().chantierPhoto.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            chantierId: chantierA,
-            filename: 'orpheline.jpg',
-            mimeType: 'image/jpeg',
-            byteSize: 3,
-            storageKey: `cert/${randomUUID()}`,
-            phase: 'before',
-          },
-        }),
-      ).rejects.toThrow();
-    });
+    await expectRefused(workerA, companyA, /chantier_photos_phase_check/, (tx) =>
+      tx.chantierPhoto.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'orpheline.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          phase: 'before',
+        },
+      }),
+    );
   });
 
   /**
@@ -349,42 +379,38 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
     });
 
     // « après » sur une fiche encore planifiée : il n'y a aucun travail à montrer.
-    await expect(
-      workerA.withTenant(companyA, () =>
-        workerA.client().chantierPhoto.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            chantierId: chantierA,
-            filename: 'apres.jpg',
-            mimeType: 'image/jpeg',
-            byteSize: 3,
-            storageKey: `cert/${randomUUID()}`,
-            interventionId: planifiee,
-            phase: 'after',
-          },
-        }),
-      ),
-    ).rejects.toThrow(/INTERVENTION_PHASE_AFTER_BEFORE_START/);
+    await expectRefused(workerA, companyA, /INTERVENTION_PHASE_AFTER_BEFORE_START/, (tx) =>
+      tx.chantierPhoto.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'apres.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: planifiee,
+          phase: 'after',
+        },
+      }),
+    );
 
     // « avant » après la complétion : l'état initial n'existe plus, la photo l'affirmerait.
-    await expect(
-      workerA.withTenant(companyA, () =>
-        workerA.client().chantierPhoto.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            chantierId: chantierA,
-            filename: 'avant.jpg',
-            mimeType: 'image/jpeg',
-            byteSize: 3,
-            storageKey: `cert/${randomUUID()}`,
-            interventionId: terminee,
-            phase: 'before',
-          },
-        }),
-      ),
-    ).rejects.toThrow(/INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/);
+    await expectRefused(workerA, companyA, /INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/, (tx) =>
+      tx.chantierPhoto.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'avant.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: terminee,
+          phase: 'before',
+        },
+      }),
+    );
 
     // Le RE-ÉTIQUETAGE d'une photo légitime passe par la même règle (branche UPDATE).
     const photoId = randomUUID();
@@ -404,15 +430,15 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
         },
       });
     });
-    await expect(
-      workerA.withTenant(
-        companyA,
-        () => workerA.client().$executeRaw`
-          UPDATE "chantier_photos" SET "phase" = 'before'
-           WHERE "id" = ${photoId} AND "companyId" = ${companyA}
-        `,
-      ),
-    ).rejects.toThrow(/INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/);
+    await expectRefused(
+      workerA,
+      companyA,
+      /INTERVENTION_PHASE_BEFORE_AFTER_COMPLETION/,
+      (tx) => tx.$executeRaw`
+        UPDATE "chantier_photos" SET "phase" = 'before'
+         WHERE "id" = ${photoId} AND "companyId" = ${companyA}
+      `,
+    );
 
     // Et la MÊME photo SANS phase reste acceptée : le refus ne perd aucune preuve.
     await workerA.withTenant(companyA, async () => {
@@ -508,37 +534,46 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
         capturedAt: '2026-08-04T10:00:00.000Z',
       });
       await repoA.save(loaded!);
+    });
 
-      await expect(
-        workerA.client().chantierPhoto.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            chantierId: chantierA,
-            filename: 'apres.jpg',
-            mimeType: 'image/jpeg',
-            byteSize: 3,
-            storageKey: `cert/${randomUUID()}`,
-            interventionId: id,
-            phase: 'after',
-          },
-        }),
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
-      await expect(
-        workerA.client().chantierNote.create({
-          data: {
-            id: randomUUID(),
-            companyId: companyA,
-            chantierId: chantierA,
-            text: 'Trop tard',
-            authorLabel: 'Certification',
-            interventionId: id,
-          },
-        }),
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
-      await expect(
-        workerA.client().chantierPhoto.deleteMany({ where: { id: photoId, companyId: companyA } }),
-      ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+    // TROIS refus, TROIS transactions. Enchaînés dans la transaction ci-dessus, seul le premier
+    // atteignait le trigger : les deux suivants recevaient 25P02 (transaction avortée) et la
+    // certification ne prouvait plus ni le refus d'une NOTE ni celui d'un RETRAIT.
+    await expectRefused(workerA, companyA, /INTERVENTION_SIGNED_LOCKED/, (tx) =>
+      tx.chantierPhoto.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          filename: 'apres.jpg',
+          mimeType: 'image/jpeg',
+          byteSize: 3,
+          storageKey: `cert/${randomUUID()}`,
+          interventionId: id,
+          phase: 'after',
+        },
+      }),
+    );
+    await expectRefused(workerA, companyA, /INTERVENTION_SIGNED_LOCKED/, (tx) =>
+      tx.chantierNote.create({
+        data: {
+          id: randomUUID(),
+          companyId: companyA,
+          chantierId: chantierA,
+          text: 'Trop tard',
+          authorLabel: 'Certification',
+          interventionId: id,
+        },
+      }),
+    );
+    await expectRefused(workerA, companyA, /INTERVENTION_SIGNED_LOCKED/, (tx) =>
+      tx.chantierPhoto.deleteMany({ where: { id: photoId, companyId: companyA } }),
+    );
+
+    // La photo d'origine est TOUJOURS là : le refus de retrait n'a rien emporté.
+    await workerA.withTenant(companyA, async () => {
+      const photo = await workerA.client().chantierPhoto.findFirst({ where: { id: photoId } });
+      expect(photo?.interventionId).toBe(id);
     });
   });
 
@@ -583,33 +618,30 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Fiches de passage — certification Postgre
       await repoA.save(loaded!);
     });
 
-    // Un SQL brut refusé AVORTE sa transaction PostgreSQL (25P02) : chaque refus est donc
-    // prouvé dans SA propre transaction, sinon le second échouerait pour la mauvaise raison.
+    // Refus attendu = unité de travail dédiée (voir `expectRefused`).
     // Dé-taggage : la trace SORTIRAIT de la preuve signée sans jamais être supprimée.
-    await expect(
-      workerA.withTenant(
-        companyA,
-        () => workerA.client().$executeRaw`
-          UPDATE "chantier_photos" SET "interventionId" = NULL, "phase" = NULL
-           WHERE "id" = ${photoId} AND "companyId" = ${companyA}
-        `,
-      ),
-    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
-    await expect(
-      workerA.withTenant(
-        companyA,
-        () => workerA.client().$executeRaw`
-          UPDATE "chantier_notes" SET "interventionId" = NULL
-           WHERE "id" = ${noteId} AND "companyId" = ${companyA}
-        `,
-      ),
-    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+    await expectRefused(
+      workerA,
+      companyA,
+      /INTERVENTION_SIGNED_LOCKED/,
+      (tx) => tx.$executeRaw`
+        UPDATE "chantier_photos" SET "interventionId" = NULL, "phase" = NULL
+         WHERE "id" = ${photoId} AND "companyId" = ${companyA}
+      `,
+    );
+    await expectRefused(
+      workerA,
+      companyA,
+      /INTERVENTION_SIGNED_LOCKED/,
+      (tx) => tx.$executeRaw`
+        UPDATE "chantier_notes" SET "interventionId" = NULL
+         WHERE "id" = ${noteId} AND "companyId" = ${companyA}
+      `,
+    );
     // Retrait d'une NOTE de fiche signée : refusé comme celui d'une photo.
-    await expect(
-      workerA.withTenant(companyA, () =>
-        workerA.client().chantierNote.deleteMany({ where: { id: noteId, companyId: companyA } }),
-      ),
-    ).rejects.toThrow(/INTERVENTION_SIGNED_LOCKED/);
+    await expectRefused(workerA, companyA, /INTERVENTION_SIGNED_LOCKED/, (tx) =>
+      tx.chantierNote.deleteMany({ where: { id: noteId, companyId: companyA } }),
+    );
 
     // Les traces sont TOUJOURS là, toujours rattachées à la fiche signée.
     await workerA.withTenant(companyA, async () => {
