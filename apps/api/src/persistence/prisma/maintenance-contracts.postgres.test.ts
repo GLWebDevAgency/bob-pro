@@ -149,9 +149,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
     if (!runtimeUrl || !directUrl) {
       throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
     }
-    admin = new PrismaClient({ datasourceUrl: directUrl });
-    workerA = new PrismaService({ datasourceUrl: runtimeUrl });
-    workerB = new PrismaService({ datasourceUrl: runtimeUrl });
+    // Les refus attendus ci-dessous sont vérifiés par leur motif SQL nommé. Le format Prisma
+    // minimal empêche une erreur de pool/transaction de recopier l'extrait source contenant
+    // lui-même ce motif et de fabriquer ainsi un faux vert sans avoir atteint le trigger.
+    admin = new PrismaClient({ datasourceUrl: directUrl, errorFormat: 'minimal' });
+    workerA = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
+    workerB = new PrismaService({ datasourceUrl: runtimeUrl, errorFormat: 'minimal' });
     persistence = new PrismaPersistence(workerA);
     await Promise.all([admin.$connect(), workerA.$connect(), workerB.$connect()]);
 
