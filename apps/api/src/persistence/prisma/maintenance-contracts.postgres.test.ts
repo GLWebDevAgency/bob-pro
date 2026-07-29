@@ -528,25 +528,38 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
     const liveFrozen = frozenFieldsOf(live[0]?.definition ?? '');
     expect([...liveFrozen].sort()).toEqual(Object.keys(mutations).sort());
 
-    for (const [field, literal] of Object.entries(mutations)) {
-      // `companyId` est défendu EN PROFONDEUR : le trigger d'audience d'archive (FK logique
-      // client↔tenant) refuse AVANT la liste d'immutabilité — la mutation est refusée dans
-      // tous les cas, et la PRÉSENCE du champ dans la liste figée est prouvée par la
-      // comparaison de complétude ci-dessus (liveFrozen) + le test champ à champ des corps.
-      const refusal =
-        field === 'companyId'
-          ? /invoices_issued_legal_immutability|issued invoice legal fields|archive audience/
-          : /invoices_issued_legal_immutability|issued invoice legal fields/;
-      await expect(
-        workerA.withTenant(companyA, () =>
-          workerA
-            .client()
-            .$executeRawUnsafe(
-              `UPDATE "invoices" SET "${field}" = ${literal} WHERE "id" = '${issuedAnnualA}'`,
+    // Une transaction PAR champ figé (36) — la doctrine « une unité de travail par refus
+    // attendu » l'impose : sinon le premier refus avorte la transaction et les 35 suivants
+    // n'atteignent jamais le trigger. Contre une base DISTANTE, ces 36 allers-retours
+    // séquentiels dépassaient le budget de 30 s du gate ; par LOTS ils tiennent, sans qu'une
+    // seule preuve soit perdue. Le lot reste petit : le pooler borne les connexions
+    // concurrentes, et un lot trop large échangerait un dépassement de délai contre une
+    // saturation de pool.
+    const TAILLE_LOT = 6;
+    const champsFiges = Object.entries(mutations);
+    for (let debut = 0; debut < champsFiges.length; debut += TAILLE_LOT) {
+      await Promise.all(
+        champsFiges.slice(debut, debut + TAILLE_LOT).map(([field, literal]) => {
+          // `companyId` est défendu EN PROFONDEUR : le trigger d'audience d'archive (FK logique
+          // client↔tenant) refuse AVANT la liste d'immutabilité — la mutation est refusée dans
+          // tous les cas, et la PRÉSENCE du champ dans la liste figée est prouvée par la
+          // comparaison de complétude ci-dessus (liveFrozen) + le test champ à champ des corps.
+          const refusal =
+            field === 'companyId'
+              ? /invoices_issued_legal_immutability|issued invoice legal fields|archive audience/
+              : /invoices_issued_legal_immutability|issued invoice legal fields/;
+          return expect(
+            workerA.withTenant(companyA, () =>
+              workerA
+                .client()
+                .$executeRawUnsafe(
+                  `UPDATE "invoices" SET "${field}" = ${literal} WHERE "id" = '${issuedAnnualA}'`,
+                ),
             ),
-        ),
-        `champ figé non protégé : ${field}`,
-      ).rejects.toThrowError(refusal);
+            `champ figé non protégé : ${field}`,
+          ).rejects.toThrowError(refusal);
+        }),
+      );
     }
     // Contrôle POSITIF : le suivi de transmission reste mutable après émission (jamais figé).
     await workerA.withTenant(companyA, async () => {
@@ -557,7 +570,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Contrats de maintenance — certification P
         UPDATE "invoices" SET "transmissionDepositedAt" = NULL WHERE "id" = ${issuedAnnualA}
       `;
     });
-  });
+    // Budget propre : 36 refus + un contrôle positif contre une base DISTANTE. Le lotissement
+    // ci-dessus ramène le coût bien en deçà, mais le budget commun de 30 s ne laisse aucune
+    // marge à une latence réseau dégradée — et un dépassement ici bloquerait un déploiement
+    // pour une raison qui n'a rien à voir avec la règle testée.
+  }, 120_000);
 
   it('[erratum n° 1] corps redéfini depuis 20260727120000 : AUCUN champ perdu, ajouts exacts', async () => {
     const previous = readFileSync(
