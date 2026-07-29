@@ -3,6 +3,11 @@ import {
   type RealtimeAgentMissionSession,
 } from '@bob/api-client';
 import type { AgentContext } from '@bob/ai';
+import type {
+  AcknowledgeQuoteScreenOutput,
+  AgentMissionViewV1,
+  AppError,
+} from '@bob/core';
 import type { RealtimePublishedFence } from './realtime-driver';
 
 const SHA_256 = /^[a-f0-9]{64}$/u;
@@ -46,6 +51,40 @@ export interface AgentMissionRuntimeBridge {
     fence: RealtimePublishedFence,
     context: AgentContext,
   ) => boolean;
+}
+
+export type AgentMissionRuntimeCall<T> =
+  | { readonly status: 'completed'; readonly value: T }
+  | { readonly status: 'failed'; readonly error: AppError }
+  | {
+      readonly status:
+        | 'context_unconfirmed'
+        | 'invalid_response'
+        | 'stale'
+        | 'unavailable';
+    };
+
+export interface AgentMissionQuoteScreenAckInput {
+  readonly missionId: string;
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly draft: {
+    readonly sessionId: string;
+    readonly slotRevision: number;
+    readonly contentRevision: number;
+  };
+  readonly expectedScreenInstanceId: string;
+}
+
+export interface AgentMissionRuntimeActions {
+  readonly readCurrentQuoteCreation: (
+    expectedScreenInstanceId: string,
+  ) => Promise<
+    AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+  >;
+  readonly acknowledgeQuoteScreen: (
+    input: AgentMissionQuoteScreenAckInput,
+  ) => Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>>;
 }
 
 type Listener = (snapshot: AgentMissionRuntimeSnapshot) => void;
@@ -223,5 +262,151 @@ export class AgentMissionRuntimeOwner {
   private emit(): void {
     const snapshot = this.snapshot();
     for (const listener of this.listeners) listener(snapshot);
+  }
+}
+
+function captureForQuoteScreen(
+  owner: AgentMissionRuntimeOwner,
+  expectedScreenInstanceId: string,
+): AgentMissionRuntimeCapture | null | 'context_unconfirmed' {
+  const capture = owner.capture();
+  if (capture === null) return null;
+  const context = capture.confirmedContext;
+  if (
+    context === null
+    || context.screen.name !== '/devis/new'
+    || context.screen.instanceId !== expectedScreenInstanceId
+  ) {
+    return 'context_unconfirmed';
+  }
+  return capture;
+}
+
+/**
+ * Façade écran sans fuite de capability.
+ *
+ * Elle injecte elle-même l'identité Realtime et le fence confirmé, partage les appels identiques
+ * en vol, puis invalide toute réponse reçue après navigation, reconnexion ou logout.
+ */
+export class FencedAgentMissionRuntimeActions implements AgentMissionRuntimeActions {
+  private readonly flights = new Map<string, Promise<AgentMissionRuntimeCall<unknown>>>();
+
+  constructor(private readonly owner: AgentMissionRuntimeOwner) {}
+
+  readCurrentQuoteCreation(
+    expectedScreenInstanceId: string,
+  ): Promise<
+    AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+  > {
+    const captured = captureForQuoteScreen(this.owner, expectedScreenInstanceId);
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const key = JSON.stringify([
+      'read_quote_creation',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      expectedScreenInstanceId,
+    ]);
+    return this.singleFlight<{ readonly mission: AgentMissionViewV1 | null }>(
+      key,
+      async (): Promise<
+        AgentMissionRuntimeCall<{ readonly mission: AgentMissionViewV1 | null }>
+      > => {
+      try {
+        const result = await captured.session.getCurrentQuoteCreation();
+        if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+        if (!result.ok) return { status: 'failed', error: result.error };
+        return { status: 'completed', value: result.value };
+      } catch {
+        return { status: 'unavailable' };
+      }
+      },
+    );
+  }
+
+  acknowledgeQuoteScreen(
+    input: AgentMissionQuoteScreenAckInput,
+  ): Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>> {
+    const captured = captureForQuoteScreen(
+      this.owner,
+      input.expectedScreenInstanceId,
+    );
+    if (captured === null) return Promise.resolve({ status: 'unavailable' });
+    if (captured === 'context_unconfirmed') {
+      return Promise.resolve({ status: 'context_unconfirmed' });
+    }
+    const context = captured.confirmedContext;
+    if (context === null) return Promise.resolve({ status: 'context_unconfirmed' });
+    const key = JSON.stringify([
+      'ack_quote_screen',
+      captured.generation,
+      captured.session.realtimeSessionId,
+      context.revision,
+      context.digest,
+      input.expectedScreenInstanceId,
+      input.missionId,
+      input.commandId,
+      input.expectedMissionRevision,
+      input.draft.sessionId,
+      input.draft.slotRevision,
+      input.draft.contentRevision,
+    ]);
+    return this.singleFlight<AcknowledgeQuoteScreenOutput>(
+      key,
+      async (): Promise<AgentMissionRuntimeCall<AcknowledgeQuoteScreenOutput>> => {
+      try {
+        const result = await captured.session.acknowledgeQuoteScreen({
+          missionId: input.missionId,
+          commandId: input.commandId,
+          expectedMissionRevision: input.expectedMissionRevision,
+          contextRevision: context.revision,
+          contextDigest: context.digest,
+          draftSessionId: input.draft.sessionId,
+          expectedDraftSlotRevision: input.draft.slotRevision,
+          expectedDraftContentRevision: input.draft.contentRevision,
+        });
+        if (!this.owner.isCurrent(captured)) return { status: 'stale' };
+        if (!result.ok) return { status: 'failed', error: result.error };
+        const output = result.value;
+        if (
+          output.receipt.ackCommandId !== input.commandId
+          || output.receipt.missionId !== input.missionId
+          || output.receipt.realtimeSessionId !== captured.session.realtimeSessionId
+          || output.receipt.contextRevision !== context.revision
+          || output.receipt.contextDigest !== context.digest
+          || output.mission.id !== input.missionId
+        ) {
+          return { status: 'invalid_response' };
+        }
+        return { status: 'completed', value: output };
+      } catch {
+        return { status: 'unavailable' };
+      }
+      },
+    );
+  }
+
+  private singleFlight<T>(
+    key: string,
+    work: () => Promise<AgentMissionRuntimeCall<T>>,
+  ): Promise<AgentMissionRuntimeCall<T>> {
+    const existing = this.flights.get(key);
+    if (existing !== undefined) {
+      return existing as Promise<AgentMissionRuntimeCall<T>>;
+    }
+    const flight = work().finally(() => {
+      if (this.flights.get(key) === flight) this.flights.delete(key);
+    });
+    this.flights.set(
+      key,
+      flight as Promise<AgentMissionRuntimeCall<unknown>>,
+    );
+    return flight;
   }
 }

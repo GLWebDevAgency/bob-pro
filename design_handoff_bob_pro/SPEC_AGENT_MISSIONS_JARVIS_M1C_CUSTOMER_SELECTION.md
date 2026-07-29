@@ -256,6 +256,38 @@ Une navigation n'est jamais rendue si la transition mission reconnue n'a pas ét
 erreur du planificateur, de l'autorisation, de la base ou de la revalidation échoue fermée et ne
 retombe pas vers une navigation générique qui contournerait la mission.
 
+#### 3.4.3 Observation atomique du slot et point fixe écran
+
+Le store mobile ne rend jamais sa révision CAS sous forme d'un getter mutable. Une lecture de
+mission utilise une opération sérialisée `refresh(accept)` :
+
+1. le GET produit une observation immuable
+   `{ state, reference: { sessionId, slotRevision, contentRevision } }` ;
+2. le provider compare synchroniquement les trois fences, sa génération de mutation et l'absence
+   de saisie locale non enregistrée ;
+3. seulement si le prédicat accepte, le store adopte la révision CAS et le provider assigne
+   l'état observé dans la même section sérialisée ;
+4. un refus laisse à la fois l'UI **et** la révision CAS locale inchangées. Le prochain save ne
+   peut donc jamais écraser le slot mission avec une révision apprise par une hydratation refusée.
+
+Le binding `/devis/new` est une machine explicite
+`detecting → hydrating → waiting_context → acknowledging → refreshing → ready`, avec sorties
+`manual | blocked`. Ni `startFresh`, ni défaut de facturation, ni ancien hint local ne mutent le
+brouillon tant que cette détection n'a pas conclu `manual`.
+
+`ready` est un **point fixe**, pas le succès d'un ACK isolé :
+
+```text
+mission.payload.draft == observation autoritaire
+ET mission.currentBinding == contexte confirmé de l'instance réellement rendue
+```
+
+Une continuation `exact_match` modifie le slot et la mission après le premier ACK. Le mobile
+recharge alors le slot, rend l'étape lignes, republie ce nouvel `instanceId`, puis effectue un
+second ACK de binding. Un cas `none | choices` dont le brouillon ne change pas atteint le point
+fixe après un seul ACK. Chaque ACK possède un UUIDv4 stable par tuple exact et les doubles rendus
+partagent le même vol ; une réponse tardive n'agit jamais après changement de génération.
+
 ## 4. Contrats exacts
 
 ### 4.1 Recherche

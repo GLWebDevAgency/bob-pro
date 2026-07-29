@@ -25,11 +25,39 @@ export class QuoteDraftRemoteError extends Error {
   }
 }
 
+export interface QuoteDraftAuthoritativeReference {
+  readonly sessionId: string;
+  readonly slotRevision: number;
+  readonly contentRevision: number;
+}
+
+export interface QuoteDraftRemoteObservation {
+  readonly state: QuoteDraftState;
+  readonly reference: QuoteDraftAuthoritativeReference;
+}
+
+export type QuoteDraftRemoteRefreshResult =
+  | {
+      readonly status: 'adopted';
+      readonly observation: QuoteDraftRemoteObservation | null;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly observation: QuoteDraftRemoteObservation | null;
+    };
+
 export interface QuoteDraftRemotePersistence {
   /** GET obligatoire : aucune donnée de brouillon n'est rendue avant son résultat. */
-  readonly load: () => Promise<QuoteDraftState | null>;
+  readonly load: () => Promise<QuoteDraftRemoteObservation | null>;
+  /**
+   * GET sérialisé dont la révision CAS n'est adoptée que si le prédicat synchrone accepte
+   * l'observation. Un refus laisse la révision locale strictement inchangée.
+   */
+  readonly refresh: (
+    accept: (observation: QuoteDraftRemoteObservation | null) => boolean,
+  ) => Promise<QuoteDraftRemoteRefreshResult>;
   /** PUT CAS avec la dernière révision réellement observée sur le serveur. */
-  readonly save: (state: QuoteDraftState) => Promise<QuoteDraftState>;
+  readonly save: (state: QuoteDraftState) => Promise<QuoteDraftRemoteObservation>;
   /** DELETE CAS, réservé à l'abandon explicite ou à la finalisation réelle. */
   readonly clear: () => Promise<void>;
   /** Invalide immédiatement tous les résultats tardifs, sans aucune mutation serveur. */
@@ -59,6 +87,18 @@ function failure(
   return new QuoteDraftRemoteError(code, operation);
 }
 
+function observation(slot: QuoteDraftSlotView): QuoteDraftRemoteObservation {
+  const state = decodeQuoteDraftServerSlot(slot);
+  return Object.freeze({
+    state,
+    reference: Object.freeze({
+      sessionId: state.sessionId,
+      slotRevision: slot.revision,
+      contentRevision: state.revision,
+    }),
+  });
+}
+
 /**
  * Slot distant sérialisé. La révision CAS reste dans cet adapter et n'est jamais confondue avec
  * `state.revision` (révision du contenu financier). Une seule requête mutante peut être en vol ;
@@ -70,7 +110,7 @@ class HttpQuoteDraftRemotePersistence implements QuoteDraftRemotePersistence {
   private loaded = false;
   private serverRevision: number | null = null;
   private tail: Promise<void> = Promise.resolve();
-  private loadInFlight: Promise<QuoteDraftState | null> | null = null;
+  private loadInFlight: Promise<QuoteDraftRemoteObservation | null> | null = null;
 
   constructor(private readonly client: QuoteDraftRemoteClient) {}
 
@@ -89,7 +129,7 @@ class HttpQuoteDraftRemotePersistence implements QuoteDraftRemotePersistence {
     return result;
   }
 
-  load(): Promise<QuoteDraftState | null> {
+  load(): Promise<QuoteDraftRemoteObservation | null> {
     if (!this.active) {
       return Promise.reject(new QuoteDraftRemoteError('session_closed', 'load'));
     }
@@ -102,7 +142,7 @@ class HttpQuoteDraftRemotePersistence implements QuoteDraftRemotePersistence {
       if (!result.ok) throw failure('load', result.error);
       this.loaded = true;
       this.serverRevision = result.value?.revision ?? 0;
-      return result.value === null ? null : decodeQuoteDraftServerSlot(result.value);
+      return result.value === null ? null : observation(result.value);
     });
     this.loadInFlight = flight;
     const clearFlight = (): void => {
@@ -112,7 +152,26 @@ class HttpQuoteDraftRemotePersistence implements QuoteDraftRemotePersistence {
     return flight;
   }
 
-  save(state: QuoteDraftState): Promise<QuoteDraftState> {
+  refresh(
+    accept: (observation: QuoteDraftRemoteObservation | null) => boolean,
+  ): Promise<QuoteDraftRemoteRefreshResult> {
+    const generation = this.generation;
+    return this.enqueue(async () => {
+      this.assertSession(generation, 'load');
+      const result = await this.client.getQuoteDraft();
+      this.assertSession(generation, 'load');
+      if (!result.ok) throw failure('load', result.error);
+      const observed = result.value === null ? null : observation(result.value);
+      const accepted = accept(observed);
+      this.assertSession(generation, 'load');
+      if (!accepted) return { status: 'rejected', observation: observed };
+      this.loaded = true;
+      this.serverRevision = result.value?.revision ?? 0;
+      return { status: 'adopted', observation: observed };
+    });
+  }
+
+  save(state: QuoteDraftState): Promise<QuoteDraftRemoteObservation> {
     const generation = this.generation;
     return this.enqueue(async () => {
       this.assertSession(generation, 'save');
@@ -126,7 +185,7 @@ class HttpQuoteDraftRemotePersistence implements QuoteDraftRemotePersistence {
       this.assertSession(generation, 'save');
       if (!result.ok) throw failure('save', result.error);
       this.serverRevision = result.value.revision;
-      return decodeQuoteDraftServerSlot(result.value);
+      return observation(result.value);
     });
   }
 

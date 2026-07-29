@@ -4557,6 +4557,31 @@ const legacyFr = {
     pro: 'Le brouillon n’a pas pu être récupéré. Aucune donnée locale ne lui est substituée.',
     direct: 'Brouillon inaccessible. Aucune donnée locale affichée.',
   },
+  'devis.mission.loading': {
+    pote: 'Je synchronise le devis avec ce que tu viens de me demander.',
+    pro: 'Synchronisation de la mission avec le devis affiché.',
+    direct: 'Synchronisation du devis.',
+  },
+  'devis.mission.error': {
+    pote: 'Je n’ai pas pu vérifier que ce devis est bien celui de notre conversation. Rien n’a été modifié.',
+    pro: 'La mission n’a pas pu être reliée de façon sûre au devis affiché. Aucune modification n’a été appliquée.',
+    direct: 'Mission non vérifiée. Aucune modification appliquée.',
+  },
+  'devis.mission.localChanges': {
+    pote: 'Ce devis a changé pendant la synchronisation. Je garde tes modifications et je n’écrase rien.',
+    pro: 'Le devis a été modifié pendant la synchronisation. Les modifications sont préservées et ne seront pas écrasées.',
+    direct: 'Modifications locales préservées. Rien n’est écrasé.',
+  },
+  'devis.mission.draftDecision': {
+    pote: 'J’ai retrouvé un autre brouillon. Choisis de le reprendre ou de recommencer avant que je continue.',
+    pro: 'Un autre brouillon a été retrouvé. Choisissez de le reprendre ou de recommencer avant de poursuivre.',
+    direct: 'Autre brouillon trouvé. Choisis reprendre ou recommencer.',
+  },
+  'devis.mission.linesHandoff': {
+    pote: 'Le client est confirmé. Continue les prestations à l’écran ; je garde le contexte.',
+    pro: 'Le client est confirmé. Poursuivez les prestations à l’écran ; le contexte est conservé.',
+    direct: 'Client confirmé. Continue les prestations à l’écran.',
+  },
   'devis.draftExit.title': {
     pote: 'Que veux-tu faire de ce devis ?',
     pro: 'Que souhaitez-vous faire de ce devis ?',

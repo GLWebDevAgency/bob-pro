@@ -124,6 +124,8 @@ import { useCatalogue } from '../../src/data/catalogue';
 import { useBillingPrefs } from '../../src/data/billing-prefs';
 import {
   consumeWizardHint,
+  quoteScreenInstanceId,
+  useQuoteScreenMissionBinding,
   usePublishAgentContext,
   useAgentSession,
   type AgentAffordance,
@@ -314,6 +316,26 @@ export default function DevisNew() {
 
   // ── Machine RÉELLE @bob/core (C02), portée par le provider racine : une seule vérité ──
   const flow = quoteDraft.state.flow;
+  const missionScreenInstanceId = quoteScreenInstanceId({
+    sessionId: quoteDraft.state.sessionId,
+    slotRevision: quoteDraft.authoritativeReference?.slotRevision ?? null,
+    contentRevision:
+      quoteDraft.authoritativeReference?.contentRevision ?? quoteDraft.state.revision,
+    step: flow.step,
+  });
+  const missionBinding = useQuoteScreenMissionBinding({
+    screenInstanceId: missionScreenInstanceId,
+    authoritativeDraft: quoteDraft.authoritativeReference,
+    persistenceStatus: quoteDraft.persistence.status,
+    hydrateDraft: quoteDraft.hydrateMissionDraft,
+  });
+  const missionEntryReady =
+    missionBinding.state.phase === 'ready'
+    || missionBinding.state.phase === 'handoff'
+    || missionBinding.state.phase === 'manual';
+  const missionOwnsEntry =
+    missionBinding.state.phase === 'ready'
+    || missionBinding.state.phase === 'handoff';
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -462,8 +484,14 @@ export default function DevisNew() {
   const freshnessApplied = useRef(false);
   const [freshnessReady, setFreshnessReady] = useState(false);
   useEffect(() => {
-    if (freshnessApplied.current) return;
+    if (freshnessApplied.current || !missionEntryReady) return;
     freshnessApplied.current = true;
+    if (missionOwnsEntry) {
+      // La mission a déjà choisi et persisté le slot exact. Toute initialisation locale
+      // (nouvelle session, ancien hint, défaut de facturation) détruirait cette autorité.
+      setFreshnessReady(true);
+      return;
+    }
     if (resumeRequested) {
       // Rien à faire si la session déjà chargée EST le brouillon visé (ex. démarrage à froid,
       // jamais soft-resetée) — sinon, on ramène celui parké par une visite précédente.
@@ -474,13 +502,19 @@ export default function DevisNew() {
       quoteDraft.startFresh();
     }
     setFreshnessReady(true);
-    // Mount uniquement — une seule décision par ouverture d'écran (resumeRequested/quoteDraft
-    // sont lus via refs/valeurs figées à l'ouverture ; les redemander ne doit rien redéclencher).
-  }, []);
+  }, [missionEntryReady, missionOwnsEntry, quoteDraft, resumeRequested]);
   const billingDefaultsApplied = useRef(false);
   const [billingDefaultsReady, setBillingDefaultsReady] = useState(false);
   useEffect(() => {
     if (billingDefaultsApplied.current || !freshnessReady) return;
+    if (missionOwnsEntry) {
+      // Le brouillon mission est une photographie serveur : les defaults ont été décidés dans
+      // le domaine. L'écran ne crée jamais une révision locale avant son ACK.
+      billingDefaultsApplied.current = true;
+      setBillingDefaultsReady(true);
+      return;
+    }
+    if (missionBinding.state.phase !== 'manual') return;
     if (resumeRequested) {
       billingDefaultsApplied.current = true;
       setBillingDefaultsReady(true);
@@ -502,17 +536,30 @@ export default function DevisNew() {
     if (!applied.ok && applied.error.code === 'revision_conflict') return;
     billingDefaultsApplied.current = true;
     setBillingDefaultsReady(true);
-  }, [billingPrefs.prefs, freshnessReady, quoteDraft.state.revision, resumeRequested]);
+  }, [
+    billingPrefs.prefs,
+    freshnessReady,
+    missionBinding.state.phase,
+    missionOwnsEntry,
+    quoteDraft,
+    quoteDraft.state.revision,
+    resumeRequested,
+  ]);
   const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false);
 
   // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
   // les clients RÉELS dès leur chargement — client présélectionné + saut direct aux
   // prestations. Introuvable/ambigu → flux normal étape client (fail-safe, jamais de devinette).
   // Attend la décision fraîcheur ci-dessus : sinon `flowRef` porterait encore l'ancien brouillon.
-  const [wizardHint] = useState(() => consumeWizardHint('devis-new'));
-  const wizardHintRef = useRef(wizardHint);
+  const wizardHintRef =
+    useRef<ReturnType<typeof consumeWizardHint>>(null);
+  const wizardHintConsumed = useRef(false);
   useEffect(() => {
-    if (!freshnessReady) return;
+    if (!freshnessReady || missionBinding.state.phase !== 'manual') return;
+    if (!wizardHintConsumed.current) {
+      wizardHintRef.current = consumeWizardHint('devis-new');
+      wizardHintConsumed.current = true;
+    }
     const hint = wizardHintRef.current;
     const reference = hint?.customerReference;
     if (!reference) return;
@@ -528,7 +575,7 @@ export default function DevisNew() {
       { type: 'select_customer', customer: { id: matched.id, name: matched.name } },
       { type: 'next_step' },
     ]);
-  }, [customers.data, freshnessReady]);
+  }, [customers.data, freshnessReady, missionBinding.state.phase, quoteDraft]);
   const customersRef = useRef(customers.data ?? []);
   customersRef.current = customers.data ?? [];
   const prestationsRef = useRef<readonly VoicePrestation[]>([]);
@@ -995,21 +1042,33 @@ export default function DevisNew() {
     });
   const agentSurface = useMemo<AgentSurface>(
     () => ({
-      ...(greetKey
+      ...(missionBinding.state.phase === 'handoff'
         ? {
             greeting: {
-              key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
-              text: speaksSignatureAdvice
-                ? `${t(greetKey, { personality })} ${t('legal.signatureChannel.voice', { personality })}`
-                : t(greetKey, { personality }),
+              key: `devis-new:mission-handoff:${missionBinding.state.mission.id}:${missionBinding.state.mission.revision}`,
+              text: t('devis.mission.linesHandoff', { personality }),
             },
           }
-        : {}),
-      affordances: voiceAffordances,
+        : missionBinding.state.phase === 'manual' && greetKey
+          ? {
+              greeting: {
+                key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
+                text: speaksSignatureAdvice
+                  ? `${t(greetKey, { personality })} ${t('legal.signatureChannel.voice', { personality })}`
+                  : t(greetKey, { personality }),
+              },
+            }
+          : {}),
+      // Une mission Live active est pilotée par les use cases serveur. Les affordances
+      // historiques restent le repli manuel, mais ne peuvent jamais muter en parallèle le slot
+      // durable pendant que GPT Realtime attend un ACK.
+      affordances:
+        missionBinding.state.phase === 'manual' ? voiceAffordances : [],
     }),
     [
       flow.step,
       greetKey,
+      missionBinding.state.phase,
       personality,
       quoteDraft.state.sessionId,
       speaksSignatureAdvice,
@@ -1020,14 +1079,16 @@ export default function DevisNew() {
     () => ({
       screen: {
         name: '/devis/new',
-        instanceId: `devis-new:${quoteDraft.state.sessionId}:${quoteDraft.state.revision}:${flow.step}`,
+        instanceId: missionScreenInstanceId,
       },
-      entities: contextCustomer
+      // Avant adoption du triplet mission, l'ancien brouillon chargé ne doit jamais être publié
+      // comme contexte de la nouvelle conversation.
+      entities: missionEntryReady && contextCustomer
         ? [{ type: 'customer' as const, id: contextCustomer.id, label: contextCustomer.name }]
         : [],
       capabilities: ['screen.read', 'customer.read'],
     }),
-    [contextCustomer, flow.step, quoteDraft.state.revision, quoteDraft.state.sessionId],
+    [contextCustomer, missionEntryReady, missionScreenInstanceId],
   );
   usePublishAgentContext(wizardAgentContext, WIZARD_AGENT_LAYOUT, agentSurface);
   const agentSession = useAgentSession();
@@ -1035,6 +1096,7 @@ export default function DevisNew() {
   // Une reprise de route obtient une nouvelle mission vocale, mais le même sessionId de brouillon.
   // Une proposition expirée reste un diff refusé, jamais une mutation différée.
   useEffect(() => {
+    if (missionBinding.state.phase !== 'manual') return undefined;
     quoteDraft.expireProposal();
     if (quoteStateRef.current.mission.status !== 'active') {
       quoteDraft.startMission({ mode: 'guided_voice', startedFrom: '/devis/new' });
@@ -1042,28 +1104,45 @@ export default function DevisNew() {
     return () => {
       quoteDraft.stopMission('user');
     };
-  }, [quoteDraft.expireProposal, quoteDraft.startMission, quoteDraft.stopMission]);
+  }, [
+    missionBinding.state.phase,
+    quoteDraft.expireProposal,
+    quoteDraft.startMission,
+    quoteDraft.stopMission,
+  ]);
 
   // À chaque (re)entrée sur l'étape signature : pad remonté VIERGE ⇒ capture réinitialisée
   // (ce qui est affiché = ce qui est commité — revenir en arrière exige de re-signer),
   // et nom du signataire pré-rempli avec le client choisi.
   useEffect(() => {
-    if (flow.step !== 'signature') return;
+    if (!billingDefaultsReady || !missionEntryReady || flow.step !== 'signature') return;
     setSignature(null);
     if (signerName === '' && customer !== null) setSignerName(customer.name);
-  }, [flow.step]);
+  }, [
+    billingDefaultsReady,
+    customer,
+    flow.step,
+    missionEntryReady,
+    signerName,
+  ]);
 
   // signerName n'est commité dans la machine QUE si le pad porte un tracé ET un nom
   // valide (≥ 2 caractères — même plancher que SignQuote) : la garde devisNext reste
   // l'unique juge du passage. Le dataURL (signature.dataUrl) part avec signQuote (preuve R4).
   useEffect(() => {
-    if (exitActionInFlight.current) return;
+    if (!billingDefaultsReady || !missionEntryReady || exitActionInFlight.current) return;
     const name = signerName.trim();
     const committed = signature !== null && !signature.isEmpty && name.length >= 2 ? name : null;
     if (quoteStateRef.current.flow.draft.signerName !== committed) {
       quoteDraft.apply({ type: 'set_signer_name', signerName: committed });
     }
-  }, [signature, signerName]);
+  }, [
+    billingDefaultsReady,
+    missionEntryReady,
+    quoteDraft,
+    signature,
+    signerName,
+  ]);
 
   // ── Étape 2 : lignes ───────────────────────────────────────────────────────
   const lineQtyValue = parsePositive(lineQty);
@@ -1375,7 +1454,9 @@ export default function DevisNew() {
 
   // ── Sortie sûre : bouton, back Android et swipe iOS passent par la même décision ──
   const hasUnpersistedSignature = signature !== null && !signature.isEmpty;
-  const needsExitDecision = quoteResult === null
+  const wizardInteractive = billingDefaultsReady && missionEntryReady;
+  const needsExitDecision = wizardInteractive
+    && quoteResult === null
     && (
       hasUnsavedQuoteDraftChanges(quoteDraft.state)
       || hasUnpersistedSignature
@@ -1383,7 +1464,8 @@ export default function DevisNew() {
     );
   // Une chaîne partiellement exécutée ne se transforme pas en « brouillon local » : quitter
   // ferait perdre les checkpoints et pourrait provoquer un double envoi/signature au retry.
-  const generationExitLocked = quoteResult === null && flow.step === 'recap';
+  const generationExitLocked =
+    wizardInteractive && quoteResult === null && flow.step === 'recap';
 
   useEffect(() => navigation.addListener('beforeRemove', (event) => {
     if (allowNextRemoval.current) {
@@ -1457,7 +1539,15 @@ export default function DevisNew() {
   };
 
   // ════════ RECAP (machine: 'recap', devis réel créé — JAMAIS de facture) ═════
-  if (!billingDefaultsReady) {
+  if (
+    missionBinding.state.phase === 'error'
+    || missionBinding.state.phase === 'blocked'
+  ) {
+    const messageKey: I18nKey = missionBinding.state.phase === 'error'
+      ? 'devis.mission.error'
+      : missionBinding.state.reason === 'local_changes'
+        ? 'devis.mission.localChanges'
+        : 'devis.mission.draftDecision';
     return (
       <View
         style={{
@@ -1468,7 +1558,33 @@ export default function DevisNew() {
           justifyContent: 'center',
         }}
       >
-        {billingPrefs.isError ? (
+        <ErrorRetry
+          message={t(messageKey, { personality })}
+          onRetry={missionBinding.retry}
+        />
+      </View>
+    );
+  }
+
+  if (!billingDefaultsReady) {
+    return (
+      <View
+        accessibilityRole="progressbar"
+        accessibilityLabel={t(
+          missionEntryReady
+            ? 'devis.draftLoad.loading'
+            : 'devis.mission.loading',
+          { personality },
+        )}
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 24,
+          paddingHorizontal: 18,
+          justifyContent: 'center',
+        }}
+      >
+        {missionEntryReady && billingPrefs.isError ? (
           <ErrorRetry
             message={t('reglages.dataError', { personality })}
             onRetry={() => { void billingPrefs.refetch(); }}
@@ -1713,6 +1829,37 @@ export default function DevisNew() {
             accessibilityLabel={t('devis.title', { personality })}
           />
         </View>
+
+        {missionBinding.state.phase === 'handoff' ? (
+          <View
+            accessible
+            accessibilityLiveRegion="polite"
+            accessibilityLabel={t('devis.mission.linesHandoff', { personality })}
+            style={{
+              marginHorizontal: 18,
+              marginBottom: 8,
+              borderRadius: 14,
+              borderWidth: 1,
+              borderColor: semantic.ai,
+              backgroundColor: semantic.aiBg,
+              paddingVertical: 10,
+              paddingHorizontal: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <Ionicons name="sparkles-outline" size={18} color={semantic.ai} />
+            <Text
+              style={[
+                font('sub', 600),
+                { flex: 1, color: semantic.aiInk, lineHeight: 18 },
+              ]}
+            >
+              {t('devis.mission.linesHandoff', { personality })}
+            </Text>
+          </View>
+        ) : null}
 
         {/* Bannière discrète de reprise (bug fondateur 2026-07-17) : jamais de résurrection
             silencieuse — le wizard démarre vierge, mais un brouillon enregistré parké reste

@@ -11,7 +11,9 @@ import type { AgentContext } from '@bob/ai';
 import type { RealtimeAgentMissionSession } from '@bob/api-client';
 import {
   AgentMissionRuntimeOwner,
+  FencedAgentMissionRuntimeActions,
   type AgentMissionRuntimeBridge,
+  type AgentMissionRuntimeActions,
   type AgentMissionRuntimeSnapshot,
 } from './agent-mission-runtime';
 import type { RealtimePublishedFence } from './realtime-driver';
@@ -19,6 +21,7 @@ import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
 
 interface AgentMissionRuntimeContextValue {
   readonly bridge: AgentMissionRuntimeBridge;
+  readonly actions: AgentMissionRuntimeActions;
   readonly snapshot: AgentMissionRuntimeSnapshot;
 }
 
@@ -38,6 +41,7 @@ export function AgentMissionProvider({
   readonly children: ReactNode;
 }) {
   const [owner] = useState(() => new AgentMissionRuntimeOwner());
+  const [actions] = useState(() => new FencedAgentMissionRuntimeActions(owner));
   const [snapshot, setSnapshot] = useState(() => owner.snapshot());
   const effectGeneration = useRef(0);
 
@@ -79,8 +83,8 @@ export function AgentMissionProvider({
     [owner],
   );
   const value = useMemo<AgentMissionRuntimeContextValue>(
-    () => Object.freeze({ bridge, snapshot }),
-    [bridge, snapshot],
+    () => Object.freeze({ actions, bridge, snapshot }),
+    [actions, bridge, snapshot],
   );
 
   return (
@@ -108,4 +112,14 @@ export function useAgentMissionRuntimeSnapshot(): AgentMissionRuntimeSnapshot {
     );
   }
   return value.snapshot;
+}
+
+export function useAgentMissionRuntimeActions(): AgentMissionRuntimeActions {
+  const value = useContext(AgentMissionRuntimeContext);
+  if (value === null) {
+    throw new Error(
+      'useAgentMissionRuntimeActions doit être utilisé dans AgentMissionProvider',
+    );
+  }
+  return value.actions;
 }

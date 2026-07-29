@@ -32,6 +32,7 @@ import {
   discardQuoteDraft,
   expireQuoteDraftProposal,
   hasMeaningfulQuoteDraft,
+  hasUnsavedQuoteDraftChanges,
   proposeQuoteDraft,
   rejectQuoteDraftProposal,
   requireQuoteDraftRevision,
@@ -55,6 +56,7 @@ import {
   createQuoteDraftRemotePersistence,
   disposeQuoteDraftSession,
   isQuoteDraftRevisionConflict,
+  type QuoteDraftAuthoritativeReference,
   type QuoteDraftRemotePersistence,
 } from './quote-draft-remote-store';
 
@@ -74,6 +76,11 @@ const DEFAULT_RUNTIME: QuoteDraftProviderRuntime = {
 
 export interface QuoteDraftContextValue {
   readonly state: QuoteDraftState;
+  /**
+   * Non-null uniquement si l'état rendu correspond exactement au slot serveur observé.
+   * Toute saisie locale non enregistrée le remet à null.
+   */
+  readonly authoritativeReference: QuoteDraftAuthoritativeReference | null;
   /** Brouillon enregistré PARKÉ par `startFresh` — jamais touché tant qu'il n'est pas repris
    * explicitement. Source unique pour la carte « brouillon » de ventes.tsx (bug fondateur
    * 2026-07-17 : « Devis » ne doit plus reprendre en silence ce qui traînait). */
@@ -140,7 +147,25 @@ export interface QuoteDraftContextValue {
   readonly startFresh: () => void;
   /** Ramène le brouillon parké en session active — le SEUL chemin de reprise explicite. */
   readonly resumePending: () => void;
+  readonly hydrateMissionDraft: (
+    expected: QuoteDraftAuthoritativeReference,
+  ) => Promise<QuoteDraftMissionHydrationResult>;
 }
+
+export type QuoteDraftMissionHydrationResult =
+  | {
+      readonly status: 'ready';
+      readonly reference: QuoteDraftAuthoritativeReference;
+    }
+  | {
+      readonly status:
+        | 'busy'
+        | 'local_changes'
+        | 'not_found'
+        | 'stale'
+        | 'superseded'
+        | 'unavailable';
+    };
 
 const QuoteDraftContext = createContext<QuoteDraftContextValue | null>(null);
 
@@ -206,6 +231,8 @@ function QuoteDraftSessionProvider({
   /** Brouillon enregistré parké par `startFresh` — jamais écrasé tant qu'il n'est pas repris ou
    * qu'une nouvelle sauvegarde/suppression ne le rend caduc (la BDD est un slot UNIQUE). */
   const [pendingResume, setPendingResume] = useState<QuoteDraftState | null>(null);
+  const [authoritativeReference, setAuthoritativeReference] =
+    useState<QuoteDraftAuthoritativeReference | null>(null);
   const [persistenceState, setPersistenceState] = useState<QuoteDraftContextValue['persistence']>(
     () => ({ ready: false, status: 'hydrating', error: null }),
   );
@@ -213,8 +240,20 @@ function QuoteDraftSessionProvider({
   // Fence synchrone : tap et transcript reçus dans le même tick sont sérialisés sur le dernier état.
   const stateRef = useRef(state);
   stateRef.current = state;
+  const authoritativeReferenceRef =
+    useRef<QuoteDraftAuthoritativeReference | null>(authoritativeReference);
+  authoritativeReferenceRef.current = authoritativeReference;
   const mutationEpoch = useRef(0);
-  const persistenceOperation = useRef<'save' | 'clear' | 'complete' | null>(null);
+  const persistenceOperation =
+    useRef<'save' | 'clear' | 'complete' | 'mission_hydrate' | null>(null);
+
+  const publishAuthoritativeReference = useCallback(
+    (reference: QuoteDraftAuthoritativeReference | null): void => {
+      authoritativeReferenceRef.current = reference;
+      setAuthoritativeReference(reference);
+    },
+    [],
+  );
 
   useEffect(() => {
     let active = true;
@@ -227,8 +266,11 @@ function QuoteDraftSessionProvider({
         // Double fence : les enfants ne sont pas encore montés, et une future évolution qui les
         // monterait ne pourra toujours pas écraser une saisie arrivée pendant l'I/O.
         if (hydrated !== null && mutationEpoch.current === epochAtStart) {
-          stateRef.current = hydrated;
-          setState(hydrated);
+          stateRef.current = hydrated.state;
+          setState(hydrated.state);
+          publishAuthoritativeReference(hydrated.reference);
+        } else if (hydrated === null && mutationEpoch.current === epochAtStart) {
+          publishAuthoritativeReference(null);
         }
         setPersistenceState({ ready: true, status: 'ready', error: null });
       })
@@ -241,13 +283,24 @@ function QuoteDraftSessionProvider({
     return () => {
       active = false;
     };
-  }, [hydrationAttempt, persistence]);
+  }, [hydrationAttempt, persistence, publishAuthoritativeReference]);
 
   const assign = useCallback((next: QuoteDraftState, isMutation = true): void => {
     if (isMutation) mutationEpoch.current += 1;
+    const currentReference = authoritativeReferenceRef.current;
+    if (
+      currentReference !== null
+      && (
+        currentReference.sessionId !== next.sessionId
+        || currentReference.contentRevision !== next.revision
+        || hasUnsavedQuoteDraftChanges(next)
+      )
+    ) {
+      publishAuthoritativeReference(null);
+    }
     stateRef.current = next;
     setState(next);
-  }, []);
+  }, [publishAuthoritativeReference]);
 
   useEffect(() => {
     const unregister = registerBeforeSignOutCleanup(() => {
@@ -259,6 +312,7 @@ function QuoteDraftSessionProvider({
       const empty = createQuoteDraft(runtime.newId('session'));
       stateRef.current = empty;
       setState(empty);
+      publishAuthoritativeReference(null);
       setPendingResume(null);
       setPersistenceState({ ready: false, status: 'hydrating', error: null });
       return disposeQuoteDraftSession(persistence);
@@ -267,7 +321,7 @@ function QuoteDraftSessionProvider({
       unregister();
       persistence.dispose();
     };
-  }, [persistence, runtime]);
+  }, [persistence, publishAuthoritativeReference, runtime]);
 
   const commit = useCallback(
     (result: QuoteDraftResult<QuoteDraftState>): QuoteDraftResult<QuoteDraftState> => {
@@ -445,7 +499,8 @@ function QuoteDraftSessionProvider({
         const epoch = mutationEpoch.current;
         const saved = await persistence.save(stateRef.current);
         if (epoch !== mutationEpoch.current) continue;
-        assign(saved, false);
+        assign(saved.state, false);
+        publishAuthoritativeReference(saved.reference);
         // Le slot BDD unique porte désormais CETTE session : un ancien brouillon parké
         // (jamais re-sauvegardé depuis) n'existe plus nulle part — le proposer resterait fantôme.
         setPendingResume(null);
@@ -464,7 +519,7 @@ function QuoteDraftSessionProvider({
     } finally {
       persistenceOperation.current = null;
     }
-  }, [assign, persistence]);
+  }, [assign, persistence, publishAuthoritativeReference]);
 
   const discard = useCallback(async (): Promise<boolean> => {
     if (persistenceOperation.current !== null) return false;
@@ -473,6 +528,7 @@ function QuoteDraftSessionProvider({
     try {
       await persistence.clear();
       assign(discardQuoteDraft(stateRef.current, runtime.newId('session')));
+      publishAuthoritativeReference(null);
       // Le slot BDD unique est vidé : un brouillon parké n'y survit pas non plus.
       setPendingResume(null);
       setPersistenceState({ ready: true, status: 'ready', error: null });
@@ -487,7 +543,7 @@ function QuoteDraftSessionProvider({
     } finally {
       persistenceOperation.current = null;
     }
-  }, [assign, persistence, runtime]);
+  }, [assign, persistence, publishAuthoritativeReference, runtime]);
 
   const complete = useCallback(
     async (artifactId: string): Promise<boolean> => {
@@ -502,6 +558,7 @@ function QuoteDraftSessionProvider({
       try {
         await persistence.clear();
         assign(result.state);
+        publishAuthoritativeReference(null);
         setPendingResume(null);
         setPersistenceState({ ready: true, status: 'ready', error: null });
         return true;
@@ -516,7 +573,7 @@ function QuoteDraftSessionProvider({
         persistenceOperation.current = null;
       }
     },
-    [assign, persistence, runtime],
+    [assign, persistence, publishAuthoritativeReference, runtime],
   );
 
   const reset = discard;
@@ -529,17 +586,75 @@ function QuoteDraftSessionProvider({
       setPendingResume(current);
     }
     assign(createQuoteDraft(runtime.newId('session')));
-  }, [assign, runtime]);
+    publishAuthoritativeReference(null);
+  }, [assign, publishAuthoritativeReference, runtime]);
 
   const resumePending = useCallback(() => {
     if (pendingResume === null) return;
     assign(pendingResume);
+    publishAuthoritativeReference(null);
     setPendingResume(null);
-  }, [assign, pendingResume]);
+  }, [assign, pendingResume, publishAuthoritativeReference]);
+
+  const hydrateMissionDraft = useCallback(
+    async (
+      expected: QuoteDraftAuthoritativeReference,
+    ): Promise<QuoteDraftMissionHydrationResult> => {
+      if (persistenceOperation.current !== null) return { status: 'busy' };
+      persistenceOperation.current = 'mission_hydrate';
+      const epochAtStart = mutationEpoch.current;
+      let rejection: Exclude<
+        QuoteDraftMissionHydrationResult['status'],
+        'ready' | 'busy' | 'unavailable'
+      > = 'stale';
+      try {
+        const refreshed = await persistence.refresh((observed) => {
+          if (mutationEpoch.current !== epochAtStart) {
+            rejection = 'superseded';
+            return false;
+          }
+          if (observed === null) {
+            rejection = 'not_found';
+            return false;
+          }
+          const reference = observed.reference;
+          if (
+            reference.sessionId !== expected.sessionId
+            || reference.slotRevision !== expected.slotRevision
+            || reference.contentRevision !== expected.contentRevision
+          ) {
+            rejection = 'stale';
+            return false;
+          }
+          if (hasUnsavedQuoteDraftChanges(stateRef.current)) {
+            rejection = 'local_changes';
+            return false;
+          }
+          // L'assignation et l'adoption CAS sont dans la même section sérialisée du store.
+          assign(observed.state, false);
+          publishAuthoritativeReference(reference);
+          return true;
+        });
+        if (refreshed.status !== 'adopted' || refreshed.observation === null) {
+          return { status: rejection };
+        }
+        return {
+          status: 'ready',
+          reference: refreshed.observation.reference,
+        };
+      } catch {
+        return { status: 'unavailable' };
+      } finally {
+        persistenceOperation.current = null;
+      }
+    },
+    [assign, persistence, publishAuthoritativeReference],
+  );
 
   const value = useMemo<QuoteDraftContextValue>(
     () => ({
       state,
+      authoritativeReference,
       pendingResume,
       guidance: deriveQuoteDraftGuidance(state),
       persistence: persistenceState,
@@ -565,6 +680,7 @@ function QuoteDraftSessionProvider({
       reset,
       startFresh,
       resumePending,
+      hydrateMissionDraft,
     }),
     [
       acceptProposal,
@@ -576,7 +692,9 @@ function QuoteDraftSessionProvider({
       clearLineFormAction,
       complete,
       completeMission,
+      authoritativeReference,
       pendingResume,
+      hydrateMissionDraft,
       resumePending,
       startFresh,
       discard,
