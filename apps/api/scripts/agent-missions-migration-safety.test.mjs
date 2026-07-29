@@ -77,6 +77,18 @@ const globalForegroundExpandPath = path.join(
   apiDir,
   'prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql',
 );
+const m2aExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260729150000_agent_mission_quote_line_work_expand/migration.sql',
+);
+const m2aValidatePath = path.join(
+  apiDir,
+  'prisma/migrations/20260729150100_agent_mission_quote_line_work_validate/migration.sql',
+);
+const m2aCutoverPath = path.join(
+  apiDir,
+  'prisma/migrations/20260729150200_agent_mission_quote_line_work_cutover/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
 const persistencePath = path.join(
   apiDir,
@@ -88,6 +100,10 @@ const agentMissionRlsReplayPath = path.join(
   'prisma/agent-mission-realtime-rls-replay.sql',
 );
 const generatorPath = path.join(scriptDir, 'generate-agent-mission-migration-values.mjs');
+const m2aGeneratorPath = path.join(
+  scriptDir,
+  'generate-agent-mission-m2a-foundation-values.mjs',
+);
 
 const [
   expand,
@@ -107,11 +123,15 @@ const [
   customerResolutionValidate,
   customerResolutionCutover,
   globalForegroundExpand,
+  m2aExpand,
+  m2aValidate,
+  m2aCutover,
   schema,
   persistence,
   rls,
   agentMissionRlsReplay,
   generator,
+  m2aGenerator,
 ] = await Promise.all([
   readFile(expandPath, 'utf8'),
   readFile(validatePath, 'utf8'),
@@ -130,11 +150,15 @@ const [
   readFile(customerResolutionValidatePath, 'utf8'),
   readFile(customerResolutionCutoverPath, 'utf8'),
   readFile(globalForegroundExpandPath, 'utf8'),
+  readFile(m2aExpandPath, 'utf8'),
+  readFile(m2aValidatePath, 'utf8'),
+  readFile(m2aCutoverPath, 'utf8'),
   readFile(schemaPath, 'utf8'),
   readFile(persistencePath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
   readFile(generatorPath, 'utf8'),
+  readFile(m2aGeneratorPath, 'utf8'),
 ]);
 
 test('les listes SQL AgentMission sont générées depuis les constantes du core', () => {
@@ -215,6 +239,9 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['customer resolution validate', customerResolutionValidate],
     ['customer resolution cutover', customerResolutionCutover],
     ['global foreground expand', globalForegroundExpand],
+    ['M2-A expand', m2aExpand],
+    ['M2-A validate', m2aValidate],
+    ['M2-A cutover', m2aCutover],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -224,6 +251,179 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
       `${name}: statement_timeout absent`,
     );
     assert.match(sql, /\bCOMMIT;/u, `${name}: commit absent`);
+  }
+});
+
+test('M2-A-0 génère ses unions SQL depuis le core sans réécrire une migration historique', () => {
+  const result = spawnSync(
+    process.execPath,
+    [m2aGeneratorPath, '--check'],
+    { cwd: repositoryRoot, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(
+    (m2aGenerator.match(/\bawait writeFile\(/gmu) ?? []).length,
+    1,
+    'Le générateur M2-A ne peut écrire que sa migration expand courante.',
+  );
+  assert.match(m2aGenerator, /await writeFile\(migrationPath, renderedMigration/u);
+  for (const region of [
+    'AGENT_MISSION_QUOTE_LINE_WORK_STATES',
+    'AGENT_MISSION_QUOTE_LINE_WORK_ORIGINS',
+    'AGENT_MISSION_QUOTE_LINE_CATEGORIES',
+    'AGENT_MISSION_QUOTE_LINE_VAT_RATES',
+    'AGENT_MISSION_QUOTE_LINE_PRICE_BASES',
+    'AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS',
+    'CATALOGUE_PRESTATION_CATEGORIES',
+    'CATALOGUE_PRESTATION_VAT_RATES',
+    'CATALOGUE_SEARCH_EXPANSION_EXPRESSION',
+    'CATALOGUE_SEARCH_TRANSLITERATION_SOURCE',
+    'CATALOGUE_SEARCH_TRANSLITERATION_TARGET',
+  ]) {
+    assert.match(m2aExpand, new RegExp(`BEGIN GENERATED ${region}`, 'u'));
+    assert.match(m2aExpand, new RegExp(`END GENERATED ${region}`, 'u'));
+  }
+});
+
+test('M2-A-0 suit expand, validate et cutover sans fermer le writer catalogue N-1', () => {
+  for (const constraintName of [
+    'catalogue_prestations_category_check_m2a',
+    'catalogue_prestations_vat_check_m2a',
+  ]) {
+    assert.match(
+      m2aExpand,
+      new RegExp(`ADD CONSTRAINT ${constraintName}[\\s\\S]*?NOT VALID`, 'u'),
+    );
+    assert.match(
+      m2aValidate,
+      new RegExp(`VALIDATE CONSTRAINT ${constraintName}`, 'u'),
+    );
+    assert.match(
+      m2aCutover,
+      new RegExp(`RENAME CONSTRAINT ${constraintName}`, 'u'),
+    );
+  }
+  assert.equal((m2aExpand.match(/\bNOT VALID\b/gmu) ?? []).length, 2);
+  assert.doesNotMatch(m2aExpand, /\bVALIDATE CONSTRAINT\b/u);
+  assert.doesNotMatch(m2aExpand, /\bDROP CONSTRAINT\b/u);
+  assert.doesNotMatch(m2aExpand, /\bRENAME CONSTRAINT\b/u);
+
+  assert.equal((m2aValidate.match(/\bVALIDATE CONSTRAINT\b/gmu) ?? []).length, 2);
+  assert.doesNotMatch(m2aValidate, /\bNOT VALID\b/u);
+  assert.doesNotMatch(m2aValidate, /\bDROP CONSTRAINT\b/u);
+  assert.doesNotMatch(m2aValidate, /\bRENAME CONSTRAINT\b/u);
+
+  assert.equal((m2aCutover.match(/\bDROP CONSTRAINT\b/gmu) ?? []).length, 2);
+  assert.equal((m2aCutover.match(/\bRENAME CONSTRAINT\b/gmu) ?? []).length, 2);
+  assert.doesNotMatch(m2aCutover, /\bNOT VALID\b/u);
+  assert.doesNotMatch(m2aCutover, /\bVALIDATE CONSTRAINT\b/u);
+  for (const historical of ['labor', 'supply', 'travel', '0', '5.5', '10', '20']) {
+    assert.match(m2aExpand, new RegExp(`'${historical}'|\\b${historical}\\b`, 'u'));
+  }
+});
+
+test('M2-A-0 persiste seulement les faits normalisés sous capability, FORCE RLS et parent actif', () => {
+  assert.match(schema, /model AgentMissionQuoteLineWork/u);
+  assert.match(schema, /quoteLineWork\s+AgentMissionQuoteLineWork\[\]/u);
+  assert.match(
+    schema,
+    /mission\s+AgentMission\s+@relation\("AgentMissionQuoteLineWork"[\s\S]*?onDelete: Cascade/u,
+  );
+  assert.match(m2aExpand, /CREATE TABLE public\.agent_mission_quote_line_work/u);
+  assert.match(
+    m2aExpand,
+    /FOREIGN KEY \("missionId", "companyId", "ownerUserId"\)[\s\S]*?ON DELETE CASCADE/u,
+  );
+  assert.match(m2aExpand, /FORCE ROW LEVEL SECURITY/u);
+  assert.match(
+    m2aExpand,
+    /current_setting\('app\.current_agent_mission_id', true\)/u,
+  );
+  assert.match(
+    m2aExpand,
+    /OLD\."id" IS DISTINCT FROM NEW\."id"[\s\S]*?NEW\."revision" <> OLD\."revision" \+ 1/u,
+  );
+  assert.match(
+    m2aExpand,
+    /mission\."kind" = 'quote_creation'[\s\S]*?mission\."status" = 'active'[\s\S]*?AGENT_MISSION_QUOTE_LINE_ACTIVE_PARENT_REQUIRED/u,
+  );
+  assert.match(
+    m2aExpand,
+    /"proposalId" IS NOT NULL[\s\S]*?"proposalRevision" IS NOT NULL[\s\S]*?"proposalDiffHash" IS NOT NULL[\s\S]*?"proposalRevision" = 1/u,
+  );
+  assert.match(
+    m2aExpand,
+    /TG_OP = 'DELETE' AND pg_trigger_depth\(\) > 1/u,
+  );
+  assert.match(
+    m2aExpand,
+    /REVOKE ALL ON TABLE public\.agent_mission_quote_line_work FROM PUBLIC/u,
+  );
+  for (const role of ['anon', 'authenticated', 'service_role']) {
+    assert.match(m2aExpand, new RegExp(`'${role}'`, 'u'));
+  }
+  assert.doesNotMatch(
+    m2aExpand.match(
+      /CREATE TABLE public\.agent_mission_quote_line_work[\s\S]*?^\);$/mu,
+    )?.[0] ?? '',
+    /transcript|prompt|model|score|customerName|catalogueLabel/iu,
+  );
+});
+
+test('M2-A-0 indexe la recherche catalogue réelle avec une normalisation tenant-first', () => {
+  assert.match(schema, /searchKey\s+String\s+@ignore/u);
+  assert.match(
+    m2aExpand,
+    /ADD COLUMN "searchKey" TEXT GENERATED ALWAYS AS/u,
+  );
+  for (const primitive of [
+    'pg_catalog.btrim',
+    'pg_catalog.regexp_replace',
+    'pg_catalog.lower',
+    'pg_catalog.translate',
+    'pg_catalog.replace',
+  ]) {
+    assert.match(m2aExpand, new RegExp(primitive.replace('.', '\\.'), 'u'));
+  }
+  for (const sourceName of [
+    'CATALOGUE_SEARCH_LATIN_RANGES',
+    'CATALOGUE_SEARCH_IGNORED_MARK_RANGES',
+    'CATALOGUE_SEARCH_EXPANSIONS',
+  ]) {
+    assert.match(m2aGenerator, new RegExp(sourceName, 'u'));
+  }
+  assert.match(m2aGenerator, /character\.normalize\('NFD'\)/u);
+  assert.match(
+    m2aExpand,
+    /catalogue_prestations_company_search_prefix_idx[\s\S]*?"companyId",[\s\S]*?"searchKey" pg_catalog\.text_pattern_ops,[\s\S]*?"id"/u,
+  );
+  assert.match(
+    m2aExpand,
+    /catalogue_prestations_search_tokens_idx[\s\S]*?USING GIN[\s\S]*?to_tsvector\('simple'/u,
+  );
+  assert.doesNotMatch(m2aExpand, /CREATE EXTENSION/u);
+});
+
+test('M2-A-0 assume les propriétaires exacts sous un déployeur non-superuser', () => {
+  for (const [name, sql, relation] of [
+    ['expand mission', m2aExpand, 'agent_missions'],
+    ['expand catalogue', m2aExpand, 'catalogue_prestations'],
+    ['validate catalogue', m2aValidate, 'catalogue_prestations'],
+    ['cutover catalogue', m2aCutover, 'catalogue_prestations'],
+  ]) {
+    assert.match(
+      sql,
+      new RegExp(
+        `relation\\.relname = '${relation}'[\\s\\S]*?pg_has_role\\(session_user, schema_owner_oid, 'SET'\\)[\\s\\S]*?SET LOCAL ROLE %I`,
+        'u',
+      ),
+      `${name}: SET ROLE owner absent`,
+    );
+    assert.doesNotMatch(
+      sql,
+      /GRANT\s+\w+\s+TO\s+(?:postgres|current_user|session_user)/iu,
+      `${name}: adhésion explicite interdite`,
+    );
   }
 });
 

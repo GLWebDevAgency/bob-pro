@@ -53,6 +53,10 @@ import {
   type StartQuoteAgentMissionCommand,
 } from './start-quote-agent-mission';
 import { deriveAgentMissionSystemCommandId } from './agent-mission-application';
+import {
+  parseAgentMissionQuoteLineWork,
+  type AgentMissionQuoteLineWork,
+} from './quote-line-work';
 
 const OWNER = {
   companyId: 'company-1',
@@ -81,6 +85,7 @@ interface MemoryState {
   readonly missions: Map<string, AgentMission>;
   readonly events: AgentMissionEvent[];
   readonly customers: readonly CustomerCandidateReference[];
+  readonly quoteLineWork: Map<string, AgentMissionQuoteLineWork>;
   slot: AgentMissionQuoteDraftSlot | null;
 }
 
@@ -101,6 +106,7 @@ function cloneState(state: MemoryState): MemoryState {
     missions: new Map(state.missions),
     events: [...state.events],
     customers: state.customers.map((customer) => ({ ...customer })),
+    quoteLineWork: new Map(state.quoteLineWork),
     slot: cloneSlot(state.slot),
   };
 }
@@ -136,6 +142,7 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     missions: new Map(),
     events: [],
     customers: [],
+    quoteLineWork: new Map(),
     slot: null,
   };
 
@@ -251,6 +258,17 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     const scopedSlot = (): AgentMissionQuoteDraftSlot | null => (
       nextState.slot !== null && sameOwner(owner, nextState.slot) ? nextState.slot : null
     );
+    const activeQuoteMission = (
+      scope: AgentMissionOwner & { readonly missionId: string },
+    ): boolean => {
+      if (!sameOwner(owner, scope)) return false;
+      const mission = nextState.missions.get(scope.missionId);
+      if (mission === undefined) return false;
+      const snapshot = mission.toSnapshot();
+      return sameOwner(owner, snapshot)
+        && snapshot.kind === 'quote_creation'
+        && snapshot.status === 'active';
+    };
     const transaction: AgentMissionTransaction = {
       databaseNow: async () => this.now,
       realtime: {
@@ -414,6 +432,131 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
             updatedAt: this.now,
           };
           return nextState.slot;
+        },
+      },
+      quoteLineWork: {
+        listForUpdate: async (scope) => (
+          activeQuoteMission(scope)
+            ? [...nextState.quoteLineWork.values()]
+            .filter((item) => (
+              sameOwner(owner, item) && item.missionId === scope.missionId
+            ))
+            .sort((left, right) => left.ordinal - right.ordinal)
+            : []
+        ),
+        findByIdForUpdate: async (scope) => {
+          if (!activeQuoteMission(scope)) return null;
+          const { missionId, workItemId } = scope;
+          const item = nextState.quoteLineWork.get(workItemId) ?? null;
+          return item !== null
+            && sameOwner(owner, item)
+            && item.missionId === missionId
+            ? item
+            : null;
+        },
+        insertMany: async (scope) => {
+          const { missionId, workItems } = scope;
+          if (workItems.length === 0) return 'inserted';
+          if (!activeQuoteMission(scope)) return 'conflict';
+          const canonical = workItems.map((item) => {
+            const parsed = parseAgentMissionQuoteLineWork(item);
+            if (!parsed.ok) {
+              throw new Error(
+                `AGENT_MISSION_QUOTE_LINE_WORK_INPUT_INVALID:${parsed.error.field}:${
+                  parsed.error.reason
+                }`,
+              );
+            }
+            return parsed.value;
+          });
+          if (
+            canonical.some((item) => (
+            item.missionId !== missionId
+            || !sameOwner(owner, item)
+              || item.revision !== 1
+            ))
+            || new Set(canonical.map((item) => item.id)).size !== canonical.length
+            || new Set(canonical.map((item) => item.ordinal)).size !== canonical.length
+          ) {
+            throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
+          }
+          if (canonical.some((item) => (
+            nextState.quoteLineWork.has(item.id)
+            || [...nextState.quoteLineWork.values()].some((current) => (
+              current.missionId === missionId && current.ordinal === item.ordinal
+            ))
+          ))) {
+            return 'conflict';
+          }
+          beforeWrite();
+          for (const item of canonical) nextState.quoteLineWork.set(item.id, item);
+          return 'inserted';
+        },
+        updateCas: async ({ workItem, expectedRevision }) => {
+          const parsed = parseAgentMissionQuoteLineWork(workItem);
+          if (!parsed.ok) {
+            throw new Error(
+              `AGENT_MISSION_QUOTE_LINE_WORK_INPUT_INVALID:${parsed.error.field}:${
+                parsed.error.reason
+              }`,
+            );
+          }
+          const canonical = parsed.value;
+          if (
+            !Number.isSafeInteger(expectedRevision)
+            || expectedRevision < 1
+            || canonical.revision !== expectedRevision + 1
+          ) {
+            throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_CAS_REVISION_INVALID');
+          }
+          if (!activeQuoteMission({
+            companyId: canonical.companyId,
+            ownerUserId: canonical.ownerUserId,
+            missionId: canonical.missionId,
+          })) {
+            return 'revision_conflict';
+          }
+          const current = nextState.quoteLineWork.get(workItem.id);
+          if (
+            current === undefined
+            || !sameOwner(owner, current)
+            || current.missionId !== canonical.missionId
+            || current.revision !== expectedRevision
+          ) {
+            return 'revision_conflict';
+          }
+          beforeWrite();
+          nextState.quoteLineWork.set(workItem.id, canonical);
+          return 'updated';
+        },
+        delete: async (scope) => {
+          if (!activeQuoteMission(scope)) return 'not_found';
+          const { missionId, workItemId, expectedRevision } = scope;
+          const current = nextState.quoteLineWork.get(workItemId);
+          if (
+            current === undefined
+            || !sameOwner(owner, current)
+            || current.missionId !== missionId
+          ) {
+            return 'not_found';
+          }
+          if (current.revision !== expectedRevision) return 'revision_conflict';
+          beforeWrite();
+          nextState.quoteLineWork.delete(workItemId);
+          return 'deleted';
+        },
+        deleteAll: async (scope) => {
+          if (!activeQuoteMission(scope)) return 0;
+          const { missionId } = scope;
+          beforeWrite();
+          let deleted = 0;
+          for (const [id, item] of nextState.quoteLineWork) {
+            if (sameOwner(owner, item) && item.missionId === missionId) {
+              nextState.quoteLineWork.delete(id);
+              deleted += 1;
+            }
+          }
+          return deleted;
         },
       },
       quoteScreen: {
@@ -2838,4 +2981,127 @@ describe('AgentMission application M1-A', () => {
       expect(state.slot).toBeNull();
     },
   );
+
+  it('garde le double mémoire strictement aligné sur insert/savepoint/scope/CAS PostgreSQL', async () => {
+    const suite = useCases();
+    const started = await suite.start.execute({
+      ...OWNER,
+      commandId: START_COMMAND,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    const missionId = started.value.mission.id;
+    const workItem: AgentMissionQuoteLineWork = {
+      id: '90000000-0000-4000-8000-000000000001',
+      ...OWNER,
+      missionId,
+      ordinal: 1,
+      revision: 1,
+      state: 'queued',
+      origin: 'user_voice',
+      serviceReference: 'Main-d’œuvre plomberie',
+      category: 'labor',
+      quantityMilli: 2_000,
+      unit: 'heure',
+      unitPriceCents: 5_500,
+      requestedVatRate: 20,
+      priceBasis: 'per_unit',
+      housingOlderThan2y: null,
+      energyRenovation: null,
+      requiredFact: null,
+      catalogueItemId: null,
+      expectedCatalogueRevision: null,
+      proposalId: null,
+      proposalRevision: null,
+      proposalDiffHash: null,
+      createdAt: INITIAL_NOW,
+      updatedAt: INITIAL_NOW,
+    };
+    const run = async <T>(
+      work: (transaction: AgentMissionTransaction) => Promise<T>,
+    ): Promise<T> => {
+      const result = await suite.unitOfWork.runQuoteCreationOwner(
+        OWNER,
+        AUTHORITY,
+        work,
+      );
+      if (result.status !== 'executed') {
+        throw new Error(`memory quote line work rejected:${result.status}`);
+      }
+      return result.value;
+    };
+
+    expect(await run((transaction) => transaction.quoteLineWork.insertMany({
+      ...OWNER,
+      missionId,
+      workItems: [workItem],
+    }))).toBe('inserted');
+
+    const duplicateId = {
+      ...workItem,
+      ordinal: 2,
+    };
+    await expect(run((transaction) => transaction.quoteLineWork.insertMany({
+      ...OWNER,
+      missionId,
+      workItems: [
+        duplicateId,
+        { ...duplicateId, ordinal: 3 },
+      ],
+    }))).rejects.toThrow('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
+
+    await expect(run((transaction) => transaction.quoteLineWork.insertMany({
+      ...OWNER,
+      missionId,
+      workItems: [
+        {
+          ...workItem,
+          id: '90000000-0000-4000-8000-000000000002',
+          ordinal: 2,
+        },
+        {
+          ...workItem,
+          id: '90000000-0000-4000-8000-000000000003',
+          ordinal: 2,
+        },
+      ],
+    }))).rejects.toThrow('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
+
+    await expect(run((transaction) => transaction.quoteLineWork.insertMany({
+      ...OWNER,
+      missionId,
+      workItems: [{ ...workItem, revision: 2, ordinal: 2 }],
+    }))).rejects.toThrow('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
+
+    await expect(run((transaction) => transaction.quoteLineWork.updateCas({
+      workItem: { ...workItem, revision: 3 },
+      expectedRevision: 1,
+    }))).rejects.toThrow('AGENT_MISSION_QUOTE_LINE_WORK_CAS_REVISION_INVALID');
+
+    expect(await run((transaction) => transaction.quoteLineWork.updateCas({
+      workItem: {
+        ...workItem,
+        ownerUserId: OTHER_OWNER.ownerUserId,
+        revision: 2,
+      },
+      expectedRevision: 1,
+    }))).toBe('revision_conflict');
+
+    const revised: AgentMissionQuoteLineWork = {
+      ...workItem,
+      revision: 2,
+      state: 'awaiting_details',
+      requiredFact: 'vat_rate',
+      updatedAt: '2026-07-26T10:00:01.000Z',
+    };
+    expect(await run((transaction) => transaction.quoteLineWork.updateCas({
+      workItem: revised,
+      expectedRevision: 1,
+    }))).toBe('updated');
+    expect(await run((transaction) => transaction.quoteLineWork.updateCas({
+      workItem: revised,
+      expectedRevision: 1,
+    }))).toBe('revision_conflict');
+    expect(suite.unitOfWork.snapshot().quoteLineWork.get(workItem.id)).toEqual(revised);
+  });
 });

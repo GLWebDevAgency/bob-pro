@@ -506,6 +506,10 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
   );
   assert.match(
     runtimeGrants,
+    /'agent_mission_quote_line_work'::TEXT,[\s\S]*?'SELECT, INSERT, UPDATE, DELETE'::TEXT,[\s\S]*?'TRUNCATE, REFERENCES, TRIGGER'/u,
+  );
+  assert.match(
+    runtimeGrants,
     /'realtime_admission_cancellation_fences'::TEXT,[\s\S]*?'SELECT, INSERT, DELETE'::TEXT,[\s\S]*?'UPDATE, TRUNCATE, REFERENCES, TRIGGER'/u,
   );
   assert.match(runtimeGrants, /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u);
@@ -576,6 +580,7 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
   for (const functionName of [
     'guard_agent_mission_mutation_v1',
     'guard_quote_draft_agent_mission_v1',
+    'guard_agent_mission_quote_line_work_v1',
     'reject_agent_mission_event_mutation_v1',
     'guard_agent_mission_event_append_v1',
     'require_agent_mission_event_v1',
@@ -610,6 +615,158 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
   assert.match(
     releaseCertificate,
     /FROM public\.agent_mission_fingerprint_key_readiness\([\s\S]*?AGENT_MISSION_READINESS_RUNTIME_EXECUTION_INVALID/u,
+  );
+});
+
+test('M2-A ferme exactement work items, capability, trigger et policies RLS', () => {
+  const m2aReaderPreExpand = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 pre-expand',
+  );
+  const m2aExpand = localCertificate.indexOf(
+    '20260729150000_agent_mission_quote_line_work_expand',
+    m2aReaderPreExpand,
+  );
+  const m2aWriterExpand = localCertificate.indexOf(
+    'certify_m2a_catalogue_writer_n1 \\\n  expand',
+    m2aExpand,
+  );
+  const m2aReaderExpand = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 expand',
+    m2aWriterExpand,
+  );
+  const m2aBlockedExpand = localCertificate.indexOf(
+    'certify_m2a_catalogue_new_shape_blocked \\\n  expand',
+    m2aReaderExpand,
+  );
+  const m2aValidate = localCertificate.indexOf(
+    '20260729150100_agent_mission_quote_line_work_validate',
+    m2aBlockedExpand,
+  );
+  const m2aWriterValidate = localCertificate.indexOf(
+    'certify_m2a_catalogue_writer_n1 \\\n  validate',
+    m2aValidate,
+  );
+  const m2aReaderValidate = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 validate',
+    m2aWriterValidate,
+  );
+  const m2aBlockedValidate = localCertificate.indexOf(
+    'certify_m2a_catalogue_new_shape_blocked \\\n  validate',
+    m2aReaderValidate,
+  );
+  const m2aCutover = localCertificate.indexOf(
+    '20260729150200_agent_mission_quote_line_work_cutover',
+    m2aBlockedValidate,
+  );
+  const m2aWriterCutover = localCertificate.indexOf(
+    'certify_m2a_catalogue_writer_n1 \\\n  cutover',
+    m2aCutover,
+  );
+  const m2aReaderCutover = localCertificate.indexOf(
+    'certify_m2a_quote_draft_reader_n1 cutover',
+    m2aWriterCutover,
+  );
+  const m2aNewCutover = localCertificate.indexOf(
+    "'catalogue-m2a-new-cutover'",
+    m2aReaderCutover,
+  );
+  const m2aWorkMission = localCertificate.indexOf(
+    'writer-m2a-work',
+    m2aNewCutover,
+  );
+  assert.ok(
+    m2aReaderPreExpand >= 0 &&
+      m2aExpand > m2aReaderPreExpand &&
+      m2aWriterExpand > m2aExpand &&
+      m2aReaderExpand > m2aWriterExpand &&
+      m2aBlockedExpand > m2aWriterExpand &&
+      m2aValidate > m2aBlockedExpand &&
+      m2aWriterValidate > m2aValidate &&
+      m2aReaderValidate > m2aWriterValidate &&
+      m2aBlockedValidate > m2aWriterValidate &&
+      m2aCutover > m2aBlockedValidate &&
+      m2aWriterCutover > m2aCutover &&
+      m2aReaderCutover > m2aWriterCutover &&
+      m2aNewCutover > m2aWriterCutover &&
+      m2aWorkMission > m2aNewCutover,
+    'M2-A doit prouver writer+reader N-1 à chaque étape, bloquer N puis tester le work item.',
+  );
+  assert.match(
+    localCertificate,
+    /"\$DIRECT_URL" -X -v ON_ERROR_STOP=1 \\\n  -f "\$ROOT_DIR\/apps\/api\/prisma\/migrations\/20260729150000/u,
+    'L’expand M2-A doit assumer lui-même son owner sous le déployeur non-superuser.',
+  );
+  assert.match(
+    localCertificate,
+    /AGENT_MISSION_M2A_READER_N1_DRIFT[\s\S]*?CATALOGUE_M2A_SEARCH_KEY_PARITY_DRIFT[\s\S]*?catalogue_prestations_company_search_prefix_idx[\s\S]*?AGENT_MISSION_M2A_MISSING_CAPABILITY_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_ACTIVE_PARENT_FENCE_NOT_PROVEN[\s\S]*?AGENT_MISSION_M2A_PARTIAL_PROPOSAL_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_STALE_CAS_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_OWNER_WRITE_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_TENANT_WRITE_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_TERMINAL_PARENT_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CROSS_KIND_PARENT_ACCEPTED[\s\S]*?AGENT_MISSION_M2A_CASCADE_DELETE_FAILED/u,
+  );
+  assert.match(
+    rls,
+    /'agent_mission_quote_line_work'[\s\S]*?DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_select[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_select[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_insert[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_update[\s\S]*?CREATE POLICY agent_mission_quote_line_work_owner_delete/u,
+  );
+  assert.match(
+    rls,
+    /REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;[\s\S]*?REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v1\(\) FROM PUBLIC;/u,
+  );
+  assert.match(
+    rls,
+    /REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v1\(\) FROM %I/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /'agent_mission_quote_line_work'[\s\S]*?\) <> 9 THEN[\s\S]*?AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /'guard_agent_mission_quote_line_work_v1'[\s\S]*?\) <> 15 THEN[\s\S]*?AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I[\s\S]*?'guard_agent_mission_quote_line_work_v1'/u,
+  );
+  const executeGrant = runtimeGrants.slice(
+    runtimeGrants.indexOf('GRANT EXECUTE ON FUNCTION %s TO %I'),
+  );
+  assert.doesNotMatch(
+    executeGrant,
+    /guard_agent_mission_quote_line_work_v1/u,
+    'La fonction de trigger M2-A ne doit jamais devenir une API exécutable.',
+  );
+  assert.match(
+    releaseCertificate,
+    /quote_line_work_trigger_count <> 1[\s\S]*?agent_mission_quote_line_work_guard_v1[\s\S]*?trigger\.tgenabled = 'O'[\s\S]*?trigger\.tgtype = 31[\s\S]*?trigger\.tgqual IS NULL[\s\S]*?trigger\.tgnargs = 0[\s\S]*?trigger\.tgattr = ''::pg_catalog\.int2vector[\s\S]*?guard_agent_mission_quote_line_work_v1/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /procedure\.oid = quote_line_work_guard_oid[\s\S]*?NOT procedure\.prosecdef[\s\S]*?NOT procedure\.proleakproof[\s\S]*?procedure\.provolatile = 'v'[\s\S]*?procedure\.proparallel = 'u'[\s\S]*?procedure\.pronargs = 0[\s\S]*?procedure\.prorettype = 'pg_catalog\.trigger'::pg_catalog\.regtype[\s\S]*?search_path=pg_catalog, public[\s\S]*?AGENT_MISSION_QUOTE_LINE_WORK_GUARD_FUNCTION_DRIFT/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /quote_line_work_policy_count <> 4[\s\S]*?owner_select[\s\S]*?'r'::"char"[\s\S]*?owner_insert[\s\S]*?'a'::"char"[\s\S]*?owner_update[\s\S]*?'w'::"char"[\s\S]*?owner_delete[\s\S]*?'d'::"char"/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /policy\.polroles IS DISTINCT FROM ARRAY\[0::OID\][\s\S]*?POLICY_DEFINITION_DRIFT/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /app\.current_company_id[\s\S]*?app\.current_user_id[\s\S]*?app\.current_agent_mission_id/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /'public\.agent_mission_quote_line_work'::pg_catalog\.regclass[\s\S]*?RUNTIME_OWNER_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /'public\.guard_agent_mission_quote_line_work_v1\(\)'::pg_catalog\.regprocedure[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /FOREACH table_name IN ARRAY ARRAY\[[\s\S]*?'agent_mission_quote_line_work'[\s\S]*?DATA_API_TABLE_PRIVILEGE_FORBIDDEN/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /FOREACH function_name IN ARRAY ARRAY\[[\s\S]*?'guard_agent_mission_quote_line_work_v1\(\)'[\s\S]*?DATA_API_FUNCTION_EXECUTE_FORBIDDEN/u,
   );
 });
 
@@ -811,7 +968,7 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     runtimeGrants,
-    /guard_realtime_agent_mission_capability_immutable_v1[\s\S]*?guard_realtime_agent_mission_bootstrap_receipt_v1[\s\S]*?\) <> 14[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u,
+    /guard_realtime_agent_mission_capability_immutable_v1[\s\S]*?guard_realtime_agent_mission_bootstrap_receipt_v1[\s\S]*?\) <> 15[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u,
   );
   assert.match(realtimeReleaseCertificate, /pg_temp, public, pg_catalog/u);
   assert.match(

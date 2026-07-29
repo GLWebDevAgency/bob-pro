@@ -10,6 +10,9 @@ import {
   type CustomerCandidateReadPort,
   type CustomerCandidateSearchPort,
 } from './customer-candidate-search';
+import {
+  type AgentMissionQuoteLineWorkRepositoryPort,
+} from './agent-mission-quote-line-work';
 
 export interface AgentMissionRealtimeAuthorityProof {
   /**
@@ -94,6 +97,7 @@ export interface AgentMissionTransaction {
   readonly missions: AgentMissionRepositoryPort;
   readonly events: AgentMissionEventRepositoryPort;
   readonly quoteDrafts: AgentMissionQuoteDraftRepositoryPort;
+  readonly quoteLineWork: AgentMissionQuoteLineWorkRepositoryPort;
   readonly quoteScreen: AgentMissionQuoteScreenAuthorityPort;
   readonly customers: CustomerCandidateSearchPort & CustomerCandidateReadPort;
 }

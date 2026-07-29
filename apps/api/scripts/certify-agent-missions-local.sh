@@ -303,6 +303,13 @@ CREATE TYPE public."ReleaseEnvironment" AS ENUM (
   'production'
 );
 CREATE TYPE public."ReleaseFlagSubjectType" AS ENUM ('user', 'cabinet');
+CREATE TYPE public."LineCategory" AS ENUM (
+  'labor',
+  'supply',
+  'travel',
+  'disbursement',
+  'subscription'
+);
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
@@ -446,6 +453,49 @@ CREATE INDEX customers_name_trgm_idx
   ON public.customers
   USING GIN (public.immutable_unaccent(lower("name")) gin_trgm_ops);
 
+-- Surface catalogue N-1 exacte consommée par M2-A. La table existe avant le train avec ses
+-- anciens CHECK : ni `subscription`, ni TVA 2,1 ne sont acceptés avant le cutover.
+CREATE TABLE public.catalogue_prestations (
+  "id" TEXT NOT NULL,
+  "companyId" TEXT NOT NULL,
+  "label" TEXT NOT NULL,
+  "category" public."LineCategory" NOT NULL,
+  "unit" TEXT,
+  "unitPriceHt" INTEGER NOT NULL,
+  "vatRate" DECIMAL(4,2) NOT NULL,
+  "revision" INTEGER NOT NULL DEFAULT 1,
+  "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT catalogue_prestations_pkey PRIMARY KEY ("id"),
+  CONSTRAINT uniq_catalogue_prestation_id_company UNIQUE ("id", "companyId"),
+  CONSTRAINT catalogue_prestations_companyId_fkey
+    FOREIGN KEY ("companyId") REFERENCES public.companies("id")
+    ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT catalogue_prestations_category_check
+    CHECK ("category" IN ('labor', 'supply', 'travel')),
+  CONSTRAINT catalogue_prestations_label_check
+    CHECK (
+      char_length(btrim("label")) BETWEEN 1 AND 500
+      AND "label" = btrim("label")
+      AND "label" !~ '[[:cntrl:]]'
+    ),
+  CONSTRAINT catalogue_prestations_unit_check
+    CHECK (
+      "unit" IS NULL OR (
+        char_length(btrim("unit")) BETWEEN 1 AND 80
+        AND "unit" = btrim("unit")
+        AND "unit" !~ '[[:cntrl:]]'
+      )
+    ),
+  CONSTRAINT catalogue_prestations_price_check
+    CHECK ("unitPriceHt" BETWEEN 1 AND 1500000000),
+  CONSTRAINT catalogue_prestations_vat_check
+    CHECK ("vatRate" IN (0, 5.5, 10, 20)),
+  CONSTRAINT catalogue_prestations_revision_check CHECK ("revision" >= 1)
+);
+CREATE INDEX catalogue_prestations_company_category_label_idx
+  ON public.catalogue_prestations("companyId", "category", "label");
+
 ALTER TABLE public.quote_draft_slots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quote_draft_slots FORCE ROW LEVEL SECURITY;
 CREATE POLICY quote_draft_slot_owner_select ON public.quote_draft_slots FOR SELECT
@@ -476,6 +526,12 @@ CREATE POLICY quote_draft_slot_owner_delete ON public.quote_draft_slots FOR DELE
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.customers FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.customers
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+ALTER TABLE public.catalogue_prestations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.catalogue_prestations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON public.catalogue_prestations
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
@@ -514,6 +570,7 @@ GRANT SELECT, UPDATE ON TABLE public.companies TO bob_app;
 -- SELECT ... FOR SHARE exige aussi un privilège UPDATE ; une colonne suffit à reproduire ce
 -- droit sans élargir le harnais aux mutations client (la release réelle accorde déjà UPDATE).
 GRANT SELECT, UPDATE ("id") ON TABLE public.customers TO bob_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.catalogue_prestations TO bob_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.quote_draft_slots TO bob_app;
 GRANT SELECT ON TABLE public.release_flags, public.release_flag_subjects TO bob_app;
 
@@ -2122,6 +2179,774 @@ BEGIN
   END IF;
 END;
 $agent_mission_k2_cross_kind$;
+
+ROLLBACK;
+SQL
+
+# M2-A-0 : le train est rejoué tel qu'en release par bob_deployer non-superuser. Les helpers
+# propriétaire dans chaque migration doivent prendre leur propre SET ROLE ; aucun `-c SET ROLE`
+# externe ne doit masquer une incompatibilité Supabase.
+certify_m2a_quote_draft_reader_n1() {
+  reader_stage="$1"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v reader_stage="$reader_stage" <<'SQL'
+BEGIN READ ONLY;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-n1-owner', true);
+SELECT set_config('bob.cert.m2a_reader_stage', :'reader_stage', true);
+
+DO $quote_draft_reader_n1$
+DECLARE
+  slot_payload_version INTEGER;
+  slot_payload JSONB;
+  slot_agent_mission_id UUID;
+  expected_payload CONSTANT JSONB :=
+    '{"schema":"bob.quote-draft","version":1,"draft":{"sessionId":"n1","contentRevision":0,"stagingRevision":0,"step":"client","customer":null,"lines":[],"lineMetadata":[],"lineForm":{"label":"","quantity":"1","unitPrice":"","category":"labor"},"vatDecision":null,"depositPct":30,"signMode":null}}'::JSONB;
+BEGIN
+  SELECT "payloadVersion", "payload", "agentMissionId"
+    INTO STRICT slot_payload_version, slot_payload, slot_agent_mission_id
+    FROM public.quote_draft_slots
+   WHERE "companyId" = 'writer-n1-company'
+     AND "ownerUserId" = 'writer-n1-owner';
+
+  IF slot_payload_version <> 1
+     OR slot_payload IS DISTINCT FROM expected_payload
+     OR slot_agent_mission_id IS NOT NULL THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_READER_N1_DRIFT:%',
+      current_setting('bob.cert.m2a_reader_stage');
+  END IF;
+END;
+$quote_draft_reader_n1$;
+COMMIT;
+SQL
+}
+
+certify_m2a_catalogue_writer_n1() {
+  catalogue_stage="$1"
+  catalogue_id="$2"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v catalogue_stage="$catalogue_stage" \
+    -v catalogue_id="$catalogue_id" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-catalogue', true);
+SELECT set_config('bob.cert.m2a_catalogue_stage', :'catalogue_stage', true);
+SELECT set_config('bob.cert.m2a_catalogue_id', :'catalogue_id', true);
+
+-- Forme N-1 exacte : searchKey omis, catégorie/taux historiques et colonnes sans nouveauté.
+INSERT INTO public.catalogue_prestations (
+  "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+  "revision", "createdAt", "updatedAt"
+) VALUES (
+  :'catalogue_id',
+  'writer-n1-company',
+  'Škoda Łódź — Straße ' || :'catalogue_stage',
+  'labor',
+  'heure',
+  5500,
+  20,
+  1,
+  clock_timestamp(),
+  clock_timestamp()
+);
+
+DO $catalogue_writer_n1$
+DECLARE
+  actual_search_key TEXT;
+BEGIN
+  SELECT "searchKey"
+   INTO STRICT actual_search_key
+    FROM public.catalogue_prestations
+   WHERE "companyId" = 'writer-n1-company'
+     AND "id" = current_setting('bob.cert.m2a_catalogue_id');
+  IF actual_search_key IS DISTINCT FROM
+    'skoda lodz strasse ' || current_setting('bob.cert.m2a_catalogue_stage')
+  THEN
+    RAISE EXCEPTION 'CATALOGUE_M2A_SEARCH_KEY_PARITY_DRIFT:%', actual_search_key;
+  END IF;
+END;
+$catalogue_writer_n1$;
+COMMIT;
+SQL
+}
+
+certify_m2a_catalogue_new_shape_blocked() {
+  catalogue_stage="$1"
+  catalogue_id="$2"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v catalogue_stage="$catalogue_stage" \
+    -v catalogue_id="$catalogue_id" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-catalogue', true);
+SELECT set_config('bob.cert.m2a_catalogue_stage', :'catalogue_stage', true);
+SELECT set_config('bob.cert.m2a_catalogue_id', :'catalogue_id', true);
+
+DO $catalogue_new_shape_blocked$
+DECLARE
+  rejected BOOLEAN := FALSE;
+  rejected_by TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.catalogue_prestations (
+      "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+      "revision", "createdAt", "updatedAt"
+    ) VALUES (
+      current_setting('bob.cert.m2a_catalogue_id'),
+      'writer-n1-company',
+      'Abonnement avant cutover ' ||
+        current_setting('bob.cert.m2a_catalogue_stage'),
+      'subscription',
+      'mois',
+      2500,
+      2.1,
+      1,
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejected_by = CONSTRAINT_NAME;
+    rejected := rejected_by IN (
+      'catalogue_prestations_category_check',
+      'catalogue_prestations_vat_check'
+    );
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'CATALOGUE_M2A_NEW_SHAPE_ACCEPTED_BEFORE_CUTOVER:%',
+      current_setting('bob.cert.m2a_catalogue_stage');
+  END IF;
+  IF EXISTS (
+    SELECT 1
+     FROM public.catalogue_prestations
+     WHERE "companyId" = 'writer-n1-company'
+       AND "id" = current_setting('bob.cert.m2a_catalogue_id')
+  ) THEN
+    RAISE EXCEPTION 'CATALOGUE_M2A_REJECTED_ROW_SURVIVED:%',
+      current_setting('bob.cert.m2a_catalogue_stage');
+  END IF;
+END;
+$catalogue_new_shape_blocked$;
+COMMIT;
+SQL
+}
+
+certify_m2a_quote_draft_reader_n1 pre-expand
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729150000_agent_mission_quote_line_work_expand/migration.sql"
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON TABLE public.agent_mission_quote_line_work TO bob_app;
+RESET ROLE;
+SQL
+
+certify_m2a_catalogue_writer_n1 \
+  expand \
+  catalogue-m2a-n1-expand
+certify_m2a_quote_draft_reader_n1 expand
+certify_m2a_catalogue_new_shape_blocked \
+  expand \
+  catalogue-m2a-new-expand
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729150100_agent_mission_quote_line_work_validate/migration.sql"
+
+certify_m2a_catalogue_writer_n1 \
+  validate \
+  catalogue-m2a-n1-validate
+certify_m2a_quote_draft_reader_n1 validate
+certify_m2a_catalogue_new_shape_blocked \
+  validate \
+  catalogue-m2a-new-validate
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729150200_agent_mission_quote_line_work_cutover/migration.sql"
+
+certify_m2a_catalogue_writer_n1 \
+  cutover \
+  catalogue-m2a-n1-cutover
+certify_m2a_quote_draft_reader_n1 cutover
+
+# La forme nouvellement autorisée et les ligatures rares sont prouvées après cutover.
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-catalogue', true);
+INSERT INTO public.catalogue_prestations (
+  "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+  "revision", "createdAt", "updatedAt"
+) VALUES (
+  'catalogue-m2a-new-cutover',
+  'writer-n1-company',
+  'Þing Đuro, Øresund',
+  'subscription',
+  'mois',
+  2500,
+  2.1,
+  1,
+  clock_timestamp(),
+  clock_timestamp()
+);
+DO $catalogue_m2a_cutover$
+BEGIN
+  IF (
+    SELECT "searchKey"
+      FROM public.catalogue_prestations
+     WHERE "companyId" = 'writer-n1-company'
+       AND "id" = 'catalogue-m2a-new-cutover'
+  ) IS DISTINCT FROM 'thing duro oresund' THEN
+    RAISE EXCEPTION 'CATALOGUE_M2A_CUTOVER_SEARCH_KEY_DRIFT';
+  END IF;
+  IF (
+    SELECT count(*)
+      FROM public.catalogue_prestations
+     WHERE "companyId" = 'writer-n1-company'
+       AND pg_catalog.to_tsvector(
+         'simple'::pg_catalog.regconfig,
+         "searchKey"
+       ) @@ pg_catalog.plainto_tsquery(
+         'simple'::pg_catalog.regconfig,
+         'lodz strasse'
+       )
+  ) <> 3 THEN
+    RAISE EXCEPTION 'CATALOGUE_M2A_TOKEN_SEARCH_DRIFT';
+  END IF;
+END;
+$catalogue_m2a_cutover$;
+COMMIT;
+SQL
+
+catalogue_prefix_plan="$(
+  "$PSQL_BIN" "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL enable_seqscan = off;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-catalogue', true);
+EXPLAIN (COSTS OFF)
+SELECT "id"
+  FROM public.catalogue_prestations
+ WHERE "companyId" = 'writer-n1-company'
+   AND "searchKey" LIKE 'skoda%'
+ ORDER BY "searchKey", "id"
+ LIMIT 6;
+ROLLBACK;
+SQL
+)"
+case "$catalogue_prefix_plan" in
+  *catalogue_prestations_company_search_prefix_idx*) ;;
+  *)
+    echo "$catalogue_prefix_plan" >&2
+    echo "Catalogue M2-A prefix search does not use the tenant-first index" >&2
+    exit 1
+    ;;
+esac
+
+# Le parent réel est créé via le writer historique déjà certifié ; M2-A ne fabrique aucun second
+# chemin de mission. Il reste actif et quote_creation pendant toutes les preuves work item.
+certify_agent_mission_event_writer \
+  writer-m2a-work \
+  d0000000-0000-4000-8000-000000000001 \
+  d0000000-0000-4000-8000-000000000002 \
+  d0000000-0000-4000-8000-000000000003 \
+  d0000000-0000-4000-8000-000000000004 \
+  d0000000-0000-4000-8000-000000000005 \
+  d0000000-0000-4000-8000-000000000006
+
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-work', true);
+
+DO $quote_line_work_capability$
+DECLARE
+  rejected BOOLEAN;
+  affected_rows INTEGER;
+  rejection_message TEXT;
+BEGIN
+  -- Sans capability puis avec une autre mission : refus fermé, aucun work item fantôme.
+  rejected := FALSE;
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "createdAt", "updatedAt"
+    ) VALUES (
+      'd1000000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-m2a-work',
+      'd0000000-0000-4000-8000-000000000001'::UUID,
+      1,
+      1,
+      'queued',
+      'user_voice',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    rejected := TRUE;
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_MISSING_CAPABILITY_ACCEPTED';
+  END IF;
+
+  PERFORM set_config(
+    'app.current_agent_mission_id',
+    'd9999999-0000-4000-8000-000000000001',
+    true
+  );
+  rejected := FALSE;
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "createdAt", "updatedAt"
+    ) VALUES (
+      'd1000000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-m2a-work',
+      'd0000000-0000-4000-8000-000000000001'::UUID,
+      1,
+      1,
+      'queued',
+      'user_voice',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    rejected := TRUE;
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_WRONG_CAPABILITY_ACCEPTED';
+  END IF;
+
+  PERFORM set_config(
+    'app.current_agent_mission_id',
+    'd0000000-0000-4000-8000-000000000001',
+    true
+  );
+
+  -- Un parent absent échoue dans le trigger avant la FK ; la preuve valide le fence actif.
+  PERFORM set_config(
+    'app.current_agent_mission_id',
+    'd0000000-0000-4000-8000-000000000099',
+    true
+  );
+  rejected := FALSE;
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "createdAt", "updatedAt"
+    ) VALUES (
+      'd1000000-0000-4000-8000-000000000002'::UUID,
+      'writer-n1-company',
+      'writer-m2a-work',
+      'd0000000-0000-4000-8000-000000000099'::UUID,
+      1,
+      1,
+      'queued',
+      'user_voice',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN foreign_key_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'AGENT_MISSION_QUOTE_LINE_ACTIVE_PARENT_REQUIRED';
+  END;
+  PERFORM set_config(
+    'app.current_agent_mission_id',
+    'd0000000-0000-4000-8000-000000000001',
+    true
+  );
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_ACTIVE_PARENT_FENCE_NOT_PROVEN';
+  END IF;
+
+  INSERT INTO public.agent_mission_quote_line_work (
+    "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+    "state", "origin", "createdAt", "updatedAt"
+  ) VALUES (
+    'd1000000-0000-4000-8000-000000000001'::UUID,
+    'writer-n1-company',
+    'writer-m2a-work',
+    'd0000000-0000-4000-8000-000000000001'::UUID,
+    1,
+    1,
+    'queued',
+    'user_voice',
+    clock_timestamp(),
+    clock_timestamp()
+  );
+
+  -- CHECK(NULL) ne doit jamais accepter un triplet proposal partiel.
+  rejected := FALSE;
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "serviceReference", "category", "quantityMilli", "unit",
+      "unitPriceCents", "requestedVatRate", "priceBasis", "proposalId",
+      "createdAt", "updatedAt"
+    ) VALUES (
+      'd1000000-0000-4000-8000-000000000002'::UUID,
+      'writer-n1-company',
+      'writer-m2a-work',
+      'd0000000-0000-4000-8000-000000000001'::UUID,
+      2,
+      1,
+      'awaiting_confirmation',
+      'user_voice',
+      'Main-d''œuvre plomberie',
+      'labor',
+      2000,
+      'heure',
+      5500,
+      20,
+      'per_unit',
+      'd2000000-0000-4000-8000-000000000001'::UUID,
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = CONSTRAINT_NAME;
+    rejected := rejection_message =
+      'agent_mission_quote_line_work_proposal_check';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_PARTIAL_PROPOSAL_ACCEPTED';
+  END IF;
+
+  UPDATE public.agent_mission_quote_line_work
+     SET "revision" = 2,
+         "state" = 'awaiting_details',
+         "requiredFact" = 'service_reference',
+         "updatedAt" = clock_timestamp()
+   WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+     AND "revision" = 1;
+  GET DIAGNOSTICS affected_rows = ROW_COUNT;
+  IF affected_rows <> 1 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CAS_FIRST_UPDATE_FAILED';
+  END IF;
+
+  UPDATE public.agent_mission_quote_line_work
+     SET "revision" = 2,
+         "updatedAt" = clock_timestamp()
+   WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+     AND "revision" = 1;
+  GET DIAGNOSTICS affected_rows = ROW_COUNT;
+  IF affected_rows <> 0 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_STALE_CAS_ACCEPTED';
+  END IF;
+
+  rejected := FALSE;
+  BEGIN
+    UPDATE public.agent_mission_quote_line_work
+       SET "revision" = 4,
+           "updatedAt" = clock_timestamp()
+     WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID;
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'AGENT_MISSION_QUOTE_LINE_IDENTITY_OR_REVISION_INVALID';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_REVISION_JUMP_ACCEPTED';
+  END IF;
+
+  rejected := FALSE;
+  BEGIN
+    UPDATE public.agent_mission_quote_line_work
+       SET "id" = 'd1000000-0000-4000-8000-000000000099'::UUID,
+           "revision" = 3,
+           "updatedAt" = clock_timestamp()
+     WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID;
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'AGENT_MISSION_QUOTE_LINE_IDENTITY_OR_REVISION_INVALID';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_IDENTITY_MUTATION_ACCEPTED';
+  END IF;
+END;
+$quote_line_work_capability$;
+
+-- Owner isolation : une autre identité ne voit et ne mute aucune ligne.
+SELECT set_config('app.current_user_id', 'writer-m2a-other-owner', true);
+DO $quote_line_work_owner_isolation$
+DECLARE
+  affected_rows INTEGER;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CROSS_OWNER_READ_VISIBLE';
+  END IF;
+  UPDATE public.agent_mission_quote_line_work
+     SET "revision" = 3,
+         "updatedAt" = clock_timestamp()
+   WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID;
+  GET DIAGNOSTICS affected_rows = ROW_COUNT;
+  IF affected_rows <> 0 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CROSS_OWNER_WRITE_ACCEPTED';
+  END IF;
+END;
+$quote_line_work_owner_isolation$;
+
+-- Tenant isolation : même owner et UUID exacts restent invisibles si le tenant courant diffère.
+SELECT set_config('app.current_user_id', 'writer-m2a-work', true);
+SELECT set_config('app.current_company_id', 'writer-m2a-other-company', true);
+DO $quote_line_work_tenant_isolation$
+DECLARE
+  affected_rows INTEGER;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CROSS_TENANT_READ_VISIBLE';
+  END IF;
+  UPDATE public.agent_mission_quote_line_work
+     SET "revision" = 3,
+         "updatedAt" = clock_timestamp()
+   WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID;
+  GET DIAGNOSTICS affected_rows = ROW_COUNT;
+  IF affected_rows <> 0 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CROSS_TENANT_WRITE_ACCEPTED';
+  END IF;
+END;
+$quote_line_work_tenant_isolation$;
+
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-work', true);
+DELETE FROM public.agent_mission_quote_line_work
+ WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+   AND "revision" = 2;
+DO $quote_line_work_delete$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE "id" = 'd1000000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_DELETE_FAILED';
+  END IF;
+END;
+$quote_line_work_delete$;
+COMMIT;
+SQL
+
+# Parents terminal/cross-kind et cascade FK sont éprouvés sous l'owner NOLOGIN réel. La transaction
+# est rollbackée : elle peut relâcher temporairement le CHECK quote-only pour simuler un futur kind
+# sans publier une donnée ni contourner la lignée append-only.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+ALTER TABLE public.agent_missions
+  DROP CONSTRAINT agent_missions_kind_check;
+-- L'owner reste non-superuser. NO FORCE est transactionnel et doit précéder les événements de
+-- trigger en attente ; il permet uniquement le DELETE parent de rétention testé plus bas.
+ALTER TABLE public.agent_missions NO FORCE ROW LEVEL SECURITY;
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('bob.cert.m2a_parent_started_at', clock_timestamp()::TEXT, true);
+
+-- Parent terminal existant : la FK seule l'accepterait, le trigger doit le refuser.
+SELECT set_config('app.current_user_id', 'writer-m2a-terminal-parent', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'd3000000-0000-4000-8000-000000000001',
+  true
+);
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+  "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+  "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  'd3000000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-m2a-terminal-parent',
+  'quote_creation',
+  'cancelled',
+  'awaiting_quote_screen',
+  1,
+  1,
+  '{"schema":"bob.agent-mission.quote-creation","version":1,"draft":{"sessionId":"writer-m2a-terminal-parent","slotRevision":1,"contentRevision":0},"decision":null}'::JSONB,
+  NULL,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '1 hour',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '2161 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '1 hour'
+);
+DO $quote_line_terminal_parent$
+DECLARE
+  rejected BOOLEAN := FALSE;
+  rejection_message TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "createdAt", "updatedAt"
+    ) VALUES (
+      'd3100000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-m2a-terminal-parent',
+      'd3000000-0000-4000-8000-000000000001'::UUID,
+      1,
+      1,
+      'queued',
+      'user_voice',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN foreign_key_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'AGENT_MISSION_QUOTE_LINE_ACTIVE_PARENT_REQUIRED';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_TERMINAL_PARENT_ACCEPTED';
+  END IF;
+END;
+$quote_line_terminal_parent$;
+
+-- Futur kind actif : la capability et la FK correspondent, mais ce work item reste quote-only.
+SELECT set_config('app.current_user_id', 'writer-m2a-cross-kind-parent', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'd4000000-0000-4000-8000-000000000001',
+  true
+);
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+  "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+  "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  'd4000000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-m2a-cross-kind-parent',
+  'maintenance_contract',
+  'active',
+  'awaiting_quote_screen',
+  1,
+  1,
+  '{"schema":"bob.agent-mission.quote-creation","version":1,"draft":{"sessionId":"writer-m2a-cross-kind-parent","slotRevision":1,"contentRevision":0},"decision":null}'::JSONB,
+  NULL,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+  NULL,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '2328 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ
+);
+DO $quote_line_cross_kind_parent$
+DECLARE
+  rejected BOOLEAN := FALSE;
+  rejection_message TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.agent_mission_quote_line_work (
+      "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+      "state", "origin", "createdAt", "updatedAt"
+    ) VALUES (
+      'd4100000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-m2a-cross-kind-parent',
+      'd4000000-0000-4000-8000-000000000001'::UUID,
+      1,
+      1,
+      'queued',
+      'user_voice',
+      clock_timestamp(),
+      clock_timestamp()
+    );
+  EXCEPTION WHEN foreign_key_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'AGENT_MISSION_QUOTE_LINE_ACTIVE_PARENT_REQUIRED';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CROSS_KIND_PARENT_ACCEPTED';
+  END IF;
+END;
+$quote_line_cross_kind_parent$;
+
+-- Suppression de rétention : le DELETE cascade traverse le trigger enfant sans capability
+-- artificielle et ne laisse aucun fait éphémère orphelin.
+SELECT set_config('app.current_user_id', 'writer-m2a-cascade-parent', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'd5000000-0000-4000-8000-000000000001',
+  true
+);
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+  "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+  "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  'd5000000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-m2a-cascade-parent',
+  'quote_creation',
+  'active',
+  'awaiting_quote_screen',
+  1,
+  1,
+  '{"schema":"bob.agent-mission.quote-creation","version":1,"draft":{"sessionId":"writer-m2a-cascade-parent","slotRevision":1,"contentRevision":0},"decision":null}'::JSONB,
+  NULL,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+  NULL,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ + INTERVAL '2328 hours',
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a_parent_started_at')::TIMESTAMPTZ
+);
+INSERT INTO public.agent_mission_quote_line_work (
+  "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+  "state", "origin", "createdAt", "updatedAt"
+) VALUES (
+  'd5100000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-m2a-cascade-parent',
+  'd5000000-0000-4000-8000-000000000001'::UUID,
+  1,
+  1,
+  'queued',
+  'user_voice',
+  clock_timestamp(),
+  clock_timestamp()
+);
+DELETE FROM public.agent_missions
+ WHERE "id" = 'd5000000-0000-4000-8000-000000000001'::UUID;
+DO $quote_line_cascade$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE "id" = 'd5100000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A_CASCADE_DELETE_FAILED';
+  END IF;
+END;
+$quote_line_cascade$;
 
 ROLLBACK;
 SQL

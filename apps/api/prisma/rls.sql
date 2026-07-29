@@ -28,6 +28,7 @@ DECLARE
     'quote_draft_slots',
     'agent_missions',
     'agent_mission_events',
+    'agent_mission_quote_line_work',
     'agent_mission_fingerprint_key_version_floors',
     'agent_mission_fingerprint_key_bindings',
     'documents',
@@ -275,12 +276,62 @@ CREATE POLICY agent_mission_events_owner_insert ON agent_mission_events FOR INSE
     AND "missionId"::text = nullif(current_setting('app.current_agent_mission_id', true), '')
   );
 
+-- Les faits de ligne non confirmés appartiennent à la même capability mission que leur parent.
+-- Le rejeu RLS doit conserver exactement les quatre policies de la migration M2-A : une lecture
+-- owner/tenant et trois mutations également fencées par l'identifiant de mission courant.
+DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_select
+  ON agent_mission_quote_line_work;
+DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_insert
+  ON agent_mission_quote_line_work;
+DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_update
+  ON agent_mission_quote_line_work;
+DROP POLICY IF EXISTS agent_mission_quote_line_work_owner_delete
+  ON agent_mission_quote_line_work;
+CREATE POLICY agent_mission_quote_line_work_owner_select
+  ON agent_mission_quote_line_work FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY agent_mission_quote_line_work_owner_insert
+  ON agent_mission_quote_line_work FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text =
+      nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY agent_mission_quote_line_work_owner_update
+  ON agent_mission_quote_line_work FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text =
+      nullif(current_setting('app.current_agent_mission_id', true), '')
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text =
+      nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+CREATE POLICY agent_mission_quote_line_work_owner_delete
+  ON agent_mission_quote_line_work FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+    AND "missionId"::text =
+      nullif(current_setting('app.current_agent_mission_id', true), '')
+  );
+
 REVOKE ALL ON TABLE agent_missions FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_events FROM PUBLIC;
+REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_fingerprint_key_version_floors FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_fingerprint_key_bindings FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
@@ -320,6 +371,10 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON TABLE agent_mission_fingerprint_key_version_floors FROM %I',
         exposed_role
       );
@@ -333,6 +388,10 @@ BEGIN
       );
       EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON FUNCTION guard_quote_draft_agent_mission_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v1() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(

@@ -4,6 +4,7 @@ import {
   AgentMission,
   AgentMissionEvent,
   normalizeCustomerName,
+  parseAgentMissionQuoteLineWork,
   parseQuoteDraftPayload,
   type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionCapabilityRejectionReason,
@@ -20,6 +21,8 @@ import {
   type AgentMissionQuoteScreenObservation,
   type AgentMissionQuoteDraftRepositoryPort,
   type AgentMissionQuoteDraftSlot,
+  type AgentMissionQuoteLineWork,
+  type AgentMissionQuoteLineWorkRepositoryPort,
   type AgentMissionReadRepositoryPort,
   type AgentMissionReadTransaction,
   type AgentMissionRealtimeAuthorityProof,
@@ -41,6 +44,7 @@ import {
   Prisma,
   type AgentMission as AgentMissionRow,
   type AgentMissionEvent as AgentMissionEventRow,
+  type AgentMissionQuoteLineWork as AgentMissionQuoteLineWorkRow,
   type QuoteDraftSlot as QuoteDraftSlotRow,
 } from '@prisma/client';
 import { prepareRealtimeContext } from '../../voice/realtime/realtime-admission';
@@ -80,6 +84,34 @@ const QUOTE_DRAFT_COLUMNS = Prisma.sql`
   "payloadVersion",
   "payload",
   "agentMissionId",
+  "createdAt",
+  "updatedAt"
+`;
+
+const QUOTE_LINE_WORK_COLUMNS = Prisma.sql`
+  "id",
+  "companyId",
+  "ownerUserId",
+  "missionId",
+  "ordinal",
+  "revision",
+  "state",
+  "origin",
+  "serviceReference",
+  "category",
+  "quantityMilli",
+  "unit",
+  "unitPriceCents",
+  "requestedVatRate",
+  "priceBasis",
+  "housingOlderThan2y",
+  "energyRenovation",
+  "requiredFact",
+  "catalogueItemId",
+  "expectedCatalogueRevision",
+  "proposalId",
+  "proposalRevision",
+  "proposalDiffHash",
   "createdAt",
   "updatedAt"
 `;
@@ -381,6 +413,52 @@ function quoteDraftFromRow(row: QuoteDraftSlotRow): AgentMissionQuoteDraftSlot {
   };
 }
 
+function quoteLineWorkFromRow(
+  row: AgentMissionQuoteLineWorkRow,
+): AgentMissionQuoteLineWork {
+  const quantityMilli = row.quantityMilli === null
+    ? null
+    : Number(row.quantityMilli);
+  const requestedVatRate = row.requestedVatRate === null
+    ? null
+    : row.requestedVatRate.toNumber();
+  const parsed = parseAgentMissionQuoteLineWork({
+    id: row.id,
+    companyId: row.companyId,
+    ownerUserId: row.ownerUserId,
+    missionId: row.missionId,
+    ordinal: row.ordinal,
+    revision: row.revision,
+    state: row.state,
+    origin: row.origin,
+    serviceReference: row.serviceReference,
+    category: row.category,
+    quantityMilli,
+    unit: row.unit,
+    unitPriceCents: row.unitPriceCents,
+    requestedVatRate,
+    priceBasis: row.priceBasis,
+    housingOlderThan2y: row.housingOlderThan2y,
+    energyRenovation: row.energyRenovation,
+    requiredFact: row.requiredFact,
+    catalogueItemId: row.catalogueItemId,
+    expectedCatalogueRevision: row.expectedCatalogueRevision,
+    proposalId: row.proposalId,
+    proposalRevision: row.proposalRevision,
+    proposalDiffHash: row.proposalDiffHash,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+  if (!parsed.ok) {
+    throw new Error(
+      `AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:${parsed.error.field}:${
+        parsed.error.reason
+      }`,
+    );
+  }
+  return parsed.value;
+}
+
 async function setMissionContext(
   transaction: Prisma.TransactionClient,
   missionId: string,
@@ -388,6 +466,28 @@ async function setMissionContext(
   await transaction.$executeRaw`
     SELECT set_config('app.current_agent_mission_id', ${missionId}, true)
   `;
+}
+
+async function lockActiveQuoteMissionForWork(
+  transaction: Prisma.TransactionClient,
+  input: AgentMissionOwner & { readonly missionId: string },
+): Promise<boolean> {
+  // Le contexte est nécessaire pour satisfaire la policy UPDATE de la mission lors du
+  // SELECT ... FOR UPDATE. L'identifiant seul ne confère aucune autorité : la ligne parent doit
+  // aussi appartenir au tenant/propriétaire courant, être un devis et rester active.
+  await setMissionContext(transaction, input.missionId);
+  const rows = await transaction.$queryRaw<Array<{ readonly id: string }>>`
+    SELECT "id"
+    FROM public.agent_missions
+    WHERE "id" = ${input.missionId}::UUID
+      AND "companyId" = ${input.companyId}
+      AND "ownerUserId" = ${input.ownerUserId}
+      AND "kind" = 'quote_creation'
+      AND "status" = 'active'
+    LIMIT 1
+    FOR UPDATE
+  `;
+  return rows.length === 1;
 }
 
 async function setTransactionTimeouts(
@@ -1032,6 +1132,265 @@ implements AgentMissionQuoteDraftRepositoryPort {
   }
 }
 
+function quoteLineWorkForPersistence(
+  workItem: AgentMissionQuoteLineWork,
+): AgentMissionQuoteLineWork {
+  const parsed = parseAgentMissionQuoteLineWork(workItem);
+  if (!parsed.ok) {
+    throw new Error(
+      `AGENT_MISSION_QUOTE_LINE_WORK_INPUT_INVALID:${parsed.error.field}:${
+        parsed.error.reason
+      }`,
+    );
+  }
+  return parsed.value;
+}
+
+function quoteLineWorkCreateData(
+  workItem: AgentMissionQuoteLineWork,
+): Prisma.AgentMissionQuoteLineWorkCreateManyInput {
+  return {
+    id: workItem.id,
+    companyId: workItem.companyId,
+    ownerUserId: workItem.ownerUserId,
+    missionId: workItem.missionId,
+    ordinal: workItem.ordinal,
+    revision: workItem.revision,
+    state: workItem.state,
+    origin: workItem.origin,
+    serviceReference: workItem.serviceReference,
+    category: workItem.category,
+    quantityMilli: workItem.quantityMilli === null
+      ? null
+      : BigInt(workItem.quantityMilli),
+    unit: workItem.unit,
+    unitPriceCents: workItem.unitPriceCents,
+    requestedVatRate: workItem.requestedVatRate === null
+      ? null
+      : new Prisma.Decimal(workItem.requestedVatRate),
+    priceBasis: workItem.priceBasis,
+    housingOlderThan2y: workItem.housingOlderThan2y,
+    energyRenovation: workItem.energyRenovation,
+    requiredFact: workItem.requiredFact,
+    catalogueItemId: workItem.catalogueItemId,
+    expectedCatalogueRevision: workItem.expectedCatalogueRevision,
+    proposalId: workItem.proposalId,
+    proposalRevision: workItem.proposalRevision,
+    proposalDiffHash: workItem.proposalDiffHash,
+    createdAt: new Date(workItem.createdAt),
+    updatedAt: new Date(workItem.updatedAt),
+  };
+}
+
+class PrismaAgentMissionQuoteLineWorkRepository
+implements AgentMissionQuoteLineWorkRepositoryPort {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async listForUpdate(
+    input: AgentMissionOwner & { readonly missionId: string },
+  ): Promise<readonly AgentMissionQuoteLineWork[]> {
+    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return [];
+    const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
+      SELECT ${QUOTE_LINE_WORK_COLUMNS}
+      FROM public.agent_mission_quote_line_work
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+      ORDER BY "ordinal" ASC, "id" ASC
+      FOR UPDATE
+    `;
+    return rows.map(quoteLineWorkFromRow);
+  }
+
+  async findByIdForUpdate(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly workItemId: string;
+    },
+  ): Promise<AgentMissionQuoteLineWork | null> {
+    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return null;
+    const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
+      SELECT ${QUOTE_LINE_WORK_COLUMNS}
+      FROM public.agent_mission_quote_line_work
+      WHERE "id" = ${input.workItemId}::UUID
+        AND "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+      LIMIT 1
+      FOR UPDATE
+    `;
+    return rows[0] === undefined ? null : quoteLineWorkFromRow(rows[0]);
+  }
+
+  async insertMany(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly workItems: readonly AgentMissionQuoteLineWork[];
+    },
+  ): Promise<'inserted' | 'conflict'> {
+    if (input.workItems.length === 0) return 'inserted';
+    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 'conflict';
+
+    const canonical = input.workItems.map(quoteLineWorkForPersistence);
+    if (
+      canonical.some((item) => (
+        item.companyId !== input.companyId
+        || item.ownerUserId !== input.ownerUserId
+        || item.missionId !== input.missionId
+        || item.revision !== 1
+      ))
+      || new Set(canonical.map((item) => item.id)).size !== canonical.length
+      || new Set(canonical.map((item) => item.ordinal)).size !== canonical.length
+    ) {
+      throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_INSERT_SCOPE_INVALID');
+    }
+
+    const existing = await this.transaction.agentMissionQuoteLineWork.findFirst({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        missionId: input.missionId,
+        OR: [
+          { id: { in: canonical.map((item) => item.id) } },
+          { ordinal: { in: canonical.map((item) => item.ordinal) } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (existing !== null) return 'conflict';
+
+    // Prisma ne fournit pas de transaction imbriquée dans une interactive transaction. Ce
+    // savepoint rend néanmoins le contrat `conflict` atomique : une collision UUID globale ne
+    // peut jamais laisser un sous-ensemble des lignes inséré.
+    await this.transaction.$executeRawUnsafe(
+      'SAVEPOINT bob_agent_mission_quote_line_work_insert',
+    );
+    try {
+      await this.transaction.agentMissionQuoteLineWork.createMany({
+        data: canonical.map(quoteLineWorkCreateData),
+      });
+      await this.transaction.$executeRawUnsafe(
+        'RELEASE SAVEPOINT bob_agent_mission_quote_line_work_insert',
+      );
+      return 'inserted';
+    } catch (error) {
+      await this.transaction.$executeRawUnsafe(
+        'ROLLBACK TO SAVEPOINT bob_agent_mission_quote_line_work_insert',
+      );
+      await this.transaction.$executeRawUnsafe(
+        'RELEASE SAVEPOINT bob_agent_mission_quote_line_work_insert',
+      );
+      if (postgresErrorCode(error) === '23505' || postgresErrorCode(error) === 'P2002') {
+        return 'conflict';
+      }
+      throw error;
+    }
+  }
+
+  async updateCas(input: {
+    readonly workItem: AgentMissionQuoteLineWork;
+    readonly expectedRevision: number;
+  }): Promise<'updated' | 'revision_conflict'> {
+    const workItem = quoteLineWorkForPersistence(input.workItem);
+    if (
+      !Number.isSafeInteger(input.expectedRevision)
+      || input.expectedRevision < 1
+      || workItem.revision !== input.expectedRevision + 1
+    ) {
+      throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_CAS_REVISION_INVALID');
+    }
+    if (!await lockActiveQuoteMissionForWork(this.transaction, {
+      companyId: workItem.companyId,
+      ownerUserId: workItem.ownerUserId,
+      missionId: workItem.missionId,
+    })) {
+      return 'revision_conflict';
+    }
+    const updated = await this.transaction.agentMissionQuoteLineWork.updateMany({
+      where: {
+        id: workItem.id,
+        companyId: workItem.companyId,
+        ownerUserId: workItem.ownerUserId,
+        missionId: workItem.missionId,
+        revision: input.expectedRevision,
+      },
+      data: {
+        revision: workItem.revision,
+        state: workItem.state,
+        origin: workItem.origin,
+        serviceReference: workItem.serviceReference,
+        category: workItem.category,
+        quantityMilli: workItem.quantityMilli === null
+          ? null
+          : BigInt(workItem.quantityMilli),
+        unit: workItem.unit,
+        unitPriceCents: workItem.unitPriceCents,
+        requestedVatRate: workItem.requestedVatRate === null
+          ? null
+          : new Prisma.Decimal(workItem.requestedVatRate),
+        priceBasis: workItem.priceBasis,
+        housingOlderThan2y: workItem.housingOlderThan2y,
+        energyRenovation: workItem.energyRenovation,
+        requiredFact: workItem.requiredFact,
+        catalogueItemId: workItem.catalogueItemId,
+        expectedCatalogueRevision: workItem.expectedCatalogueRevision,
+        proposalId: workItem.proposalId,
+        proposalRevision: workItem.proposalRevision,
+        proposalDiffHash: workItem.proposalDiffHash,
+        updatedAt: new Date(workItem.updatedAt),
+      },
+    });
+    return updated.count === 1 ? 'updated' : 'revision_conflict';
+  }
+
+  async delete(
+    input: AgentMissionOwner & {
+      readonly missionId: string;
+      readonly workItemId: string;
+      readonly expectedRevision: number;
+    },
+  ): Promise<'deleted' | 'not_found' | 'revision_conflict'> {
+    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 'not_found';
+    const rows = await this.transaction.$queryRaw<Array<{ readonly revision: number }>>`
+      SELECT "revision"
+      FROM public.agent_mission_quote_line_work
+      WHERE "id" = ${input.workItemId}::UUID
+        AND "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+      LIMIT 1
+      FOR UPDATE
+    `;
+    const row = rows[0];
+    if (row === undefined) return 'not_found';
+    if (row.revision !== input.expectedRevision) return 'revision_conflict';
+    const deleted = await this.transaction.$queryRaw<Array<{ readonly id: string }>>`
+      DELETE FROM public.agent_mission_quote_line_work
+      WHERE "id" = ${input.workItemId}::UUID
+        AND "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+        AND "revision" = ${input.expectedRevision}
+      RETURNING "id"
+    `;
+    return deleted.length === 1 ? 'deleted' : 'revision_conflict';
+  }
+
+  async deleteAll(
+    input: AgentMissionOwner & { readonly missionId: string },
+  ): Promise<number> {
+    if (!await lockActiveQuoteMissionForWork(this.transaction, input)) return 0;
+    const deleted = await this.transaction.$queryRaw<Array<{ readonly id: string }>>`
+      DELETE FROM public.agent_mission_quote_line_work
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+      RETURNING "id"
+    `;
+    return deleted.length;
+  }
+}
+
 class PrismaAgentMissionCustomerRepository
 implements CustomerCandidateSearchPort, CustomerCandidateReadPort {
   constructor(private readonly transaction: Prisma.TransactionClient) {}
@@ -1301,6 +1660,7 @@ function createWriteTransaction(
     missions: new PrismaAgentMissionRepository(transaction),
     events: new PrismaAgentMissionEventRepository(transaction),
     quoteDrafts: new PrismaAgentMissionQuoteDraftRepository(transaction),
+    quoteLineWork: new PrismaAgentMissionQuoteLineWorkRepository(transaction),
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
     customers: new PrismaAgentMissionCustomerRepository(transaction),
   };

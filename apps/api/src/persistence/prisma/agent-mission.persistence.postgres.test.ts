@@ -6,9 +6,11 @@ import {
   GetActiveAgentMission,
   StartQuoteAgentMission,
   createEmptyQuoteDraftPayload,
+  parseQuoteDraftPayload,
   sha256Hex,
   type AgentMissionFingerprintPort,
   type AgentMissionOwner,
+  type AgentMissionQuoteLineWork,
   type AgentMissionRealtimeAuthorityProof,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
@@ -223,6 +225,22 @@ function faultAfterWrite(
           release: async (input) => afterWrite(await tx.quoteDrafts.release(input)),
           selectCustomerCas: async (input) => (
             afterWrite(await tx.quoteDrafts.selectCustomerCas(input))
+          ),
+        },
+        quoteLineWork: {
+          listForUpdate: (input) => tx.quoteLineWork.listForUpdate(input),
+          findByIdForUpdate: (input) => tx.quoteLineWork.findByIdForUpdate(input),
+          insertMany: async (input) => (
+            afterWrite(await tx.quoteLineWork.insertMany(input))
+          ),
+          updateCas: async (input) => (
+            afterWrite(await tx.quoteLineWork.updateCas(input))
+          ),
+          delete: async (input) => (
+            afterWrite(await tx.quoteLineWork.delete(input))
+          ),
+          deleteAll: async (input) => (
+            afterWrite(await tx.quoteLineWork.deleteAll(input))
           ),
         },
         quoteScreen: tx.quoteScreen,
@@ -774,6 +792,251 @@ describe.skipIf(!RUN_CERT)(
           )
       `;
       expect(exposedFunctions).toEqual([]);
+    });
+
+    it('relit et décode le QuoteDraftPayloadV1 N-1 exact après le train M2-A-0', async () => {
+      const legacyOwner = {
+        companyId: 'writer-n1-company',
+        ownerUserId: 'writer-n1-owner',
+      };
+      const row = await workerA.withIsolatedOwner(
+        legacyOwner.companyId,
+        legacyOwner.ownerUserId,
+        (transaction) => transaction.quoteDraftSlot.findUnique({
+          where: { quote_draft_slot_owner: legacyOwner },
+          select: {
+            payloadVersion: true,
+            payload: true,
+            agentMissionId: true,
+          },
+        }),
+        {
+          maxWaitMs: 5_000,
+          timeoutMs: 10_000,
+          readOnly: true,
+          isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        },
+      );
+      expect(row).not.toBeNull();
+      if (row === null) return;
+      expect(row.payloadVersion).toBe(1);
+      expect(row.agentMissionId).toBeNull();
+      const decoded = parseQuoteDraftPayload(row.payload);
+      expect(decoded).toMatchObject({
+        ok: true,
+        value: {
+          schema: 'bob.quote-draft',
+          version: 1,
+          draft: {
+            sessionId: 'n1',
+            contentRevision: 0,
+            stagingRevision: 0,
+            step: 'client',
+            customer: null,
+            lines: [],
+            lineMetadata: [],
+          },
+        },
+      });
+    });
+
+    it('appelle réellement le repository de lignes sous RLS, savepoint et CAS', async () => {
+      const ownerA = {
+        companyId: companyA,
+        ownerUserId: `owner-quote-line-work-a-${randomUUID()}`,
+      };
+      const ownerB = {
+        companyId: companyA,
+        ownerUserId: `owner-quote-line-work-b-${randomUUID()}`,
+      };
+      const [startedA, startedB] = await Promise.all([
+        start(uowA).execute({ ...ownerA, commandId: randomUUID() }),
+        start(uowB).execute({ ...ownerB, commandId: randomUUID() }),
+      ]);
+      if (!startedA.ok || !startedB.ok) {
+        throw new Error(
+          `quote line work mission fixture failed:${JSON.stringify({ startedA, startedB })}`,
+        );
+      }
+      const missionA = startedA.value.mission;
+      const missionB = startedB.value.mission;
+      const createdAt = new Date().toISOString();
+      const makeWorkItem = (
+        owner: AgentMissionOwner,
+        missionId: string,
+        id: string,
+        ordinal: number,
+      ): AgentMissionQuoteLineWork => ({
+        id,
+        companyId: owner.companyId,
+        ownerUserId: owner.ownerUserId,
+        missionId,
+        ordinal,
+        revision: 1,
+        state: 'queued',
+        origin: 'user_voice',
+        serviceReference: 'Main-d’œuvre plomberie',
+        category: 'labor',
+        quantityMilli: 2_000,
+        unit: 'heure',
+        unitPriceCents: 5_500,
+        requestedVatRate: 20,
+        priceBasis: 'per_unit',
+        housingOlderThan2y: null,
+        energyRenovation: null,
+        requiredFact: null,
+        catalogueItemId: null,
+        expectedCatalogueRevision: null,
+        proposalId: null,
+        proposalRevision: null,
+        proposalDiffHash: null,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const runOwner = async <T>(
+        uow: PrismaAgentMissionUnitOfWork,
+        owner: AgentMissionOwner,
+        work: (transaction: AgentMissionTransaction) => Promise<T>,
+      ): Promise<T> => {
+        const result = await uow.runQuoteCreationOwner(
+          owner,
+          await authorizeOwner(owner),
+          work,
+        );
+        if (result.status !== 'executed') {
+          throw new Error(`quote line work transaction rejected:${JSON.stringify(result)}`);
+        }
+        return result.value;
+      };
+
+      // La collision de PK appartient à un autre owner et reste donc invisible au pré-check RLS.
+      // Le createMany doit échouer atomiquement, revenir au savepoint puis laisser la transaction
+      // utilisable — sans conserver le premier item du batch.
+      const globalCollisionId = randomUUID();
+      const foreignCollision = makeWorkItem(
+        ownerB,
+        missionB.id,
+        globalCollisionId,
+        1,
+      );
+      expect(await runOwner(uowB, ownerB, (transaction) =>
+        transaction.quoteLineWork.insertMany({
+          ...ownerB,
+          missionId: missionB.id,
+          workItems: [foreignCollision],
+        }),
+      )).toBe('inserted');
+
+      const workA = makeWorkItem(ownerA, missionA.id, randomUUID(), 1);
+      const collidingWorkA = makeWorkItem(
+        ownerA,
+        missionA.id,
+        globalCollisionId,
+        2,
+      );
+      expect(await runOwner(uowA, ownerA, async (transaction) => {
+        const outcome = await transaction.quoteLineWork.insertMany({
+          ...ownerA,
+          missionId: missionA.id,
+          workItems: [workA, collidingWorkA],
+        });
+        const afterConflict = await transaction.quoteLineWork.listForUpdate({
+          ...ownerA,
+          missionId: missionA.id,
+        });
+        return { outcome, afterConflict };
+      })).toEqual({ outcome: 'conflict', afterConflict: [] });
+
+      const workA2: AgentMissionQuoteLineWork = {
+        ...makeWorkItem(ownerA, missionA.id, randomUUID(), 2),
+        serviceReference: 'Contrat entretien annuel',
+        category: 'subscription',
+        unit: 'mois',
+        requestedVatRate: 2.1,
+      };
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.insertMany({
+          ...ownerA,
+          missionId: missionA.id,
+          workItems: [workA, workA2],
+        }),
+      )).toBe('inserted');
+
+      const listed = await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.listForUpdate({
+          ...ownerA,
+          missionId: missionA.id,
+        }),
+      );
+      expect(listed.map((item) => [item.id, item.ordinal])).toEqual([
+        [workA.id, 1],
+        [workA2.id, 2],
+      ]);
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.findByIdForUpdate({
+          ...ownerA,
+          missionId: missionA.id,
+          workItemId: workA.id,
+        }),
+      )).toEqual(workA);
+
+      // Même en fournissant les identifiants exacts, une transaction autorisée pour ownerB ne
+      // peut ni verrouiller la mission A ni découvrir son work item.
+      expect(await runOwner(uowB, ownerB, (transaction) =>
+        transaction.quoteLineWork.findByIdForUpdate({
+          ...ownerA,
+          missionId: missionA.id,
+          workItemId: workA.id,
+        }),
+      )).toBeNull();
+
+      const revisedWorkA: AgentMissionQuoteLineWork = {
+        ...workA,
+        revision: 2,
+        state: 'awaiting_details',
+        requiredFact: 'vat_rate',
+        updatedAt: new Date(Date.parse(createdAt) + 1_000).toISOString(),
+      };
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.updateCas({
+          workItem: revisedWorkA,
+          expectedRevision: 1,
+        }),
+      )).toBe('updated');
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.updateCas({
+          workItem: revisedWorkA,
+          expectedRevision: 1,
+        }),
+      )).toBe('revision_conflict');
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.delete({
+          ...ownerA,
+          missionId: missionA.id,
+          workItemId: workA.id,
+          expectedRevision: 1,
+        }),
+      )).toBe('revision_conflict');
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.delete({
+          ...ownerA,
+          missionId: missionA.id,
+          workItemId: workA.id,
+          expectedRevision: 2,
+        }),
+      )).toBe('deleted');
+      expect(await runOwner(uowA, ownerA, (transaction) =>
+        transaction.quoteLineWork.deleteAll({
+          ...ownerA,
+          missionId: missionA.id,
+        }),
+      )).toBe(1);
+      expect(await runOwner(uowB, ownerB, (transaction) =>
+        transaction.quoteLineWork.deleteAll({
+          ...ownerB,
+          missionId: missionB.id,
+        }),
+      )).toBe(1);
     });
 
     it('ferme get/start/cancel/screen-ack avant le reçu durable puis ouvre exactement après ACK', async () => {

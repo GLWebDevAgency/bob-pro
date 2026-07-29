@@ -4,6 +4,7 @@ import {
   CATALOGUE_CATEGORIES,
   deriveCatalogue,
   isCatalogueCategory,
+  normalizeCatalogueSearchKey,
   parseCustomPrestation,
   searchCatalogue,
   type CustomPrestation,
@@ -233,6 +234,18 @@ describe('application/catalogue/searchCatalogue', () => {
     expect(searchCatalogue(prestations, 'oeuvre electricite').map((item) => item.id)).toEqual([
       'owner-3',
     ]);
+  });
+
+  it.each([
+    ['  Main-d’Œuvre, Électricité ! ', 'main d oeuvre electricite'],
+    ['CÆUR / pose', 'caeur pose'],
+    ['Chauffe---eau  200 L', 'chauffe eau 200 l'],
+    ['Škoda Łódź — Straße', 'skoda lodz strasse'],
+    ['Þing Đuro, Øresund', 'thing duro oresund'],
+    ['Ångström service', 'angstrom service'],
+    ['E\u0301lectricite\u0301', 'electricite'],
+  ])('normalise "%s" comme la future clé indexée PostgreSQL', (input, expected) => {
+    expect(normalizeCatalogueSearchKey(input)).toBe(expected);
   });
 
   it('retourne une copie complète pour une requête vide et une liste vide sans correspondance', () => {
