@@ -173,6 +173,7 @@ export class StartQuoteAgentMission {
             const reference = draftReferenceForMission(active);
             const joined = transitionValue(active.joinActive({
               expectedRevision: active.revision,
+              stagedCustomerResolution: null,
               occurredAt: now,
             }));
             const updated = await transaction.missions.updateCas({
@@ -250,6 +251,7 @@ export class StartQuoteAgentMission {
               id: missionId,
               ...owner,
               createdAt: now,
+              stagedCustomerResolution: null,
               startOutcome,
               existingDraft: draftReference(slot),
               decision: {
@@ -262,6 +264,7 @@ export class StartQuoteAgentMission {
               id: missionId,
               ...owner,
               createdAt: now,
+              stagedCustomerResolution: null,
               startOutcome,
               draft: draftReference(slot),
             });

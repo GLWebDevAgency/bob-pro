@@ -18,6 +18,7 @@ import {
   AGENT_MISSION_START_NEW_SLOT_OUTCOMES,
   AGENT_MISSION_START_OUTCOMES,
   AGENT_MISSION_SYSTEM_ACTORS,
+  AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES,
   AGENT_MISSION_TAP_ACTORS,
   AGENT_MISSION_USER_ACTORS,
   AGENT_MISSION_VOICE_ACTORS,
@@ -79,6 +80,8 @@ function dataFor(type: AgentMissionEventType): AgentMissionEventDataV1 {
       return { kind: type };
     case 'screen_acknowledged':
       return { kind: type, nextPhase: 'awaiting_customer' };
+    case 'customer_resolution_staged':
+      return { kind: type, result: 'choices', observedCandidateCount: 2 };
     case 'customer_not_found':
       return { kind: type, result: 'none' };
     case 'customer_choice_presented':
@@ -424,6 +427,9 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
       type !== 'screen_acknowledged' && type !== 'mission_expired'
     ),
   );
+  const userOnlyEvents = userEvents.filter(
+    (type) => !(AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES as readonly string[]).includes(type),
+  );
   const noOpEvents = [
     'draft_resume_selected',
     'draft_discard_requested',
@@ -464,7 +470,7 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
     }).ok).toBe(true);
   });
 
-  it.each(userEvents)('%s refuse l’acteur système', (eventType) => {
+  it.each(userOnlyEvents)('%s refuse l’acteur système', (eventType) => {
     expect(AgentMissionEvent.record({
       ...validEventFor(eventType),
       actor: 'system',
@@ -474,6 +480,79 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
       error: { field: 'actor', reason: 'inconsistent_event' },
     });
   });
+
+  it.each(AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES)(
+    '%s accepte uniquement une continuation UUIDv8 corrélée à l’ACK',
+    (eventType) => {
+      const base = validEventFor(eventType);
+      const data = eventType === 'customer_selected'
+        ? {
+            kind: 'customer_selected' as const,
+            customerId: 'customer-1',
+            source: 'exact_match' as const,
+            choiceId: null,
+            choiceSetHash: null,
+          }
+        : base.data;
+      const continuation = {
+        ...base,
+        actor: 'system' as const,
+        commandId: SYSTEM_COMMAND_ID,
+        realtimeSessionId: SESSION_ID,
+        turnId: null,
+        contextRevision: 2,
+        contextDigest: DIGEST,
+        data,
+      };
+      expect(AgentMissionEvent.record(continuation).ok).toBe(true);
+      expect(AgentMissionEvent.record({
+        ...continuation,
+        commandId: COMMAND_ID,
+      })).toMatchObject({
+        ok: false,
+        error: { field: 'commandId', reason: 'invalid_uuid_version' },
+      });
+      for (const patch of [
+        { realtimeSessionId: null },
+        { contextRevision: null, contextDigest: null },
+        { turnId: TURN_ID },
+      ]) {
+        expect(AgentMissionEvent.record({
+          ...continuation,
+          ...patch,
+        })).toMatchObject({
+          ok: false,
+          error: { field: 'correlation', reason: 'inconsistent_event' },
+        });
+      }
+    },
+  );
+
+  it.each(['screen_selection', 'presented_choice'] as const)(
+    'refuse une sélection client système de source %s',
+    (source) => {
+      const base = validEventFor('customer_selected');
+      expect(AgentMissionEvent.record({
+        ...base,
+        actor: 'system',
+        commandId: SYSTEM_COMMAND_ID,
+        realtimeSessionId: SESSION_ID,
+        turnId: null,
+        contextRevision: 2,
+        contextDigest: DIGEST,
+        data: {
+          kind: 'customer_selected',
+          customerId: 'customer-1',
+          source,
+          choiceId: source === 'presented_choice' ? CHOICE_ID : null,
+          choiceSetHash: source === 'presented_choice' ? DIGEST : null,
+        },
+      })).toMatchObject({
+        ok: false,
+        error: { field: 'actor', reason: 'inconsistent_event' },
+      });
+    },
+  );
 
   it.each(['user_voice', 'user_tap'] as const)('screen_acknowledged refuse l’acteur %s', (actor) => {
     expect(AgentMissionEvent.record({

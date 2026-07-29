@@ -9,6 +9,7 @@ export const AGENT_MISSION_EVENT_TYPES = [
   'draft_discard_requested',
   'draft_discard_cancelled',
   'draft_discard_confirmed',
+  'customer_resolution_staged',
   'screen_acknowledged',
   'customer_not_found',
   'customer_choice_presented',
@@ -49,6 +50,11 @@ export const AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES = ['mission_expired'] 
 export const AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES = [
   'screen_acknowledged',
 ] as const;
+export const AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES = [
+  'customer_not_found',
+  'customer_choice_presented',
+  'customer_selected',
+] as const;
 export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'mission_started',
   'mission_joined',
@@ -56,6 +62,7 @@ export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'draft_discard_requested',
   'draft_discard_cancelled',
   'draft_discard_confirmed',
+  'customer_resolution_staged',
   'customer_not_found',
   'customer_choice_presented',
   'customer_selected',
@@ -68,6 +75,7 @@ export const AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES = [
   'draft_resume_selected',
   'draft_discard_requested',
   'draft_discard_cancelled',
+  'customer_resolution_staged',
   'screen_acknowledged',
   'customer_not_found',
   'customer_choice_presented',
@@ -95,6 +103,11 @@ export const AGENT_MISSION_EVENT_KIND_ONLY_DATA_KEYS = ['kind'] as const;
 export const AGENT_MISSION_EVENT_START_DATA_KEYS = ['kind', 'startOutcome'] as const;
 export const AGENT_MISSION_EVENT_NEXT_PHASE_DATA_KEYS = ['kind', 'nextPhase'] as const;
 export const AGENT_MISSION_EVENT_RESULT_DATA_KEYS = ['kind', 'result'] as const;
+export const AGENT_MISSION_EVENT_STAGED_RESOLUTION_DATA_KEYS = [
+  'kind',
+  'result',
+  'observedCandidateCount',
+] as const;
 export const AGENT_MISSION_EVENT_CHOICE_PRESENTED_DATA_KEYS = [
   'kind',
   'candidateCount',
@@ -114,6 +127,12 @@ export const AGENT_MISSION_SCREEN_ACK_NEXT_PHASES = [
   'awaiting_lines',
 ] as const;
 export const AGENT_MISSION_CUSTOMER_NOT_FOUND_RESULTS = ['none', 'too_many'] as const;
+export const AGENT_MISSION_STAGED_CUSTOMER_RESOLUTION_RESULTS = [
+  'none',
+  'too_many',
+  'exact',
+  'choices',
+] as const;
 export const AGENT_MISSION_CUSTOMER_SELECTION_SOURCES = [
   'exact_match',
   'presented_choice',
@@ -141,6 +160,14 @@ export type AgentMissionEventDataV1 =
   | {
       readonly kind: 'screen_acknowledged';
       readonly nextPhase: 'awaiting_customer' | 'awaiting_customer_choice' | 'awaiting_lines';
+    }
+  | {
+      readonly kind: 'customer_resolution_staged';
+      readonly result: 'none' | 'too_many' | 'exact' | 'choices';
+      /**
+       * Résultat borné de la recherche LIMIT 6. La valeur 6 signifie « six ou davantage ».
+       */
+      readonly observedCandidateCount: number;
     }
   | {
       readonly kind: 'customer_not_found';
@@ -341,6 +368,19 @@ function validateData(
       kind: eventType,
       nextPhase: value['nextPhase'] as 'awaiting_customer' | 'awaiting_customer_choice' | 'awaiting_lines',
     };
+  } else if (eventType === 'customer_resolution_staged') {
+    if (
+      !exactKeys(value, AGENT_MISSION_EVENT_STAGED_RESOLUTION_DATA_KEYS)
+      || !isOneOf(AGENT_MISSION_STAGED_CUSTOMER_RESOLUTION_RESULTS, value['result'])
+      || !Number.isSafeInteger(value['observedCandidateCount'])
+    ) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      result: value['result'],
+      observedCandidateCount: value['observedCandidateCount'] as number,
+    };
   } else if (eventType === 'customer_not_found') {
     if (
       !exactKeys(value, AGENT_MISSION_EVENT_RESULT_DATA_KEYS)
@@ -414,6 +454,20 @@ function validateData(
       return invalid('data.candidateCount', 'invalid_value');
     }
     if (!SHA256.test(data.choiceSetHash)) return invalid('data.choiceSetHash', 'invalid_digest');
+  }
+
+  if (data.kind === 'customer_resolution_staged') {
+    const validCount = (
+      (data.result === 'none' && data.observedCandidateCount === 0)
+      || (data.result === 'too_many' && data.observedCandidateCount === 6)
+      || (data.result === 'exact' && data.observedCandidateCount === 1)
+      || (
+        data.result === 'choices'
+        && data.observedCandidateCount >= 1
+        && data.observedCandidateCount <= 5
+      )
+    );
+    if (!validCount) return invalid('data.observedCandidateCount', 'inconsistent_event');
   }
 
   if (data.kind === 'customer_selected') {
@@ -497,6 +551,26 @@ function validateCorrelation(input: {
   readonly contextDigest: string | null;
   readonly data: AgentMissionEventDataV1;
 }): AgentMissionEventResult<void> {
+  const isSystemContinuation = (
+    input.actor === 'system'
+    && containsEventType(AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES, input.eventType)
+  );
+  if (isSystemContinuation) {
+    const hasSession = input.realtimeSessionId !== null;
+    const hasTurn = input.turnId !== null;
+    const hasContext = input.contextRevision !== null && input.contextDigest !== null;
+    if (!hasSession || hasTurn || !hasContext) {
+      return invalid('correlation', 'inconsistent_event');
+    }
+    if (
+      input.data.kind === 'customer_selected'
+      && input.data.source !== 'exact_match'
+    ) {
+      return invalid('actor', 'inconsistent_event');
+    }
+    return ok(undefined);
+  }
+
   const rule = ruleForEvent(input.eventType);
   if (!(rule.actors as readonly AgentMissionActor[]).includes(input.actor)) {
     return invalid('actor', 'inconsistent_event');
@@ -633,12 +707,26 @@ export class AgentMissionEvent {
       return invalid('actor', 'invalid_value');
     }
     const actor = value['actor'];
-    const systemEvent = eventType === 'screen_acknowledged' || eventType === 'mission_expired';
-    if ((systemEvent && actor !== 'system') || (!systemEvent && actor === 'system')) {
+    const systemOnlyEvent = eventType === 'screen_acknowledged' || eventType === 'mission_expired';
+    const systemContinuationEvent = containsEventType(
+      AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES,
+      eventType,
+    );
+    if (
+      (systemOnlyEvent && actor !== 'system')
+      || (
+        actor === 'system'
+        && !systemOnlyEvent
+        && !systemContinuationEvent
+      )
+    ) {
       return invalid('actor', 'inconsistent_event');
     }
     const commandId = value['commandId'];
-    if (eventType === 'mission_expired') {
+    if (
+      eventType === 'mission_expired'
+      || (actor === 'system' && systemContinuationEvent)
+    ) {
       if (!isCanonicalAgentMissionSystemCommandId(commandId)) {
         return invalid('commandId', 'invalid_uuid_version');
       }

@@ -43,8 +43,8 @@ la main après un handoff explicite ; M1-C ne promet pas encore un devis complet
    initial. Seul le résultat réel 0/exact/choix/trop nombreux est staged dans la mission ; la
    requête et le transcript disparaissent à la fin du tour.
 6. Transition pure partagée qui applique `select_customer + next_step` au payload durable.
-7. `AdvanceQuoteAgentMission` avec idempotence, CAS et transaction unique
-   brouillon + mission + événement.
+7. `AdvanceQuoteAgentMission` avec commande système UUIDv8 déterministe, idempotence, CAS et
+   transaction unique brouillon + mission + événement.
 8. Endpoint tactile exact `POST /agent-missions/:missionId/decisions`.
 9. Orchestrateur Realtime mission-aware :
    - démarre/reprend la mission avant de rendre la navigation « nouveau devis » ;
@@ -99,9 +99,12 @@ Company SHARE → owner/kind → mission → quote_draft_slot → customer
 
 La résolution initiale et la sélection sont deux frontières :
 
-1. avant navigation, une transaction écrit seulement la résolution tenantée dans la mission et son
-   événement `customer_resolution_staged` ; elle ne modifie jamais le brouillon. L'événement
-   conserve seulement le résultat et le nombre observé borné à six, jamais les IDs ni la requête ;
+1. avant navigation, la recherche tenantée est exécutée dans l'unique transaction de
+   `StartQuoteAgentMission` à partir d'une requête transitoire validée : `mission_started` ou
+   `mission_joined` persiste la résolution avec la mission sans modifier le contenu du brouillon.
+   Une commande utilisateur ultérieure qui remplace cette résolution utilise seule
+   `customer_resolution_staged` ; son événement conserve uniquement le résultat et le nombre
+   observé borné à six, jamais les IDs ni la requête ;
 2. après l'ACK écran, un `AdvanceQuoteAgentMission` idempotent consomme la résolution staged dans
    une transaction distincte et reprenable :
    - `exact` → sélection atomique automatique ;
@@ -110,10 +113,23 @@ La résolution initiale et la sélection sont deux frontières :
    - `none | too_many` → phase `awaiting_customer`, question ciblée ;
    - aucune résolution → phase `awaiting_customer`.
 
-Une panne entre ACK et consommation laisse la résolution staged intacte : la reprise rejoue la
-consommation avec le même `commandId`. Une résolution `exact` dont le client a disparu devient
-`customer_not_found`. Un jeu `choices` devenu vide suit la même règle ; un jeu encore non vide
-reste une suggestion explicite, même s'il ne contient plus qu'un client.
+Une panne entre ACK et consommation laisse la résolution staged intacte. L'ACK retourne un receipt
+immuable reconstruit depuis son événement : `ackCommandId`, `missionId`, `missionRevisionAfter`,
+corrélation et `occurredAt`. La continuation dérive alors un `commandId` UUIDv8 stable depuis la
+version canonique de l'opération, le tenant, le propriétaire, la mission et la révision post-ACK.
+Elle ne dépend pas du staged, qui a disparu après un succès. Le retry ou la reprise recalcule donc
+le même identifiant : un événement déjà acquis est rejoué, sinon la consommation reprend sans
+double effet.
+
+Une résolution `exact` dont le client a disparu devient `customer_not_found`. Un jeu `choices`
+devenu vide suit la même règle ; un jeu encore non vide reste une suggestion explicite, même s'il
+ne contient plus qu'un client. La continuation ne peut consommer que :
+
+- le `customerId` exact présent dans le staged ;
+- pour des choix, un sous-ensemble ordonné des `customerId` staged, relus sous le même tenant ;
+- le résultat `none` ou `too_many` identique au staged.
+
+Toute substitution, injection, duplication ou permutation est un conflit sans écriture.
 
 Si l'utilisateur choisit de reprendre un brouillon existant :
 
@@ -121,6 +137,17 @@ Si l'utilisateur choisit de reprendre un brouillon existant :
   client ;
 - un brouillon sans client conserve le staged ;
 - le parcours « abandonner » puis confirmer conserve toujours le staged pour le nouveau brouillon.
+
+Un tour initial n'enchaîne jamais `mission_started` puis `customer_resolution_staged` avec deux
+commandes artificielles : une commande utilisateur produit exactement une transition, une
+révision et un événement. La continuation post-ACK est une nouvelle commande système causale,
+déterministe et auditable : `actor=system`, UUIDv8, corrélation écran de l'ACK et `turnId=null`.
+`customer_selected` système est permis uniquement avec `source=exact_match`; un choix tactile
+reste `user_tap` et un choix présenté garde l'acteur de sa commande utilisateur.
+
+Le handler ACK n'annonce pas le succès au mobile avant que la continuation interne ait rendu un
+résultat terminal (`advanced`, `replayed`, `superseded` ou erreur retryable). Un replay ACK relit
+le receipt immuable de l'événement acquis, jamais la seule révision courante de la mission.
 
 La sélection réussie réalise dans une seule transaction PostgreSQL :
 
@@ -256,6 +283,10 @@ choix vides.
 - [ ] Une faute injectée après le write brouillon rollbacke brouillon, mission et événement.
 - [ ] Deux décisions concurrentes donnent un gagnant, un conflit et un seul événement.
 - [ ] Un replay exact ne crée pas de second événement ; un replay altéré échoue.
+- [ ] Un crash après ACK mais avant consommation conserve le staged ; la reprise recalcule le même
+      UUIDv8 et produit exactement un événement métier.
+- [ ] La continuation refuse toute substitution, injection, duplication ou permutation des IDs
+      staged avant le premier write.
 - [ ] `turn_settled` est émis exactement une fois pour `done`, `cancelled` et `failed` sur les deux
       chemins OpenAI, et provoque une relecture mobile.
 - [ ] La capability n'apparaît dans aucun JSON, log, métrique, trace ou stockage mobile.

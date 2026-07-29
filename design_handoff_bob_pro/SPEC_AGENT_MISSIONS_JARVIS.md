@@ -422,6 +422,9 @@ isolément :
 
 - `screen_acknowledged` est `system`, porte session + contexte appliqués et aucun `turnId` ;
 - `mission_expired` est `system` et ne porte aucun tuple Realtime ;
+- la continuation post-ACK peut produire `customer_not_found`, `customer_choice_presented` ou
+  `customer_selected` avec `actor=system`, UUIDv8, session + contexte de l'ACK et aucun `turnId` ;
+  une sélection système impose `source=exact_match` ;
 - les autres commandes utilisateur sont `user_voice` ou `user_tap` ; `user_voice` porte le tuple
   session + turn + contexte complet, tandis qu'un tap porte soit session + contexte sans turn,
   soit aucun tuple Realtime lorsqu'aucune session Live n'est ouverte ;
@@ -446,7 +449,7 @@ bornée et non accessible aux rôles Data API.
 | absent | start | aucun slot | `awaiting_quote_screen` | `mission_started(no_slot)` + brouillon vide durable |
 | absent | start | slot non significatif | `awaiting_quote_screen` | `mission_started(empty_slot_adopted)` + lie le slot existant |
 | absent | start | slot significatif | `awaiting_draft_decision` | `mission_started(draft_conflict)`, ne touche pas au slot |
-| active | start rejoué | même owner/kind | inchangé | retourne la mission existante, aucun event doublé |
+| active | start/join | même owner/kind | inchangé | retourne la mission existante ; une résolution initiale éventuelle est intégrée à cette unique transition |
 | `awaiting_draft_decision` | reprendre | choix courant | `awaiting_quote_screen` | lie le slot, event `draft_resume_selected` |
 | `awaiting_draft_decision` | abandonner | choix courant | `awaiting_draft_discard_confirmation` | aucune suppression |
 | `awaiting_draft_discard_confirmation` | garder | choix courant | `awaiting_draft_decision` | renouvelle un jeu de choix |
@@ -466,6 +469,19 @@ bornée et non accessible aux rôles Data API.
 
 Les phases terminales ne sont jamais rouvertes. Une nouvelle demande crée une nouvelle mission ou
 reprend le brouillon via la décision explicite prévue.
+
+Pour une phrase initiale « crée un devis pour X », la recherche tenantée est effectuée dans le
+writer puis sa résolution réelle est incluse dans l'unique transition `mission_started` ou
+`mission_joined`.
+Elle ne produit pas un second événement. `customer_resolution_staged` est réservé à une commande
+ultérieure qui remplace la résolution pendant une phase pré-écran. L'invariant global reste ainsi :
+un `commandId` utilisateur = une transition = une révision = un événement.
+
+Après l'ACK écran, une continuation distincte consomme la résolution staged avec un `commandId`
+système UUIDv8 déterministe dérivé de la mission et de sa révision post-ACK immuable. Cette
+commande est reprenable après crash et produit l'événement métier dédié
+(`customer_selected`, `customer_choice_presented` ou `customer_not_found`) ; l'ACK reste un
+événement de contexte strictement sans effet sur le brouillon.
 
 ## 8. Brouillon existant : aucune perte silencieuse
 
