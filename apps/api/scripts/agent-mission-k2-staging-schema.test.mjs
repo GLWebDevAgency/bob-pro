@@ -125,7 +125,7 @@ function schemaState({
     kindConstraintValidated: true,
     indexes: {
       agent_missions_one_active_owner_kind_key: foregroundIndex(
-        ['"companyId"', '"ownerUserId"', '"kind"'],
+        ['"companyId"', '"ownerUserId"', 'kind'],
         owner,
       ),
       ...(postflight

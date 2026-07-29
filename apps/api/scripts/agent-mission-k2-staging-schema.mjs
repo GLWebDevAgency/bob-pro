@@ -938,7 +938,7 @@ export function assertK2SchemaState(value, phase) {
   assertIndex(
     state.indexes.agent_missions_one_active_owner_kind_key,
     'agent_missions_one_active_owner_kind_key',
-    ['"companyId"', '"ownerUserId"', '"kind"'],
+    ['"companyId"', '"ownerUserId"', 'kind'],
     state.tableOwner,
   );
   const globalIndex = state.indexes.agent_missions_one_active_owner_key;
