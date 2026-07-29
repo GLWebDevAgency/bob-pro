@@ -62,6 +62,7 @@ test('workflow M1-B est uniquement manuel ou réutilisable, staging et sérialis
 test('le workflow Railway déjà présent sur main sert seulement de trampoline pré-merge', () => {
   assert.match(railwayReleaseWorkflow, /- m1b-staging-certification/u);
   assert.match(railwayReleaseWorkflow, /- m1b-staging-recovery/u);
+  assert.match(railwayReleaseWorkflow, /- k2-staging-schema/u);
   assert.match(
     railwayReleaseWorkflow,
     /uses: \.\/\.github\/workflows\/agent-mission-m1b-staging\.yml/u,
@@ -70,7 +71,11 @@ test('le workflow Railway déjà présent sur main sert seulement de trampoline 
   assert.match(railwayReleaseWorkflow, /test "\$RELEASE_SERVICE" = "\$EXPECTED_SERVICE"/u);
   assert.match(
     railwayReleaseWorkflow,
-    /release-api:[\s\S]*?if: \$\{\{ always\(\) && inputs\.purpose != 'm1b-staging-certification' && inputs\.purpose != 'm1b-staging-recovery' \}\}/u,
+    /release-api:[\s\S]*?needs: validate-purpose[\s\S]*?if: \$\{\{ always\(\) && needs\.validate-purpose\.result == 'success' && inputs\.purpose == 'release' \}\}/u,
+  );
+  assert.match(
+    railwayReleaseWorkflow,
+    /validate-purpose:[\s\S]*?release\|m1b-staging-certification\|m1b-staging-recovery\|k2-staging-schema\)[\s\S]*?Unsupported Railway release purpose/u,
   );
   assert.match(
     railwayReleaseWorkflow,

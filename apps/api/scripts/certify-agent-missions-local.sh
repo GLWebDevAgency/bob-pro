@@ -150,6 +150,73 @@ CREATE ROLE bob_realtime_reaper_directory
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 SQL
 
+if [ "$LOCAL_CLUSTER_STARTED" = "true" ]; then
+  "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+CREATE TABLE public.agent_missions (
+  "companyId" TEXT NOT NULL,
+  "ownerUserId" TEXT NOT NULL,
+  "status" TEXT NOT NULL
+);
+SQL
+  "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 \
+    -f "$ROOT_DIR/apps/api/prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql"
+
+  missing_owner_output=""
+  if missing_owner_output="$(
+    "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X -v ON_ERROR_STOP=1 \
+      -f "$ROOT_DIR/apps/api/prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql" \
+      2>&1
+  )"; then
+    echo "AgentMission K2 accepted a deployer without SET access to the table owner" >&2
+    exit 1
+  fi
+  case "$missing_owner_output" in
+    *"AGENT_MISSION_K2_SCHEMA_OWNER_UNAVAILABLE"*) ;;
+    *)
+      echo "$missing_owner_output" >&2
+      echo "AgentMission K2 missing-owner refusal was not deterministic" >&2
+      exit 1
+      ;;
+  esac
+
+  "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DROP TABLE public.agent_missions;
+CREATE TABLE public.agent_missions (
+  "companyId" TEXT NOT NULL,
+  "ownerUserId" TEXT NOT NULL,
+  "status" TEXT NOT NULL
+);
+ALTER TABLE public.agent_missions OWNER TO bob_deployer;
+GRANT CREATE ON SCHEMA public TO bob_deployer;
+SQL
+  "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X -v ON_ERROR_STOP=1 \
+    -f "$ROOT_DIR/apps/api/prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql"
+  "$PSQL_BIN" "$SUPER_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $bob_agent_mission_k2_ci_owner$
+DECLARE
+  table_owner OID;
+  index_owner OID;
+BEGIN
+  SELECT relation.relowner
+    INTO STRICT table_owner
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid = 'public.agent_missions'::pg_catalog.regclass;
+  SELECT relation.relowner
+    INTO STRICT index_owner
+    FROM pg_catalog.pg_class AS relation
+   WHERE relation.oid =
+     'public.agent_missions_one_active_owner_key'::pg_catalog.regclass;
+  IF table_owner <> index_owner
+     OR table_owner <> pg_catalog.to_regrole('bob_deployer') THEN
+    RAISE EXCEPTION 'AGENT_MISSION_K2_CI_OWNER_PARITY_FAILED';
+  END IF;
+END;
+$bob_agent_mission_k2_ci_owner$;
+DROP TABLE public.agent_missions;
+REVOKE CREATE ON SCHEMA public FROM bob_deployer;
+SQL
+fi
+
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET createrole_self_grant = 'set';
 CREATE ROLE bob_schema_owner
@@ -1920,6 +1987,7 @@ SELECT count(*)
      'agent_missions_one_active_owner_key',
      'agent_missions_one_active_owner_kind_key'
    )
+   AND index_relation.relowner = relation.relowner
    AND index.indisunique
    AND index.indisvalid
    AND index.indisready

@@ -819,7 +819,18 @@ test('K2 ajoute le foreground global sans retirer le backstop N-1 owner/kind', (
   assert.match(globalForegroundExpand, /BEGIN;/u);
   assert.match(globalForegroundExpand, /SET LOCAL lock_timeout = '5s';/u);
   assert.match(globalForegroundExpand, /SET LOCAL statement_timeout = '60s';/u);
-  assert.match(globalForegroundExpand, /SET LOCAL ROLE bob_schema_owner;/u);
+  assert.match(
+    globalForegroundExpand,
+    /SELECT relation\.relowner, pg_catalog\.pg_get_userbyid\(relation\.relowner\)[\s\S]*?relation\.relname = 'agent_missions'[\s\S]*?relation\.relkind IN \('r', 'p'\)/u,
+  );
+  assert.match(
+    globalForegroundExpand,
+    /current_user::pg_catalog\.regrole <> schema_owner_oid[\s\S]*?NOT pg_catalog\.pg_has_role\(session_user, schema_owner_oid, 'SET'\)[\s\S]*?ERRCODE = '42501'[\s\S]*?AGENT_MISSION_K2_SCHEMA_OWNER_UNAVAILABLE/u,
+  );
+  assert.match(
+    globalForegroundExpand,
+    /EXECUTE pg_catalog\.format\('SET LOCAL ROLE %I', schema_owner_name\);[\s\S]*?IF current_user::pg_catalog\.regrole <> schema_owner_oid THEN[\s\S]*?AGENT_MISSION_K2_SCHEMA_OWNER_NOT_ASSUMED/u,
+  );
   assert.match(
     globalForegroundExpand,
     /CREATE UNIQUE INDEX agent_missions_one_active_owner_key\s+ON public\.agent_missions \("companyId", "ownerUserId"\)\s+WHERE "status" = 'active';/u,

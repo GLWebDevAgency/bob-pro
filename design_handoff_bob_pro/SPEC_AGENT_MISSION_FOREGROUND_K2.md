@@ -246,7 +246,20 @@ prend les deux advisory locks dans l'ordre inverse.
 | futur kind | non concerné | V2 + verrou kind propre | bloqué tant que sa PR/certification n'existe pas |
 
 La forme exacte N-1 est tentée après la migration sous les triggers finaux avec le rôle runtime.
-La migration est exécutée par le déployeur non-superuser sous `SET ROLE bob_schema_owner`.
+La migration découvre le propriétaire catalogue réel de `public.agent_missions`. Si le déployeur
+est déjà ce propriétaire, elle ne change pas d'identité ; sinon elle exige une adhésion `SET`,
+assume ce propriétaire sous `SET LOCAL ROLE`, puis atteste la postcondition avant de créer
+l'index. Sur staging, l'architecture réellement publiée conserve les tables RLS sous l'unique
+déployeur Supabase `postgres` : le gate exige donc exactement
+`tableOwner=sessionUser=currentUser=postgres`, rôle LOGIN non-superuser/BYPASSRLS. Un rôle
+propriétaire dédié n'y sera admis qu'après une migration/provisioning atomique et une modification
+explicite de cette spec. Les certificats qui touchent le schéma assument le propriétaire attesté ;
+aucun nom de rôle inventé n'est substitué à l'état réel. Sur une base CI fraîche, `postgres` peut
+lui aussi légitimement être à la fois le déployeur non-superuser reproduit et le propriétaire de la
+table. Toute identité qui
+n'est ni propriétaire ni autorisée à l'assumer reçoit le refus stable
+`AGENT_MISSION_K2_SCHEMA_OWNER_UNAVAILABLE`. La CI éphémère ne devient donc jamais un substitut à
+la preuve Supabase.
 
 ### Train d'activation sans autorité mixte
 
@@ -267,6 +280,38 @@ capabilité simultanés sont interdits :
 La topologie mono-réplique éventuellement observée sur Railway n'est jamais un invariant
 d'architecture : la preuve doit rester vraie avec plusieurs répliques et l'autorité est portée par
 PostgreSQL, pas par la mémoire du processus.
+
+### Lane de schéma staging K2
+
+Le workflow de release global et le workflow M1-B sont interdits pour appliquer K2 seul : ils
+déploient le binaire ou mutent des flags, keyrings, capacités et protocoles sans rapport avec cet
+index. Le seul chemin admis avant merge est un purpose `k2-staging-schema` dans l'entrypoint
+Railway existant, sérialisé par `railway-api-staging`, qui :
+
+1. cible exclusivement l'environnement et le projet Supabase staging épinglés ;
+2. atteste `DIRECT_URL` non-superuser/BYPASSRLS, `DATABASE_URL` runtime sans BYPASSRLS et le
+   propriétaire `postgres` réel de `agent_missions` ;
+3. refuse tout état Prisma partiel et tout checksum divergent. Au premier passage, l'ensemble
+   pending doit être exactement K2. Après une application réussie suivie d'un échec de certificat,
+   le même lane peut uniquement **recertifier** une ligne K2 unique, finie, non rollbackée, en une
+   étape, de checksum exact et avec zéro pending ; il ne rejoue alors jamais Prisma ;
+4. prend un hash non-PII des autorités M1-B, capacité, archive, settlement et clés Realtime ;
+5. exécute uniquement `prisma migrate deploy`, sans `railway up`, `release.sh`, activateur,
+   flag, key manager ni écriture de configuration ;
+6. atteste ensuite la ligne Prisma K2 finie/non rollbackée, les deux index foreground exacts,
+   valides et de même owner, les ACL/RLS, puis rejoue la forme N-1 complète
+   mission+brouillon+événement en transaction rollbackée : si le writer fingerprint est ouvert,
+   les contraintes différées sont forcées avant rollback ; si staging est volontairement OFF, le
+   seul résultat admis est le refus exact
+   `agent_mission_fingerprint_key_writer_disabled`. Le reçu distingue `accepted` de
+   `disabled-fence`. Le rejet cross-kind par le nouvel index est lui aussi rollbacké ;
+7. refuse la réussite si le hash des autorités étrangères — y compris les overrides
+   `release_flag_subjects` — a changé et publie deux enveloppes distinctes avant/après, sans URL,
+   secret, identifiant utilisateur ni donnée métier.
+
+Un état Prisma partiel ne déclenche jamais de `migrate resolve` automatique. Il exige un audit et
+une reprise explicites. La recertification stricte n'accepte que l'état terminal exact décrit
+ci-dessus et publie honnêtement `operation=recertify`, avec des compteurs avant/après identiques.
 
 ## 8. Critères d'acceptation binaires
 
@@ -296,6 +341,9 @@ PostgreSQL, pas par la mémoire du processus.
 - [x] L'index global partiel est présent sans retrait de l'index historique.
 - [x] Deux starts concurrents produisent au plus une mission active et aucun SQL brut.
 - [x] La forme N-1 passe après la migration sous RLS forcée/runtime non-superuser.
+- [x] La migration passe lorsque le déployeur est déjà le propriétaire catalogue, assume
+      réellement ce propriétaire lorsqu'il dispose de `SET`, et refuse toute autre identité ;
+      l'index global et la table conservent exactement le même owner.
 - [x] Un writer N-1 qui possède réellement le verrou V1 fait attendre le writer K2 V2→V1 ;
       après son commit, K2 converge vers le conflit de brouillon sans deuxième mission/event.
 - [x] Une annulation SQL dans le callback transactionnel force un rollback réel après écriture ;
@@ -307,6 +355,9 @@ PostgreSQL, pas par la mémoire du processus.
       contention.
 - [x] Une simulation de deux kinds prouve que le second actif reçoit `unique_violation`.
 - [x] Les Data API roles Supabase n'obtiennent aucun nouveau droit.
+- [ ] Le lane staging K2 refuse production, tout autre pending et toute identité/ownership
+      divergente ; il ne contient aucun déploiement ou activateur de protocole.
+- [ ] Le lane staging K2 produit une preuve avant/après exacte et non-PII, sans mutation étrangère.
 - [x] Tous les résultats M1-C existants restent inchangés.
 
 ## 9. Definition of Done
@@ -321,6 +372,7 @@ PostgreSQL, pas par la mémoire du processus.
 - [x] `git diff --check` et garde d'artefact verts ;
 - [x] review adversariale indépendante sans P0/P1 ;
 - [ ] CI exacte verte ;
+- [ ] lane `k2-staging-schema` testé, exécuté au SHA exact et vert ;
 - [ ] déploiement phase A et certification sous rôle non-superuser sur staging Supabase ;
 - [ ] drainage TTL, activation phase B bornée puis retour OFF certifié ;
 - [ ] PR unique fusionnée avant K3.
