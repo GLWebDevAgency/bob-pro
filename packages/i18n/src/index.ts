@@ -1137,6 +1137,15 @@ const legacyFr = {
     pro: 'Fiche trouvée : {name}.',
     direct: 'Trouvé : {name}.',
   },
+  // Établissement au statut « cessé » à l'annuaire des entreprises (INSEE). On n'interdit pas :
+  // une facture finale, un avoir ou un litige sur un établissement fermé sont parfaitement
+  // légitimes. Mais on le DIT, sinon un fermé passerait pour un client valide.
+  'clients.createSiretClosed': {
+    pote:
+      'Attention : l’INSEE dit que cet établissement est fermé. Tu peux quand même l’enregistrer (facture finale, avoir), mais vérifie l’adresse avec ton client.',
+    pro: 'Établissement déclaré fermé à l’annuaire (INSEE). L’enregistrement reste possible (facture finale, avoir) : vérifiez l’adresse de facturation.',
+    direct: 'Établissement fermé (INSEE). Vérifiez l’adresse.',
+  },
   'clients.createContactNameLabel': {
     pote: 'Contact chez le client',
     pro: 'Nom du contact',

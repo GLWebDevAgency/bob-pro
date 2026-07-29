@@ -138,6 +138,9 @@ export function CustomerForm({
   const [siret, setSiret] = useState('');
   const [siretError, setSiretError] = useState(false);
   const [siretFound, setSiretFound] = useState<string | null>(null);
+  // État administratif de l'ÉTABLISSEMENT retenu par l'annuaire ('C' = fermé). Un établissement
+  // fermé n'est pas refusé — il reste facturable (facture finale, avoir) — mais il est annoncé.
+  const [siretClosed, setSiretClosed] = useState(false);
   const [siretCandidateUnverified, setSiretCandidateUnverified] = useState(false);
   const lookup = useLookupCompany();
   const search = useSearchAddress();
@@ -155,6 +158,7 @@ export function CustomerForm({
   const searchSiret = (): void => {
     setSiretError(false);
     setSiretFound(null);
+    setSiretClosed(false);
     const v = Siret.of(siret);
     if (!v.ok) {
       setSiretError(true);
@@ -166,6 +170,7 @@ export function CustomerForm({
         setSiren(result.siren);
         setTvaIntracom(result.tvaIntracom ?? '');
         setSiretFound(result.denomination);
+        setSiretClosed(result.etatAdministratif === 'C');
         setSiretCandidateUnverified(false);
         if (result.address) {
           setSelectedAddress(result.address);
@@ -260,6 +265,7 @@ export function CustomerForm({
             onChangeText={(v) => {
               setCompanyName(v);
               setSiretFound(null);
+              setSiretClosed(false);
             }}
             placeholder={t('clients.createCompanyNamePlaceholder', { personality })}
             autoCapitalize="words"
@@ -279,6 +285,7 @@ export function CustomerForm({
                 // silencieusement le SIREN/TVA existant ou d'envoyer l'ancien avec le nouveau.
                 setSiretCandidateUnverified(next.length > 0);
                 setSiretFound(null);
+                setSiretClosed(false);
                 setSiretError(false);
               }}
               placeholder={t('clients.createSiretPlaceholder', { personality })}
@@ -317,9 +324,19 @@ export function CustomerForm({
               {t('clients.createSiretError', { personality })}
             </Text>
           ) : siretFound !== null ? (
-            <Text style={[font('sub'), { color: semantic.success, marginTop: 8 }]}>
-              {t('clients.createSiretFound', { personality, params: { name: siretFound } })}
-            </Text>
+            <>
+              <Text style={[font('sub'), { color: semantic.success, marginTop: 8 }]}>
+                {t('clients.createSiretFound', { personality, params: { name: siretFound } })}
+              </Text>
+              {siretClosed ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={[font('sub'), { color: semantic.warning, marginTop: 6 }]}
+                >
+                  {t('clients.createSiretClosed', { personality })}
+                </Text>
+              ) : null}
+            </>
           ) : null}
 
           <Field
