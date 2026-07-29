@@ -19,6 +19,7 @@ import {
   type ContractPeriod,
   type MaintenanceContractProps,
 } from '@bob/core';
+import type { I18nKey } from '@bob/i18n';
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -182,4 +183,65 @@ export function isContractRevisionConflict(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const candidate = error as { kind?: unknown; entity?: unknown };
   return candidate.kind === 'conflict' && candidate.entity === 'maintenance_contract';
+}
+
+/** Ce que la fermeture de la feuille « Renommer » doit ENTRAÎNER. */
+export type ContractRenameCloseEffect = 'stay' | 'close' | 'close_and_reload';
+
+/**
+ * SORTIR d'un conflit — par n'importe quelle porte, jamais sur une vue périmée. Un conflit de
+ * révision est la preuve que la fiche AFFICHÉE derrière la feuille est fausse : le serveur
+ * porte déjà un autre nom. Proposer « Recharger la fiche » ne suffit pas si le scrim, lui,
+ * laisse sortir sans rien recharger — le pro continuerait sur un écran que Bob SAIT faux, et
+ * l'honnêteté du chemin proposé ne serait qu'une politesse contournable.
+ *
+ * Une seule décision pour TOUTES les sorties (bouton, scrim, geste de fermeture) : tant que le
+ * geste est en vol la feuille ne se ferme pas ; périmée, elle se ferme ET recharge ; sinon elle
+ * se ferme, sans appel réseau gratuit.
+ */
+export function contractRenameCloseEffect(input: {
+  pending: boolean;
+  stale: boolean;
+}): ContractRenameCloseEffect {
+  if (input.pending) return 'stay';
+  return input.stale ? 'close_and_reload' : 'close';
+}
+
+/** Clefs i18n des phrases que la feuille affiche sous le champ (existence vérifiée à la
+ *  compilation : une clef absente du catalogue disparaîtrait de l'union et ne compilerait pas). */
+export type ContractRenameNoticeKey = Extract<
+  I18nKey,
+  | 'contrat.renameUnchanged'
+  | 'contrat.labelRequired'
+  | 'contrat.renameTooLong'
+  | 'contrat.renameControlChars'
+>;
+
+export interface ContractRenameNotice {
+  /** Phrase AFFICHÉE sous le champ — jamais un simple indice d'accessibilité. */
+  readonly key: ContractRenameNoticeKey;
+  /** `'attente'` = le bouton attend quelque chose (ton calme) ; `'refus'` = ce qui est tapé ne
+   *  passera pas tel quel (ton d'alerte). La couleur ne porte jamais l'information seule. */
+  readonly tone: 'attente' | 'refus';
+}
+
+/**
+ * CE QUE LA FEUILLE DIT quand le bouton est désactivé — et elle le dit À L'ÉCRAN. Un bouton
+ * gris sans explication visible ne se distingue pas d'un bug : le voyant ne lit pas les indices
+ * d'accessibilité, et « rien n'a changé » est précisément l'état le plus fréquent (feuille
+ * qu'on vient d'ouvrir).
+ *
+ * Deux tons, parce que deux situations : `'unchanged'` et `'vide'` ATTENDENT (le pro n'a pas
+ * encore tapé — le lui reprocher en rouge serait une faute inventée), tandis que `'trop_long'`
+ * et `'caractere_de_controle'` sont des refus que le domaine opposera de toute façon : autant
+ * les dire pendant la frappe plutôt que par un aller-retour serveur.
+ */
+export function contractRenameNotice(
+  blocked: ContractRenameBlock | null,
+): ContractRenameNotice | null {
+  if (blocked === null) return null;
+  if (blocked === 'unchanged') return { key: 'contrat.renameUnchanged', tone: 'attente' };
+  if (blocked === 'vide') return { key: 'contrat.labelRequired', tone: 'attente' };
+  if (blocked === 'trop_long') return { key: 'contrat.renameTooLong', tone: 'refus' };
+  return { key: 'contrat.renameControlChars', tone: 'refus' };
 }

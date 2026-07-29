@@ -17,7 +17,7 @@
 import { useMemo, useState } from 'react';
 import { AccessibilityInfo, Alert, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { t, type Personality } from '@bob/i18n';
+import { t } from '@bob/i18n';
 import {
   BobSurface,
   Button,
@@ -48,11 +48,12 @@ import {
   contractEventDay,
   contractHistoryEntries,
   contractRenameAllowed,
+  contractRenameCloseEffect,
+  contractRenameNotice,
   contractRenameSubmission,
   frContractDate,
   inclusivePeriodOf,
   isContractRevisionConflict,
-  type ContractRenameBlock,
 } from '../../src/components/contract-fiche.logic';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 
@@ -67,22 +68,6 @@ interface VatDivergenceNotice {
   invoiceId: string;
   totals: Totals;
   contractTotals: Totals;
-}
-
-/** Ce que la feuille « Renommer » DIT quand le geste ne peut pas partir — jamais un bouton
- *  gris sans explication. `'unchanged'` n'est pas une erreur : c'est un bouton qui attend, on
- *  ne l'affiche donc qu'en indice d'accessibilité (voir plus bas). */
-function renameBlockSaid(
-  block: Exclude<ContractRenameBlock, 'unchanged'>,
-  personality: Personality,
-): string {
-  if (block === 'vide') return t('contrat.labelRequired', { personality });
-  if (block === 'trop_long')
-    return t('contrat.renameTooLong', {
-      personality,
-      params: { max: String(MAX_CONTRACT_LABEL_LENGTH) },
-    });
-  return t('contrat.renameControlChars', { personality });
 }
 
 export default function FicheContrat() {
@@ -262,6 +247,9 @@ export default function FicheContrat() {
     current: currentLabel,
     typed: renameDraft,
   });
+  // Ce que la feuille AFFICHE sous le champ : l'explication du bouton désactivé est VISIBLE,
+  // jamais réservée au lecteur d'écran — un bouton gris sans raison ne se distingue pas d'un bug.
+  const renameNotice = contractRenameNotice(renameSubmission.blocked);
 
   const openRename = (): void => {
     setRenameDraft(currentLabel);
@@ -270,11 +258,28 @@ export default function FicheContrat() {
     setRenameOpen(true);
   };
 
+  /** LA seule sortie de la feuille — bouton « Recharger la fiche », scrim, geste de fermeture :
+   *  après un conflit, toutes rechargent. Une porte qui laisserait la vue périmée rendrait le
+   *  chemin honnête contournable, donc décoratif. */
+  const closeRename = (): void => {
+    const effect = contractRenameCloseEffect({
+      pending: rename.isPending,
+      stale: renameStale,
+    });
+    if (effect === 'stay') return;
+    setRenameOpen(false);
+    setRenameStale(false);
+    setRenameError(null);
+    if (effect === 'close_and_reload') {
+      void query.refetch();
+      AccessibilityInfo.announceForAccessibility(t('contrat.renameReloaded', { personality }));
+    }
+  };
+
   const submitRename = async (): Promise<void> => {
     if (renameSubmission.label === null) {
-      // `'unchanged'` n'est pas une faute : le bouton est déjà désactivé, rien à reprocher.
-      if (renameSubmission.blocked !== null && renameSubmission.blocked !== 'unchanged')
-        setRenameError(renameBlockSaid(renameSubmission.blocked, personality));
+      // Rien à ajouter : ce qui bloque est DÉJÀ écrit sous le champ (`renameNotice`), et le
+      // bouton est désactivé. Le redire en rouge ferait d'une attente une faute.
       return;
     }
     setRenameError(null);
@@ -648,9 +653,7 @@ export default function FicheContrat() {
           qu'elle promet, l'y soumettre le rendrait circulaire. */}
       <Sheet
         visible={renameOpen}
-        onClose={() => {
-          if (!rename.isPending) setRenameOpen(false);
-        }}
+        onClose={closeRename}
         accessibilityLabel={t('contrat.renameTitle', { personality })}
       >
         <Text
@@ -672,8 +675,9 @@ export default function FicheContrat() {
             editable={!rename.isPending && !renameStale}
             placeholder={t('contrat.renameField', { personality })}
             placeholderTextColor={colors.slate400}
+            // Pas d'accessibilityHint : la MÊME phrase est AFFICHÉE juste sous le champ (plus
+            // bas). En mettre une ici la ferait lire deux fois de suite au lecteur d'écran.
             accessibilityLabel={t('contrat.renameField', { personality })}
-            accessibilityHint={t('contrat.renameHint', { personality })}
             autoFocus
             autoCapitalize="sentences"
             autoCorrect
@@ -684,7 +688,12 @@ export default function FicheContrat() {
               {
                 minHeight: 44,
                 borderWidth: 1,
-                borderColor: renameError !== null ? semantic.danger : controls.cardBorder,
+                // Le champ se souligne de la MÊME façon qu'il refuse : un refus écrit en rouge
+                // sous un champ resté neutre laisserait croire que la faute est ailleurs.
+                borderColor:
+                  renameError !== null || renameNotice?.tone === 'refus'
+                    ? semantic.danger
+                    : controls.cardBorder,
                 borderRadius: 12,
                 paddingHorizontal: 12,
                 color: colors.ink800,
@@ -714,28 +723,35 @@ export default function FicheContrat() {
               {renameError}
             </Text>
           ) : null}
+          {/* POURQUOI le bouton est gris — écrit à l'écran, pas seulement dit au lecteur
+              d'écran. Ton calme pour ce qui ATTEND (« rien n'a changé », champ vidé) : ce n'est
+              pas une faute ; ton d'alerte pour ce que le domaine refusera de toute façon. */}
+          {renameNotice !== null && !renameStale ? (
+            <Text
+              style={[
+                font('sub', renameNotice.tone === 'refus' ? 600 : 500),
+                { color: renameNotice.tone === 'refus' ? semantic.danger : colors.slate500 },
+              ]}
+            >
+              {t(renameNotice.key, {
+                personality,
+                params: { max: String(MAX_CONTRACT_LABEL_LENGTH) },
+              })}
+            </Text>
+          ) : null}
           {renameStale ? (
-            // Conflit de révision : le SEUL chemin honnête est de repartir du nom à jour.
+            // Conflit de révision : le SEUL chemin honnête est de repartir du nom à jour — et
+            // toutes les autres sorties de la feuille rechargent aussi (closeRename).
             <Button
               title={t('contrat.renameReload', { personality })}
               variant="secondary"
-              onPress={() => {
-                setRenameOpen(false);
-                setRenameStale(false);
-                setRenameError(null);
-                void query.refetch();
-              }}
+              onPress={closeRename}
             />
           ) : (
             <Button
               title={t('contrat.renameConfirm', { personality })}
               loading={rename.isPending}
               disabled={renameSubmission.label === null}
-              accessibilityLabel={
-                renameSubmission.blocked === 'unchanged'
-                  ? `${t('contrat.renameConfirm', { personality })} — ${t('contrat.renameUnchanged', { personality })}`
-                  : t('contrat.renameConfirm', { personality })
-              }
               onPress={() => void submitRename()}
             />
           )}

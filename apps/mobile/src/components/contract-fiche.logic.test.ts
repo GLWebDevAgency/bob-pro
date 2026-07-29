@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_CONTRACT_LABEL_LENGTH } from '@bob/core';
+import { t } from '@bob/i18n';
 import {
   contractEventDay,
   contractHistoryEntries,
   contractPrimaryCta,
   contractRenameAllowed,
+  contractRenameCloseEffect,
+  contractRenameNotice,
   contractRenameSubmission,
   frContractDate,
   importCoveredUntilFromInclusive,
@@ -213,5 +216,73 @@ describe('Renommer — le remède que la garde du libellé PROMET (« un tap sur
     ).toBe(false);
     expect(isContractRevisionConflict(null)).toBe(false);
     expect(isContractRevisionConflict('conflict')).toBe(false);
+  });
+});
+
+describe('Renommer — après un CONFLIT, aucune porte ne laisse la fiche périmée', () => {
+  it('fermer une feuille PÉRIMÉE recharge la fiche : le chemin honnête n’est pas contournable', () => {
+    // Le conflit dit que la fiche AFFICHÉE derrière la feuille est fausse. Fermer sans
+    // recharger laisserait le pro travailler sur un nom que le serveur a déjà remplacé —
+    // « Recharger la fiche » ne peut donc pas être un chemin qu'on quitte par le scrim.
+    expect(contractRenameCloseEffect({ pending: false, stale: true })).toBe('close_and_reload');
+  });
+
+  it('sans conflit, fermer ne recharge rien — aucun appel réseau gratuit', () => {
+    expect(contractRenameCloseEffect({ pending: false, stale: false })).toBe('close');
+  });
+
+  it('pendant l’écriture, la feuille ne se ferme pas : le geste est en vol', () => {
+    expect(contractRenameCloseEffect({ pending: true, stale: false })).toBe('stay');
+    expect(contractRenameCloseEffect({ pending: true, stale: true })).toBe('stay');
+  });
+});
+
+describe('Renommer — ce que la feuille AFFICHE : jamais un bouton gris sans explication', () => {
+  it('« unchanged » a une explication, et son ton dit que ce n’est pas une faute', () => {
+    // Un voyant ne lit pas les indices d'accessibilité : l'explication du bouton désactivé
+    // doit être VISIBLE. Elle reste calme — un champ pré-rempli et intact n'est pas une erreur.
+    expect(contractRenameNotice('unchanged')).toEqual({
+      key: 'contrat.renameUnchanged',
+      tone: 'attente',
+    });
+  });
+
+  it('un champ vidé ATTEND lui aussi — on ne reproche pas au pro de ne pas encore avoir tapé', () => {
+    expect(contractRenameNotice('vide')).toEqual({
+      key: 'contrat.labelRequired',
+      tone: 'attente',
+    });
+  });
+
+  it('ce que le domaine REFUSERA se dit en refus : le nom tapé ne passera jamais tel quel', () => {
+    expect(contractRenameNotice('trop_long')).toEqual({
+      key: 'contrat.renameTooLong',
+      tone: 'refus',
+    });
+    expect(contractRenameNotice('caractere_de_controle')).toEqual({
+      key: 'contrat.renameControlChars',
+      tone: 'refus',
+    });
+  });
+
+  it('rien ne bloque ⇒ rien n’est affiché (le bouton parle tout seul)', () => {
+    expect(contractRenameNotice(null)).toBeNull();
+  });
+
+  it('chaque blocage a sa phrase, dans les TROIS personnalités — jamais un libellé manquant', () => {
+    const blocks = ['unchanged', 'vide', 'trop_long', 'caractere_de_controle'] as const;
+    for (const block of blocks) {
+      const notice = contractRenameNotice(block);
+      expect(notice).not.toBeNull();
+      for (const personality of ['pote', 'pro', 'direct'] as const) {
+        const said = t(notice!.key, {
+          personality,
+          params: { max: String(MAX_CONTRACT_LABEL_LENGTH) },
+        });
+        expect(said.length).toBeGreaterThan(0);
+        // Un gabarit non substitué ({max}) atteindrait l'écran tel quel.
+        expect(said).not.toContain('{');
+      }
+    }
   });
 });

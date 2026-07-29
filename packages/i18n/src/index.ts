@@ -1814,6 +1814,13 @@ const legacyFr = {
     pro: 'Recharger la fiche',
     direct: 'Recharger',
   },
+  // Le rechargement suit TOUTE sortie d'un conflit (bouton comme scrim) : il s'annonce, sinon
+  // seul un voyant saurait que la fiche affichée derrière vient de changer.
+  'contrat.renameReloaded': {
+    pote: 'Fiche rechargée — tu repars du nom à jour.',
+    pro: 'Fiche rechargée : la version à jour est affichée.',
+    direct: 'Fiche rechargée.',
+  },
   'contrat.renameDone': {
     pote: 'Nom du contrat mis à jour.',
     pro: 'Intitulé du contrat mis à jour.',
