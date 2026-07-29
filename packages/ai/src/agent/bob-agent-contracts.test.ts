@@ -545,9 +545,12 @@ describe('creer_contrat_maintenance — consigne composite désordonnée lue en 
     expect(r.value.kind).toBe('answer');
     expect(created).toEqual([]);
     expect(r.value.card.title).toContain('Quel nom');
-    // Bob CITE ce qu'il a entendu et EXPLIQUE pourquoi ce nom ne peut pas s'imprimer.
+    // Bob CITE ce qu'il a entendu et EXPLIQUE pourquoi ce nom ne peut pas nommer le contrat.
+    // Il ne parle PLUS de la facture : la ligne de la facture annuelle ne reprend plus le nom
+    // (le domaine compose sa désignation), donc le promettre au pro serait lui mentir.
     expect(r.value.card.body).toContain('Entretien trimestriel');
-    expect(r.value.card.body).toContain('facture');
+    expect(r.value.card.body).toContain('contrat');
+    expect(r.value.card.body).not.toContain('facture');
     expect(r.value.card.body).toContain('Rien n’a été créé');
     // AUCUN FAIT PERDU : la commande canonique redit le client, le montant et la date.
     expect(r.value.card.body).toContain('cus-ratp');

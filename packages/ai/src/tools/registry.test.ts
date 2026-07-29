@@ -1059,8 +1059,11 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
     const refused = t.parse({ ...base, label: 'Entretien vitrines à 1.200 € par an' });
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
-    expect(JSON.stringify(refused.error)).toContain('facture');
-    // La LIGNE s'imprime aussi : elle passe par la MÊME garde, sans raccourci…
+    // Le refus parle du NOM affiché sur le contrat, jamais de la facture : la ligne de la facture
+    // annuelle ne reprend plus ce nom (le domaine compose sa désignation, @bob/core).
+    expect(JSON.stringify(refused.error)).toContain('montant');
+    expect(JSON.stringify(refused.error)).not.toContain('facture');
+    // La LIGNE du contrat passe par la MÊME garde, sans raccourci…
     expect(
       t.parse({
         ...base,

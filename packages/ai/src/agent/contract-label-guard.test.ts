@@ -196,7 +196,11 @@ describe('garde liste blanche — la fermeture, pas le catalogue', () => {
     expect(verdict.accepted).toBe(false);
     const said = contractLabelRefusalSaid(verdict);
     expect(said).toContain('montant');
-    expect(said).toContain('facture');
+    // Le refus parle du NOM — ce que cette garde protège désormais — et JAMAIS de la facture :
+    // la ligne de la facture annuelle ne reprend plus le nom (le domaine compose sa désignation),
+    // donc promettre au pro qu'on le protège « sur la facture » serait lui mentir.
+    expect(said).toContain('contrat');
+    expect(said).not.toContain('facture');
     expect(said).not.toMatch(/[A-Z]{3,}_[A-Z]/); // aucun code technique
     expect(verdict.fragment).not.toBeNull();
     expect('Entretien vitrines à 1.200 € par an').toContain(verdict.fragment!);
