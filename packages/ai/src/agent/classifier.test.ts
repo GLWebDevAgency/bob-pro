@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { classifyWithLlm, classifyWithRegex } from './classifier';
+import {
+  classifyWithLlm,
+  classifyWithRegex,
+  INTENTS_HORS_OUTILLAGE_LLM,
+  LLM_TOOL_SPECS,
+} from './classifier';
 import { type LlmPort, type LlmCompletion } from '../llm/port';
 import { type AgentContext } from './context';
 
@@ -178,5 +183,66 @@ describe('classifyWithRegex (fallback déterministe)', () => {
       intent: 'contexte_ecran',
       reference: 'ordinal:2',
     });
+  });
+});
+
+// ── LE PARTAGE DES RÔLES, PROUVÉ ─────────────────────────────────────────────────────────────
+
+/**
+ * Le chemin LLM est CELUI QUI DÉCOMPOSE : une consigne à deux gestes doit rendre DEUX étapes,
+ * dans l'ordre dicté, sans fusion. Le chemin déterministe, lui, n'en rend JAMAIS qu'une : c'est
+ * son contrat, et c'est ce qui le rend fiable.
+ *
+ * Ce que ces tests mesurent AUSSI, et qui borne le train : les gestes de fiche de passage
+ * (PR-15/16) et de parc d'équipements (PR-11) n'ont AUCUN outil exposé au LLM — il ne peut donc
+ * pas les nommer, et encore moins décomposer une consigne composite qui les porte. Le repli
+ * déterministe (`INTENTS_HORS_OUTILLAGE_LLM`) est leur seule voie tant que ces outils n'existent
+ * pas. Exposer les outils manquants est un chantier à part entière.
+ */
+describe('partage des rôles LLM / déterministe', () => {
+  it('LLM : une consigne à DEUX gestes rend DEUX étapes, dans l’ordre, sans fusion', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({
+        text: null,
+        toolCalls: [
+          { name: 'encaisser_facture', arguments: { reference: '2026-014' } },
+          { name: 'envoyer_facture', arguments: { reference: '2026-021' } },
+        ],
+        model: 'glm',
+      }),
+      'encaisse la 2026-014 puis envoie la 2026-021 au client',
+    );
+    expect(r.steps).toEqual([
+      { intent: 'encaisser', reference: '2026-014' },
+      { intent: 'envoyer_facture', reference: '2026-021' },
+    ]);
+  });
+
+  it('déterministe : la MÊME consigne ne rend qu’UNE étape (contrat du chemin)', () => {
+    const r = classifyWithRegex('encaisse la 2026-014 puis envoie la 2026-021 au client');
+    expect(r.steps).toHaveLength(1);
+  });
+
+  it('les gestes de passage et de parc n’ont AUCUN outil LLM — le déterministe les porte seul', () => {
+    const outils = new Set(LLM_TOOL_SPECS.map((spec) => spec.name));
+    for (const nom of [
+      'commencer_intervention',
+      'terminer_intervention',
+      'faire_signer_intervention',
+      'envoyer_fiche_passage',
+      'facturer_intervention',
+      'ajouter_equipement',
+      'parc_equipements',
+      'historique_equipement',
+      'retirer_equipement',
+    ]) {
+      expect(outils.has(nom), nom).toBe(false);
+      expect(INTENTS_HORS_OUTILLAGE_LLM.has(nom as never), nom).toBe(true);
+    }
+  });
+
+  it('… et une intention OUTILLÉE n’entre jamais dans ce repli', () => {
+    for (const intent of ['encaisser', 'relance', 'facture_directe', 'documents'] as const)
+      expect(INTENTS_HORS_OUTILLAGE_LLM.has(intent), intent).toBe(false);
   });
 });
