@@ -157,7 +157,20 @@ components/
 
 ## 6. Règles de transition
 
-- **Onglets** : pas d'animation de slide entre onglets (cross-fade instantané), état préservé par onglet.
+- **(amendé 2026-07-29)** **Onglets** : **fade-through**, pas un « cross-fade instantané ». La
+  formulation précédente était fausse deux fois — ce n'est ni instantané, ni un cross-fade.
+  L'écran **entrant** monte en opacité 0 → 1 avec une échelle 0,985 → 1 sur **220 ms**
+  (`easing.enter`) ; l'écran **sortant** est masqué **immédiatement**, de sorte que jamais deux
+  écrans animés ne se croisent — c'est précisément ce qu'un cross-fade ferait. Le tout premier
+  écran au lancement n'est pas animé, et la durée tombe à **0** sous Reduce Motion. **Toujours pas
+  de slide entre onglets** : cette moitié de la règle est confirmée. En revanche l'**indicateur**
+  de sélection, lui, **voyage** — il ne saute pas. État préservé par onglet.
+  *Rédaction initiale (supersédée) : « pas d'animation de slide entre onglets (cross-fade
+  instantané) ».*
+  **Arbitrage** : directive 1 du fondateur — le comportement de `davidmokos/expo-glass-tabs`
+  (`fading-tab-slot.tsx`) fait foi. Spécification normative :
+  [04 § 5](../docs/mobile-experience/04-navigation-scroll-surfaces.md#5-slot-décran-qui-sefface-fade-through)
+  et [19 — Glossaire](../docs/mobile-experience/19-glossary.md), entrée « Fade-through ».
 - **Feuilles** (`formSheet`) : spring depuis le bas, poignée de glisse, fond scrim `rgba(12,35,64,.45)`, dismiss au drag-down.
 - **Flux plein écran** (voice/devis/scan/diagnostic) : slide-up modal, bouton fermer (✕) en haut-gauche, jamais de geste back-swipe destructeur sans confirmation si des données sont saisies.
 - **Paywall** : `transparentModal`, la carte monte, le fond s'assombrit.

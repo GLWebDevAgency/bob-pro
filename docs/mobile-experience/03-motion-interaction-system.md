@@ -169,7 +169,7 @@ appareil et un prototype release. Aucun d'eux ne redéfinit `motionSemantic.spri
 | Parent → enfant | Push natif/shared axis. | Dossier → document. | Push natif réduit/crossfade système. |
 | Création | Modal verticale ou document qui se construit. | Nouveau devis, scan. | Présentation immédiate/fade. |
 | Choix temporaire | Sheet depuis le bas. | Filtres, dossier, catalogue. | Apparition immédiate/fade. |
-| Destinations sœurs | Fade-through. | Filtres, segments, tabs internes. | Crossfade ou remplacement immédiat. |
+| Destinations sœurs | Fade-through. | Filtres, segments, tabs internes. | Crossfade ou remplacement immédiat. **(précisé A11 · 2026-07-29 : pour la tab bar du bas, la valeur normative est `durée 0` — remplacement immédiat, jamais un crossfade ; voir [04 § 5](04-navigation-scroll-surfaces.md#5-slot-décran-qui-sefface-fade-through).)** |
 | Ancré à un contrôle | Fade + micro-scale depuis l'ancre. | Menu, popover. | Fade seul. |
 | Changement de statut | Layout transition + symbole. | Payé, classé, lu. | Couleur/symbole/texte immédiats. |
 
