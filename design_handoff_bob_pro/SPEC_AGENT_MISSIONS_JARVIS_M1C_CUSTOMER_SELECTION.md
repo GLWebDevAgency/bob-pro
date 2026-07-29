@@ -202,6 +202,60 @@ cutover. Le flag M1-C n'est activé qu'après déploiement du writer N et draina
 - Après kill : aucune voix, navigation ou mutation automatique. La UI propose une reprise, puis
   rattache une nouvelle session V1 par ACK.
 
+#### 3.4.1 Propriété mobile unique de la capability
+
+`AgentMissionProvider` est l'unique propriétaire long terme du handle capability après son
+adoption :
+
+1. le transport remet le handle une seule fois au contrôleur Realtime ;
+2. le contrôleur propose immédiatement un transfert synchrone au provider ;
+3. si le provider accepte, le contrôleur efface sa référence et ne dispose plus jamais ce handle,
+   y compris pendant l'arrêt one-shot qui précède une navigation ;
+4. si le provider refuse ou n'existe plus, le contrôleur conserve la responsabilité de disposer
+   le handle ;
+5. un remplacement accepté dispose exactement une fois l'ancien handle avant de publier le
+   nouveau ;
+6. unmount, logout ou changement de propriétaire invalide la génération courante, ignore les
+   réponses asynchrones tardives et dispose exactement une fois le handle possédé.
+
+Le provider est monté au-dessus du routeur authentifié et survit donc à `/devis/new`. Aucune
+capability, aucun handle et aucune fonction de mutation ne passe dans des params de route, un
+stockage persistant, un contexte écran ou une télémétrie.
+
+#### 3.4.2 Ordre autoritaire du tour et ACK écran
+
+L'ordre suivant est normatif pour une navigation issue de Bob Live :
+
+```text
+turnId créé
+→ compréhension sémantique typée
+→ autorité reconstruite depuis la lease serveur
+→ use case mission idempotent + commit DB
+→ revalidation du ContextEnvelope
+→ contrôle de navigation durable
+→ réception du nouvel écran
+→ publication et ACK serveur du contexte réellement affiché
+→ correspondance exacte du brouillon local avec la référence mission
+→ ACK mission
+→ continuation déterministe
+→ relecture mission + brouillon
+```
+
+Le contrôleur remet au provider le fence confirmé par le serveur uniquement après le `PUT`
+contexte réussi et sa synchronisation avec le transport. `/devis/new` n'ACK que si la route, la
+révision/digest de contexte, le `sessionId`, la révision de slot et la révision de contenu
+correspondent tous à la mission observée. Après l'ACK, le mobile recharge le brouillon et la mission
+depuis leurs autorités serveur ; il n'invente ni client ni étape localement.
+
+Chaque requête asynchrone mobile capture la génération du handle et du brouillon. Un résultat
+tardif, une mutation manuelle concurrente ou un changement de session est ignoré et relu, jamais
+appliqué par-dessus l'état plus récent. `turn_settled` provoque une relecture au plus une fois par
+tour ; foreground et action tactile peuvent également relire, sans produire de mutation implicite.
+
+Une navigation n'est jamais rendue si la transition mission reconnue n'a pas été persistée. Une
+erreur du planificateur, de l'autorisation, de la base ou de la revalidation échoue fermée et ne
+retombe pas vers une navigation générique qui contournerait la mission.
+
 ## 4. Contrats exacts
 
 ### 4.1 Recherche
