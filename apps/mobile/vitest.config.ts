@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/realtime/**/*.test.ts?(x)',
-      'src/agent/**/*.test.ts',
+      'src/agent/**/*.test.ts?(x)',
       'src/audio/**/*.test.ts',
       'src/auth-recovery/**/*.test.ts',
       'src/auth-confirmation/**/*.test.ts',

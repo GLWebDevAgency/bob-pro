@@ -63,6 +63,7 @@ import {
 import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
+import { useAgentMissionRuntimeBridge } from './agent-mission-provider';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
@@ -124,6 +125,7 @@ function wait(ms: number): Promise<void> {
 export function AgentSessionProvider({ children }: { readonly children: ReactNode }) {
   const { personality } = useTheme();
   const client = useBobClient();
+  const agentMissionRuntime = useAgentMissionRuntimeBridge();
   const mistralConversationCheckpoint = useMistralConversationCheckpointBinding();
   const retryMistralConversationCheckpoint = useRetryMistralConversationCheckpointRecovery();
   const mistralConversationCheckpointRef = useRef(mistralConversationCheckpoint);
@@ -243,6 +245,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             return fence === null ? null : fence;
           }),
         allowMicrophoneActivation: voiceMayActivateMicrophone,
+        agentMissionRuntime,
       },
       {
         onPhase: (phase) => {

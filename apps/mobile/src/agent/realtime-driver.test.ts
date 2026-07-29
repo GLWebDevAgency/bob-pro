@@ -69,6 +69,14 @@ describe('RealtimeContextPublisher — révision monotone, fence, jamais après 
     expect(await publisher.publish(CONTEXT)).toEqual({ status: 'failed' });
     expect(await publisher.publish(CONTEXT)).toMatchObject({ status: 'confirmed', fence: { contextRevision: 2 } });
   });
+
+  it('refuse un ACK serveur portant une autre révision que la publication demandée', async () => {
+    const publisher = new RealtimeContextPublisher('h-1', async () =>
+      ok({ revision: 2, contextDigest: 'a'.repeat(64) }));
+
+    expect(await publisher.publish(CONTEXT)).toEqual({ status: 'failed' });
+    expect(publisher.fence).toBeNull();
+  });
 });
 
 describe('decideAgentControl — navigation allowlistée, validation VISUELLE seulement', () => {

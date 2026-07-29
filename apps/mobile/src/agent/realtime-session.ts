@@ -25,6 +25,7 @@ import type {
 } from '../realtime/realtime-transport';
 import type { RealtimeAgentControlReference } from '../realtime/realtime-event-codecs';
 import type { RealtimeVoiceControlReference } from '@bob/api-client';
+import type { AgentMissionRuntimeBridge } from './agent-mission-runtime';
 import {
   RealtimeContextPublisher,
   decideAgentControl,
@@ -107,6 +108,11 @@ export interface RealtimeSessionDeps {
    * `false` ferme la mission en background, sans lancer un fallback audio invisible.
    */
   readonly allowMicrophoneActivation: () => Promise<boolean>;
+  /**
+   * Propriétaire durable optionnel de la capability. S'il accepte le transfert, ce contrôleur
+   * oublie immédiatement le handle ; en son absence il conserve et détruit lui-même le handle.
+   */
+  readonly agentMissionRuntime?: AgentMissionRuntimeBridge;
 }
 
 export type RealtimeStartOutcome =
@@ -142,6 +148,8 @@ export class RealtimeSessionController {
   private responsePendingForCurrentInput = false;
   private agentMissionSession: RealtimeAgentMissionSession | null = null;
   private agentMissionSessionClaimed = false;
+  private agentMissionSessionTransferred = false;
+  private agentMissionRealtimeSessionId: string | null = null;
 
   constructor(
     private readonly deps: RealtimeSessionDeps,
@@ -218,10 +226,12 @@ export class RealtimeSessionController {
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     const publisher = this.publisher;
+    const context = this.hooks.getContextSnapshot();
+    this.invalidateAgentMissionContext();
     this.resetCommittedInputLifecycle();
     transport.setMicrophoneEnabled(false);
     transport.interrupt('navigation');
-    const result = await publisher.publish(this.hooks.getContextSnapshot());
+    const result = await publisher.publish(context);
     if (
       !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
       this.publisher !== publisher
@@ -244,6 +254,13 @@ export class RealtimeSessionController {
       primaryGeneration,
       transport,
       result.fence,
+    )) return;
+    if (!await this.confirmAgentMissionContext(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      result.fence,
+      context,
     )) return;
     await this.openMicrophoneIfActive(
       controllerGeneration,
@@ -408,7 +425,16 @@ export class RealtimeSessionController {
   }
 
   private applyDecision(decision: AgentControlDecision): void {
-    if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
+    if (decision.kind === 'navigate') {
+      // La route cible n'est pas encore rendue : fermer l'oreille et l'autorité de l'ancien
+      // écran AVANT le premier effet de navigation. Le nouvel écran seul republiera son contexte
+      // exact puis rouvrira le micro.
+      this.resetCommittedInputLifecycle();
+      this.lastTransport?.setMicrophoneEnabled(false);
+      this.lastTransport?.interrupt('navigation');
+      this.invalidateAgentMissionContext();
+      this.hooks.onNavigate(decision.route);
+    }
     else if (decision.kind === 'review') {
       this.hooks.onReview(decision.proposalId, decision.proposalExpiresAt);
     }
@@ -538,12 +564,32 @@ export class RealtimeSessionController {
     const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     if (!transport) return;
-    if (!this.agentMissionSessionClaimed) {
-      this.agentMissionSession = transport.takeAgentMissionSession();
-      this.agentMissionSessionClaimed = true;
-    }
     const handle = transport.getSessionHandle();
     if (handle === null) {
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
+      return;
+    }
+    if (
+      !this.agentMissionSessionClaimed
+      && !this.claimAgentMissionSession(transport, handle)
+    ) {
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
+      return;
+    }
+    if (
+      this.agentMissionRealtimeSessionId !== null
+      && this.agentMissionRealtimeSessionId !== handle
+    ) {
       await this.stopCurrentPrimaryWithFallback(
         controllerGeneration,
         primaryGeneration,
@@ -555,7 +601,8 @@ export class RealtimeSessionController {
     this.publisher?.close();
     const publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
     this.publisher = publisher;
-    const result = await publisher.publish(this.hooks.getContextSnapshot());
+    const context = this.hooks.getContextSnapshot();
+    const result = await publisher.publish(context);
     if (
       !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
       this.publisher !== publisher
@@ -577,6 +624,13 @@ export class RealtimeSessionController {
       transport,
       result.fence,
     )) return;
+    if (!await this.confirmAgentMissionContext(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      result.fence,
+      context,
+    )) return;
     await this.openMicrophoneIfActive(
       controllerGeneration,
       primaryGeneration,
@@ -585,9 +639,92 @@ export class RealtimeSessionController {
   }
 
   private disposeAgentMissionSession(): void {
+    this.invalidateAgentMissionContext();
     const session = this.agentMissionSession;
     this.agentMissionSession = null;
     this.agentMissionSessionClaimed = false;
+    this.agentMissionSessionTransferred = false;
+    this.agentMissionRealtimeSessionId = null;
     session?.dispose();
+  }
+
+  private claimAgentMissionSession(
+    transport: RealtimeTransportLike,
+    expectedRealtimeSessionId: string,
+  ): boolean {
+    const session = transport.takeAgentMissionSession();
+    this.agentMissionSessionClaimed = true;
+    if (session === null) return true;
+    if (session.realtimeSessionId !== expectedRealtimeSessionId) {
+      this.agentMissionSession = session;
+      this.agentMissionSessionTransferred = false;
+      this.agentMissionRealtimeSessionId = null;
+      return false;
+    }
+    this.agentMissionRealtimeSessionId = session.realtimeSessionId;
+    let transferred = false;
+    try {
+      transferred = this.deps.agentMissionRuntime?.adopt(session) === true;
+    } catch {
+      transferred = false;
+    }
+    if (transferred) {
+      this.agentMissionSession = null;
+      this.agentMissionSessionTransferred = true;
+      return true;
+    }
+    if (this.deps.agentMissionRuntime !== undefined) {
+      // Un provider présent mais incapable de prendre la capability est une rupture du contrat
+      // M1-C. Continuer ouvrirait une conversation impossible à reprendre après navigation.
+      session.dispose();
+      this.agentMissionSession = null;
+      this.agentMissionRealtimeSessionId = null;
+      this.agentMissionSessionTransferred = false;
+      return false;
+    }
+    this.agentMissionSession = session;
+    this.agentMissionSessionTransferred = false;
+    return true;
+  }
+
+  private invalidateAgentMissionContext(): void {
+    const realtimeSessionId = this.agentMissionRealtimeSessionId;
+    if (realtimeSessionId === null || !this.agentMissionSessionTransferred) return;
+    try {
+      this.deps.agentMissionRuntime?.invalidateContext(realtimeSessionId);
+    } catch {
+      // Le provider n'est plus disponible. Le prochain confirm échouera fermé avant le micro.
+    }
+  }
+
+  private async confirmAgentMissionContext(
+    controllerGeneration: number,
+    primaryGeneration: number,
+    transport: RealtimeTransportLike,
+    fence: RealtimePublishedFence,
+    context: AgentContext,
+  ): Promise<boolean> {
+    if (!this.agentMissionSessionTransferred) return true;
+    const realtimeSessionId = this.agentMissionRealtimeSessionId;
+    let confirmed = false;
+    try {
+      confirmed = realtimeSessionId !== null
+        && this.deps.agentMissionRuntime?.confirmContext(
+          realtimeSessionId,
+          fence,
+          context,
+        ) === true;
+    } catch {
+      confirmed = false;
+    }
+    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (confirmed) return true;
+    await this.stopCurrentPrimaryWithFallback(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+      'provider_error',
+    );
+    return false;
   }
 }

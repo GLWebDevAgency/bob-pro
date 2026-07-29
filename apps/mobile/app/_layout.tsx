@@ -25,7 +25,11 @@ import { BobClientProvider } from '../src/data/client';
 import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { GlobalBobAccess } from '../src/components/GlobalBobAccess';
-import { AgentContextProvider, AgentSessionProvider } from '../src/agent';
+import {
+  AgentContextProvider,
+  AgentMissionProvider,
+  AgentSessionProvider,
+} from '../src/agent';
 import { QuoteDraftProvider } from '../src/quote-draft';
 import { LoginScreen } from '../src/screens/LoginScreen';
 import { PasswordRecoveryScreen } from '../src/screens/PasswordRecoveryScreen';
@@ -230,9 +234,10 @@ function RootLayout() {
                     <AuthGate>
                       <QuoteDraftProvider>
                         <AgentContextProvider>
-                          <AgentSessionProvider>
-                            <ConfirmProvider>
-                              <Stack screenOptions={{ headerShown: false }}>
+                          <AgentMissionProvider>
+                            <AgentSessionProvider>
+                              <ConfirmProvider>
+                                <Stack screenOptions={{ headerShown: false }}>
                                 <Stack.Screen name="(tabs)" />
                                 <Stack.Screen name="auth/recovery" />
                                 <Stack.Screen name="auth/callback" />
@@ -262,10 +267,11 @@ function RootLayout() {
                                 <Stack.Screen name="comptabilite" />
                                 <Stack.Screen name="cloture" />
                                 <Stack.Screen name="pilotage" />
-                              </Stack>
-                              <GlobalBobAccess />
-                            </ConfirmProvider>
-                          </AgentSessionProvider>
+                                </Stack>
+                                <GlobalBobAccess />
+                              </ConfirmProvider>
+                            </AgentSessionProvider>
+                          </AgentMissionProvider>
                         </AgentContextProvider>
                       </QuoteDraftProvider>
                     </AuthGate>

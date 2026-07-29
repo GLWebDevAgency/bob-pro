@@ -85,6 +85,7 @@ export class RealtimeContextPublisher {
     const result = await this.update(this.sessionHandle, { version: 1, revision, context });
     if (abort.signal.aborted || this.closed) return { status: 'superseded' }; // course perdue — la plus récente fait foi
     if (!result.ok) return { status: 'failed' };
+    if (result.value.revision !== revision) return { status: 'failed' };
     // La fence = la RÉPONSE serveur (revision confirmée + digest) — jamais nos valeurs locales :
     // c'est elle qui authentifie les contrôles one-shot liés à CE contexte.
     this.acknowledged = {
