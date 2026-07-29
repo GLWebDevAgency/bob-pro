@@ -8,11 +8,12 @@ import { type AgentDocument, type AgentExpense, type BillableCustomer, type BobA
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
-import { type BobIntent, detectIntent } from './intent';
+import { type BobIntent, detectIntent, INTENT_BY_GESTURE } from './intent';
 import {
   classifyWithLlm,
   classifyWithRegex,
   DETERMINISTIC_CLASSIFIER_MODEL,
+  INTENTS_HORS_OUTILLAGE_LLM,
 } from './classifier';
 import {
   AgentRuntime,
@@ -40,6 +41,7 @@ import {
   explainInterventionBlock,
   explainWithheldDownstream,
   interventionRequestFor,
+  markInterventionCommand,
   readInterventionDirective,
   requestedGesture,
   resolveInterventionGesture,
@@ -1290,13 +1292,8 @@ const INTERVENTION_GESTURE_BY_INTENT: Partial<Record<BobIntent, InterventionGest
   facturer_intervention: 'bill',
 };
 
-const INTERVENTION_INTENT_BY_GESTURE: Record<InterventionGesture, BobIntent> = {
-  start: 'commencer_intervention',
-  complete: 'terminer_intervention',
-  sign: 'faire_signer_intervention',
-  send: 'envoyer_fiche_passage',
-  bill: 'facturer_intervention',
-};
+/** Source UNIQUE, partagée avec `detectIntent` : l'orientation et la restitution ne divergent pas. */
+const INTERVENTION_INTENT_BY_GESTURE = INTENT_BY_GESTURE;
 
 const INTERVENTION_TOOL_BY_GESTURE: Record<InterventionGesture, string> = {
   start: 'commencer_intervention',
@@ -1319,8 +1316,14 @@ const INTERVENTION_GESTURE_LABEL: Record<InterventionGesture, string> = {
 /**
  * Commande CANONIQUE d'un geste sur un passage. Rejouée VERBATIM par ask(), qui refait TOUTE
  * l'autorité : résolution contre les passages réels, routage par l'état, confirmation propre.
- * Le geste aval éventuel est redit dans la commande — une consigne composite ne perd jamais sa
- * suite en passant par une question de désambiguïsation.
+ *
+ * Elle porte le MARQUEUR que Bob pose lui-même (`markInterventionCommand`) : c'est LUI, et non
+ * une tournure d'utilisateur (« le passage », « la visite »), qui autorise la lecture « passage »
+ * malgré un montant ou un numéro dans la phrase. Sans ce marqueur, « Facture 380 € à Mme Girard
+ * pour LA VISITE » — une facture directe, le chemin de l'argent — se faisait détourner.
+ *
+ * Une consigne composite ne perd pas sa suite en passant par une question de désambiguïsation :
+ * le geste aval éventuel est redit dans la commande.
  */
 function interventionCommand(
   gesture: InterventionGesture,
@@ -1335,11 +1338,17 @@ function interventionCommand(
         : then === 'send'
           ? ' et envoie la fiche de passage'
           : ' et facture ce passage';
-  if (gesture === 'start') return `Démarre l'intervention ${id}`;
-  if (gesture === 'complete') return `Termine l'intervention ${id}${suite}`;
-  if (gesture === 'sign') return `Fais signer l'intervention ${id}`;
-  if (gesture === 'send') return `Envoie la fiche de passage ${id}`;
-  return `Facture le passage ${id}`;
+  const commande =
+    gesture === 'start'
+      ? `Démarre l'intervention ${id}`
+      : gesture === 'complete'
+        ? `Termine l'intervention ${id}${suite}`
+        : gesture === 'sign'
+          ? `Fais signer l'intervention ${id}`
+          : gesture === 'send'
+            ? `Envoie la fiche de passage ${id}`
+            : `Facture le passage ${id}`;
+  return markInterventionCommand(commande);
 }
 
 /**
@@ -1888,7 +1897,17 @@ export class BobAgent {
     signal?.throwIfAborted();
     if (this.deps.llm && routedModel !== 'unavailable') {
       try {
-        return await classifyWithLlm(this.deps.llm, message, history, context, signal);
+        const plan = await classifyWithLlm(this.deps.llm, message, history, context, signal);
+        signal?.throwIfAborted();
+        if (plan.steps.length > 0) return plan;
+        // Le modèle n'a nommé AUCUN outil. Deux causes possibles, une seule sûre : la demande
+        // porte un geste qu'AUCUN outil ne lui expose (fiche de passage, parc d'équipements).
+        // Dans ce cas SEULEMENT, le déterministe reprend la main — hors de là, l'abstention du
+        // modèle reste le garde-fou de périmètre (une blague ne devient pas une commande).
+        const secours = classifyWithRegex(message);
+        const geste = secours.steps[0]?.intent;
+        if (geste !== undefined && INTENTS_HORS_OUTILLAGE_LLM.has(geste)) return secours;
+        return plan;
       } catch {
         // Un barge-in n'est jamais une indisponibilité LLM : ne surtout pas poursuivre par regex.
         signal?.throwIfAborted();
@@ -5752,15 +5771,27 @@ export class BobAgent {
       // Confirmations : groupées aux mutations de fiche, et TOUJOURS séparée pour le sortant.
       const listInterventions = this.deps.actions.listInterventions?.bind(this.deps.actions);
       const directive = readInterventionDirective(message);
-      // §3.7 — RIEN N'EST JETÉ EN SILENCE : ce que la consigne demande d'autre (un geste qui vit
-      // ailleurs, ou une demande que Bob n'a pas su lire) est DIT dans la MÊME carte, quel que
-      // soit le chemin emprunté par ce tour.
+      // §3.7 — RIEN N'EST JETÉ EN SILENCE : ce que la consigne demande d'autre (un geste de
+      // passage EN TROP que le déterministe refuse d'arbitrer, un geste qui vit ailleurs, ou une
+      // demande que Bob n'a pas su lire) est DIT dans la MÊME carte, quel que soit le chemin.
       const asideNote = explainInterventionAsides(directive.asides);
       const withAside = (body: string): string => (asideNote === '' ? body : `${body} ${asideNote}`);
+      // La DEMANDE est lue sur le texte : UN geste certain + ce que la phrase déclare (annonce de
+      // fin). C'est l'ÉTAT RÉEL du passage qui tranche ensuite — passage en cours → on termine
+      // PUIS on enchaîne ; passage déjà terminé ou signé → le « c'est terminé » n'est qu'un
+      // rappel, on exécute DIRECTEMENT le geste aval.
+      const request = interventionRequestFor(
+        INTERVENTION_GESTURE_BY_INTENT[intent] ?? 'complete',
+        directive,
+      );
+      // L'intent RESTITUÉ est celui du geste DEMANDÉ, sur TOUTES les branches — y compris celles
+      // qui répondent avant d'avoir résolu la moindre fiche (capacité de l'hôte, question de
+      // clarification). Sans cela, la télémétrie des refus mentait sur la moitié des chemins.
+      const requestedIntent = INTERVENTION_INTENT_BY_GESTURE[requestedGesture(request)];
       if (!listInterventions) {
         return ok({
           kind: 'answer',
-          intent,
+          intent: requestedIntent,
           model,
           plan: ['Vérifier la capacité de l’hôte'],
           card: {
@@ -5771,6 +5802,40 @@ export class BobAgent {
           },
         });
       }
+      // AUCUN GESTE CERTAIN : le déterministe ne devine pas. Il pose la question — jamais une
+      // mutation sur une tournure qui n'ordonne rien (« la fiche de passage est à envoyer »).
+      if (directive.needsClarification) {
+        const gestesProposes: readonly { readonly label: string; readonly commande: string }[] = [
+          { label: 'Terminer le passage', commande: 'C’est terminé' },
+          { label: 'Envoyer la fiche', commande: 'Envoie la fiche de passage' },
+          { label: 'Préparer la facture', commande: 'Facture ce passage' },
+        ];
+        return ok({
+          kind: 'answer',
+          intent: requestedIntent,
+          model,
+          plan: ['Lever le doute sur le geste demandé'],
+          card: {
+            title: 'Qu’est-ce que je fais sur ce passage ?',
+            body: withAside(
+              'Je préfère te le demander plutôt que de deviner : rien n’a été modifié.',
+            ),
+          },
+          choices: gestesProposes.map((geste) => ({ label: geste.label, value: geste.commande })),
+          ask: [
+            askToPick({
+              id: `${intent}.geste`,
+              question: 'Qu’est-ce que je fais sur ce passage ?',
+              header: 'Geste',
+              items: gestesProposes.map((geste) => ({
+                value: geste.commande,
+                label: geste.label,
+                followUp: geste.commande,
+              })),
+            }),
+          ],
+        });
+      }
       const all = await listInterventions();
       if (!all.ok) return err(all.error);
       const conversation = [
@@ -5779,17 +5844,6 @@ export class BobAgent {
         reference ?? '',
       ].join(' ');
 
-      // [Revue de vérification 29/07 — LECTURE CLAUSE PAR CLAUSE, PUIS ROUTAGE PAR L'ÉTAT] La
-      // DEMANDE est lue clause par clause (geste classé + TOUS les gestes de fiche de la même
-      // dictée, dans l'ordre dit) ; c'est l'ÉTAT RÉEL du passage qui tranche. Une consigne
-      // composite « annonce de fin + geste aval » n'a qu'une lecture sensée : passage en cours →
-      // on termine PUIS on enchaîne ; passage déjà terminé ou signé → le « c'est terminé » n'est
-      // qu'un rappel, on exécute DIRECTEMENT le geste aval. Aucune garde lexicale ne voit le
-      // message entier : une clause ne peut plus en éteindre une autre.
-      const request = interventionRequestFor(
-        INTERVENTION_GESTURE_BY_INTENT[intent] ?? 'complete',
-        directive,
-      );
       // Un passage est ÉLIGIBLE dès qu'un des deux gestes de la consigne lui est possible :
       // c'est la même autorité qui filtrera ensuite le geste exact sur la fiche retenue.
       const eligible = all.value.filter(

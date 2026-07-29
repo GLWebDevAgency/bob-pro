@@ -9,6 +9,7 @@ import {
   type InterventionActionInput,
 } from './actions';
 import { detectIntent } from './intent';
+import { markInterventionCommand } from './intervention-directive';
 
 /**
  * PR-15c/PR-16 — PARITÉ VOCALE §3.7 de la fiche de passage : « démarre l'intervention chez
@@ -156,8 +157,10 @@ describe('commencer_intervention — « démarre l’intervention chez Carrefour
     expect(r.value.card?.title).toBe('Quel passage ?');
     expect(started).toHaveLength(0);
     const followUps = r.value.ask?.[0]?.options.map((option) => option.followUp) ?? [];
-    expect(followUps).toContain("Démarre l'intervention itv-carrefour-1");
-    expect(followUps).toContain("Démarre l'intervention itv-carrefour-2");
+    // Les commandes rejouées portent le MARQUEUR que Bob pose lui-même : c'est lui — et jamais
+    // une tournure d'utilisateur (« le passage », « la visite ») — qui les autorise.
+    expect(followUps).toContain(markInterventionCommand("Démarre l'intervention itv-carrefour-1"));
+    expect(followUps).toContain(markInterventionCommand("Démarre l'intervention itv-carrefour-2"));
   });
 
   it('CONVERGENCE : le followUp par ID résout au tour suivant et PROPOSE (mutation confirmée)', async () => {
@@ -537,6 +540,11 @@ describe('ENCHAÎNEMENT COMPOSITE §3.7 — « j’ai fini chez RATP… envoie l
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.card?.title).toBe('Fiche de passage indisponible');
+    // L'intent restitué est celui du geste DEMANDÉ, même sur la branche qui répond avant toute
+    // résolution : la télémétrie des refus dit la même chose sur tous les chemins.
+    expect(r.value.intent).toBe('commencer_intervention');
+    const envoi = await agent.ask('Envoie la fiche de passage');
+    expect(envoi.ok && envoi.value.intent).toBe('envoyer_fiche_passage');
   });
 });
 
@@ -679,5 +687,156 @@ describe('§3.7 — la moitié aval d’une consigne est TOUJOURS dite', () => {
     expect(propose.ok).toBe(true);
     if (!propose.ok) return;
     expect(propose.value.intent).toBe(refus.value.intent);
+  });
+});
+
+// ── LE PÉRIMÈTRE DÉTERMINISTE, DE BOUT EN BOUT ───────────────────────────────────────────────
+
+describe('§3.7 — le déterministe n’arbitre plus : il retient UN geste et DIT le reste', () => {
+  it('« envoie la fiche ET facture ce passage » : la fiche part, la facture est DITE', async () => {
+    const envoyees: InterventionActionInput[] = [];
+    const agent = makeAgent({
+      listInterventions: async () => ok(INTERVENTIONS.filter((i) => i.id === 'itv-ratp-terminee')),
+      sendInterventionReport: async (input) => {
+        envoyees.push(input);
+        return ok({
+          interventionId: input.interventionId,
+          recipient: 'contact@docks.fr',
+          deliveryStatus: 'queued',
+        });
+      },
+    });
+    const r = await agent.ask('Envoie la fiche de passage et facture ce passage');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.intent).toBe('envoyer_fiche_passage');
+    // Le second geste n'est ni exécuté, ni détourné, ni tu : il est REDIT tel quel.
+    expect(r.value.card?.body).toContain('Je ne traite pas « facture ce passage » dans ce tour');
+    expect(envoyees).toHaveLength(0);
+  });
+
+  it('« envoie-lui la fiche de passage avec la facture » envoie la FICHE (plus d’exclusion intra-clause)', async () => {
+    const agent = makeAgent({
+      listInterventions: async () => ok(INTERVENTIONS.filter((i) => i.id === 'itv-ratp-terminee')),
+      sendInterventionReport: async (input) =>
+        ok({
+          interventionId: input.interventionId,
+          recipient: 'contact@docks.fr',
+          deliveryStatus: 'queued',
+        }),
+    });
+    const r = await agent.ask('Envoie-lui la fiche de passage avec la facture');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('envoyer_fiche_passage');
+    expect(r.value.card?.body).toContain('« la facture »');
+  });
+
+  it('un CONSTAT de terrain n’éteint plus la fin de passage (homographe participe/impératif)', async () => {
+    const terminees: CompleteInterventionActionInput[] = [];
+    const agent = makeAgent({
+      completeIntervention: async (input) => {
+        terminees.push(input);
+        return ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite d’entretien',
+          chantierNom: 'RATP Bastille',
+        });
+      },
+    });
+    const r = await agent.ask('C’est terminé, l’archive est à jour');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.intent).toBe('terminer_intervention');
+    expect(terminees).toHaveLength(0);
+  });
+
+  it('AUCUN geste certain : Bob POSE LA QUESTION, rien n’est modifié', async () => {
+    const terminees: CompleteInterventionActionInput[] = [];
+    const agent = makeAgent({
+      completeIntervention: async (input) => {
+        terminees.push(input);
+        return ok({ interventionId: input.interventionId, status: 'completed', kind: 'x', chantierNom: 'y' });
+      },
+    });
+    const r = await agent.ask('La fiche de passage est à envoyer');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card?.title).toBe('Qu’est-ce que je fais sur ce passage ?');
+    expect(r.value.ask?.[0]?.options.map((option) => option.followUp)).toEqual([
+      'C’est terminé',
+      'Envoie la fiche de passage',
+      'Facture ce passage',
+    ]);
+    expect(terminees).toHaveLength(0);
+  });
+
+  it('le résumé dicté part sur la fiche SANS être déclaré « incompris » dans la même carte', async () => {
+    const terminees: CompleteInterventionActionInput[] = [];
+    const agent = makeAgent({
+      completeIntervention: async (input) => {
+        terminees.push(input);
+        return ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite d’entretien',
+          chantierNom: 'RATP Bastille',
+        });
+      },
+    });
+    const r = await agent.ask('C’est terminé, note-le : la pression était basse');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.card?.body).toContain('la pression était basse');
+    expect(r.value.card?.body).not.toContain('pas su quoi faire');
+  });
+});
+
+describe('§3.7 — chemin LLM : le parcours passage reste atteignable', () => {
+  /**
+   * AUCUN outil de fiche de passage n'est exposé au LLM : sur « c'est terminé », il n'appelle
+   * rien, le plan est VIDE, et l'agent répondait « je n'ai pas compris » — tout le parcours
+   * PR-15/16 était MUET en production dès qu'une clé était configurée. Le repli déterministe est
+   * borné aux intentions qu'aucun outil n'expose : il ne desserre pas le garde-fou de périmètre.
+   */
+  const llmSansOutil = {
+    id: 'fake',
+    complete: async () => ({ text: null, toolCalls: [], model: 'glm' }),
+    generate: async () => ({ text: '', model: 'glm' }),
+    health: async () => ({ healthy: true }),
+  };
+
+  const agentAvecLlm = (over: Partial<BobActions> = {}): BobAgent =>
+    new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: true }),
+      actions: { ...baseActions, ...over },
+      llm: llmSansOutil,
+      runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-intervention' } },
+    });
+
+  it('LLM disponible mais sans outil de passage → le déterministe reprend la main', async () => {
+    const r = await agentAvecLlm({
+      listInterventions: async () => ok(INTERVENTIONS.filter((i) => i.id === 'itv-ratp-encours')),
+      completeIntervention: async (input) =>
+        ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite d’entretien',
+          chantierNom: 'RATP Bastille',
+        }),
+    }).ask('C’est terminé, facture ce passage');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('terminer_intervention');
+    expect(r.value.kind).toBe('proposed');
+  });
+
+  it('… sans desserrer le garde-fou : une demande hors périmètre reste écartée', async () => {
+    const r = await agentAvecLlm().ask('raconte-moi une blague');
+    expect(r.ok && r.value.intent).toBe('unknown');
   });
 });
