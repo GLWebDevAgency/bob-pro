@@ -1764,6 +1764,68 @@ const legacyFr = {
     pro: 'Supprimer le brouillon',
     direct: 'Supprimer',
   },
+  // — RENOMMER (§2.7) : le geste que la garde du libellé PROMET (« un nom imparfait se corrige
+  //   d'un tap »). Le nom sert à s'y retrouver DANS Bob ; la ligne de la facture annuelle, elle,
+  //   reste composée par le domaine (prestation + période) — on le DIT, pour ne rien promettre
+  //   de faux au point de décision. —
+  'contrat.renameCta': { pote: 'Renommer', pro: 'Renommer', direct: 'Renommer' },
+  'contrat.renameTitle': {
+    pote: 'Renommer le contrat',
+    pro: 'Renommer le contrat',
+    direct: 'Renommer',
+  },
+  'contrat.renameField': {
+    pote: 'Nom du contrat',
+    pro: 'Intitulé du contrat',
+    direct: 'Nom',
+  },
+  'contrat.renameHint': {
+    pote: 'Ce nom, c’est pour t’y retrouver dans Bob — la fiche, la liste, les alertes. La ligne de ta facture annuelle, Bob l’écrit tout seul (prestation + période) : la renommer ici n’y touche pas.',
+    pro: 'Ce nom identifie le contrat dans l’application (fiche, liste, alertes de renouvellement). La désignation portée par la facture annuelle est composée par Bob (nature de la prestation et période couverte) et reste inchangée.',
+    direct: 'Nom d’affichage dans Bob. La ligne de la facture annuelle ne change pas.',
+  },
+  'contrat.renameConfirm': {
+    pote: 'Enregistrer le nom',
+    pro: 'Enregistrer le nom',
+    direct: 'Enregistrer',
+  },
+  'contrat.renameUnchanged': {
+    pote: 'Change le nom pour pouvoir enregistrer.',
+    pro: 'Modifiez l’intitulé pour activer l’enregistrement.',
+    direct: 'Aucun changement.',
+  },
+  'contrat.renameTooLong': {
+    pote: 'C’est trop long : {max} caractères maximum.',
+    pro: 'Intitulé limité à {max} caractères.',
+    direct: '{max} caractères max.',
+  },
+  'contrat.renameControlChars': {
+    pote: 'Il y a des caractères invisibles dans ce nom — retire-les et redis-moi ça.',
+    pro: 'L’intitulé contient des caractères de contrôle : retirez-les.',
+    direct: 'Caractères invisibles — à retirer.',
+  },
+  'contrat.renameConflict': {
+    pote: 'La fiche a changé entre-temps — rouvre-la pour repartir du nom à jour. Rien n’a été écrasé.',
+    pro: 'La fiche a été modifiée depuis son ouverture. Rouvrez-la pour repartir de la version à jour : aucune modification n’a été écrasée.',
+    direct: 'Fiche modifiée entre-temps. Rouvre-la. Rien n’est écrasé.',
+  },
+  'contrat.renameReload': {
+    pote: 'Recharger la fiche',
+    pro: 'Recharger la fiche',
+    direct: 'Recharger',
+  },
+  // Le rechargement suit TOUTE sortie d'un conflit (bouton comme scrim) : il s'annonce, sinon
+  // seul un voyant saurait que la fiche affichée derrière vient de changer.
+  'contrat.renameReloaded': {
+    pote: 'Fiche rechargée — tu repars du nom à jour.',
+    pro: 'Fiche rechargée : la version à jour est affichée.',
+    direct: 'Fiche rechargée.',
+  },
+  'contrat.renameDone': {
+    pote: 'Nom du contrat mis à jour.',
+    pro: 'Intitulé du contrat mis à jour.',
+    direct: 'Nom mis à jour.',
+  },
   'contrat.terminateCta': { pote: 'Résilier…', pro: 'Résilier…', direct: 'Résilier…' },
   'contrat.terminateTitle': {
     pote: 'Résilier le contrat',

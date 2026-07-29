@@ -13,6 +13,9 @@ import {
   type FrenchOperationCategory,
   EXPENSE_PAYMENT_PROOF_DOCUMENT_ID_MAX_LENGTH,
   EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
+  MAX_CONTRACT_LABEL_LENGTH,
+  contractLabelRefusal,
+  contractLabelRefusalMessage,
   PaymentTerms,
   isValidDateOnly,
   isVatRate,
@@ -41,6 +44,7 @@ import {
   type CreateMaintenanceContractActionInput,
   type ActivateContractActionInput,
   type TerminateContractActionInput,
+  type RenameContractActionInput,
   type ContractLifecycleActionOutput,
   type AgentIntervention,
   type InterventionActionInput,
@@ -1715,8 +1719,12 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
               unitPriceHtCents?: unknown;
               vatRate?: unknown;
             };
-            if (typeof line?.label !== 'string' || line.label.trim().length === 0 || line.label.length > 200)
-              return err(appValidation(`lines.${index}.label`, 'Libellé de ligne manquant.'));
+            // Borne du DOMAINE, jamais une copie : elle mesure après trim, la copie mesurait avant.
+            if (typeof line?.label !== 'string')
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalMessage('vide')));
+            const lineBorne = contractLabelRefusal(line.label);
+            if (lineBorne !== null)
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalMessage(lineBorne)));
             // La LIGNE est ce qui s'imprime littéralement sur la facture annuelle : elle passe
             // par la MÊME garde que le libellé du contrat, sans exception ni raccourci.
             const lineVerdict = inspectContractLabel(line.label, { mode: 'nomme' });
@@ -1822,6 +1830,49 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => terminateContractAction(input),
     };
     tools.push(resilierContrat as AnyTool);
+  }
+
+  // —— §2.7 — RENOMMER un contrat : le geste que la garde du libellé PROMET (« un nom de
+  //    contrat imparfait DANS L'APPLICATION se corrige d'un tap sur la fiche »). Même use case
+  //    UpdateMaintenanceContract que ce tap — un patch d'un SEUL champ, jamais un remplacement. ——
+  const renameContractAction = actions.renameMaintenanceContract?.bind(actions);
+  if (renameContractAction) {
+    const renommerContrat: Tool<RenameContractActionInput, ContractLifecycleActionOutput> = {
+      name: 'renommer_contrat',
+      description:
+        'Renomme un contrat de maintenance (« renomme le contrat Bastille en Entretien des ascenseurs ») — même use case UpdateMaintenanceContract que le bouton « Renommer » de la fiche. Ce nom sert à s’y retrouver dans l’application ; la ligne de la facture annuelle reste composée par le domaine et n’est pas touchée. Un contrat résilié est en lecture seule.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Un nom se lit partout (fiche, liste, alertes de renouvellement) : jamais réécrit en
+      // silence, même en autonomie 'auto' — plancher de confirmation comme les autres gestes.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<RenameContractActionInput, AppError> => {
+        const r = raw as { contractId?: unknown; label?: unknown };
+        if (typeof r?.contractId !== 'string' || r.contractId.length === 0)
+          return err(appValidation('contractId', 'Contrat ciblé invalide.'));
+        if (typeof r?.label !== 'string')
+          return err(appValidation('label', `Nouveau nom manquant (${MAX_CONTRACT_LABEL_LENGTH} caractères maximum).`));
+        // BORNE DU DOMAINE d'abord (vide, longueur, caractères de contrôle) — la MÊME que
+        // `MaintenanceContract.record` et que le champ de la fiche : une seule règle, jamais
+        // une copie qui pourrait diverger.
+        const refusal = contractLabelRefusal(r.label);
+        if (refusal !== null)
+          return err(appValidation('label', contractLabelRefusalMessage(refusal)));
+        // GARDE DU LIBELLÉ en sévérité `'nomme'` — c'est ici, et NULLE PART sur le chemin de la
+        // fiche, qu'elle s'applique. À la voix, le nom vient d'une transcription ou d'un modèle :
+        // personne n'a RELU ce qui va nommer le contrat dans toute l'application, et un modèle
+        // recopie volontiers la phrase du pro (« renomme-le contrat de mars à 1 200 euros »).
+        // Sur la fiche, l'artisan tape et relit : il est sa propre garde, et lui appliquer ce
+        // refus fermerait le seul remède que la garde elle-même promet.
+        const verdict = inspectContractLabel(r.label, { mode: 'nomme' });
+        if (!verdict.accepted) return err(appValidation('label', contractLabelRefusalSaid(verdict)));
+        return ok({ contractId: r.contractId, label: r.label.trim() });
+      },
+      run: (input) => renameContractAction(input),
+    };
+    tools.push(renommerContrat as AnyTool);
   }
 
   // —— PR-15/16 — fiche de passage : MÊMES use cases que l'écran fiche (parité §3.7). ——

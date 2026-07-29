@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CONTRACT_B2C_REFUSED_MESSAGE, err, ok } from '@bob/core';
-import { BobAgent } from './bob-agent';
+import { contractLabelRefusalSaid, inspectContractLabel } from './contract-label-guard';
+import { BobAgent, splitSpokenContractRename } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import {
   type AgentContract,
@@ -899,5 +900,388 @@ describe('activer_contrat / resilier_contrat — gestes DISTINCTS, préavis expl
     if (!r.ok) return;
     expect(r.value.kind).toBe('answer');
     expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+});
+
+/**
+ * §2.7 — RENOMMER À LA VOIX : le geste que la garde du libellé PROMET (« un nom de contrat
+ * imparfait DANS L'APPLICATION se corrige d'un tap sur la fiche »). Même use case
+ * UpdateMaintenanceContract que ce tap. TESTS D'AMBIGUÏTÉ OBLIGATOIRES — les followUps portent
+ * l'ID ET le nouveau nom, si bien que le tour suivant n'a plus rien à redemander.
+ */
+describe('renommer_contrat — le remède promis par la garde, disponible à la voix (§2.7)', () => {
+  const FONTAINES = contractOf({
+    id: 'contract-fontaines',
+    label: 'Entretien fontaines',
+    customerName: 'RATP',
+  });
+  const FONTAINES_QUAI = contractOf({
+    id: 'contract-fontaines-quai',
+    label: 'Entretien fontaines quai',
+    customerName: 'RATP',
+  });
+
+  function renameAgent(contracts: AgentContract[], recorded: unknown[] = []): BobAgent {
+    return lifecycleAgent(
+      {
+        renameMaintenanceContract: async (input) => {
+          recorded.push(input);
+          return ok({
+            contractId: input.contractId,
+            label: input.label,
+            status: 'active' as const,
+            anniversaryDate: '2025-10-12',
+            terminationEffectiveDate: null,
+          });
+        },
+      },
+      contracts,
+    );
+  }
+
+  it('« renomme le contrat Bastille en « Entretien des ascenseurs » » : confirmation AVANT mutation, et ce que le nom ne change pas est DIT', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([BASTILLE_DUE, CARREFOUR_COVERED], recorded);
+    const r = await agent.ask('Renomme le contrat Bastille en « Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('renommer_contrat');
+    expect(r.value.kind).toBe('proposed');
+    expect(recorded).toEqual([]);
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-bastille',
+      label: 'Entretien des ascenseurs',
+    });
+    expect(r.value.card.body).toContain('Entretien fontaines Bastille');
+    expect(r.value.card.body).toContain('Entretien des ascenseurs');
+    // La ligne de la facture annuelle reste composée par le domaine : le promettre autrement
+    // serait mentir sur une pièce légale.
+    expect(r.value.card.body).toContain('facture annuelle');
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect(recorded).toEqual([
+      { contractId: 'contract-bastille', label: 'Entretien des ascenseurs' },
+    ]);
+  });
+
+  it('LE NOUVEAU NOM NE CIBLE JAMAIS — « … Bastille en Entretien vitrines » renomme Bastille, pas le contrat « Entretien vitrines »', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([BASTILLE_DUE, CARREFOUR_COVERED], recorded);
+    const r = await agent.ask('Renomme le contrat Bastille en Entretien vitrines Bastille');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    // Sans la découpe cible/nom, « vitrines » aurait résolu le contrat Carrefour et Bob aurait
+    // renommé le mauvais contrat en croyant obéir.
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-bastille',
+      label: 'Entretien vitrines Bastille',
+    });
+  });
+
+  it('AMBIGUÏTÉ (deux contrats aux noms INCLUSIFS) → question à followUps par ID qui CONVERGE, nouveau nom reporté', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES, FONTAINES_QUAI], recorded);
+    const first = await agent.ask('Renomme le contrat fontaines en « Entretien des ascenseurs »');
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.intent).toBe('renommer_contrat');
+    expect(first.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(first.value.ask?.[0]?.options.map((option) => option.value).sort()).toEqual(
+      ['contract-fontaines', 'contract-fontaines-quai'].sort(),
+    );
+    const followUp = first.value.ask?.[0]?.options.find(
+      (option) => option.value === 'contract-fontaines-quai',
+    )?.followUp;
+    expect(followUp).toBeDefined();
+    // Le followUp REDIT le nouveau nom : le tour suivant n'a plus rien à redemander.
+    expect(followUp).toContain('Entretien des ascenseurs');
+    const second = await agent.ask(followUp!);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.kind).toBe('proposed');
+    expect(second.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines-quai',
+      label: 'Entretien des ascenseurs',
+    });
+  });
+
+  it('AMBIGUÏTÉ sans nom dit : un tenant à plusieurs contrats est QUESTIONNÉ, jamais deviné', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES, CARREFOUR_COVERED], recorded);
+    const r = await agent.ask('Renomme le contrat en « Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.title).toContain('Quel contrat');
+    expect(r.value.ask?.[0]?.options.map((option) => option.value).sort()).toEqual(
+      ['contract-carrefour', 'contract-fontaines'].sort(),
+    );
+  });
+
+  it('nom dit mais INTROUVABLE : refus honnête qui cite ce qui a été entendu, rien n’est modifié', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat Villette en « Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.title).toContain('introuvable');
+    expect(r.value.card.body).toContain('villette');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('nouveau nom MANQUANT : le contrat est déjà résolu, seul le nom est demandé — rien n’est muté', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat fontaines');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.title).toContain('Entretien fontaines');
+    expect(r.value.card.body).toContain('contract-fontaines');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('PARITÉ FICHE — le nom DÉJÀ PORTÉ n’est pas un renommage : Bob le DIT, la révision ne tourne pas', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    // Le MÊME geste, tapé sur la fiche, ne part pas : `contractRenameSubmission` rend
+    // « unchanged » parce que « le renvoyer ferait tourner la révision pour rien ». Un geste ne
+    // peut pas avoir deux comportements selon qu'on le tape ou qu'on le dit.
+    const r = await agent.ask('Renomme le contrat fontaines en « Entretien fontaines »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.pending).toBeUndefined();
+    expect(recorded).toEqual([]);
+    expect(r.value.card.body).toContain('porte déjà ce nom');
+    // Le chemin reste ouvert : le pro sait comment en dire un AUTRE.
+    expect(r.value.card.body).toContain('contract-fontaines');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('PARITÉ FICHE — le trim est la SEULE tolérance : la casse, elle, est un vrai changement', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const spaced = await agent.ask('Renomme le contrat fontaines en «   Entretien fontaines   »');
+    expect(spaced.ok).toBe(true);
+    if (!spaced.ok) return;
+    expect(spaced.value.kind).toBe('answer');
+    expect(spaced.value.card.body).toContain('porte déjà ce nom');
+    expect(recorded).toEqual([]);
+    // La fiche compare des noms TRIMÉS, jamais normalisés : « entretien fontaines » y change
+    // bien le nom. À la voix aussi — sinon la parité se paierait d'un refus inventé.
+    const cased = await agent.ask('Renomme le contrat fontaines en « entretien fontaines »');
+    expect(cased.ok).toBe(true);
+    if (!cased.ok) return;
+    expect(cased.value.kind).toBe('proposed');
+    expect(cased.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'entretien fontaines',
+    });
+  });
+
+  it('GARDE DU LIBELLÉ à la voix (sévérité « nommé ») : un nom qui ANNONCE un fait est refusé VERBATIM, et la fiche est proposée', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat fontaines en « Entretien du 12 octobre »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    // Le refus est celui de la garde, mot pour mot — jamais une reformulation.
+    expect(r.value.card.body).toContain(
+      contractLabelRefusalSaid(inspectContractLabel('Entretien du 12 octobre', { mode: 'nomme' })),
+    );
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    // L'autre chemin RESTE ouvert : sur la fiche, c'est l'artisan qui tape et qui relit.
+    expect(r.value.card.body).toContain('Renommer');
+  });
+
+  it('un nom que le métier emploie (« Entretien annuel ») passe : la sévérité « nommé » n’est pas un mur', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat fontaines en « Entretien annuel »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'Entretien annuel',
+    });
+  });
+
+  it('un contrat RÉSILIÉ n’entre jamais dans le pool : lecture seule côté domaine, refus honnête', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent(
+      [
+        contractOf({
+          id: 'contract-docks',
+          label: 'Entretien Docks',
+          status: 'terminated',
+          currentPeriod: null,
+          currentPeriodCoveredBy: null,
+          renewalAlert: null,
+        }),
+      ],
+      recorded,
+    );
+    const r = await agent.ask('Renomme le contrat Docks en « Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.body).toContain('résilié ne se renomme plus');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('refus du DOMAINE à la confirmation (le contrat a été résilié entre-temps) : restitué VERBATIM', async () => {
+    const agent = lifecycleAgent(
+      {
+        renameMaintenanceContract: async () =>
+          err({
+            kind: 'domain' as const,
+            error: {
+              code: 'VALIDATION' as const,
+              field: 'status',
+              message: 'Contrat résilié : lecture seule.',
+            },
+          }),
+      },
+      [FONTAINES],
+    );
+    const proposed = await agent.ask('Renomme le contrat fontaines en « Entretien des ascenseurs »');
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok) return;
+    expect(proposed.value.kind).toBe('proposed');
+    const r = await agent.confirm(proposed.value.pending!);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.card.body).toContain('Contrat résilié : lecture seule.');
+  });
+
+  it('capacité hôte absente : réponse honnête qui renvoie à la fiche, jamais une erreur brute', async () => {
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: { ...baseActions, listMaintenanceContracts: async () => ok([FONTAINES]) },
+      runtime: { clock: { now: () => NOW }, ids: { newId: () => 'run-contracts' } },
+    });
+    const r = await agent.ask('Renomme le contrat fontaines en « Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect(r.value.card.body).toContain('Renommer');
+  });
+
+  it('les DEUX noms guillemetés : le dernier est le NOUVEAU, le premier reste la CIBLE', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES, FONTAINES_QUAI], recorded);
+    const r = await agent.ask(
+      'Renomme le contrat « Entretien fontaines quai » en « Entretien des ascenseurs »',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines-quai',
+      label: 'Entretien des ascenseurs',
+    });
+  });
+
+  it('un SEUL nom guillemeté sans « en » désigne la CIBLE, jamais le nouveau nom', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES, FONTAINES_QUAI], recorded);
+    const r = await agent.ask('Renomme le contrat « Entretien fontaines quai »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Le contrat est RÉSOLU (le nom guillemeté l'a désigné) et c'est le nouveau nom qui manque —
+    // pas l'inverse : sans cette règle, Bob aurait renommé un contrat en lui-même.
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.title).toContain('Entretien fontaines quai');
+    expect(r.value.card.body).toContain('contract-fontaines-quai');
+  });
+
+  it('« change le nom du contrat fontaines en Entretien des ascenseurs » : même geste, autre tournure', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Change le nom du contrat fontaines en Entretien des ascenseurs');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('renommer_contrat');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'Entretien des ascenseurs',
+    });
+  });
+
+  it('des guillemets VIDES ne sont pas un nom « invalide » : le nom MANQUE, et le refus le dit', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    // Une dictée ponctuée par la transcription — « en "" » — n'apporte aucun nom. Refuser sa
+    // FORME renverrait au pro un message inexploitable sur un nom qu'il n'a jamais dit ; le
+    // seul refus honnête est celui qui redemande le nom.
+    const r = await agent.ask('Renomme le contrat fontaines en ""');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(recorded).toEqual([]);
+    expect(r.value.card.body).toContain('Quel nouveau nom');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect(r.value.card.body).not.toContain('""');
+  });
+
+  it('un guillemet ORPHELIN laissé par la dictée ne s’écrit pas dans le nom du contrat', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const r = await agent.ask('Renomme le contrat fontaines en Entretien des ascenseurs »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    // Sans nettoyage, le contrat s'appellerait « Entretien des ascenseurs » » PARTOUT dans
+    // l'application — un nom que personne n'a voulu et que le pro devrait re-corriger.
+    expect(r.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'Entretien des ascenseurs',
+    });
+  });
+});
+
+describe('splitSpokenContractRename — les guillemets délimitent, ils ne NOMMENT jamais', () => {
+  it('guillemets vides (droits ou français) ⇒ aucun nom, jamais une chaîne de ponctuation', () => {
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en ""').newName).toBe('');
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en « »').newName).toBe('');
+    expect(splitSpokenContractRename('Renomme le contrat fontaines en «  »').newName).toBe('');
+  });
+
+  it('guillemets ORPHELINS (ouvrant ou fermant seul) retirés du nom, jamais du sens', () => {
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en Entretien des ascenseurs »')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en « Entretien des ascenseurs')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
+  });
+
+  it('la forme guillemetée COMPLÈTE reste la référence, et l’apostrophe n’est pas un guillemet', () => {
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en « Entretien de l’accueil »')
+        .newName,
+    ).toBe('Entretien de l’accueil');
+    expect(
+      splitSpokenContractRename('Renomme le contrat fontaines en "Entretien des ascenseurs"')
+        .newName,
+    ).toBe('Entretien des ascenseurs');
   });
 });

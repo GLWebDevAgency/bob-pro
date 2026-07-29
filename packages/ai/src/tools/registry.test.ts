@@ -1001,21 +1001,36 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
         anniversaryDate: '2026-10-01',
         terminationEffectiveDate: '2027-10-01',
       }),
+    renameMaintenanceContract: async () =>
+      ok({
+        contractId: 'c-1',
+        label: 'Entretien des ascenseurs',
+        status: 'active' as const,
+        anniversaryDate: '2026-10-01',
+        terminationEffectiveDate: null,
+      }),
   };
+
+  const LIFECYCLE_TOOL_NAMES = [
+    'creer_contrat_maintenance',
+    'activer_contrat',
+    'resilier_contrat',
+    'renommer_contrat',
+  ];
 
   it('absents de l’hôte legacy, exposés dès que l’hôte fournit les MÊMES use cases que l’écran', () => {
     const legacy = buildBobTools(baseActions).map((t) => t.name);
-    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+    for (const name of LIFECYCLE_TOOL_NAMES) {
       expect(legacy).not.toContain(name);
     }
     const names = buildBobTools(lifecycleActions).map((t) => t.name);
-    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+    for (const name of LIFECYCLE_TOOL_NAMES) {
       expect(names).toContain(name);
     }
   });
 
-  it('les trois gestes sont au PLANCHER de sécurité : confirmés même en autonomie « auto »', () => {
-    for (const name of ['creer_contrat_maintenance', 'activer_contrat', 'resilier_contrat']) {
+  it('les quatre gestes sont au PLANCHER de sécurité : confirmés même en autonomie « auto »', () => {
+    for (const name of LIFECYCLE_TOOL_NAMES) {
       const t = tool(lifecycleActions, name)!;
       expect(t.mutating).toBe(true);
       expect(t.outbound).toBe(false);
@@ -1138,5 +1153,37 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
     if (!parsed.ok) return;
     // Sans date dite, aucune date n’est envoyée : le domaine calcule le prochain anniversaire.
     expect(parsed.value).toEqual({ contractId: 'c-1', note: 'le client déménage' });
+  });
+
+  /**
+   * RENOMMER — l'outil qui rend le compromis du train Contrats tenable : le domaine compose la
+   * désignation imprimée, la garde laisse passer les noms imparfaits, et CE geste les corrige.
+   * Deux bornes s'y superposent, dans cet ordre : celle du DOMAINE (vide, longueur, caractères
+   * de contrôle — la même que `MaintenanceContract.record`), puis la GARDE en sévérité
+   * `'nomme'`, parce qu'ici le nom vient d'une transcription ou d'un modèle et que personne ne
+   * l'a relu. Sur la fiche, où l'artisan tape et relit, seule la première s'applique.
+   */
+  it('renommer_contrat : borne du DOMAINE puis garde « nommé », un nom métier passant toujours', () => {
+    const t = tool(lifecycleActions, 'renommer_contrat')!;
+    expect(t.parse({ label: 'Entretien des ascenseurs' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
+    // Borne du DOMAINE.
+    expect(t.parse({ contractId: 'c-1', label: '   ' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', label: 'a'.repeat(201) }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', label: 'Entretien\u0007ascenseurs' }).ok).toBe(false);
+    // GARDE « nommé » : ce qui ANNONCE un fait faux ne peut pas nommer le contrat…
+    expect(t.parse({ contractId: 'c-1', label: 'Entretien à 1.200 € par an' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', label: 'Entretien du 01/10/2026' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', label: 'Entretien pour le compte de RATP' }).ok).toBe(false);
+    // …et le refus est DIT en français, jamais rendu en code technique.
+    const refused = t.parse({ contractId: 'c-1', label: 'Entretien à 1.200 € par an' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(JSON.stringify(refused.error)).toContain('montant');
+    // …tandis qu'un nom que le métier emploie reste possible : la garde n'est pas un mur.
+    const parsed = t.parse({ contractId: 'c-1', label: '  Entretien annuel hall A  ' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toEqual({ contractId: 'c-1', label: 'Entretien annuel hall A' });
   });
 });

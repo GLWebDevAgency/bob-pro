@@ -1058,7 +1058,79 @@ const CONTRACT_GESTURE_WORDS: ReadonlySet<string> = new Set([
   'monter', 'enregistre', 'enregistrer', 'ouvre', 'ouvrir', 'signe', 'signer', 'mets', 'mettre',
   'place', 'ajoute', 'ajouter', 'oui', 'non', 'janvier', 'fevrier', 'mars', 'avril', 'mai',
   'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre',
+  // §2.7 — vocabulaire du RENOMMAGE : « renomme le contrat Bastille en … » ne doit cibler
+  // aucun contrat par « renomme » ni par « nom », sinon un tenant qui n'en a qu'un le verrait
+  // déclaré « introuvable » alors que le pro vient de le nommer.
+  'renomme', 'renommes', 'renommer', 'rebaptise', 'rebaptises', 'rebaptiser', 'change',
+  'changes', 'changer', 'corrige', 'corriges', 'corriger', 'modifie', 'modifies', 'modifier',
+  'nom', 'noms', 'comme', 'intitule', 'intitules', 'libelle', 'libelles',
 ]);
+
+/** Verbes du RENOMMAGE dicté — le même ensemble fermé que celui qu'`detectIntent` reconnaît. */
+const CONTRACT_RENAME_VERB =
+  /\b(?:renomme[sz]?|renommer|rebaptise[sz]?|rebaptiser|change[sz]?|changer|corrige[sz]?|corriger|modifie[sz]?|modifier)\b/iu;
+
+/**
+ * §2.7 — DÉCOUPE d'un renommage dicté : d'un côté ce qui CIBLE le contrat, de l'autre le
+ * NOUVEAU NOM. La découpe n'est pas cosmétique — sans elle, les mots du nouveau nom cibleraient
+ * eux aussi des contrats (« renomme le contrat Bastille en Entretien Carrefour » résoudrait le
+ * contrat de Carrefour), et Bob renommerait le mauvais contrat en croyant obéir.
+ *
+ * Le nom est lu sur le message BRUT — accents et casse conservés : c'est un libellé, pas une
+ * clef de comparaison. La forme GUILLEMETÉE prime : c'est la seule où le pro a délimité lui-même
+ * où son nom commence et où il finit ; à défaut, la coupure se fait au premier « en »/« comme »
+ * qui suit le verbe.
+ *
+ * Un guillemet DÉLIMITE, il ne nomme jamais : la dictée en sème (paire vide « en "" », guillemet
+ * orphelin resté d'une paire que la transcription n'a pas refermée) et aucun ne fait partie du
+ * nom. Les laisser entrer coûte deux fois : le contrat s'appellerait « Entretien des ascenseurs »
+ * » PARTOUT dans l'application, et une paire VIDE deviendrait un nom « trop court » — un refus
+ * inexploitable, opposé à un nom que le pro n'a jamais dit. Nettoyés, il ne reste rien, et
+ * l'absence de nom se dit comme telle : « quel nouveau nom ? ».
+ */
+export function splitSpokenContractRename(message: string): {
+  targetPart: string;
+  newName: string;
+} {
+  const verb = CONTRACT_RENAME_VERB.exec(message);
+  const from = verb === null ? 0 : verb.index + verb[0].length;
+  const rest = message.slice(from);
+  // L'apostrophe (droite ou typographique) n'est PAS un guillemet : « Entretien de l'accueil »
+  // est un nom légitime, et le mutiler serait réintroduire par la porte du nettoyage le nom que
+  // personne n'a voulu.
+  const clean = (raw: string): string =>
+    raw
+      .replace(/[«»"“”]/gu, ' ')
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .replace(/[.;!?]+$/u, '')
+      .trim();
+  const separator = /\b(?:en|comme)\b/iu;
+
+  // 1) FORME GUILLEMETÉE. Le DERNIER segment guillemeté est le nouveau nom — mais SEULEMENT si
+  //    un « en »/« comme » le précède : sans ce marqueur, le pro a guillemeté la CIBLE
+  //    (« renomme le contrat « Entretien fontaines » »), et prendre ce nom pour le nouveau
+  //    renommerait un contrat en lui-même après avoir cherché une cible qui n'est plus dite.
+  const quotes = [...rest.matchAll(/[«"]\s*([^«»"]{1,220}?)\s*[»"]/gu)];
+  const lastQuote = quotes[quotes.length - 1];
+  if (lastQuote?.index !== undefined && clean(lastQuote[1] ?? '').length > 0) {
+    if (separator.test(rest.slice(0, lastQuote.index)))
+      return {
+        targetPart: message.slice(0, from + lastQuote.index),
+        newName: clean(lastQuote[1] ?? ''),
+      };
+    return { targetPart: message, newName: '' };
+  }
+
+  // 2) FORME NUE : « … Bastille en Entretien des ascenseurs ». La coupure se fait au PREMIER
+  //    séparateur qui suit le verbe (le dernier découperait le nom lui-même).
+  const hit = separator.exec(rest);
+  if (hit === null) return { targetPart: message, newName: '' };
+  return {
+    targetPart: `${message.slice(0, from)} ${rest.slice(0, hit.index)}`,
+    newName: clean(rest.slice(hit.index + hit[0].length)),
+  };
+}
 
 /**
  * PR-12c — résolution du CONTRAT dicté contre les données réelles (« la facture annuelle de
@@ -1616,6 +1688,10 @@ export const CONTRACT_LIFECYCLE_TOOLS: ReadonlySet<string> = new Set([
   'creer_contrat_maintenance',
   'activer_contrat',
   'resilier_contrat',
+  // Le renommage y appartient pour la MÊME raison : entre la proposition et la confirmation, le
+  // contrat peut avoir été résilié ailleurs — « Contrat résilié : lecture seule » est un refus
+  // du domaine, et il doit se lire tel quel plutôt que remonter en erreur technique.
+  'renommer_contrat',
 ]);
 
 /** % par défaut de la « Situation n°1 » (repli acompte pro, décision fondateur 25/07) — même
@@ -1785,6 +1861,7 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'creer_contrat_maintenance') return 'creer_contrat_maintenance';
   if (tool === 'activer_contrat') return 'activer_contrat';
   if (tool === 'resilier_contrat') return 'resilier_contrat';
+  if (tool === 'renommer_contrat') return 'renommer_contrat';
   if (tool === 'valider_document') return 'valider_document';
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
@@ -4834,6 +4911,222 @@ export class BobAgent {
         card: {
           title: 'Contrat résilié ✓',
           body: `${label} — c’est fait, motif tracé.${decided}${notice}`,
+        },
+      });
+    }
+
+    if (intent === 'renommer_contrat') {
+      // §2.7 — RENOMMER À LA VOIX : MÊME use case UpdateMaintenanceContract que le bouton
+      // « Renommer » de la fiche (parité humain↔Bob). C'est le geste que la garde du libellé
+      // PROMET quand elle laisse passer un nom imparfait — sans lui, un nom mal compris à la
+      // dictée serait définitif, et toute la doctrine du train Contrats tiendrait sur du vide.
+      const listContracts = this.deps.actions.listMaintenanceContracts?.bind(this.deps.actions);
+      const tool = this.tool('renommer_contrat');
+      if (!listContracts || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Renommage indisponible',
+            body: 'Je ne peux pas renommer un contrat depuis cet appareil. Rien n’a été modifié — la fiche du contrat porte le geste « Renommer ».',
+          },
+        });
+      }
+      const contractsResult = await listContracts();
+      if (!contractsResult.ok) return err(contractsResult.error);
+      // Un contrat RÉSILIÉ est en « lecture seule » côté domaine : il n'entre pas dans le pool
+      // ciblable — le proposer serait promettre un refus. Même règle que la fiche, où le CTA
+      // « Renommer » est ABSENT sur un contrat résilié (§3.1), jamais grisé.
+      const pool = contractsResult.value.filter((contract) => contract.status !== 'terminated');
+      const spoken = splitSpokenContractRename(message);
+      // La cible se résout sur la partie AVANT le nouveau nom : les mots du nom qu'on donne ne
+      // doivent JAMAIS désigner le contrat qu'on renomme.
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        spoken.targetPart,
+        reference ?? '',
+      ].join(' ');
+      const resolution = resolveSpokenContract({ conversation, contracts: pool });
+      const commandOf = (contract: { id: string }): string =>
+        `Renomme le contrat ${contract.id}${spoken.newName ? ` en « ${spoken.newName} »` : ''}`;
+      const target =
+        resolution.byId.length === 1
+          ? resolution.byId[0]!
+          : resolution.strong.length === 1
+            ? resolution.strong[0]!
+            : resolution.strong.length === 0 && resolution.loose.length === 1
+              ? resolution.loose[0]!
+              : resolution.strong.length === 0 &&
+                  resolution.loose.length === 0 &&
+                  resolution.saidTokens.length === 0 &&
+                  pool.length === 1
+                ? pool[0]!
+                : null;
+
+      if (target === null) {
+        if (pool.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier les contrats réels'],
+            card: {
+              title: 'Aucun contrat à renommer',
+              body:
+                contractsResult.value.length === 0
+                  ? 'Aucun contrat de maintenance enregistré pour l’instant. Rien n’a été modifié.'
+                  : 'Les seuls contrats que je vois sont résiliés, et un contrat résilié ne se renomme plus. Rien n’a été modifié.',
+            },
+          });
+        }
+        // Nom dit mais introuvable → refus HONNÊTE ; sinon vraie ambiguïté → question ciblée
+        // dont les followUps portent l'ID ET le nouveau nom (le tour suivant résout par byId et
+        // n'a plus rien à redemander : la question converge, elle ne reboucle jamais).
+        const named =
+          resolution.saidTokens.length > 0 &&
+          resolution.strong.length === 0 &&
+          resolution.loose.length === 0;
+        const options = (
+          resolution.strong.length > 1
+            ? resolution.strong
+            : resolution.loose.length > 1
+              ? resolution.loose
+              : pool
+        ).slice(0, 4);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: named
+            ? ['Vérifier le contrat contre les données réelles']
+            : ['Lever l’ambiguïté du contrat'],
+          card: named
+            ? {
+                title: 'Contrat introuvable',
+                body: `Je ne trouve aucun contrat correspondant à « ${resolution.saidTokens.join(' ')} ». Rien n’a été modifié — choisis dans la liste :`,
+              }
+            : { title: 'Quel contrat ?', body: 'Quel contrat veux-tu renommer ?' },
+          choices: options.map((contract) => ({
+            label: `${contract.label}${contract.customerName ? ` (${contract.customerName})` : ''}`,
+            value: commandOf(contract),
+          })),
+          ask: [
+            askToPick({
+              id: 'renommer_contrat.contrat',
+              question: 'Quel contrat veux-tu renommer ?',
+              header: 'Contrat',
+              items: options.map((contract) => ({
+                value: contract.id,
+                label: contract.label,
+                description: contract.customerName ?? '',
+                followUp: commandOf(contract),
+              })),
+            }),
+          ],
+        });
+      }
+
+      const who = target.customerName ? ` (${target.customerName})` : '';
+      if (spoken.newName.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Demander le seul manque : le nouveau nom'],
+          card: {
+            title: `Renommer « ${target.label} »`,
+            body: `Quel nouveau nom ? Redis-moi : Renomme le contrat ${target.id} en … . Rien n’a été modifié.`,
+          },
+        });
+      }
+
+      // PARITÉ AVEC LA FICHE — un nom DÉJÀ PORTÉ n'est pas un renommage. À l'écran, le geste
+      // ne part pas (`contractRenameSubmission` rend `'unchanged'`) parce que « le renvoyer
+      // ferait tourner la révision pour rien » : une révision de plus, une écriture de plus, et
+      // la garde CAS de tous les autres appareils qui saute — pour zéro changement. Le même
+      // geste ne peut pas se comporter autrement selon qu'on le tape ou qu'on le dit, donc Bob
+      // le DIT au lieu d'obéir en silence. Évalué AVANT la garde du libellé, exactement comme à
+      // l'écran : un nom déjà écrit sur la fiche a déjà été relu, lui reprocher sa FORME serait
+      // refuser au pro ce qu'il regarde déjà. La comparaison est celle de la fiche — des noms
+      // TRIMÉS, jamais normalisés : une casse différente est un vrai changement, ici comme là.
+      if (spoken.newName.trim() === target.label.trim()) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Constater que le nom est déjà celui-là'],
+          card: {
+            title: `« ${target.label} »${who}`,
+            body: `Il porte déjà ce nom. Rien n’a été modifié — si tu en veux un autre, redis-moi : Renomme le contrat ${target.id} en … .`,
+          },
+        });
+      }
+
+      // GARDE DU LIBELLÉ, sévérité `'nomme'` — appliquée ICI et pas sur le chemin de la fiche :
+      // à la voix, le nom vient d'une transcription, personne n'a RELU ce qui va nommer le
+      // contrat dans toute l'application. Le refus est CITÉ verbatim (même phrase qu'au registre
+      // d'outils), et Bob rouvre les DEUX chemins : redire un nom propre, ou l'écrire soi-même
+      // sur la fiche — où l'artisan relit ce qu'il tape, et où ce geste est donc sans garde.
+      // (`customerNames` n'est pas fourni : en sévérité `'nomme'` le doute « client » ne bloque
+      // pas — le demander à l'hôte ne changerait aucun verdict.)
+      const verdict = inspectContractLabel(spoken.newName, { mode: 'nomme' });
+      if (!verdict.accepted) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Refuser un nom qui afficherait un fait faux'],
+          card: {
+            title: 'Quel nom pour ce contrat ?',
+            body: `${contractLabelRefusalSaid(verdict)} Rien n’a été modifié — redis-moi : Renomme le contrat ${target.id} en … , sans cette partie. Tu peux aussi l’écrire toi-même sur la fiche du contrat (« Renommer ») : là, c’est toi qui relis.`,
+          },
+        });
+      }
+
+      const args = { contractId: target.id, label: spoken.newName };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) {
+        const guard = domainGuardCard(parsed.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(parsed.error);
+      }
+      const label = `Renommer « ${target.label} »${who} en « ${spoken.newName} »`;
+      // Ce que le renommage NE fait PAS est dit AVANT le geste, comme sur la fiche : la ligne de
+      // la facture annuelle est composée par le domaine (prestation + période) — promettre
+      // qu'elle suivra le nom serait mentir sur une pièce légale.
+      const scope =
+        ' Ce nom sert à t’y retrouver dans Bob (fiche, liste, alertes) ; la ligne de la facture annuelle, elle, reste écrite par Bob.';
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Dire ce que le nom change (et ce qu’il ne change pas)', 'Attendre ta confirmation'],
+          card: { title: 'Renommage à confirmer', body: `${label}.${scope} Je confirme ?` },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(`${label} —${scope}`),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        return err(run.error);
+      }
+      // Le nom RÉCITÉ est celui que le domaine a écrit (trimé par lui), jamais celui que Bob
+      // croit avoir envoyé.
+      const renamed = run.value as { label?: unknown };
+      const written = typeof renamed?.label === 'string' ? renamed.label : spoken.newName;
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Renommer le contrat'],
+        card: {
+          title: 'Contrat renommé ✓',
+          body: `« ${target.label} »${who} s’appelle maintenant « ${written} ».${scope}`,
         },
       });
     }

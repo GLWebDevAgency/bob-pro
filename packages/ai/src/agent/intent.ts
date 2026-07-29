@@ -52,6 +52,7 @@ export type BobIntent =
   | 'creer_contrat_maintenance' // « fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an » — CreateMaintenanceContract (§2.7)
   | 'activer_contrat' // « active le contrat Bastille » — ActivateContract, geste distinct de la création (§2.7)
   | 'resilier_contrat' // « le client résilie au 1er juin » — TerminateContract, préavis expliqué jamais bloquant (§2.7)
+  | 'renommer_contrat' // « renomme le contrat Bastille en Entretien des ascenseurs » — UpdateMaintenanceContract, le remède promis par la garde du libellé (§2.7)
   | 'commencer_intervention' // « démarre l'intervention chez Carrefour » — StartIntervention (PR-15)
   | 'terminer_intervention' // « c'est terminé » — CompleteIntervention, checklist figée (PR-15)
   | 'faire_signer_intervention' // « fais signer » — ouvre le pad de signature (PR-15)
@@ -170,6 +171,26 @@ export function detectIntent(message: string): BobIntent {
   )
     return 'resilier_contrat';
   if (!annualInvoiceAsked && !contractPaperwork && /\bcontrats?\b/.test(normalizedMessage)) {
+    // RENOMMER (§2.7) — « renomme le contrat Bastille en Entretien des ascenseurs », « change le
+    // nom du contrat RATP ». C'est le geste que la garde du libellé PROMET quand elle laisse
+    // passer un nom imparfait ; il est lu EN PREMIER dans ce bloc, et surtout AVANT
+    // `renommer_document` plus bas — sinon « renomme le contrat … » irait chercher une pièce du
+    // coffre et Bob répondrait à côté sur le seul geste qui répare la dictée. Négation ⇒ rien.
+    const contractRenameVerb =
+      /\b(renomme|renommes|renommer|rebaptise|rebaptises|rebaptiser)\b/.test(normalizedMessage) ||
+      /\b(change|changes|changer|corrige|corriges|corriger|modifie|modifies|modifier)\b[^.!?]{0,20}\bnom\b/.test(
+        normalizedMessage,
+      );
+    if (
+      contractRenameVerb &&
+      !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(renomme|renommer|rebaptise|rebaptiser|change|changer|corrige|corriger|modifie|modifier)\b/.test(
+        normalizedMessage,
+      ) &&
+      !/\b(renomme|renommer|rebaptise|rebaptiser|change|changer|corrige|corriger|modifie|modifier)\b.{0,30}\bpas\b/.test(
+        normalizedMessage,
+      )
+    )
+      return 'renommer_contrat';
     // Un verbe de CRÉATION présent désambiguïse « ça démarre au 1er octobre » (fait de la
     // consigne de création) d'un « démarre le contrat » (activation) : seul le lexique
     // d'activation NON équivoque (« active », « en service ») prime sur la création.
@@ -533,10 +554,12 @@ export function detectIntent(message: string): BobIntent {
   )
     return 'classer_document';
   // Renommage d'un document (LOT 5) : « renomme-le facture matériaux salle de bain » — le nom
-  // dicté devient un renommage humain prioritaire. Clients/dossiers/chantiers exclus (autre geste).
+  // dicté devient un renommage humain prioritaire. Clients/dossiers/chantiers exclus (autre
+  // geste) ; les CONTRATS aussi (§2.7 — `renommer_contrat`, lu plus haut) : un filet en plus
+  // sur un chemin où « renomme le contrat … » repartirait chercher une pièce du coffre.
   if (
     /\b(renomme|renommer|renommes|rebaptise|rebaptiser|rebaptises)\b/.test(normalizedMessage) &&
-    !/\b(renomme|renommer|renommes|rebaptise|rebaptiser|rebaptises)\b.{0,24}\b(client|chantier|dossier)\b/.test(
+    !/\b(renomme|renommer|renommes|rebaptise|rebaptiser|rebaptises)\b.{0,24}\b(client|chantier|dossier|contrat|contrats)\b/.test(
       normalizedMessage,
     ) &&
     !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(renomme|renommer|rebaptise|rebaptiser)\b|\b(renomme|renommer|rebaptise|rebaptiser)\b.{0,30}\bpas\b/.test(

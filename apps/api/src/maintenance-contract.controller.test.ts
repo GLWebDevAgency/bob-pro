@@ -3,11 +3,14 @@ import {
   Chantier,
   Customer,
   Equipment,
+  MAX_CONTRACT_LABEL_LENGTH,
+  contractLabelRefusalMessage,
   type OcrPort,
   type PaymentGatewayPort,
   type PdfRendererPort,
 } from '@bob/core';
 import { seedCompany } from '@bob/core/testing';
+import { MaintenanceContractsController } from './api.controllers';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -334,5 +337,144 @@ describe('contrats de maintenance — service (PR-12b)', () => {
       expect(view.value.renewalAlert).toBeNull();
       expect(view.value.lifecycle.terminatedCoverage).not.toBeNull();
     }
+  });
+
+  /**
+   * RENOMMER — le geste que la garde du libellé PROMET (« un nom de contrat imparfait DANS
+   * L'APPLICATION se corrige d'un tap sur la fiche »). Ce test tient les DEUX bouts de ce que la
+   * fiche mobile suppose : le nom écrit à la main n'est borné que par le domaine (il peut donc
+   * contenir ce qu'une extraction n'aurait jamais eu le droit d'y mettre), et une révision
+   * PÉRIMÉE se solde par un CONFLIT — l'écran a quelque chose d'honnête à dire, et rien n'est
+   * écrasé en silence.
+   */
+  it('renommer : un nom ÉCRIT À LA MAIN passe, une révision périmée CONFLICTE (jamais d’écrasement)', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'b2g');
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2025-10-12',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 40_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('create');
+
+    // Ce que la garde du libellé refuserait à une DICTÉE (une date, une somme) est ACCEPTÉ ici :
+    // l'artisan a tapé ce nom et l'a relu. C'est exactement le remède que la garde promet.
+    const renamed = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Entretien du 12 octobre — 1 200 €' },
+      }),
+    );
+    expect(renamed.ok).toBe(true);
+    if (!renamed.ok) return;
+    expect(renamed.value.label).toBe('Entretien du 12 octobre — 1 200 €');
+    expect(renamed.value.revision).toBe(2);
+    // Un patch d'un seul champ ne réécrit rien d'autre.
+    expect(renamed.value.lines).toHaveLength(1);
+    expect(renamed.value.anniversaryDate).toBe('2025-10-12');
+
+    // Révision PÉRIMÉE (la fiche a changé ailleurs entre le chargement et le tap) : conflit.
+    const stale = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Autre nom' },
+      }),
+    );
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.error.kind).toBe('conflict');
+    // Rien n'a été écrasé : le nom du premier renommage tient toujours.
+    const after = await p.maintenanceContracts.findById(companyId, created.value.id);
+    expect(after!.label).toBe('Entretien du 12 octobre — 1 200 €');
+
+    // La borne du DOMAINE, elle, reste : un nom vide ou trop long est refusé.
+    const emptied = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 2,
+        patch: { label: '   ' },
+      }),
+    );
+    expect(emptied.ok).toBe(false);
+    const tooLong = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 2,
+        patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH + 1) },
+      }),
+    );
+    expect(tooLong.ok).toBe(false);
+  });
+});
+
+describe('MaintenanceContractsController — la frontière HTTP lit la borne du DOMAINE', () => {
+  function controller(overrides: Partial<BackendService> = {}) {
+    return new MaintenanceContractsController(overrides as BackendService);
+  }
+
+  /** Le message de refus porté par le 422, tel que le client le recevra. */
+  function labelIssueMessage(error: unknown): string | undefined {
+    const response = (error as { response?: unknown }).response as
+      | { error?: { issues?: { field: string; message: string }[] } }
+      | undefined;
+    return response?.error?.issues?.find((issue) => issue.field === 'label')?.message;
+  }
+
+  it('la borne du nom est celle du domaine — et la phrase du refus AUSSI (jamais une copie qui diverge)', async () => {
+    const updateMaintenanceContract = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const c = controller({ updateMaintenanceContract } as never);
+
+    // La borne EXACTE passe la frontière : elle ne peut pas être plus sévère que `record`,
+    // sinon l'écran (qui borne son champ avec la MÊME constante) laisserait taper un nom que
+    // le serveur refuserait — le cul-de-sac que le geste « Renommer » existe pour fermer.
+    await c.update('c-1', {
+      expectedRevision: 1,
+      patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH) },
+    });
+    expect(updateMaintenanceContract).toHaveBeenCalledTimes(1);
+
+    // Un caractère de plus est refusé AVANT le domaine — avec la phrase du domaine, mot pour
+    // mot : c'est la seule frontière que ce geste traverse en production, elle ne peut pas
+    // inventer sa propre formulation de la même règle.
+    const tooLong = await c
+      .update('c-1', {
+        expectedRevision: 1,
+        patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH + 1) },
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(tooLong).not.toBeNull();
+    expect(tooLong).toMatchObject({ status: 422 });
+    expect(labelIssueMessage(tooLong)).toBe(contractLabelRefusalMessage('trop_long'));
+
+    const emptied = await c
+      .update('c-1', { expectedRevision: 1, patch: { label: '   ' } })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(labelIssueMessage(emptied)).toBe(contractLabelRefusalMessage('vide'));
+
+    const controlChars = await c
+      .update('c-1', { expectedRevision: 1, patch: { label: 'Entretien\u0007fontaines' } })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(labelIssueMessage(controlChars)).toBe(
+      contractLabelRefusalMessage('caractere_de_controle'),
+    );
+
+    // Rien d'invalide n'a jamais atteint le use case.
+    expect(updateMaintenanceContract).toHaveBeenCalledTimes(1);
   });
 });

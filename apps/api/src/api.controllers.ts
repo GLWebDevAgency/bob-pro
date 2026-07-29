@@ -51,6 +51,8 @@ import {
   MAX_PURCHASE_ORDER_NUMBER_LENGTH,
   Siren,
   Siret,
+  contractLabelRefusal,
+  contractLabelRefusalMessage,
   isCatalogueCategory,
   isValidDateOnly,
   isVatRate,
@@ -4325,8 +4327,17 @@ function parseContractLines(value: unknown, issues: ValidationIssue[]): {
     const unitPriceHtCents = line['unitPriceHtCents'];
     const vatRate = line['vatRate'];
     const catalogueItemId = line['catalogueItemId'];
-    if (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)) {
-      issues.push({ field: `lines[${index}].label`, message: 'Libellé de ligne requis (200 caractères maximum).' });
+    // La borne d'un libellé de LIGNE est la même règle que celle du nom du contrat, et elle vit
+    // dans le domaine (« BORNE du nom d'un contrat — ET DE CHACUNE DE SES LIGNES »). La recopier
+    // ici la ferait diverger : la version en dur mesurait la longueur AVANT le trim, donc
+    // refusait 200 caractères suivis d'une espace que le domaine accepte.
+    if (typeof label !== 'string') {
+      issues.push({ field: `lines[${index}].label`, message: contractLabelRefusalMessage('vide') });
+      return undefined;
+    }
+    const lineRefusal = contractLabelRefusal(label);
+    if (lineRefusal !== null) {
+      issues.push({ field: `lines[${index}].label`, message: contractLabelRefusalMessage(lineRefusal) });
       return undefined;
     }
     if (typeof quantity !== 'number' || !Number.isFinite(quantity) || quantity <= 0) {
@@ -4366,8 +4377,20 @@ function parseContractEquipmentIds(value: unknown, issues: ValidationIssue[]): s
 
 function parseContractScalarFields(body: Record<string, unknown>, issues: ValidationIssue[]) {
   const label = 'label' in body ? body['label'] : undefined;
-  if (label !== undefined && (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)))
-    issues.push({ field: 'label', message: 'Nom du contrat requis (200 caractères maximum).' });
+  // LA borne du nom vit dans le domaine (`contractLabelRefusal`), et cette frontière est la
+  // SEULE que le geste « Renommer » traverse en production : y garder une copie de la règle,
+  // c'est garantir qu'un jour l'écran bornera son champ à une valeur et que le serveur en
+  // refusera une autre — le cul-de-sac que ce geste existe pour fermer. La phrase du refus
+  // vient du domaine elle aussi : une seule règle, une seule explication, partout.
+  if (label !== undefined) {
+    if (typeof label !== 'string') {
+      issues.push({ field: 'label', message: contractLabelRefusalMessage('vide') });
+    } else {
+      const refusal = contractLabelRefusal(label);
+      if (refusal !== null)
+        issues.push({ field: 'label', message: contractLabelRefusalMessage(refusal) });
+    }
+  }
   const chantierId = parseEquipmentFreeField(body, 'chantierId', 200, issues);
   const anniversaryDate = parseEquipmentDateField(body, 'anniversaryDate', issues);
   const importCoveredUntil = parseEquipmentDateField(body, 'importCoveredUntil', issues);
@@ -4418,7 +4441,7 @@ export class MaintenanceContractsController {
       issues.push({ field: 'customerId', message: 'Client requis.' });
     const scalars = parseContractScalarFields(body, issues);
     if (!('label' in scalars))
-      issues.push({ field: 'label', message: 'Nom du contrat requis.' });
+      issues.push({ field: 'label', message: contractLabelRefusalMessage('vide') });
     if (!('anniversaryDate' in scalars) || scalars.anniversaryDate === null)
       issues.push({ field: 'anniversaryDate', message: 'Date de début requise (AAAA-MM-JJ).' });
     const lines = 'lines' in body ? parseContractLines(body['lines'], issues) : undefined;

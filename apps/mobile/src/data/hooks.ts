@@ -497,6 +497,39 @@ function invalidateContract(qc: ReturnType<typeof useQueryClient>, contractId: s
   void qc.invalidateQueries({ queryKey: ['contract', contractId] });
 }
 
+/**
+ * §2.7 — RENOMMER un contrat : le geste que la garde du libellé PROMET (« un nom de contrat
+ * imparfait DANS L'APPLICATION se corrige d'un tap sur la fiche »). MÊME use case
+ * `UpdateMaintenanceContract` que la voix — un patch d'un seul champ, jamais un remplacement
+ * de la fiche : les lignes, les équipements et les conditions ne sont pas renvoyés, donc pas
+ * réécrits.
+ *
+ * `expectedRevision` vient de la vue DÉJÀ CHARGÉE (jamais d'une relecture juste avant l'appel,
+ * qui rendrait la garde CAS décorative) : si la fiche a bougé ailleurs, le serveur répond
+ * `conflict` et l'écran le DIT. Aucune reprise automatique — réessayer avec la révision fraîche
+ * écraserait en silence ce que l'autre appareil vient d'écrire.
+ */
+export function useRenameMaintenanceContract() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { contractId: string; expectedRevision: number; label: string }) => {
+      const r = await requireContractCapability(client.updateMaintenanceContract?.bind(client))(
+        input.contractId,
+        { expectedRevision: input.expectedRevision, patch: { label: input.label } },
+      );
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    // Le nom se lit AUSSI hors de la fiche : liste des contrats du dashboard, carte « contrats »
+    // du client, encart contrat d'une facture annuelle. Toutes ces vues descendent des deux
+    // mêmes clés — les réinvalider suffit, et sans elles l'ancien nom survivrait dans un écran
+    // déjà monté. (La couverture contractuelle d'un équipement, elle, est relue à chaque geste
+    // de retrait, jamais mise en cache : rien à invalider de ce côté.)
+    onSuccess: (_data, input) => invalidateContract(qc, input.contractId),
+  });
+}
+
 export function useActivateMaintenanceContract() {
   const client = useBobClient();
   const qc = useQueryClient();

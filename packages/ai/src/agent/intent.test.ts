@@ -667,9 +667,37 @@ describe('PR-12c §2.7 — gestes de cycle de vie d’un CONTRAT à la voix', ()
     expect(detectIntent('Fais un devis pour Martin')).toBe('nouveau_devis');
   });
 
+  /**
+   * RENOMMER (§2.7) — le geste que la garde du libellé PROMET. Il est lu AVANT
+   * `renommer_document` : sans cette priorité, « renomme le contrat … » partirait chercher une
+   * pièce du coffre, et le seul geste qui répare une dictée mal comprise n'existerait pas.
+   */
+  it('renommage : « renomme le contrat … », « change le nom du contrat … » — jamais un document', () => {
+    expect(detectIntent('Renomme le contrat Bastille en Entretien des ascenseurs')).toBe(
+      'renommer_contrat',
+    );
+    expect(detectIntent('Renomme le contrat fontaines en « Entretien annuel »')).toBe(
+      'renommer_contrat',
+    );
+    expect(detectIntent('Change le nom du contrat RATP')).toBe('renommer_contrat');
+    expect(detectIntent('Corrige le nom du contrat Bastille')).toBe('renommer_contrat');
+    // Le renommage d'une PIÈCE du coffre reste ce qu'il est.
+    expect(detectIntent('Renomme-le facture matériaux salle de bain')).toBe('renommer_document');
+  });
+
+  it('le renommage ne détourne NI l’activation NI la résiliation NI la création', () => {
+    expect(detectIntent('Active le contrat Bastille')).toBe('activer_contrat');
+    expect(detectIntent('Résilie le contrat Bastille au 30 juin')).toBe('resilier_contrat');
+    expect(detectIntent('Fais-moi le contrat fontaines RATP à 1 200 € par an')).toBe(
+      'creer_contrat_maintenance',
+    );
+  });
+
   it('négation ⇒ rien (jamais une mutation de contrat sur une intention niée)', () => {
     expect(detectIntent('Ne crée pas le contrat fontaines RATP')).not.toBe('creer_contrat_maintenance');
     expect(detectIntent("N'active pas le contrat Bastille")).not.toBe('activer_contrat');
     expect(detectIntent('Ne résilie pas le contrat Bastille')).not.toBe('resilier_contrat');
+    expect(detectIntent('Ne renomme pas le contrat Bastille')).not.toBe('renommer_contrat');
+    expect(detectIntent('Ne change pas le nom du contrat Bastille')).not.toBe('renommer_contrat');
   });
 });
