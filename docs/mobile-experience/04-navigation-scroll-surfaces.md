@@ -226,6 +226,85 @@ Le zoom partagé :
 > et contrôles flottants » et « Reduce Transparency remplace par une surface opaque sémantique ».
 > Ces deux lignes faisaient du verre la matière de premier choix du chrome et de l'opaque un repli.
 
+## Retombée de bord — `ProgressiveBlurBob`
+
+> Ajouté A2 · 2026-07-29. Source normative : plan P1 du fondateur,
+> [`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md)
+> §1.3. Technique étudiée dans `davidmokos/expo-glass-tabs` → `src/progressive-blur.tsx` (43 l.),
+> présent à l'identique dans `davidmokos/revolut-expo-clone`. Implémentation de référence déjà
+> livrée : `patterns.bottomTabBar` (`packages/tokens/src/index.ts`) rendu par
+> `packages/ui/src/components/bottom-tab-bar.tsx`.
+
+### Ce que c'est
+
+Un chrome flottant (tab bar, barre d'action de fiche, toolbar de visualiseur) laisse le contenu
+défiler **dessous**. Sans traitement, le contenu vient buter sur le bord du chrome et on lit une
+ligne de coupe. La **retombée de bord** est la zone qui dissout ce contenu avant qu'il n'atteigne
+le chrome. Elle est décorative, non interactive (`pointerEvents="none"`), et ne contient jamais de
+texte ni d'information.
+
+### Mode nominal — teinté, sans aucun flou (défaut)
+
+`ProgressiveBlurBob` rend **par défaut** un dégradé de notre couleur de fond, **zéro échantillon de
+flou**, en un seul draw call :
+
+| Paramètre | Valeur normative | Source |
+| --- | --- | --- |
+| Stops de couleur | `['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7']` | `patterns.bottomTabBar.fade` |
+| Positions | `[0, 0.32, 0.6]` — transparent au sommet, 92 % à 32 %, **opaque dès 60 %** | `patterns.bottomTabBar.fadeLocations` |
+| Hauteur totale | `inset de sécurité + hauteur du chrome + 44 pt de débord` | Géométrie de la référence (`BLUR_BLEED`) |
+| Ancre | `bottom` pour un chrome bas, `top` pour un chrome haut ; le point opaque est toujours au bord ancré | Référence |
+| Interaction | `pointerEvents="none"` | Référence |
+| Animation | **jamais animée**, dans aucun mode | Plan P1 §1.3 |
+
+C'est la **même courbe de dissolution** que la référence, mais dans notre couleur, opaque par
+construction, sans une seule ligne de noir, et déjà livrée.
+
+### Mode flouté — option bornée, teintée Bob
+
+Réservé aux fonds où une teinte plate ne suffit pas parce que le fond **est une image** : scan,
+aperçu de document, visualiseur photo. Jamais sur un fond de l'app.
+
+| Paramètre | Valeur normative | Justification |
+| --- | --- | --- |
+| Topologie | N couches **frères** dans un même parent — **jamais imbriquées** | La retombée vient de la géométrie, pas d'un masque |
+| Profil de hauteurs | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %` (tronqué aux N premières) | Profil exact de la référence |
+| Intensité par couche | **uniforme et faible** (référence : 5 pour chacune) | L'intensité effective vient du recouvrement, pas d'une rampe |
+| Intensité effective | ~5 × N au bord ancré → ~5 à l'extrémité, par marches de 5 | Nombre de couches couvrant le pixel à la distance f du bord |
+| N (couches floutées) | **plafonné ; `N = 0` est le défaut** | Chaque couche est un échantillonnage GPU permanent sous scroll |
+| Voile | **teinté Bob** — dégradé de notre couleur de fond, aux mêmes stops que le mode nominal | La référence pose `rgba(0,0,0,.70)`, inversion complète d'identité sur notre fond `#EFF2F7` |
+| Rendu de couche | **port injecté `renderBlurLayer`** (doctrine `PrefsStorage`) | `@bob/ui` ne prend aucune dépendance ; `expo-blur` reste dans `apps/mobile` |
+| Repli | **repli opaque UNIQUE** = le mode nominal | Un seul chemin de secours, donc un seul chemin à tester |
+
+### Quand le repli opaque unique s'applique — sans exception
+
+1. port `renderBlurLayer` absent (cas par défaut de `@bob/ui`) ;
+2. **Reduce Transparency actif** ;
+3. Android en rendu dégradé ;
+4. budget de performance non tenu sur l'appareil médian.
+
+Dans les quatre cas, l'utilisateur voit la **même géométrie, la même courbe et la même couleur** :
+seuls les échantillons de flou disparaissent. Aucune information, aucune cible et aucun contraste
+ne change.
+
+### Pourquoi notre version est meilleure que son modèle
+
+Le `ProgressiveBlur` de la référence n'écoute **aucune** préférence d'accessibilité. Sous Reduce
+Transparency, iOS dégrade chacune de ses dix `UIVisualEffectView` en matériau quasi opaque : la
+retombée progressive s'effondre en **dalle dure** et le voile `rgba(0,0,0,.70)` subsiste par-dessus
+— un bandeau sombre opaque en pied d'écran. Notre version n'a pas ce problème parce qu'elle **n'a
+rien à dégrader** : elle est déjà opaque et déjà dans notre couleur.
+
+### Contradiction levée
+
+Deux documents canoniques posaient « jamais de blur imbriqué »
+([09 — Architecture](09-technical-architecture.md), [10 — Performance](10-performance-observability.md))
+et semblaient donc interdire la technique prescrite par le plan P1. Vérification faite dans le code
+de la référence : les couches sont des **frères** dans un même parent et il n'y a **aucun masque**.
+La règle ne visait pas cette technique ; elle était imprécise. Les deux documents ont été amendés
+pour distinguer le blur imbriqué (interdit), le blur de fond d'une surface d'information (interdit)
+et l'empilement de frères en zone non interactive (autorisé et **borné par un budget**).
+
 ## Adaptation tablette
 
 | Domaine | Composition proposée |
