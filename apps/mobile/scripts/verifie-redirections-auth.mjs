@@ -17,7 +17,7 @@
  * dashboard, sans jeton d'administration, et sans jamais rien écrire ni consommer.
  *
  * Usage : `node scripts/verifie-redirections-auth.mjs [profil…]` (défaut : tous ceux d'eas.json
- * qui déclarent une URL Supabase). Sort non nul au premier refus.
+ * qui déclarent une URL Supabase). Agrège les refus de tous les profils puis sort non nul.
  */
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -25,16 +25,19 @@ import path from 'node:path';
 
 /** Deep links de retour codés en dur dans l'application : ils doivent TOUJOURS être autorisés. */
 export const DEEP_LINKS_OBLIGATOIRES = Object.freeze([
-  { cible: 'bobpro:///auth/callback', type: 'signup', role: "repli de confirmation d'inscription" },
-  { cible: 'bobpro:///auth/recovery', type: 'recovery', role: 'réinitialisation du mot de passe' },
+  { cible: 'bobpro://auth/callback', type: 'signup', role: "repli de confirmation d'inscription" },
+  { cible: 'bobpro://auth/recovery', type: 'recovery', role: 'réinitialisation du mot de passe' },
 ]);
+
+export const SONDE_TIMEOUT_MS = 8_000;
 
 const HOTES_LOCAUX = Object.freeze(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
 
 /**
  * Ramène une URL de redirection à sa forme comparable : sans query ni fragment, et avec le
- * `scheme:///chemin` réduit à `scheme://chemin` — GoTrue applique cette normalisation lui-même,
- * si bien que `bobpro:///auth/callback` demandé revient toujours en `bobpro://auth/callback`.
+ * `scheme:///chemin` réduit à `scheme://chemin`. La forme double-slash est la cible canonique
+ * générée par Expo et acceptée par le dashboard Supabase ; le repli garde la compatibilité avec
+ * les anciens liens triple-slash déjà émis.
  */
 export function normaliseCible(url) {
   if (typeof url !== 'string' || url.trim() === '') return '';
@@ -96,6 +99,55 @@ export function analyseRedirection({ profil, role, cibleDemandee, redirectionObt
   return { ok: true };
 }
 
+/**
+ * La Site URL est le filet de sécurité de GoTrue : toute cible absente/refusée y retombe.
+ * « Pas localhost » ne suffit donc pas. Elle doit être exactement la cible web versionnée dans
+ * le profil EAS, faute de quoi un ancien domaine ou un mauvais environnement recevrait les
+ * paramètres d'authentification tout en produisant un faux certificat vert.
+ */
+export function analyseSiteUrl({ profil, cibleAttendue, redirectionObtenue }) {
+  const attendue = normaliseCible(cibleAttendue);
+  const obtenue = normaliseCible(redirectionObtenue);
+  if (attendue === '') {
+    return {
+      ok: false,
+      refus: 'SITE_URL_ATTENDUE_ABSENTE',
+      message:
+        `[${profil}] EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL est absente : impossible de ` +
+        'certifier la Site URL exacte de ce projet.',
+    };
+  }
+  if (obtenue === '') {
+    return {
+      ok: false,
+      refus: 'REDIRECTION_ABSENTE',
+      message:
+        `[${profil}] Site URL : GoTrue n'a renvoyé aucune redirection. Projet injoignable ou ` +
+        'réponse inattendue — vérifier EXPO_PUBLIC_SUPABASE_URL.',
+    };
+  }
+  if (pointeVersLocalhost(obtenue)) {
+    return {
+      ok: false,
+      refus: 'SITE_URL_LOCALHOST',
+      message:
+        `[${profil}] Site URL = ${obtenue} — le filet de sécurité du projet renvoie sur une ` +
+        'adresse locale. Toute redirection refusée y atterrit : l’inscription et la ' +
+        'réinitialisation de mot de passe sont inutilisables pour un vrai client.',
+    };
+  }
+  if (obtenue !== attendue) {
+    return {
+      ok: false,
+      refus: 'SITE_URL_INATTENDUE',
+      message:
+        `[${profil}] Site URL = ${obtenue}, attendu exactement ${attendue}. Corriger ` +
+        'Authentication → URL Configuration avant de distribuer ce build.',
+    };
+  }
+  return { ok: true };
+}
+
 /** Les cibles qu'un profil doit voir acceptées, déduites de ses variables EAS + des deep links. */
 export function ciblesAttendues(env = {}) {
   const cibles = [];
@@ -119,14 +171,53 @@ export function profilsSondables(easJson, filtre = []) {
     });
 }
 
-/** Sonde une cible : jeton volontairement invalide, redirection NON suivie, rien n'est consommé. */
-async function sonde(supabaseUrl, type, redirectTo) {
-  const url = new URL('/auth/v1/verify', supabaseUrl);
-  url.searchParams.set('token', 'sonde-de-configuration-invalide');
-  url.searchParams.set('type', type);
-  if (redirectTo !== undefined) url.searchParams.set('redirect_to', redirectTo);
-  const reponse = await fetch(url, { redirect: 'manual' });
-  return reponse.headers.get('location') ?? '';
+/**
+ * Sonde bornée : jeton volontairement invalide, redirection NON suivie, rien n'est consommé.
+ * Toute panne réseau devient un refus fini et nommé ; le rituel ne peut pas rester suspendu.
+ */
+export async function sonde(
+  supabaseUrl,
+  type,
+  redirectTo,
+  {
+    fetchImpl = globalThis.fetch,
+    timeoutMs = SONDE_TIMEOUT_MS,
+  } = {},
+) {
+  let signal;
+  try {
+    signal = AbortSignal.timeout(timeoutMs);
+    const url = new URL('/auth/v1/verify', supabaseUrl);
+    url.searchParams.set('token', 'sonde-de-configuration-invalide');
+    url.searchParams.set('type', type);
+    if (redirectTo !== undefined) url.searchParams.set('redirect_to', redirectTo);
+    const reponse = await fetchImpl(url, { redirect: 'manual', signal });
+    return { ok: true, redirection: reponse.headers.get('location') ?? '' };
+  } catch (error) {
+    const errorName =
+      typeof error === 'object' && error !== null && 'name' in error
+        ? error.name
+        : null;
+    const timeout =
+      signal?.aborted === true || errorName === 'TimeoutError' || errorName === 'AbortError';
+    return {
+      ok: false,
+      refus: timeout ? 'SONDE_TIMEOUT' : 'SONDE_INJOIGNABLE',
+    };
+  }
+}
+
+function refusDeSonde({ profil, role, resultat }) {
+  const timeout = resultat.refus === 'SONDE_TIMEOUT';
+  return {
+    ok: false,
+    refus: resultat.refus,
+    message:
+      `[${profil}] ${role} : ${timeout
+        ? `la sonde a dépassé ${SONDE_TIMEOUT_MS / 1_000} secondes`
+        : 'le projet Supabase est injoignable'} — aucune conformité n’est déclarée. ` +
+      'Vérifier le réseau et EXPO_PUBLIC_SUPABASE_URL, puis relancer.',
+  };
 }
 
 async function main() {
@@ -146,28 +237,45 @@ async function main() {
     console.log(`\n▸ ${profil} — ${supabaseUrl}`);
 
     // Le filet de sécurité : toute cible refusée ou absente retombe ici. Jamais localhost.
-    const siteUrl = await sonde(supabaseUrl, 'signup', undefined);
-    if (pointeVersLocalhost(siteUrl)) {
-      const verdict = {
-        ok: false,
-        refus: 'SITE_URL_LOCALHOST',
-        message:
-          `[${profil}] Site URL = ${normaliseCible(siteUrl)} — le filet de sécurité du projet ` +
-          `renvoie sur une adresse locale. Toute redirection refusée y atterrit : l'inscription ` +
-          `et la réinitialisation de mot de passe sont inutilisables pour un vrai client.`,
-      };
+    const siteUrlSonde = await sonde(supabaseUrl, 'signup', undefined);
+    if (!siteUrlSonde.ok) {
+      const verdict = refusDeSonde({
+        profil,
+        role: 'Site URL',
+        resultat: siteUrlSonde,
+      });
       refus.push(verdict);
       console.log(`  ✗ Site URL — ${verdict.refus}`);
-    } else {
-      console.log(`  ✓ Site URL — ${normaliseCible(siteUrl)}`);
+      // Une indisponibilité projet rendrait les sondes suivantes redondantes et bruyantes.
+      continue;
     }
+    const siteUrlVerdict = analyseSiteUrl({
+      profil,
+      cibleAttendue: env.EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL,
+      redirectionObtenue: siteUrlSonde.redirection,
+    });
+    console.log(
+      `  ${siteUrlVerdict.ok ? '✓' : '✗'} Site URL — ${
+        siteUrlVerdict.ok
+          ? normaliseCible(siteUrlSonde.redirection)
+          : siteUrlVerdict.refus
+      }`,
+    );
+    if (!siteUrlVerdict.ok) refus.push(siteUrlVerdict);
 
     for (const { cible, type, role } of ciblesAttendues(env)) {
+      const resultat = await sonde(supabaseUrl, type, cible);
+      if (!resultat.ok) {
+        const verdict = refusDeSonde({ profil, role, resultat });
+        console.log(`  ✗ ${cible} — ${verdict.refus}`);
+        refus.push(verdict);
+        continue;
+      }
       const verdict = analyseRedirection({
         profil,
         role,
         cibleDemandee: cible,
-        redirectionObtenue: await sonde(supabaseUrl, type, cible),
+        redirectionObtenue: resultat.redirection,
       });
       console.log(`  ${verdict.ok ? '✓' : '✗'} ${cible}${verdict.ok ? '' : ` — ${verdict.refus}`}`);
       if (!verdict.ok) refus.push(verdict);

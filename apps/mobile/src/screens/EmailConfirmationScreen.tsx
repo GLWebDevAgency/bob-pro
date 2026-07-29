@@ -1,5 +1,5 @@
 /**
- * Retour du lien de confirmation d'inscription (deep link `bobpro:///auth/callback`, atteint
+ * Retour du lien de confirmation d'inscription (deep link `bobpro://auth/callback`, atteint
  * directement ou via la page relais sign-web `/auth/confirme`). Miroir architectural de
  * PasswordRecoveryScreen : l'écran consomme l'URL (initiale ou événement), la nettoie
  * immédiatement de la navigation, puis délègue l'échange de preuve à la couche data (auth.tsx).
@@ -22,6 +22,7 @@ import { LockIcon, MailIcon, SparkIcon } from '../components/icons';
 import { useAuth } from '../data/auth';
 import { markFreshLogin } from '../data/biometric';
 import {
+  EMAIL_CONFIRMATION_DEEP_LINK,
   EMAIL_CONFIRMATION_ROUTE,
   isEmailConfirmationUrl,
   type EmailConfirmationErrorCode,
@@ -139,7 +140,7 @@ export function EmailConfirmationScreen() {
         else if (Array.isArray(value)) for (const item of value) forwarded.append(name, item);
       }
       if ([...forwarded.keys()].length > 0) {
-        await consumeLink(`bobpro://${EMAIL_CONFIRMATION_ROUTE}?${forwarded.toString()}`);
+        await consumeLink(`${EMAIL_CONFIRMATION_DEEP_LINK}?${forwarded.toString()}`);
       } else {
         await beginEmailConfirmation('');
       }

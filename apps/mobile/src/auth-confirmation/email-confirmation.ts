@@ -3,7 +3,7 @@
  * n'envoyait AUCUN `emailRedirectTo` → GoTrue retombait sur la Site URL du projet (défaut
  * `http://localhost:3000`) et le lien de confirmation était inutilisable. Ce module porte :
  *   1. la cible de redirection explicite du signUp/resend (page relais sign-web `/auth/confirme`
- *      si configurée, sinon deep link `bobpro:///auth/callback`) ;
+ *      si configurée, sinon deep link `bobpro://auth/callback`) ;
  *   2. le parseur durci du deep link de retour (miroir de password-recovery.ts) : PKCE `?code=`
  *      prioritaire, implicite `#access_token…&type=signup` accepté, erreurs provider mappées
  *      sans jamais remonter un message brut.
@@ -12,6 +12,9 @@
  */
 export const EMAIL_CONFIRMATION_ROUTE = '/auth/callback' as const;
 export const EMAIL_CONFIRMATION_SCHEME = 'bobpro' as const;
+/** Forme canonique acceptée par Expo ET par l'éditeur d'allowlist Supabase. */
+export const EMAIL_CONFIRMATION_DEEP_LINK =
+  `${EMAIL_CONFIRMATION_SCHEME}:/${EMAIL_CONFIRMATION_ROUTE}` as const;
 /** Chemin de la page relais web (sign-web) — reçoit le redirect http(s) de GoTrue puis rouvre l'app. */
 export const EMAIL_CONFIRMATION_WEB_RELAY_PATH = '/auth/confirme' as const;
 

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  EMAIL_CONFIRMATION_DEEP_LINK,
   emailConfirmationWebRelayUrl,
   isEmailConfirmationUrl,
   parseEmailConfirmationUrl,
 } from './email-confirmation';
 
 describe('parseEmailConfirmationUrl', () => {
+  it('publie la cible double-slash canonique acceptée par Supabase', () => {
+    expect(EMAIL_CONFIRMATION_DEEP_LINK).toBe('bobpro://auth/callback');
+  });
+
   it('accepte le code PKCE (forme triple-slash et forme double-slash Expo)', () => {
     expect(parseEmailConfirmationUrl('bobpro:///auth/callback?code=one-time-code')).toEqual({
       ok: true,

@@ -3,10 +3,12 @@ import test from 'node:test';
 import {
   DEEP_LINKS_OBLIGATOIRES,
   analyseRedirection,
+  analyseSiteUrl,
   ciblesAttendues,
   normaliseCible,
   pointeVersLocalhost,
   profilsSondables,
+  sonde,
 } from './verifie-redirections-auth.mjs';
 
 /** La redirection exacte observée par le fondateur le 29/07/2026 sur le projet de staging. */
@@ -54,6 +56,52 @@ test('une cible refusée qui retombe sur une Site URL saine est quand même un r
   assert.equal(verdict.refus, 'CIBLE_NON_AUTORISEE');
 });
 
+test('la Site URL doit être exactement le relais versionné, pas seulement distante', () => {
+  assert.deepEqual(
+    analyseSiteUrl({
+      profil: 'preview',
+      cibleAttendue: RELAIS,
+      redirectionObtenue: `${RELAIS}#error=access_denied`,
+    }),
+    { ok: true },
+  );
+
+  const ancienne = analyseSiteUrl({
+    profil: 'preview',
+    cibleAttendue: RELAIS,
+    redirectionObtenue: 'https://ancien-bob.example/auth',
+  });
+  assert.equal(ancienne.ok, false);
+  assert.equal(ancienne.refus, 'SITE_URL_INATTENDUE');
+  assert.match(ancienne.message, /attendu exactement/);
+
+  const mauvaisChemin = analyseSiteUrl({
+    profil: 'preview',
+    cibleAttendue: RELAIS,
+    redirectionObtenue: 'https://bob-pro-sign-web.vercel.app/mauvaise-route',
+  });
+  assert.equal(mauvaisChemin.refus, 'SITE_URL_INATTENDUE');
+});
+
+test('une Site URL attendue absente ou locale échoue fermé avec un motif exact', () => {
+  assert.equal(
+    analyseSiteUrl({
+      profil: 'preview',
+      cibleAttendue: '',
+      redirectionObtenue: RELAIS,
+    }).refus,
+    'SITE_URL_ATTENDUE_ABSENTE',
+  );
+  assert.equal(
+    analyseSiteUrl({
+      profil: 'preview',
+      cibleAttendue: RELAIS,
+      redirectionObtenue: 'http://localhost:3000',
+    }).refus,
+    'SITE_URL_LOCALHOST',
+  );
+});
+
 test('une absence de redirection est nommée, jamais confondue avec un succès', () => {
   for (const vide of ['', '   ', undefined, null]) {
     const verdict = analyseRedirection({
@@ -95,6 +143,83 @@ test('normaliseCible retire query et fragment sans toucher au chemin', () => {
   assert.equal(normaliseCible(`${RELAIS}?a=1#b=2`), RELAIS);
   assert.equal(normaliseCible('bobpro:///auth/callback'), 'bobpro://auth/callback');
   assert.equal(normaliseCible(`${RELAIS}/`), RELAIS);
+});
+
+test('la sonde ne suit pas la redirection et transmet un signal borné', async () => {
+  let options;
+  const resultat = await sonde(
+    'https://staging.supabase.co',
+    'signup',
+    RELAIS,
+    {
+      fetchImpl: async (_url, receivedOptions) => {
+        options = receivedOptions;
+        return { headers: new Headers({ location: `${RELAIS}#error=access_denied` }) };
+      },
+      timeoutMs: 25,
+    },
+  );
+
+  assert.deepEqual(resultat, {
+    ok: true,
+    redirection: `${RELAIS}#error=access_denied`,
+  });
+  assert.equal(options.redirect, 'manual');
+  assert.equal(options.signal instanceof AbortSignal, true);
+});
+
+test('timeout et panne réseau rendent deux refus finis et nommés', async () => {
+  const timeout = await sonde(
+    'https://staging.supabase.co',
+    'signup',
+    RELAIS,
+    {
+      fetchImpl: async () => {
+        throw Object.assign(new Error('ne doit pas fuiter'), { name: 'TimeoutError' });
+      },
+    },
+  );
+  assert.deepEqual(timeout, { ok: false, refus: 'SONDE_TIMEOUT' });
+
+  const indisponible = await sonde(
+    'https://staging.supabase.co',
+    'signup',
+    RELAIS,
+    {
+      fetchImpl: async () => {
+        throw new Error('secret réseau non affiché');
+      },
+    },
+  );
+  assert.deepEqual(indisponible, { ok: false, refus: 'SONDE_INJOIGNABLE' });
+});
+
+test('le timeout interrompt réellement une requête suspendue via le signal transmis', async () => {
+  const debut = Date.now();
+  const timeout = await sonde(
+    'https://staging.supabase.co',
+    'signup',
+    RELAIS,
+    {
+      fetchImpl: async (_url, { signal }) =>
+        await new Promise((_resolve, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        }),
+      timeoutMs: 20,
+    },
+  );
+
+  assert.deepEqual(timeout, { ok: false, refus: 'SONDE_TIMEOUT' });
+  assert.ok(Date.now() - debut < 1_000, 'la requête suspendue doit être interrompue, pas attendre');
+});
+
+test('une URL Supabase invalide échoue comme projet injoignable, sans stack brute', async () => {
+  const resultat = await sonde('pas une URL', 'signup', RELAIS);
+  assert.deepEqual(resultat, { ok: false, refus: 'SONDE_INJOIGNABLE' });
 });
 
 test('les deux deep links de retour sont exigés même sans page relais configurée', () => {

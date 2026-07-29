@@ -15,11 +15,11 @@ Correctif code (2026-07-18) :
 
 - `signUp` **et** `resend` envoient `emailRedirectTo` explicite :
   page relais `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` (sign-web `/auth/confirme`),
-  repli deep link `bobpro:///auth/callback` si la variable est absente ;
+  repli deep link `bobpro://auth/callback` si la variable est absente ;
 - nouvelle page relais `apps/sign-web/app/auth/confirme/page.tsx` : « Compte confirmé —
   retourne dans l'app », relaie query+fragment vers le deep link, tente l'ouverture auto,
   repli texte (email lu sur ordinateur), nettoie l'URL du navigateur ;
-- nouvelle route native `bobpro:///auth/callback` (`apps/mobile/app/auth/callback.tsx` +
+- nouvelle route native `bobpro://auth/callback` (`apps/mobile/app/auth/callback.tsx` +
   `src/screens/EmailConfirmationScreen.tsx` + `src/auth-confirmation/email-confirmation.ts`) :
   échange PKCE → session immédiate, sinon « compte confirmé, connecte-toi » ;
 - écran de connexion : erreur `email_not_confirmed` → lien « Renvoyer l'email de
@@ -36,8 +36,8 @@ naît avec `http://localhost:3000` en Site URL et une allowlist vide : il reprod
 | Champ | Valeur exacte à saisir |
 | --- | --- |
 | **Site URL** | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
-| **Redirect URLs** (une ligne chacune) | `bobpro:///auth/callback` |
-| | `bobpro:///auth/recovery` |
+| **Redirect URLs** (une ligne chacune) | `bobpro://auth/callback` |
+| | `bobpro://auth/recovery` |
 | | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
 | | *(optionnel, previews Vercel)* `https://bob-pro-sign-web-*-glwebdevagencys-projects.vercel.app/auth/confirme` |
 
@@ -56,9 +56,13 @@ staging créé par db53eb67, six jours après avoir été corrigé sur la produc
 `apps/mobile/scripts/verifie-redirections-auth.mjs` rend cet état lisible. Il envoie à
 `/auth/v1/verify` un jeton volontairement invalide assorti de chaque `redirect_to` attendu :
 GoTrue n'honore la cible que si elle est allowlistée, sinon il retombe sur la Site URL — la
-redirection renvoyée dit donc la configuration réelle du projet. Rien n'est écrit, rien n'est
-consommé, aucun jeton d'administration n'est requis. Le script sort non nul et **nomme** ce qui
-manque (`SITE_URL_LOCALHOST`, `RETOUR_LOCALHOST`, `CIBLE_NON_AUTORISEE`, `REDIRECTION_ABSENTE`).
+redirection renvoyée dit donc la configuration réelle du projet. La Site URL doit correspondre
+**exactement** au relais versionné du profil ; « distante » ne suffit pas. Chaque requête est
+bornée à huit secondes. Rien n'est écrit, rien n'est consommé, aucun jeton d'administration
+n'est requis. Le script sort non nul et **nomme** ce qui manque
+(`SITE_URL_ATTENDUE_ABSENTE`, `SITE_URL_LOCALHOST`, `SITE_URL_INATTENDUE`,
+`RETOUR_LOCALHOST`, `CIBLE_NON_AUTORISEE`, `REDIRECTION_ABSENTE`, `SONDE_TIMEOUT`,
+`SONDE_INJOIGNABLE`).
 
 **À lancer après toute création de projet Supabase, et avant tout build EAS destiné à un
 testeur** : un binaire distribué avec une allowlist incomplète rend l'inscription impossible
@@ -68,8 +72,8 @@ sans qu'aucun test du dépôt ne s'en aperçoive.
 
 | # | Source (code) | Variable d'env | Valeur prod actuelle | Verdict |
 | --- | --- | --- | --- | --- |
-| 1 | Email **confirmation d'inscription** — `auth.tsx` `signUp`/`resend` | `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` (+ Site URL/Redirect URLs dashboard) | *(à poser)* `https://bob-pro-sign-web.vercel.app/auth/confirme` | 🔴 **était le bug** (aucun redirect → Site URL localhost). Corrigé code ; dashboard + env EAS à poser (§2) |
-| 2 | Email **reset mot de passe** — `auth.tsx` `resetPasswordForEmail` | — (deep link constant `bobpro:///auth/recovery`) | `bobpro:///auth/recovery` | 🟡 OK côté code ; **ne marche que si allowlisté au dashboard** (§2) — sinon retombait sur la Site URL localhost, même bug |
+| 1 | Email **confirmation d'inscription** — `auth.tsx` `signUp`/`resend` | `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` (+ Site URL/Redirect URLs dashboard) | `https://bob-pro-sign-web.vercel.app/auth/confirme` | ✅ Code + profils EAS + dashboards staging/production certifiés le 29/07/2026 par la sonde du §2 |
+| 2 | Email **reset mot de passe** — `auth.tsx` `resetPasswordForEmail` | — (deep link constant `bobpro://auth/recovery`) | `bobpro://auth/recovery` | ✅ Code + allowlists staging/production certifiés le 29/07/2026 par la sonde du §2 |
 | 3 | **Lien de signature devis** — `backend.service.ts` `publicSignatureUrl` (email Brevo + `signatureUrl` API) | `SIGN_WEB_BASE_URL` | `https://bob-pro-sign-web.vercel.app` (posée sur Railway) | ✅ OK — origine durcie (`signWebOrigin` : HTTPS, refus localhost/démo/credentials/query/hash) ; `loadEnv` la rend obligatoire hors démo |
 | 4 | **Lien de visualisation devis/facture** — `publicDocumentViewUrl` (`/view/:token`) | `SIGN_WEB_BASE_URL` (même origine) | idem | ✅ OK — même garde |
 | 5 | **PDF / aperçus** — `documents/storage.ts` `getSignedUrl` | `SUPABASE_URL` + `SUPABASE_STORAGE_BUCKET` | `https://cvdkqjczgqoeshputacl.supabase.co`, bucket `bob-documents` | ✅ OK — URL signée émise par Supabase Storage (host = SUPABASE_URL), TTL 300 s (`backend.service.ts`), bucket privé |
@@ -92,9 +96,9 @@ erreurs (`ERROR_REPORTER_WEBHOOK_URL`), sidecar audit loopback.
 | Variable | Dev local | Preview/QA (APK staging) | Production |
 | --- | --- | --- | --- |
 | `EXPO_PUBLIC_API_URL` | `http://<ip-locale>:3000` | `https://bob-pro-api-staging.up.railway.app` | `https://bob-pro-api-production.up.railway.app` |
-| `EXPO_PUBLIC_SUPABASE_URL` | `https://cvdkqjczgqoeshputacl.supabase.co` | idem (auth partagée, documenté) | idem |
+| `EXPO_PUBLIC_SUPABASE_URL` | `https://cvdkqjczgqoeshputacl.supabase.co` | `https://afywrrzjjuyznewzvpmk.supabase.co` (projet staging distinct) | `https://cvdkqjczgqoeshputacl.supabase.co` |
 | `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` | *(vide → deep link direct)* | `https://bob-pro-sign-web.vercel.app/auth/confirme` | `https://bob-pro-sign-web.vercel.app/auth/confirme` |
-| Deep links retour auth | `bobpro:///auth/callback` + `bobpro:///auth/recovery` (dev client, scheme `bobpro` d'app.json) | idem | idem |
+| Deep links retour auth | `bobpro://auth/callback` + `bobpro://auth/recovery` (dev client, scheme `bobpro` d'app.json) | idem | idem |
 
 ### API (Railway)
 
@@ -111,11 +115,14 @@ erreurs (`ERROR_REPORTER_WEBHOOK_URL`), sidecar audit loopback.
 | --- | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | *(vide → repli localhost dev-only)* | `https://bob-pro-api-production.up.railway.app` (posée) | `https://bob-pro-api-production.up.railway.app` |
 
-## 5. Reste à faire côté humain (récap)
+## 5. État opérationnel et dernière preuve à obtenir
 
-1. **Dashboard Supabase** : Site URL + les 3 Redirect URLs du §2 (débloque Fly Services).
-2. **EAS/builds mobiles** : poser `EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL` (preview + prod).
-3. **Déployer sign-web** (nouvelle page `/auth/confirme`) puis l'API/mobile comme d'habitude.
-4. Fly Services : ouvrir l'app → se connecter → « Renvoyer l'email de confirmation ».
+1. ✅ **Dashboards Supabase staging + production** : Site URL et les 3 Redirect URLs du §2 ;
+   sonde réelle 8/8 verte le 29/07/2026.
+2. ✅ **Profils EAS preview + production** : relais web et projets Supabase distincts versionnés
+   dans `apps/mobile/eas.json`.
+3. ✅ **sign-web** : `/auth/confirme` répond HTTP 200 le 29/07/2026.
+4. ⏳ **Preuve appareil/e-mail** : Fly Services ouvre l'app, se connecte puis utilise
+   « Renvoyer l'email de confirmation » ; tester aussi un reset de mot de passe sur le même APK.
 5. Plus tard : `CABINET_INVITATION_WEB_BASE_URL` (lancement cabinet) et bloc Stripe complet
    avec `PAYMENT_RETURN_BASE_URL` (fin early-access).

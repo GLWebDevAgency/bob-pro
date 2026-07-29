@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   initialPasswordRecoveryState,
   isPasswordRecoveryUrl,
+  PASSWORD_RECOVERY_DEEP_LINK,
   parsePasswordRecoveryUrl,
   passwordRecoveryReducer,
   validateRecoveryPassword,
 } from './password-recovery';
 
 describe('parsePasswordRecoveryUrl', () => {
+  it('publie la cible double-slash canonique acceptée par Supabase', () => {
+    expect(PASSWORD_RECOVERY_DEEP_LINK).toBe('bobpro://auth/recovery');
+  });
+
   it('accepte le deep-link implicite Supabase sans exposer de message provider', () => {
     expect(
       parsePasswordRecoveryUrl(

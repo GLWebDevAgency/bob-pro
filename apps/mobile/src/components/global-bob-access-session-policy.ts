@@ -4,10 +4,9 @@ export type GlobalBobSessionStopReason =
   | 'incompatible_route';
 
 /**
- * Parcours d'ENTRÉE : l'utilisateur n'est pas encore connecté, ou son espace de travail n'existe
- * pas encore. Bob n'y a aucune donnée à lire, aucun geste à poser, aucune question à laquelle
- * répondre — l'y afficher promet une aide qu'il ne peut pas rendre, et le premier contact avec
- * l'assistant se solde par une déception. Il apparaît une fois l'utilisateur DANS l'application.
+ * Parcours où Bob est volontairement indisponible en V1 : Auth n'a aucune session exploitable ;
+ * l'onboarding est authentifié mais reste un parcours de configuration explicitement exclu de
+ * la parité vocale V1. L'y afficher promettrait une aide qu'il ne peut pas encore rendre.
  *
  * Une route est reconnue par égalité ou par préfixe de segment : `/auth` couvre `/auth/callback`
  * et `/auth/recovery`, sans jamais capturer un `/authentification` qui n'aurait rien à voir.
@@ -24,8 +23,8 @@ export function deriveGlobalBobSessionStopReason(input: {
   readonly entitled: boolean;
   readonly pathname: string;
 }): GlobalBobSessionStopReason | null {
-  // La route prime sur le droit : elle est connue localement et sans latence, là où l'abonnement
-  // dépend d'un appel réseau qui, pendant l'onboarding, échoue par construction (pas de tenant).
+  // La route prime sur le droit : elle est connue localement et sans latence. Auth n'a aucune
+  // session exploitable et l'onboarding est volontairement hors parité vocale pendant la V1.
   if (input.pathname === '/voix' || isBobEntryRoute(input.pathname)) return 'incompatible_route';
   if (!input.subscriptionResolved) return 'entitlement_unconfirmed';
   if (!input.entitled) return 'entitlement_revoked';

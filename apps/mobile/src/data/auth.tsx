@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState } from 'react-native';
-import { createURL } from 'expo-linking';
 import { useQueryClient } from '@tanstack/react-query';
 import type { AuthError, Session } from '@supabase/supabase-js';
 import type { CompanyLookupResult } from '@bob/core';
@@ -27,14 +26,12 @@ import {
   initialPasswordRecoveryState,
   parsePasswordRecoveryUrl,
   passwordRecoveryReducer,
-  PASSWORD_RECOVERY_ROUTE,
-  PASSWORD_RECOVERY_SCHEME,
+  PASSWORD_RECOVERY_DEEP_LINK,
   type PasswordRecoveryErrorCode,
   type PasswordRecoveryState,
 } from '../auth-recovery/password-recovery';
 import {
-  EMAIL_CONFIRMATION_ROUTE,
-  EMAIL_CONFIRMATION_SCHEME,
+  EMAIL_CONFIRMATION_DEEP_LINK,
   emailConfirmationWebRelayUrl,
   initialEmailConfirmationState,
   parseEmailConfirmationUrl,
@@ -163,7 +160,7 @@ interface AuthValue {
   resetPassword: (email: string) => Promise<{ error: AuthErrorCode | null }>;
   resendSignupConfirmation: (email: string) => Promise<{ error: AuthErrorCode | null }>;
   /**
-   * Retour du lien de confirmation d'inscription (deep link `bobpro:///auth/callback`) :
+   * Retour du lien de confirmation d'inscription (deep link `bobpro://auth/callback`) :
    * échange la preuve PKCE/implicite contre une session quand elle est présente, sinon
    * constate honnêtement « compte confirmé, connexion manuelle ».
    */
@@ -183,10 +180,7 @@ interface AuthValue {
 const AuthContext = createContext<AuthValue | null>(null);
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 8_000;
 const AUTH_REQUEST_TIMEOUT_MS = 12_000;
-const PASSWORD_RECOVERY_REDIRECT_URL = createURL(PASSWORD_RECOVERY_ROUTE.slice(1), {
-  scheme: PASSWORD_RECOVERY_SCHEME,
-  isTripleSlashed: true,
-});
+const PASSWORD_RECOVERY_REDIRECT_URL = PASSWORD_RECOVERY_DEEP_LINK;
 /**
  * Cible EXPLICITE de l'email de confirmation d'inscription — sans elle, GoTrue retombe sur la
  * Site URL du projet Supabase (défaut `http://localhost:3000`) et le lien est inutilisable
@@ -197,10 +191,7 @@ const PASSWORD_RECOVERY_REDIRECT_URL = createURL(PASSWORD_RECOVERY_ROUTE.slice(1
  */
 const EMAIL_CONFIRMATION_REDIRECT_URL =
   emailConfirmationWebRelayUrl(process.env.EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL) ??
-  createURL(EMAIL_CONFIRMATION_ROUTE.slice(1), {
-    scheme: EMAIL_CONFIRMATION_SCHEME,
-    isTripleSlashed: true,
-  });
+  EMAIL_CONFIRMATION_DEEP_LINK;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
