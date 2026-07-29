@@ -55,7 +55,14 @@ export const CONTRACT_B2C_REFUSED_MESSAGE =
   '(art. L215-1 du code de la consommation, loi Chatel) et un cadre de facturation dédié — Bob ' +
   'les ajoutera proprement plutôt que mal. En attendant : un devis signé annuel couvre ce besoin.';
 
-const MAX_LABEL_LENGTH = 200;
+/**
+ * BORNE du nom d'un contrat — et de chacune de ses lignes. EXPORTÉE parce qu'elle est la SEULE
+ * règle qui s'applique à un nom ÉCRIT À LA MAIN : la fiche « Renommer » borne son champ avec
+ * CETTE valeur plutôt qu'avec une copie, faute de quoi l'écran laisserait taper un nom que le
+ * domaine refuserait ensuite — un cul-de-sac au lieu d'un remède.
+ */
+export const MAX_CONTRACT_LABEL_LENGTH = 200;
+const MAX_LABEL_LENGTH = MAX_CONTRACT_LABEL_LENGTH;
 const MAX_NOTES_LENGTH = 2000;
 const MAX_NOTICE_DAYS = 365;
 const MAX_VISITS_PER_YEAR = 52;
@@ -65,6 +72,29 @@ const MAX_LINE_QUANTITY = 1_000_000;
 /** Caractères de contrôle interdits dans un champ MONO-LIGNE (miroir SQL `[[:cntrl:]]`). */
 function hasControlCharacter(value: string): boolean {
   return /\p{Cc}/u.test(value);
+}
+
+/** Ce qui empêche un texte de NOMMER un contrat — `null` quand rien ne s'y oppose. */
+export type ContractLabelRefusal = 'vide' | 'trop_long' | 'caractere_de_controle';
+
+/**
+ * LA borne d'un nom de contrat, lisible AVANT l'écriture. `record` l'applique (c'est elle qui
+ * fait autorité) et les appelants la consultent pour DIRE au pro ce qui coince pendant qu'il
+ * tape, au lieu de le lui apprendre par un refus après coup. Une seule règle, deux usages.
+ */
+export function contractLabelRefusal(raw: string): ContractLabelRefusal | null {
+  const label = raw.trim();
+  if (label.length === 0) return 'vide';
+  if (label.length > MAX_CONTRACT_LABEL_LENGTH) return 'trop_long';
+  if (hasControlCharacter(label)) return 'caractere_de_controle';
+  return null;
+}
+
+/** Ce que le DOMAINE répond quand un nom ne passe pas — même phrase à l'écran et à la voix. */
+export function contractLabelRefusalMessage(refusal: ContractLabelRefusal): string {
+  if (refusal === 'vide') return 'Nom du contrat requis.';
+  if (refusal === 'trop_long') return `Nom limité à ${MAX_CONTRACT_LABEL_LENGTH} caractères.`;
+  return 'Caractères de contrôle interdits.';
 }
 
 /** Notes multilignes de terrain : \n/\t admis, tout autre caractère de contrôle refusé. */
@@ -215,12 +245,13 @@ export class MaintenanceContract {
 
   static record(props: MaintenanceContractProps): DomainResult<MaintenanceContract> {
     const label = props.label.trim();
-    if (!label)
-      return err({ code: 'VALIDATION', field: 'label', message: 'Nom du contrat requis.' });
-    if (label.length > MAX_LABEL_LENGTH)
-      return err({ code: 'VALIDATION', field: 'label', message: `Nom limité à ${MAX_LABEL_LENGTH} caractères.` });
-    if (hasControlCharacter(label))
-      return err({ code: 'VALIDATION', field: 'label', message: 'Caractères de contrôle interdits.' });
+    const labelRefusal = contractLabelRefusal(label);
+    if (labelRefusal !== null)
+      return err({
+        code: 'VALIDATION',
+        field: 'label',
+        message: contractLabelRefusalMessage(labelRefusal),
+      });
     const customerId = props.customerId.trim();
     if (!customerId)
       return err({ code: 'VALIDATION', field: 'customerId', message: 'Client requis.' });

@@ -29,6 +29,20 @@ import {
  * attribution — parce qu'un nom qui ANNONCE un fait faux trompe le pro lui-même, et qu'aucune
  * relecture ne rattrape ce qu'on ne remarque pas.
  *
+ * ── OÙ CETTE GARDE NE S'APPLIQUE PAS, ET POURQUOI C'EST LA MÊME RÈGLE ──────────────────────
+ *
+ * Le tap qu'elle invoque existe : « Renommer » sur la fiche contrat (mobile), adossé au use case
+ * `UpdateMaintenanceContract`. Ce champ-là ne repasse PAS par cette garde — il n'est borné que
+ * par le domaine (`contractLabelRefusal` : vide, longueur, caractères de contrôle). Ce n'est pas
+ * une exception, c'est la conclusion de la règle des deux sévérités poussée d'un cran : ici, ce
+ * n'est ni une extraction ni un modèle qui écrit le nom, c'est l'artisan, et il le RELIT. Lui
+ * appliquer le refus fermerait le seul remède que cette garde promet — le nom qu'elle vient de
+ * refuser serait précisément celui que le pro ne pourrait plus écrire, et l'aiguillage
+ * « extrait/nommé » deviendrait un cul-de-sac de plus.
+ *
+ * L'outil vocal `renommer_contrat`, lui, passe par la sévérité `'nomme'` : le nom y arrive par
+ * une transcription ou par un modèle, et personne ne l'a relu.
+ *
  * ── LA RÈGLE : LA CHARGE DE LA PREUVE EST RENVERSÉE ────────────────────────────────────────
  *
  * Tant qu'on ÉNUMÈRE ce qui est INTERDIT dans un nom de contrat, on énumère les tournures du

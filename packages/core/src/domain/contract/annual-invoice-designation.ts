@@ -30,6 +30,12 @@ import {
  * pièce légale fausse et archivée immuable. Un nom de contrat imparfait DANS L'APPLICATION se
  * corrige d'un tap sur la fiche ; une ligne de facture fausse, jamais.
  *
+ * Ce tap EXISTE, et c'est ce qui rend le compromis tenable : « Renommer » sur la fiche contrat
+ * (mobile) et l'outil vocal du même nom, tous deux adossés au use case
+ * `UpdateMaintenanceContract`. Le nom qu'on y écrit n'est borné que par le domaine
+ * (`contractLabelRefusal` : vide, longueur, caractères de contrôle) — l'artisan tape et relit,
+ * il est sa propre garde. Ce module reste, lui, la seule autorité sur ce qui s'IMPRIME.
+ *
  * La ligne ne porte donc plus le nom brut. Elle porte une DÉSIGNATION NORMALISÉE, composée ici
  * à partir de FAITS DÉJÀ VALIDÉS :
  *   · la NATURE de la prestation — « Contrat de maintenance », que le domaine connaît de toute
