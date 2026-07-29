@@ -1137,6 +1137,22 @@ const legacyFr = {
     pro: 'Fiche trouvée : {name}.',
     direct: 'Trouvé : {name}.',
   },
+  // Établissement au statut « cessé » à l'annuaire des entreprises (INSEE). On n'interdit pas :
+  // une facture finale, un avoir ou un litige sur un établissement fermé sont parfaitement
+  // légitimes. Mais on le DIT, sinon un fermé passerait pour un client valide.
+  'clients.createSiretClosed': {
+    pote:
+      'Attention : l’INSEE dit que cet établissement est fermé. Tu peux quand même l’enregistrer (facture finale, avoir), mais vérifie l’adresse avec ton client.',
+    pro: 'Établissement déclaré fermé à l’annuaire (INSEE). L’enregistrement reste possible (facture finale, avoir) : vérifiez l’adresse de facturation.',
+    direct: 'Établissement fermé (INSEE). Vérifiez l’adresse.',
+  },
+  'clients.createSiretAddressMissing': {
+    pote:
+      'L’annuaire ne donne pas l’adresse de cet établissement. Je l’ai laissée vide : ajoute-la si tu la connais.',
+    pro:
+      'L’annuaire ne publie pas l’adresse de cet établissement. Le champ a été laissé vide pour une saisie manuelle.',
+    direct: 'Adresse absente de l’annuaire. Saisissez-la manuellement.',
+  },
   'clients.createContactNameLabel': {
     pote: 'Contact chez le client',
     pro: 'Nom du contact',
@@ -6444,6 +6460,13 @@ const legacyFr = {
     direct: 'NAF',
   },
   'auth.companyAddressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  'auth.companyClosedWarning': {
+    pote:
+      'Attention : l’INSEE déclare cet établissement fermé. Vérifie le SIRET avant de créer ton espace.',
+    pro:
+      'Cet établissement est déclaré fermé à l’annuaire (INSEE). Vérifiez le SIRET avant de créer votre espace.',
+    direct: 'Établissement fermé (INSEE). Vérifiez le SIRET.',
+  },
   'auth.companyTvaLabel': {
     pote: 'TVA intracom',
     pro: 'TVA intracommunautaire',

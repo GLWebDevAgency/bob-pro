@@ -98,24 +98,64 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
     if (!r) return null; // 200 + 0 résultat = réellement introuvable
 
     const siege = r.siege ?? {};
-    const officialSiren = r.siren?.replace(/\s/gu, '') ?? '';
-    const officialSiret = siege.siret?.replace(/\s/gu, '') ?? '';
-    const exactIdentity = v.length === 9 ? officialSiren === v : officialSiret === v;
-    if (!exactIdentity) return null;
+    const officialSiren = digitsOf(r.siren);
+    const siegeSiret = digitsOf(siege.siret);
+
+    // Identité EXACTE, jamais un à-peu-près. Le siège d'abord — chemin historique, inchangé :
+    // requête à 9 chiffres = SIREN de l'entreprise, requête à 14 chiffres = SIRET du siège.
+    const siegeMatches = v.length === 9 ? officialSiren === v : siegeSiret === v;
+
+    // Sinon l'établissement SECONDAIRE : l'amont le publie dans `matching_etablissements`, le
+    // tableau prévu pour les établissements correspondant à la requête. Ne comparer qu'au siège
+    // rejetait en `null` (404) tout SIRET secondaire pourtant parfaitement connu de l'annuaire —
+    // c'était le bug de production corrigé ici. Un SIREN (9 chiffres) ne s'y résout jamais : il
+    // désigne l'entreprise, donc son siège.
+    const secondaire =
+      siegeMatches || v.length === 9
+        ? null
+        : ((r.matching_etablissements ?? []).find((e) => digitsOf(e.siret) === v) ?? null);
+
+    // Aucune correspondance EXACTE nulle part = réellement introuvable. Une entreprise renvoyée
+    // « à peu près » n'est jamais attribuée au compte.
+    if (!siegeMatches && !secondaire) return null;
+
+    const etablissement = secondaire ?? siege;
+    const officialSiret = secondaire ? v : siegeSiret;
+
     if (!/^\d{9}$/u.test(officialSiren) || !/^\d{14}$/u.test(officialSiret)) {
       throw new CompanyLookupUnavailableError('Réponse amont incomplète : identité officielle absente.');
     }
-    const denomination = (r.nom_complet ?? r.nom_raison_sociale ?? '').trim();
+    // Toute identité renvoyée doit être cohérente, y compris le siège. Une réponse amont qui
+    // associe un SIRET à un autre SIREN est une panne NOMMÉE, jamais un « introuvable » ni une
+    // identité appliquée à la fiche.
+    if (!officialSiret.startsWith(officialSiren)) {
+      throw new CompanyLookupUnavailableError('Réponse amont incohérente : établissement hors du SIREN annoncé.');
+    }
+    const denominationCandidate =
+      typeof r.nom_complet === 'string'
+        ? r.nom_complet
+        : typeof r.nom_raison_sociale === 'string'
+          ? r.nom_raison_sociale
+          : '';
+    const denomination = denominationCandidate.trim();
     if (!denomination) {
       throw new CompanyLookupUnavailableError('Réponse amont incomplète : raison sociale absente.');
     }
-    const naf = r.activite_principale ?? null;
-    const line1 =
-      [siege.numero_voie, siege.type_voie, siege.libelle_voie].filter(Boolean).join(' ').trim() || (siege.adresse ?? '');
-    const address =
-      siege.code_postal && siege.libelle_commune ? { line1, zip: siege.code_postal, city: siege.libelle_commune } : null;
+    // L'activité est celle de l'ÉTABLISSEMENT retenu. L'unité légale peut porter un NAF très
+    // différent (ex. holding/commerçant vs établissement immobilier) : son NAF n'est qu'un
+    // repli explicite lorsque l'amont omet celui de l'établissement.
+    const nafCandidate = etablissement.activite_principale ?? r.activite_principale;
+    const naf =
+      typeof nafCandidate === 'string' && nafCandidate.trim() !== ''
+        ? nafCandidate.trim()
+        : null;
+    // L'ADRESSE SUIT L'ÉTABLISSEMENT retenu : servir celle du siège pour un établissement
+    // secondaire ferait facturer à la mauvaise adresse, en silence. Si l'amont ne publie pas
+    // l'adresse de CET établissement, on rend `null` — on ne la remplace pas par celle du siège.
+    const address = addressOf(etablissement);
     const siren = officialSiren;
-    const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
+    const firstTva = Array.isArray(r.tva) ? r.tva[0] : r.tva;
+    const tva = typeof firstTva === 'string' && firstTva.trim() !== '' ? firstTva.trim() : null;
     // Fiche société COMPLÈTE (C24b) : nature_juridique (code INSEE, ex. 5710) + date_creation
     // (ISO) sont renvoyés par l'API réelle — on les remonte, mappés prudemment (code inconnu →
     // null, l'utilisateur choisit). PAS de dirigeants : minimisation RGPD, inutile pour facturer.
@@ -137,6 +177,9 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
       // L'algorithme de clé ne prouve pas qu'un numéro a été attribué. On conserve uniquement
       // la valeur réellement renvoyée par la source officielle ; absence = null.
       tvaIntracom: tva,
+      // Un établissement FERMÉ n'est pas refusé (ce serait indiscernable d'un « introuvable »)
+      // mais il est NOMMÉ, pour que l'appelant avertisse avant d'en faire un client.
+      etatAdministratif: etatAdministratifOf(etablissement),
       rge: Boolean(r.complements?.est_rge),
     };
 
@@ -151,6 +194,63 @@ function nowMs(): number {
   return new Date().getTime();
 }
 
+function digitsOf(raw: unknown): string {
+  return typeof raw === 'string' ? raw.replace(/\s/gu, '') : '';
+}
+
+/** Adresse d'un établissement quelconque (siège ou secondaire) — même forme amont, même lecture. */
+function addressOf(e: RechercheEntreprisesEtablissement): { line1: string; zip: string; city: string } | null {
+  const zip = typeof e.code_postal === 'string' ? e.code_postal.trim() : '';
+  const city = typeof e.libelle_commune === 'string' ? e.libelle_commune.trim() : '';
+  if (!zip || !city) return null;
+  const structured = [e.numero_voie, e.type_voie, e.libelle_voie]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .join(' ')
+    .trim();
+  // Le siège publie les champs de voie structurés ; `matching_etablissements`, NON — il ne donne
+  // que `adresse`, une chaîne qui contient DÉJÀ le code postal et la commune. La recopier telle
+  // quelle dans line1 imprimerait « 280 RUE DE PARIS 93100 MONTREUIL » PUIS « 93100 MONTREUIL »
+  // sur la facture : on retire le suffixe redondant.
+  const line1 =
+    structured ||
+    withoutZipCity(typeof e.adresse === 'string' ? e.adresse : '', zip, city);
+  // Un code postal et une commune ne constituent pas une adresse de facturation. Retourner une
+  // line1 vide ferait passer une adresse incomplète pour une adresse officielle disponible.
+  if (!line1) return null;
+  return { line1, zip, city };
+}
+
+/** Retire le « <cp> <commune> » final d'une adresse à plat, sans rien inventer si absent. */
+function withoutZipCity(adresse: string, zip: string, city: string): string {
+  const raw = adresse.replace(/\s+/gu, ' ').trim();
+  const suffix = `${zip} ${city}`;
+  return raw.toUpperCase().endsWith(suffix.toUpperCase()) ? raw.slice(0, raw.length - suffix.length).trim() : raw;
+}
+
+/** 'A' actif · 'F' fermé · null si la source ne le dit pas (on n'invente pas un état). */
+function etatAdministratifOf(e: RechercheEntreprisesEtablissement): 'A' | 'F' | null {
+  return e.etat_administratif === 'A' || e.etat_administratif === 'F' ? e.etat_administratif : null;
+}
+
+/**
+ * Établissement tel que publié par l'amont. Le siège et les `matching_etablissements` partagent
+ * la MÊME forme : c'est ce qui permet de faire suivre l'adresse et l'état à l'établissement
+ * réellement demandé, sans code dupliqué.
+ */
+interface RechercheEntreprisesEtablissement {
+  siret?: string;
+  adresse?: string;
+  code_postal?: string;
+  libelle_commune?: string;
+  numero_voie?: string;
+  type_voie?: string;
+  libelle_voie?: string;
+  /** Activité principale de CET établissement, distincte de celle de l'unité légale. */
+  activite_principale?: string;
+  /** 'A' = actif · 'F' = fermé. */
+  etat_administratif?: string;
+}
+
 interface RechercheEntreprisesResponse {
   results?: Array<{
     siren?: string;
@@ -161,14 +261,11 @@ interface RechercheEntreprisesResponse {
     date_creation?: string;
     tva?: string[] | string | null;
     complements?: { est_rge?: boolean };
-    siege?: {
-      siret?: string;
-      adresse?: string;
-      code_postal?: string;
-      libelle_commune?: string;
-      numero_voie?: string;
-      type_voie?: string;
-      libelle_voie?: string;
-    };
+    siege?: RechercheEntreprisesEtablissement;
+    /**
+     * Établissements correspondant à la requête. C'est ICI que l'amont place un SIRET
+     * d'établissement SECONDAIRE : le champ était reçu et jamais lu, d'où le 404.
+     */
+    matching_etablissements?: RechercheEntreprisesEtablissement[];
   }>;
 }

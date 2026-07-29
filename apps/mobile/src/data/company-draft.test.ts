@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CompanyLookupResult } from '@bob/core';
-import { registerInputFromLookup } from './company-draft';
+import type { Session } from '@supabase/supabase-js';
+import { readCompanySnapshot, registerInputFromLookup } from './company-draft';
 
 const lookup: CompanyLookupResult = {
   siren: '552100554',
@@ -13,6 +14,7 @@ const lookup: CompanyLookupResult = {
   dateCreation: '2024-01-01',
   address: { line1: '1 rue Réelle', zip: '75001', city: 'Paris' },
   tvaIntracom: null,
+  etatAdministratif: 'A',
   rge: false,
 };
 
@@ -34,5 +36,40 @@ describe('registerInputFromLookup', () => {
     const input = registerInputFromLookup({ ...lookup, natureJuridiqueCode: null }, 'EI', 'franchise');
     expect(input.natureJuridiqueCode).toBeUndefined();
     expect(input.estRge).toBe(false);
+  });
+});
+
+describe('readCompanySnapshot', () => {
+  const sessionWith = (companySnapshot: unknown): Session =>
+    ({
+      user: { user_metadata: { company_snapshot: companySnapshot } },
+    }) as unknown as Session;
+
+  it('conserve le F courant du snapshot sans transformer une absence en actif', () => {
+    expect(
+      readCompanySnapshot(sessionWith({ ...lookup, etatAdministratif: 'F' }))
+        ?.etatAdministratif,
+    ).toBe('F');
+    expect(
+      readCompanySnapshot(
+        sessionWith(
+          Object.fromEntries(
+            Object.entries(lookup).filter(([key]) => key !== 'etatAdministratif'),
+          ),
+        ),
+      )?.etatAdministratif,
+    ).toBeNull();
+  });
+
+  it('rejette le C d unité légale et toute identité SIREN SIRET incohérente', () => {
+    expect(
+      readCompanySnapshot(sessionWith({ ...lookup, etatAdministratif: 'C' }))
+        ?.etatAdministratif,
+    ).toBeNull();
+    expect(
+      readCompanySnapshot(
+        sessionWith({ ...lookup, siren: '732829320', siret: '45132133501021' }),
+      ),
+    ).toBeNull();
   });
 });

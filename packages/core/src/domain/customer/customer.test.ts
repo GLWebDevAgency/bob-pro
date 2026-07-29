@@ -25,6 +25,53 @@ describe('Customer', () => {
     });
   });
 
+  it('conserve le SIRET de l établissement et en extrait le SIREN quand il est seul', () => {
+    const result = Customer.of({
+      ...base,
+      type: 'b2b',
+      name: 'CARREFOUR',
+      siret: '4513 2133 501021',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.siret).toBe('45132133501021');
+      expect(result.value.siren).toBe('451321335');
+    }
+  });
+
+  it('refuse un SIRET invalide ou incohérent avec le SIREN', () => {
+    expect(
+      Customer.of({
+        ...base,
+        type: 'b2b',
+        name: 'CARREFOUR',
+        siret: '45132133501020',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'VALIDATION', field: 'siret' } });
+
+    expect(
+      Customer.of({
+        ...base,
+        type: 'b2b',
+        name: 'CARREFOUR',
+        siren: '732829320',
+        siret: '45132133501021',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'VALIDATION', field: 'siret' } });
+  });
+
+  it('un SIRET seul fournit le SIREN nécessaire à la TVA française', () => {
+    const result = Customer.of({
+      ...base,
+      type: 'b2b',
+      name: 'Mercier Plomberie',
+      siret: '73282932000074',
+      tvaIntracom: 'FR44732829320',
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.tvaIntracom).toBe('FR44732829320');
+  });
+
   it('b2b exige un SIREN pour e-invoice', () => {
     const r = Customer.of({ ...base, type: 'b2b', name: 'Durand SARL' });
     if (r.ok) expect(r.value.requiresSirenForEinvoice()).toBe(true);

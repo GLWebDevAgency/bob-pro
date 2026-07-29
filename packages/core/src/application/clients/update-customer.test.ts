@@ -53,6 +53,7 @@ describe('UpdateCustomer', () => {
       type: 'b2b',
       name: 'Durand SARL',
       siren: '732829320',
+      siret: '73282932000074',
       contactName: 'Julie Durand',
       email: 'julie@durand.fr',
       phone: '0612345678',
@@ -64,6 +65,7 @@ describe('UpdateCustomer', () => {
     expect(saved?.name).toBe('Durand SARL');
     expect(saved?.type).toBe('b2b');
     expect(saved?.siren).toBe('732829320');
+    expect(saved?.siret).toBe('73282932000074');
     expect(saved?.contactName).toBe('Julie Durand');
     expect(saved?.toProps().address).toEqual({ line1: '2 rue B', zip: '75002', city: 'Paris' });
   });

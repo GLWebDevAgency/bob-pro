@@ -577,6 +577,9 @@ model Customer {
   type                     CustomerType
   name                     String
   siren                    String?           @db.Char(9)
+  /// Établissement facturé (14 chiffres). NULL = inconnu, jamais dérivé du SIREN.
+  /// Les CHECK SQL de forme et de cohérence vivent dans customer_siret_expand.
+  siret                    String?           @db.Char(14)
   /// N° TVA français réellement saisi/confirmé. Jamais calculé depuis le SIREN.
   tvaIntracom              String?
   isInternational          Boolean           @default(false)

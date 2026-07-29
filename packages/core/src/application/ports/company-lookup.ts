@@ -4,6 +4,11 @@ import { type Address } from '../../shared-kernel/contact';
 /** Profil entreprise renvoyé par une recherche SIRET (sources Open Data FR). */
 export interface CompanyLookupResult {
   siren: string;
+  /**
+   * SIRET de l'établissement RÉELLEMENT demandé — siège OU établissement secondaire.
+   * Jamais un repli sur le siège : l'appelant a saisi un établissement précis, on lui rend
+   * celui-là ou rien.
+   */
   siret: string;
   denomination: string;
   nafApe: string | null;
@@ -15,9 +20,26 @@ export interface CompanyLookupResult {
   legalForm: LegalForm | null;
   /** Date de création de l'entreprise (ISO yyyy-mm-dd) — null si absente de la source. */
   dateCreation: string | null;
+  /**
+   * Adresse de l'ÉTABLISSEMENT identifié par `siret`, jamais celle du siège par défaut :
+   * facturer un établissement secondaire à l'adresse du siège est une erreur d'adressage.
+   * `null` = la source ne publie pas d'adresse pour CET établissement (on le dit, on ne
+   * sert pas celle du siège en la faisant passer pour la bonne).
+   */
   address: Address | null;
   /** N° TVA intracom réellement renvoyé par la source ; null si elle ne le fournit pas. */
   tvaIntracom: string | null;
+  /**
+   * État administratif de l'établissement retenu, tel que l'annuaire le déclare :
+   * 'A' = actif · 'F' = fermé · null = la source ne le dit pas.
+   *
+   * On le REMONTE au lieu de refuser l'établissement : un établissement fermé reste
+   * légitimement facturable (facture finale, avoir, litige) et le refuser serait
+   * indiscernable d'un « introuvable ». En contrepartie, l'appelant DOIT avertir avant
+   * d'enregistrer un client sur un établissement 'F' — un fermé présenté comme valide
+   * serait un piège comptable.
+   */
+  etatAdministratif: 'A' | 'F' | null;
   /** Qualification RGE active (utile Pack BTP). */
   rge: boolean;
 }

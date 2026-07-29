@@ -1611,6 +1611,7 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       name: 'SARL Nguyen',
       type: 'b2b' as const,
       siren: '732829320',
+      siret: '73282932000074',
       tvaIntracom: 'FR44732829320',
       contactName: 'Mme Nguyen',
       address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
@@ -1664,6 +1665,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
         {
           ...item,
           tvaIntracom: null,
+          siret: null,
+          requiresPurchaseOrder: false,
           paymentTerms: null,
           billingChannel: null,
           isInternational: false,
@@ -1704,6 +1707,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       isInternational: false,
       paymentTermsLabel: null,
       isSubcontractingBtp: false,
+      siret: '13002526500013',
+      requiresPurchaseOrder: true,
     };
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify([rich]), { headers: { 'content-type': 'application/json' } })));
@@ -1722,6 +1727,47 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       const result = await failing.listCustomers();
       expect(result.ok).toBe(false);
     }
+  });
+
+  it('listCustomers refuse un SIRET difforme au lieu de perdre l établissement', async () => {
+    const item = {
+      id: 'cust-42',
+      name: 'CARREFOUR HYPERMARCHES',
+      type: 'b2b',
+      address: { line1: '280 RUE DE PARIS', zip: '93100', city: 'MONTREUIL' },
+      contactName: null,
+      score: null,
+      scoreBand: null,
+      scoreStatus: 'model_not_ratified',
+      grossReceivableCents: 0,
+      issuedCreditCents: 0,
+      outstandingCents: 0,
+      customerCreditCents: 0,
+      siren: '451321335',
+      siret: '4513213350102',
+      avgDelayDays: null,
+      paidOnTimeRatio: null,
+      paymentHistoryStatus: 'insufficient_history',
+      settledInvoiceCount: 0,
+      email: null,
+      phone: null,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify([item]), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+    await expect(client.listCustomers()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it.each([
@@ -1859,6 +1905,93 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     expect(device.ok && device.value).toEqual({ status: 'bound' });
     const revoked = await client.unregisterDevice({ expoPushToken: 'ExponentPushToken[abc]' });
     expect(revoked).toEqual({ ok: true, value: { unregistered: true } });
+  });
+
+  it('lookupCompany décode strictement l établissement et normalise uniquement l état absent N-1', async () => {
+    const payload = {
+      siren: '451321335',
+      siret: '45132133501021',
+      denomination: 'CARREFOUR HYPERMARCHES',
+      nafApe: '68.20B',
+      trade: null,
+      natureJuridiqueCode: '5710',
+      legalForm: 'SAS',
+      dateCreation: '2000-01-03',
+      address: { line1: '280 RUE DE PARIS', zip: '93100', city: 'MONTREUIL' },
+      tvaIntracom: 'FR90451321335',
+      rge: false,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(payload), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    await expect(client.lookupCompany(payload.siret)).resolves.toEqual({
+      ok: true,
+      value: { ...payload, etatAdministratif: null },
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ ...payload, etatAdministratif: 'F' }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    await expect(client.lookupCompany(payload.siret)).resolves.toMatchObject({
+      ok: true,
+      value: { siret: payload.siret, etatAdministratif: 'F' },
+    });
+  });
+
+  it.each([
+    ['SIRET incohérent', { siret: '73282932000074' }],
+    ['état établissement inconnu', { etatAdministratif: 'C' }],
+    ['adresse sans voie', { address: { line1: '', zip: '93100', city: 'MONTREUIL' } }],
+    ['date impossible', { dateCreation: '2026-02-30' }],
+    ['champ inattendu', { statutCommercial: 'ouvert' }],
+  ])('lookupCompany refuse un contrat Bob malformé : %s', async (_label, override) => {
+    const payload = {
+      siren: '451321335',
+      siret: '45132133501021',
+      denomination: 'CARREFOUR HYPERMARCHES',
+      nafApe: '68.20B',
+      trade: null,
+      natureJuridiqueCode: '5710',
+      legalForm: 'SAS',
+      dateCreation: '2000-01-03',
+      address: { line1: '280 RUE DE PARIS', zip: '93100', city: 'MONTREUIL' },
+      tvaIntracom: 'FR90451321335',
+      etatAdministratif: 'A',
+      rge: false,
+      ...override,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(payload), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    await expect(client.lookupCompany('45132133501021')).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it('C24b : registerCompany → POST /onboarding/company, id décidé par le serveur (jamais envoyé)', async () => {

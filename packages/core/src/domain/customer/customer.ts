@@ -3,7 +3,7 @@ import { type Address } from '../../shared-kernel/contact';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { validateProPaymentTermsCeiling } from '../services/payment-terms-legal';
 import { validateFrenchVatId } from '../../shared-kernel/french-vat-id';
-import { Siren } from '../../shared-kernel/identifiers';
+import { Siren, Siret } from '../../shared-kernel/identifiers';
 import { hasAsciiControlCharacter } from '../../shared-kernel/control-characters';
 
 const UNICODE_CONTROL_CHARACTER = /\p{Cc}/u;
@@ -111,6 +111,11 @@ export interface CustomerProps {
   type: CustomerType;
   name: string;
   siren?: string;
+  /**
+   * Établissement facturé (SIRET, 14 chiffres). Absent = inconnu ; jamais dérivé du SIREN.
+   * Lorsqu'il est fourni seul, son préfixe arithmétique permet d'extraire le SIREN.
+   */
+  siret?: string;
   /** N° TVA français réellement fourni par le client/annuaire. Jamais dérivé du SIREN. */
   tvaIntracom?: string;
   address: Address;
@@ -178,6 +183,22 @@ export class Customer {
       if (!parsedSiren.ok) return parsedSiren;
       siren = parsedSiren.value.value;
     }
+    let siret: string | undefined;
+    if (p.siret !== undefined) {
+      const parsedSiret = Siret.of(p.siret);
+      if (!parsedSiret.ok) return parsedSiret;
+      siret = parsedSiret.value.value;
+      if (siren !== undefined && !siret.startsWith(siren)) {
+        return err({
+          code: 'VALIDATION',
+          field: 'siret',
+          message: 'Le SIRET et le SIREN de ce client ne concordent pas.',
+        });
+      }
+      // Le SIREN est la partie arithmétique de 9 chiffres du SIRET : extraction, pas déduction
+      // depuis une adresse ou un libellé.
+      siren ??= parsedSiret.value.siren().value;
+    }
     let tvaIntracom: string | undefined;
     if (p.tvaIntracom !== undefined) {
       if (siren === undefined) {
@@ -229,6 +250,7 @@ export class Customer {
       name,
       address: { ...p.address },
       ...(siren !== undefined ? { siren } : {}),
+      ...(siret !== undefined ? { siret } : {}),
       ...(tvaIntracom !== undefined ? { tvaIntracom } : {}),
       ...(email !== undefined ? { email } : {}),
       ...(p.phone !== undefined ? { phone: p.phone } : {}),
@@ -259,6 +281,9 @@ export class Customer {
   }
   get siren(): string | undefined {
     return this.p.siren;
+  }
+  get siret(): string | undefined {
+    return this.p.siret;
   }
   get tvaIntracom(): string | undefined {
     return this.p.tvaIntracom;

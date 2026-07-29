@@ -270,6 +270,7 @@ describe('customer mappers — aucune métrique synthétique persistée', () => 
     type: 'b2b',
     name: 'Client réel',
     siren: '732829320',
+    siret: null,
     tvaIntracom: null,
     isInternational: false,
     addrLine1: '1 rue du Test',
@@ -310,6 +311,19 @@ describe('customer mappers — aucune métrique synthétique persistée', () => 
     expect(data).not.toHaveProperty('score');
     expect(data).not.toHaveProperty('avgDelayDays');
     expect(data).not.toHaveProperty('outstanding');
+  });
+
+  it('conserve le SIRET de l établissement et dégrade son absence en NULL honnête', () => {
+    const withSiret = customerRowToProps({
+      ...row,
+      siren: '451321335',
+      siret: '45132133501021',
+    });
+    expect(withSiret.siret).toBe('45132133501021');
+    expect(customerPropsToCreate(withSiret).siret).toBe('45132133501021');
+
+    expect(customerRowToProps(row).siret).toBeUndefined();
+    expect(customerPropsToCreate(customerRowToProps(row)).siret).toBeNull();
   });
 });
 
@@ -461,6 +475,7 @@ describe('B4/canal — customer mappers : conditions de paiement + canal de fact
     type: 'b2b',
     name: 'Boulangerie Lefèvre',
     siren: '402118558',
+    siret: null,
     tvaIntracom: null,
     isInternational: false,
     addrLine1: '3 place du Marché',

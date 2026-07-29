@@ -245,6 +245,7 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'type',
   'name',
   'siren',
+  'siret',
   'tvaIntracom',
   'address',
   'email',
@@ -666,6 +667,7 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
     typeof body.address.zip !== 'string' ||
     typeof body.address.city !== 'string' ||
     !validOptionalString(body.siren) ||
+    !validOptionalString(body.siret) ||
     !validOptionalString(body.tvaIntracom) ||
     !validOptionalString(body.email) ||
     !validOptionalString(body.phone) ||
@@ -747,6 +749,7 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
       city: body.address.city,
     },
     ...(body.siren !== undefined ? { siren: body.siren as string } : {}),
+    ...(body.siret !== undefined ? { siret: body.siret as string } : {}),
     ...(body.tvaIntracom !== undefined ? { tvaIntracom: body.tvaIntracom as string } : {}),
     ...(body.email !== undefined ? { email: body.email as string } : {}),
     ...(body.phone !== undefined ? { phone: body.phone as string } : {}),

@@ -291,6 +291,7 @@ export function companyPropsToCreate(p: CompanyProps) {
 
 interface CustomerRow {
   id: string; companyId: string; type: string; name: string; siren: string | null; isInternational: boolean;
+  siret: string | null;
   tvaIntracom: string | null;
   addrLine1: string; addrZip: string; addrCity: string; email: string | null; phone: string | null;
   contactName: string | null;
@@ -321,6 +322,7 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
     isSubcontractingBtp: row.isSubcontractingBtp,
   };
   if (row.siren) props.siren = row.siren;
+  if (row.siret?.trim()) props.siret = row.siret.trim();
   if (row.tvaIntracom) props.tvaIntracom = row.tvaIntracom;
   if (row.email) props.email = row.email;
   if (row.phone) props.phone = row.phone;
@@ -365,6 +367,7 @@ export function customerPropsToCreate(p: CustomerProps) {
     type: p.type,
     name: p.name,
     siren: p.siren ?? null,
+    siret: p.siret ?? null,
     tvaIntracom: p.tvaIntracom ?? null,
     isInternational: p.isInternational ?? false,
     addrLine1: p.address.line1,
