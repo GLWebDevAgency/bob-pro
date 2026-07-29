@@ -53,8 +53,12 @@ ligne sans owner nommé ne peut pas passer à `Decision-ready`.
 ## Mise à jour du registre
 
 - Toute transition de statut indique date, décideurs, lien vers preuve et résultat dans cette table.
-- Le caractère optionnel de D08 limite son blocage à WP-0307/G20 ; son statut suit néanmoins le
-  même cycle que les autres décisions et le programme conserve son fallback opaque.
+- **(amendé A9 · 2026-07-29)** Le caractère optionnel de D08 limite son blocage à WP-0307/G20 ; son
+  statut suit néanmoins le même cycle que les autres décisions, et si D08 est rejetée le programme
+  **livre quand même sa matière nominale** — la surface teintée, mode sans flou. Ce n'est pas un
+  repli : c'est le rang 1 de l'algorithme de surface.
+  *Rédaction initiale (supersédée) : « le programme conserve son fallback opaque » — formulation
+  d'avant A1, où l'opaque était le dernier recours et non le défaut.*
 - Un ADR `Accepted` n'est pas réécrit pour changer sa décision. Un nouvel ADR le supersède en liant
   l'ancien et en expliquant la migration.
 - Après implémentation, le statut d'implémentation et le [registre de preuves](../18-evidence-register.md)

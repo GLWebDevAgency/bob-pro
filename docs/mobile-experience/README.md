@@ -1,7 +1,7 @@
 # Programme d'excellence de l'expérience mobile Bob
 
 > Statut : **Proposed — dossier de conception, aucun code associé**
-> Dernière mise à jour : 2026-07-29 (amendements A1 → A8, voir § Journal des amendements)
+> Dernière mise à jour : 2026-07-29 (amendements A1 → A9, voir § Journal des amendements)
 > Périmètre : application mobile Expo/React Native Bob Pro
 > Audience : produit, design, mobile, QA, accessibilité, contenu, sécurité et direction
 
@@ -22,6 +22,7 @@ inchangée.
 | **A6** | 2026-07-29 | **Cohérence de gouvernance** : propagation d'A1 → A5 dans les registres (décisions, risques, traçabilité, backlog, DoD, tests, baseline, roadmap) sans changer la machine. | Amendements A1 → A5. | [00](00-audit-baseline.md), [02](02-roadmap.md), [11](11-test-strategy.md), [12](12-definition-of-done.md), [14](14-risk-register.md), [15](15-traceability-matrix.md), [16](16-implementation-backlog.md), [18](18-evidence-register.md), [adr/README](adr/README.md), ce fichier |
 | **A7** | 2026-07-29 | **Fait de dépendance corrigé** : A3 affirmait que Reanimated **et** Gesture Handler étaient « installés mais importés nulle part ». Vérification faite, Gesture Handler est **déjà utilisé** (root provider + deux `Swipeable`) — l'affirmation recréait la contradiction avec [09](09-technical-architecture.md) qu'elle prétendait lever ; et Reanimated, déclaré depuis `251271dc`, n'est plus « transitif ». Une roadmap normative ne s'appuie pas sur un état de dépendances faux. | Lecture directe de `apps/mobile/package.json`, de `pnpm-lock.yaml` et des imports de `apps/mobile` / `packages/ui/src` au commit `251271dc` (2026-07-28), postérieur au snapshot `2515ddf3`. | [00](00-audit-baseline.md), [04](04-navigation-scroll-surfaces.md), [09](09-technical-architecture.md), [14](14-risk-register.md), [UX-ADR-001](adr/UX-ADR-001-motion-runtime.md), [UX-ADR-002](adr/UX-ADR-002-navigation-surfaces.md), ce fichier |
 | **A8** | 2026-07-29 | **Le sixième comportement est exigé, pas seulement spécifié** : [04](04-navigation-scroll-surfaces.md) définissait SIX comportements normatifs de tab bar, la gouvernance n'en exigeait que CINQ — et l'omis, la teinte pilotée par le highlight, est justement l'**EFFET** que nomme la directive. Ce qui n'est pas exigé n'est pas construit. Six exigés en bloc, deux preuves ajoutées (contraste échantillonné le long de l'interpolation, Reduced Motion sans course), `R42` ajouté. | Directive du fondateur (« FONCTIONNALITÉ, **COMPORTEMENT et EFFET** ») ; [04 § 6](04-navigation-scroll-surfaces.md#6-teinte-icônelabel-pilotée-par-le-highlight-pas-par-le-focus) ; rôles certifiés AA de `bottom-tab-bar.logic.ts`. | [04](04-navigation-scroll-surfaces.md), [10](10-performance-observability.md), [14](14-risk-register.md), [15](15-traceability-matrix.md), [16](16-implementation-backlog.md), [18](18-evidence-register.md), [19](19-glossary.md), [adr/README](adr/README.md), [UX-ADR-002](adr/UX-ADR-002-navigation-surfaces.md), ce fichier |
+| **A9** | 2026-07-29 | **Repli opaque résiduel** : quatre prescriptions d'avant A1 survivaient — dont une dans l'ADR doctrinal lui-même, qui exigeait de « démontrer le fallback opaque » quand le point 6 du même ADR pose que Reduce Transparency n'a aucun effet et qu'il n'y a **pas** de fallback à déclencher. Depuis A1, l'opaque n'est plus un repli : la **surface teintée est le rang normal**. Le seul repli restant est celui de `ProgressiveBlurBob`, et il consiste à rendre ce rang 1. | Amendement A1 (algorithme de surface, rangs 0 → 3) ; kit livré `surfaceTint` / `BobSurface`. | [04](04-navigation-scroll-surfaces.md), [11](11-test-strategy.md), [adr/README](adr/README.md), [UX-ADR-004](adr/UX-ADR-004-adaptive-appearance.md), ce fichier |
 
 Ces amendements **ne modifient aucun code applicatif, n'ajoutent aucune dépendance et ne touchent
 aucun écran**. Ils ne changent ni le nombre d'exigences (77), ni les gates, ni les statuts, ni les
@@ -137,7 +138,7 @@ La mise à jour d'un owner nommé, d'un snapshot ou d'un statut se fait dans ce 
 l'en-tête du document au même changement. Le registre est l'autorité si un ancien export diverge.
 
 **Amendements du 2026-07-29.** Les documents 00, 01, 02, 03, 04, 08, 09, 10, 11, 12, 14, 15, 16, 17,
-18, 19, `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-004` portent en tête un encadré daté (A1 → A8) qui
+18, 19, `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-004` portent en tête un encadré daté (A1 → A9) qui
 nomme sa source et sa portée. La colonne « Dernière référence » ci-dessus reste valable : ces
 amendements n'actualisent **pas** le snapshot de code `2515ddf3` du corps historique — ils ajoutent
 une seconde référence, le kit « matière Bob » livré et testé, dont les chemins exacts sont listés

@@ -43,7 +43,12 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 - Route matrix exhaustive par rapport aux fichiers `app`.
 - Chaque clé de statut existe dans les trois personnalités.
 - Chaque motion intent possède une variante reduced.
-- Chaque surface adaptative possède fallback opaque.
+- **(amendé A9 · 2026-07-29)** Chaque surface est **opaque à la source** : son fond vient de
+  `surfaceTint`, jamais d'un `rgba` translucide ni d'une capability runtime. Le contrôle ne cherche
+  plus l'existence d'un fallback — il cherche l'existence d'un chemin **non opaque**, et échoue s'il
+  en trouve un. *Rédaction initiale 2026-07-23 (supersédée) : « Chaque surface adaptative possède
+  fallback opaque » — un test qui, depuis A1, validerait du code mort : une branche de repli
+  qu'aucune préférence ne peut atteindre.*
 - Chaque ID G/V/S/T apparaît dans la matrice de traçabilité.
 - Chaque ID possède exactement une ligne dans le registre de preuves ; `Verified` implique manifest,
   build, owner, reviewers et verdict admissible.

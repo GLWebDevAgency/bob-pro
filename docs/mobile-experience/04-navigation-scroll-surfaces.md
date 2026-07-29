@@ -553,6 +553,11 @@ compositions.
 - [ ] Sheets testées avec clavier, drag, focus et Reduce Motion.
 - [ ] Tabs testées retap, badge, safe area, rotation et restauration.
 - [ ] Scroll ne saute pas pendant collapse ou layout transition.
-- [ ] Matières possèdent fallback opaque et contraste vérifié.
+- [ ] **(amendé A9 · 2026-07-29)** Matières **opaques par construction** (`surfaceTint` /
+      `BobSurface`) et contraste vérifié. Aucune surface n'a de « fallback opaque » : l'opaque n'est
+      plus un repli, c'est le rang normal. Seule la retombée de bord en mode flouté doit démontrer
+      son repli — qui consiste à rendre cette même surface teintée.
+      *Rédaction initiale 2026-07-23 (supersédée) : « Matières possèdent fallback opaque et
+      contraste vérifié ».*
 - [ ] Layouts tablette et split view conservent toutes les actions.
 - [ ] Aucune route ne change de sens métier ou de contrat backend.

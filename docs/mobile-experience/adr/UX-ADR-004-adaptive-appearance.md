@@ -58,7 +58,14 @@ certification complète.
 - inventaire de chaque famille de surface et des ruptures StatusBar actuelles ;
 - comparaison chiffrée force-light durable vs thème sémantique complet ;
 - prototype de tokens canvas/content/chrome/status en clair, sombre et contraste augmenté ;
-- démonstration Reduce Transparency et fallback opaque sur surfaces candidates ;
+- **(amendé A9 · 2026-07-29)** démonstration Reduce Transparency montrant des captures
+  **identiques** avant/après — la preuve attendue est une **absence de différence**, pas le
+  déclenchement d'un repli. Il n'y a plus de « surfaces candidates » : la surface teintée du rang 1
+  s'applique partout, y compris au chrome. Le seul repli qui existe encore est celui de
+  `ProgressiveBlurBob` (rang 3), et il consiste à **rendre le rang 1** ;
+  *Rédaction initiale 2026-07-23 (supersédée) : « démonstration Reduce Transparency et fallback
+  opaque sur surfaces candidates » — contradictoire avec le point 6 de la décision ci-dessous, qui
+  pose que Reduce Transparency n'a aucun effet visuel et qu'il n'y a pas de fallback à déclencher.*
 - estimation QA/performance et décision Product/Design/Mobile/Accessibilité.
 
 ## Décision proposée
