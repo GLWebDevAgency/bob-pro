@@ -283,8 +283,23 @@ de commuter d'un coup.
 Assistant `navigation.assistantActive` `#4338CA`, **qui doit survivre à l'interpolation** (elle n'a
 aucun équivalent dans la référence). Nos icônes maison prennent déjà une prop `color` : elles se
 prêtent au double rendu sans modification. **Abandonné** : les teintes de chrome sombre de la
-référence, son `fontSize: 9.5` (notre label reste à 10 pt `font('meta')`, sous peine de passer sous
-le plancher de lisibilité en plein soleil) et SF Symbols (`expo-symbols`, inexistant sur Android).
+référence, son `fontSize: 9.5` — **(corrigé A13 · 2026-07-29)** notre label d'onglet reste à
+**10 pt**, valeur **livrée** : `font('meta')` (Hanken Grotesk 600) posé puis explicitement ramené
+par `fontSize: 10` dans `packages/ui/src/components/bottom-tab-bar.tsx` l. 94, en paire certifiée
+AA avec les rôles `navigation.*`. On ne la change pas pour ressembler à la référence — et
+SF Symbols (`expo-symbols`, inexistant sur Android).
+
+> *Rédaction A3 (fausse, supersédée par A13) : « notre label reste à 10 pt `font('meta')`, sous
+> peine de passer sous le plancher de lisibilité en plein soleil ». Deux faits faux. **Un**,
+> `font('meta')` ne vaut pas 10 pt : il résout `type.meta` = **12 pt** Hanken Grotesk 600
+> (`packages/tokens/src/index.ts` l. 147) ; le 10 pt vient d'un override explicite du composant, et
+> l'écrire autrement laisserait croire qu'on peut obtenir la taille du label en citant le token
+> seul. **Deux**, aucun « plancher de lisibilité » n'est défini par ce dossier, et le dépôt rend
+> déjà du 9,5 pt (`apps/mobile/src/components/PieceDetailView.tsx` l. 346) : la justification
+> invoquée était contredite par le code qu'elle prétendait protéger. Le motif réel du refus est
+> plus simple et vérifiable — nous avons **notre** valeur livrée et certifiée, la référence n'a pas
+> autorité sur notre typographie ([17 § Ligne de partage](17-references.md#autorités-normatives) :
+> on reprend le comportement, pas la matière).*
 
 **Ce que ce comportement exige en plus (ajouté A8 · 2026-07-29)** — parce qu'il est le seul à
 interpoler une **couleur** et non une géométrie :

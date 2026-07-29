@@ -9,6 +9,12 @@
 > `bob-surface.tsx`. Aucune exigence d'accessibilité n'est affaiblie : la garantie passe d'un
 > fallback à exercer à une propriété structurelle de la matière. Chemins exacts du kit :
 > [17 § Autorités normatives](17-references.md#autorités-normatives).
+>
+> **Amendement A13 — 2026-07-29** — § Apparence claire/sombre, prérequis du thème sombre complet.
+> La liste exigeait encore de tester le « blur/verre » : A1 a retiré le verre système de la
+> doctrine, il n'y a donc rien à tester de ce côté, et cette ligne était le dernier endroit du
+> dossier où le terme était **prescrit**. Aucun prérequis n'est retiré : la ligne devient
+> `surfaceTint.dark` + retombée de bord + scrims.
 
 ## Principe
 
@@ -86,9 +92,17 @@ claire. Le thème sombre complet nécessite :
 - contrastes recalculés ;
 - ombres remplacées/ajustées ;
 - images et PDF sur surfaces adaptées ;
-- blur/verre et scrims testés ;
+- **(amendé A13 · 2026-07-29)** `surfaceTint.dark` vérifié ton par ton, **retombée de bord** et
+  scrims testés sur fond sombre ;
 - clavier, alertes, modales et status/navigation bar cohérents ;
 - captures de chaque route prioritaire.
+
+> *Rédaction initiale 2026-07-23 (supersédée par A13) : « blur/verre et scrims testés ». Le verre
+> système n'est pas employé (§ Reduce Transparency, [04 § Matières](04-navigation-scroll-surfaces.md#matières),
+> [UX-ADR-004](adr/UX-ADR-004-adaptive-appearance.md)) : il n'y a rien à tester en sombre. Le seul
+> flou du produit est celui, optionnel, de la retombée de bord non interactive. La ligne restait
+> par ailleurs le dernier endroit du dossier où « verre » était **prescrit** au lieu d'être exclu —
+> ce qui rendait fausse l'affirmation du [19 — Glossaire](19-glossary.md).*
 
 ## StatusBar et barres système
 

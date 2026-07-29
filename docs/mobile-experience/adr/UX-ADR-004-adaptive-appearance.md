@@ -29,6 +29,10 @@ L'app déclare une apparence système automatique, mais les surfaces et la Statu
 un contrat clair/sombre complet. Les APIs blur/verre peuvent améliorer le chrome sur certains OS,
 mais ne sont pas disponibles uniformément et peuvent réduire contraste et performance.
 
+> **Note A13 · 2026-07-29.** Ce paragraphe décrit le contexte **du 2026-07-23**, avant décision. Il
+> n'autorise rien : depuis A1, le verre système est hors doctrine quelle que soit sa disponibilité
+> runtime (§ Algorithme de surface, rang 4, et § Pourquoi le verre système est exclu).
+
 ## Drivers
 
 - lisibilité immédiate des barres système ;
