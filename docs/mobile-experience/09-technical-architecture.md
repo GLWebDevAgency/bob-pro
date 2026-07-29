@@ -26,8 +26,8 @@ navigation dans le domaine et sans donner à la présentation une autorité mét
 | --- | --- | --- |
 | Expo / RN / Router | Déclarés et utilisés. | Conserver Expo Router comme façade de navigation. |
 | RN Animated | Utilisé dans plusieurs composants. | Migration progressive, pas réécriture big bang. |
-| Reanimated | Présent transitivement dans le lock, pas dépendance directe mobile. | `UX-ADR-001`. |
-| Gesture Handler | Déclaré et utilisé. | Réutiliser pour gestures autorisées. |
+| Reanimated | **(corrigé A7 · 2026-07-29)** **Déclaré directement** dans `apps/mobile` depuis `251271dc` (`react-native-reanimated` `4.5.0` + `react-native-worklets` `0.10.0`, prescrits par SDK 57), mais **importé par aucun fichier** de `apps/mobile` ni de `packages/ui/src`. Déclarer n'est pas adopter : le runtime reste à mettre en service. *Rédaction 2026-07-23, exacte au snapshot `2515ddf3`, supersédée par le fait : « présent transitivement dans le lock, pas dépendance directe mobile ».* | `UX-ADR-001`. |
+| Gesture Handler | Déclaré et utilisé. **(précisé A7 · 2026-07-29 : `^2.32.0` ; `GestureHandlerRootView` à la racine et deux `Swipeable` de contenu — aucun usage dans le chrome ni dans `packages/ui/src`.)** | Réutiliser pour gestures autorisées. |
 | Expo Haptics | Non déclaré directement. | Ajouter seulement après `UX-ADR-006` Accepted et certification acoustique. |
 | Expo Blur | Non déclaré directement. | **(amendé A1 · 2026-07-29)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. |
 | Expo Glass (`expo-glass-effect`) | Non déclaré directement. | **(amendé A1 · 2026-07-29)** **Ne sera pas adopté.** Hors doctrine « matière Bob » : le verre système impose la teinte de l'OS, pas la nôtre. Contrôle statique d'import à ajouter. |

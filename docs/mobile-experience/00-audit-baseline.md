@@ -62,7 +62,7 @@ de certification ni de promesse marketing.
 | B07 | `FadeIn` anime uniquement le montage, avec fade et 6 dp. | Les mises à jour et sorties restent instantanées. |
 | B08 | `Button` applique un scale press instantané ; `PressableScale` anime 90/150 ms. | Deux sensations tactiles concurrentes. |
 | B09 | Aucune dépendance directe `expo-haptics` n'est déclarée. | Aucun langage tactile cohérent. |
-| B10 | Reanimated n'est pas une dépendance mobile directe ni un runtime utilisé. | Layout/gestures interruptibles ne disposent pas encore d'un socle partagé. |
+| B10 | Reanimated n'est pas une dépendance mobile directe ni un runtime utilisé. **(corrigé A7 · 2026-07-29 : la première moitié n'est plus vraie — `251271dc` a déclaré `react-native-reanimated` `4.5.0` et `react-native-worklets` `0.10.0` dans `apps/mobile`, après le snapshot `2515ddf3`. La seconde reste vraie et porte le constat : aucun fichier ne les importe.)** | Layout/gestures interruptibles ne disposent pas encore d'un socle partagé. |
 | B11 | Blur, GlassEffect et Symbols ne sont pas déclarés. | Aucun usage actuel, donc aucune dette de fallback. **(amendé A1/A2 · 2026-07-29 : la décision n'est plus ouverte. GlassEffect et Symbols ne seront pas adoptés — matière système et glyphes iOS-only. Blur reste possible uniquement derrière le port `renderBlurLayer` de la retombée de bord, dont le défaut est sans flou. Cette absence de dépendance devient un actif, pas une lacune.)** |
 | B12 | Le thème expose des tailles fixes et des familles chargées par graisse. | Base typographique solide, mais adaptation extrême non prouvée. |
 | B13 | Peu de ScrollViews utilisent l'ajustement automatique des insets. | Chrome et contenu ne se comportent pas uniformément. |

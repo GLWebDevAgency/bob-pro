@@ -15,10 +15,15 @@
 > (« tous les onglets restant visibles et atteignables »). Native Tabs ne peut donc pas satisfaire
 > le comportement demandé ; l'option 2 (§ Options à prototyper de 04) devient non conforme, et
 > l'option hybride 3 avec elle.
-> **Dépendances révélées.** Le portage introduit `react-native-reanimated` et
-> `react-native-gesture-handler` dans le produit (installés, mais importés nulle part à ce jour) et
-> exige `expo-haptics` (absent de `apps/mobile/package.json`). Aucune n'est ajoutée par cet
-> amendement : elles restent conditionnées à `UX-ADR-001` et `UX-ADR-006`.
+> **Dépendances révélées — corrigé A7 · 2026-07-29** (vérifié dans `apps/mobile/package.json`).
+> `react-native-reanimated` `4.5.0` et `react-native-worklets` `0.10.0` sont **déclarés mais
+> importés nulle part** : le portage en est le premier usage réel. `react-native-gesture-handler`
+> `^2.32.0` est déclaré **et déjà utilisé** — `GestureHandlerRootView` à la racine et deux
+> `Swipeable` de contenu ; le portage étend son usage au **chrome**, il ne l'introduit pas. Seul
+> `expo-haptics` est réellement **absent**. Aucune dépendance n'est ajoutée par cet amendement :
+> elles restent conditionnées à `UX-ADR-001` et `UX-ADR-006`.
+> *Rédaction A3 (fausse, supersédée) : « installés, mais importés nulle part à ce jour », affirmé
+> des deux bibliothèques à la fois.*
 
 ## Statut
 

@@ -272,12 +272,31 @@ Ce que la référence fait bien et qu'on reprend tel quel : le calcul de safe ar
 
 1. Ces comportements sont livrés par le **nouveau** composant. La `BottomTabBar` existante n'est ni
    restylée ni supprimée tant que la refonte visuelle est reportée (directive 5 du fondateur).
-2. Ce portage introduit **`react-native-reanimated` et `react-native-gesture-handler` dans le
-   produit** : les deux sont installés (4.5.0 et 2.32.0) mais **aucun fichier de `apps/mobile` ni
-   de `packages/ui/src` ne les importe** à ce jour — tout le motion actuel est en `Animated` RN
-   avec `useNativeDriver`. Il exige aussi `expo-haptics`, **absent** de
-   `apps/mobile/package.json`. Ces trois faits relèvent de `UX-ADR-001`, `UX-ADR-002` et
-   `UX-ADR-006` : aucune dépendance n'est ajoutée par le présent document.
+2. **(corrigé A7 · 2026-07-29 — vérifié dans `apps/mobile/package.json`)** Les deux bibliothèques du
+   portage n'ont **pas** le même statut, et A3 les avait mises à tort dans le même sac :
+   - `react-native-reanimated` **`4.5.0`** et son runtime `react-native-worklets` **`0.10.0`** sont
+     **déclarés** dans `apps/mobile/package.json` — ajoutés le 2026-07-28 par `251271dc`
+     (« prescrits par SDK 57 »), donc **après** le snapshot `2515ddf3` du dossier — mais
+     **importés par aucun fichier** de `apps/mobile` ni de `packages/ui/src`. Le portage en est le
+     **premier usage réel** : c'est un runtime à mettre en service, pas une dépendance à ajouter.
+   - `react-native-gesture-handler` **`^2.32.0`** est déclaré **et déjà utilisé** : le
+     `GestureHandlerRootView` est monté à la racine (`apps/mobile/app/_layout.tsx`) et deux écrans
+     consomment `Swipeable` (`app/catalogue.tsx`, `src/components/PieceDetailView.tsx`). Le portage
+     **n'introduit pas** cette dépendance ; il étend son usage au **chrome** (`Race(pan, tap)`,
+     § 3), là où elle ne servait qu'au contenu — ce qui déplace le risque du « premier build natif »
+     vers le **conflit de gestes** avec les `Swipeable` existants et le scroll (`R40`).
+   - Reste **une seule** dépendance réellement absente : `expo-haptics`, introuvable dans tous les
+     `package.json` du dépôt.
+
+   Tout le motion actuel reste en `Animated` RN avec `useNativeDriver`. Ces faits relèvent de
+   `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-006` : aucune dépendance n'est ajoutée par le présent
+   document.
+
+   *Rédaction A3 (fausse, supersédée) : « les deux sont installés (4.5.0 et 2.32.0) mais aucun
+   fichier de `apps/mobile` ni de `packages/ui/src` ne les importe ». Gesture Handler est importé
+   depuis `75de6545`, ce que
+   [09 § État de dépendances observé](09-technical-architecture.md#état-de-dépendances-observé)
+   disait déjà correctement — l'amendement recréait donc la contradiction qu'il prétendait lever.*
 3. Aucune valeur ci-dessus n'est un « réglage » d'un token existant : les deux ressorts nécessaires
    sont des **ajouts** au kit, spécifiés dans
    [03 — Motion](03-motion-interaction-system.md#ajouts-nécessaires-au-portage-de-la-tab-bar).

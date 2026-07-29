@@ -1,7 +1,7 @@
 # Programme d'excellence de l'expérience mobile Bob
 
 > Statut : **Proposed — dossier de conception, aucun code associé**
-> Dernière mise à jour : 2026-07-29 (amendements A1 → A5, voir § Journal des amendements)
+> Dernière mise à jour : 2026-07-29 (amendements A1 → A7, voir § Journal des amendements)
 > Périmètre : application mobile Expo/React Native Bob Pro
 > Audience : produit, design, mobile, QA, accessibilité, contenu, sécurité et direction
 
@@ -20,6 +20,7 @@ inchangée.
 | **A4** | 2026-07-29 | **Autorités normatives** : ni les deux références du fondateur, ni le kit livré n'étaient cités. Bibliographie à deux étages, l'externe subordonné à l'interne, avec la ligne de partage comportement/matière. | Directives 1 et 3 du fondateur ; inventaire du kit livré. | [17](17-references.md) |
 | **A5** | 2026-07-29 | **Collision de tokens** : le document définissait un système `motion.*` concurrent de l'export public `motion` et proposait des valeurs de press qui auraient restylé l'existant. Le dossier devient explicitement additif. | Kit livré `packages/tokens` (`motion`, `motionSemantic`), `packages/ui` (`button.logic.ts`, `pressable-scale.logic.ts`) ; directive 5 du fondateur. | [03](03-motion-interaction-system.md) |
 | **A6** | 2026-07-29 | **Cohérence de gouvernance** : propagation d'A1 → A5 dans les registres (décisions, risques, traçabilité, backlog, DoD, tests, baseline, roadmap) sans changer la machine. | Amendements A1 → A5. | [00](00-audit-baseline.md), [02](02-roadmap.md), [11](11-test-strategy.md), [12](12-definition-of-done.md), [14](14-risk-register.md), [15](15-traceability-matrix.md), [16](16-implementation-backlog.md), [18](18-evidence-register.md), [adr/README](adr/README.md), ce fichier |
+| **A7** | 2026-07-29 | **Fait de dépendance corrigé** : A3 affirmait que Reanimated **et** Gesture Handler étaient « installés mais importés nulle part ». Vérification faite, Gesture Handler est **déjà utilisé** (root provider + deux `Swipeable`) — l'affirmation recréait la contradiction avec [09](09-technical-architecture.md) qu'elle prétendait lever ; et Reanimated, déclaré depuis `251271dc`, n'est plus « transitif ». Une roadmap normative ne s'appuie pas sur un état de dépendances faux. | Lecture directe de `apps/mobile/package.json`, de `pnpm-lock.yaml` et des imports de `apps/mobile` / `packages/ui/src` au commit `251271dc` (2026-07-28), postérieur au snapshot `2515ddf3`. | [00](00-audit-baseline.md), [04](04-navigation-scroll-surfaces.md), [09](09-technical-architecture.md), [14](14-risk-register.md), [UX-ADR-001](adr/UX-ADR-001-motion-runtime.md), [UX-ADR-002](adr/UX-ADR-002-navigation-surfaces.md), ce fichier |
 
 Ces amendements **ne modifient aucun code applicatif, n'ajoutent aucune dépendance et ne touchent
 aucun écran**. Ils ne changent ni le nombre d'exigences (77), ni les gates, ni les statuts, ni les
@@ -135,12 +136,19 @@ La mise à jour d'un owner nommé, d'un snapshot ou d'un statut se fait dans ce 
 l'en-tête du document au même changement. Le registre est l'autorité si un ancien export diverge.
 
 **Amendements du 2026-07-29.** Les documents 00, 01, 02, 03, 04, 08, 09, 10, 11, 12, 14, 15, 16, 17,
-18, 19, `UX-ADR-002` et `UX-ADR-004` portent en tête un encadré daté (A1 → A6) qui nomme sa source
-et sa portée. La colonne « Dernière référence » ci-dessus reste valable : ces amendements
-n'actualisent **pas** le snapshot de code `2515ddf3` du corps historique — ils ajoutent une seconde
-référence, le kit « matière Bob » livré et testé, dont les chemins exacts sont listés dans
-[17 § Autorités normatives](17-references.md#autorités-normatives). Aucun owner n'est affecté par
-ces amendements : toutes les lignes restent **à affecter**.
+18, 19, `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-004` portent en tête un encadré daté (A1 → A7) qui
+nomme sa source et sa portée. La colonne « Dernière référence » ci-dessus reste valable : ces
+amendements n'actualisent **pas** le snapshot de code `2515ddf3` du corps historique — ils ajoutent
+une seconde référence, le kit « matière Bob » livré et testé, dont les chemins exacts sont listés
+dans [17 § Autorités normatives](17-references.md#autorités-normatives). Aucun owner n'est affecté
+par ces amendements : toutes les lignes restent **à affecter**.
+
+**Exception A7.** Un amendement **actualise** bien le snapshot, mais sur un point unique et nommé :
+`A7` corrige un état de dépendances qui a changé **après** `2515ddf3` (commit `251271dc`). Les
+constats concernés — [00](00-audit-baseline.md) `B10`, [09](09-technical-architecture.md)
+§ État de dépendances, [UX-ADR-001](adr/UX-ADR-001-motion-runtime.md) § Contexte — portent la
+mention `corrigé A7` et citent le commit vérifié. Tous les autres constats de code restent hérités
+de `2515ddf3`.
 
 ## Parcours de lecture
 
