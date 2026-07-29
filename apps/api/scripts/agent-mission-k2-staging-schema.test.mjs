@@ -12,6 +12,7 @@ import {
   parseK2MigrationInventory,
   parseK2StagingEnvironment,
   runK2StagingSchema,
+  summarizeK2PostgresFailure,
 } from './agent-mission-k2-staging-schema.mjs';
 
 const BASE_MIGRATION = '20260701000000_base';
@@ -421,6 +422,26 @@ test('le snapshot étranger est borné, JSON et converti uniquement en hash', ()
   assert.throws(
     () => hashK2ForeignAuthoritySnapshot('{'),
     /snapshot is invalid/u,
+  );
+});
+
+test('le diagnostic PostgreSQL ne conserve que SQLSTATE et autorité non-PII', () => {
+  const summary = summarizeK2PostgresFailure(`
+ERROR:  23514: new row for relation "agent_missions" violates check constraint "agent_missions_kind_check"
+DETAIL:  Failing row contains (company-secret, owner-secret).
+CONSTRAINT NAME:  agent_missions_kind_check
+LOCATION:  ExecConstraints, execMain.c:2094
+  `);
+  assert.equal(
+    summary,
+    'sqlstate=23514,constraint=agent_missions_kind_check',
+  );
+  assert.doesNotMatch(summary, /company-secret|owner-secret/u);
+  assert.equal(
+    summarizeK2PostgresFailure(
+      'ERROR:  P0001: AGENT_MISSION_K2_N1_WRITER_UNEXPECTEDLY_REJECTED',
+    ),
+    'sqlstate=P0001,authority=AGENT_MISSION_K2_N1_WRITER_UNEXPECTEDLY_REJECTED',
   );
 });
 

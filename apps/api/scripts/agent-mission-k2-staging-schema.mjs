@@ -655,6 +655,23 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function summarizeK2PostgresFailure(stderr) {
+  const text = typeof stderr === 'string' ? stderr : '';
+  const sqlState =
+    /(?:ERROR|FATAL):\s+([0-9A-Z]{5}):/u.exec(text)?.[1] ?? 'unknown';
+  const constraint =
+    /CONSTRAINT NAME:\s+([A-Za-z_][A-Za-z0-9_]{0,127})/u.exec(text)?.[1];
+  const authority =
+    /\b(AGENT_MISSION_[A-Z0-9_:.-]{1,200})\b/u.exec(
+      text,
+    )?.[1];
+  return [
+    `sqlstate=${sqlState}`,
+    ...(constraint ? [`constraint=${constraint}`] : []),
+    ...(authority ? [`authority=${authority}`] : []),
+  ].join(',');
+}
+
 function deterministicUuid(seed) {
   const hex = sha256(seed);
   return [
@@ -1070,6 +1087,8 @@ function securePsql(
     '-qAt',
     '-v',
     'ON_ERROR_STOP=1',
+    '-v',
+    'VERBOSITY=verbose',
     ...(singleTransaction ? ['--single-transaction'] : []),
     ...variables.flatMap(([name, value]) => {
       if (!/^[a-z][a-z0-9_]{0,62}$/u.test(name)) {
@@ -1094,7 +1113,11 @@ function securePsql(
       result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL'
         ? 'timeout'
         : 'nonzero-exit';
-    fail(`PostgreSQL gate ${label} failed (${kind})`);
+    fail(
+      `PostgreSQL gate ${label} failed (${kind},${
+        summarizeK2PostgresFailure(String(result.stderr ?? ''))
+      })`,
+    );
   }
   return String(result.stdout ?? '').trim();
 }
