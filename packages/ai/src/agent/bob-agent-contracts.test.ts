@@ -1049,6 +1049,45 @@ describe('renommer_contrat — le remède promis par la garde, disponible à la 
     expect(r.value.card.body).toContain('Rien n’a été modifié');
   });
 
+  it('PARITÉ FICHE — le nom DÉJÀ PORTÉ n’est pas un renommage : Bob le DIT, la révision ne tourne pas', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    // Le MÊME geste, tapé sur la fiche, ne part pas : `contractRenameSubmission` rend
+    // « unchanged » parce que « le renvoyer ferait tourner la révision pour rien ». Un geste ne
+    // peut pas avoir deux comportements selon qu'on le tape ou qu'on le dit.
+    const r = await agent.ask('Renomme le contrat fontaines en « Entretien fontaines »');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.pending).toBeUndefined();
+    expect(recorded).toEqual([]);
+    expect(r.value.card.body).toContain('porte déjà ce nom');
+    // Le chemin reste ouvert : le pro sait comment en dire un AUTRE.
+    expect(r.value.card.body).toContain('contract-fontaines');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('PARITÉ FICHE — le trim est la SEULE tolérance : la casse, elle, est un vrai changement', async () => {
+    const recorded: unknown[] = [];
+    const agent = renameAgent([FONTAINES], recorded);
+    const spaced = await agent.ask('Renomme le contrat fontaines en «   Entretien fontaines   »');
+    expect(spaced.ok).toBe(true);
+    if (!spaced.ok) return;
+    expect(spaced.value.kind).toBe('answer');
+    expect(spaced.value.card.body).toContain('porte déjà ce nom');
+    expect(recorded).toEqual([]);
+    // La fiche compare des noms TRIMÉS, jamais normalisés : « entretien fontaines » y change
+    // bien le nom. À la voix aussi — sinon la parité se paierait d'un refus inventé.
+    const cased = await agent.ask('Renomme le contrat fontaines en « entretien fontaines »');
+    expect(cased.ok).toBe(true);
+    if (!cased.ok) return;
+    expect(cased.value.kind).toBe('proposed');
+    expect(cased.value.pending?.args).toEqual({
+      contractId: 'contract-fontaines',
+      label: 'entretien fontaines',
+    });
+  });
+
   it('GARDE DU LIBELLÉ à la voix (sévérité « nommé ») : un nom qui ANNONCE un fait est refusé VERBATIM, et la fiche est proposée', async () => {
     const recorded: unknown[] = [];
     const agent = renameAgent([FONTAINES], recorded);

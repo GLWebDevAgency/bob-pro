@@ -5027,6 +5027,28 @@ export class BobAgent {
         });
       }
 
+      // PARITÉ AVEC LA FICHE — un nom DÉJÀ PORTÉ n'est pas un renommage. À l'écran, le geste
+      // ne part pas (`contractRenameSubmission` rend `'unchanged'`) parce que « le renvoyer
+      // ferait tourner la révision pour rien » : une révision de plus, une écriture de plus, et
+      // la garde CAS de tous les autres appareils qui saute — pour zéro changement. Le même
+      // geste ne peut pas se comporter autrement selon qu'on le tape ou qu'on le dit, donc Bob
+      // le DIT au lieu d'obéir en silence. Évalué AVANT la garde du libellé, exactement comme à
+      // l'écran : un nom déjà écrit sur la fiche a déjà été relu, lui reprocher sa FORME serait
+      // refuser au pro ce qu'il regarde déjà. La comparaison est celle de la fiche — des noms
+      // TRIMÉS, jamais normalisés : une casse différente est un vrai changement, ici comme là.
+      if (spoken.newName.trim() === target.label.trim()) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Résoudre le contrat', 'Constater que le nom est déjà celui-là'],
+          card: {
+            title: `« ${target.label} »${who}`,
+            body: `Il porte déjà ce nom. Rien n’a été modifié — si tu en veux un autre, redis-moi : Renomme le contrat ${target.id} en … .`,
+          },
+        });
+      }
+
       // GARDE DU LIBELLÉ, sévérité `'nomme'` — appliquée ICI et pas sur le chemin de la fiche :
       // à la voix, le nom vient d'une transcription, personne n'a RELU ce qui va nommer le
       // contrat dans toute l'application. Le refus est CITÉ verbatim (même phrase qu'au registre
