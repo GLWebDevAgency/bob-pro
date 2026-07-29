@@ -145,6 +145,23 @@ obtenir Liquid Glass ; l'identité, l'accessibilité, la restauration et la matu
 Chaque comportement ci-dessous précise ce qu'on **reprend** et ce qu'on **abandonne**. Ce qu'on
 abandonne est toujours la même chose : la matière iOS.
 
+> **Décompte normatif (précisé A8 · 2026-07-29).** Ils sont **SIX**, exigés **en bloc** : §§ 1 à 6
+> ci-dessous. La directive nomme trois choses — **FONCTIONNALITÉ, COMPORTEMENT et EFFET** — et le
+> § 6 est le seul qui soit un **EFFET** au sens strict : il ne change ni la fonction ni la
+> topologie, il change ce que l'œil voit pendant que le highlight voyage. C'est précisément le
+> genre de ligne qu'un backlog laisse tomber en dernier ; elle est donc **exigée nommément** dans
+> `G11`, `WP-0303`, `D07` et les critères de `UX-ADR-002`. Livrer cinq comportements sur six
+> **ne satisfait pas** `G11`.
+
+| # | Comportement | Nature | Perdu si non livré |
+| --- | --- | --- | --- |
+| 1 | Minimize-on-scroll | Comportement + fonctionnalité | La signature de la barre |
+| 2 | Highlight glissant | Comportement | La continuité de la sélection |
+| 3 | Scrub à ticks | Fonctionnalité | Un moyen de navigation entier |
+| 4 | Flou de bord (retombée) | Effet | La dissolution du contenu sous le chrome |
+| 5 | Fade-through | Comportement | Le calme du changement d'onglet |
+| 6 | Teinte pilotée par le highlight | **Effet** | La lumière qui **voyage** — la barre redevient un commutateur |
+
 ### 1. Minimize-on-scroll — la signature
 
 | Paramètre | Valeur normative | Note |
@@ -251,6 +268,17 @@ aucun équivalent dans la référence). Nos icônes maison prennent déjà une p
 prêtent au double rendu sans modification. **Abandonné** : les teintes de chrome sombre de la
 référence, son `fontSize: 9.5` (notre label reste à 10 pt `font('meta')`, sous peine de passer sous
 le plancher de lisibilité en plein soleil) et SF Symbols (`expo-symbols`, inexistant sur Android).
+
+**Ce que ce comportement exige en plus (ajouté A8 · 2026-07-29)** — parce qu'il est le seul à
+interpoler une **couleur** et non une géométrie :
+
+| Contrainte | Valeur normative |
+| --- | --- |
+| Contraste en cours d'interpolation | Le rapport de contraste doit rester **AA sur toute la course**, pas seulement aux deux extrémités. Les deux bornes sont certifiées ; le chemin entre elles ne l'est pas automatiquement, en particulier `navigation.assistantActive` `#4338CA` → `navigation.inactive` `#5B6B7B`. À prouver par échantillonnage, pas par raisonnement. |
+| Reduced Motion | La teinte **commute** à l'état final, sans course : `useReduceMotion()`, durée 0, même couleur d'arrivée. Aucune position intermédiaire n'est rendue. |
+| Lecteur d'écran | La teinte est **décorative** : la sélection est portée par `accessibilityState.selected`, jamais par la couleur seule. Scrub désactivé (§ 3), donc la teinte suit alors le focus et non le doigt — c'est le même code, avec un highlight qui ne bouge que par saut. |
+| Coût de rendu | **Deux glyphes par onglet** (dix pour cinq onglets) sont montés en permanence. À mesurer dans `PERF-13`, pas à supposer négligeable. |
+| Interpolation | Sur la **distance au highlight**, jamais sur un booléen de focus : c'est ce qui fait voyager la lumière au lieu de la commuter. |
 
 ### Ce que la référence ne fait PAS — et que Bob ne doit pas perdre en la copiant
 

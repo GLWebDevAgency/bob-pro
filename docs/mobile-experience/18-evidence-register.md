@@ -11,6 +11,14 @@ Dernière mise à jour : 2026-07-29
 > couverture reste **77/77**, tous les verdicts restent `NOT RUN` et tous les owners restent **à
 > affecter**. Le format de manifest, les données interdites et la politique de partage sont
 > inchangés.
+>
+> **Amendement A8 — 2026-07-29.** Même effet, même invariant : le faisceau de preuves de `G11`
+> gagne le **sixième** comportement de la tab bar (teinte pilotée par le highlight) et deux pièces
+> — relevé de contraste **échantillonné le long de l'interpolation** et capture Reduced Motion sans
+> course de couleur. La spécification en définissait six, la gouvernance n'en exigeait que cinq ;
+> ce qui n'est pas exigé n'est pas construit, et ce qui n'est pas au registre n'est pas prouvé. Le
+> manifest de `G11` doit donc porter **six** vidéos, pas cinq. **Aucune ligne ajoutée** : la
+> couverture reste **77/77**, `G11` reste `NOT RUN` et son owner reste **à affecter**.
 
 ## 1. Rôle
 

@@ -8,6 +8,12 @@
 > à la suite du registre, sans recyclage d'identifiant : `R39`, `R40`, `R41`. Aucun risque existant
 > n'est supprimé ni renuméroté. Voir le
 > [journal des amendements](README.md#journal-des-amendements).
+>
+> **Amendements A7 et A8 — 2026-07-29.** `R40` change de **libellé** et de nature — Gesture Handler
+> est déjà en service dans le produit, donc le risque n'est plus « première entrée » mais conflit de
+> gestes avec l'existant (A7). Un risque est **ajouté** à la suite, sans recyclage : `R42`, la perte
+> du sixième comportement de la tab bar (A8). Registre : **42 risques**, aucun supprimé ni
+> renuméroté.
 
 ## Registre
 
@@ -54,6 +60,7 @@
 | R39 **(ajouté A1 · 2026-07-29)** | Réintroduction rampante du verre système | Moyen | Élevé | Un `GlassView`, un `glassEffectStyle` ou un `rgba` translucide apparaît dans une PR de chrome « pour faire moderne ». | Doctrine écrite et sourcée (UX-ADR-004) ; contrôle statique d'import `expo-glass-effect` ; revue de matière dans la DoD composant. | Design owner |
 | R40 **(ajouté A3 · 2026-07-29 ; libellé corrigé A7)** | Portage de la tab bar : **premier usage** de Reanimated (déclaré `4.5.0` + `worklets` `0.10.0`, importé nulle part) et **première utilisation de Gesture Handler dans le chrome** — la lib est déjà en service, mais uniquement en root provider et sur deux `Swipeable` de contenu | Élevé | Élevé | Le composant est fluide en dev et saccade en release ; **conflit de gestes** entre le `Race(pan, tap)` de la barre, le scroll et les `Swipeable` déjà en place ; régression du geste Retour. | `UX-ADR-001` accepté avant le portage ; `PERF-13` obligatoire ; seuils de geste repris tels quels de la référence ; **passe de non-régression sur `catalogue` et `PieceDetailView`, dont les `Swipeable` préexistent au portage** ; flag `mobile_tabs_experiment_v1` OFF par défaut ; `BottomTabBar` actuelle conservée comme fallback. | Mobile tech lead |
 | R41 **(ajouté A3 · 2026-07-29)** | Le scrub casse l'exploration au lecteur d'écran | Moyen | Critique | Le détecteur de geste consomme les touches ; VoiceOver/TalkBack ne trouve plus les onglets. | Scrub **désactivé** dès qu'un lecteur d'écran est actif, retour aux `Pressable` ; passe manuelle signée sur les deux OS avant tout rollout. | Accessibility reviewer |
+| R42 **(ajouté A8 · 2026-07-29)** | Le sixième comportement (teinte pilotée par le highlight) tombe du lot, ou tombe sous AA en cours d'interpolation | Élevé | Moyen | C'est un **effet** sans fonction propre : rien ne casse s'il manque, la barre marche — elle redevient simplement un commutateur, et la directive « même EFFET que la référence » n'est plus tenue. Variante silencieuse : il est livré, mais la teinte traverse une zone sous-contrastée, notamment `navigation.assistantActive` `#4338CA` qui n'a aucun équivalent dans la référence. | Exigé **nommément** dans `G11`, `WP-0303`, `D07` et les critères de `UX-ADR-002` ; vidéo au ralenti obligatoire au registre de preuves ; contraste **échantillonné le long de la course**, pas déduit des deux bornes ; variante Reduced Motion = commutation sans course. | Design owner + Accessibility reviewer |
 
 ## Règle d'escalade
 

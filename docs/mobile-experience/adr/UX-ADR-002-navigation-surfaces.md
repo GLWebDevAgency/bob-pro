@@ -99,10 +99,18 @@ Négatives : matrice cross-platform plus riche ; coexistence de surfaces ; QA de
 - [ ] Tab retap/badges/state preservation prouvés.
 - [ ] Native Tabs/Zoom n'ont aucun rôle bloquant.
 - [ ] StatusBar adaptative livrée avant chrome avancé.
-- [ ] **(ajouté A3)** Les cinq comportements de la barre sont livrés et filmés : minimize-on-scroll,
-      highlight glissant interruptible, scrub avec ticks au franchissement, retombée de bord et
-      fade-through des écrans frères — chacun avec sa variante Reduced Motion et son alternative
-      lecteur d'écran.
+- [ ] **(ajouté A3, corrigé A8)** Les **six** comportements de la barre sont livrés et filmés :
+      minimize-on-scroll, highlight glissant interruptible, scrub avec ticks au franchissement,
+      retombée de bord, fade-through des écrans frères **et teinte icône/label pilotée par le
+      highlight** — chacun avec sa variante Reduced Motion et son alternative lecteur d'écran.
+      Cinq sur six ne valident pas ce critère.
+- [ ] **(ajouté A8)** La teinte est bien pilotée par la **position du highlight** et non par le
+      focus : sur un tap, la lumière **voyage** ; pendant un scrub, les icônes s'allument au passage
+      du doigt. Preuve : vidéo au ralenti d'un tap d'un bout à l'autre de la barre.
+- [ ] **(ajouté A8)** Le contraste reste AA **en cours d'interpolation**, échantillonné et non
+      raisonné, `navigation.assistantActive` `#4338CA` inclus — c'est la seule couleur de la barre
+      sans équivalent dans la référence, donc la seule que le portage peut perdre sans s'en
+      apercevoir.
 - [ ] **(ajouté A3)** Le scrub est **désactivé** quand un lecteur d'écran est actif, et les
       `Pressable` reprennent la main sans perte d'action.
 

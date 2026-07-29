@@ -108,7 +108,7 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 | PERF-10 | Bob Live 5 min | Audio input/output, amplitude, transcript, tool card, barge-in. |
 | PERF-11 | Background/foreground × 10 | Cleanup loops, session, restauration. |
 | PERF-12 | Dynamic Type 200 % | Layout, reflow, scroll et sheets. |
-| PERF-13 **(ajouté A3)** | Tab bar : scroll long avec repli/dépli répétés, tab-hopping rapide, scrub au doigt d'un bout à l'autre | Animation de layout de la barre, highlight transform-only, worklet de scroll, ticks haptiques et retombée de bord simultanés. Mesurer aussi la **latence du tick** par rapport au franchissement. |
+| PERF-13 **(ajouté A3, étendu A8)** | Tab bar : scroll long avec repli/dépli répétés, tab-hopping rapide, scrub au doigt d'un bout à l'autre | Animation de layout de la barre, highlight transform-only, worklet de scroll, ticks haptiques et retombée de bord simultanés. Mesurer aussi la **latence du tick** par rapport au franchissement. **(A8)** + le **double rendu d'icônes** du sixième comportement : deux glyphes superposés par onglet, donc **dix** icônes montées en permanence pour cinq onglets, plus l'interpolation de couleur du label à chaque frame. Ce coût est constant, pas proportionnel au geste : le mesurer aussi **barre au repos**, sinon il disparaît dans le bruit du scrub. |
 
 ## Méthode
 
