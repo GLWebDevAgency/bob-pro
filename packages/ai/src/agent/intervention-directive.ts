@@ -1,4 +1,7 @@
-import { extractInterventionSummary } from './intervention-summary';
+import {
+  extractInterventionSummary,
+  type InterventionSummaryHinges,
+} from './intervention-summary';
 
 /**
  * §3.7 — LA CONSIGNE DE PASSAGE, LUE PAR LE CHEMIN DÉTERMINISTE.
@@ -47,6 +50,14 @@ import { extractInterventionSummary } from './intervention-summary';
  * BORNE : quand la consigne porte une demande CERTAINE qui vit ailleurs (un ordre en tête de
  * clause, une question, une demande nominale) et aucun geste de passage, l'annonce de fin ne
  * capte rien — chaque clause garde son intent d'origine.
+ *
+ * ┌─ UNE SEULE LECTURE DU RÉSUMÉ ────────────────────────────────────────────────────────────┐
+ * │  Le résumé dicté part sur la FICHE SIGNÉE : c'est une pièce de preuve. Il est lu ICI, UNE │
+ * │  fois, charnières comprises, et RENDU (`summary`). L'appelant écrit CE texte-là et pas un │
+ * │  autre : deux lectures du même message (l'une avec charnières, l'autre sans) pouvaient    │
+ * │  écrire un texte sur la fiche ET le déclarer « incompris » dans la MÊME carte — ou        │
+ * │  l'inverse, l'étouffer sans rien écrire. Une lecture, un jeu d'arguments, un résultat.    │
+ * └──────────────────────────────────────────────────────────────────────────────────────────┘
  */
 
 /** Geste AVAL d'une consigne composite — ce que l'artisan enchaîne après la fin du passage. */
@@ -83,6 +94,13 @@ export interface InterventionDirective {
   readonly downstreams: readonly InterventionDownstream[];
   /** Ce que la consigne demande d'autre — jamais jeté en silence. */
   readonly asides: readonly InterventionAside[];
+  /**
+   * LE résumé dicté, lu UNE SEULE FOIS pour tout le tour (charnières comprises), ou `null`
+   * quand l'artisan n'en a dicté aucun. C'est CE texte-là qui part sur la fiche signée :
+   * l'appelant ne relit jamais le message autrement, sinon la carte et la pièce de preuve
+   * peuvent se contredire.
+   */
+  readonly summary: string | null;
   /** Au moins une clause porte une demande CERTAINE qui ne parle pas du passage. */
   readonly divertsElsewhere: boolean;
   /** Le geste que le déterministe ORIENTE — `null` quand il n'oriente rien vers le passage. */
@@ -587,8 +605,17 @@ function readClause(clause: string, announced: boolean, marquee: boolean): Claus
 /**
  * Lecture d'UNE consigne. Chaque clause est classée SEULE ; le tour retient LE geste certain et
  * REND le reste. Aucun arbitrage entre plusieurs gestes : c'est le travail du chemin LLM.
+ *
+ * `hinges` = les CHARNIÈRES FACTUELLES de la lecture du résumé (sites et clients déjà résolus).
+ * C'est le SEUL endroit où le résumé est lu : l'appelant qui écrit sur la pièce de preuve reprend
+ * `summary` tel quel, avec les mêmes charnières, donc exactement le même texte que celui que la
+ * carte tient pour compris. Le défaut (aucune charnière) sert le classement d'intent, qui n'écrit
+ * sur aucune pièce de preuve — il ORIENTE, il ne signe rien.
  */
-export function readInterventionDirective(message: string): InterventionDirective {
+export function readInterventionDirective(
+  message: string,
+  hinges: InterventionSummaryHinges = {},
+): InterventionDirective {
   const folded = fold(message);
   const marquee = MARQUEUR_DE_COMMANDE.test(folded);
   const clauses = splitClauses(folded);
@@ -597,9 +624,9 @@ export function readInterventionDirective(message: string): InterventionDirectiv
   const announcesCompletion = clauses.some((clause) => annonceDeFin(clause.folded));
 
   // Le RÉSUMÉ dicté part sur la FICHE (pièce de preuve) : le texte qu'il capte n'est donc PAS
-  // une demande incomprise. Une seule lecture du même texte — la réconciliation se fait ici,
-  // à la source, plutôt que dans deux cartes qui se contredisent.
-  const resume = extractInterventionSummary(message);
+  // une demande incomprise. UNE SEULE lecture du même texte, rendue telle quelle — la
+  // réconciliation se fait ici, à la source, plutôt que dans deux cartes qui se contredisent.
+  const resume = extractInterventionSummary(message, hinges);
   const resumeFolded = resume === null ? null : fold(resume);
 
   // Passe 2 — chaque clause est classée SÉPARÉMENT, avec cette seule ancre pour contexte.
@@ -656,6 +683,7 @@ export function readInterventionDirective(message: string): InterventionDirectiv
     downstream,
     downstreams: downstream === null ? [] : [downstream],
     asides,
+    summary: resume,
     divertsElsewhere,
     gesture,
     // On ne pose la question que si RIEN n'est certain : le doute ne produit ni geste faux, ni

@@ -705,3 +705,78 @@ describe('cartes — un texte capté comme RÉSUMÉ n’est jamais déclaré « 
     ]);
   });
 });
+
+// ── UNE SEULE LECTURE DU RÉSUMÉ ──────────────────────────────────────────────────────────────
+
+describe('cartes — UNE SEULE LECTURE du résumé : la pièce de preuve et la carte disent la MÊME chose', () => {
+  /**
+   * La directive lisait le résumé SANS charnières pendant que l'agent le relisait AVEC (sites et
+   * clients résolus). Deux lectures du même message, donc deux vérités dans la même carte. Les
+   * deux phrases ci-dessous sont exactement celles où elles divergeaient :
+   *
+   *   · au-delà de 300 caractères, la lecture SANS charnières renonce (`null`) alors que celle
+   *     AVEC s'arrête proprement au nom de client : le texte partait sur la FICHE SIGNÉE et
+   *     était déclaré « incompris » dans la MÊME carte ;
+   *   · à l'inverse, la lecture SANS charnières avalait la demande voisine dans le résumé — donc
+   *     la taisait — alors que celle AVEC n'écrivait RIEN : ni fait, ni dit, ni écrit.
+   *
+   * Le remède n'est pas un motif : c'est UNE seule lecture, rendue par la directive (`summary`).
+   */
+  const CHARNIERES = {
+    siteNames: ['RATP Bastille', 'Docks Rouen'],
+    customerNames: ['RATP CAP', 'Docks SAS'],
+  };
+  const MONOLOGUE = 'la pression est restée stable toute la matinée '.repeat(7);
+  const ECRIT_ET_INCOMPRIS = `J’ai fini, note-le : la pompe est HS, enregistre 12 bars au manomètre, ${MONOLOGUE} pour RATP CAP`;
+  const NI_FAIT_NI_DIT = 'J’ai fini, note-le : la pompe est HS chez Docks Rouen, montre-moi ma trésorerie';
+
+  it('la directive REND le résumé qu’elle a lu — mêmes arguments, même résultat', () => {
+    for (const phrase of [ECRIT_ET_INCOMPRIS, NI_FAIT_NI_DIT, 'C’est terminé, note-le : joint refait']) {
+      expect(readInterventionDirective(phrase, CHARNIERES).summary, phrase).toBe(
+        extractInterventionSummary(phrase, CHARNIERES),
+      );
+    }
+  });
+
+  it('ce qui est ÉCRIT sur la pièce de preuve n’est jamais déclaré « incompris » dans la même carte', () => {
+    // Les deux lectures d'AVANT, sur la même phrase : elles se contredisaient.
+    expect(extractInterventionSummary(ECRIT_ET_INCOMPRIS)).toBeNull();
+    expect(extractInterventionSummary(ECRIT_ET_INCOMPRIS, CHARNIERES)).toBe(
+      'la pompe est HS, enregistre 12 bars au manomètre',
+    );
+    const directive = readInterventionDirective(ECRIT_ET_INCOMPRIS, CHARNIERES);
+    expect(directive.summary).toBe('la pompe est HS, enregistre 12 bars au manomètre');
+    expect(directive.asides).toEqual([]);
+    expect(explainInterventionAsides(directive.asides)).toBe('');
+  });
+
+  it('… et réciproquement : ce qui n’est PAS écrit sur la fiche est DIT', () => {
+    expect(extractInterventionSummary(NI_FAIT_NI_DIT)).toContain('montre-moi ma trésorerie');
+    expect(extractInterventionSummary(NI_FAIT_NI_DIT, CHARNIERES)).toBeNull();
+    const directive = readInterventionDirective(NI_FAIT_NI_DIT, CHARNIERES);
+    expect(directive.summary).toBeNull();
+    expect(directive.asides).toEqual([{ text: 'montre-moi ma trésorerie', kind: 'ailleurs' }]);
+    expect(explainInterventionAsides(directive.asides)).toContain('montre-moi ma trésorerie');
+  });
+
+  it('INVARIANT : aucun aside n’est un morceau du résumé rendu (et le résumé n’avale aucun aside)', () => {
+    const phrases = [
+      ECRIT_ET_INCOMPRIS,
+      NI_FAIT_NI_DIT,
+      'C’est terminé, note-le : la pression était basse',
+      'J’ai fini chez Docks Rouen, note-le : détartrage complet, envoie la fiche de passage',
+      'C’est terminé, note-le : joint refait, encaisse la facture',
+      'C’est terminé, prépare le matériel pour demain',
+    ];
+    const echecs: string[] = [];
+    for (const phrase of phrases) {
+      const directive = readInterventionDirective(phrase, CHARNIERES);
+      const resume = directive.summary;
+      if (resume === null) continue;
+      for (const aside of directive.asides)
+        if (resume.includes(aside.text) || aside.text.includes(resume))
+          echecs.push(`« ${phrase} » : « ${aside.text} » écrit sur la fiche ET rendu « ${aside.kind} »`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+});

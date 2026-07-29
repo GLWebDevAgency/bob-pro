@@ -520,6 +520,59 @@ describe('ENCHAÎNEMENT COMPOSITE §3.7 — « j’ai fini chez RATP… envoie l
     expect(sent).toEqual([{ interventionId: 'itv-ratp-encours' }]);
   });
 
+  /**
+   * [Dernière passe du train — UNE SEULE LECTURE DU RÉSUMÉ] La directive lisait le résumé SANS
+   * charnières pendant que l'agent le relisait AVEC (sites et clients des passages réels). Sur un
+   * monologue de plus de 300 caractères, la première renonçait quand la seconde s'arrêtait
+   * proprement au nom du client : le MÊME texte partait sur la FICHE SIGNÉE et était déclaré
+   * « je n'ai pas su quoi faire de … » dans la MÊME carte. Une seule lecture, désormais : celle
+   * que la directive rend et que l'agent écrit.
+   */
+  /** Complétion minimale : ces deux tests ne mesurent que le TEXTE, pas la mutation. */
+  const agentQuiTermine = (): BobAgent =>
+    makeAgent({
+      completeIntervention: async (input) =>
+        ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite d’entretien',
+          chantierNom: 'RATP Bastille',
+        }),
+    });
+
+  it('UNE SEULE LECTURE : le texte écrit sur la fiche n’est jamais avoué « incompris » dans la même carte', async () => {
+    const agent = agentQuiTermine();
+    const monologue = 'la pression est restée stable toute la matinée '.repeat(7);
+    const consigne = `J’ai fini, note-le : la pompe est HS, enregistre 12 bars au manomètre, ${monologue} pour RATP CAP`;
+    const fin = await agent.ask(consigne);
+    expect(fin.ok).toBe(true);
+    if (!fin.ok) return;
+    expect(fin.value.kind).toBe('proposed');
+    expect(fin.value.pending?.tool).toBe('terminer_intervention');
+    // Ce qui part sur la PIÈCE DE PREUVE — borné par la charnière « RATP CAP ».
+    const summary = (fin.value.pending?.args as { summary?: string }).summary;
+    expect(summary).toBe('la pompe est HS, enregistre 12 bars au manomètre');
+    // … et la MÊME carte l'annonce comme RÉSUMÉ, sans l'avouer incompris deux lignes plus bas :
+    // une seule lecture, une seule vérité.
+    expect(fin.value.card?.body).toContain(
+      'avec le résumé « la pompe est HS, enregistre 12 bars au manomètre »',
+    );
+    expect(fin.value.card?.body).not.toContain('Je n’ai pas su quoi faire de');
+  });
+
+  it('… et réciproquement : ce qui n’est PAS écrit sur la fiche est DIT dans la carte', async () => {
+    const agent = agentQuiTermine();
+    const fin = await agent.ask(
+      'J’ai fini chez RATP Bastille, note-le : la pompe est HS chez RATP Bastille, montre-moi ma trésorerie',
+    );
+    expect(fin.ok).toBe(true);
+    if (!fin.ok) return;
+    // Rien n'est écrit sur la pièce de preuve (le résumé bute sur le site résolu)…
+    expect((fin.value.pending?.args as { summary?: string }).summary).toBeUndefined();
+    // … donc la demande voisine n'est PAS étouffée par un résumé fantôme : elle est citée.
+    expect(fin.value.card?.body).toContain('montre-moi ma trésorerie');
+  });
+
   it('un envoi SEUL reste un envoi (la discrimination ne vole pas le geste sortant)', () => {
     expect(detectIntent('Envoie la fiche de passage des Docks Rouen')).toBe('envoyer_fiche_passage');
     // « du passage terminé » DÉCRIT la fiche, il ne demande pas de terminer quoi que ce soit.

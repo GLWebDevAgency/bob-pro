@@ -28,7 +28,6 @@ import {
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
 import { extractSpokenWarranty } from './equipment-warranty';
-import { extractInterventionSummary } from './intervention-summary';
 import {
   extractSpokenContractFacts,
   extractSpokenEquipmentCount,
@@ -5770,7 +5769,20 @@ export class BobAgent {
       // ciblée dont les followUps portent l'id (le tour suivant ne reboucle jamais).
       // Confirmations : groupées aux mutations de fiche, et TOUJOURS séparée pour le sortant.
       const listInterventions = this.deps.actions.listInterventions?.bind(this.deps.actions);
-      const directive = readInterventionDirective(message);
+      // UNE SEULE LECTURE DU RÉSUMÉ : les passages RÉELS sont chargés AVANT la lecture de la
+      // consigne, parce que ce sont eux qui portent les CHARNIÈRES (sites, clients) qui bornent
+      // le résumé. La directive lit donc le message une fois, avec ces charnières, et ce qu'elle
+      // rend (`summary`) est EXACTEMENT ce qui partira sur la fiche signée : la carte ne peut
+      // plus déclarer « incompris » un texte que la pièce de preuve, elle, aurait écrit. Sans
+      // hôte capable de lister, il n'y a ni charnière ni pièce de preuve à écrire : la même
+      // lecture tourne à vide, et la branche de capacité répond juste après.
+      const chargement = listInterventions ? await listInterventions() : null;
+      if (chargement !== null && !chargement.ok) return err(chargement.error);
+      const passages = chargement !== null && chargement.ok ? chargement.value : [];
+      const directive = readInterventionDirective(message, {
+        siteNames: passages.map((intervention) => intervention.chantierNom),
+        customerNames: passages.map((intervention) => intervention.customerNom),
+      });
       // §3.7 — RIEN N'EST JETÉ EN SILENCE : ce que la consigne demande d'autre (un geste de
       // passage EN TROP que le déterministe refuse d'arbitrer, un geste qui vit ailleurs, ou une
       // demande que Bob n'a pas su lire) est DIT dans la MÊME carte, quel que soit le chemin.
@@ -5836,8 +5848,6 @@ export class BobAgent {
           ],
         });
       }
-      const all = await listInterventions();
-      if (!all.ok) return err(all.error);
       const conversation = [
         ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
         message,
@@ -5846,7 +5856,7 @@ export class BobAgent {
 
       // Un passage est ÉLIGIBLE dès qu'un des deux gestes de la consigne lui est possible :
       // c'est la même autorité qui filtrera ensuite le geste exact sur la fiche retenue.
-      const eligible = all.value.filter(
+      const eligible = passages.filter(
         (intervention) => resolveInterventionGesture(request, intervention) !== null,
       );
 
@@ -5856,7 +5866,7 @@ export class BobAgent {
         currentTurn: message,
         chantiers: [
           ...new Map(
-            all.value.map((intervention) => [
+            passages.map((intervention) => [
               intervention.chantierId,
               { id: intervention.chantierId, nom: intervention.chantierNom },
             ]),
@@ -5912,7 +5922,7 @@ export class BobAgent {
         if (pool.length === 0) {
           // Rien d'éligible : Bob DIT pourquoi, en citant l'ÉTAT RÉEL des passages qu'il a bien
           // sous la main — jamais « Aucun passage concerné » quand il y en a un, jamais muet.
-          const candidats = scope(all.value);
+          const candidats = scope(passages);
           return ok({
             kind: 'answer',
             intent: effectiveIntent,
@@ -6018,15 +6028,10 @@ export class BobAgent {
 
       // Résumé dicté dans le MÊME geste (« la pression était basse mais c'est réglé, note-le »)
       // — extrait de la phrase courante, jamais réinventé au tour suivant. [finding 4] Il part
-      // sur une PIÈCE DE PREUVE : l'extraction est bornée par les charnières factuelles DÉJÀ
-      // résolues ici (sites et clients des passages réels), jamais gloutonne jusqu'au point.
-      const summary =
-        gesture === 'complete'
-          ? extractInterventionSummary(message, {
-              siteNames: all.value.map((intervention) => intervention.chantierNom),
-              customerNames: all.value.map((intervention) => intervention.customerNom),
-            })
-          : null;
+      // sur une PIÈCE DE PREUVE : c'est LA lecture de la directive, bornée par les charnières
+      // factuelles des passages réels — jamais une SECONDE lecture qui pourrait dire autre chose
+      // que ce que la carte, elle, tient pour compris.
+      const summary = gesture === 'complete' ? directive.summary : null;
       const args =
         summary !== null ? { interventionId: target.id, summary } : { interventionId: target.id };
       const parsed = tool.parse(args);
