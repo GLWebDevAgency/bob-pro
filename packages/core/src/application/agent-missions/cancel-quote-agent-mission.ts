@@ -13,14 +13,19 @@ import {
   canonicalAgentMissionCommand,
   draftReferenceForMission,
   expireAgentMissionInTransaction,
+  guardAgentMissionReplayForeground,
   isCanonicalAgentMissionOwner,
   isCanonicalAgentMissionUuid,
   missingAgentMission,
   recordAgentMissionEvent,
   rejectedAgentMissionCapability,
   requireAgentMissionFingerprint,
+  resolveQuoteAgentMissionEventLookup,
+  resolveQuoteAgentMissionLookup,
+  resolveQuoteAgentMissionForUpdate,
   toAgentMissionView,
   unavailableAgentMissionCompany,
+  unavailableAgentMissionForeground,
   verifyAgentMissionFingerprint,
   type AgentMissionViewV1,
 } from './agent-mission-application';
@@ -122,10 +127,13 @@ export class CancelQuoteAgentMission {
         input.authority,
         async (transaction) => {
         const now = await transaction.databaseNow();
-        const consumed = await transaction.events.findByCommandId({
+        const consumedLookup = await transaction.events.findByCommandId({
           ...owner,
           commandId: input.commandId,
         });
+        const consumedResult = resolveQuoteAgentMissionEventLookup(consumedLookup);
+        if (!consumedResult.ok) abort(consumedResult.error);
+        const consumed = consumedResult.value;
         if (consumed !== null) {
           const snapshot = consumed.toSnapshot();
           if (snapshot.eventType !== 'mission_cancelled' || snapshot.missionId !== input.missionId) {
@@ -138,10 +146,13 @@ export class CancelQuoteAgentMission {
           );
           if (!verified.ok) abort(verified.error);
           if (!verified.value) abort(appConflict('agent_mission_command', 'fingerprint_mismatch'));
-          const replayedMission = await transaction.missions.findById({
+          const replayedMissionLookup = await transaction.missions.findById({
             ...owner,
             missionId: input.missionId,
           });
+          const replayedMissionResult = resolveQuoteAgentMissionLookup(replayedMissionLookup);
+          if (!replayedMissionResult.ok) abort(replayedMissionResult.error);
+          const replayedMission = replayedMissionResult.value;
           if (replayedMission === null) {
             abort({
               kind: 'dependency',
@@ -149,6 +160,12 @@ export class CancelQuoteAgentMission {
               cause: 'cancel_event_without_mission',
             });
           }
+          const replayGuard = await guardAgentMissionReplayForeground({
+            transaction,
+            owner,
+            replayedMissionId: replayedMission.id,
+          });
+          if (!replayGuard.ok) abort(replayGuard.error);
           const replayedView = toAgentMissionView(replayedMission, now);
           if (!replayedView.ok) abort(replayedView.error);
           return {
@@ -160,10 +177,13 @@ export class CancelQuoteAgentMission {
           } as const;
         }
 
-        const mission = await transaction.missions.findByIdForUpdate({
-          ...owner,
+        const resolvedMission = await resolveQuoteAgentMissionForUpdate({
+          transaction,
+          owner,
           missionId: input.missionId,
         });
+        if (!resolvedMission.ok) abort(resolvedMission.error);
+        const mission = resolvedMission.value;
         if (mission === null) abort(missingAgentMission(input.missionId));
         // Une réponse HTTP peut être perdue après le commit de l'expiration paresseuse. Le retry
         // exact doit rendre le même conflit `expired`, sans tenter une seconde transition sur
@@ -236,6 +256,9 @@ export class CancelQuoteAgentMission {
       );
       if (execution.status === 'company_unavailable') {
         return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      if (execution.status === 'foreground_unavailable') {
+        return err(unavailableAgentMissionForeground(execution.reason));
       }
       if (execution.status === 'capability_rejected') {
         return err(rejectedAgentMissionCapability(execution.reason));

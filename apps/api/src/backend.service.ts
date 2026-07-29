@@ -176,6 +176,8 @@ import {
   type RetractationProfessional,
   type Result,
   type AppError,
+  isMissionKindId,
+  type MissionKindId,
   type CreateQuoteInput,
   buildQuoteDuplicationInput,
   type DuplicateQuoteOutput,
@@ -324,6 +326,7 @@ import {
   type AgentAskPayload,
   type AgentRun,
   type AgentAutonomy,
+  type BobIntent,
   type Provider,
   type BatchItem,
   type PendingAction,
@@ -338,6 +341,11 @@ import {
   CONTRACT_LIFECYCLE_TOOLS,
   contractLifecycleRetryCommand,
   intentForTool,
+  createLegacyExecutionAuthority,
+  LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
+  LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+  type LegacyExecutionAuthority,
+  preflightRuntimeToolOwnership,
   // PR-15/16 — parité des hôtes : l'enchaînement ANNONCÉ est tenu par le chemin serveur comme
   // par BobAgent.confirm et par le client local (confirmBob) — une seule fonction pour les trois.
   withAnnouncedChain,
@@ -1042,12 +1050,101 @@ interface OwnedAgentProposal {
   readonly proposalId: string;
   readonly planned: readonly JournalEntry[];
   readonly expiresAt: string;
+  readonly executionAuthority: LegacyExecutionAuthority;
   /**
    * PR-15/16 — enchaînement ANNONCÉ au moment de la proposition (« ensuite je te propose … »).
    * `/ai/confirm` ne reçoit qu'un `proposalId` opaque : sans cette preuve durable, la promesse
    * faite à l'artisan restait sans suite sur le chemin SERVEUR — donc en production.
    */
   readonly chain?: AgentChainOffer;
+}
+
+interface PersistedProposalOwnershipBindingV1 {
+  readonly seq: number;
+  readonly tool: string;
+  readonly intent: BobIntent;
+}
+
+function readPersistedProposalExecutionAuthority(
+  ownerArgs: Record<string, unknown>,
+  planned: readonly JournalEntry[],
+): LegacyExecutionAuthority | null {
+  const raw = ownerArgs.ownership;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const ownership = raw as Record<string, unknown>;
+  if (
+    Object.keys(ownership).sort().join(',') !== [
+      'admittedMissionKinds',
+      'bindings',
+      'contractSha256',
+      'schemaVersion',
+    ].join(',')
+    || ownership.schemaVersion !== LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION
+    || ownership.contractSha256 !== LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256
+    || !Array.isArray(ownership.admittedMissionKinds)
+    || !Array.isArray(ownership.bindings)
+  ) return null;
+
+  const admittedMissionKinds: MissionKindId[] = [];
+  for (const candidate of ownership.admittedMissionKinds) {
+    if (!isMissionKindId(candidate)) return null;
+    admittedMissionKinds.push(candidate);
+  }
+  const canonicalKinds = [...new Set(admittedMissionKinds)].sort();
+  if (
+    canonicalKinds.length !== admittedMissionKinds.length
+    || canonicalKinds.some((kind, index) => kind !== admittedMissionKinds[index])
+  ) return null;
+
+  const bindings: PersistedProposalOwnershipBindingV1[] = [];
+  for (const candidate of ownership.bindings) {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return null;
+    const binding = candidate as Record<string, unknown>;
+    if (
+      Object.keys(binding).some((key) => !['seq', 'tool', 'intent'].includes(key))
+      || typeof binding.seq !== 'number'
+      || !Number.isInteger(binding.seq)
+      || typeof binding.tool !== 'string'
+      || typeof binding.intent !== 'string'
+    ) return null;
+    let actualIntent: BobIntent;
+    try {
+      actualIntent = intentForTool(binding.tool);
+    } catch {
+      return null;
+    }
+    if (binding.intent !== actualIntent) return null;
+    bindings.push({
+      seq: binding.seq,
+      tool: binding.tool,
+      intent: actualIntent,
+    });
+  }
+  if (
+    bindings.length !== planned.length
+    || planned.some((entry, index) => {
+      const binding = bindings[index];
+      if (binding === undefined) return true;
+      let actualIntent: BobIntent;
+      try {
+        actualIntent = intentForTool(entry.tool);
+      } catch {
+        return true;
+      }
+      return (
+        binding.seq !== entry.seq
+        || binding.tool !== entry.tool
+        || binding.intent !== actualIntent
+      );
+    })
+  ) return null;
+
+  // L'autorité confirmée est exactement le snapshot serveur persisté avec la proposition.
+  // Le registre des kinds compilés décrit ce que le binaire sait parser ; il ne prouve jamais
+  // qu'un kind était admis pour ce transport et ce propriétaire. Un changement de politique
+  // invalide le snapshot par `contractSha256` après le drain rolling défini dans la spec.
+  const authority = createLegacyExecutionAuthority(canonicalKinds);
+  return authority.contractSha256 === ownership.contractSha256 ? authority : null;
 }
 
 /** Lecture DÉFENSIVE de l'enchaînement persisté : trois libellés, sinon rien (jamais un objet deviné). */
@@ -1199,6 +1296,8 @@ export interface AgentExecutionOptions {
   readonly signal?: AbortSignal;
   /** Contrainte exacte issue d'un transport serveur authentifié, jamais du payload utilisateur. */
   readonly requiredProvider?: Provider;
+  /** Kinds négociés par le transport authentifié, jamais lus depuis `AgentAskPayload`. */
+  readonly admittedMissionKinds?: readonly MissionKindId[];
 }
 
 /**
@@ -4969,7 +5068,10 @@ export class BackendService {
     };
   }
 
-  private bobAgent(requiredProvider?: Provider) {
+  private bobAgent(
+    requiredProvider?: Provider,
+    admittedMissionKinds: readonly MissionKindId[] = [],
+  ) {
     const router = new ModelRouter({
       hasClaudeKey: hasClaudeKey(),
       hasGlmKey: hasGlmKey(),
@@ -4981,12 +5083,15 @@ export class BackendService {
     // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur.
     const provider = router.route('intent.detect').model;
     const llm = provider !== 'unavailable' ? buildLlmForProvider(provider) : undefined;
+    const executionAuthority = createLegacyExecutionAuthority(admittedMissionKinds);
     return {
       provider,
+      executionAuthority,
       agent: new BobAgent({
         router,
         actions: this.buildBobActions(),
         llm,
+        admittedMissionKinds: executionAuthority.admittedMissionKinds,
         runtime: {
           clock: this.clock,
           ids: this.ids,
@@ -5049,7 +5154,10 @@ export class BackendService {
       subscription.autonomyEntitlement(),
     );
     const start = Date.now();
-    const bobRuntime = this.bobAgent(execution?.requiredProvider);
+    const bobRuntime = this.bobAgent(
+      execution?.requiredProvider,
+      execution?.admittedMissionKinds ?? [],
+    );
     if (bobRuntime.provider === 'unavailable') {
       return err(appUnavailable('bob-llm'));
     }
@@ -5127,6 +5235,18 @@ export class BackendService {
           // devient durable. Aucun effet sur l'exécution : ces args ne sont jamais rejoués.
           args: {
             userId: principal.userId,
+            ownership: {
+              schemaVersion: bobRuntime.executionAuthority.schemaVersion,
+              contractSha256: bobRuntime.executionAuthority.contractSha256,
+              admittedMissionKinds: [
+                ...bobRuntime.executionAuthority.admittedMissionKinds,
+              ],
+              bindings: proposal.entries.map((entry) => ({
+                seq: entry.seq,
+                tool: entry.tool,
+                intent: intentForTool(entry.tool),
+              })),
+            },
             ...(r.value.pending.chain ? { chain: { ...r.value.pending.chain } } : {}),
           },
           mutating: false,
@@ -5184,6 +5304,7 @@ export class BackendService {
       requestedAutonomy: input.autonomy ?? null,
       effectiveAutonomy,
       contextual: input.context !== undefined,
+      blockedIntentCount: bobRuntime.executionAuthority.blockedIntents.length,
     });
     // TRAÇAGE VOCAL — moitié « ce que Bob a compris / a fait / répond ». L'enregistreur ne
     // retient ce tour QUE si le message correspond à une transcription récente du même
@@ -5446,11 +5567,19 @@ export class BackendService {
     try {
       const proposalEntries = await this.p.agentJournal.load(this.companyId(), proposalId);
       const planned = proposalEntries.filter((entry) => entry.phase === 'planned');
-      const owner = proposalEntries.find((entry) => entry.tool === AGENT_PROPOSAL_OWNER_TOOL);
+      const owners = proposalEntries.filter((entry) => entry.tool === AGENT_PROPOSAL_OWNER_TOOL);
+      const owner = owners[0];
       const principalUserId = getPrincipal()?.userId;
       if (
         planned.length === 0 ||
+        proposalEntries.length !== planned.length + 1 ||
+        planned.some((entry, index) => entry.seq !== index + 1) ||
+        owners.length !== 1 ||
         !owner ||
+        owner.phase !== 'executed' ||
+        owner.seq !== planned.length + 1 ||
+        owner.mutating ||
+        owner.outbound ||
         typeof owner.args.userId !== 'string' ||
         typeof principalUserId !== 'string' ||
         owner.args.userId !== principalUserId
@@ -5480,11 +5609,29 @@ export class BackendService {
           },
         };
       }
+      const executionAuthority = readPersistedProposalExecutionAuthority(owner.args, planned);
+      if (executionAuthority === null) {
+        return {
+          ok: false,
+          error: appConflict('agent_proposal', 'ownership_changed'),
+        };
+      }
+      const ownership = preflightRuntimeToolOwnership(
+        planned.map((entry) => entry.tool),
+        (intent) => executionAuthority.isIntentBlocked(intent),
+      );
+      if (ownership.status !== 'allowed') {
+        return {
+          ok: false,
+          error: appConflict('agent_proposal', 'ownership_changed'),
+        };
+      }
       const chain = readPersistedChain(owner.args);
       return ok({
         proposalId,
         planned,
         expiresAt: new Date(proposedAt + AGENT_PROPOSAL_TTL_MS).toISOString(),
+        executionAuthority,
         ...(chain ? { chain } : {}),
       });
     } catch (error) {
@@ -5544,7 +5691,23 @@ export class BackendService {
       const companyId = this.companyId();
       const loaded = await this.loadOwnedAgentProposal(input.proposalId);
       if (!loaded.ok) return loaded;
-      const { proposalId, planned, chain } = loaded.value;
+      const {
+        proposalId,
+        planned,
+        chain,
+        executionAuthority,
+      } = loaded.value;
+
+      const ownership = preflightRuntimeToolOwnership(
+        planned.map((entry) => entry.tool),
+        (intent) => executionAuthority.isIntentBlocked(intent),
+      );
+      if (ownership.status !== 'allowed') {
+        return {
+          ok: false,
+          error: appConflict('agent_proposal', 'ownership_changed'),
+        };
+      }
 
       // Autorisation fermée : un outil sortant n'est exécutable que si son adapter a été audité
       // outbox commitée + worker idempotent. Toute future capability outbound est bloquée par
@@ -5589,7 +5752,10 @@ export class BackendService {
         args: entry.args,
         label: entry.label,
       }));
-      const record = await this.bobAgent().agent.runJournaled(invocations, {
+      const record = await this.bobAgent(
+        undefined,
+        executionAuthority.admittedMissionKinds,
+      ).agent.runJournaled(invocations, {
         autonomy: subscription.autonomyEntitlement(),
         runId: `execute:${proposalId}`,
       });

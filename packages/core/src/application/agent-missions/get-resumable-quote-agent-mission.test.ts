@@ -5,6 +5,7 @@ import {
 } from '../../domain/agent/agent-mission';
 import { createEmptyQuoteDraftPayload } from '../quote-drafts/quote-draft-slot';
 import type {
+  AgentMissionForeground,
   AgentMissionOwner,
   AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
@@ -105,6 +106,7 @@ class ResumeMemoryUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
   customers: readonly CustomerCandidateReference[] = [];
   now = NOW;
   companyUnavailable: 'missing' | 'closed' | null = null;
+  foregroundOverride: AgentMissionForeground | null | undefined;
   calls = 0;
 
   async readQuoteCreationOwner<T>(
@@ -124,6 +126,13 @@ class ResumeMemoryUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
         databaseNow: async () => this.now,
         missions: {
           findActive: async () => this.mission,
+          findForeground: async (): Promise<AgentMissionForeground | null> => (
+            this.foregroundOverride !== undefined
+              ? this.foregroundOverride
+              : this.mission === null
+                ? null
+                : { status: 'known', mission: this.mission }
+          ),
         },
         quoteDrafts: {
           get: async () => this.slot,
@@ -174,6 +183,26 @@ describe('GetResumableQuoteAgentMission', () => {
         kind: 'dependency',
         port: 'agent_mission_resume_snapshot',
         cause: 'orphaned_draft_mission_owner',
+      },
+    });
+  });
+
+  it('refuse un kind futur sans tenter de lire son payload comme un devis', async () => {
+    const unitOfWork = new ResumeMemoryUnitOfWork();
+    unitOfWork.foregroundOverride = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000001',
+      kind: 'maintenance_contract@1',
+    };
+
+    await expect(
+      new GetResumableQuoteAgentMission({ unitOfWork }).execute(OWNER),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
       },
     });
   });

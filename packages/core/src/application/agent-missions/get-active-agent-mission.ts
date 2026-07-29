@@ -1,11 +1,10 @@
-import { AGENT_MISSION_KIND } from '../../domain/agent/agent-mission';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type AgentMissionOwner } from '../ports/agent-mission-repository';
 import {
   type AgentMissionRealtimeAuthorityProof,
   type AgentMissionUnitOfWorkPort,
 } from '../ports/agent-mission-unit-of-work';
-import { type AppError } from '../result';
+import { type AppError, appConflict } from '../result';
 import {
   isCanonicalAgentMissionOwner,
   rejectedAgentMissionCapability,
@@ -35,12 +34,15 @@ export class GetActiveAgentMission {
       authority,
       async (transaction) => {
         const now = await transaction.databaseNow();
-        const mission = await transaction.missions.findActive({
-          ...owner,
-          kind: AGENT_MISSION_KIND,
-        });
-        if (mission === null) return ok(null);
-        return toAgentMissionView(mission, now);
+        const foreground = await transaction.missions.findForeground(owner);
+        if (foreground === null) return ok(null);
+        if (foreground.status === 'unsupported_kind') {
+          return err(appConflict(
+            'agent_mission_foreground',
+            'active_mission_exists',
+          ));
+        }
+        return toAgentMissionView(foreground.mission, now);
       },
     );
     return execution.status === 'capability_rejected'

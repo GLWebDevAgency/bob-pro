@@ -8,8 +8,12 @@ import {
   type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionCapabilityRejectionReason,
   type AgentMissionDraftFenceResult,
+  type AgentMissionEventLookup,
   type AgentMissionEventRepositoryPort,
   type AgentMissionDraftFencePort,
+  type AgentMissionForeground,
+  type AgentMissionForegroundUnavailableReason,
+  type AgentMissionLookup,
   type AgentMissionOwner,
   type AgentMissionQuoteScreenAuthorityPort,
   type AgentMissionQuoteScreenFences,
@@ -169,6 +173,90 @@ function exactCapabilityHash(expected: string, actual: string): boolean {
     && timingSafeEqual(expectedBytes, actualBytes);
 }
 
+function postgresErrorCode(error: unknown): string | null {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const databaseCode = error.meta?.code;
+    return typeof databaseCode === 'string' ? databaseCode : error.code;
+  }
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly meta?: { readonly code?: unknown };
+  };
+  if (typeof candidate.meta?.code === 'string') return candidate.meta.code;
+  const code = candidate.code;
+  return typeof code === 'string' ? code : null;
+}
+
+function prismaTransactionTimeout(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as {
+    readonly meta?: { readonly error?: unknown };
+  };
+  const detail = candidate.meta?.error;
+  return typeof detail === 'string'
+    && (
+      detail === 'Unable to start a transaction in the given time.'
+      || /^(?:Transaction already closed: )?A (?:query|commit|rollback) cannot be executed on an expired transaction\./u.test(
+        detail,
+      )
+    );
+}
+
+function foregroundUnavailableReason(
+  error: unknown,
+): AgentMissionForegroundUnavailableReason | null {
+  const code = postgresErrorCode(error);
+  if (code === '55P03') return 'lock_timeout';
+  if (code === '57014') return 'query_canceled';
+  if (code === 'P2028' && prismaTransactionTimeout(error)) return 'transaction_timeout';
+  return null;
+}
+
+/**
+ * Sentinel interne : une erreur SQLSTATE survenue DANS le callback transactionnel doit sortir
+ * par une exception. Retourner un statut depuis ce callback ferait croire à Prisma que le
+ * callback a réussi alors que PostgreSQL a déjà aborté la transaction, donc faux succès possible.
+ */
+class AgentMissionForegroundTransactionUnavailable extends Error {
+  readonly name = 'AgentMissionForegroundTransactionUnavailable';
+
+  constructor(readonly reason: AgentMissionForegroundUnavailableReason) {
+    super('agent_mission_foreground_transaction_unavailable');
+  }
+}
+
+function rethrowForegroundTransactionFailure(error: unknown): never {
+  const reason = foregroundUnavailableReason(error);
+  if (reason !== null) {
+    throw new AgentMissionForegroundTransactionUnavailable(reason);
+  }
+  throw error;
+}
+
+async function mapForegroundTransactionFailure<R>(
+  operation: () => Promise<R>,
+): Promise<
+  R | {
+    readonly status: 'foreground_unavailable';
+    readonly reason: AgentMissionForegroundUnavailableReason;
+  }
+> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof AgentMissionForegroundTransactionUnavailable) {
+      return { status: 'foreground_unavailable', reason: error.reason };
+    }
+    // Une panne peut aussi survenir dans la frontière `withIsolatedOwner` elle-même, avant
+    // l'entrée dans notre callback. À ce stade la promesse transactionnelle a déjà rejeté :
+    // le rollback est donc acquis et le mapping externe est sûr.
+    const reason = foregroundUnavailableReason(error);
+    if (reason !== null) return { status: 'foreground_unavailable', reason };
+    throw error;
+  }
+}
+
 function validAuthorityLeaseAt(
   row: AgentMissionAuthorityLeaseRow,
   databaseNow: Date,
@@ -319,6 +407,26 @@ function quoteCreationOwnerLockKey(owner: AgentMissionOwner): string {
     owner.ownerUserId,
     'quote_creation',
   ].join('\u001f');
+}
+
+function missionForegroundOwnerLockKey(owner: AgentMissionOwner): string {
+  return [
+    'bob.agent-mission.owner-foreground.v2',
+    owner.companyId,
+    owner.ownerUserId,
+  ].join('\u001f');
+}
+
+async function acquireMissionForegroundOwnerLock(
+  transaction: Prisma.TransactionClient,
+  owner: AgentMissionOwner,
+): Promise<void> {
+  const ownerLockKey = missionForegroundOwnerLockKey(owner);
+  await transaction.$queryRaw<Array<{ locked: boolean }>>`
+    SELECT (
+      pg_advisory_xact_lock(hashtextextended(${ownerLockKey}, 0)) IS NULL
+    ) AS "locked"
+  `;
 }
 
 async function acquireQuoteCreationOwnerLock(
@@ -496,17 +604,67 @@ class PrismaAgentMissionReadRepository implements AgentMissionReadRepositoryPort
     return row === null ? null : missionFromRow(row);
   }
 
+  async findForeground(input: AgentMissionOwner): Promise<AgentMissionForeground | null> {
+    const visible = await this.transaction.agentMission.findMany({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        status: 'active',
+      },
+      select: { id: true, kind: true },
+      orderBy: { id: 'asc' },
+      take: 2,
+    });
+    if (visible.length > 1) {
+      throw new Error('AGENT_MISSION_FOREGROUND_AMBIGUOUS');
+    }
+    const reference = visible[0];
+    if (reference === undefined) return null;
+    if (reference.kind !== 'quote_creation') {
+      return {
+        status: 'unsupported_kind',
+        missionId: reference.id,
+        kind: reference.kind,
+      };
+    }
+    const lookup = await this.findById({
+      ...input,
+      missionId: reference.id,
+    });
+    if (lookup === null || lookup.status !== 'known') {
+      throw new Error('AGENT_MISSION_FOREGROUND_DISAPPEARED');
+    }
+    return lookup;
+  }
+
   async findById(input: AgentMissionOwner & {
     readonly missionId: string;
-  }): Promise<AgentMission | null> {
-    const row = await this.transaction.agentMission.findFirst({
+  }): Promise<AgentMissionLookup | null> {
+    const reference = await this.transaction.agentMission.findFirst({
       where: {
         id: input.missionId,
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
       },
+      select: { id: true, kind: true },
     });
-    return row === null ? null : missionFromRow(row);
+    if (reference === null) return null;
+    if (reference.kind !== 'quote_creation') {
+      return {
+        status: 'unsupported_kind',
+        missionId: reference.id,
+        kind: reference.kind,
+      };
+    }
+    const row = await this.transaction.agentMission.findFirst({
+      where: {
+        id: input.missionId,
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        kind: 'quote_creation',
+      },
+    });
+    return row === null ? null : { status: 'known', mission: missionFromRow(row) };
   }
 }
 
@@ -545,10 +703,88 @@ class PrismaAgentMissionRepository
     return rows[0] === undefined ? null : missionFromRow(rows[0]);
   }
 
+  async findForegroundForUpdate(
+    input: AgentMissionOwner,
+  ): Promise<AgentMissionForeground | null> {
+    // Le verrou foreground global est possédé par l'UoW. La première lecture ne parse aucun
+    // payload : un binaire K2 peut donc voir un futur kind sans l'interpréter comme un devis.
+    const visible = await this.transaction.agentMission.findMany({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        status: 'active',
+      },
+      select: { id: true, kind: true },
+      orderBy: { id: 'asc' },
+      take: 2,
+    });
+    if (visible.length > 1) {
+      throw new Error('AGENT_MISSION_FOREGROUND_AMBIGUOUS');
+    }
+    const reference = visible[0];
+    if (reference === undefined) return null;
+    await setMissionContext(this.transaction, reference.id);
+    if (reference.kind !== 'quote_creation') {
+      const locked = await this.transaction.$queryRaw<Array<{ id: string; kind: string }>>`
+        SELECT "id", "kind"
+        FROM public.agent_missions
+        WHERE "id" = ${reference.id}::UUID
+          AND "companyId" = ${input.companyId}
+          AND "ownerUserId" = ${input.ownerUserId}
+          AND "status" = 'active'
+        LIMIT 1
+        FOR UPDATE
+      `;
+      const row = locked[0];
+      if (row === undefined) {
+        throw new Error('AGENT_MISSION_FOREGROUND_DISAPPEARED');
+      }
+      return {
+        status: 'unsupported_kind',
+        missionId: row.id,
+        kind: row.kind,
+      };
+    }
+    const rows = await this.transaction.$queryRaw<AgentMissionRow[]>`
+      SELECT ${MISSION_COLUMNS}
+      FROM public.agent_missions
+      WHERE "id" = ${reference.id}::UUID
+        AND "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "kind" = 'quote_creation'
+        AND "status" = 'active'
+      LIMIT 1
+      FOR UPDATE
+    `;
+    const row = rows[0];
+    if (row === undefined) {
+      throw new Error('AGENT_MISSION_FOREGROUND_DISAPPEARED');
+    }
+    return { status: 'known', mission: missionFromRow(row) };
+  }
+
   async findByIdForUpdate(input: AgentMissionOwner & {
     readonly missionId: string;
-  }): Promise<AgentMission | null> {
+  }): Promise<AgentMissionLookup | null> {
     await setMissionContext(this.transaction, input.missionId);
+    const reference = await this.transaction.agentMission.findFirst({
+      where: {
+        id: input.missionId,
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+      },
+      select: { id: true, kind: true },
+    });
+    if (reference === null) return null;
+    // Une mission terminale d'un futur kind reste discriminée : l'appelant ne peut ni la parser
+    // comme un devis, ni confondre son identifiant avec une absence.
+    if (reference.kind !== 'quote_creation') {
+      return {
+        status: 'unsupported_kind',
+        missionId: reference.id,
+        kind: reference.kind,
+      };
+    }
     const rows = await this.transaction.$queryRaw<AgentMissionRow[]>`
       SELECT ${MISSION_COLUMNS}
       FROM public.agent_missions
@@ -558,14 +794,16 @@ class PrismaAgentMissionRepository
       LIMIT 1
       FOR UPDATE
     `;
-    return rows[0] === undefined ? null : missionFromRow(rows[0]);
+    return rows[0] === undefined
+      ? null
+      : { status: 'known', mission: missionFromRow(rows[0]) };
   }
 
-  async insert(mission: AgentMission): Promise<void> {
+  async insert(mission: AgentMission): Promise<'inserted' | 'conflict'> {
     const snapshot = mission.toSnapshot();
     await setMissionContext(this.transaction, snapshot.id);
-    await this.transaction.agentMission.create({
-      data: {
+    const inserted = await this.transaction.agentMission.createMany({
+      data: [{
         id: snapshot.id,
         companyId: snapshot.companyId,
         ownerUserId: snapshot.ownerUserId,
@@ -584,8 +822,11 @@ class PrismaAgentMissionRepository
         retentionExpiresAt: new Date(snapshot.retentionExpiresAt),
         createdAt: new Date(snapshot.createdAt),
         updatedAt: new Date(snapshot.updatedAt),
-      },
+      }],
+      skipDuplicates: true,
     });
+    if (inserted.count === 1) return 'inserted';
+    return 'conflict';
   }
 
   async updateCas(input: {
@@ -626,15 +867,35 @@ class PrismaAgentMissionEventRepository implements AgentMissionEventRepositoryPo
 
   async findByCommandId(input: AgentMissionOwner & {
     readonly commandId: string;
-  }): Promise<AgentMissionEvent | null> {
-    const row = await this.transaction.agentMissionEvent.findFirst({
+  }): Promise<AgentMissionEventLookup | null> {
+    const reference = await this.transaction.agentMissionEvent.findFirst({
       where: {
         companyId: input.companyId,
         ownerUserId: input.ownerUserId,
         commandId: input.commandId,
       },
+      select: {
+        missionId: true,
+        mission: { select: { kind: true } },
+      },
     });
-    return row === null ? null : eventFromRow(row);
+    if (reference === null) return null;
+    if (reference.mission.kind !== 'quote_creation') {
+      return {
+        status: 'unsupported_kind',
+        missionId: reference.missionId,
+        kind: reference.mission.kind,
+      };
+    }
+    const row = await this.transaction.agentMissionEvent.findFirst({
+      where: {
+        companyId: input.companyId,
+        ownerUserId: input.ownerUserId,
+        commandId: input.commandId,
+        mission: { kind: 'quote_creation' },
+      },
+    });
+    return row === null ? null : { status: 'known', event: eventFromRow(row) };
   }
 
   async append(event: AgentMissionEvent): Promise<void> {
@@ -1095,31 +1356,43 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
     if (canonicalAuthorityProof(authority) === null) {
       return Promise.resolve({ status: 'capability_rejected', reason: 'malformed' });
     }
-    return this.prisma.withIsolatedOwner(owner.companyId, owner.ownerUserId, async (transaction) => {
-      await setTransactionTimeouts(transaction);
-      const company = await lockOpenCompanyForMissionWrite(transaction, owner.companyId);
-      if (company !== 'open') {
-        return { status: 'company_unavailable', reason: company } as const;
-      }
-      await acquireQuoteCreationOwnerLock(transaction, owner);
-      const resolution = await resolveAgentMissionAuthority(
-        transaction,
-        owner,
-        authority,
-        true,
-      );
-      if (resolution.status === 'rejected') {
-        return { status: 'capability_rejected', reason: resolution.reason } as const;
-      }
-      return {
-        status: 'executed',
-        value: await work(createWriteTransaction(
-          transaction,
-          resolution.lease,
-          resolution.databaseNow,
-        )),
-      } as const;
-    }, { ...OWNER_TRANSACTION_OPTIONS, readOnly: false });
+    return mapForegroundTransactionFailure(() =>
+      this.prisma.withIsolatedOwner(
+        owner.companyId,
+        owner.ownerUserId,
+        async (transaction) => {
+          try {
+            await setTransactionTimeouts(transaction);
+            const company = await lockOpenCompanyForMissionWrite(transaction, owner.companyId);
+            if (company !== 'open') {
+              return { status: 'company_unavailable', reason: company } as const;
+            }
+            await acquireMissionForegroundOwnerLock(transaction, owner);
+            await acquireQuoteCreationOwnerLock(transaction, owner);
+            const resolution = await resolveAgentMissionAuthority(
+              transaction,
+              owner,
+              authority,
+              true,
+            );
+            if (resolution.status === 'rejected') {
+              return { status: 'capability_rejected', reason: resolution.reason } as const;
+            }
+            return {
+              status: 'executed',
+              value: await work(createWriteTransaction(
+                transaction,
+                resolution.lease,
+                resolution.databaseNow,
+              )),
+            } as const;
+          } catch (error) {
+            rethrowForegroundTransactionFailure(error);
+          }
+        },
+        { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
+      ),
+    );
   }
 }
 
@@ -1182,32 +1455,39 @@ export class PrismaAgentMissionDraftFence implements AgentMissionDraftFencePort 
     owner: AgentMissionOwner,
     work: () => Promise<T>,
   ): Promise<AgentMissionDraftFenceResult<T>> {
-    return this.prisma.withIsolatedOwner(
-      owner.companyId,
-      owner.ownerUserId,
-      async (transaction) => {
-        await setTransactionTimeouts(transaction);
-        const company = await lockOpenCompanyForMissionWrite(transaction, owner.companyId);
-        if (company !== 'open') {
-          return { status: 'company_unavailable', reason: company } as const;
-        }
-        await acquireQuoteCreationOwnerLock(transaction, owner);
-        const rows = await transaction.$queryRaw<Array<{ agentMissionId: string | null }>>`
-          SELECT "agentMissionId"
-          FROM public.quote_draft_slots
-          WHERE "companyId" = ${owner.companyId}
-            AND "ownerUserId" = ${owner.ownerUserId}
-          LIMIT 1
-          FOR UPDATE
-        `;
-        // Tout marqueur est bloquant, même si la mission liée est terminale : un orphelin est une
-        // corruption à réparer, jamais une permission implicite de contourner le trigger SQL.
-        if (rows[0]?.agentMissionId != null) {
-          return { status: 'owned_by_agent_mission' } as const;
-        }
-        return { status: 'executed', value: await work() } as const;
-      },
-      { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
+    return mapForegroundTransactionFailure(() =>
+      this.prisma.withIsolatedOwner(
+        owner.companyId,
+        owner.ownerUserId,
+        async (transaction) => {
+          try {
+            await setTransactionTimeouts(transaction);
+            const company = await lockOpenCompanyForMissionWrite(transaction, owner.companyId);
+            if (company !== 'open') {
+              return { status: 'company_unavailable', reason: company } as const;
+            }
+            await acquireMissionForegroundOwnerLock(transaction, owner);
+            await acquireQuoteCreationOwnerLock(transaction, owner);
+            const rows = await transaction.$queryRaw<Array<{ agentMissionId: string | null }>>`
+              SELECT "agentMissionId"
+              FROM public.quote_draft_slots
+              WHERE "companyId" = ${owner.companyId}
+                AND "ownerUserId" = ${owner.ownerUserId}
+              LIMIT 1
+              FOR UPDATE
+            `;
+            // Tout marqueur est bloquant, même si la mission liée est terminale : un orphelin est
+            // une corruption à réparer, jamais une permission implicite de contourner le trigger SQL.
+            if (rows[0]?.agentMissionId != null) {
+              return { status: 'owned_by_agent_mission' } as const;
+            }
+            return { status: 'executed', value: await work() } as const;
+          } catch (error) {
+            rethrowForegroundTransactionFailure(error);
+          }
+        },
+        { ...OWNER_TRANSACTION_OPTIONS, readOnly: false },
+      ),
     );
   }
 }

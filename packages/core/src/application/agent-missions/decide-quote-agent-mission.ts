@@ -30,6 +30,7 @@ import {
   agentMissionDomainError,
   canonicalAgentMissionCustomerDecisionCommand,
   expireAgentMissionInTransaction,
+  guardAgentMissionReplayForeground,
   isCanonicalAgentMissionOwner,
   isCanonicalAgentMissionUserCommandOrigin,
   isCanonicalAgentMissionUuid,
@@ -38,8 +39,12 @@ import {
   recordAgentMissionEvent,
   rejectedAgentMissionCapability,
   requireAgentMissionFingerprint,
+  resolveQuoteAgentMissionEventLookup,
+  resolveQuoteAgentMissionLookup,
+  resolveQuoteAgentMissionForUpdate,
   toAgentMissionView,
   unavailableAgentMissionCompany,
+  unavailableAgentMissionForeground,
   verifyAgentMissionFingerprint,
   type AgentMissionUserCommandOrigin,
   type AgentMissionViewV1,
@@ -452,10 +457,13 @@ export class DecideQuoteAgentMission {
         input.authority,
         async (transaction) => {
           const now = await transaction.databaseNow();
-          const consumed = await transaction.events.findByCommandId({
+          const consumedLookup = await transaction.events.findByCommandId({
             ...owner,
             commandId: input.commandId,
           });
+          const consumedResult = resolveQuoteAgentMissionEventLookup(consumedLookup);
+          if (!consumedResult.ok) abort(consumedResult.error);
+          const consumed = consumedResult.value;
           if (consumed !== null) {
             const snapshot = consumed.toSnapshot();
             if (
@@ -478,10 +486,13 @@ export class DecideQuoteAgentMission {
             if (!verified.value) {
               abort(appConflict('agent_mission_command', 'fingerprint_mismatch'));
             }
-            const mission = await transaction.missions.findById({
+            const missionLookup = await transaction.missions.findById({
               ...owner,
               missionId: input.missionId,
             });
+            const missionResult = resolveQuoteAgentMissionLookup(missionLookup);
+            if (!missionResult.ok) abort(missionResult.error);
+            const mission = missionResult.value;
             if (mission === null) {
               abort({
                 kind: 'dependency',
@@ -489,6 +500,12 @@ export class DecideQuoteAgentMission {
                 cause: 'customer_decision_event_without_mission',
               });
             }
+            const replayGuard = await guardAgentMissionReplayForeground({
+              transaction,
+              owner,
+              replayedMissionId: mission.id,
+            });
+            if (!replayGuard.ok) abort(replayGuard.error);
             const view = toAgentMissionView(mission, now);
             if (!view.ok) abort(view.error);
             return {
@@ -498,10 +515,13 @@ export class DecideQuoteAgentMission {
             } satisfies DecideQuoteAgentMissionOutput;
           }
 
-          const mission = await transaction.missions.findByIdForUpdate({
-            ...owner,
+          const resolvedMission = await resolveQuoteAgentMissionForUpdate({
+            transaction,
+            owner,
             missionId: input.missionId,
           });
+          if (!resolvedMission.ok) abort(resolvedMission.error);
+          const mission = resolvedMission.value;
           if (mission === null) abort(missingAgentMission(input.missionId));
           if (mission.status !== 'active') {
             return { kind: 'gone', reason: mission.status } as const;
@@ -858,6 +878,9 @@ export class DecideQuoteAgentMission {
       );
       if (execution.status === 'company_unavailable') {
         return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      if (execution.status === 'foreground_unavailable') {
+        return err(unavailableAgentMissionForeground(execution.reason));
       }
       if (execution.status === 'capability_rejected') {
         return err(rejectedAgentMissionCapability(execution.reason));

@@ -36,6 +36,7 @@ export class Metrics {
   readonly bobLiveEntitlementChecks: Counter<string>;
   readonly agentMissionNegotiations: Counter<string>;
   readonly agentMissionCapabilityRejections: Counter<string>;
+  readonly agentMissionForegroundContentions: Counter<string>;
   readonly agentMissionBootstrapReceipts: Counter<string>;
   readonly agentMissionScreenAcks: Counter<string>;
   readonly cabinetOperations: Counter<string>;
@@ -223,6 +224,12 @@ export class Metrics {
     this.agentMissionCapabilityRejections = new Counter({
       name: 'bob_agent_mission_capability_rejections_total',
       help: 'Capabilities Mission refusées selon une taxonomie bornée, sans secret ni hash.',
+      labelNames: ['operation', 'reason'] as const,
+      registers: [this.registry],
+    });
+    this.agentMissionForegroundContentions = new Counter({
+      name: 'bob_agent_mission_foreground_contentions_total',
+      help: 'Indisponibilités transactionnelles bornées du premier plan Mission, sans identité.',
       labelNames: ['operation', 'reason'] as const,
       registers: [this.registry],
     });

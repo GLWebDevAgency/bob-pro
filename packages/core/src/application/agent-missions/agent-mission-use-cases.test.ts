@@ -15,6 +15,8 @@ import {
   type CustomerCandidateReference,
 } from '../ports/customer-candidate-search';
 import {
+  type AgentMissionEventLookup,
+  type AgentMissionForeground,
   type AgentMissionOwner,
   type AgentMissionQuoteDraftSlot,
 } from '../ports/agent-mission-repository';
@@ -140,12 +142,24 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   now = INITIAL_NOW;
   failAtWrite: number | null = null;
   companyUnavailableReason: 'missing' | 'closed' | null = null;
+  foregroundUnavailableReason:
+    | 'lock_timeout'
+    | 'query_canceled'
+    | 'transaction_timeout'
+    | null = null;
+  foregroundOverride: AgentMissionForeground | null | undefined;
+  eventLookupOverride: AgentMissionEventLookup | null | undefined;
+  insertOutcome: 'inserted' | 'conflict' = 'inserted';
+  insertConflictForeground: AgentMissionForeground | null | undefined;
   screenObservation: AgentMissionQuoteScreenObservation = {
     status: 'rejected',
     reason: 'unavailable',
   };
   readTransactions = 0;
   writeTransactions = 0;
+  findByIdForUpdateCalls = 0;
+  findByIdCalls = 0;
+  findByCommandIdCalls = 0;
   customerSearches = 0;
   customerByIdOverride: CustomerCandidateReference | null | undefined;
   customersByIdsOverride: readonly CustomerCandidateReference[] | undefined;
@@ -192,9 +206,17 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       },
       missions: {
         findActive: async ({ kind }) => this.findActive(state, owner, kind),
+        findForeground: async () => (
+          this.foregroundOverride !== undefined
+            ? this.foregroundOverride
+            : this.findForeground(state, owner)
+        ),
         findById: async ({ missionId }) => {
+          this.findByIdCalls += 1;
           const mission = state.missions.get(missionId) ?? null;
-          return mission !== null && sameOwner(owner, mission.toSnapshot()) ? mission : null;
+          return mission !== null && sameOwner(owner, mission.toSnapshot())
+            ? { status: 'known', mission }
+            : null;
         },
       },
     });
@@ -213,8 +235,15 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         reason: this.companyUnavailableReason,
       };
     }
+    if (this.foregroundUnavailableReason !== null) {
+      return {
+        status: 'foreground_unavailable',
+        reason: this.foregroundUnavailableReason,
+      };
+    }
     const nextState = cloneState(this.state);
     let writeCount = 0;
+    let insertConflictObserved = false;
     const beforeWrite = (): void => {
       writeCount += 1;
       if (this.failAtWrite === writeCount) throw new Error(`injected-write-${writeCount}`);
@@ -230,19 +259,42 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       },
       missions: {
         findActive: async ({ kind }) => this.findActive(nextState, owner, kind),
+        findForeground: async () => (
+          this.foregroundOverride !== undefined
+            ? this.foregroundOverride
+            : this.findForeground(nextState, owner)
+        ),
         findById: async ({ missionId }) => {
+          this.findByIdCalls += 1;
           const mission = nextState.missions.get(missionId) ?? null;
-          return mission !== null && sameOwner(owner, mission.toSnapshot()) ? mission : null;
+          return mission !== null && sameOwner(owner, mission.toSnapshot())
+            ? { status: 'known', mission }
+            : null;
         },
         findActiveForUpdate: async ({ kind }) => this.findActive(nextState, owner, kind),
+        findForegroundForUpdate: async () => (
+          insertConflictObserved && this.insertConflictForeground !== undefined
+            ? this.insertConflictForeground
+            : this.foregroundOverride !== undefined
+              ? this.foregroundOverride
+              : this.findForeground(nextState, owner)
+        ),
         findByIdForUpdate: async ({ missionId }) => {
+          this.findByIdForUpdateCalls += 1;
           const mission = nextState.missions.get(missionId) ?? null;
-          return mission !== null && sameOwner(owner, mission.toSnapshot()) ? mission : null;
+          return mission !== null && sameOwner(owner, mission.toSnapshot())
+            ? { status: 'known', mission }
+            : null;
         },
         insert: async (mission) => {
           beforeWrite();
+          if (this.insertOutcome === 'conflict') {
+            insertConflictObserved = true;
+            return 'conflict';
+          }
           if (nextState.missions.has(mission.id)) throw new Error('duplicate mission');
           nextState.missions.set(mission.id, mission);
+          return 'inserted';
         },
         updateCas: async ({ mission, expectedRevision }) => {
           beforeWrite();
@@ -259,12 +311,17 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         },
       },
       events: {
-        findByCommandId: async ({ commandId }) => (
-          nextState.events.find((event) => {
-            const snapshot = event.toSnapshot();
+        findByCommandId: async ({ commandId }) => {
+          this.findByCommandIdCalls += 1;
+          if (this.eventLookupOverride !== undefined) {
+            return this.eventLookupOverride;
+          }
+          const event = nextState.events.find((candidate) => {
+            const snapshot = candidate.toSnapshot();
             return sameOwner(owner, snapshot) && snapshot.commandId === commandId;
-          }) ?? null
-        ),
+          }) ?? null;
+          return event === null ? null : { status: 'known', event };
+        },
         append: async (event) => {
           beforeWrite();
           const snapshot = event.toSnapshot();
@@ -422,6 +479,17 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       const snapshot = mission.toSnapshot();
       return sameOwner(owner, snapshot) && snapshot.kind === kind && snapshot.status === 'active';
     }) ?? null;
+  }
+
+  private findForeground(
+    state: MemoryState,
+    owner: AgentMissionOwner,
+  ): AgentMissionForeground | null {
+    const mission = [...state.missions.values()].find((candidate) => {
+      const snapshot = candidate.toSnapshot();
+      return sameOwner(owner, snapshot) && snapshot.status === 'active';
+    });
+    return mission === undefined ? null : { status: 'known', mission };
   }
 }
 
@@ -628,6 +696,333 @@ describe('AgentMission application M1-A', () => {
     },
   );
 
+  it.each(['lock_timeout', 'query_canceled', 'transaction_timeout'] as const)(
+    'rend une contention foreground %s retentable sans état partiel',
+    async (reason) => {
+      const { unitOfWork, start } = useCases();
+      unitOfWork.foregroundUnavailableReason = reason;
+
+      await expect(
+        start.execute({ ...OWNER, commandId: START_COMMAND }),
+      ).resolves.toEqual({
+        ok: false,
+        error: {
+          kind: 'unavailable',
+          service: 'agent_mission_foreground',
+          retryAfterSeconds: 1,
+        },
+      });
+      const state = unitOfWork.snapshot();
+      expect(state.missions.size).toBe(0);
+      expect(state.events).toHaveLength(0);
+      expect(state.slot).toBeNull();
+    },
+  );
+
+  it('refuse un foreground de kind futur sans le parser comme un devis', async () => {
+    const { unitOfWork, start, get } = useCases();
+    unitOfWork.foregroundOverride = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000001',
+      kind: 'maintenance_contract@1',
+    };
+
+    await expect(get.execute(OWNER)).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    await expect(
+      start.execute({ ...OWNER, commandId: START_COMMAND }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    const state = unitOfWork.snapshot();
+    expect(state.missions.size).toBe(0);
+    expect(state.events).toHaveLength(0);
+    expect(state.slot).toBeNull();
+  });
+
+  it('refuse les commandes devis neuves sous un futur foreground avant la lecture quote-only', async () => {
+    const futureForeground = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000001',
+      kind: 'maintenance_contract@1',
+    } as const;
+    const expectedConflict = {
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    } as const;
+
+    {
+      const suite = useCases();
+      const started = await suite.start.execute({ ...OWNER, commandId: START_COMMAND });
+      if (!started.ok) throw new Error('cancel future foreground fixture failed');
+      suite.unitOfWork.foregroundOverride = futureForeground;
+      const before = suite.unitOfWork.snapshot();
+
+      expect(await suite.cancel.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        commandId: CANCEL_COMMAND,
+        expectedRevision: started.value.mission.revision,
+        reason: 'user_cancelled',
+        actor: 'user_tap',
+      })).toEqual(expectedConflict);
+      expect(suite.unitOfWork.findByIdForUpdateCalls).toBe(0);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    }
+
+    {
+      const suite = useCases();
+      const started = await suite.start.execute({ ...OWNER, commandId: START_COMMAND });
+      if (!started.ok || started.value.mission.payload.draft === null) {
+        throw new Error('ack future foreground fixture failed');
+      }
+      const draft = started.value.mission.payload.draft;
+      suite.unitOfWork.foregroundOverride = futureForeground;
+      const before = suite.unitOfWork.snapshot();
+
+      expect(await suite.acknowledge.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        commandId: ACK_COMMAND,
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      })).toEqual(expectedConflict);
+      expect(suite.unitOfWork.findByIdForUpdateCalls).toBe(0);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    }
+
+    {
+      const suite = await preparedCustomerDecisionMission({
+        customers: [{
+          customerId: 'customer-camping',
+          canonicalName: 'Camping les Pins',
+        }],
+        customerReference: null,
+      });
+      const draft = suite.mission.payload.draft;
+      if (draft === null) throw new Error('decision future foreground fixture failed');
+      suite.unitOfWork.foregroundOverride = futureForeground;
+      const before = suite.unitOfWork.snapshot();
+
+      expect(await suite.decide.execute({
+        ...OWNER,
+        missionId: suite.mission.id,
+        commandId: DECISION_COMMAND,
+        expectedMissionRevision: suite.mission.revision,
+        expectedDraftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+        origin: { actor: 'user_tap', correlation: null },
+        decision: {
+          action: 'select_screen_customer',
+          customerId: 'customer-camping',
+        },
+      })).toEqual(expectedConflict);
+      expect(suite.unitOfWork.findByIdForUpdateCalls).toBe(0);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    }
+
+    {
+      const suite = useCases();
+      suite.unitOfWork.setCustomers([{
+        customerId: 'customer-camping',
+        canonicalName: 'Camping les Pins',
+      }]);
+      const started = await suite.start.execute({
+        ...OWNER,
+        commandId: START_COMMAND,
+        customerReference: 'Camping les Pins',
+      });
+      if (!started.ok || started.value.mission.payload.draft === null) {
+        throw new Error('advance future foreground fixture failed');
+      }
+      const draft = started.value.mission.payload.draft;
+      suite.unitOfWork.screenObservation = {
+        status: 'ready',
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        screenInstanceId: 'quote-wizard-instance-future-foreground',
+        draft,
+        draftHasCustomer: false,
+      };
+      expect(await suite.acknowledge.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        commandId: ACK_COMMAND,
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        draftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+      })).toMatchObject({ ok: true, value: { outcome: 'acknowledged' } });
+      suite.unitOfWork.foregroundOverride = futureForeground;
+      const before = suite.unitOfWork.snapshot();
+
+      expect(await suite.advance.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        acknowledgementCommandId: ACK_COMMAND,
+      })).toEqual(expectedConflict);
+      expect(suite.unitOfWork.findByIdForUpdateCalls).toBe(0);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    }
+  });
+
+  it.each([
+    {
+      command: 'start',
+      execute: (suite: ReturnType<typeof useCases>) => suite.start.execute({
+        ...OWNER,
+        commandId: START_COMMAND,
+      }),
+    },
+    {
+      command: 'cancel',
+      execute: (suite: ReturnType<typeof useCases>) => suite.cancel.execute({
+        ...OWNER,
+        missionId: '20000000-0000-4000-8000-000000000001',
+        commandId: CANCEL_COMMAND,
+        expectedRevision: 1,
+        reason: 'user_cancelled',
+        actor: 'user_tap',
+      }),
+    },
+    {
+      command: 'screen ACK',
+      execute: (suite: ReturnType<typeof useCases>) => suite.acknowledge.execute({
+        ...OWNER,
+        missionId: '20000000-0000-4000-8000-000000000001',
+        commandId: ACK_COMMAND,
+        expectedMissionRevision: 1,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 1,
+        contextDigest: 'd'.repeat(64),
+        draftSessionId: 'draft-session-future-event',
+        expectedDraftSlotRevision: 1,
+        expectedDraftContentRevision: 0,
+      }),
+    },
+    {
+      command: 'decision',
+      execute: (suite: ReturnType<typeof useCases>) => suite.decide.execute({
+        ...OWNER,
+        missionId: '20000000-0000-4000-8000-000000000001',
+        commandId: DECISION_COMMAND,
+        expectedMissionRevision: 1,
+        expectedDraftSessionId: 'draft-session-future-event',
+        expectedDraftSlotRevision: 1,
+        expectedDraftContentRevision: 0,
+        origin: { actor: 'user_tap', correlation: null },
+        decision: {
+          action: 'select_screen_customer',
+          customerId: 'customer-future-event',
+        },
+      }),
+    },
+    {
+      command: 'advance ACK',
+      execute: (suite: ReturnType<typeof useCases>) => suite.advance.execute({
+        ...OWNER,
+        missionId: '20000000-0000-4000-8000-000000000001',
+        acknowledgementCommandId: ACK_COMMAND,
+      }),
+    },
+  ])(
+    'refuse le replay $command d’un event futur sans parser mission/payload ni écrire',
+    async ({ execute }) => {
+      const suite = useCases();
+      suite.unitOfWork.eventLookupOverride = {
+        status: 'unsupported_kind',
+        missionId: '90000000-0000-4000-8000-000000000010',
+        kind: 'equipment_maintenance@1',
+      };
+      const before = suite.unitOfWork.snapshot();
+
+      await expect(execute(suite)).resolves.toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_kind',
+          reason: 'unsupported_kind',
+        },
+      });
+
+      expect(suite.unitOfWork.findByCommandIdCalls).toBe(1);
+      expect(suite.unitOfWork.findByIdCalls).toBe(0);
+      expect(suite.unitOfWork.findByIdForUpdateCalls).toBe(0);
+      expect(suite.unitOfWork.snapshot()).toEqual(before);
+    },
+  );
+
+  it('traduit un conflit d’insert sans foreground relisible en dépendance fermée', async () => {
+    const { unitOfWork, start } = useCases();
+    unitOfWork.insertOutcome = 'conflict';
+    unitOfWork.insertConflictForeground = null;
+
+    await expect(
+      start.execute({ ...OWNER, commandId: START_COMMAND }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'agent_mission_repository',
+        cause: 'insert_conflict_without_active_foreground',
+      },
+    });
+    const state = unitOfWork.snapshot();
+    expect(state.missions.size).toBe(0);
+    expect(state.events).toHaveLength(0);
+    expect(state.slot).toBeNull();
+  });
+
+  it('traduit un conflit d’insert avec foreground relisible en conflit métier', async () => {
+    const { unitOfWork, start } = useCases();
+    unitOfWork.insertOutcome = 'conflict';
+    unitOfWork.insertConflictForeground = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000002',
+      kind: 'maintenance_contract@1',
+    };
+
+    await expect(
+      start.execute({ ...OWNER, commandId: START_COMMAND }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    const state = unitOfWork.snapshot();
+    expect(state.missions.size).toBe(0);
+    expect(state.events).toHaveLength(0);
+    expect(state.slot).toBeNull();
+  });
+
   it('crée atomiquement le vrai brouillon, la mission et son événement initial', async () => {
     const { unitOfWork, start } = useCases();
 
@@ -727,6 +1122,41 @@ describe('AgentMission application M1-A', () => {
     });
     expect(unitOfWork.snapshot().missions).toHaveLength(1);
     expect(unitOfWork.snapshot().events).toHaveLength(afterCancel.events.length);
+  });
+
+  it('refuse le replay historique si un autre kind possède désormais le foreground', async () => {
+    const { unitOfWork, start, cancel } = useCases();
+    const created = await start.execute({ ...OWNER, commandId: START_COMMAND });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(await cancel.execute({
+      ...OWNER,
+      missionId: created.value.mission.id,
+      commandId: CANCEL_COMMAND,
+      expectedRevision: 1,
+      reason: 'user_cancelled',
+      actor: 'user_tap',
+    })).toMatchObject({ ok: true, value: { outcome: 'cancelled' } });
+
+    unitOfWork.foregroundOverride = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000099',
+      kind: 'maintenance_contract',
+    };
+    const beforeReplay = unitOfWork.snapshot();
+
+    const replayed = await start.execute({ ...OWNER, commandId: START_COMMAND });
+
+    expect(replayed).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    expect(unitOfWork.snapshot()).toEqual(beforeReplay);
   });
 
   it('présente un conflit réel sans modifier ni réclamer le brouillon significatif', async () => {
@@ -839,6 +1269,29 @@ describe('AgentMission application M1-A', () => {
       });
       expect(replayed).toMatchObject({ ok: true, value: { outcome: 'replayed' } });
       expect(unitOfWork.snapshot().events).toHaveLength(eventCount);
+
+      unitOfWork.foregroundOverride = {
+        status: 'unsupported_kind',
+        missionId: '90000000-0000-4000-8000-000000000099',
+        kind: 'maintenance_contract',
+      };
+      const beforeBlockedReplay = unitOfWork.snapshot();
+      expect(await cancel.execute({
+        ...OWNER,
+        missionId: started.value.mission.id,
+        commandId: CANCEL_COMMAND,
+        expectedRevision: 1,
+        reason,
+        actor: 'user_tap',
+      })).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_foreground',
+          reason: 'active_mission_exists',
+        },
+      });
+      expect(unitOfWork.snapshot()).toEqual(beforeBlockedReplay);
     },
   );
 
@@ -1277,7 +1730,7 @@ describe('AgentMission application M1-A', () => {
   );
 
   it('enchaîne exact staged → ACK réel → sélection client atomique et rejouable', async () => {
-    const { unitOfWork, start, acknowledge, advance } = useCases();
+    const { unitOfWork, start, acknowledge, advance, cancel } = useCases();
     unitOfWork.setCustomers([
       { customerId: 'customer-camping', canonicalName: 'Camping les Pins' },
     ]);
@@ -1412,6 +1865,42 @@ describe('AgentMission application M1-A', () => {
         mission: { revision: 3 },
       },
     });
+
+    expect(await cancel.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      commandId: CANCEL_COMMAND,
+      expectedRevision: 3,
+      reason: 'user_cancelled',
+      actor: 'user_tap',
+    })).toMatchObject({ ok: true, value: { outcome: 'cancelled' } });
+    unitOfWork.foregroundOverride = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000099',
+      kind: 'maintenance_contract',
+    };
+    const beforeBlockedReplays = unitOfWork.snapshot();
+    expect(await advance.execute({
+      ...OWNER,
+      missionId: started.value.mission.id,
+      acknowledgementCommandId: ACK_COMMAND,
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    expect(await acknowledge.execute(ackCommand)).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    expect(unitOfWork.snapshot()).toEqual(beforeBlockedReplays);
   });
 
   it('refuse une relecture client substituée par un adapter sans aucune écriture', async () => {
@@ -1698,6 +2187,31 @@ describe('AgentMission application M1-A', () => {
         reason: 'fingerprint_mismatch',
       },
     });
+
+    if (!selected.ok) return;
+    expect(await suite.cancel.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: CANCEL_COMMAND,
+      expectedRevision: selected.value.mission.revision,
+      reason: 'user_cancelled',
+      actor: 'user_tap',
+    })).toMatchObject({ ok: true, value: { outcome: 'cancelled' } });
+    suite.unitOfWork.foregroundOverride = {
+      status: 'unsupported_kind',
+      missionId: '90000000-0000-4000-8000-000000000099',
+      kind: 'maintenance_contract',
+    };
+    const beforeBlockedReplay = suite.unitOfWork.snapshot();
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_foreground',
+        reason: 'active_mission_exists',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(beforeBlockedReplay);
   });
 
   it('résout une référence vocale contre la BDD et sélectionne le nom canonique dans la même commande', async () => {

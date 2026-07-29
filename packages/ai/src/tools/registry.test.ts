@@ -3,6 +3,7 @@ import { ok, type FiscalDeadline } from '@bob/core';
 import { buildBobTools } from './registry';
 import { type BobActions } from '../agent/actions';
 import { isSafetyFloor, requiresConfirmation, riskTierOf } from '../agent/autonomy';
+import { RUNTIME_TOOL_INTENTS } from '../agent/runtime-tool-intent';
 
 /** Surface d'actions minimale (hôte legacy type apps/api) : AUCUNE capacité optionnelle. */
 const baseActions: BobActions = {
@@ -32,6 +33,8 @@ function fullActions(calls: Record<string, unknown[]>): BobActions {
       ok({ filename: '732829320FEC20261231.txt', entryCount: 2, rowCount: 5, warnings: [] })
     ),
     createCustomer: async (input) => (track('createCustomer', input), ok({ id: 'cust-9' })),
+    composeStandaloneInvoice: async () => ok({} as never),
+    setCustomerPaymentTerms: async () => ok({} as never),
     scheduleEmbargoPayment: async (input) => (
       track('scheduleEmbargoPayment', input),
       ok({
@@ -41,6 +44,41 @@ function fullActions(calls: Record<string, unknown[]>): BobActions {
         status: 'pending',
       })
     ),
+    sendInvoice: async () => ok({} as never),
+    sendRelance: async () => ok({} as never),
+    draftQuoteRelance: async () => ok({} as never),
+    recordInvoiceTransmission: async () => ok({} as never),
+    getRelanceSettings: async () => ok({} as never),
+    setRelanceAutoEnabled: async () => ok({} as never),
+    recordExpensePayment: async () => ok({} as never),
+    assignExpenseChantier: async () => ok({} as never),
+    markNotificationsReadThrough: async () => ok({} as never),
+    listFiscalDeadlines: async () => ok([]),
+    getSubscriptionStatus: async () => ok({} as never),
+    acknowledgeDocument: async () => ok({} as never),
+    listFilingDestinations: async () => ok({} as never),
+    fileDocument: async () => ok({} as never),
+    renameDocument: async () => ok({} as never),
+    searchDocuments: async () => ok({} as never),
+    attachPurchaseOrderToQuote: async () => ok({} as never),
+    listEquipments: async () => ok([]),
+    createEquipment: async () => ok({} as never),
+    retireEquipment: async () => ok({} as never),
+    getEquipmentHistory: async () => ok({} as never),
+    listMaintenanceContracts: async () => ok([]),
+    prepareContractAnnualInvoice: async () => ok({} as never),
+    createMaintenanceContract: async () => ok({} as never),
+    activateMaintenanceContract: async () => ok({} as never),
+    terminateMaintenanceContract: async () => ok({} as never),
+    renameMaintenanceContract: async () => ok({} as never),
+    listInterventions: async () => ok([]),
+    startIntervention: async () => ok({} as never),
+    completeIntervention: async () => ok({} as never),
+    sendInterventionReport: async () => ok({} as never),
+    prepareInterventionInvoice: async () => ok({} as never),
+    listInterventionsToBill: async () => ok([]),
+    getInterventionSettings: async () => ok({} as never),
+    updateInterventionSettings: async () => ok({} as never),
   };
 }
 
@@ -49,6 +87,13 @@ function tool(actions: BobActions, name: string) {
 }
 
 describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
+  it('construit exactement la surface exhaustive liée au contrat d’ownership', () => {
+    const constructed = buildBobTools(fullActions({}))
+      .map((candidate) => candidate.name)
+      .sort();
+    expect(constructed).toEqual(Object.keys(RUNTIME_TOOL_INTENTS).sort());
+  });
+
   it("n'expose PAS les outils optionnels si l'hôte ne fournit pas l'action (rétro-compat apps/api)", () => {
     const names = buildBobTools(baseActions).map((t) => t.name);
     expect(names).not.toContain('generer_facture');

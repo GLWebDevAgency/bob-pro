@@ -1,5 +1,4 @@
 import {
-  AGENT_MISSION_KIND,
   AgentMission,
   type AgentMissionTransition,
   type QuoteMissionStagedCustomerResolutionV1,
@@ -31,13 +30,17 @@ import {
   canonicalAgentMissionStartCommand,
   draftReferenceForMission,
   expireAgentMissionInTransaction,
+  guardAgentMissionReplayForeground,
   isCanonicalAgentMissionOwner,
   isCanonicalAgentMissionUserCommandOrigin,
   recordAgentMissionEvent,
+  resolveQuoteAgentMissionEventLookup,
+  resolveQuoteAgentMissionLookup,
   requireAgentMissionFingerprint,
   toAgentMissionView,
   rejectedAgentMissionCapability,
   unavailableAgentMissionCompany,
+  unavailableAgentMissionForeground,
   verifyAgentMissionFingerprint,
   type AgentMissionUserCommandOrigin,
   type AgentMissionViewV1,
@@ -168,10 +171,13 @@ export class StartQuoteAgentMission {
             abort(appConflict('agent_mission_command', 'context_stale'));
           }
         }
-        const consumed = await transaction.events.findByCommandId({
+        const consumedLookup = await transaction.events.findByCommandId({
           ...owner,
           commandId: input.commandId,
         });
+        const consumedResult = resolveQuoteAgentMissionEventLookup(consumedLookup);
+        if (!consumedResult.ok) abort(consumedResult.error);
+        const consumed = consumedResult.value;
         if (consumed !== null) {
           const snapshot = consumed.toSnapshot();
           if (
@@ -187,10 +193,13 @@ export class StartQuoteAgentMission {
           );
           if (!verified.ok) abort(verified.error);
           if (!verified.value) abort(appConflict('agent_mission_command', 'fingerprint_mismatch'));
-          const mission = await transaction.missions.findById({
+          const missionLookup = await transaction.missions.findById({
             ...owner,
             missionId: snapshot.missionId,
           });
+          const missionResult = resolveQuoteAgentMissionLookup(missionLookup);
+          if (!missionResult.ok) abort(missionResult.error);
+          const mission = missionResult.value;
           if (mission === null) {
             abort({
               kind: 'dependency',
@@ -198,6 +207,12 @@ export class StartQuoteAgentMission {
               cause: 'creator_event_without_mission',
             });
           }
+          const replayGuard = await guardAgentMissionReplayForeground({
+            transaction,
+            owner,
+            replayedMissionId: mission.id,
+          });
+          if (!replayGuard.ok) abort(replayGuard.error);
           const view = toAgentMissionView(mission, now);
           if (!view.ok) abort(view.error);
           return {
@@ -209,10 +224,11 @@ export class StartQuoteAgentMission {
           } satisfies StartQuoteAgentMissionOutput;
         }
 
-        const active = await transaction.missions.findActiveForUpdate({
-          ...owner,
-          kind: AGENT_MISSION_KIND,
-        });
+        const foreground = await transaction.missions.findForegroundForUpdate(owner);
+        if (foreground?.status === 'unsupported_kind') {
+          abort(appConflict('agent_mission_foreground', 'active_mission_exists'));
+        }
+        const active = foreground?.mission ?? null;
         if (active !== null) {
           const expired = active.isExpiredAt(now);
           if (!expired.ok) abort(agentMissionDomainError(expired.error));
@@ -370,7 +386,18 @@ export class StartQuoteAgentMission {
               draft: draftReference(slot),
             });
         const transition = transitionValue(started);
-        await transaction.missions.insert(transition.mission);
+        const inserted = await transaction.missions.insert(transition.mission);
+        if (inserted === 'conflict') {
+          const racedForeground = await transaction.missions.findForegroundForUpdate(owner);
+          if (racedForeground === null) {
+            abort({
+              kind: 'dependency',
+              port: 'agent_mission_repository',
+              cause: 'insert_conflict_without_active_foreground',
+            });
+          }
+          abort(appConflict('agent_mission_foreground', 'active_mission_exists'));
+        }
 
         if (startOutcome !== 'draft_conflict') {
           const claimed = await transaction.quoteDrafts.claim({
@@ -424,6 +451,9 @@ export class StartQuoteAgentMission {
       );
       if (execution.status === 'company_unavailable') {
         return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      if (execution.status === 'foreground_unavailable') {
+        return err(unavailableAgentMissionForeground(execution.reason));
       }
       return execution.status === 'capability_rejected'
         ? err(rejectedAgentMissionCapability(execution.reason))

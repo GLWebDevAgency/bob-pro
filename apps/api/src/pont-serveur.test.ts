@@ -3,11 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
 import {
+  LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
+  LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+  runtimeToolResultIntent,
+  type JournalEntry,
+} from '@bob/ai';
+import {
   Company,
   Customer,
   DocumentFolder,
   Expense,
   Invoice,
+  QUOTE_CREATION_MISSION_KIND_V1,
   deriveVatPosition,
   makeDocumentAnalysis,
   type DocumentView,
@@ -152,6 +159,56 @@ const COLLEAGUE: Principal = { userId: 'u-colleague', companyId: MERCIER_PROPS.i
 const INTRUS: Principal = { userId: 'u-intrus', companyId: 'company-intrus' };
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
+
+async function seedOpaqueAgentProposal(
+  p: InMemoryPersistence,
+  input: {
+    proposalId: string;
+    planned: readonly Omit<JournalEntry, 'runId' | 'at' | 'phase' | 'seq'>[];
+    admittedMissionKinds?: readonly string[];
+    ownership?: Record<string, unknown> | null;
+  },
+): Promise<void> {
+  const at = new Date().toISOString();
+  const planned = input.planned.map((entry, index): JournalEntry => ({
+    ...entry,
+    seq: index + 1,
+    runId: input.proposalId,
+    at,
+    phase: 'planned',
+    args: { ...entry.args },
+  }));
+  for (const entry of planned) await p.agentJournal.append(MERCIER_PROPS.id, entry);
+
+  const ownership = input.ownership === undefined
+    ? {
+        schemaVersion: LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+        contractSha256: LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
+        admittedMissionKinds: [...(input.admittedMissionKinds ?? [])],
+        bindings: planned.map((entry) => {
+          const intent = runtimeToolResultIntent(entry.tool);
+          if (intent === null) throw new Error(`fixture: outil runtime inconnu ${entry.tool}`);
+          return { seq: entry.seq, tool: entry.tool, intent };
+        }),
+      }
+    : input.ownership;
+  await p.agentJournal.append(MERCIER_PROPS.id, {
+    seq: planned.length + 1,
+    runId: input.proposalId,
+    at,
+    phase: 'executed',
+    tool: '__proposal_owner__',
+    label: 'Propriétaire de la proposition agent',
+    args: {
+      userId: MERCIER.userId,
+      ...(ownership === null ? {} : { ownership }),
+    },
+    mutating: false,
+    outbound: false,
+    compliance: 'high',
+    resultDigest: 'owner-bound',
+  });
+}
 
 /** Flow d'émission RÉEL (jamais un statut fabriqué) : devis → envoi → signature → facture → émission. */
 async function issueFinalInvoice(
@@ -1216,6 +1273,239 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         });
       }
     });
+  });
+
+  it('recharge exactement l’autorité legacy persistée : creer_devis reste visible sans kind admis', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const proposalId = 'proposal-legacy-quote-001';
+    await seedOpaqueAgentProposal(p, {
+      proposalId,
+      planned: [{
+        tool: 'creer_devis',
+        label: 'Créer le devis test',
+        args: {
+          customerId: 'cust-martin',
+          lines: [{
+            label: 'Entretien vitrines',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 12_000,
+            vatRate: 20,
+          }],
+        },
+        mutating: true,
+        outbound: false,
+        compliance: 'medium',
+      }],
+    });
+    const claim = vi.spyOn(p.agentJournal, 'claim');
+
+    await asPrincipal(MERCIER, async () => {
+      const preview = await service.previewBobProposal({ proposalId });
+      expect(preview.ok).toBe(true);
+      expect(preview.ok && preview.value.tool).toBe('creer_devis');
+    });
+    // Le serveur HTTP historique n'expose volontairement pas createQuote : K2 ne crée pas un
+    // nouveau chemin de mutation pour faire passer le test. L'exécution legacy est prouvée dans
+    // @bob/ai ; ici on prouve seulement que le snapshot [] n'est pas réécrit en admission globale.
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      id: 'missing',
+      label: 'metadata absente',
+      ownership: null,
+    },
+    {
+      id: 'stale',
+      label: 'empreinte de policy périmée',
+      ownership: {
+        schemaVersion: LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+        contractSha256: '0'.repeat(64),
+        admittedMissionKinds: [],
+        bindings: [{ seq: 1, tool: 'documents_liste', intent: 'documents' }],
+      },
+    },
+    {
+      id: 'tampered',
+      label: 'binding outil-intention altéré',
+      ownership: {
+        schemaVersion: LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+        contractSha256: LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
+        admittedMissionKinds: [],
+        bindings: [{ seq: 1, tool: 'documents_liste', intent: 'factures' }],
+      },
+    },
+    {
+      id: 'future-shape',
+      label: 'forme future avec clé inconnue',
+      ownership: {
+        schemaVersion: LEGACY_EXECUTION_AUTHORITY_SCHEMA_VERSION,
+        contractSha256: LEGACY_EXECUTION_AUTHORITY_CONTRACT_SHA256,
+        admittedMissionKinds: [],
+        bindings: [{ seq: 1, tool: 'documents_liste', intent: 'documents' }],
+        futureField: true,
+      },
+    },
+  ])('refuse une proposition dont la preuve d’ownership est $label avant tout claim', async ({
+    id,
+    ownership,
+  }) => {
+    const { service, p } = makeService();
+    await p.seed();
+    const proposalId = `proposal-invalid-owner-${id}`;
+    await seedOpaqueAgentProposal(p, {
+      proposalId,
+      planned: [{
+        tool: 'documents_liste',
+        label: 'Lister les documents',
+        args: {},
+        mutating: false,
+        outbound: false,
+        compliance: 'low',
+      }],
+      ownership,
+    });
+    const claim = vi.spyOn(p.agentJournal, 'claim');
+
+    await asPrincipal(MERCIER, async () => {
+      const preview = await service.previewBobProposal({ proposalId });
+      expect(preview).toEqual({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_proposal',
+          reason: 'ownership_changed',
+        },
+      });
+      const confirmed = await service.confirmBob({ proposalId });
+      expect(confirmed).toEqual(preview);
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      id: 'sequence-gap',
+      entry: {
+        phase: 'planned',
+        tool: 'documents_liste',
+        label: 'Entrée planifiée hors séquence',
+        args: {},
+        mutating: false,
+        outbound: false,
+        compliance: 'low',
+      } as const,
+    },
+    {
+      id: 'second-owner',
+      entry: {
+        phase: 'executed',
+        tool: '__proposal_owner__',
+        label: 'Second propriétaire interdit',
+        args: { userId: MERCIER.userId },
+        mutating: false,
+        outbound: false,
+        compliance: 'high',
+        resultDigest: 'owner-bound',
+      } as const,
+    },
+  ])('refuse un journal de proposition non canonique : $id', async ({ id, entry }) => {
+    const { service, p } = makeService();
+    await p.seed();
+    const proposalId = `proposal-invalid-journal-${id}`;
+    await seedOpaqueAgentProposal(p, {
+      proposalId,
+      planned: [{
+        tool: 'documents_liste',
+        label: 'Lister les documents',
+        args: {},
+        mutating: false,
+        outbound: false,
+        compliance: 'low',
+      }],
+    });
+    await p.agentJournal.append(MERCIER_PROPS.id, {
+      ...entry,
+      seq: 3,
+      runId: proposalId,
+      at: new Date().toISOString(),
+    });
+    const claim = vi.spyOn(p.agentJournal, 'claim');
+
+    await asPrincipal(MERCIER, async () => {
+      const preview = await service.previewBobProposal({ proposalId });
+      expect(preview).toEqual({
+        ok: false,
+        error: {
+          kind: 'not_found',
+          entity: 'agent_proposal',
+          id: 'redacted',
+        },
+      });
+      expect(await service.confirmBob({ proposalId })).toEqual(preview);
+    });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('préflight le lot entier : un second outil mission-owned bloque avant le claim et avant tout effet', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const proposalId = 'proposal-batch-mission-owned-001';
+    await seedOpaqueAgentProposal(p, {
+      proposalId,
+      admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+      planned: [
+        {
+          tool: 'creer_client',
+          label: 'Créer un client',
+          args: { name: 'Client qui ne doit pas exister', type: 'b2b' },
+          mutating: true,
+          outbound: false,
+          compliance: 'medium',
+        },
+        {
+          tool: 'creer_devis',
+          label: 'Créer un devis',
+          args: {
+            customerId: 'cust-martin',
+            lines: [{
+              label: 'Ne doit pas être créé',
+              category: 'labor',
+              qty: 1,
+              unitPriceHT: 10_000,
+              vatRate: 20,
+            }],
+          },
+          mutating: true,
+          outbound: false,
+          compliance: 'medium',
+        },
+      ],
+    });
+    const claim = vi.spyOn(p.agentJournal, 'claim');
+    const quotesBefore = await asPrincipal(MERCIER, () => service.listQuotes());
+    const customersBefore = await asPrincipal(MERCIER, () => service.listCustomers());
+
+    const confirmed = await asPrincipal(MERCIER, () => service.confirmBob({ proposalId }));
+
+    expect(confirmed).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_proposal',
+        reason: 'ownership_changed',
+      },
+    });
+    expect(claim).not.toHaveBeenCalled();
+    const quotesAfter = await asPrincipal(MERCIER, () => service.listQuotes());
+    const customersAfter = await asPrincipal(MERCIER, () => service.listCustomers());
+    expect(quotesBefore.ok && quotesAfter.ok && quotesAfter.value)
+      .toEqual(quotesBefore.ok ? quotesBefore.value : []);
+    expect(customersBefore.ok && customersAfter.ok && customersAfter.value)
+      .toEqual(customersBefore.ok ? customersBefore.value : []);
   });
 
   it('isole la proposition opaque par tenant avant même la consommation', async () => {

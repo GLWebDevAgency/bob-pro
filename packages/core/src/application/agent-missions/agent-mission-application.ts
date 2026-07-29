@@ -21,9 +21,14 @@ import {
   type AgentMissionFingerprint,
   type AgentMissionFingerprintPort,
 } from '../ports/agent-mission-fingerprint';
-import { type AgentMissionOwner } from '../ports/agent-mission-repository';
+import {
+  type AgentMissionEventLookup,
+  type AgentMissionLookup,
+  type AgentMissionOwner,
+} from '../ports/agent-mission-repository';
 import {
   type AgentMissionCapabilityRejectionReason,
+  type AgentMissionForegroundUnavailableReason,
   type AgentMissionTransaction,
 } from '../ports/agent-mission-unit-of-work';
 import {
@@ -73,6 +78,76 @@ export interface AgentMissionViewV1 {
   readonly terminalAt: Instant | null;
   readonly createdAt: Instant;
   readonly updatedAt: Instant;
+}
+
+/**
+ * Un reçu idempotent ne redevient jamais une autorité de premier plan.
+ *
+ * Après vérification du journal et du fingerprint, chaque use case appelle ce garde avant de
+ * restituer une mission historique. Un autre kind actif gagne toujours : le replay est alors
+ * refusé sans transition, sans effet métier et sans navigation dérivée de l'ancienne réponse.
+ */
+export async function guardAgentMissionReplayForeground(input: {
+  readonly transaction: AgentMissionTransaction;
+  readonly owner: AgentMissionOwner;
+  readonly replayedMissionId: string;
+}): Promise<Result<void, AppError>> {
+  const foreground = await input.transaction.missions.findForegroundForUpdate(input.owner);
+  if (foreground === null) return ok(undefined);
+  const foregroundMissionId = foreground.status === 'known'
+    ? foreground.mission.id
+    : foreground.missionId;
+  return foregroundMissionId === input.replayedMissionId
+    ? ok(undefined)
+    : err(appConflict('agent_mission_foreground', 'active_mission_exists'));
+}
+
+/** Un binaire devis ne parse jamais une mission ajoutée par un binaire plus récent. */
+export function resolveQuoteAgentMissionLookup(
+  lookup: AgentMissionLookup | null,
+): Result<AgentMission | null, AppError> {
+  if (lookup === null) return ok(null);
+  return lookup.status === 'known'
+    ? ok(lookup.mission)
+    : err(appConflict('agent_mission_kind', 'unsupported_kind'));
+}
+
+/** Même discrimination pour le journal : un commandId futur n'est jamais considéré comme neuf. */
+export function resolveQuoteAgentMissionEventLookup(
+  lookup: AgentMissionEventLookup | null,
+): Result<AgentMissionEvent | null, AppError> {
+  if (lookup === null) return ok(null);
+  return lookup.status === 'known'
+    ? ok(lookup.event)
+    : err(appConflict('agent_mission_kind', 'unsupported_kind'));
+}
+
+/**
+ * Résout une commande devis neuve sans jamais demander au repository de parser le payload d'un
+ * autre kind. Le foreground global est l'autorité : un kind inconnu ou une autre mission active
+ * refuse la commande ; la mission devis courante est réutilisée déjà typée. La lecture par ID ne
+ * subsiste que pour rendre le résultat historique d'une mission devis terminale.
+ */
+export async function resolveQuoteAgentMissionForUpdate(input: {
+  readonly transaction: AgentMissionTransaction;
+  readonly owner: AgentMissionOwner;
+  readonly missionId: string;
+}): Promise<Result<AgentMission | null, AppError>> {
+  const foreground = await input.transaction.missions.findForegroundForUpdate(input.owner);
+  if (foreground === null) {
+    const lookup = await input.transaction.missions.findByIdForUpdate({
+      ...input.owner,
+      missionId: input.missionId,
+    });
+    return resolveQuoteAgentMissionLookup(lookup);
+  }
+  if (
+    foreground.status === 'unsupported_kind'
+    || foreground.mission.id !== input.missionId
+  ) {
+    return err(appConflict('agent_mission_foreground', 'active_mission_exists'));
+  }
+  return ok(foreground.mission);
 }
 
 export function isCanonicalAgentMissionUuid(value: unknown): value is string {
@@ -530,6 +605,14 @@ export function unavailableAgentMissionCompany(
   return reason === 'closed'
     ? appForbidden('company_closed')
     : appNotFound('company', 'current');
+}
+
+export function unavailableAgentMissionForeground(
+  _reason: AgentMissionForegroundUnavailableReason,
+): AppError {
+  // La cause SQL exacte reste bornée dans la métrique hôte. Le client reçoit un même service
+  // temporairement indisponible et peut retenter sans jamais voir Prisma ni un SQLSTATE.
+  return appUnavailable('agent_mission_foreground', 1);
 }
 
 export function rejectedAgentMissionCapability(

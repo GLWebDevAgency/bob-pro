@@ -6,6 +6,7 @@ import {
 } from '@bob/core';
 import { describe, expect, it, vi } from 'vitest';
 import { AppLogger, requestContext, type Principal } from '../observability/logger';
+import type { Metrics } from '../observability/metrics';
 import { InMemoryPersistence } from '../persistence/persistence.testing';
 import { QuoteDraftController } from './quote-draft.controller';
 import { QuoteDraftService } from './quote-draft.service';
@@ -36,9 +37,19 @@ function asPrincipal<T>(principal: Principal, operation: () => Promise<T>): Prom
 
 function harness() {
   const persistence = new InMemoryPersistence();
-  const logger = { audit: vi.fn() } as unknown as AppLogger;
-  const service = new QuoteDraftService(persistence, logger);
-  return { persistence, logger, service, controller: new QuoteDraftController(service) };
+  const logger = { audit: vi.fn(), warn: vi.fn() } as unknown as AppLogger;
+  const foregroundInc = vi.fn();
+  const metrics = {
+    agentMissionForegroundContentions: { inc: foregroundInc },
+  } as unknown as Metrics;
+  const service = new QuoteDraftService(persistence, logger, metrics);
+  return {
+    persistence,
+    logger,
+    foregroundInc,
+    service,
+    controller: new QuoteDraftController(service),
+  };
 }
 
 describe('QuoteDraftService — identité JWT, isolation et CAS', () => {
@@ -185,6 +196,49 @@ describe('QuoteDraftService — identité JWT, isolation et CAS', () => {
       })).toBeNull();
     },
   );
+
+  it('rend et observe save/delete foreground indisponibles sans exécuter le writer legacy', async () => {
+    const { persistence, logger, foregroundInc, service } = harness();
+    const principal = { companyId: 'company-a', userId: 'owner-a' } satisfies Principal;
+    persistence.agentMissionDraftFence.setForegroundUnavailable('transaction_timeout');
+
+    const unavailable = {
+      ok: false,
+      error: {
+        kind: 'unavailable',
+        service: 'agent_mission_foreground',
+        retryAfterSeconds: 1,
+      },
+    } as const;
+    await expect(asPrincipal(principal, () =>
+      service.saveCurrent({ expectedRevision: 0, payload: payload('must-not-exist') }),
+    )).resolves.toEqual(unavailable);
+    await expect(asPrincipal(principal, () =>
+      service.deleteCurrent({ expectedRevision: 1 }),
+    )).resolves.toEqual(unavailable);
+    expect(await persistence.quoteDraftSlots.get({
+      companyId: principal.companyId,
+      ownerUserId: principal.userId,
+    })).toBeNull();
+    expect(foregroundInc).toHaveBeenNthCalledWith(1, {
+      operation: 'draft_save',
+      reason: 'transaction_timeout',
+    });
+    expect(foregroundInc).toHaveBeenNthCalledWith(2, {
+      operation: 'draft_delete',
+      reason: 'transaction_timeout',
+    });
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      1,
+      'AgentMission foreground indisponible (draft_save/transaction_timeout).',
+      'QuoteDraftService',
+    );
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      2,
+      'AgentMission foreground indisponible (draft_delete/transaction_timeout).',
+      'QuoteDraftService',
+    );
+  });
 });
 
 describe('QuoteDraftController — frontière HTTP stricte', () => {

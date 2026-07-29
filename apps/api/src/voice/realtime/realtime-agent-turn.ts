@@ -1,13 +1,20 @@
 import { createHash } from 'node:crypto';
 import {
+  detectIntent,
   isAllowedAgentNavigationRoute,
+  legacyBlockedIntents,
   type AgentAskPayload,
   type AgentContext,
   type AgentHistoryTurn,
   type AgentRun,
   type Provider,
 } from '@bob/ai';
-import type { AppError, Result } from '@bob/core';
+import {
+  QUOTE_CREATION_MISSION_KIND_V1,
+  type AppError,
+  type MissionKindId,
+  type Result,
+} from '@bob/core';
 import { requestContext } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
 import type {
@@ -22,6 +29,14 @@ import type {
 
 const MAX_CANONICAL_SPEECH_CHARS = 2_400;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const QUOTE_MISSION_BLOCKED_LEGACY_INTENTS = legacyBlockedIntents([
+  QUOTE_CREATION_MISSION_KIND_V1,
+]);
+const QUOTE_MISSION_BLOCKED_LEGACY_INTENT_SET = new Set(
+  QUOTE_MISSION_BLOCKED_LEGACY_INTENTS,
+);
+const MISSION_OWNERSHIP_REFUSAL =
+  'Je garde la création du devis dans la mission sécurisée. Rien n’a été exécuté. Reformule uniquement l’étape du devis.';
 
 export interface RealtimeAgentTurnInput {
   /** Clé stable dérivée de la session et de l'item provider avant tout appel LLM ou métier. */
@@ -82,6 +97,7 @@ export interface RealtimeBobAgentExecutor {
     execution: {
       readonly signal: AbortSignal;
       readonly requiredProvider: RealtimeAgentProvider;
+      readonly admittedMissionKinds?: readonly MissionKindId[];
     },
   ): Promise<Result<AgentRun, AppError>>;
 }
@@ -156,6 +172,13 @@ function canonicalSpeech(run: AgentRun): SelectedCanonicalSpeech {
 }
 
 function safeFailureSpeech(error: AppError): string {
+  if (
+    error.kind === 'conflict'
+    && error.entity === 'agent_intent_ownership'
+    && error.reason === 'mission_owned'
+  ) {
+    return MISSION_OWNERSHIP_REFUSAL;
+  }
   if (error.kind === 'validation') {
     return "Je n’ai pas bien compris. Reformule ta demande en une phrase courte.";
   }
@@ -311,6 +334,20 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
       }
     }
 
+    // Défense avant dispatcher : si le planner Mission s'est abstenu mais que le fallback
+    // déterministe reconnaît l'intention possédée, le cerveau legacy n'est même pas construit.
+    // Le garde interne BobAgent reste nécessaire pour les formulations reconnues uniquement
+    // par son classifieur LLM et pour les plans composites.
+    if (
+      input.agentMissionAuthority !== undefined
+      && QUOTE_MISSION_BLOCKED_LEGACY_INTENT_SET.has(detectIntent(input.transcript))
+    ) {
+      return {
+        status: 'failed',
+        canonicalSpeech: MISSION_OWNERSHIP_REFUSAL,
+      };
+    }
+
     const payload: AgentAskPayload = {
       message: input.transcript,
       // Bob Live ne peut jamais muter sans une proposition opaque et une confirmation dédiée.
@@ -332,6 +369,9 @@ export class RealtimeBobAgentTurnAdapter implements RealtimeAgentTurnPort {
           () => this.resolveExecutor().askBob(payload, {
             signal: input.signal,
             requiredProvider: this.requiredProvider,
+            ...(input.agentMissionAuthority === undefined
+              ? {}
+              : { admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1] }),
           }),
         ),
       );

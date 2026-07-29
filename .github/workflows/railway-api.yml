@@ -15,6 +15,7 @@ on:
           - release
           - m1b-staging-certification
           - m1b-staging-recovery
+          - k2-staging-schema
       environment:
         description: Railway environment
         required: true
@@ -98,7 +99,21 @@ on:
         description: Railway environment certified by the readiness smoke
         value: ${{ jobs.release-api.outputs.release_environment }}
 jobs:
+  validate-purpose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Reject every unknown execution path
+        env:
+          RELEASE_PURPOSE: ${{ inputs.purpose }}
+        run: |
+          case "$RELEASE_PURPOSE" in
+            release|m1b-staging-certification|m1b-staging-recovery|k2-staging-schema) ;;
+            *) echo "Unsupported Railway release purpose" >&2; exit 1 ;;
+          esac
+
   route-m1b-staging-certification:
+    needs: validate-purpose
     if: ${{ inputs.purpose == 'm1b-staging-certification' || inputs.purpose == 'm1b-staging-recovery' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -127,11 +142,190 @@ jobs:
       gpt_countersign_ref: ${{ inputs.gpt_countersign_ref }}
     secrets: inherit
 
+  certify-agent-mission-k2-staging-schema:
+    needs: validate-purpose
+    if: ${{ inputs.purpose == 'k2-staging-schema' && needs.validate-purpose.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    concurrency:
+      group: railway-api-staging
+      cancel-in-progress: false
+    env:
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_ENVIRONMENT_ID: ${{ vars.RAILWAY_ENVIRONMENT_ID }}
+      RAILWAY_API_SERVICE_ID: ${{ vars.RAILWAY_API_SERVICE_ID }}
+      BOB_M1B_STAGING_COMPANY_ID: ${{ vars.BOB_M1B_STAGING_COMPANY_ID }}
+      BOB_M1B_STAGING_SUPABASE_PROJECT_REF: ${{ vars.BOB_M1B_STAGING_SUPABASE_PROJECT_REF }}
+      BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER: ${{ vars.BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER }}
+      BOB_M1B_STAGING_DATABASE_OID: ${{ vars.BOB_M1B_STAGING_DATABASE_OID }}
+      BOB_M1B_STAGING_DATABASE_NAME: ${{ vars.BOB_M1B_STAGING_DATABASE_NAME }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate the exact staging-only target
+        env:
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_SERVICE: ${{ inputs.service }}
+          EXPECTED_SERVICE: ${{ vars.RAILWAY_API_SERVICE }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RELEASE_ENVIRONMENT" = staging
+          test -n "$EXPECTED_SERVICE"
+          test "$RELEASE_SERVICE" = "$EXPECTED_SERVICE"
+          node <<'NODE'
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const required = [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+            'BOB_M1B_STAGING_COMPANY_ID',
+            'BOB_M1B_STAGING_SUPABASE_PROJECT_REF',
+            'BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER',
+            'BOB_M1B_STAGING_DATABASE_OID',
+            'BOB_M1B_STAGING_DATABASE_NAME',
+            'RAILWAY_TOKEN',
+          ];
+          for (const name of required) {
+            const value = process.env[name];
+            if (
+              typeof value !== 'string'
+              || value.length < 1
+              || value.length > 16_384
+              || value !== value.trim()
+            ) {
+              throw new Error(`${name} is required by the staging environment`);
+            }
+          }
+          for (const name of [
+            'RAILWAY_PROJECT_ID',
+            'RAILWAY_ENVIRONMENT_ID',
+            'RAILWAY_API_SERVICE_ID',
+          ]) {
+            if (!uuid.test(process.env[name] ?? '')) {
+              throw new Error(`${name} must be a UUID`);
+            }
+          }
+          if (!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? '')) {
+            throw new Error('GITHUB_SHA must be exact');
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - name: Install the deterministic schema operator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          pnpm install --frozen-lockfile
+          sh apps/api/scripts/install-railway-cli.sh
+      - name: Prove the staging-only operator and workflow routing
+        run: |
+          node --test \
+            apps/api/scripts/agent-mission-k2-staging-schema.test.mjs \
+            apps/api/scripts/agent-mission-m1b-staging-release-safety.test.mjs
+      - name: Apply and certify only the K2 schema migration
+        timeout-minutes: 8
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway run --project "$RAILWAY_PROJECT_ID" \
+            --service "$RAILWAY_API_SERVICE_ID" \
+            --environment "$RAILWAY_ENVIRONMENT_ID" \
+            --no-local -- \
+            env CABINET_RELEASE_ENV=staging \
+              BOB_K2_RELEASE_SHA="$GITHUB_SHA" \
+              BOB_M1B_STAGING_COMPANY_ID="$BOB_M1B_STAGING_COMPANY_ID" \
+              BOB_M1B_STAGING_SUPABASE_PROJECT_REF="$BOB_M1B_STAGING_SUPABASE_PROJECT_REF" \
+              BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER="$BOB_M1B_STAGING_DATABASE_SYSTEM_IDENTIFIER" \
+              BOB_M1B_STAGING_DATABASE_OID="$BOB_M1B_STAGING_DATABASE_OID" \
+              BOB_M1B_STAGING_DATABASE_NAME="$BOB_M1B_STAGING_DATABASE_NAME" \
+              GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+              GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+              node apps/api/scripts/agent-mission-k2-staging-schema.mjs apply
+      - name: Require the paired non-PII receipts
+        run: |
+          EVIDENCE_DIRECTORY=".release-evidence/agent-mission-k2" \
+            node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const read = (status) => JSON.parse(fs.readFileSync(
+            path.join(
+              process.env.EVIDENCE_DIRECTORY,
+              `staging-schema-${process.env.GITHUB_SHA}-${status}.json`,
+            ),
+            'utf8',
+          ));
+          const preflight = read('preflight');
+          const certified = read('certified');
+          if (
+            preflight?.schema !== 'bob.agent-mission.k2.staging-schema-evidence'
+            || certified?.schema !== preflight.schema
+            || preflight?.version !== 1
+            || certified?.version !== 1
+            || preflight?.status !== 'preflight'
+            || certified?.status !== 'certified'
+            || !['apply', 'recertify'].includes(preflight?.operation)
+            || certified?.operation !== preflight.operation
+            || preflight?.releaseSha !== process.env.GITHUB_SHA
+            || certified?.releaseSha !== process.env.GITHUB_SHA
+            || certified?.pendingMigrationCount !== 0
+            || (
+              preflight.operation === 'apply'
+              && (
+                preflight?.pendingMigrationCount !== 1
+                || certified?.appliedMigrationCount
+                  !== preflight?.appliedMigrationCount + 1
+              )
+            )
+            || (
+              preflight.operation === 'recertify'
+              && (
+                preflight?.pendingMigrationCount !== 0
+                || certified?.appliedMigrationCount
+                  !== preflight?.appliedMigrationCount
+              )
+            )
+            || preflight?.n1WriterOutcome !== 'not-run'
+            || !['accepted', 'disabled-fence'].includes(
+              certified?.n1WriterOutcome,
+            )
+            || certified?.migrationChecksum !== preflight.migrationChecksum
+            || certified?.databasePinHash !== preflight.databasePinHash
+            || certified?.schemaOwner !== preflight.schemaOwner
+            || certified?.foreignAuthorityHash !== preflight.foreignAuthorityHash
+            || certified?.githubRunId !== preflight.githubRunId
+            || certified?.githubRunAttempt !== preflight.githubRunAttempt
+            || !Number.isFinite(Date.parse(preflight?.observedAt ?? ''))
+            || Date.parse(certified?.observedAt ?? '')
+              < Date.parse(preflight.observedAt)
+          ) {
+            throw new Error('K2 staging receipts are not an exact certified pair');
+          }
+          NODE
+      - name: Preserve the K2 schema receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-mission-k2-staging-schema-${{ github.sha }}
+          path: .release-evidence/agent-mission-k2/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+
   release-api:
     # GitHub cancels a normal run step after roughly ten seconds. Keep the job alive so the
     # cancellation-specific cleanup step below can reconcile an archive deployment whose creation
     # response was lost; all ordinary unfinished steps still retain their implicit success() guard.
-    if: ${{ always() && inputs.purpose != 'm1b-staging-certification' && inputs.purpose != 'm1b-staging-recovery' }}
+    needs: validate-purpose
+    if: ${{ always() && needs.validate-purpose.result == 'success' && inputs.purpose == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     # Map the free-form workflow_call input before GitHub resolves environment

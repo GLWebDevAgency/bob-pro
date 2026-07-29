@@ -73,7 +73,15 @@ const customerResolutionCutoverPath = path.join(
   apiDir,
   'prisma/migrations/20260729100200_agent_mission_customer_resolution_cutover/migration.sql',
 );
+const globalForegroundExpandPath = path.join(
+  apiDir,
+  'prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql',
+);
 const schemaPath = path.join(apiDir, 'prisma/schema.prisma');
+const persistencePath = path.join(
+  apiDir,
+  'src/persistence/prisma/agent-mission.persistence.ts',
+);
 const rlsPath = path.join(apiDir, 'prisma/rls.sql');
 const agentMissionRlsReplayPath = path.join(
   apiDir,
@@ -98,7 +106,9 @@ const [
   customerResolutionExpand,
   customerResolutionValidate,
   customerResolutionCutover,
+  globalForegroundExpand,
   schema,
+  persistence,
   rls,
   agentMissionRlsReplay,
   generator,
@@ -119,7 +129,9 @@ const [
   readFile(customerResolutionExpandPath, 'utf8'),
   readFile(customerResolutionValidatePath, 'utf8'),
   readFile(customerResolutionCutoverPath, 'utf8'),
+  readFile(globalForegroundExpandPath, 'utf8'),
   readFile(schemaPath, 'utf8'),
+  readFile(persistencePath, 'utf8'),
   readFile(rlsPath, 'utf8'),
   readFile(agentMissionRlsReplayPath, 'utf8'),
   readFile(generatorPath, 'utf8'),
@@ -202,6 +214,7 @@ test('chaque migration borne les verrous et le temps de statement dans sa transa
     ['customer resolution expand', customerResolutionExpand],
     ['customer resolution validate', customerResolutionValidate],
     ['customer resolution cutover', customerResolutionCutover],
+    ['global foreground expand', globalForegroundExpand],
   ]) {
     assert.match(sql, /\bBEGIN;/u, `${name}: transaction absente`);
     assert.match(sql, /SET LOCAL lock_timeout = '[^']+';/u, `${name}: lock_timeout absent`);
@@ -799,6 +812,58 @@ test('le journal est borné, append-only et la mission active est unique par own
   assert.match(
     expand,
     /CREATE UNIQUE INDEX agent_missions_one_active_owner_kind_key[\s\S]*?WHERE "status" = 'active'/u,
+  );
+});
+
+test('K2 ajoute le foreground global sans retirer le backstop N-1 owner/kind', () => {
+  assert.match(globalForegroundExpand, /BEGIN;/u);
+  assert.match(globalForegroundExpand, /SET LOCAL lock_timeout = '5s';/u);
+  assert.match(globalForegroundExpand, /SET LOCAL statement_timeout = '60s';/u);
+  assert.match(
+    globalForegroundExpand,
+    /SELECT relation\.relowner, pg_catalog\.pg_get_userbyid\(relation\.relowner\)[\s\S]*?relation\.relname = 'agent_missions'[\s\S]*?relation\.relkind IN \('r', 'p'\)/u,
+  );
+  assert.match(
+    globalForegroundExpand,
+    /current_user::pg_catalog\.regrole <> schema_owner_oid[\s\S]*?NOT pg_catalog\.pg_has_role\(session_user, schema_owner_oid, 'SET'\)[\s\S]*?ERRCODE = '42501'[\s\S]*?AGENT_MISSION_K2_SCHEMA_OWNER_UNAVAILABLE/u,
+  );
+  assert.match(
+    globalForegroundExpand,
+    /EXECUTE pg_catalog\.format\('SET LOCAL ROLE %I', schema_owner_name\);[\s\S]*?IF current_user::pg_catalog\.regrole <> schema_owner_oid THEN[\s\S]*?AGENT_MISSION_K2_SCHEMA_OWNER_NOT_ASSUMED/u,
+  );
+  assert.match(
+    globalForegroundExpand,
+    /CREATE UNIQUE INDEX agent_missions_one_active_owner_key\s+ON public\.agent_missions \("companyId", "ownerUserId"\)\s+WHERE "status" = 'active';/u,
+  );
+  assert.doesNotMatch(globalForegroundExpand, /DROP\s+(?:INDEX|CONSTRAINT)/iu);
+  assert.doesNotMatch(schema, /@@unique\(\[companyId, ownerUserId\]/u);
+  assert.match(
+    expand,
+    /CREATE UNIQUE INDEX agent_missions_one_active_owner_kind_key[\s\S]*?WHERE "status" = 'active'/u,
+  );
+});
+
+test('K2 prend toujours le verrou foreground V2 avant le verrou quote V1', () => {
+  assert.match(persistence, /'bob\.agent-mission\.owner-foreground\.v2'/u);
+  assert.match(persistence, /'bob\.agent-mission\.owner-kind\.v1'/u);
+  const runWriter = persistence.match(
+    /runQuoteCreationOwner<T>\([\s\S]*?\n  \}\n\}/u,
+  )?.[0] ?? '';
+  const draftFence = persistence.match(
+    /export class PrismaAgentMissionDraftFence[\s\S]*$/u,
+  )?.[0] ?? '';
+  for (const [name, source] of [
+    ['writer mission', runWriter],
+    ['fence manuel', draftFence],
+  ]) {
+    const globalOffset = source.indexOf('acquireMissionForegroundOwnerLock');
+    const legacyOffset = source.indexOf('acquireQuoteCreationOwnerLock');
+    assert.ok(globalOffset >= 0, `${name}: verrou global absent`);
+    assert.ok(legacyOffset > globalOffset, `${name}: ordre V2 → V1 non respecté`);
+  }
+  assert.doesNotMatch(
+    persistence,
+    /acquireQuoteCreationOwnerLock\([^)]*\);[\s\S]{0,300}acquireMissionForegroundOwnerLock/u,
   );
 });
 

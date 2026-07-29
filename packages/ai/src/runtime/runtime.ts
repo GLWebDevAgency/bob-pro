@@ -9,6 +9,10 @@ import {
   digestResult,
 } from './journal';
 import { ActionPolicy, type ActionContext } from './permissions';
+import {
+  preflightRuntimeToolOwnership,
+} from '../agent/runtime-tool-intent';
+import type { LegacyExecutionAuthority } from '../agent/intent-ownership';
 
 /** Horloge minimale (structurelle) — compatible ClockPort de @bob/core sans le coupler. */
 export interface RuntimeClock {
@@ -39,6 +43,8 @@ export interface AgentRuntimeDeps {
   readonly tools: readonly AnyTool[];
   readonly clock: RuntimeClock;
   readonly ids: RuntimeIds;
+  /** Autorité explicite : aucun runtime ne possède un mode implicite « allow all ». */
+  readonly executionAuthority: LegacyExecutionAuthority;
   /** Défaut : tout autorisé. */
   readonly policy?: ActionPolicy;
   /** Optionnel : sink durable (chaque entrée est aussi persistée). */
@@ -77,6 +83,47 @@ export class AgentRuntime {
       const entry = journal.append(e);
       if (this.deps.store) await this.deps.store.append(entry);
     };
+
+    const executionAuthority = this.deps.executionAuthority;
+    const ownership = preflightRuntimeToolOwnership(
+      invocations.map((invocation) => invocation.tool),
+      (intent) => executionAuthority.isIntentBlocked(intent),
+    );
+    if (ownership.status !== 'allowed') {
+      const invocation = invocations.find((candidate) => candidate.tool === ownership.tool);
+      const label = invocation?.label ?? ownership.tool;
+      const args = invocation?.args ?? {};
+      const reason = ownership.status === 'mission_owned'
+        ? `agent_intent_ownership:mission_owned:${ownership.intent}`
+        : `agent_intent_ownership:unknown_tool:${ownership.tool}`;
+      await record({
+        at: this.deps.clock.now(),
+        tool: ownership.tool,
+        label,
+        args,
+        phase: ownership.status === 'mission_owned' ? 'denied' : 'failed',
+        mutating: false,
+        outbound: false,
+        compliance: 'high',
+        reason,
+      });
+      outcomes.push({
+        tool: ownership.tool,
+        label,
+        status: ownership.status === 'mission_owned' ? 'denied' : 'failed',
+        reason,
+      });
+      return {
+        runId,
+        startedAt,
+        finishedAt: this.deps.clock.now(),
+        mode,
+        autonomy,
+        entries: journal.snapshot(),
+        outcomes,
+        ok: false,
+      };
+    }
 
     let stopped = false;
     for (const inv of invocations) {

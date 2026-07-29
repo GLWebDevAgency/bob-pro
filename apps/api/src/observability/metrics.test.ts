@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Metrics } from './metrics';
 
 describe('Metrics — contrats AgentMission bornés', () => {
-  it('expose exactement les quatre familles et leurs labels à cardinalité finie', async () => {
+  it('expose les familles Mission et leurs labels à cardinalité finie', async () => {
     const metrics = new Metrics();
 
     metrics.agentMissionNegotiations.inc({
@@ -14,6 +14,10 @@ describe('Metrics — contrats AgentMission bornés', () => {
     metrics.agentMissionCapabilityRejections.inc({
       operation: 'screen_ack',
       reason: 'hash_mismatch',
+    });
+    metrics.agentMissionForegroundContentions.inc({
+      operation: 'start',
+      reason: 'transaction_timeout',
     });
     metrics.agentMissionBootstrapReceipts.inc({ outcome: 'acknowledged' });
     metrics.agentMissionScreenAcks.inc({ outcome: 'context_stale' });
@@ -36,6 +40,15 @@ describe('Metrics — contrats AgentMission bornés', () => {
           labels: {
             operation: 'screen_ack',
             reason: 'hash_mismatch',
+          },
+        })]),
+      }),
+      expect.objectContaining({
+        name: 'bob_agent_mission_foreground_contentions_total',
+        values: expect.arrayContaining([expect.objectContaining({
+          labels: {
+            operation: 'start',
+            reason: 'transaction_timeout',
           },
         })]),
       }),
