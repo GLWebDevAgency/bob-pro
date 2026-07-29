@@ -592,6 +592,100 @@ describe('argent — une facture DIRECTE dictée avec un montant reste une factu
   });
 });
 
+// ── L’OBJET DÉSIGNÉ : une fiche DE PASSAGE, un passage QUI EST UNE VISITE ────────────────────
+
+describe('périmètre — « fiche » et « rapport » ne désignent la fiche du terrain que NUS ou COMPLÉTÉS PAR LE PASSAGE', () => {
+  /**
+   * Trois consignes SIMPLES — le périmètre que le déterministe DOIT réussir — partaient vers un
+   * geste de fiche de passage alors qu'elles parlent d'un document de BUREAU : « fiche » et
+   * « rapport » étaient captés quel que soit leur complément, et la paie, la TVA et les états
+   * périodiques ne comptaient pas encore parmi les pièces de bureau.
+   */
+  it('les trois consignes mesurées ne partent plus sur la fiche de passage', () => {
+    const bureau = [
+      'Envoie la fiche de paie à Marc',
+      'Envoie le rapport de TVA au comptable',
+      'Envoie le rapport mensuel au comptable',
+    ];
+    const echecs: string[] = [];
+    for (const phrase of bureau) {
+      const directive = readInterventionDirective(phrase);
+      if (directive.downstreams.length > 0)
+        echecs.push(`« ${phrase} » : geste de fiche lu (${directive.downstreams.join('+')})`);
+      if (detectIntent(phrase) === 'envoyer_fiche_passage')
+        echecs.push(`« ${phrase} » → envoyer_fiche_passage`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+
+  it('… et les symétriques LÉGITIMES marchent toujours (le document du passage, nu ou complété)', () => {
+    const terrain = [
+      'Envoie la fiche de passage',
+      'Envoie la fiche',
+      'Envoie la fiche au client',
+      'Envoie la fiche d’intervention',
+      'Envoie le compte rendu',
+      'Envoie le compte rendu de passage',
+      'Envoie le rapport d’intervention',
+      'Envoie le rapport de passage au client',
+    ];
+    const echecs: string[] = [];
+    for (const phrase of terrain) {
+      const directive = readInterventionDirective(phrase);
+      if (!directive.downstreams.includes('send'))
+        echecs.push(`« ${phrase} » : envoi de fiche PERDU (lu : ${directive.downstreams.join('+') || '∅'})`);
+      if (detectIntent(phrase) !== 'envoyer_fiche_passage')
+        echecs.push(`« ${phrase} » → ${detectIntent(phrase)}`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+});
+
+describe('périmètre — « le passage » désigne une VISITE, jamais un ouvrage', () => {
+  /**
+   * « le passage » était reconnu sans regarder ce qui suit : « Facture le passage À NIVEAU de la
+   * SNCF » — un ouvrage ferroviaire — devenait une facturation de passage (c'était `unknown`).
+   * En français, « nom + à + nom NU » soude un nom COMPOSÉ ; un déterminant, une civilité ou une
+   * heure après « à » SITUENT la visite, ils ne la re-qualifient pas.
+   */
+  it('un nom COMPOSÉ n’est pas une visite (« facture le passage à niveau de la SNCF »)', () => {
+    const echecs: string[] = [];
+    for (const phrase of ['Facture le passage à niveau de la SNCF', 'Facture le passage à gué']) {
+      const directive = readInterventionDirective(phrase);
+      if (directive.downstreams.length > 0)
+        echecs.push(`« ${phrase} » : geste de passage lu (${directive.downstreams.join('+')})`);
+      if (detectIntent(phrase) === 'facturer_intervention')
+        echecs.push(`« ${phrase} » → facturer_intervention`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+
+  it('… et toute référence qui DÉSIGNE la visite facture toujours ce passage', () => {
+    const visites = [
+      'Facture ce passage',
+      'Facture cette intervention',
+      'Facture cette visite',
+      'Facture le passage',
+      'Facture le passage chez Carrefour',
+      'Facture le passage de ce matin',
+      // « à » + déterminant / civilité / heure : le complément SITUE la visite ou en nomme le
+      // destinataire — il ne la re-qualifie pas.
+      'Facture le passage à la SNCF',
+      'Facture le passage à Mme Girard',
+      'Facture la visite',
+    ];
+    const echecs: string[] = [];
+    for (const phrase of visites) {
+      const directive = readInterventionDirective(phrase);
+      if (!directive.downstreams.includes('bill'))
+        echecs.push(`« ${phrase} » : facturation de passage PERDUE (lu : ${directive.downstreams.join('+') || '∅'})`);
+      if (detectIntent(phrase) !== 'facturer_intervention')
+        echecs.push(`« ${phrase} » → ${detectIntent(phrase)}`);
+    }
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+});
+
 // ── COHÉRENCE DES CARTES ─────────────────────────────────────────────────────────────────────
 
 describe('cartes — un texte capté comme RÉSUMÉ n’est jamais déclaré « incompris »', () => {

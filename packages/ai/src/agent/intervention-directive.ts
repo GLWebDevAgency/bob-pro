@@ -322,9 +322,33 @@ function nie(clause: string, verbes: string): boolean {
 
 const VERBES_ENVOI =
   'envoie|envoies|envoyer|envoyez|transmets|transmettez|transmettre|adresse|adresses|adresser|expedie|expedies|expedier';
-const OBJET_FICHE = /\b(?:fiches?|rapports?|comptes? rendus?|passages?|interventions?)\b/u;
-/** Une pièce comptable nommée garde son propre geste : « envoie la facture 2026-014 ». */
-const PIECE_COMPTABLE = /\b(?:devis|factures?|avoirs?|relances?)\b/u;
+/**
+ * L'OBJET d'un geste de fiche : LE DOCUMENT DU PASSAGE. « fiche », « rapport », « compte rendu »
+ * sont des noms GÉNÉRIQUES — en français, c'est le complément en « de » qui donne son TYPE au
+ * document : « fiche DE PAIE », « rapport DE TVA », « fiche DE PASSAGE ». Un nom COMPLÉTÉ ne
+ * désigne donc le document du terrain que si son complément NOMME le passage ; NU (« envoie la
+ * fiche », « envoie le compte rendu », « envoie la fiche au client »), il désigne la fiche du
+ * passage sous la main. La règle dit ce que l'objet DÉSIGNE — elle n'énumère aucun contre-exemple.
+ */
+const NOM_DE_DOCUMENT = '(?:fiches?|rapports?|comptes? rendus?)';
+const COMPLEMENT_DU_PASSAGE =
+  `(?:de\\s+la\\s+|de\\s+l'|d'|de\\s+|du\\s+|des\\s+)` +
+  `(?:passages?|interventions?|visites?|depannages?|chantiers?)`;
+const OBJET_FICHE = new RegExp(
+  `\\b${NOM_DE_DOCUMENT}\\s+${COMPLEMENT_DU_PASSAGE}\\b` +
+    `|\\b${NOM_DE_DOCUMENT}\\b(?!\\s+(?:de\\b|d'|du\\b|des\\b))` +
+    `|\\b(?:passages?|interventions?)\\b`,
+  'u',
+);
+/**
+ * Une pièce de BUREAU nommée garde son propre geste — elle ne se produit pas sur le terrain :
+ * les pièces de VENTE (« envoie la facture 2026-014 »), les pièces SOCIALES et FISCALES
+ * (« envoie la fiche de paie », « envoie le rapport de TVA ») et les états PÉRIODIQUES
+ * (« envoie le rapport mensuel »). C'est la définition de ce qu'est une pièce de bureau, pas une
+ * liste de contre-exemples de la fiche de passage.
+ */
+const PIECE_COMPTABLE =
+  /\b(?:devis|factures?|avoirs?|relances?)\b|\b(?:paie|paies|paye|salaires?|tva|urssaf)\b|\bbulletins?\s+de\s+(?:paie|salaires?)\b|\b(?:rapports?|comptes? rendus?|etats?|releves?)\s+(?:mensuels?|hebdomadaires?|trimestriels?|semestriels?|annuels?)\b/u;
 /** « envoie-la », « transmets-lui » : après une fin annoncée, le seul envoyable est la fiche. */
 const ENVOI_PRONOMINAL =
   /\b(?:envoie|envoies|envoyer|transmets|transmettre|adresse|adresser)[- ](?:le|la|les|lui|leur|moi|nous|ca|cela)\b/u;
@@ -367,9 +391,26 @@ const FACTURATION_HORS_PASSAGE =
  * la phrase (« Facture le passage 4d1c…-112233445566 ») n'a jamais nommé de facture.
  */
 const PIECE_NUMEROTEE = /\bfactur\w*\s+(?:n[°o]\s*)?[a-z]*\d{3,}/u;
-/** L'OBJET du geste est le passage : « facture ce passage », « facture cette intervention ». */
-const REFERENCE_PASSAGE =
-  /\b(?:ce passage|cette intervention|cette visite|ce depannage|le passage|la visite|l'intervention de)\b/u;
+/**
+ * L'OBJET du geste est LE PASSAGE lui-même : « facture ce passage », « facture cette
+ * intervention ». La forme DÉMONSTRATIVE est ANAPHORIQUE — elle renvoie au passage dont on vient
+ * de parler, quoi qu'il suive. La forme DÉFINIE (« le passage », « la visite ») ne le désigne, en
+ * revanche, que si rien ne la RE-QUALIFIE : en français, « nom + à + nom NU » soude un nom
+ * COMPOSÉ qui nomme AUTRE CHOSE (« le passage À NIVEAU », « le passage À GUÉ ») — un passage à
+ * niveau n'est pas une visite. Ce qui SITUE la visite ou en nomme le destinataire la désigne
+ * toujours, lui : un déterminant, une civilité ou une heure après « à » (« la visite à la SNCF »,
+ * « le passage à Mme Girard », « le passage à 14 h »), comme « chez … » ou « de ce matin ».
+ */
+const DETERMINANT_OU_DESTINATAIRE =
+  `(?:l[ae]\\b|l'|les\\b|un\\b|une\\b|des\\b|mon\\b|ma\\b|mes\\b|son\\b|sa\\b|ses\\b|leurs?\\b|` +
+  `notre\\b|nos\\b|votre\\b|vos\\b|ce\\b|cet\\b|cette\\b|ces\\b|` +
+  `m\\.|mr\\b|mme\\b|mlle\\b|monsieur\\b|madame\\b|mademoiselle\\b|\\d)`;
+const REFERENCE_PASSAGE = new RegExp(
+  `\\b(?:ce passage|cette intervention|cette visite|ce depannage)\\b` +
+    `|\\b(?:le passage|la visite)\\b(?!\\s+a\\s+(?!${DETERMINANT_OU_DESTINATAIRE}))` +
+    `|\\bl'intervention de\\b`,
+  'u',
+);
 
 const VERBES_DEMARRAGE = 'demarre|demarrer|demarres|commence|commencer|commences|debute|debuter|lance|lancer';
 const OBJET_DEMARRAGE = /\b(?:interventions?|passages?|visites?|chantier|depannage)\b/u;
