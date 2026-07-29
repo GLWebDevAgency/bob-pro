@@ -1719,8 +1719,12 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
               unitPriceHtCents?: unknown;
               vatRate?: unknown;
             };
-            if (typeof line?.label !== 'string' || line.label.trim().length === 0 || line.label.length > 200)
-              return err(appValidation(`lines.${index}.label`, 'Libellé de ligne manquant.'));
+            // Borne du DOMAINE, jamais une copie : elle mesure après trim, la copie mesurait avant.
+            if (typeof line?.label !== 'string')
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalMessage('vide')));
+            const lineBorne = contractLabelRefusal(line.label);
+            if (lineBorne !== null)
+              return err(appValidation(`lines.${index}.label`, contractLabelRefusalMessage(lineBorne)));
             // La LIGNE est ce qui s'imprime littéralement sur la facture annuelle : elle passe
             // par la MÊME garde que le libellé du contrat, sans exception ni raccourci.
             const lineVerdict = inspectContractLabel(line.label, { mode: 'nomme' });

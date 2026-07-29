@@ -4327,8 +4327,17 @@ function parseContractLines(value: unknown, issues: ValidationIssue[]): {
     const unitPriceHtCents = line['unitPriceHtCents'];
     const vatRate = line['vatRate'];
     const catalogueItemId = line['catalogueItemId'];
-    if (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || hasControlCharacter(label)) {
-      issues.push({ field: `lines[${index}].label`, message: 'Libellé de ligne requis (200 caractères maximum).' });
+    // La borne d'un libellé de LIGNE est la même règle que celle du nom du contrat, et elle vit
+    // dans le domaine (« BORNE du nom d'un contrat — ET DE CHACUNE DE SES LIGNES »). La recopier
+    // ici la ferait diverger : la version en dur mesurait la longueur AVANT le trim, donc
+    // refusait 200 caractères suivis d'une espace que le domaine accepte.
+    if (typeof label !== 'string') {
+      issues.push({ field: `lines[${index}].label`, message: contractLabelRefusalMessage('vide') });
+      return undefined;
+    }
+    const lineRefusal = contractLabelRefusal(label);
+    if (lineRefusal !== null) {
+      issues.push({ field: `lines[${index}].label`, message: contractLabelRefusalMessage(lineRefusal) });
       return undefined;
     }
     if (typeof quantity !== 'number' || !Number.isFinite(quantity) || quantity <= 0) {
@@ -4432,7 +4441,7 @@ export class MaintenanceContractsController {
       issues.push({ field: 'customerId', message: 'Client requis.' });
     const scalars = parseContractScalarFields(body, issues);
     if (!('label' in scalars))
-      issues.push({ field: 'label', message: 'Nom du contrat requis.' });
+      issues.push({ field: 'label', message: contractLabelRefusalMessage('vide') });
     if (!('anniversaryDate' in scalars) || scalars.anniversaryDate === null)
       issues.push({ field: 'anniversaryDate', message: 'Date de début requise (AAAA-MM-JJ).' });
     const lines = 'lines' in body ? parseContractLines(body['lines'], issues) : undefined;
