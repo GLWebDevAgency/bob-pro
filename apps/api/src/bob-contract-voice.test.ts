@@ -253,3 +253,103 @@ describe('voix ↔ serveur — gestes de contrat de bout en bout (§2.7)', () =>
     expect(await p.maintenanceContracts.listByCompany(companyId)).toHaveLength(0);
   });
 });
+
+/**
+ * §2.7 — RENOMMER : le geste que la garde du libellé PROMET (« un nom de contrat imparfait DANS
+ * L'APPLICATION se corrige d'un tap sur la fiche »). Ce test prouve que la voix emprunte le MÊME
+ * use case UpdateMaintenanceContract que ce tap, que la RÉVISION est résolue côté serveur (le
+ * geste vocal n'a pas de vue optimiste), et qu'un patch d'un seul champ ne réécrit rien d'autre —
+ * lignes, équipements et conditions restent intacts.
+ */
+describe('voix ↔ serveur — renommer un contrat (§2.7)', () => {
+  it('« renomme le contrat … » : confirmation, puis nom RÉEL changé sans toucher au reste', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    await seedSiteWithFountains(p, companyId);
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        chantierId: 'site-bastille',
+        anniversaryDate: '2026-10-01',
+        visitsPerYear: 3,
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+        equipmentIds: ['equip-fontaine-a'],
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+    const before = (await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps();
+    const agent = makeAgent(service);
+
+    const proposed = await run(() =>
+      agent.ask('Renomme le contrat fontaines en « Entretien des ascenseurs »'),
+    );
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || !proposed.value.pending) throw new Error('proposition attendue');
+    expect(proposed.value.kind).toBe('proposed');
+    // Rien n'est écrit avant la confirmation (plancher de sécurité).
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.label).toBe(
+      'Entretien fontaines',
+    );
+
+    const done = await run(() => agent.confirm(proposed.value.pending!));
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+
+    const after = (await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps();
+    expect(after.label).toBe('Entretien des ascenseurs');
+    // Patch d'un SEUL champ : rien d'autre n'a bougé — sauf la révision, qui DOIT bouger.
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.status).toBe(before.status);
+    expect(after.chantierId).toBe(before.chantierId);
+    expect(after.anniversaryDate).toBe(before.anniversaryDate);
+    expect(after.visitsPerYear).toBe(before.visitsPerYear);
+    expect(after.lines).toEqual(before.lines);
+    expect(after.equipmentIds).toEqual(before.equipmentIds);
+  });
+
+  it('contrat RÉSILIÉ : lecture seule côté domaine — la voix ne le propose même pas, rien ne change', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+    await run(() =>
+      service.activateMaintenanceContract({ contractId: created.value.id, expectedRevision: 1 }),
+    );
+    const activated = (await p.maintenanceContracts.findById(companyId, created.value.id))!;
+    await run(() =>
+      service.terminateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: activated.revision,
+        note: 'le client déménage',
+      }),
+    );
+
+    const agent = makeAgent(service);
+    const r = await run(() =>
+      agent.ask('Renomme le contrat fontaines en « Entretien des ascenseurs »'),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.pending).toBeUndefined();
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.label).toBe(
+      'Entretien fontaines',
+    );
+  });
+});

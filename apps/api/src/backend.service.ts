@@ -4356,6 +4356,26 @@ export class BackendService {
           terminationEffectiveDate: r.value.terminationEffectiveDate,
         });
       },
+      // §2.7 — « renomme le contrat Bastille en … » : MÊME use case UpdateMaintenanceContract
+      // que le bouton « Renommer » de la fiche, avec un patch d'un SEUL champ (les lignes, les
+      // équipements et les conditions ne sont pas renvoyés, donc pas réécrits).
+      renameMaintenanceContract: async (input) => {
+        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
+        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
+        const r = await this.updateMaintenanceContract({
+          contractId: input.contractId,
+          expectedRevision: current.revision,
+          patch: { label: input.label },
+        });
+        if (!r.ok) return r;
+        return ok({
+          contractId: r.value.id,
+          label: r.value.label,
+          status: r.value.status,
+          anniversaryDate: r.value.anniversaryDate,
+          terminationEffectiveDate: r.value.terminationEffectiveDate,
+        });
+      },
       // PR-15/16 (parité papa vocal §3.7) — fiche de passage : les adapters délèguent aux MÊMES
       // use cases que les endpoints (Start/Complete/Send/PrepareInvoice) ; la révision courante
       // est résolue ICI (le geste vocal n'a pas de vue optimiste), jamais devinée par l'agent.

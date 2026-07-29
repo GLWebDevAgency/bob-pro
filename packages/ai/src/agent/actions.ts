@@ -769,6 +769,18 @@ export interface TerminateContractActionInput {
   note: string;
 }
 
+/**
+ * Outil `renommer_contrat` (§2.7) : MÊME use case UpdateMaintenanceContract que la fiche —
+ * un patch d'un SEUL champ, jamais un remplacement (lignes, équipements et conditions ne sont
+ * pas renvoyés, donc pas réécrits). L'hôte résout la révision courante côté serveur : le geste
+ * vocal n'a pas de vue optimiste, il ne devine jamais un numéro de révision.
+ */
+export interface RenameContractActionInput {
+  contractId: string;
+  /** Nouveau nom, déjà passé par la garde du libellé en sévérité `'nomme'` (registre d'outils). */
+  label: string;
+}
+
 /** Retour COMMUN des gestes de cycle de vie : les faits que Bob RÉCITE après le geste (jamais
  * recalculés — la date d'effet réelle vient du domaine, y compris quand elle n'a pas été dite). */
 export interface ContractLifecycleActionOutput {
@@ -1080,6 +1092,13 @@ export interface BobActions {
    * par le domaine (jamais par Bob), motif porté en trace. */
   terminateMaintenanceContract?(
     input: TerminateContractActionInput,
+  ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
+  /** §2.7 — « renomme le contrat Bastille en Entretien des ascenseurs » : MÊME use case
+   * UpdateMaintenanceContract que le bouton « Renommer » de la fiche (parité humain↔Bob). C'est
+   * le geste que la garde du libellé PROMET quand elle laisse passer un nom imparfait : sans
+   * lui, un nom mal compris à la dictée serait définitif. */
+  renameMaintenanceContract?(
+    input: RenameContractActionInput,
   ): Promise<Result<ContractLifecycleActionOutput, AppError>>;
   /** PR-15 — fiches de passage RÉELLES du tenant : matière de résolution par nom parlé
    * (« démarre l'intervention chez Carrefour »). Lecture pure, jamais une fiche inventée. */

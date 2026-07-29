@@ -3,6 +3,7 @@ import {
   Chantier,
   Customer,
   Equipment,
+  MAX_CONTRACT_LABEL_LENGTH,
   type OcrPort,
   type PaymentGatewayPort,
   type PdfRendererPort,
@@ -334,5 +335,79 @@ describe('contrats de maintenance — service (PR-12b)', () => {
       expect(view.value.renewalAlert).toBeNull();
       expect(view.value.lifecycle.terminatedCoverage).not.toBeNull();
     }
+  });
+
+  /**
+   * RENOMMER — le geste que la garde du libellé PROMET (« un nom de contrat imparfait DANS
+   * L'APPLICATION se corrige d'un tap sur la fiche »). Ce test tient les DEUX bouts de ce que la
+   * fiche mobile suppose : le nom écrit à la main n'est borné que par le domaine (il peut donc
+   * contenir ce qu'une extraction n'aurait jamais eu le droit d'y mettre), et une révision
+   * PÉRIMÉE se solde par un CONFLIT — l'écran a quelque chose d'honnête à dire, et rien n'est
+   * écrasé en silence.
+   */
+  it('renommer : un nom ÉCRIT À LA MAIN passe, une révision périmée CONFLICTE (jamais d’écrasement)', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'b2g');
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal({ userId: 'u-1', companyId }, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2025-10-12',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 40_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('create');
+
+    // Ce que la garde du libellé refuserait à une DICTÉE (une date, une somme) est ACCEPTÉ ici :
+    // l'artisan a tapé ce nom et l'a relu. C'est exactement le remède que la garde promet.
+    const renamed = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Entretien du 12 octobre — 1 200 €' },
+      }),
+    );
+    expect(renamed.ok).toBe(true);
+    if (!renamed.ok) return;
+    expect(renamed.value.label).toBe('Entretien du 12 octobre — 1 200 €');
+    expect(renamed.value.revision).toBe(2);
+    // Un patch d'un seul champ ne réécrit rien d'autre.
+    expect(renamed.value.lines).toHaveLength(1);
+    expect(renamed.value.anniversaryDate).toBe('2025-10-12');
+
+    // Révision PÉRIMÉE (la fiche a changé ailleurs entre le chargement et le tap) : conflit.
+    const stale = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Autre nom' },
+      }),
+    );
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.error.kind).toBe('conflict');
+    // Rien n'a été écrasé : le nom du premier renommage tient toujours.
+    const after = await p.maintenanceContracts.findById(companyId, created.value.id);
+    expect(after!.label).toBe('Entretien du 12 octobre — 1 200 €');
+
+    // La borne du DOMAINE, elle, reste : un nom vide ou trop long est refusé.
+    const emptied = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 2,
+        patch: { label: '   ' },
+      }),
+    );
+    expect(emptied.ok).toBe(false);
+    const tooLong = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 2,
+        patch: { label: 'a'.repeat(MAX_CONTRACT_LABEL_LENGTH + 1) },
+      }),
+    );
+    expect(tooLong.ok).toBe(false);
   });
 });
