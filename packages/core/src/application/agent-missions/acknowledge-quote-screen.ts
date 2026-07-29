@@ -18,14 +18,19 @@ import {
 import {
   agentMissionDomainError,
   canonicalAgentMissionScreenAckCommand,
+  guardAgentMissionReplayForeground,
   isCanonicalAgentMissionOwner,
   isCanonicalAgentMissionUuid,
   missingAgentMission,
   recordAgentMissionEvent,
   rejectedAgentMissionCapability,
   requireAgentMissionFingerprint,
+  resolveQuoteAgentMissionEventLookup,
+  resolveQuoteAgentMissionLookup,
+  resolveQuoteAgentMissionForUpdate,
   toAgentMissionView,
   unavailableAgentMissionCompany,
+  unavailableAgentMissionForeground,
   verifyAgentMissionFingerprint,
   type AgentMissionViewV1,
 } from './agent-mission-application';
@@ -179,10 +184,13 @@ export class AcknowledgeQuoteScreen {
         input.authority,
         async (transaction) => {
           const now = await transaction.databaseNow();
-          const consumed = await transaction.events.findByCommandId({
+          const consumedLookup = await transaction.events.findByCommandId({
             ...owner,
             commandId: input.commandId,
           });
+          const consumedResult = resolveQuoteAgentMissionEventLookup(consumedLookup);
+          if (!consumedResult.ok) abort(consumedResult.error);
+          const consumed = consumedResult.value;
           if (consumed !== null) {
             const snapshot = consumed.toSnapshot();
             if (
@@ -203,10 +211,13 @@ export class AcknowledgeQuoteScreen {
             if (transaction.realtime.realtimeSessionId !== input.realtimeSessionId) {
               abort(appConflict('agent_mission_screen_ack', 'context_stale'));
             }
-            const replayed = await transaction.missions.findById({
+            const replayedLookup = await transaction.missions.findById({
               ...owner,
               missionId: input.missionId,
             });
+            const replayedResult = resolveQuoteAgentMissionLookup(replayedLookup);
+            if (!replayedResult.ok) abort(replayedResult.error);
+            const replayed = replayedResult.value;
             if (replayed === null) {
               abort({
                 kind: 'dependency',
@@ -214,6 +225,12 @@ export class AcknowledgeQuoteScreen {
                 cause: 'screen_ack_event_without_mission',
               });
             }
+            const replayGuard = await guardAgentMissionReplayForeground({
+              transaction,
+              owner,
+              replayedMissionId: replayed.id,
+            });
+            if (!replayGuard.ok) abort(replayGuard.error);
             const view = toAgentMissionView(replayed, now);
             if (!view.ok) abort(view.error);
             const receipt = acknowledgementReceipt(snapshot);
@@ -234,10 +251,13 @@ export class AcknowledgeQuoteScreen {
           if (transaction.realtime.realtimeSessionId !== input.realtimeSessionId) {
             abort(appConflict('agent_mission_screen_ack', 'context_stale'));
           }
-          const mission = await transaction.missions.findByIdForUpdate({
-            ...owner,
+          const resolvedMission = await resolveQuoteAgentMissionForUpdate({
+            transaction,
+            owner,
             missionId: input.missionId,
           });
+          if (!resolvedMission.ok) abort(resolvedMission.error);
+          const mission = resolvedMission.value;
           if (mission === null) abort(missingAgentMission(input.missionId));
           const expired = mission.isExpiredAt(now);
           if (!expired.ok) abort(agentMissionDomainError(expired.error));
@@ -321,6 +341,9 @@ export class AcknowledgeQuoteScreen {
       );
       if (execution.status === 'company_unavailable') {
         return err(unavailableAgentMissionCompany(execution.reason));
+      }
+      if (execution.status === 'foreground_unavailable') {
+        return err(unavailableAgentMissionForeground(execution.reason));
       }
       if (execution.status === 'capability_rejected') {
         return err(rejectedAgentMissionCapability(execution.reason));

@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, CONTRACT_B2C_REFUSED_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type FrenchOperationCategory, type MissionKindId, type PaymentMethod, type SituationAmountInput, addDays as addDaysOnly, equipmentContractCoverageWarning, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, PROFESSIONAL_ADVANCE_RECOVERY_UNAVAILABLE_MESSAGE, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, CONTRACT_B2C_REFUSED_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -9,6 +9,14 @@ import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
 import { type BobIntent, detectIntent, INTENT_BY_GESTURE } from './intent';
+import {
+  createLegacyExecutionAuthority,
+  type LegacyExecutionAuthority,
+} from './intent-ownership';
+import {
+  preflightRuntimeToolOwnership,
+  runtimeToolResultIntent,
+} from './runtime-tool-intent';
 import {
   classifyWithLlm,
   classifyWithRegex,
@@ -1864,54 +1872,9 @@ function subscriptionStatusBody(s: SubscriptionStatusView): string {
 /** Intent public d'un outil — exporté pour que tout hôte qui confirme via son propre
  * runtime (HTTP /ai/confirm, client local) étiquette le run comme BobAgent.confirm. */
 export function intentForTool(tool: string): BobIntent {
-  if (tool === 'contexte_ecran') return 'contexte_ecran';
-  if (tool === 'marquer_notifications_lues') return 'marquer_notifications_lues';
-  if (tool === 'envoyer_devis') return 'envoyer_devis';
-  if (tool === 'emettre_facture') return 'emettre_facture';
-  if (tool === 'documents_liste') return 'documents';
-  if (tool === 'encaisser_facture') return 'encaisser';
-  if (tool === 'relance_brouillon') return 'relance';
-  if (tool === 'factures_impayees') return 'factures';
-  if (tool === 'tresorerie_versement') return 'payout';
-  if (tool === 'echeances_fiscales') return 'echeances';
-  if (tool === 'etat_abonnement') return 'abonnement';
-  if (tool === 'position_tva') return 'tva';
-  if (tool === 'balance_agee') return 'balance';
-  if (tool === 'enregistrer_reglement_depense') return 'payer_depense';
-  if (tool === 'envoyer_relance') return 'relance';
-  if (tool === 'envoyer_facture') return 'envoyer_facture';
-  if (tool === 'relance_devis') return 'relance_devis';
-  if (tool === 'marquer_facture_transmise') return 'declarer_transmission';
-  if (tool === 'cadence_relances' || tool === 'regler_relances_auto') return 'cadence_relances';
-  if (tool === 'scan_depense') return 'depense_dictee';
-  if (tool === 'lier_depense_chantier') return 'lier_depense_chantier';
-  if (tool === 'ajouter_equipement') return 'ajouter_equipement';
-  if (tool === 'retirer_equipement') return 'retirer_equipement';
-  if (tool === 'parc_du_site') return 'parc_equipements';
-  if (tool === 'historique_equipement') return 'historique_equipement';
-  if (tool === 'preparer_facture_annuelle') return 'preparer_facture_annuelle';
-  if (tool === 'statut_contrat') return 'statut_contrat';
-  if (tool === 'contrats_a_renouveler') return 'contrats_a_renouveler';
-  if (tool === 'creer_contrat_maintenance') return 'creer_contrat_maintenance';
-  if (tool === 'activer_contrat') return 'activer_contrat';
-  if (tool === 'resilier_contrat') return 'resilier_contrat';
-  if (tool === 'renommer_contrat') return 'renommer_contrat';
-  if (tool === 'valider_document') return 'valider_document';
-  if (tool === 'classer_document') return 'classer_document';
-  if (tool === 'renommer_document') return 'renommer_document';
-  if (tool === 'chercher_document') return 'chercher_document';
-  if (tool === 'lier_bon_commande') return 'lier_bon_commande';
-  if (tool === 'facture_directe') return 'facture_directe';
-  if (tool === 'facturer_situation') return 'facturer_situation';
-  if (tool === 'definir_conditions_paiement') return 'conditions_paiement';
-  if (tool === 'resultat_provisoire') return 'resultat';
-  if (tool === 'mon_bilan') return 'bilan';
-  if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
-  if (tool === 'revue_cloture') return 'revue_cloture';
-  if (tool === 'revue_pilotage') return 'pilotage';
-  if (tool === 'delai_paiement') return 'dso';
-  if (tool === 'top_clients') return 'top_clients';
-  return 'unknown';
+  const intent = runtimeToolResultIntent(tool);
+  if (intent === null) throw new Error(`BobAgent: contrat d'intention absent pour ${tool}`);
+  return intent;
 }
 
 /** Convertit une action proposée (simple ou lot) en invocations rejouables par le runtime. */
@@ -1937,6 +1900,11 @@ export interface BobAgentDeps {
   llm?: LlmPort;
   /** Optionnel : active dryRun()/runJournaled() (audit append-only + permissions par action). */
   runtime?: BobRuntimeConfig;
+  /**
+   * Kinds admis par l'hôte authentifié. Absent signifie explicitement le chemin legacy/local ;
+   * cette valeur n'est jamais lue depuis un payload utilisateur.
+   */
+  admittedMissionKinds?: readonly MissionKindId[];
 }
 
 /** Phase de traitement émise pendant ask() — pour un indicateur d'activité « temps réel » côté UI. */
@@ -1978,14 +1946,19 @@ export const BOB_GENERIC_ASSISTANCE_SPEECH = Object.freeze({
 export class BobAgent {
   private readonly tools: AnyTool[];
   private readonly engine?: AgentRuntime;
+  private readonly executionAuthority: LegacyExecutionAuthority;
 
   constructor(private readonly deps: BobAgentDeps) {
     this.tools = buildBobTools(deps.actions);
+    this.executionAuthority = createLegacyExecutionAuthority(
+      deps.admittedMissionKinds ?? [],
+    );
     if (deps.runtime) {
       this.engine = new AgentRuntime({
         tools: this.tools,
         clock: deps.runtime.clock,
         ids: deps.runtime.ids,
+        executionAuthority: this.executionAuthority,
         ...(deps.runtime.policy ? { policy: deps.runtime.policy } : {}),
         ...(deps.runtime.store ? { store: deps.runtime.store } : {}),
       });
@@ -2150,6 +2123,13 @@ export class BobAgent {
     const effectiveMessage = chainCommand ?? operationCategoryCommand ?? userMessage;
     const plan = await this.classify(classificationMessage, routed.model, history, context, opts.signal);
     opts.signal?.throwIfAborted();
+    if (plan.steps.some((step) => this.executionAuthority.isIntentBlocked(step.intent))) {
+      return err({
+        kind: 'conflict',
+        entity: 'agent_intent_ownership',
+        reason: 'mission_owned',
+      });
+    }
     const model =
       plan.model !== DETERMINISTIC_CLASSIFIER_MODEL || routed.model === 'unavailable'
         ? plan.model
@@ -9253,6 +9233,20 @@ export class BobAgent {
   /** Exécute une action (ou un lot) précédemment proposé, après confirmation utilisateur. */
   async confirm(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
     const model = this.deps.router.route('agent.plan').model;
+    const ownership = preflightRuntimeToolOwnership(
+      pendingToInvocations(pending).map((invocation) => invocation.tool),
+      (intent) => this.executionAuthority.isIntentBlocked(intent),
+    );
+    if (ownership.status === 'unknown_tool') {
+      return err({ kind: 'not_found', entity: 'tool', id: ownership.tool });
+    }
+    if (ownership.status === 'mission_owned') {
+      return err({
+        kind: 'conflict',
+        entity: 'agent_intent_ownership',
+        reason: 'mission_owned',
+      });
+    }
     if (pending.batch && pending.batch.length > 0) {
       const r = await this.runBatch(pending.batch);
       if (!r.ok) return err(r.error);

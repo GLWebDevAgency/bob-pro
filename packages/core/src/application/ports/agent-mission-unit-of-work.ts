@@ -88,7 +88,7 @@ export interface AgentMissionReadTransaction {
 }
 
 export interface AgentMissionTransaction {
-  /** Instant métier unique lu après le verrou owner+kind (`clock_timestamp()` côté SQL). */
+  /** Instant métier unique lu après les verrous foreground global puis owner+kind historique. */
   databaseNow(): Promise<Instant>;
   readonly realtime: AgentMissionAuthorizedRealtimeLease;
   readonly missions: AgentMissionRepositoryPort;
@@ -99,6 +99,10 @@ export interface AgentMissionTransaction {
 }
 
 export type AgentMissionCompanyUnavailableReason = 'missing' | 'closed';
+export type AgentMissionForegroundUnavailableReason =
+  | 'lock_timeout'
+  | 'query_canceled'
+  | 'transaction_timeout';
 
 export type AgentMissionWriteExecution<T> =
   | { readonly status: 'executed'; readonly value: T }
@@ -109,6 +113,10 @@ export type AgentMissionWriteExecution<T> =
   | {
       readonly status: 'company_unavailable';
       readonly reason: AgentMissionCompanyUnavailableReason;
+    }
+  | {
+      readonly status: 'foreground_unavailable';
+      readonly reason: AgentMissionForegroundUnavailableReason;
     };
 
 export type AgentMissionReadExecution<T> =
@@ -119,10 +127,11 @@ export type AgentMissionReadExecution<T> =
     };
 
 /**
- * Le port impose une transaction owner/tenant et le verrou owner+kind avant d'exposer les repos.
- * Avant le verrou owner+kind, l'adapter prend le verrou partagé de cycle de vie société et ne
- * lance jamais `work` si la société est absente ou clôturée. L'ordre global est donc
- * company(SHARE) → owner/kind → agrégats, identique aux autres writers financiers.
+ * Le port impose une transaction owner/tenant et le double verrou de rollout avant d'exposer les
+ * repos. L'adapter prend d'abord le verrou partagé de cycle de vie société et ne lance jamais
+ * `work` si la société est absente ou clôturée. L'ordre est :
+ * company(SHARE) → owner-foreground-v2 → owner-kind-v1/quote_creation → agrégats.
+ * Le second verrou conserve la sérialisation exacte avec le writer N-1.
  */
 export interface AgentMissionUnitOfWorkPort {
   readQuoteCreationOwner<T>(

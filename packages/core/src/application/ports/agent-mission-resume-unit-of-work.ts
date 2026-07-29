@@ -18,7 +18,7 @@ export interface AgentMissionResumeQuoteDraftReadPort {
  */
 export interface AgentMissionResumeReadTransaction {
   databaseNow(): Promise<Instant>;
-  readonly missions: Pick<AgentMissionReadRepositoryPort, 'findActive'>;
+  readonly missions: Pick<AgentMissionReadRepositoryPort, 'findActive' | 'findForeground'>;
   readonly quoteDrafts: AgentMissionResumeQuoteDraftReadPort;
   readonly customers: Pick<CustomerCandidateReadPort, 'findByIds'>;
 }

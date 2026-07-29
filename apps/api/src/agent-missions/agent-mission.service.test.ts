@@ -149,14 +149,37 @@ class RejectingUnitOfWork implements AgentMissionUnitOfWorkPort {
   }
 }
 
+class ForegroundUnavailableUnitOfWork implements AgentMissionUnitOfWorkPort {
+  async readQuoteCreationOwner<T>(
+    _owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
+    _work: (transaction: AgentMissionReadTransaction) => Promise<T>,
+  ) {
+    return { status: 'capability_rejected' as const, reason: 'state' as const };
+  }
+
+  async runQuoteCreationOwner<T>(
+    _owner: AgentMissionOwner,
+    _authority: AgentMissionRealtimeAuthorityProof,
+    _work: (transaction: AgentMissionTransaction) => Promise<T>,
+  ) {
+    return {
+      status: 'foreground_unavailable' as const,
+      reason: 'lock_timeout' as const,
+    };
+  }
+}
+
 function harness(
   unitOfWork: AgentMissionUnitOfWorkPort | null,
   resumeUnitOfWork: AgentMissionResumeUnitOfWorkPort | null = null,
 ) {
   const capabilityInc = vi.fn();
+  const foregroundInc = vi.fn();
   const screenAckInc = vi.fn();
   const metrics = {
     agentMissionCapabilityRejections: { inc: capabilityInc },
+    agentMissionForegroundContentions: { inc: foregroundInc },
     agentMissionScreenAcks: { inc: screenAckInc },
   } as unknown as Metrics;
   const persistence = {
@@ -166,6 +189,7 @@ function harness(
   const logger = {
     audit: vi.fn(),
     error: vi.fn(),
+    warn: vi.fn(),
   } as unknown as AppLogger;
   const service = new AgentMissionService(
     persistence,
@@ -173,7 +197,14 @@ function harness(
     logger,
     metrics,
   );
-  return { service, capabilityInc, screenAckInc, persistence, logger };
+  return {
+    service,
+    capabilityInc,
+    foregroundInc,
+    screenAckInc,
+    persistence,
+    logger,
+  };
 }
 
 class ResumeNullUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
@@ -188,7 +219,10 @@ class ResumeNullUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
       status: 'executed' as const,
       value: await work({
         databaseNow: async () => NOW,
-        missions: { findActive: async () => null },
+        missions: {
+          findActive: async () => null,
+          findForeground: async () => null,
+        },
         quoteDrafts: { get: async () => null },
         customers: { findByIds: async () => [] },
       }),
@@ -315,6 +349,34 @@ describe('AgentMissionService metrics', () => {
       expect(screenAckInc).not.toHaveBeenCalled();
     },
   );
+
+  it('mesure une contention foreground sans exposer le SQLSTATE', async () => {
+    const { service, capabilityInc, foregroundInc, logger } = harness(
+      new ForegroundUnavailableUnitOfWork(),
+    );
+
+    await expect(service.start({
+      authorization: authorization('start_quote_creation'),
+      commandId: '10000000-0000-4000-8000-000000000001',
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'unavailable',
+        service: 'agent_mission_foreground',
+        retryAfterSeconds: 1,
+      },
+    });
+    expect(foregroundInc).toHaveBeenCalledOnce();
+    expect(foregroundInc).toHaveBeenCalledWith({
+      operation: 'start',
+      reason: 'lock_timeout',
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      'AgentMission foreground indisponible (start/lock_timeout).',
+      'AgentMissionService',
+    );
+    expect(capabilityInc).not.toHaveBeenCalled();
+  });
 
   it('mesure séparément le rejet capability et le résultat public d’un screen ACK', async () => {
     const { service, capabilityInc, screenAckInc } = harness(

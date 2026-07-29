@@ -39,9 +39,13 @@ export type AgentMissionServiceAuthorization = Readonly<
 Pick<AgentMissionHttpAuthorization, 'owner' | 'proof'>
 >;
 
-function observeCapabilityRejection<T>(
+function observeBoundedUnitOfWorkOutcome<T>(
   execution: AgentMissionReadExecution<T> | AgentMissionWriteExecution<T>,
-  metrics: Pick<Metrics, 'agentMissionCapabilityRejections'>,
+  metrics: Pick<
+  Metrics,
+  'agentMissionCapabilityRejections' | 'agentMissionForegroundContentions'
+  >,
+  logger: Pick<AppLogger, 'warn'>,
   operation: AgentMissionCapabilityMetricOperation,
 ): void {
   if (execution.status === 'capability_rejected') {
@@ -50,11 +54,25 @@ function observeCapabilityRejection<T>(
       reason: execution.reason,
     });
   }
+  if (execution.status === 'foreground_unavailable') {
+    metrics.agentMissionForegroundContentions.inc({
+      operation,
+      reason: execution.reason,
+    });
+    logger.warn(
+      `AgentMission foreground indisponible (${operation}/${execution.reason}).`,
+      'AgentMissionService',
+    );
+  }
 }
 
 function instrumentAgentMissionCapabilityRejections(
   delegate: AgentMissionUnitOfWorkPort,
-  metrics: Pick<Metrics, 'agentMissionCapabilityRejections'>,
+  metrics: Pick<
+  Metrics,
+  'agentMissionCapabilityRejections' | 'agentMissionForegroundContentions'
+  >,
+  logger: Pick<AppLogger, 'warn'>,
   operation: AgentMissionCapabilityMetricOperation,
 ): AgentMissionUnitOfWorkPort {
   return {
@@ -64,7 +82,7 @@ function instrumentAgentMissionCapabilityRejections(
       work: (transaction: AgentMissionReadTransaction) => Promise<T>,
     ): Promise<AgentMissionReadExecution<T>> {
       const execution = await delegate.readQuoteCreationOwner(owner, authority, work);
-      observeCapabilityRejection(execution, metrics, operation);
+      observeBoundedUnitOfWorkOutcome(execution, metrics, logger, operation);
       return execution;
     },
     async runQuoteCreationOwner<T>(
@@ -73,7 +91,7 @@ function instrumentAgentMissionCapabilityRejections(
       work: (transaction: AgentMissionTransaction) => Promise<T>,
     ): Promise<AgentMissionWriteExecution<T>> {
       const execution = await delegate.runQuoteCreationOwner(owner, authority, work);
-      observeCapabilityRejection(execution, metrics, operation);
+      observeBoundedUnitOfWorkOutcome(execution, metrics, logger, operation);
       return execution;
     },
   };
@@ -160,6 +178,7 @@ export class AgentMissionService {
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
+      this.logger,
       'get',
     );
     return new GetActiveAgentMission({ unitOfWork }).execute(
@@ -246,6 +265,7 @@ export class AgentMissionService {
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
+      this.logger,
       'start',
     );
     const useCase = new StartQuoteAgentMission({
@@ -290,6 +310,7 @@ export class AgentMissionService {
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
+      this.logger,
       'cancel',
     );
     const useCase = new CancelQuoteAgentMission({
@@ -341,6 +362,7 @@ export class AgentMissionService {
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
+      this.logger,
       'screen_ack',
     );
     const ids = { newId: () => randomUUID() };
@@ -483,6 +505,7 @@ export class AgentMissionService {
     const unitOfWork = instrumentAgentMissionCapabilityRejections(
       persistedUnitOfWork,
       this.metrics,
+      this.logger,
       'decision',
     );
     const owner = input.authorization.owner;

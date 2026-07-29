@@ -8,6 +8,11 @@ import type {
 export class InMemoryAgentMissionDraftFence implements AgentMissionDraftFencePort {
   private owned = false;
   private companyUnavailable: 'missing' | 'closed' | null = null;
+  private foregroundUnavailable:
+    | 'lock_timeout'
+    | 'query_canceled'
+    | 'transaction_timeout'
+    | null = null;
 
   setOwned(owned: boolean): void {
     this.owned = owned;
@@ -17,12 +22,21 @@ export class InMemoryAgentMissionDraftFence implements AgentMissionDraftFencePor
     this.companyUnavailable = reason;
   }
 
+  setForegroundUnavailable(
+    reason: 'lock_timeout' | 'query_canceled' | 'transaction_timeout' | null,
+  ): void {
+    this.foregroundUnavailable = reason;
+  }
+
   async runLegacyMutationIfUnowned<T>(
     _owner: AgentMissionOwner,
     work: () => Promise<T>,
   ): Promise<AgentMissionDraftFenceResult<T>> {
     if (this.companyUnavailable !== null) {
       return { status: 'company_unavailable', reason: this.companyUnavailable };
+    }
+    if (this.foregroundUnavailable !== null) {
+      return { status: 'foreground_unavailable', reason: this.foregroundUnavailable };
     }
     return this.owned
       ? { status: 'owned_by_agent_mission' }

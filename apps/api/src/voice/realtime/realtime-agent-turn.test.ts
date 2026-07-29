@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentAskPayload, AgentRun } from '@bob/ai';
-import type { AppError, Result } from '@bob/core';
+import {
+  QUOTE_CREATION_MISSION_KIND_V1,
+  type AppError,
+  type Result,
+} from '@bob/core';
 import { getPrincipal } from '../../observability/logger';
 import type { Persistence } from '../../persistence/persistence';
 import { prepareRealtimeContext } from './realtime-context';
@@ -240,7 +244,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
     expect(h.runWithTenant).not.toHaveBeenCalled();
   });
 
-  it('interdit au moteur historique de contourner une mission par /devis/new', async () => {
+  it('interdit le dispatcher historique avant appel quand la mission possède le devis', async () => {
     const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
       async () => ({ status: 'not_applicable' }),
     );
@@ -252,6 +256,85 @@ describe('RealtimeBobAgentTurnAdapter', () => {
 
     const outcome = await h.adapter.run({
       ...input(),
+      transcript: 'Fais-moi un devis',
+      agentMissionAuthority: {
+        owner: { companyId: 'company-1', ownerUserId: 'user-1' },
+        proof: {
+          subjectHashCandidates: ['a'.repeat(64)],
+          principalBindingHash: 'b'.repeat(64),
+          capabilityHash: 'c'.repeat(64),
+        },
+        realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: 'failed',
+      canonicalSpeech:
+        'Je garde la création du devis dans la mission sécurisée. Rien n’a été exécuté. Reformule uniquement l’étape du devis.',
+    });
+    expect(h.askBob).not.toHaveBeenCalled();
+  });
+
+  it('restitue le refus d’ownership du garde LLM avant tout effet legacy', async () => {
+    const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+      async () => ({ status: 'not_applicable' }),
+    );
+    const h = harness(
+      {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_intent_ownership',
+          reason: 'mission_owned',
+        },
+      },
+      'openai',
+      { run: runMission },
+    );
+
+    const outcome = await h.adapter.run({
+      ...input(),
+      transcript: 'Prépare la proposition commerciale pour Martin',
+      agentMissionAuthority: {
+        owner: { companyId: 'company-1', ownerUserId: 'user-1' },
+        proof: {
+          subjectHashCandidates: ['a'.repeat(64)],
+          principalBindingHash: 'b'.repeat(64),
+          capabilityHash: 'c'.repeat(64),
+        },
+        realtimeSessionId: '20000000-0000-4000-8000-000000000001',
+      },
+    });
+
+    expect(outcome).toEqual({
+      status: 'failed',
+      canonicalSpeech:
+        'Je garde la création du devis dans la mission sécurisée. Rien n’a été exécuté. Reformule uniquement l’étape du devis.',
+    });
+    expect(h.askBob).toHaveBeenCalledWith(
+      expect.any(Object),
+      {
+        signal: expect.any(AbortSignal),
+        requiredProvider: 'openai',
+        admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+      },
+    );
+  });
+
+  it('garde aussi la sortie /devis/new si un exécuteur non conforme ignore la policy', async () => {
+    const runMission = vi.fn<RealtimeQuoteMissionOrchestratorPort['run']>(
+      async () => ({ status: 'not_applicable' }),
+    );
+    const h = harness(
+      { ok: true, value: run({ navigate: '/devis/new' }) },
+      'openai',
+      { run: runMission },
+    );
+
+    const outcome = await h.adapter.run({
+      ...input(),
+      transcript: 'Prépare la proposition commerciale pour Martin',
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
@@ -268,7 +351,6 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       canonicalSpeech:
         'Je ne peux pas ouvrir un devis sans mission vérifiée. Rien n’a été exécuté.',
     });
-    expect(h.askBob).toHaveBeenCalledOnce();
   });
 
   it('propage le fournisseur Mistral exact sans le déduire des clés disponibles', async () => {

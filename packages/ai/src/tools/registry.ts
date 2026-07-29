@@ -24,7 +24,8 @@ import {
   validateDocumentDisplayName,
   hasAsciiControlCharacter,
 } from '@bob/core';
-import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
+import { type AnyTool, type ToolPublicResult } from './tool';
+import { type RuntimeBobTool } from '../agent/runtime-tool-intent';
 import {
   contractLabelRefusalSaid,
   inspectContractLabel,
@@ -167,7 +168,7 @@ function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
  * Chaque outil DÉLÈGUE à une méthode de BobActions : aucune logique métier ici.
  */
 export function buildBobTools(actions: BobActions): AnyTool[] {
-  const computePayout: Tool<Record<string, never>, { payoutCents: number; availableCents: number }> = {
+  const computePayout: RuntimeBobTool<Record<string, never>, { payoutCents: number; availableCents: number }> = {
     name: 'tresorerie_versement',
     description:
       'Calcule la trésorerie mobilisable sans risque (réserves déjà mises de côté) — ' +
@@ -180,7 +181,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.computePayout(),
   };
 
-  const draftRelance: Tool<DraftRelanceActionInput, { subject: string; body: string }> = {
+  const draftRelance: RuntimeBobTool<DraftRelanceActionInput, { subject: string; body: string }> = {
     name: 'relance_brouillon',
     description:
       'Rédige un brouillon de relance pour une facture impayée — ciblable par facture ou client (défaut : la plus urgente). N’envoie rien.',
@@ -203,7 +204,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.draftRelance(input),
   };
 
-  const listPayable: Tool<Record<string, never>, unknown> = {
+  const listPayable: RuntimeBobTool<Record<string, never>, unknown> = {
     name: 'factures_impayees',
     description: 'Liste les factures encore à encaisser (numéro, client, reste dû).',
     mutating: false,
@@ -214,7 +215,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.listPayableInvoices(),
   };
 
-  const listDocuments: Tool<Record<string, never>, unknown> = {
+  const listDocuments: RuntimeBobTool<Record<string, never>, unknown> = {
     name: 'documents_liste',
     description: 'Liste les derniers documents archivés de la société (PDF, XML Factur-X, reçus, justificatifs).',
     mutating: false,
@@ -225,7 +226,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.listDocuments(),
   };
 
-  const sendQuote: Tool<
+  const sendQuote: RuntimeBobTool<
     { quoteId: string },
     { number: string; deliveryStatus?: 'queued' | 'sent' | 'skipped' }
   > = {
@@ -253,7 +254,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.sendQuote(input),
   };
 
-  const issueInvoice: Tool<
+  const issueInvoice: RuntimeBobTool<
     {
       invoiceId: string;
       operationCategory?: FrenchOperationCategory;
@@ -320,7 +321,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.issueInvoice(input),
   };
 
-  const registerPayment: Tool<
+  const registerPayment: RuntimeBobTool<
     { invoiceId: string; amountCents: number; idempotencyKey?: string | null },
     { status: string }
   > = {
@@ -352,7 +353,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // Les hôtes existants (apps/api) restent inchangés ; le mobile branche ces actions sur le BobClient.
   const createQuoteAction = actions.createQuote?.bind(actions);
   if (createQuoteAction) {
-    const creerDevis: Tool<CreateQuoteActionInput, { quoteId: string }> = {
+    const creerDevis: RuntimeBobTool<CreateQuoteActionInput, { quoteId: string }> = {
       name: 'creer_devis',
       description: 'Crée un devis brouillon (client + lignes chiffrées) — même use case que l’écran devis.',
       mutating: true,
@@ -414,7 +415,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const recordExpenseAction = actions.recordExpense?.bind(actions);
   if (recordExpenseAction) {
-    const scanDepense: Tool<RecordExpenseActionInput, { id: string }> = {
+    const scanDepense: RuntimeBobTool<RecordExpenseActionInput, { id: string }> = {
       name: 'scan_depense',
       description:
         'Enregistre une dépense justifiée (fournisseur, TTC, catégorie) dans les livres — même use case que le scan OCR de l’écran Documents.',
@@ -503,7 +504,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // —— Outils OPTIONNELS (parité C15 TODO ⑤⑥ + créer client, C40) — même pattern par capacités ——
   const generateInvoiceAction = actions.generateInvoice?.bind(actions);
   if (generateInvoiceAction) {
-    const genererFacture: Tool<GenerateInvoiceActionInput, { invoiceId: string }> = {
+    const genererFacture: RuntimeBobTool<GenerateInvoiceActionInput, { invoiceId: string }> = {
       name: 'generer_facture',
       description:
         'Génère la facture (acompte « deposit » ou solde « final ») d’un devis signé — même use case GenerateInvoiceFromQuote que l’UI. Si le serveur refuse pour embargo L221-10 (signature à domicile, 7 jours), explique le refus honnête et propose le DÉFAUT : programmer_encaissement_embargo (message client planifié au premier jour légal) ; « embargoOverride: true » n’est permis qu’après avoir reformulé le risque concret (contrat annulable, remboursement exigible) et obtenu une confirmation explicite dédiée — l’action est tracée.',
@@ -539,7 +540,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // (acompte + situations ≤ marché), le gel de rétractation A3 et la retenue de garantie B5
   // vivent au domaine — leurs refus sont restitués VERBATIM (mêmes messages que l'UI).
   if (generateInvoiceAction) {
-    const facturerSituation: Tool<GenerateSituationActionInput, { invoiceId: string }> = {
+    const facturerSituation: RuntimeBobTool<GenerateSituationActionInput, { invoiceId: string }> = {
       name: 'facturer_situation',
       description:
         'Génère une SITUATION DE TRAVAUX (facture d’avancement) d’un devis signé : % du marché ou montant HT en centimes — la pratique des marchés privés stipule les situations en HT. Même use case GenerateInvoiceFromQuote que l’UI ; cumul acompte + situations plafonné au marché (garde du domaine) ; la retenue de garantie stipulée au devis est déduite du net à payer. Si le serveur refuse pour embargo L221-10 ou gel de rétractation, explique le refus honnête (mêmes messages que l’écran).',
@@ -601,7 +602,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // restituées VERBATIM — jamais contournées, jamais reformulées.
   const composeStandaloneAction = actions.composeStandaloneInvoice?.bind(actions);
   if (composeStandaloneAction) {
-    const factureDirecte: Tool<ComposeStandaloneInvoiceActionInput, ComposeStandaloneInvoiceActionOutput> = {
+    const factureDirecte: RuntimeBobTool<ComposeStandaloneInvoiceActionInput, ComposeStandaloneInvoiceActionOutput> = {
       name: 'facture_directe',
       description:
         'Crée une FACTURE DIRECTE sans devis signé (brouillon) : dépannage urgent facturé sur place, régie (TJM × jours), facturation syndic/B2B récurrente. Client particulier (b2c) : UNIQUEMENT pour une intervention urgente à domicile expressément demandée par le client (art. L221-10, al. 2 c. conso) — « urgentOnSiteRepair: true » strict après confirmation du fait ; sans urgence, le devis signé reste le chemin (refus honnête du domaine, à restituer tel quel). Client pro étranger : émission bloquée (B6, fail-closed). La TVA de chaque ligne est re-jugée par le domaine (franchise, débours, autoliquidation, taux réduits travaux).',
@@ -690,7 +691,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // l'enregistrement — son refus est restitué VERBATIM (même message que l'UI).
   const setCustomerPaymentTermsAction = actions.setCustomerPaymentTerms?.bind(actions);
   if (setCustomerPaymentTermsAction) {
-    const definirConditions: Tool<SetCustomerPaymentTermsActionInput, SetCustomerPaymentTermsActionOutput> = {
+    const definirConditions: RuntimeBobTool<SetCustomerPaymentTermsActionInput, SetCustomerPaymentTermsActionOutput> = {
       name: 'definir_conditions_paiement',
       description:
         'Enregistre les conditions de paiement PROPRES à un client (« Durand paie à 45 jours fin de mois ») : elles pilotent l’échéance des prochaines factures émises pour ce client. Plafond légal entre professionnels : 60 jours, ou 45 jours fin de mois (art. L441-10 du code de commerce) — jugé par le domaine, refus à restituer tel quel. Ne modifie aucune facture déjà émise.',
@@ -756,7 +757,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // exigible, annulable si le client se rétracte, revalidé à la livraison.
   const scheduleEmbargoPaymentAction = actions.scheduleEmbargoPayment?.bind(actions);
   if (scheduleEmbargoPaymentAction) {
-    const programmerEncaissement: Tool<
+    const programmerEncaissement: RuntimeBobTool<
       ScheduleEmbargoPaymentActionInput,
       ScheduleEmbargoPaymentActionOutput
     > = {
@@ -788,7 +789,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const exportFecAction = actions.exportFec?.bind(actions);
   if (exportFecAction) {
-    const exportFec: Tool<ExportFecActionInput, FecExportSummary> = {
+    const exportFec: RuntimeBobTool<ExportFecActionInput, FecExportSummary> = {
       name: 'export_fec',
       description:
         'Prépare l’export FEC (fichier des écritures comptables) d’une période — même use case ExportFec que l’écran compta ; renvoie le résumé (fichier, nombre d’écritures), jamais le contenu.',
@@ -816,7 +817,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // « envoie la facture » réussit à la voix). Gardes fail-closed du use case restituées.
   const sendInvoiceAction = actions.sendInvoice?.bind(actions);
   if (sendInvoiceAction) {
-    const envoyerFacture: Tool<SendInvoiceActionInput, SendInvoiceActionOutput> = {
+    const envoyerFacture: RuntimeBobTool<SendInvoiceActionInput, SendInvoiceActionOutput> = {
       name: 'envoyer_facture',
       description:
         'Envoie RÉELLEMENT la facture ÉMISE au client par e-mail (lien de consultation + PDF joint, expéditeur = la société). Destinataire optionnel : un contact du client résolu contre son carnet réel — sinon l’e-mail de la fiche client. Refus honnête si la pièce est un brouillon ou si aucune adresse n’existe.',
@@ -860,7 +861,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // que le bouton « Relancer » de l'écran Notifications (client.sendRelance → POST /invoices/:id/relance).
   const sendRelanceAction = actions.sendRelance?.bind(actions);
   if (sendRelanceAction) {
-    const envoyerRelance: Tool<SendRelanceActionInput, SendRelanceActionOutput> = {
+    const envoyerRelance: RuntimeBobTool<SendRelanceActionInput, SendRelanceActionOutput> = {
       name: 'envoyer_relance',
       description:
         'Envoie RÉELLEMENT la relance d’une facture en retard au client (email + notification) — ton choisi par le plan de relances, mise en demeure incluse au régime légal du type de client (pro L441-10, particulier code civil, public CCP).',
@@ -887,7 +888,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // carte Aujourd'hui/fiche devis. Lecture PURE : rien ne part (le partage reste un geste).
   const draftQuoteRelanceAction = actions.draftQuoteRelance?.bind(actions);
   if (draftQuoteRelanceAction) {
-    const relanceDevis: Tool<DraftQuoteRelanceActionInput, DraftQuoteRelanceActionOutput> = {
+    const relanceDevis: RuntimeBobTool<DraftQuoteRelanceActionInput, DraftQuoteRelanceActionOutput> = {
       name: 'relance_devis',
       description:
         'Prépare le message de relance d’un DEVIS envoyé resté sans réponse (« relance le devis Durand ») : même palier J+15/J+30 et même message pré-rédigé que la carte Aujourd’hui. N’envoie rien — l’envoi du devis (lien de signature renouvelé) reste un geste séparé.',
@@ -912,7 +913,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // de consentement, comme lier_bon_commande. Jamais un accusé de plateforme inventé.
   const recordInvoiceTransmissionAction = actions.recordInvoiceTransmission?.bind(actions);
   if (recordInvoiceTransmissionAction) {
-    const marquerTransmise: Tool<
+    const marquerTransmise: RuntimeBobTool<
       RecordInvoiceTransmissionActionInput,
       RecordInvoiceTransmissionActionOutput
     > = {
@@ -969,7 +970,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // l'écran Réglages facturation. La cadence fine (4 paliers) reste réglée à l'écran.
   const getRelanceSettingsAction = actions.getRelanceSettings?.bind(actions);
   if (getRelanceSettingsAction) {
-    const cadenceRelances: Tool<Record<string, never>, RelanceSettingsView> = {
+    const cadenceRelances: RuntimeBobTool<Record<string, never>, RelanceSettingsView> = {
       name: 'cadence_relances',
       description:
         'Lit la politique de relances de la société : cadence (J+n après échéance pour chaque palier cordial/neutre/ferme/mise en demeure) et état des relances automatiques. Lecture seule.',
@@ -985,7 +986,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const setRelanceAutoEnabledAction = actions.setRelanceAutoEnabled?.bind(actions);
   if (setRelanceAutoEnabledAction) {
-    const reglerRelancesAuto: Tool<SetRelanceAutoActionInput, RelanceSettingsView> = {
+    const reglerRelancesAuto: RuntimeBobTool<SetRelanceAutoActionInput, RelanceSettingsView> = {
       name: 'regler_relances_auto',
       description:
         'Active ou coupe les relances AUTOMATIQUES de la société (« coupe les relances automatiques ») — même réglage que l’écran Réglages facturation. La relance manuelle reste toujours possible. Ne déclenche aucun envoi immédiat.',
@@ -1014,7 +1015,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // de transfert. Date et moyen explicites sont requis avant la proposition comptable.
   const recordExpensePaymentAction = actions.recordExpensePayment?.bind(actions);
   if (recordExpensePaymentAction) {
-    const enregistrerReglement: Tool<
+    const enregistrerReglement: RuntimeBobTool<
       RecordExpensePaymentActionInput,
       { status: string; alreadyRecorded: boolean; paymentEntryId: string }
     > = {
@@ -1075,7 +1076,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // idempotent (changed:false sans écriture). Aucune écriture comptable, aucune dépense créée.
   const assignExpenseChantierAction = actions.assignExpenseChantier?.bind(actions);
   if (assignExpenseChantierAction) {
-    const lierDepenseChantier: Tool<AssignExpenseChantierActionInput, AssignExpenseChantierActionOutput> = {
+    const lierDepenseChantier: RuntimeBobTool<AssignExpenseChantierActionInput, AssignExpenseChantierActionOutput> = {
       name: 'lier_depense_chantier',
       description:
         'Impute une dépense existante à un chantier ouvert du tenant (rentabilité par chantier) — ou la délie (chantierId null). Même use case que l’écran Dépenses. Ne crée aucune dépense, ne touche pas aux livres.',
@@ -1125,7 +1126,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // une notification reçue pendant la confirmation reste non lue.
   const markNotificationsReadThroughAction = actions.markNotificationsReadThrough?.bind(actions);
   if (markNotificationsReadThroughAction) {
-    const marquerNotificationsLues: Tool<NotificationReadThroughInput, NotificationReadThroughOutput> = {
+    const marquerNotificationsLues: RuntimeBobTool<NotificationReadThroughInput, NotificationReadThroughOutput> = {
       name: 'marquer_notifications_lues',
       description:
         'Marque comme lues toutes les notifications qui existaient lors de l’aperçu serveur, sans inclure celles arrivées pendant la confirmation.',
@@ -1157,7 +1158,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // dates que l'humain, aucun montant inventé (amountHint null en v1), zéro logique fiscale ici.
   const listFiscalDeadlinesAction = actions.listFiscalDeadlines?.bind(actions);
   if (listFiscalDeadlinesAction) {
-    const echeancesFiscales: Tool<Record<string, never>, FiscalDeadline[]> = {
+    const echeancesFiscales: RuntimeBobTool<Record<string, never>, FiscalDeadline[]> = {
       name: 'echeances_fiscales',
       description:
         'Liste les échéances fiscales à venir (TVA, URSSAF, IS, CFE, comptes annuels) dérivées de la fiche société — dates et explications, sans montant. Les échéances « assumed » sont des hypothèses à confirmer.',
@@ -1176,7 +1177,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // acte d'achat vocal (SPEC décision 10) : l'outil informe, l'engagement se confirme au tap.
   const getSubscriptionStatusAction = actions.getSubscriptionStatus?.bind(actions);
   if (getSubscriptionStatusAction) {
-    const etatAbonnement: Tool<Record<string, never>, SubscriptionStatusView> = {
+    const etatAbonnement: RuntimeBobTool<Record<string, never>, SubscriptionStatusView> = {
       name: 'etat_abonnement',
       description:
         'Lit l’état d’abonnement du compte : offre en cours, essai (jours restants, échéance), statut de paiement. Lecture seule — aucun achat ni changement d’offre par la voix.',
@@ -1195,7 +1196,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // « Confirmer » de la file « À valider ». Latch idempotent : jamais de validation réécrite.
   const acknowledgeDocumentAction = actions.acknowledgeDocument?.bind(actions);
   if (acknowledgeDocumentAction) {
-    const validerDocument: Tool<AcknowledgeDocumentActionInput, AcknowledgeDocumentActionOutput> = {
+    const validerDocument: RuntimeBobTool<AcknowledgeDocumentActionInput, AcknowledgeDocumentActionOutput> = {
       name: 'valider_document',
       description:
         'Confirme la lecture d’un document scanné déjà rangé (« c’est bon, je valide ») : le document sort de la file « À valider ». Ne déplace rien, ne lie rien, n’écrit rien dans les livres.',
@@ -1228,7 +1229,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // sont résolues par le handler contre les listes RÉELLES du tenant — jamais un id inventé.
   const fileDocumentAction = actions.fileDocument?.bind(actions);
   if (fileDocumentAction) {
-    const classerDocument: Tool<FileDocumentActionInput, FileDocumentActionOutput> = {
+    const classerDocument: RuntimeBobTool<FileDocumentActionInput, FileDocumentActionOutput> = {
       name: 'classer_document',
       description:
         'Classe un document du coffre — même geste que « Classer là » : déplacement vers un dossier réel OU lien à un chantier ouvert (avec rangement dans « Chantiers » si le document n’a pas encore de dossier), puis nom intelligent (jamais par-dessus un renommage humain).',
@@ -1273,7 +1274,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // prioritaire, plus jamais écrasé par une suggestion d'analyse (d'où le plancher de consentement).
   const renameDocumentAction = actions.renameDocument?.bind(actions);
   if (renameDocumentAction) {
-    const renommerDocument: Tool<RenameDocumentActionInput, RenameDocumentActionOutput> = {
+    const renommerDocument: RuntimeBobTool<RenameDocumentActionInput, RenameDocumentActionOutput> = {
       name: 'renommer_document',
       description:
         'Renomme le libellé d’affichage d’un document du coffre. Le nom donné devient prioritaire : les suggestions automatiques ne l’écraseront plus. Ne déplace rien, ne lie rien.',
@@ -1314,7 +1315,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // (GET /documents/search — ranking serveur pg_trgm). Aucun résultat inventé, aucune mutation.
   const searchDocumentsAction = actions.searchDocuments?.bind(actions);
   if (searchDocumentsAction) {
-    const chercherDocument: Tool<SearchDocumentsActionInput, SearchDocumentsActionOutput> = {
+    const chercherDocument: RuntimeBobTool<SearchDocumentsActionInput, SearchDocumentsActionOutput> = {
       name: 'chercher_document',
       description:
         'Retrouve des devis et factures réels par mots-clés (objet, client, numéro) et période — même recherche que l’écran (« retrouve la facture du radiateur de mars »). Lecture seule.',
@@ -1356,7 +1357,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // assaini par l'AUTORITÉ du domaine (makePurchaseOrderRef), jamais par une règle locale.
   const attachPurchaseOrderAction = actions.attachPurchaseOrderToQuote?.bind(actions);
   if (attachPurchaseOrderAction) {
-    const lierBonCommande: Tool<AttachPurchaseOrderActionInput, AttachPurchaseOrderActionOutput> = {
+    const lierBonCommande: RuntimeBobTool<AttachPurchaseOrderActionInput, AttachPurchaseOrderActionOutput> = {
       name: 'lier_bon_commande',
       description:
         'Attache le numéro d’engagement d’un bon de commande client (grands comptes, secteur public/Chorus Pro) à un devis. Le numéro sera repris automatiquement sur la facture dérivée. Ne crée ni devis ni facture, ne touche pas aux documents du coffre.',
@@ -1405,7 +1406,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const createCustomerAction = actions.createCustomer?.bind(actions);
   if (createCustomerAction) {
-    const creerClient: Tool<CreateCustomerActionInput, { id: string }> = {
+    const creerClient: RuntimeBobTool<CreateCustomerActionInput, { id: string }> = {
       name: 'creer_client',
       description:
         'Crée une fiche client minimale (nom + type particulier/entreprise/public) — même use case createCustomer que l’écran Clients.',
@@ -1429,7 +1430,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // —— PR-11 — parc d'équipements d'un site : MÊMES use cases que l'écran parc (parité). ——
   const listEquipmentsAction = actions.listEquipments?.bind(actions);
   if (listEquipmentsAction) {
-    const parcDuSite: Tool<{ chantierId?: string }, unknown> = {
+    const parcDuSite: RuntimeBobTool<{ chantierId?: string }, unknown> = {
       name: 'parc_du_site',
       description:
         'Liste les équipements du parc (par site, ou tout le tenant) — lecture pure, jamais un équipement inventé.',
@@ -1458,7 +1459,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const createEquipmentAction = actions.createEquipment?.bind(actions);
   if (createEquipmentAction) {
-    const ajouterEquipement: Tool<CreateEquipmentActionInput, { id: string }> = {
+    const ajouterEquipement: RuntimeBobTool<CreateEquipmentActionInput, { id: string }> = {
       name: 'ajouter_equipement',
       description:
         'Ajoute un équipement au parc d’un site (« ajoute la clim du local serveur chez Carrefour ») — même use case CreateEquipment que l’écran ; le site doit être ouvert.',
@@ -1526,7 +1527,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const retireEquipmentAction = actions.retireEquipment?.bind(actions);
   if (retireEquipmentAction) {
-    const retirerEquipement: Tool<RetireEquipmentActionInput, RetireEquipmentActionOutput> = {
+    const retirerEquipement: RuntimeBobTool<RetireEquipmentActionInput, RetireEquipmentActionOutput> = {
       name: 'retirer_equipement',
       description:
         'Retire un équipement du parc (retrait LOGIQUE réversible — l’historique reste intégral) — même use case RetireEquipment que l’écran.',
@@ -1550,7 +1551,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const equipmentHistoryAction = actions.getEquipmentHistory?.bind(actions);
   if (equipmentHistoryAction) {
-    const historiqueEquipement: Tool<EquipmentHistoryActionInput, EquipmentHistoryActionOutput> = {
+    const historiqueEquipement: RuntimeBobTool<EquipmentHistoryActionInput, EquipmentHistoryActionOutput> = {
       name: 'historique_equipement',
       description:
         'Historique RÉEL d’un équipement (notes, photos, passages tagués) — même dérivation que GET /equipments/:id/history. Lecture pure.',
@@ -1572,7 +1573,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // —— PR-12c — contrats de maintenance (Bloc B §2.7) : MÊMES use cases que l'écran. ——
   const listContractsAction = actions.listMaintenanceContracts?.bind(actions);
   if (listContractsAction) {
-    const statutContrat: Tool<{ contractId?: string }, unknown> = {
+    const statutContrat: RuntimeBobTool<{ contractId?: string }, unknown> = {
       name: 'statut_contrat',
       description:
         'Statut RÉEL d’un contrat de maintenance (état, période courante calculée, couverture par les factures, renouvellement) — mêmes faits dérivés que la fiche. Lecture pure.',
@@ -1598,7 +1599,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     };
     tools.push(statutContrat as AnyTool);
 
-    const contratsARenouveler: Tool<Record<string, never>, unknown> = {
+    const contratsARenouveler: RuntimeBobTool<Record<string, never>, unknown> = {
       name: 'contrats_a_renouveler',
       description:
         'Contrats à renouveler (alerte J-60/J-30 dérivée, tacites ET non-tacites échus) — même dérivation deriveRenewalAlerts que la fiche et le cron. Lecture pure, alerte INTERNE.',
@@ -1622,7 +1623,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const prepareAnnualAction = actions.prepareContractAnnualInvoice?.bind(actions);
   if (prepareAnnualAction) {
-    const preparerFactureAnnuelle: Tool<
+    const preparerFactureAnnuelle: RuntimeBobTool<
       PrepareContractAnnualInvoiceActionInput,
       PrepareContractAnnualInvoiceActionOutput
     > = {
@@ -1653,7 +1654,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   //    résilié en silence, même en autonomie 'auto'. ——
   const createContractAction = actions.createMaintenanceContract?.bind(actions);
   if (createContractAction) {
-    const creerContrat: Tool<CreateMaintenanceContractActionInput, ContractLifecycleActionOutput> = {
+    const creerContrat: RuntimeBobTool<CreateMaintenanceContractActionInput, ContractLifecycleActionOutput> = {
       name: 'creer_contrat_maintenance',
       description:
         'Crée le BROUILLON d’un contrat de maintenance (« fais-moi le contrat fontaines RATP, 3 fontaines, 1 200 € par an ») — même use case CreateMaintenanceContract que le wizard : client professionnel exigé (refus Chatel restitué tel quel), site ouvert, équipements du même site. L’activation reste un geste distinct.',
@@ -1776,7 +1777,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const activateContractAction = actions.activateMaintenanceContract?.bind(actions);
   if (activateContractAction) {
-    const activerContrat: Tool<ActivateContractActionInput, ContractLifecycleActionOutput> = {
+    const activerContrat: RuntimeBobTool<ActivateContractActionInput, ContractLifecycleActionOutput> = {
       name: 'activer_contrat',
       description:
         'Active un contrat de maintenance en brouillon (« active le contrat Bastille ») — même use case ActivateContract que la fiche : le client professionnel est revalidé et la date anniversaire figée. Geste DISTINCT de la création.',
@@ -1804,7 +1805,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const terminateContractAction = actions.terminateMaintenanceContract?.bind(actions);
   if (terminateContractAction) {
-    const resilierContrat: Tool<TerminateContractActionInput, ContractLifecycleActionOutput> = {
+    const resilierContrat: RuntimeBobTool<TerminateContractActionInput, ContractLifecycleActionOutput> = {
       name: 'resilier_contrat',
       description:
         'Résilie un contrat de maintenance actif (« le client résilie au 1er juin ») — même use case TerminateContract que la fiche : le préavis est AFFICHÉ, jamais bloquant ; sans date dite, le domaine retient le prochain anniversaire calculé. Le motif est porté en trace.',
@@ -1855,7 +1856,10 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   //    UpdateMaintenanceContract que ce tap — un patch d'un SEUL champ, jamais un remplacement. ——
   const renameContractAction = actions.renameMaintenanceContract?.bind(actions);
   if (renameContractAction) {
-    const renommerContrat: Tool<RenameContractActionInput, ContractLifecycleActionOutput> = {
+    const renommerContrat: RuntimeBobTool<
+      RenameContractActionInput,
+      ContractLifecycleActionOutput
+    > = {
       name: 'renommer_contrat',
       description:
         'Renomme un contrat de maintenance (« renomme le contrat Bastille en Entretien des ascenseurs ») — même use case UpdateMaintenanceContract que le bouton « Renommer » de la fiche. Ce nom sert à s’y retrouver dans l’application ; la ligne de la facture annuelle reste composée par le domaine et n’est pas touchée. Un contrat résilié est en lecture seule.',
@@ -1913,7 +1917,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const listInterventionsAction = actions.listInterventions?.bind(actions);
   if (listInterventionsAction) {
-    const passagesDuJour: Tool<{ chantierId?: string }, AgentIntervention[]> = {
+    const passagesDuJour: RuntimeBobTool<{ chantierId?: string }, AgentIntervention[]> = {
       name: 'passages_du_site',
       description:
         'Liste les fiches de passage réelles (par site, ou tout le tenant) — lecture pure, jamais une fiche inventée.',
@@ -1942,7 +1946,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const startInterventionAction = actions.startIntervention?.bind(actions);
   if (startInterventionAction) {
-    const commencerIntervention: Tool<InterventionActionInput, InterventionActionOutput> = {
+    const commencerIntervention: RuntimeBobTool<InterventionActionInput, InterventionActionOutput> = {
       name: 'commencer_intervention',
       description:
         'Démarre un passage planifié (« démarre l’intervention chez Carrefour ») — même use case StartIntervention que le bouton « Démarrer le passage ».',
@@ -1960,7 +1964,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const completeInterventionAction = actions.completeIntervention?.bind(actions);
   if (completeInterventionAction) {
-    const terminerIntervention: Tool<CompleteInterventionActionInput, InterventionActionOutput> = {
+    const terminerIntervention: RuntimeBobTool<CompleteInterventionActionInput, InterventionActionOutput> = {
       name: 'terminer_intervention',
       description:
         'Termine le passage (« c’est terminé ») — même use case CompleteIntervention : la checklist est FIGÉE et le résumé dicté posé dans le même geste.',
@@ -1987,7 +1991,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const sendInterventionReportAction = actions.sendInterventionReport?.bind(actions);
   if (sendInterventionReportAction) {
-    const envoyerFichePassage: Tool<InterventionActionInput, SendInterventionReportActionOutput> = {
+    const envoyerFichePassage: RuntimeBobTool<InterventionActionInput, SendInterventionReportActionOutput> = {
       name: 'envoyer_fiche_passage',
       description:
         'Envoie la fiche de passage ARCHIVÉE au client (« envoie la fiche de passage ») — geste CONFIRMÉ, jamais un effet de bord ; la fiche est archivée avant d’être envoyée.',
@@ -2006,7 +2010,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const prepareInterventionInvoiceAction = actions.prepareInterventionInvoice?.bind(actions);
   if (prepareInterventionInvoiceAction) {
-    const facturerIntervention: Tool<
+    const facturerIntervention: RuntimeBobTool<
       InterventionActionInput,
       PrepareInterventionInvoiceActionOutput
     > = {
@@ -2027,7 +2031,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // —— §3.1/§3.5 « facturer sans délai » — dérivation PURE partagée avec l'écran. ——
   const interventionsToBillAction = actions.listInterventionsToBill?.bind(actions);
   if (interventionsToBillAction) {
-    const passagesAFacturer: Tool<Record<string, never>, InterventionBillingDueAction[]> = {
+    const passagesAFacturer: RuntimeBobTool<Record<string, never>, InterventionBillingDueAction[]> = {
       name: 'passages_a_facturer',
       description:
         'Liste les passages terminés ou signés, hors contrat, qu’aucune facture vivante ne couvre (« qu’est-ce qu’il me reste à facturer ? ») — dérivation pure, jamais un statut inventé.',
@@ -2044,7 +2048,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
   // —— PR-16 §3.2/§4.5 — réglages de fiche PARAMÉTRABLES : parité stricte avec l'écran. ——
   const readInterventionSettingsAction = actions.getInterventionSettings?.bind(actions);
   if (readInterventionSettingsAction) {
-    const reglagesFichePassage: Tool<Record<string, never>, InterventionSettingsActionOutput> = {
+    const reglagesFichePassage: RuntimeBobTool<Record<string, never>, InterventionSettingsActionOutput> = {
       name: 'reglages_fiche_passage',
       description:
         'Lit les réglages de la fiche de passage (titre du PDF, modèles de checklist par type) — lecture pure.',
@@ -2060,7 +2064,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
 
   const writeInterventionSettingsAction = actions.updateInterventionSettings?.bind(actions);
   if (writeInterventionSettingsAction) {
-    const reglerFichePassage: Tool<
+    const reglerFichePassage: RuntimeBobTool<
       InterventionSettingsActionInput,
       InterventionSettingsActionOutput
     > = {

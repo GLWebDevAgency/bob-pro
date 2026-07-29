@@ -28,9 +28,11 @@ export type BobIntent =
   | 'envoyer_devis'
   | 'emettre_facture'
   | 'generer_facture' // générer la facture d'un devis signé (acompte ou solde) — ASK-2
+  | 'export_fec' // produire l'export comptable FEC depuis les écritures réelles
   | 'documents'
   | 'scan' // numériser un reçu/ticket/justificatif (ouvre l'OCR caméra)
   | 'nouveau_devis' // ouvrir l'écran de création de devis
+  | 'creer_client' // créer une fiche client minimale
   | 'voir_chantiers' // ouvrir les chantiers
   | 'voir_catalogue' // ouvrir le catalogue de prestations (C27) — libellés, prix, TVA
   | 'cloture' // préparer le mois pour le comptable (ouvre l'écran de clôture)
@@ -58,6 +60,8 @@ export type BobIntent =
   | 'faire_signer_intervention' // « fais signer » — ouvre le pad de signature (PR-15)
   | 'envoyer_fiche_passage' // « envoie la fiche de passage » — sortant CONFIRMÉ (PR-16)
   | 'facturer_intervention' // « facture cette intervention » — brouillon pré-rempli (PR-16)
+  | 'passages_intervention' // lister les fiches de passage réelles d'un site
+  | 'reglages_intervention' // lire/modifier les réglages de fiche de passage
   | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)

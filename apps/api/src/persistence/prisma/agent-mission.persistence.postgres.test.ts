@@ -194,12 +194,15 @@ function faultAfterWrite(
         realtime: tx.realtime,
         missions: {
           findActive: (input) => tx.missions.findActive(input),
+          findForeground: (input) => tx.missions.findForeground(input),
           findById: (input) => tx.missions.findById(input),
           findActiveForUpdate: (input) => tx.missions.findActiveForUpdate(input),
+          findForegroundForUpdate: (input) => tx.missions.findForegroundForUpdate(input),
           findByIdForUpdate: (input) => tx.missions.findByIdForUpdate(input),
           insert: async (mission) => {
-            await tx.missions.insert(mission);
+            const result = await tx.missions.insert(mission);
             afterWrite(undefined);
+            return result;
           },
           updateCas: async (input) => afterWrite(await tx.missions.updateCas(input)),
         },
@@ -1230,6 +1233,35 @@ describe.skipIf(!RUN_CERT)(
         },
       )).toEqual({ status: 'company_unavailable', reason: 'missing' });
       expect(callbackCalled).toBe(false);
+    });
+
+    it('force le rollback réel si PostgreSQL annule la transaction après une écriture', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-timeout-rollback-${randomUUID()}`,
+      };
+      const legacy = new PrismaQuoteDraftSlotRepository(workerA);
+
+      const result = await new PrismaAgentMissionDraftFence(workerA)
+        .runLegacyMutationIfUnowned(owner, async () => {
+          expect(await legacy.upsert({
+            ...owner,
+            expectedRevision: 0,
+            payload: emptyPayload('must-be-rolled-back'),
+          })).toMatchObject({ status: 'created' });
+          const transaction = workerA.client() as Prisma.TransactionClient;
+          await transaction.$executeRaw`
+            SELECT set_config('statement_timeout', '20ms', true)
+          `;
+          await transaction.$queryRaw`SELECT pg_sleep(0.1)`;
+          return 'unreachable';
+        });
+
+      expect(result).toEqual({
+        status: 'foreground_unavailable',
+        reason: 'query_canceled',
+      });
+      expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
     });
 
     it('converge aussi sous deux replays simultanés du même commandId', async () => {
@@ -2269,6 +2301,121 @@ describe.skipIf(!RUN_CERT)(
         draft: {
           sessionId: 'legacy-wins-race',
           lineForm: { label: 'Main-d’œuvre plomberie' },
+        },
+      });
+    });
+
+    it('sérialise réellement un writer N-1 V1 avec le writer K2 V2→V1', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-n1-k2-race-${randomUUID()}`,
+      };
+      const legacy = new PrismaQuoteDraftSlotRepository(workerA);
+      const legacyOwnerLockKey = [
+        'bob.agent-mission.owner-kind.v1',
+        owner.companyId,
+        owner.ownerUserId,
+        'quote_creation',
+      ].join('\u001f');
+      let releaseLegacy!: () => void;
+      let markLegacyEntered!: () => void;
+      const legacyEntered = new Promise<void>((resolve) => {
+        markLegacyEntered = resolve;
+      });
+      const legacyCanCommit = new Promise<void>((resolve) => {
+        releaseLegacy = resolve;
+      });
+
+      // Forme exacte du binaire N-1 : Company SHARE puis verrou owner/kind V1, sans connaître V2.
+      const legacyWrite = workerA.withIsolatedOwner(
+        owner.companyId,
+        owner.ownerUserId,
+        async (transaction) => {
+          await transaction.$executeRaw`
+            SELECT
+              set_config('lock_timeout', '5s', true),
+              set_config('statement_timeout', '10s', true)
+          `;
+          const company = await transaction.$queryRaw<Array<{ closedAt: Date | null }>>`
+            SELECT "closedAt"
+            FROM public.companies
+            WHERE "id" = ${owner.companyId}
+            LIMIT 1
+            FOR SHARE
+          `;
+          expect(company).toEqual([{ closedAt: null }]);
+          await transaction.$queryRaw<Array<{ locked: boolean }>>`
+            SELECT (
+              pg_advisory_xact_lock(
+                hashtextextended(${legacyOwnerLockKey}, 0)
+              ) IS NULL
+            ) AS "locked"
+          `;
+          markLegacyEntered();
+          await legacyCanCommit;
+          return legacy.upsert({
+            ...owner,
+            expectedRevision: 0,
+            payload: meaningfulPayload('legacy-n1-wins-race'),
+          });
+        },
+        { maxWaitMs: 5_000, timeoutMs: 15_000, readOnly: false },
+      );
+      await legacyEntered;
+
+      const missionStart = start(uowB).execute({
+        ...owner,
+        commandId: randomUUID(),
+      });
+      try {
+        let waiterObserved = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const [row] = await admin.$queryRaw<Array<{ waiting: number }>>`
+            SELECT count(*)::integer AS "waiting"
+            FROM pg_catalog.pg_locks AS lock
+            JOIN pg_catalog.pg_stat_activity AS activity
+              ON activity.pid = lock.pid
+            WHERE activity.datname = current_database()
+              AND lock.locktype = 'advisory'
+              AND lock.granted = false
+          `;
+          if ((row?.waiting ?? 0) > 0) {
+            waiterObserved = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiterObserved).toBe(true);
+      } finally {
+        releaseLegacy();
+      }
+
+      const [legacyResult, missionResult] = await Promise.all([
+        legacyWrite,
+        missionStart,
+      ]);
+      expect(legacyResult).toMatchObject({ status: 'created' });
+      expect(missionResult).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'created',
+          startOutcome: 'draft_conflict',
+          mission: { phase: 'awaiting_draft_decision' },
+        },
+      });
+      expect(await admin.agentMission.count({
+        where: { ...owner, status: 'active' },
+      })).toBe(1);
+      expect(await admin.agentMissionEvent.count({ where: owner })).toBe(1);
+      expect(await admin.quoteDraftSlot.findUniqueOrThrow({
+        where: { quote_draft_slot_owner: owner },
+      })).toMatchObject({
+        agentMissionId: null,
+        payload: {
+          draft: {
+            sessionId: 'legacy-n1-wins-race',
+            lineForm: { label: 'Main-d’œuvre plomberie' },
+          },
         },
       });
     });

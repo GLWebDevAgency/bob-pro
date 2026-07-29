@@ -3,15 +3,18 @@ import {
   appConflict,
   appForbidden,
   appNotFound,
+  appUnavailable,
   err,
   ok,
   parseQuoteDraftPayload,
+  type AgentMissionForegroundUnavailableReason,
   type AppError,
   type QuoteDraftPayloadV1,
   type QuoteDraftSlot,
   type Result,
 } from '@bob/core';
 import { AppLogger, getPrincipal } from '../observability/logger';
+import { Metrics } from '../observability/metrics';
 import type { Persistence } from '../persistence/persistence';
 import { PERSISTENCE } from '../persistence/persistence-token';
 
@@ -65,7 +68,20 @@ export class QuoteDraftService {
   constructor(
     @Inject(PERSISTENCE) private readonly persistence: Persistence,
     private readonly logger: AppLogger,
+    private readonly metrics: Metrics,
   ) {}
+
+  private foregroundUnavailable(
+    operation: 'draft_save' | 'draft_delete',
+    reason: AgentMissionForegroundUnavailableReason,
+  ): Result<never, AppError> {
+    this.metrics.agentMissionForegroundContentions.inc({ operation, reason });
+    this.logger.warn(
+      `AgentMission foreground indisponible (${operation}/${reason}).`,
+      'QuoteDraftService',
+    );
+    return err(appUnavailable('agent_mission_foreground', 1));
+  }
 
   private identity(): Result<AuthenticatedQuoteDraftOwner, AppError> {
     const principal = getPrincipal();
@@ -131,6 +147,9 @@ export class QuoteDraftService {
       if (fenced.status === 'company_unavailable') {
         return err(unavailableCompany(fenced.reason));
       }
+      if (fenced.status === 'foreground_unavailable') {
+        return this.foregroundUnavailable('draft_save', fenced.reason);
+      }
       const result = fenced.value;
       if (result.status === 'revision_conflict') {
         return err(appConflict('quote_draft_slot', 'stale_revision'));
@@ -165,6 +184,9 @@ export class QuoteDraftService {
       }
       if (fenced.status === 'company_unavailable') {
         return err(unavailableCompany(fenced.reason));
+      }
+      if (fenced.status === 'foreground_unavailable') {
+        return this.foregroundUnavailable('draft_delete', fenced.reason);
       }
       const result = fenced.value;
       if (result.status === 'not_found') {

@@ -1,12 +1,11 @@
 import {
-  AGENT_MISSION_KIND,
   type QuoteCreationMissionPhase,
 } from '../../domain/agent/agent-mission';
 import { type Result, err, ok } from '../../shared-kernel/result';
 import { type QuoteDraftStep } from '../quote-drafts/quote-draft-slot';
 import { type AgentMissionOwner } from '../ports/agent-mission-repository';
 import { type AgentMissionResumeUnitOfWorkPort } from '../ports/agent-mission-resume-unit-of-work';
-import { type AppError, appUnavailable } from '../result';
+import { type AppError, appConflict, appUnavailable } from '../result';
 import {
   draftReferenceForMission,
   isCanonicalAgentMissionOwner,
@@ -89,17 +88,21 @@ export class GetResumableQuoteAgentMission {
       owner,
       async (transaction) => {
         const now = await transaction.databaseNow();
-        const mission = await transaction.missions.findActive({
-          ...owner,
-          kind: AGENT_MISSION_KIND,
-        });
+        const foreground = await transaction.missions.findForeground(owner);
         const slot = await transaction.quoteDrafts.get(owner);
 
-        if (mission === null) {
+        if (foreground === null) {
           return slot?.agentMissionId == null
             ? ok(Object.freeze({ mission: null }) as QuoteAgentMissionResumeView)
             : unavailable('orphaned_draft_mission_owner');
         }
+        if (foreground.status === 'unsupported_kind') {
+          return err(appConflict(
+            'agent_mission_foreground',
+            'active_mission_exists',
+          ));
+        }
+        const mission = foreground.mission;
 
         const missionView = toAgentMissionView(mission, now);
         if (!missionView.ok) return missionView;

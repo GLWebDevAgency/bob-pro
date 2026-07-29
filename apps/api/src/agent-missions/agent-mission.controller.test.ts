@@ -142,9 +142,13 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       realtime: { realtimeSessionId: REALTIME_SESSION_ID, appliedContext: null },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
+        findForeground: async () => {
+          const mission = this.ownedMission(owner, true);
+          return mission === null ? null : { status: 'known' as const, mission };
+        },
         findById: async ({ missionId }) => {
           const mission = this.ownedMission(owner, false);
-          return mission?.id === missionId ? mission : null;
+          return mission?.id === missionId ? { status: 'known', mission } : null;
         },
       },
     });
@@ -162,18 +166,27 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       realtime: { realtimeSessionId: REALTIME_SESSION_ID, appliedContext: null },
       missions: {
         findActive: async () => this.ownedMission(owner, true),
+        findForeground: async () => {
+          const mission = this.ownedMission(owner, true);
+          return mission === null ? null : { status: 'known' as const, mission };
+        },
         findById: async ({ missionId }) => {
           const mission = this.ownedMission(owner, false);
-          return mission?.id === missionId ? mission : null;
+          return mission?.id === missionId ? { status: 'known', mission } : null;
         },
         findActiveForUpdate: async () => this.ownedMission(owner, true),
+        findForegroundForUpdate: async () => {
+          const mission = this.ownedMission(owner, true);
+          return mission === null ? null : { status: 'known' as const, mission };
+        },
         findByIdForUpdate: async ({ missionId }) => {
           const mission = this.ownedMission(owner, false);
-          return mission?.id === missionId ? mission : null;
+          return mission?.id === missionId ? { status: 'known', mission } : null;
         },
         insert: async (mission) => {
           if (this.mission !== null) throw new Error('duplicate mission fixture');
           this.mission = mission;
+          return 'inserted';
         },
         updateCas: async ({ mission, expectedRevision }) => {
           if (this.mission?.revision !== expectedRevision) return 'revision_conflict';
@@ -182,9 +195,12 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         },
       },
       events: {
-        findByCommandId: async ({ commandId }) => (
-          this.events.find((event) => event.toSnapshot().commandId === commandId) ?? null
-        ),
+        findByCommandId: async ({ commandId }) => {
+          const event =
+            this.events.find((candidate) => candidate.toSnapshot().commandId === commandId)
+            ?? null;
+          return event === null ? null : { status: 'known', event };
+        },
         append: async (event) => {
           this.events.push(event);
         },

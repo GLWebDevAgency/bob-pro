@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ok, err, appNotFound, formatEUR, type FiscalDeadline, type OwnerPayGuidance } from '@bob/core';
+import { ok, err, appNotFound, formatEUR, QUOTE_CREATION_MISSION_KIND_V1, type FiscalDeadline, type OwnerPayGuidance } from '@bob/core';
 import { BobAgent } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { type BobActions } from './actions';
@@ -826,6 +826,46 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     if (r.ok) expect(r.value.pending?.batch?.length).toBe(2);
   });
 
+  it('ownership : refuse tout le plan composite avant le premier effet', async () => {
+    const computePayout = vi.fn(actions.computePayout);
+    const llm: LlmPort = {
+      id: 'fake-ownership',
+      async complete() {
+        return {
+          text: null,
+          toolCalls: [
+            { name: 'nouveau_devis', arguments: {} },
+            { name: 'tresorerie_versement', arguments: {} },
+          ],
+          model: 'glm',
+        };
+      },
+      async generate() {
+        return { text: '', model: 'glm' };
+      },
+      async health() {
+        return { healthy: true };
+      },
+    };
+
+    const result = await new BobAgent({
+      router: routerWithKey,
+      actions: { ...actions, computePayout },
+      llm,
+      admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+    }).ask('Fais un devis et dis-moi ma trésorerie');
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_intent_ownership',
+        reason: 'mission_owned',
+      },
+    });
+    expect(computePayout).not.toHaveBeenCalled();
+  });
+
   it('plan multi-étapes : confirm_all propose le lot, puis confirm l’exécute', async () => {
     const agent = new BobAgent({ router: routerWithKey, actions, llm: llmTwoEncaisse });
     const p = await agent.ask('encaisse Durand et Martin', { autonomy: 'confirm_all' });
@@ -975,6 +1015,41 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
 
 describe('BobAgent — navigation (Jarvis : ouvrir le bon écran)', () => {
   const agent = () => new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
+
+  it('refuse le plan entier avant effet quand la mission admise possède nouveau_devis', async () => {
+    const createQuote = vi.fn(async () => ok({ quoteId: 'quote-forbidden' }));
+    const guarded = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: { ...actions, createQuote },
+      admittedMissionKinds: [QUOTE_CREATION_MISSION_KIND_V1],
+    });
+
+    const result = await guarded.ask('Fais-moi un nouveau devis', {
+      autonomy: 'auto',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_intent_ownership',
+        reason: 'mission_owned',
+      },
+    });
+    expect(createQuote).not.toHaveBeenCalled();
+  });
+
+  it('conserve le parcours historique quand aucune mission ne le possède', async () => {
+    const result = await agent().ask('Fais-moi un nouveau devis');
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        intent: 'nouveau_devis',
+        navigate: '/devis/new',
+      },
+    });
+  });
 
   it('« scanne ce reçu » -> ouvre le scanner OCR', async () => {
     const r = await agent().ask('hello Bob, scanne ce reçu de fournitures pour le chantier');

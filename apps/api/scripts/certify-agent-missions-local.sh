@@ -1899,6 +1899,165 @@ if [ "$temporary_m1c_constraint_count" != "0" ]; then
   exit 1
 fi
 
+# K2 est exécutée par le déployeur NON-superuser. La migration prend elle-même son SET ROLE ;
+# un appelant qui l'enveloppe d'un `SET ROLE` masquerait précisément l'écart Supabase visé.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260729110000_agent_mission_global_foreground_expand/migration.sql"
+
+foreground_index_count="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+SELECT count(*)
+  FROM pg_catalog.pg_index AS index
+  JOIN pg_catalog.pg_class AS relation
+    ON relation.oid = index.indrelid
+  JOIN pg_catalog.pg_namespace AS namespace
+    ON namespace.oid = relation.relnamespace
+  JOIN pg_catalog.pg_class AS index_relation
+    ON index_relation.oid = index.indexrelid
+ WHERE namespace.nspname = 'public'
+   AND relation.relname = 'agent_missions'
+   AND index_relation.relname IN (
+     'agent_missions_one_active_owner_key',
+     'agent_missions_one_active_owner_kind_key'
+   )
+   AND index.indisunique
+   AND index.indisvalid
+   AND index.indisready
+   AND index.indpred IS NOT NULL
+   AND pg_catalog.regexp_replace(
+     pg_catalog.pg_get_expr(index.indpred, index.indrelid),
+     '[[:space:]()"]',
+     '',
+     'g'
+   ) = 'status=''active''::text';
+SQL
+)"
+if [ "$foreground_index_count" != "2" ]; then
+  echo "AgentMission K2 global or N-1 foreground index is not ready and valid" >&2
+  exit 1
+fi
+
+# Writer N-1 exact après K2 : même payload historique, mêmes triggers finaux, FORCE RLS et rôle
+# runtime non-superuser. L'index global ne doit jamais casser le rolling deploy quote-only.
+certify_agent_mission_event_writer \
+  writer-n1-k2-global \
+  c0000000-0000-4000-8000-000000000001 \
+  c0000000-0000-4000-8000-000000000002 \
+  c0000000-0000-4000-8000-000000000003 \
+  c0000000-0000-4000-8000-000000000004 \
+  c0000000-0000-4000-8000-000000000005 \
+  c0000000-0000-4000-8000-000000000006
+
+# Le CHECK quote-only courant est relâché uniquement dans cette transaction, puis rollbacké.
+# Cela prouve l'effet multi-kind du nouvel index sans introduire de kind fictif dans le schéma.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+
+ALTER TABLE public.agent_missions
+  DROP CONSTRAINT agent_missions_kind_check;
+
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-k2-cross-kind', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'c1000000-0000-4000-8000-000000000001',
+  true
+);
+SELECT set_config('bob.cert.k2_started_at', clock_timestamp()::TEXT, true);
+
+INSERT INTO public.agent_missions (
+  "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+  "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+  "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+) VALUES (
+  'c1000000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-k2-cross-kind',
+  'quote_creation',
+  'active',
+  'awaiting_quote_screen',
+  1,
+  1,
+  jsonb_build_object(
+    'schema', 'bob.agent-mission.quote-creation',
+    'version', 1,
+    'draft', jsonb_build_object(
+      'sessionId', 'writer-k2-cross-kind',
+      'slotRevision', 1,
+      'contentRevision', 0
+    ),
+    'decision', 'null'::JSONB
+  ),
+  NULL,
+  current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+  current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+  NULL,
+  current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '2328 hours',
+  current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ
+);
+
+DO $agent_mission_k2_cross_kind$
+DECLARE
+  rejected BOOLEAN := FALSE;
+  rejected_by TEXT;
+BEGIN
+  PERFORM set_config(
+    'app.current_agent_mission_id',
+    'c2000000-0000-4000-8000-000000000001',
+    true
+  );
+  BEGIN
+    INSERT INTO public.agent_missions (
+      "id", "companyId", "ownerUserId", "kind", "status", "phase", "revision",
+      "payloadVersion", "payload", "currentBinding", "idleExpiresAt", "hardExpiresAt",
+      "terminalAt", "retentionExpiresAt", "createdAt", "updatedAt"
+    ) VALUES (
+      'c2000000-0000-4000-8000-000000000001'::UUID,
+      'writer-n1-company',
+      'writer-k2-cross-kind',
+      'maintenance_contract',
+      'active',
+      'awaiting_quote_screen',
+      1,
+      1,
+      jsonb_build_object(
+        'schema', 'bob.agent-mission.quote-creation',
+        'version', 1,
+        'draft', jsonb_build_object(
+          'sessionId', 'writer-k2-cross-kind',
+          'slotRevision', 1,
+          'contentRevision', 0
+        ),
+        'decision', 'null'::JSONB
+      ),
+      NULL,
+      current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '24 hours',
+      current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '168 hours',
+      NULL,
+      current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ + INTERVAL '2328 hours',
+      current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ,
+      current_setting('bob.cert.k2_started_at')::TIMESTAMPTZ
+    );
+  EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS rejected_by = CONSTRAINT_NAME;
+    IF rejected_by <> 'agent_missions_one_active_owner_key' THEN
+      RAISE EXCEPTION 'AGENT_MISSION_K2_WRONG_UNIQUE_BACKSTOP:%', rejected_by;
+    END IF;
+    rejected := TRUE;
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_K2_CROSS_KIND_ACTIVE_ACCEPTED';
+  END IF;
+END;
+$agent_mission_k2_cross_kind$;
+
+ROLLBACK;
+SQL
+
 "$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -v app_role=bob_app \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql"
