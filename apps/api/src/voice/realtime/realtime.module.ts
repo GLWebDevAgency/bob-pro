@@ -1,6 +1,7 @@
 import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { SttPort } from '@bob/ai';
+import { QUOTE_CREATION_MISSION_KIND_V1 } from '@bob/core';
 import {
   buildLlmForProvider,
   buildRealtimeSpeechAuditStt,
@@ -45,6 +46,8 @@ import { RealtimeSidebandManager } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import { RealtimeQuoteMissionOrchestrator } from './realtime-quote-mission-orchestrator';
+import { QuoteCreationMissionKindAdapter } from './quote-creation-mission-kind.adapter';
+import { RealtimeMissionKindRegistry } from './realtime-mission-kind';
 import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
 import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
 import {
@@ -110,6 +113,7 @@ import {
   REALTIME_ADMISSION,
   REALTIME_AGENT_MISSION_ADMISSION,
   REALTIME_GLOBAL_CAPACITY_INSPECTOR,
+  REALTIME_MISSION_KIND_REGISTRY,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
   REALTIME_DURABLE_CONTROLS,
@@ -691,25 +695,43 @@ const sidebandProvider: Provider = {
     ),
 };
 
+const realtimeMissionKindRegistryProvider: Provider = {
+  provide: REALTIME_MISSION_KIND_REGISTRY,
+  inject: [REALTIME_VOICE_SETTINGS, AgentMissionService],
+  useFactory: (
+    settings: RealtimeVoiceSettings,
+    missions: AgentMissionService,
+  ) => {
+    const llm = buildLlmForProvider(settings.provider);
+    return new RealtimeMissionKindRegistry([
+      new QuoteCreationMissionKindAdapter(
+        llm === undefined ? null : new RealtimeQuoteMissionOrchestrator(llm, missions),
+      ),
+    ]);
+  },
+};
+
 const realtimeAgentTurnProvider: Provider = {
   provide: REALTIME_AGENT_TURN,
-  inject: [PERSISTENCE, REALTIME_VOICE_SETTINGS, ModuleRef, AgentMissionService],
+  inject: [
+    PERSISTENCE,
+    REALTIME_VOICE_SETTINGS,
+    ModuleRef,
+    REALTIME_MISSION_KIND_REGISTRY,
+  ],
   useFactory: (
     persistence: Persistence,
     settings: RealtimeVoiceSettings,
     moduleRef: ModuleRef,
-    missions: AgentMissionService,
-  ) => {
-    const llm = buildLlmForProvider(settings.provider);
-    return new RealtimeBobAgentTurnAdapter(
-      persistence,
-      settings.provider,
-      // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
-      // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
-      () => moduleRef.get(BackendService, { strict: false }),
-      llm === undefined ? null : new RealtimeQuoteMissionOrchestrator(llm, missions),
-    );
-  },
+    missionKinds: RealtimeMissionKindRegistry,
+  ) => new RealtimeBobAgentTurnAdapter(
+    persistence,
+    settings.provider,
+    // Résolution tardive : RealtimeVoiceModule est enfant d'AppModule, qui possède BackendService.
+    // `strict:false` traverse le conteneur sans introduire un cycle de modules Nest.
+    () => moduleRef.get(BackendService, { strict: false }),
+    missionKinds.get(QUOTE_CREATION_MISSION_KIND_V1),
+  ),
 };
 
 const realtimeEntitlementProvider: Provider = {
@@ -806,6 +828,7 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralConversationBootstrapAuthorityProvider,
     mistralConversationBootstrapReaperProvider,
     mistralConversationBootstrapReaperOptionsProvider,
+    realtimeMissionKindRegistryProvider,
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,
