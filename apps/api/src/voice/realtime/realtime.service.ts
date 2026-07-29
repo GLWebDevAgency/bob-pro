@@ -1585,17 +1585,60 @@ export class RealtimeVoiceService {
       ...parsed.value,
     });
     if (result.ok) {
+      if (this.settings.provider === 'openai') {
+        let application: Awaited<ReturnType<RealtimeSidebandControl['contextChanged']>>;
+        try {
+          application = await this.sideband.contextChanged({
+            userId: principal.userId,
+            companyId: principal.companyId,
+            sessionHandle,
+            revision: result.revision,
+            digest: prepared.digest,
+          });
+        } catch {
+          this.metrics.bobLiveContextUpdates.inc({ outcome: 'unavailable' });
+          this.logger.warn(
+            'bob.live.context.application.failed class=sideband_exception',
+            'BobLive',
+          );
+          return {
+            ok: false,
+            error: appUnavailable('bob-live-context-application', 1),
+          };
+        }
+        if (application.status === 'superseded') {
+          this.metrics.bobLiveContextUpdates.inc({ outcome: 'conflict' });
+          return {
+            ok: false,
+            error: appConflict(
+              'realtime_context',
+              'Le contexte écran a changé. Republie l’état courant.',
+            ),
+          };
+        }
+        if (
+          application.status !== 'applied'
+          || application.revision !== result.revision
+          || application.digest !== prepared.digest
+        ) {
+          this.metrics.bobLiveContextUpdates.inc({ outcome: 'unavailable' });
+          this.logger.warn(
+            `bob.live.context.application.failed class=${
+              application.status === 'applied' ? 'invalid_ack' : application.status
+            }`,
+            'BobLive',
+          );
+          return {
+            ok: false,
+            error: appUnavailable('bob-live-context-application', 1),
+          };
+        }
+      }
       this.metrics.bobLiveContextUpdates.inc({ outcome: 'ok' });
-      this.sideband.contextChanged({
-        userId: principal.userId,
-        companyId: principal.companyId,
-        sessionHandle,
-        revision: result.revision,
-        digest: prepared.digest,
-      });
       // Le digest est calculé par la même autorité que le sideband. Le mobile le conserve
-      // seulement comme fence de fraîcheur ; il ne tente jamais de réimplémenter la
-      // canonicalisation serveur du contexte.
+      // seulement comme fence de fraîcheur. En OpenAI, cet ACK prouve aussi que le propriétaire
+      // sideband a appliqué exactement cette révision ; en Mistral, le transport WSS fournit
+      // ensuite son propre ACK d'application avant l'ouverture du microphone.
       return ok({ revision: result.revision, contextDigest: prepared.digest });
     }
     if (result.reason === 'stale' || result.reason === 'conflict') {
