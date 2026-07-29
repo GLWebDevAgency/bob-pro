@@ -2,6 +2,20 @@
 
 > Statut : **Proposed**
 > IDs liés : G01, G07, G10, G11, G12, G16, G19, G20
+>
+> **Amendements 2026-07-29** (le corps daté du 2026-07-23 n'est pas réécrit ; chaque passage
+> remplacé reste cité sous « Rédaction initiale ») :
+>
+> - **A1 · doctrine « matière Bob »** — § Matières. Source : directive du fondateur du 2026-07-29,
+>   « Je NE VEUX PAS une UI transparente à la iOS » ; autorité de matière
+>   `packages/tokens/src/index.ts` (`surfaceTint`) + `packages/ui/src/components/bob-surface.tsx`.
+> - **A2 · retombée de bord `ProgressiveBlurBob`** — § Retombée de bord (nouveau). Source :
+>   plan P1 du fondateur `docs/superpowers/plans/beta-fly-services-p1-conception-ecrans.md` §1.3 ;
+>   technique étudiée dans `davidmokos/expo-glass-tabs` → `src/progressive-blur.tsx`.
+> - **A3 · comportement normatif de la tab bar** — § Tabs (exigences communes l. 85 et 91 amendées)
+>   et § Comportement normatif de la tab bar (nouveau). Source : directive du fondateur —
+>   « garder notre design system niveau couleur et identité, mais implémenter la même
+>   FONCTIONNALITÉ, COMPORTEMENT et EFFET que la tab bar de `davidmokos/expo-glass-tabs` ».
 
 ## Objectif
 
@@ -186,12 +200,31 @@ Le zoom partagé :
 
 ## Matières
 
-- Opaque pour contenu, cartes, documents et zones de texte longues.
-- Blur/verre possible pour tab bar, toolbar et contrôles flottants.
+> Amendé A1 · 2026-07-29 — doctrine « matière Bob ». Source : directive du fondateur, « ce n'est
+> pas forcément du verre liquide qu'on veut… en gardant NOS couleurs. **Je NE VEUX PAS une UI
+> transparente à la iOS.** » Autorité : `packages/tokens/src/index.ts` (`surfaceTint`) et
+> `packages/ui/src/components/bob-surface.tsx`.
+
+- **Surface teintée opaque partout, chrome compris.** Contenu, cartes, documents, zones de texte
+  longues, **et aussi** tab bar, toolbars et contrôles flottants : `surfaceTint` / `BobSurface`,
+  opacités pré-composées en hex. La `BottomTabBar` livrée en est la référence (pilule
+  `colors.surface` + `controls.cardBorder` + `shadowNative.e2` + `radius.cardXl`).
+- **Seule la RETOMBÉE peut être floutée** : la zone non interactive qui dissout le contenu sous un
+  chrome flottant (`ProgressiveBlurBob`, § Retombée de bord). Jamais le fond d'une surface qui
+  porte une information.
+- **Le verre système n'est pas une option.** Liquid Glass / `expo-glass-effect` impose la teinte du
+  système et varie par OS et par version : il ne peut pas porter l'identité Bob. Sa mention dans ce
+  dossier sert uniquement à dire qu'on ne l'emploie pas.
 - Contraste vérifié sur chaque fond réel, pas sur une maquette unie.
-- Reduce Transparency remplace par une surface opaque sémantique.
-- Android ancien et iOS non compatible utilisent un fallback sans différence fonctionnelle.
-- Le blur n'est pas animé en entrée/sortie en Reduced Motion.
+- **Reduce Transparency n'a rien à remplacer** : les surfaces sont déjà opaques. La préférence ne
+  déclenche aucun chemin de rendu alternatif, donc aucun chemin non testé.
+- Android ancien et iOS non compatible affichent **exactement la même surface** : il n'y a plus de
+  fallback de matière, donc plus de divergence fonctionnelle ou esthétique par OS.
+- Le blur n'est pas animé, ni en entrée/sortie, ni en Reduced Motion, ni jamais.
+
+> Rédaction initiale 2026-07-23 (supersédée par A1) : « Blur/verre possible pour tab bar, toolbar
+> et contrôles flottants » et « Reduce Transparency remplace par une surface opaque sémantique ».
+> Ces deux lignes faisaient du verre la matière de premier choix du chrome et de l'opaque un repli.
 
 ## Adaptation tablette
 

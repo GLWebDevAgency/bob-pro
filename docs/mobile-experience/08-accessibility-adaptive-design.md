@@ -2,6 +2,12 @@
 
 > Statut : **Proposed — gate bloquante**
 > IDs liés : G01, G02, G03, G19, G22, V14 et tous les écrans
+>
+> **Amendement A1 — 2026-07-29 · doctrine « matière Bob »** — § Reduce Transparency et ligne
+> correspondante du tableau des préférences. Source : directive du fondateur du 2026-07-29 ;
+> autorité `packages/tokens/src/index.ts` (`surfaceTint`) + `packages/ui/src/components/`
+> `bob-surface.tsx`. Aucune exigence d'accessibilité n'est affaiblie : la garantie passe d'un
+> fallback à exercer à une propriété structurelle de la matière.
 
 ## Principe
 
@@ -19,7 +25,7 @@ prototype, testée pendant l'implémentation et signée avant rollout.
 | Differentiate Without Color | Icône, texte, forme ou motif en plus de la couleur. |
 | Reduce Motion | Suppression du spatial/ambient, crossfade ou instantané. |
 | Prefers Cross-Fade | Préférer remplacement par fondu. |
-| Reduce Transparency | Chrome opaque, contraste stable. |
+| Reduce Transparency | **(amendé A1)** Sans effet : le chrome est déjà opaque et teinté (`surfaceTint`). Contraste stable par construction. |
 | VoiceOver/TalkBack | Sémantique, ordre, focus et annonces dédupliquées. |
 | Switch Control/accès moteur | Toutes les actions accessibles sans drag précis. |
 | Haptique/son désactivé | Information visuelle et textuelle complète. |
@@ -115,11 +121,26 @@ claire. Le thème sombre complet nécessite :
 
 ## Reduce Transparency
 
-- Remplacer verre/blur par une couleur opaque sémantique.
-- Maintenir séparation avec bordure/ombre adaptée.
-- Ne pas modifier la taille ou position des contrôles.
-- Ne pas animer l'activation/désactivation du blur.
+> Amendé A1 · 2026-07-29 — **doctrine « matière Bob »**. Les surfaces de Bob sont teintées et
+> **opaques par construction** (`surfaceTint`, opacités pré-composées en hex ; rendues par
+> `BobSurface`). Cette préférence n'a donc **rien à dégrader** : c'est une garantie obtenue par
+> l'architecture de matière, pas par un chemin de rendu de secours.
+
+- **Aucune substitution à faire** : la surface affichée est déjà la surface opaque sémantique. Une
+  capture avant/après doit être identique au pixel sur le chrome et sur chaque `BobSurface`.
+- Cette préférence n'active **aucun chemin de rendu alternatif** — donc aucun chemin qui ne serait
+  exercé que par une minorité d'utilisateurs et jamais en QA nominale.
+- Maintenir séparation avec bordure/ombre adaptée (inchangé).
+- Ne pas modifier la taille ou position des contrôles (inchangé).
+- **Seule surface concernée** : la retombée de bord `ProgressiveBlurBob` si elle est un jour
+  activée en mode flouté. Sous Reduce Transparency, elle rend son **repli opaque unique** — la
+  même retombée teintée, sans échantillon de flou, donc sans changement de géométrie ni de
+  lisibilité.
+- Ne jamais animer l'activation/désactivation d'un flou.
 - Tester pendant changement de préférence si la plateforme le notifie.
+
+> Rédaction initiale 2026-07-23 (précisée par A1) : « Remplacer verre/blur par une couleur opaque
+> sémantique ». L'intention est conservée ; ce qui change est qu'il n'y a plus rien à remplacer.
 
 ## Lecteurs d'écran
 

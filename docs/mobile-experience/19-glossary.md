@@ -2,7 +2,7 @@
 
 Statut : **Proposed**
 Owner attendu : Content owner · **à affecter**
-Dernière mise à jour : 2026-07-23
+Dernière mise à jour : 2026-07-29 (amendements A1/A2/A3 : entrées matière, retombée et tab bar)
 
 Ce glossaire fixe le sens des termes employés dans ce dossier. Lorsqu'un terme du backend possède
 une définition canonique plus précise, celle-ci prévaut ; la définition ci-dessous explique son
@@ -78,7 +78,14 @@ usage dans le programme d'expérience.
 | RLS / tenant | Isolation de données côté backend. Aucun changement visuel ne peut affaiblir les règles d'accès par organisation. |
 | Progressive disclosure | Présenter conclusion et action avant les détails, tout en gardant preuves métier/légales accessibles. |
 | Action-first | Hiérarchie éditoriale centrée sur ce qui s'est passé, son impact et l'action suivante. |
-| Matière fonctionnelle | Blur/verre réservé au chrome, contrôles et modalité ; jamais nécessaire à la lisibilité du contenu. |
+| Matière fonctionnelle | ~~Blur/verre réservé au chrome…~~ **(amendé A1 · 2026-07-29)** Voir « Matière Bob » : la matière fonctionnelle de ce programme est la surface teintée opaque, pas une matière translucide. |
+| Matière Bob | **(ajouté A1 · 2026-07-29)** Doctrine de matière du produit : toute surface — contenu, action et chrome — est une **surface teintée OPAQUE** issue de `surfaceTint` et rendue par `BobSurface`. Les opacités sont pré-composées en hex ; aucune transparence système n'est employée. Directive fondatrice : « Je NE VEUX PAS une UI transparente à la iOS. » |
+| `surfaceTint` | **(ajouté A1 · 2026-07-29)** Table de tokens de `@bob/tokens` : 2 apparences (`light`, `dark`) × 6 tons (`neutral`, `marine`, `ai`, `success`, `warning`, `danger`) × 5 valeurs (`flat`, `raised`, `border`, `ink`, `inkMuted`). Couples `ink`/`inkMuted` certifiés AA sur `flat` et `raised`. |
+| `BobSurface` | **(ajouté A1 · 2026-07-29)** Composant de `@bob/ui` qui rend une surface `surfaceTint` : `tone` × `emphasis` (`flat`, `raised`, `floating`), bordure renforcée en Increase Contrast, ombre `shadowNative.e2` en `floating`. Aucune `BlurView`, aucun `rgba`, aucune capability runtime. |
+| Verre système | **(ajouté A1 · 2026-07-29)** Matériau translucide fourni par l'OS (Liquid Glass, `UIGlassEffect`, `expo-glass-effect`). **Hors doctrine Bob** : il impose la teinte du système et varie par OS et par version. Le terme n'apparaît dans ce dossier que pour dire qu'on ne l'emploie pas. |
+| Retombée de bord | **(ajouté A2 · 2026-07-29)** Zone non interactive qui dissout le contenu passant sous un chrome flottant. Elle déborde d'environ 44 pt au-delà du chrome, n'a jamais de bord dur, et rend **par défaut sans aucun flou** : un dégradé de notre couleur de fond (`patterns.bottomTabBar.fade`). |
+| `ProgressiveBlurBob` | **(ajouté A2 · 2026-07-29)** Composant de retombée de bord de Bob. Mode nominal : dégradé teinté, zéro échantillon de flou, un seul draw call. Mode flouté optionnel : empilement de couches **frères** de hauteurs décroissantes, chacune teintée Bob, derrière un port injecté `renderBlurLayer` ; repli opaque unique si le port est absent, en Reduce Transparency, sur Android dégradé ou hors budget. |
+| Blur imbriqué | **(ajouté A2 · 2026-07-29)** Surface floutée dont le **sous-arbre** contient une autre surface floutée : double échantillonnage, contraste imprévisible. **Interdit.** À ne pas confondre avec un empilement de couches frères dans un même parent, qui n'est pas une imbrication. |
 | Pixel-perfect adaptatif | Cohérence exacte des relations, alignements et rythmes qui survit aux tailles de texte/écran ; pas des hauteurs rigides. |
 
 ## Règle de changement

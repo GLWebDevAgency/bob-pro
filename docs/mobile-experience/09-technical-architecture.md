@@ -4,6 +4,16 @@
 > Dernière vérification du code : commit `2515ddf3`
 > SDK de référence : Expo 56, React Native 0.85, React 19.2, Expo Router 56
 > IDs liés : G01–G22, V01–V14
+>
+> **Amendement A1 — 2026-07-29 · doctrine « matière Bob »**
+> **Source.** Directive du fondateur du 2026-07-29 (« Je NE VEUX PAS une UI transparente à la
+> iOS ») ; kit livré `packages/tokens/src/index.ts` (`surfaceTint`) et
+> `packages/ui/src/components/bob-surface.tsx`.
+> **Portée.** § « Surfaces et apparence » (algorithme de surface et règle de blur imbriqué) et
+> ligne `Expo Blur/Glass` du tableau de dépendances. Le corps daté du 2026-07-23 n'est pas
+> réécrit ; les passages supersédés restent cités.
+> **Ce qui ne change pas.** Frontières d'architecture, projections pures, politique motion,
+> observabilité, garde d'imports, migration et critères d'acceptation.
 
 ## But
 
@@ -19,7 +29,8 @@ navigation dans le domaine et sans donner à la présentation une autorité mét
 | Reanimated | Présent transitivement dans le lock, pas dépendance directe mobile. | `UX-ADR-001`. |
 | Gesture Handler | Déclaré et utilisé. | Réutiliser pour gestures autorisées. |
 | Expo Haptics | Non déclaré directement. | Ajouter seulement après `UX-ADR-006` Accepted et certification acoustique. |
-| Expo Blur/Glass | Non déclarés directement. | Progressive enhancement, `UX-ADR-004`. |
+| Expo Blur | Non déclaré directement. | **(amendé A1 · 2026-07-29)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. |
+| Expo Glass (`expo-glass-effect`) | Non déclaré directement. | **(amendé A1 · 2026-07-29)** **Ne sera pas adopté.** Hors doctrine « matière Bob » : le verre système impose la teinte de l'OS, pas la nôtre. Contrôle statique d'import à ajouter. |
 | Skia | Non déclaré mobile directement. | Spike uniquement si Bob/chart le justifie. |
 | FlashList | Déclaré. | Conserver pour longues listes et profiler transitions. |
 | SVG/LinearGradient | Déclarés. | Socle préféré pour signature légère. |
@@ -204,20 +215,47 @@ Décision proposée par `UX-ADR-002` :
 
 ## Surfaces et apparence
 
-Décision proposée par `UX-ADR-004` :
+Décision proposée par `UX-ADR-004`, **amendée A1 le 2026-07-29** (doctrine « matière Bob ») :
 
 ```text
-reduceTransparency → opaque
-sinon glass disponible + chrome éligible → glass
-sinon blur disponible + budget tenu → blur
-sinon → opaque
+0. accessibilité d'abord
+   reduceMotion       → aucune matière animée (durée 0, état final immédiat)
+   reduceTransparency → aucun effet (le rang 1 est déjà opaque)
+   increaseContrast   → bordure renforcée, même surface
+
+1. surface TEINTÉE Bob (surfaceTint / BobSurface), opaque      ← matière NOMINALE, chrome compris
+2. flou LÉGER de bord, retombée non interactive au-dessus d'une teinte opaque   ← option bornée
+3. repli OPAQUE unique (la teinte seule, zéro échantillon de flou)              ← défaut sûr
+   Le verre système (Liquid Glass / expo-glass-effect) n'est PAS un rang : hors doctrine.
 ```
 
-- jamais de blur imbriqué ;
+> Rédaction initiale 2026-07-23 (supersédée par A1) : `reduceTransparency → opaque ; sinon glass
+> disponible + chrome éligible → glass ; sinon blur disponible + budget tenu → blur ; sinon →
+> opaque`. Elle plaçait le verre système au premier rang et ne faisait pas de la surface teintée
+> un rang du tout. Motif de l'amendement : directive du fondateur du 2026-07-29 — « Je NE VEUX PAS
+> une UI transparente à la iOS » ; le verre système impose la teinte du système, pas la nôtre.
+
+- **la matière est la même sur tous les OS et toutes les versions** : aucune surface n'est
+  sélectionnée par capability runtime, donc aucune QA combinatoire matière × OS ;
+- **jamais de blur IMBRIQUÉ** — au sens strict : une surface floutée dont le sous-arbre contient
+  une autre surface floutée. Un EMPILEMENT de couches **frères** en zone non interactive n'est pas
+  une imbrication et reste autorisé, borné par le budget de
+  [10 — Performance](10-performance-observability.md) ;
+- jamais de blur comme fond d'une surface porteuse d'information (carte, ligne, formulaire,
+  montant) : ces surfaces sont teintées opaques ;
 - contraste calculé indépendamment du fond ;
 - le choix de surface ne change pas la géométrie ni l'action ;
 - StatusBar appartient à la route de premier plan ;
-- le contrat clair/sombre est explicite.
+- le contrat clair/sombre est explicite (`surfaceTint.light` / `surfaceTint.dark`, résolution
+  `light` par défaut tant qu'UX-ADR-004 n'active pas le sombre).
+
+### Autorité de matière
+
+`packages/tokens/src/index.ts` (`surfaceTint`) et `packages/ui/src/components/bob-surface.tsx` sont
+la **norme exécutable** de ce paragraphe : livrés, testés (contrastes AA dans `index.test.ts`) et
+déjà consommés par les écrans Équipements. Aucune spécification de ce dossier ne peut redéfinir un
+token existant ni proposer une matière concurrente ; elle peut seulement s'y ajouter. **En cas de
+divergence entre un document et le code du kit, le code fait foi.**
 
 ## Bob Live
 
