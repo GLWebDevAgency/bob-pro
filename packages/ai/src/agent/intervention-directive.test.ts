@@ -780,3 +780,70 @@ describe('cartes — UNE SEULE LECTURE du résumé : la pièce de preuve et la c
     expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
   });
 });
+
+// ── LIMITE CONNUE, FIGÉE (ne plus la poursuivre : la rendre VISIBLE) ─────────────────────────
+
+/**
+ * CE QUE CE BLOC FIGE — ce n'est pas un bug de données ni un geste faux : c'est un manque de
+ * RESTITUTION. Sur une consigne qui mêle une annonce de fin et un geste ÉTRANGER certain, le
+ * geste étranger prend le tour (sa clause le demande — c'est juste), mais l'annonce de fin n'est
+ * DITE nulle part : ni exécutée, ni citée. Sept passes ont montré qu'aucune règle de plus ici ne
+ * la lève.
+ *
+ * LE CHANTIER QUI LA LÈVERA (déjà inscrit en points ouverts) : un CANAL D'ASIDES TRANSVERSE à
+ * TOUS les intents, l'EXPOSITION DES OUTILS DE PASSAGE au LLM, et des CONFIRMATIONS SÉPARÉES
+ * dans `runMulti`. Tant qu'il n'est pas fait, ce test tient la limite VISIBLE et MESURÉE — le
+ * jour où elle est levée, il ROUGIT, et c'est exactement ce qu'on veut.
+ */
+describe('LIMITE CONNUE (chantier : canal d’asides transverse + outils de passage exposés au LLM + confirmations séparées dans runMulti) — l’annonce de fin n’est pas RESTITUÉE quand un geste étranger prend le tour', () => {
+  /** Gestes étrangers CERTAINS : un ordre en tête de clause, dont l'objet vit ailleurs. */
+  const GESTES_ETRANGERS_CERTAINS = [
+    'encaisse la facture',
+    'envoie la facture au client',
+    'programme la prochaine visite lundi',
+    'ajoute une dépense de 40 € chez Point P',
+    'émets la facture 2026-014',
+    'montre-moi ma trésorerie',
+  ] as const;
+
+  it('LIMITE CONNUE — « c’est terminé, encaisse la facture » encaisse, et NE DIT PAS la fin de passage', () => {
+    const phrase = 'C’est terminé, encaisse la facture';
+    const directive = readInterventionDirective(phrase);
+    // Bob LIT bien l'annonce de fin…
+    expect(directive.announcesCompletion).toBe(true);
+    // … mais le tour appartient au geste étranger : aucune donnée fausse, aucun geste faux.
+    expect(directive.gesture).toBeNull();
+    expect(detectIntent(phrase)).toBe(detectIntent('encaisse la facture'));
+    // LA LIMITE, NOMMÉE : la seule chose restituée est le geste étranger — la fin de passage
+    // n'est portée par AUCUN canal (le déterministe n'a pas d'aside transverse à offrir).
+    expect(directive.asides).toEqual([{ text: 'encaisse la facture', kind: 'ailleurs' }]);
+    expect(explainInterventionAsides(directive.asides)).not.toMatch(/termin|fini/i);
+  });
+
+  it('LIMITE CONNUE — mesurée sur tout le corpus : 0 restitution de l’annonce de fin', () => {
+    const restituees: string[] = [];
+    let mesurees = 0;
+    for (const annonce of ANNONCES) {
+      for (const etranger of GESTES_ETRANGERS_CERTAINS) {
+        for (const fait of [...FAITS, '']) {
+          const phrase = [annonce, etranger, fait].filter((part) => part.length > 0).join(', ');
+          mesurees += 1;
+          const directive = readInterventionDirective(phrase);
+          // L'annonce est LUE (la donnée est juste)…
+          if (!directive.announcesCompletion) restituees.push(`« ${phrase} » : annonce non lue`);
+          // … le geste étranger prend le tour…
+          if (directive.gesture !== null)
+            restituees.push(`« ${phrase} » : le passage a pris le tour (${directive.gesture})`);
+          // … et RIEN ne la restitue : si un jour quelque chose la porte, ce test ROUGIT et la
+          // limite est levée — c'est le signal qu'on attend du chantier ci-dessus.
+          if (/\btermin|\bfini/i.test(explainInterventionAsides(directive.asides)))
+            restituees.push(`« ${phrase} » : fin de passage RESTITUÉE (limite levée ?)`);
+        }
+      }
+    }
+    expect(mesurees).toBeGreaterThanOrEqual(150);
+    expect(
+      restituees.length === 0 ? '' : `${restituees.length}/${mesurees} :\n${restituees.slice(0, 12).join('\n')}`,
+    ).toBe('');
+  });
+});

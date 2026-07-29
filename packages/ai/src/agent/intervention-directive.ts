@@ -58,6 +58,18 @@ import {
  * │  écrire un texte sur la fiche ET le déclarer « incompris » dans la MÊME carte — ou        │
  * │  l'inverse, l'étouffer sans rien écrire. Une lecture, un jeu d'arguments, un résultat.    │
  * └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ * ┌─ LIMITE CONNUE — l'annonce de fin n'est pas RESTITUÉE ───────────────────────────────────┐
+ * │  Sur une consigne qui mêle une annonce de fin et un geste ÉTRANGER certain (« c'est       │
+ * │  terminé, encaisse la facture »), le geste étranger prend le tour — c'est juste : sa      │
+ * │  clause le demande — mais l'annonce de fin n'est DITE nulle part. Aucune donnée fausse,   │
+ * │  aucun geste faux : il manque une RESTITUTION. Le remède n'est pas une règle de plus ici  │
+ * │  (sept passes l'ont prouvé) ; c'est un chantier à part entière, déjà inscrit en points    │
+ * │  ouverts : un CANAL D'ASIDES TRANSVERSE à tous les intents, l'EXPOSITION DES OUTILS DE    │
+ * │  PASSAGE au LLM, et des CONFIRMATIONS SÉPARÉES dans `runMulti`. Ce comportement est FIGÉ  │
+ * │  par un test qui le nomme (`intervention-directive.test.ts`) : visible et mesurable,      │
+ * │  jamais découvert par surprise.                                                           │
+ * └──────────────────────────────────────────────────────────────────────────────────────────┘
  */
 
 /** Geste AVAL d'une consigne composite — ce que l'artisan enchaîne après la fin du passage. */
