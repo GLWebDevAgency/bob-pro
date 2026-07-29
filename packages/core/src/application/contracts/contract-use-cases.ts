@@ -196,6 +196,7 @@ export class UpdateMaintenanceContract {
       return err(appNotFound('maintenance_contract', input.contractId));
     if (contract.revision !== input.expectedRevision)
       return err(appConflict('maintenance_contract', 'stale_revision'));
+    const initialRevision = contract.revision;
 
     if (input.patch !== undefined) {
       const nextChantier =
@@ -237,6 +238,9 @@ export class UpdateMaintenanceContract {
     }
     if (input.patch === undefined && input.lines === undefined && input.equipmentIds === undefined)
       return err(appDomain({ code: 'VALIDATION', field: 'patch', message: 'Aucune modification fournie.' }));
+    // L'agrégat est l'autorité du no-op. S'il a normalisé le patch vers les mêmes faits, aucune
+    // révision n'a avancé : ne pas écrire évite aussi de faire bouger updatedAt côté adapter.
+    if (contract.revision === initialRevision) return ok(contract.toProps());
     await this.deps.contracts.save(contract);
     return ok(contract.toProps());
   }

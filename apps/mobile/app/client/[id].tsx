@@ -36,6 +36,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   KeyboardAvoidingView,
   Linking,
@@ -46,6 +47,7 @@ import {
   Text,
   TextInput,
   View,
+  findNodeHandle,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -100,7 +102,10 @@ import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } fro
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
 import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
 import { CustomerContactsCard } from '../../src/components/CustomerContactsCard';
-import { CustomerContractsCard } from '../../src/components/CustomerContractsCard';
+import {
+  CustomerContractsCard,
+  type CustomerContractsCardState,
+} from '../../src/components/CustomerContractsCard';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -118,6 +123,7 @@ import {
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { ChantierRowCountBadges } from '../../src/components/chantier-row-counts';
 import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
+import { consumeContractDeletedNotice } from '../../src/lib/navigation-notice';
 
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -352,12 +358,22 @@ export default function ClientDetail() {
   const palette = useStatusBadgePalette();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ id: string; edit?: string }>();
+  const params = useLocalSearchParams<{
+    id: string;
+    edit?: string;
+    tab?: string;
+    noticeToken?: string;
+  }>();
   const id = typeof params.id === 'string' ? params.id : '';
   // `?edit=1` : la fiche s'ouvre DIRECTEMENT sur son formulaire d'édition. Utilisé par la carte
   // « devis à transmettre » du briefing (il manque l'e-mail du client) — l'action proposée
   // atterrit sur le geste exact à faire, jamais sur un écran où il faut re-chercher le bouton.
   const editRequested = params.edit === '1';
+  const contractsRequested = params.tab === 'contracts';
+  const contractDeletedNoticeToken =
+    typeof params.noticeToken === 'string' && params.noticeToken.length > 0
+      ? params.noticeToken
+      : null;
 
   const client = useBobClient();
   const customers = useCustomers();
@@ -369,7 +385,9 @@ export default function ClientDetail() {
   const profile = useProfile();
   const createChantier = useCreateChantier();
   const updateCustomer = useUpdateCustomer();
-  const [tab, setTab] = useState<TabKey>('activity');
+  // Un contrat supprimé ailleurs revient sur la seule liste métier existante : les contrats de
+  // la fiche client, dans l'onglet Infos. La destination est déterministe, même depuis un deep link.
+  const [tab, setTab] = useState<TabKey>(contractsRequested ? 'infos' : 'activity');
   const [chantierCreateOpen, setChantierCreateOpen] = useState(false);
   const [chantierName, setChantierName] = useState('');
   const [chantierNotes, setChantierNotes] = useState('');
@@ -380,6 +398,13 @@ export default function ClientDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [editError, setEditError] = useState(false);
   const [ficheToast, setFicheToast] = useState<string | null>(null);
+  const [ficheToastKind, setFicheToastKind] = useState<'success' | 'notice'>('success');
+  const [contractsSectionState, setContractsSectionState] =
+    useState<CustomerContractsCardState>('loading');
+  const scrollViewRef = useRef<ScrollView>(null);
+  const contractsSectionRef = useRef<View>(null);
+  const contractsHeaderRef = useRef<Text>(null);
+  const settledContractNoticeToken = useRef<string | null>(null);
 
   // Terminologie adaptative par métier (tradeToWorksiteTerminology @bob/core) — un plombier
   // parle de « chantier », un freelance IT de « mission »… Repli neutre tant que non chargé.
@@ -604,6 +629,7 @@ export default function ClientDetail() {
       {
         onSuccess: () => {
           setChantierCreateOpen(false);
+          setFicheToastKind('success');
           setFicheToast(
             t('fiche.chantierCreatedToast', { personality, params: { ...worksiteParams, name: trimmedName } }),
           );
@@ -630,6 +656,7 @@ export default function ClientDetail() {
       {
         onSuccess: () => {
           setEditOpen(false);
+          setFicheToastKind('success');
           setFicheToast(t('fiche.editSuccess', { personality }));
         },
         onError: () => setEditError(true),
@@ -704,6 +731,57 @@ export default function ClientDetail() {
     editRequestConsumed.current = true;
     setEditOpen(true);
   }, [editRequested, customerFresh, customer]);
+
+  // Le message terminal d'un contrat supprimé appartient à CET écran, une fois sa section
+  // Contrats réellement rendue. Le token éphémère est lié au client et consommable une fois :
+  // un deep link forgé ou une restauration après redémarrage n'affiche rien.
+  useEffect(() => {
+    if (
+      contractDeletedNoticeToken === null
+      || contractsSectionState === 'loading'
+      || settledContractNoticeToken.current === contractDeletedNoticeToken
+    ) {
+      return;
+    }
+    settledContractNoticeToken.current = contractDeletedNoticeToken;
+    const notice = consumeContractDeletedNotice(contractDeletedNoticeToken, id);
+    router.setParams({ noticeToken: undefined });
+    if (notice === null) return;
+
+    const deliver = (): void => {
+      const headerHandle = findNodeHandle(contractsHeaderRef.current);
+      if (headerHandle !== null) AccessibilityInfo.setAccessibilityFocus(headerHandle);
+      setFicheToastKind('notice');
+      setFicheToast(
+        t(
+          contractsSectionState === 'error'
+            ? 'fiche.contractDeletedListErrorToast'
+            : 'fiche.contractDeletedToast',
+          { personality },
+        ),
+      );
+    };
+    const section = contractsSectionRef.current;
+    const scrollNode = scrollViewRef.current?.getNativeScrollRef() ?? null;
+    if (section === null || scrollNode === null) {
+      deliver();
+      return;
+    }
+    section.measureLayout(
+      scrollNode,
+      (_left, top) => {
+        scrollViewRef.current?.scrollTo({ y: Math.max(0, top - 16), animated: false });
+        deliver();
+      },
+      deliver,
+    );
+  }, [
+    contractDeletedNoticeToken,
+    contractsSectionState,
+    id,
+    personality,
+    router,
+  ]);
 
   // KPI dérivés : encours = standing (retard/attente = dû réel) · CA 12 mois = @bob/core.
   const outstandingCents =
@@ -875,6 +953,7 @@ export default function ClientDetail() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
+        ref={scrollViewRef}
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
@@ -1501,7 +1580,15 @@ export default function ClientDetail() {
                   {/* PR-12c — contrats de maintenance du client (écrans §6.3) : badges DÉRIVÉS,
                       montant/an = Σ lignes vivante ; b2c sans CTA (périmètre V1, Chatel). */}
                   {customer !== null && customerFresh ? (
-                    <CustomerContractsCard customerId={customer.id} customerType={customer.type} />
+                    <View ref={contractsSectionRef} collapsable={false}>
+                      <CustomerContractsCard
+                        customerId={customer.id}
+                        customerType={customer.type}
+                        ensureVisible={contractsRequested}
+                        headerRef={contractsHeaderRef}
+                        onStateChange={setContractsSectionState}
+                      />
+                    </View>
                   ) : null}
                   {/* B4 + canal : conditions de paiement (LegalHint L441-10) et « comment ce
                       client reçoit ses factures » — visibles uniquement sur données fraîches
@@ -1712,8 +1799,11 @@ export default function ClientDetail() {
       <Toast
         message={ficheToast ?? ''}
         visible={ficheToast !== null}
-        onHide={() => setFicheToast(null)}
-        icon={<CheckIcon color={colors.surface} />}
+        onHide={() => {
+          setFicheToast(null);
+          setFicheToastKind('success');
+        }}
+        icon={ficheToastKind === 'success' ? <CheckIcon color={colors.surface} /> : undefined}
       />
     </View>
   );

@@ -207,6 +207,13 @@ describe('Renommer — le remède que la garde du libellé PROMET (« un tap sur
         reason: 'stale_revision',
       }),
     ).toBe(true);
+    expect(
+      isContractRevisionConflict({
+        kind: 'conflict',
+        entity: 'maintenance_contract',
+        reason: 'another_conflict',
+      }),
+    ).toBe(false);
     // Un conflit sur une AUTRE entité ne dit rien de cette fiche.
     expect(
       isContractRevisionConflict({ kind: 'conflict', entity: 'invoice', reason: 'stale_revision' }),
@@ -224,7 +231,7 @@ describe('Renommer — après un CONFLIT, aucune porte ne laisse la fiche périm
     // Le conflit dit que la fiche AFFICHÉE derrière la feuille est fausse. Fermer sans
     // recharger laisserait le pro travailler sur un nom que le serveur a déjà remplacé —
     // « Recharger la fiche » ne peut donc pas être un chemin qu'on quitte par le scrim.
-    expect(contractRenameCloseEffect({ pending: false, stale: true })).toBe('close_and_reload');
+    expect(contractRenameCloseEffect({ pending: false, stale: true })).toBe('reload_before_close');
   });
 
   it('sans conflit, fermer ne recharge rien — aucun appel réseau gratuit', () => {

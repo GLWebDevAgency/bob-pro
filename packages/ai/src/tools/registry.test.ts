@@ -1144,15 +1144,32 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
   it('resilier_contrat : le MOTIF est exigé (trace légale) et la date d’effet reste optionnelle', () => {
     const t = tool(lifecycleActions, 'resilier_contrat')!;
     expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', note: '   ' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1, note: '   ' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 0, note: 'motif' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1.5, note: 'motif' }).ok).toBe(false);
     // Caractère de CONTRÔLE dans le motif : refusé ici comme par le domaine.
-    expect(t.parse({ contractId: 'c-1', note: 'motif\u0007' }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', note: 'motif', effectiveDate: 'le 1er juin' }).ok).toBe(false);
-    const parsed = t.parse({ contractId: 'c-1', note: ' le client déménage ' });
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1, note: 'motif\u0007' }).ok).toBe(false);
+    expect(
+      t.parse({
+        contractId: 'c-1',
+        expectedRevision: 1,
+        note: 'motif',
+        effectiveDate: 'le 1er juin',
+      }).ok,
+    ).toBe(false);
+    const parsed = t.parse({
+      contractId: 'c-1',
+      expectedRevision: 1,
+      note: ' le client déménage ',
+    });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     // Sans date dite, aucune date n’est envoyée : le domaine calcule le prochain anniversaire.
-    expect(parsed.value).toEqual({ contractId: 'c-1', note: 'le client déménage' });
+    expect(parsed.value).toEqual({
+      contractId: 'c-1',
+      expectedRevision: 1,
+      note: 'le client déménage',
+    });
   });
 
   /**
@@ -1167,23 +1184,78 @@ describe('§2.7 — outils de CYCLE DE VIE d’un contrat (créer / activer / r�
     const t = tool(lifecycleActions, 'renommer_contrat')!;
     expect(t.parse({ label: 'Entretien des ascenseurs' }).ok).toBe(false);
     expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
+    expect(
+      t.parse({ contractId: 'c-1', expectedRevision: 0, label: 'Entretien des ascenseurs' }).ok,
+    ).toBe(false);
+    expect(
+      t.parse({ contractId: 'c-1', expectedRevision: 1.5, label: 'Entretien des ascenseurs' }).ok,
+    ).toBe(false);
     // Borne du DOMAINE.
-    expect(t.parse({ contractId: 'c-1', label: '   ' }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', label: 'a'.repeat(201) }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', label: 'Entretien\u0007ascenseurs' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1, label: '   ' }).ok).toBe(false);
+    expect(
+      t.parse({ contractId: 'c-1', expectedRevision: 1, label: 'a'.repeat(201) }).ok,
+    ).toBe(false);
+    expect(
+      t.parse({
+        contractId: 'c-1',
+        expectedRevision: 1,
+        label: 'Entretien\u0007ascenseurs',
+      }).ok,
+    ).toBe(false);
     // GARDE « nommé » : ce qui ANNONCE un fait faux ne peut pas nommer le contrat…
-    expect(t.parse({ contractId: 'c-1', label: 'Entretien à 1.200 € par an' }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', label: 'Entretien du 01/10/2026' }).ok).toBe(false);
-    expect(t.parse({ contractId: 'c-1', label: 'Entretien pour le compte de RATP' }).ok).toBe(false);
+    expect(
+      t.parse({
+        contractId: 'c-1',
+        expectedRevision: 1,
+        label: 'Entretien à 1.200 € par an',
+      }).ok,
+    ).toBe(false);
+    expect(
+      t.parse({
+        contractId: 'c-1',
+        expectedRevision: 1,
+        label: 'Entretien du 01/10/2026',
+      }).ok,
+    ).toBe(false);
+    expect(
+      t.parse({
+        contractId: 'c-1',
+        expectedRevision: 1,
+        label: 'Entretien pour le compte de RATP',
+      }).ok,
+    ).toBe(false);
     // …et le refus est DIT en français, jamais rendu en code technique.
-    const refused = t.parse({ contractId: 'c-1', label: 'Entretien à 1.200 € par an' });
+    const refused = t.parse({
+      contractId: 'c-1',
+      expectedRevision: 1,
+      label: 'Entretien à 1.200 € par an',
+    });
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
     expect(JSON.stringify(refused.error)).toContain('montant');
     // …tandis qu'un nom que le métier emploie reste possible : la garde n'est pas un mur.
-    const parsed = t.parse({ contractId: 'c-1', label: '  Entretien annuel hall A  ' });
+    const parsed = t.parse({
+      contractId: 'c-1',
+      expectedRevision: 1,
+      label: '  Entretien annuel hall A  ',
+    });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value).toEqual({ contractId: 'c-1', label: 'Entretien annuel hall A' });
+    expect(parsed.value).toEqual({
+      contractId: 'c-1',
+      expectedRevision: 1,
+      label: 'Entretien annuel hall A',
+    });
+  });
+
+  it('activer_contrat scelle une révision entière positive avant la confirmation', () => {
+    const t = tool(lifecycleActions, 'activer_contrat')!;
+    expect(t.parse({ contractId: 'c-1' }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 0 }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1.5 }).ok).toBe(false);
+    expect(t.parse({ contractId: 'c-1', expectedRevision: 1 })).toEqual({
+      ok: true,
+      value: { contractId: 'c-1', expectedRevision: 1 },
+    });
   });
 });

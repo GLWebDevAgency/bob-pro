@@ -336,6 +336,7 @@ import {
   // BobAgent.confirm local pour les outils de facturation terrain.
   FACTURATION_TERRAIN_TOOLS,
   CONTRACT_LIFECYCLE_TOOLS,
+  contractLifecycleRetryCommand,
   intentForTool,
   // PR-15/16 — parité des hôtes : l'enchaînement ANNONCÉ est tenu par le chemin serveur comme
   // par BobAgent.confirm et par le client local (confirmBob) — une seule fonction pour les trois.
@@ -4255,6 +4256,7 @@ export class BackendService {
         return ok(
           views.value.map((view) => ({
             id: view.contract.id,
+            revision: view.contract.revision,
             label: view.contract.label,
             status: view.contract.status,
             customerName: view.customerName,
@@ -4294,9 +4296,9 @@ export class BackendService {
       },
       // §2.7 — GESTES de cycle de vie du contrat À LA VOIX : MÊMES use cases que l'API et la
       // fiche (CreateMaintenanceContract / ActivateContract / TerminateContract — parité
-      // humain↔Bob). La RÉVISION courante est résolue ici : le geste vocal n'a pas de vue
-      // optimiste ; les refus du domaine (Chatel b2c, site clôturé, transition interdite)
-      // remontent tels quels et sont restitués verbatim par l'agent.
+      // humain↔Bob). La RÉVISION lue à la proposition est rejouée telle quelle : la relire ici
+      // contournerait le CAS entre proposition et confirmation. Les refus du domaine (Chatel b2c,
+      // site clôturé, transition interdite) remontent tels quels et sont restitués verbatim.
       createMaintenanceContract: async (input) => {
         const created = await this.createMaintenanceContract({
           customerId: input.customerId,
@@ -4323,11 +4325,9 @@ export class BackendService {
         });
       },
       activateMaintenanceContract: async (input) => {
-        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
-        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
         const r = await this.activateMaintenanceContract({
           contractId: input.contractId,
-          expectedRevision: current.revision,
+          expectedRevision: input.expectedRevision,
         });
         if (!r.ok) return r;
         return ok({
@@ -4339,11 +4339,9 @@ export class BackendService {
         });
       },
       terminateMaintenanceContract: async (input) => {
-        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
-        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
         const r = await this.terminateMaintenanceContract({
           contractId: input.contractId,
-          expectedRevision: current.revision,
+          expectedRevision: input.expectedRevision,
           note: input.note,
           ...(input.effectiveDate !== undefined ? { effectiveDate: input.effectiveDate } : {}),
         });
@@ -4358,13 +4356,12 @@ export class BackendService {
       },
       // §2.7 — « renomme le contrat Bastille en … » : MÊME use case UpdateMaintenanceContract
       // que le bouton « Renommer » de la fiche, avec un patch d'un SEUL champ (les lignes, les
-      // équipements et les conditions ne sont pas renvoyés, donc pas réécrits).
+      // équipements et les conditions ne sont pas renvoyés, donc pas réécrits). La révision est
+      // celle SCELLÉE à la proposition : la relire ici contournerait le CAS à la confirmation.
       renameMaintenanceContract: async (input) => {
-        const current = await this.p.maintenanceContracts.findById(this.companyId(), input.contractId);
-        if (!current) return err(appNotFound('maintenance_contract', input.contractId));
         const r = await this.updateMaintenanceContract({
           contractId: input.contractId,
-          expectedRevision: current.revision,
+          expectedRevision: input.expectedRevision,
           patch: { label: input.label },
         });
         if (!r.ok) return r;
@@ -5610,6 +5607,60 @@ export class BackendService {
             ok: false,
             error: appForbidden(blocked.reason ?? 'Action refusée par la policy.'),
           };
+        // CAS contrat périmé : l'ancienne proposition opaque est consommée sans effet. On relit
+        // la projection réelle et offre une commande de reprise ; celle-ci repassera par ask(),
+        // créera une NOUVELLE proposition opaque et exigera une nouvelle confirmation.
+        if (
+          planned.length === 1
+          && CONTRACT_LIFECYCLE_TOOLS.has(planned[0]!.tool)
+          && blocked.reason === 'conflict:maintenance_contract stale_revision'
+        ) {
+          const entry = planned[0]!;
+          const contractId =
+            typeof entry.args.contractId === 'string' ? entry.args.contractId : null;
+          const retryCommand = contractLifecycleRetryCommand(entry.tool, entry.args);
+          const current =
+            contractId === null
+              ? null
+              : await this.p.maintenanceContracts.findById(companyId, contractId);
+          const retryStillAllowed =
+            current !== null
+            && (
+              (entry.tool === 'activer_contrat' && current.status === 'draft')
+              || (entry.tool === 'resilier_contrat' && current.status === 'active')
+              || (entry.tool === 'renommer_contrat' && current.status !== 'terminated')
+            );
+          const desiredLabel =
+            entry.tool === 'renommer_contrat' && typeof entry.args.label === 'string'
+              ? entry.args.label
+              : null;
+          const alreadyNamed =
+            current !== null
+            && desiredLabel !== null
+            && current.label.trim() === desiredLabel.trim();
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(entry.tool),
+            model: 'agent-runtime',
+            plan: ['Refuser la confirmation périmée', 'Relire le contrat réel'],
+            card: {
+              title: 'Le contrat a changé',
+              body:
+                current === null
+                  ? 'Le contrat n’est plus disponible. Rien n’a été écrasé.'
+                  : alreadyNamed
+                    ? `« ${current.label} » est déjà son nom actuel. Rien n’a été modifié.`
+                    : retryStillAllowed
+                      ? `Il s’appelle maintenant « ${current.label} ». Rien n’a été écrasé. Relis la version à jour avant de confirmer à nouveau.`
+                      : `Son état actuel est « ${current.status} ». L’ancienne action n’a pas été rejouée et rien n’a été écrasé.`,
+            },
+            ...(
+              retryStillAllowed && !alreadyNamed && retryCommand !== null
+                ? { choices: [{ label: 'Relire et reproposer', value: retryCommand }] }
+                : {}
+            ),
+          });
+        }
         // PR-04 — refus « BC obligatoire » à la confirmation HTTP : MÊME parcours de rattrapage
         // que BobAgent.confirm local (message du domaine verbatim + les deux chemins réels,
         // saisir le BC d'abord, l'override responsabilisé en second) — jamais une erreur brute.
@@ -6603,7 +6654,9 @@ export class BackendService {
       equipments: this.p.equipments,
       ids: this.ids,
     }).execute({ companyId: this.companyId(), ...input });
-    if (r.ok)
+    // Un patch normalisé vers les mêmes faits est un succès NO-OP du domaine : aucune
+    // sauvegarde, aucune révision et donc aucun faux événement « updated ».
+    if (r.ok && r.value.revision !== input.expectedRevision)
       this.logger.audit('maintenance_contract.updated', {
         companyId: this.companyId(),
         id: input.contractId,

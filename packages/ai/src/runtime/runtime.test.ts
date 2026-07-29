@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ok, err } from '@bob/core';
-import { AgentRuntime, type RuntimeInvocation } from './runtime';
+import { AgentRuntime, describeError, type RuntimeInvocation } from './runtime';
 import { ActionPolicy } from './permissions';
 import { type ComplianceLevel } from './journal';
 import { InMemoryJournalStore } from './journal.testing';
@@ -63,6 +63,16 @@ describe('AgentRuntime — dry-run', () => {
 });
 
 describe('AgentRuntime — live', () => {
+  it('conserve entité + raison bornées d’un conflit pour le parcours de rattrapage', () => {
+    expect(
+      describeError({
+        kind: 'conflict',
+        entity: 'maintenance_contract',
+        reason: 'stale_revision',
+      }),
+    ).toBe('conflict:maintenance_contract stale_revision');
+  });
+
   it('exécute et trace planned puis executed avec digest', async () => {
     const tool = fakeTool();
     const rt = new AgentRuntime({ tools: [tool], clock, ids });

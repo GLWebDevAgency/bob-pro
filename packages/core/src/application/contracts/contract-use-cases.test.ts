@@ -79,6 +79,7 @@ function makeEnv(input: {
     equipmentOf('equip-ailleurs', 'site-clos'),
   ];
   const contractMap = new Map<string, MaintenanceContract>();
+  const contractSaves: string[] = [];
   const customerRepo: CustomerRepository = {
     findById: async (id) => customers.find((c) => c.id === id) ?? null,
     listByCompany: async () => customers,
@@ -114,6 +115,7 @@ function makeEnv(input: {
         (c) => c.companyId === companyId && c.customerId === customerId,
       ),
     save: async (c) => {
+      contractSaves.push(c.id);
       contractMap.set(c.id, c);
     },
     deleteById: async (_companyId, id) => {
@@ -123,7 +125,16 @@ function makeEnv(input: {
   let sequence = 0;
   const ids = { newId: () => `contract-id-${(sequence += 1)}` };
   const clock = { now: () => '2026-07-28T09:00:00.000Z', today: () => '2026-07-28' };
-  return { customerRepo, chantierRepo, equipmentRepo, contractRepo, contractMap, ids, clock };
+  return {
+    customerRepo,
+    chantierRepo,
+    equipmentRepo,
+    contractRepo,
+    contractMap,
+    contractSaves,
+    ids,
+    clock,
+  };
 }
 
 function seedContract(
@@ -275,6 +286,23 @@ describe('ActivateContract — revalidation b2b/b2g (§2.6)', () => {
 });
 
 describe('UpdateMaintenanceContract — CAS + gardes site/équipements', () => {
+  it('le même nom après normalisation est un no-op : même révision et zéro sauvegarde', async () => {
+    const env = makeEnv();
+    seedContract(env);
+    const updated = await new UpdateMaintenanceContract({ ...createDeps(env) }).execute({
+      companyId: COMPANY,
+      contractId: 'contract-seed',
+      expectedRevision: 1,
+      patch: { label: '  Entretien fontaines 2026  ' },
+    });
+
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.value.revision).toBe(1);
+    expect(updated.value.label).toBe('Entretien fontaines 2026');
+    expect(env.contractSaves).toEqual([]);
+  });
+
   it('remplace lignes et équipements (site revalidé)', async () => {
     const env = makeEnv();
     seedContract(env);
@@ -289,6 +317,8 @@ describe('UpdateMaintenanceContract — CAS + gardes site/équipements', () => {
     if (!updated.ok) return;
     expect(updated.value.lines).toHaveLength(1);
     expect(updated.value.equipmentIds).toEqual(['equip-fontaine']);
+    expect(updated.value.revision).toBe(3);
+    expect(env.contractSaves).toEqual(['contract-seed']);
     const wrongSite = await new UpdateMaintenanceContract({ ...createDeps(env) }).execute({
       companyId: COMPANY,
       contractId: 'contract-seed',

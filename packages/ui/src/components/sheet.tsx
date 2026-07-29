@@ -33,6 +33,12 @@ export interface SheetProps {
   readonly accessibilityLabel?: string;
   /** Libellé du bouton de fermeture visible. */
   readonly closeAccessibilityLabel?: string;
+  /** Action réellement déclenchée par la fermeture. Certains écrans doivent d'abord relire
+   * une donnée autoritative ; le hint par défaut ne doit pas mentir dans ce cas. */
+  readonly closeAccessibilityHint?: string;
+  /** Une opération séquencée interdit temporairement la fermeture. Le bouton × reste présent
+   * pour préserver le layout, mais expose disabled + busy au lecteur d'écran. */
+  readonly closeBusy?: boolean;
   /**
    * Appelé UNE fois quand l'animation de sortie est terminée et la feuille démontée —
    * permet à l'appelant de séquencer des feuilles SANS chevauchement visuel (au plus
@@ -47,6 +53,8 @@ export function Sheet({
   children,
   accessibilityLabel = 'Fenêtre d’options',
   closeAccessibilityLabel = 'Fermer',
+  closeAccessibilityHint = 'Ferme cette fenêtre sans appliquer d’autre changement.',
+  closeBusy = false,
   onDidClose,
 }: SheetProps) {
   const { colors, controls, overlays, radius } = useTheme();
@@ -211,7 +219,9 @@ export function Sheet({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={closeAccessibilityLabel}
-              accessibilityHint="Ferme cette fenêtre sans appliquer d’autre changement."
+              accessibilityHint={closeAccessibilityHint}
+              accessibilityState={{ busy: closeBusy, disabled: closeBusy }}
+              disabled={closeBusy}
               hitSlop={4}
               onPress={onClose}
               style={({ pressed }) => ({

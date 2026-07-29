@@ -2,37 +2,101 @@
  * PR-12c — section « Contrats » de la fiche client (écrans §6.3) : label · badge d'état
  * DÉRIVÉ · montant/an (Σ lignes vivante) · prochaine échéance calculée. Client b2c : PAS de
  * CTA « Nouveau contrat » (périmètre V1 — la pédagogie Chatel vit dans le wizard et la voix).
- * Fail-closed : capacité contrats absente ou requête en erreur → la section ne s'affiche pas
- * (jamais un état inventé sur la fiche).
+ * Fail-closed : capacité contrats absente ou requête en erreur → aucune liste inventée. Le rendu
+ * normal peut omettre la section ; un parcours qui l'a explicitement ciblée force au contraire
+ * son skeleton ou son erreur+retry, afin que la destination ne disparaisse jamais en silence.
  */
+import { useEffect, type RefObject } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { t } from '@bob/i18n';
-import { BobSurface, Button, StatusBadge, font, useTheme } from '@bob/ui';
+import {
+  BobSurface,
+  Button,
+  ErrorRetry,
+  SkeletonRow,
+  StatusBadge,
+  font,
+  useTheme,
+} from '@bob/ui';
 import { formatEURWhole } from '@bob/core';
 import { useMaintenanceContracts } from '../data/hooks';
 import { frContractDate } from './contract-fiche.logic';
+import {
+  deriveCustomerContractsCardState,
+  type CustomerContractsCardState,
+} from './customer-contracts-card-state';
+
+export type { CustomerContractsCardState } from './customer-contracts-card-state';
 
 export function CustomerContractsCard({
   customerId,
   customerType,
+  ensureVisible = false,
+  headerRef,
+  onStateChange,
 }: {
   customerId: string;
   customerType: 'b2c' | 'b2b' | 'b2g';
+  ensureVisible?: boolean;
+  headerRef?: RefObject<Text | null>;
+  onStateChange?: (state: CustomerContractsCardState) => void;
 }) {
   const { personality, colors } = useTheme();
   const router = useRouter();
   const contracts = useMaintenanceContracts();
   const mine = (contracts.data ?? []).filter((view) => view.contract.customerId === customerId);
+  const state: CustomerContractsCardState = deriveCustomerContractsCardState({
+    ensureVisible,
+    isError: contracts.isError,
+    isPending: contracts.isPending,
+    isFetching: contracts.isFetching,
+  });
+  useEffect(() => {
+    onStateChange?.(state);
+  }, [onStateChange, state]);
+
+  const header = (
+    <Text
+      ref={headerRef}
+      accessibilityRole="header"
+      style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6 }]}
+    >
+      {t('contrat.sectionClient', { personality }).toUpperCase()}
+    </Text>
+  );
+
+  if (state === 'error') {
+    if (!ensureVisible) return null;
+    return (
+      <BobSurface tone="neutral" emphasis="raised">
+        {header}
+        <View style={{ marginTop: 8 }}>
+          <ErrorRetry
+            message={t('contrat.clientDataError', { personality })}
+            onRetry={() => void contracts.refetch()}
+          />
+        </View>
+      </BobSurface>
+    );
+  }
+  if (state === 'loading') {
+    if (!ensureVisible) return null;
+    return (
+      <BobSurface tone="neutral" emphasis="raised">
+        {header}
+        <View style={{ marginTop: 8 }}>
+          <SkeletonRow lines={2} trailing="pill" />
+        </View>
+      </BobSurface>
+    );
+  }
   // b2c sans contrat : aucune section (le périmètre V1 ne propose rien à créer ici).
-  if (contracts.isError || (customerType === 'b2c' && mine.length === 0)) return null;
-  if (contracts.isPending) return null;
+  if (!ensureVisible && customerType === 'b2c' && mine.length === 0) return null;
 
   return (
     <BobSurface tone="neutral" emphasis="raised">
-      <Text style={[font('sub', 700), { color: colors.slate500, letterSpacing: 0.6 }]}>
-        {t('contrat.sectionClient', { personality }).toUpperCase()}
-      </Text>
+      {header}
       {mine.length === 0 ? (
         <Text style={[font('sub', 500), { color: colors.slate500, marginTop: 8 }]}>
           {t('contrat.clientEmpty', { personality })}

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Chantier,
   Customer,
@@ -16,6 +16,31 @@ import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
 
+beforeEach(() => {
+  // askBob construit son runtime seulement si un fournisseur est configuré. On pose donc une
+  // identité OpenAI de TEST, puis on double explicitement son transport : aucune résolution DNS,
+  // aucun appel cloud, aucun timeout variable. Le 503 immédiat exerce le repli déterministe réel.
+  vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
+  vi.stubEnv('OPENAI_URL', 'https://openai.invalid.test/v1');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string | URL | Request) => {
+      if (String(url) !== 'https://openai.invalid.test/v1/chat/completions') {
+        throw new Error(`unexpected_test_network:${String(url)}`);
+      }
+      return new Response('{"error":"provider intentionally unavailable in test"}', {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      });
+    }),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
 /**
  * PR-12c §2.7 — INTÉGRATION vocale des GESTES de contrat (patron bob-*-voice) : l'agent branché
  * sur les VRAIES actions hôte (buildBobActions → BackendService → use cases @bob/core). Preuve
@@ -26,6 +51,18 @@ import type { Metrics } from './observability/metrics';
  */
 function makeService() {
   const p = new InMemoryPersistence();
+  const audit = vi.fn();
+  const logger = {
+    audit,
+    error: vi.fn(),
+    warn: vi.fn(),
+    log: vi.fn(),
+  } as unknown as AppLogger;
+  const metrics = {
+    aiRequests: { inc: vi.fn() },
+    aiDuration: { observe: vi.fn() },
+    aiGuardViolations: { inc: vi.fn() },
+  } as unknown as Metrics;
   const service = new BackendService(
     p,
     {} as PaymentGatewayPort,
@@ -36,10 +73,10 @@ function makeService() {
       deleteUser: async () => undefined,
     } as SupabaseAdminPort,
     {} as NotificationDeliveryService,
-    {} as Metrics,
-    { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger,
+    metrics,
+    logger,
   );
-  return { service, p };
+  return { service, p, audit };
 }
 
 function makeAgent(service: BackendService): BobAgent {
@@ -254,14 +291,208 @@ describe('voix ↔ serveur — gestes de contrat de bout en bout (§2.7)', () =>
   });
 });
 
+describe('voix ↔ serveur — CAS opaque activation/résiliation', () => {
+  it('activation périmée : proposition consommée sans écriture, puis reprise scellée à N+1', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+
+    const proposed = await run(() => service.askBob('Active le contrat'));
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || proposed.value.kind !== 'proposed' || !proposed.value.pending) {
+      throw new Error('proposition opaque attendue');
+    }
+    expect(proposed.value.pending.args).toMatchObject({ expectedRevision: 1 });
+
+    const concurrent = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Entretien fontaines — équipe B' },
+      }),
+    );
+    expect(concurrent.ok).toBe(true);
+
+    const stale = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({ revision: 2, status: 'draft' });
+
+    // Opaque = usage unique : l'ancienne décision est réellement consommée.
+    const replay = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.error).toMatchObject({ kind: 'validation' });
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toContain(`Active le contrat ${created.value.id}`);
+    const reproposed = await run(() => service.askBob(retryCommand!));
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed' || !reproposed.value.pending) {
+      throw new Error('nouvelle proposition opaque attendue');
+    }
+    expect(reproposed.value.pending.args).toMatchObject({ expectedRevision: 2 });
+
+    const done = await run(() =>
+      service.confirmBob({ proposalId: reproposed.value.pending?.proposalId }),
+    );
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({ revision: 3, status: 'active' });
+  });
+
+  it('résiliation périmée : date et motif survivent, nouvelle confirmation scellée à N+1', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+    const activated = await run(() =>
+      service.activateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+      }),
+    );
+    if (!activated.ok) throw new Error('activation du scénario');
+
+    const proposed = await run(() =>
+      service.askBob(
+        `Résilie le contrat ${created.value.id} au 01/12/2026 — motif : le client déménage`,
+      ),
+    );
+    expect(proposed.ok).toBe(true);
+    if (!proposed.ok || proposed.value.kind !== 'proposed' || !proposed.value.pending) {
+      throw new Error('proposition opaque attendue');
+    }
+    expect(proposed.value.pending.args).toMatchObject({
+      expectedRevision: 2,
+      effectiveDate: '2026-12-01',
+      note: 'le client déménage',
+    });
+
+    const concurrent = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 2,
+        patch: { label: 'Entretien fontaines — équipe B' },
+      }),
+    );
+    expect(concurrent.ok).toBe(true);
+
+    const stale = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({ revision: 3, status: 'active' });
+
+    const replay = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.error).toMatchObject({ kind: 'validation' });
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toContain(`${created.value.id} au 2026-12-01`);
+    expect(retryCommand).toContain('motif : le client déménage');
+    const reproposed = await run(() => service.askBob(retryCommand!));
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed' || !reproposed.value.pending) {
+      throw new Error('nouvelle proposition opaque attendue');
+    }
+    expect(reproposed.value.pending.args).toMatchObject({
+      expectedRevision: 3,
+      effectiveDate: '2026-12-01',
+      note: 'le client déménage',
+    });
+
+    const done = await run(() =>
+      service.confirmBob({ proposalId: reproposed.value.pending?.proposalId }),
+    );
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({
+        revision: 4,
+        status: 'terminated',
+        terminationEffectiveDate: '2026-12-01',
+        terminationNote: 'le client déménage',
+      });
+  });
+});
+
 /**
  * §2.7 — RENOMMER : le geste que la garde du libellé PROMET (« un nom de contrat imparfait DANS
  * L'APPLICATION se corrige d'un tap sur la fiche »). Ce test prouve que la voix emprunte le MÊME
- * use case UpdateMaintenanceContract que ce tap, que la RÉVISION est résolue côté serveur (le
- * geste vocal n'a pas de vue optimiste), et qu'un patch d'un seul champ ne réécrit rien d'autre —
+ * use case UpdateMaintenanceContract que ce tap, que la RÉVISION lue à la proposition reste
+ * scellée jusqu'au consentement, et qu'un patch d'un seul champ ne réécrit rien d'autre —
  * lignes, équipements et conditions restent intacts.
  */
 describe('voix ↔ serveur — renommer un contrat (§2.7)', () => {
+  it('même nom normalisé : succès idempotent, sans sauvegarde visible ni faux audit', async () => {
+    const { service, p, audit } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2026-10-01',
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+    audit.mockClear();
+
+    const unchanged = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: '  Entretien fontaines  ' },
+      }),
+    );
+    expect(unchanged.ok).toBe(true);
+    if (!unchanged.ok) return;
+    expect(unchanged.value).toMatchObject({ label: 'Entretien fontaines', revision: 1 });
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))?.revision).toBe(1);
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it('« renomme le contrat … » : confirmation, puis nom RÉEL changé sans toucher au reste', async () => {
     const { service, p } = makeService();
     const companyId = await seedTenant(p);
@@ -310,6 +541,72 @@ describe('voix ↔ serveur — renommer un contrat (§2.7)', () => {
     expect(after.visitsPerYear).toBe(before.visitsPerYear);
     expect(after.lines).toEqual(before.lines);
     expect(after.equipmentIds).toEqual(before.equipmentIds);
+  });
+
+  it('proposition HTTP opaque périmée : aucune écriture, relecture réelle, puis nouvelle confirmation', async () => {
+    const { service, p } = makeService();
+    const companyId = await seedTenant(p);
+    await seedCustomer(p, companyId, 'cus-ratp', 'RATP CAP', 'b2g');
+    const principal: Principal = { userId: 'u-1', companyId };
+    const run = <T,>(fn: () => Promise<T>) => asPrincipal(principal, fn);
+    const created = await run(() =>
+      service.createMaintenanceContract({
+        customerId: 'cus-ratp',
+        label: 'Entretien fontaines',
+        anniversaryDate: '2026-10-01',
+        lines: [{ label: 'Forfait', quantity: 1, unitPriceHtCents: 120_000, vatRate: 20 }],
+      }),
+    );
+    if (!created.ok) throw new Error('contrat de scénario');
+
+    const proposed = await run(() =>
+      service.askBob('Renomme le contrat fontaines en « Entretien des ascenseurs »'),
+    );
+    expect(proposed, JSON.stringify(proposed)).toMatchObject({ ok: true });
+    if (!proposed.ok || proposed.value.kind !== 'proposed' || !proposed.value.pending) {
+      throw new Error('proposition opaque attendue');
+    }
+    expect(proposed.value.pending.args).toMatchObject({ expectedRevision: 1 });
+
+    // Écriture concurrente après la proposition : sa révision ne doit jamais être relue puis
+    // utilisée silencieusement par l'ancienne confirmation.
+    const concurrent = await run(() =>
+      service.updateMaintenanceContract({
+        contractId: created.value.id,
+        expectedRevision: 1,
+        patch: { label: 'Entretien fontaines — équipe B' },
+      }),
+    );
+    expect(concurrent.ok).toBe(true);
+
+    const stale = await run(() =>
+      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(stale.ok).toBe(true);
+    if (!stale.ok) return;
+    expect(stale.value.kind).toBe('answer');
+    expect(stale.value.card.body).toContain('Entretien fontaines — équipe B');
+    expect(stale.value.card.body).toContain('Rien n’a été écrasé');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({ revision: 2, label: 'Entretien fontaines — équipe B' });
+
+    const retryCommand = stale.value.choices?.[0]?.value;
+    expect(retryCommand).toContain(`Renomme le contrat ${created.value.id}`);
+    const reproposed = await run(() => service.askBob(retryCommand!));
+    expect(reproposed.ok).toBe(true);
+    if (!reproposed.ok || reproposed.value.kind !== 'proposed' || !reproposed.value.pending) {
+      throw new Error('nouvelle proposition opaque attendue');
+    }
+    expect(reproposed.value.pending.args).toMatchObject({ expectedRevision: 2 });
+
+    const done = await run(() =>
+      service.confirmBob({ proposalId: reproposed.value.pending?.proposalId }),
+    );
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.value.kind).toBe('done');
+    expect((await p.maintenanceContracts.findById(companyId, created.value.id))!.toProps())
+      .toMatchObject({ revision: 3, label: 'Entretien des ascenseurs' });
   });
 
   it('contrat RÉSILIÉ : lecture seule côté domaine — la voix ne le propose même pas, rien ne change', async () => {
