@@ -195,9 +195,12 @@ describe('commencer_intervention — « démarre l’intervention chez Carrefour
     const r = await agent.ask('Démarre l’intervention chez RATP Bastille');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    // Aucune fiche `scheduled` sur ce site → refus honnête, jamais un geste inventé.
+    // Aucune fiche `scheduled` sur ce site → refus honnête, jamais un geste inventé. Le passage
+    // EXISTE : Bob dit son état RÉEL et le chemin réel, jamais « aucun passage concerné ».
     expect(r.value.kind).toBe('answer');
-    expect(r.value.card?.title).toBe('Aucun passage concerné');
+    expect(r.value.card?.title).toBe('Rien à faire sur ce passage');
+    expect(r.value.card?.body).toContain('déjà en cours');
+    expect(r.value.card?.body).toContain('c’est terminé');
   });
 });
 
@@ -363,7 +366,10 @@ describe('facturer_intervention — brouillon pré-rempli, jamais une émission'
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.kind).toBe('answer');
-    expect(r.value.card?.title).toBe('Aucun passage concerné');
+    // Le passage EXISTE : Bob dit POURQUOI il ne le facture pas (pièce vivante), jamais une
+    // absence inventée qui orienterait l'artisan à l'opposé du fait réel.
+    expect(r.value.card?.title).toBe('Rien à faire sur ce passage');
+    expect(r.value.card?.body).toContain('déjà couvert par une facture');
   });
 
   it('une VISITE CONTRACTUELLE ne se facture jamais à part (discriminant contractId)', async () => {
@@ -531,5 +537,147 @@ describe('ENCHAÎNEMENT COMPOSITE §3.7 — « j’ai fini chez RATP… envoie l
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.card?.title).toBe('Fiche de passage indisponible');
+  });
+});
+
+/**
+ * [Revue de vérification 29/07 — RIEN N'EST JETÉ EN SILENCE]
+ *
+ * Trois trous mesurés au même endroit : la moitié aval d'une consigne disparaissait sans un mot
+ * (finding 4), « j'ai fini le boulot, prépare la facture » ne facturait rien sur un passage
+ * pourtant facturable et donnait la MAUVAISE raison sur un passage déjà facturé (cases
+ * E4/E5/E6 × C12), et l'intent restitué changeait selon qu'une cible s'était résolue ou non
+ * (finding 7). Ces tests mesurent la carte RENDUE, pas seulement le classement.
+ */
+describe('§3.7 — la moitié aval d’une consigne est TOUJOURS dite', () => {
+  const facturable = (status: 'completed' | 'signed'): AgentIntervention[] => [
+    {
+      id: 'itv-facturable',
+      kind: 'Détartrage',
+      status,
+      chantierId: 'site-docks',
+      chantierNom: 'Docks Rouen',
+      customerNom: 'Docks SAS',
+      plannedAt: '2026-08-03T08:00:00.000Z',
+      contractId: null,
+      reportDocumentId: null,
+      billedInvoiceId: null,
+      billedInvoiceStatus: null,
+      revision: 3,
+    },
+  ];
+
+  it('E4/E5 : « j’ai fini le boulot, prépare la facture » PROPOSE le brouillon (terminé, signé)', async () => {
+    for (const status of ['completed', 'signed'] as const) {
+      const drafted: InterventionActionInput[] = [];
+      const agent = makeAgent({
+        listInterventions: async () => ok(facturable(status)),
+        prepareInterventionInvoice: async (input) => {
+          drafted.push(input);
+          return ok({ interventionId: input.interventionId, invoiceId: 'inv-1', totalTtcCents: 12000 });
+        },
+      });
+      const r = await agent.ask('J’ai fini le boulot, prépare la facture');
+      expect(r.ok, status).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.kind, status).toBe('proposed');
+      expect(r.value.intent, status).toBe('facturer_intervention');
+      expect(r.value.card?.body, status).toContain('BROUILLON');
+      expect(drafted, status).toHaveLength(0);
+      const confirme = await agent.confirm(r.value.pending!);
+      expect(confirme.ok, status).toBe(true);
+      expect(drafted, status).toEqual([{ interventionId: 'itv-facturable' }]);
+    }
+  });
+
+  it('E6 : sur un passage DÉJÀ facturé, la raison est la bonne (jamais « plus rien à terminer »)', async () => {
+    const agent = makeAgent({
+      listInterventions: async () =>
+        ok(
+          facturable('completed').map((intervention) => ({
+            ...intervention,
+            billedInvoiceId: 'inv-vivante',
+            billedInvoiceStatus: 'issued',
+          })),
+        ),
+      prepareInterventionInvoice: async (input) =>
+        ok({ interventionId: input.interventionId, invoiceId: 'x', totalTtcCents: 0 }),
+    });
+    const r = await agent.ask('J’ai fini le boulot, prépare la facture');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card?.body).toContain('déjà couvert par une facture');
+    expect(r.value.card?.body).not.toContain('plus rien à terminer');
+  });
+
+  it('geste aval COMPRIS mais impossible : Bob le dit dans la MÊME carte (visite contractuelle)', async () => {
+    const agent = makeAgent({
+      listInterventions: async () =>
+        ok([
+          {
+            id: 'itv-contrat-encours',
+            kind: 'Visite contractuelle',
+            status: 'in_progress' as const,
+            chantierId: 'site-contrat',
+            chantierNom: 'Tour Montparnasse',
+            customerNom: 'Gestion Tour',
+            plannedAt: '2026-08-02T08:00:00.000Z',
+            contractId: 'contract-1',
+            reportDocumentId: null,
+            billedInvoiceId: null,
+            billedInvoiceStatus: null,
+            revision: 2,
+          },
+        ]),
+      completeIntervention: async (input) =>
+        ok({
+          interventionId: input.interventionId,
+          status: 'completed',
+          kind: 'Visite contractuelle',
+          chantierNom: 'Tour Montparnasse',
+        }),
+    });
+    const r = await agent.ask('C’est terminé, facture ce passage');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    // On termine (c'est possible), et la seconde moitié n'est PAS tue : sa raison est donnée.
+    expect(r.value.pending?.tool).toBe('terminer_intervention');
+    expect(r.value.card?.body).toContain('Je ne pourrai pas le facturer');
+    expect(r.value.card?.body).toContain('visite contractuelle');
+    // Aucune promesse en l'air : rien n'est annoncé comme « ensuite ».
+    expect(r.value.pending?.chain).toBeUndefined();
+  });
+
+  it('une demande qui porte AILLEURS est citée VERBATIM dans la carte du passage', async () => {
+    const agent = makeAgent({
+      listInterventions: async () => ok(facturable('completed')),
+      prepareInterventionInvoice: async (input) =>
+        ok({ interventionId: input.interventionId, invoiceId: 'inv-1', totalTtcCents: 12000 }),
+    });
+    const r = await agent.ask('Facture ce passage et encaisse la facture 2026-014');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.card?.body).toContain('« encaisse la facture 2026-014 »');
+    expect(r.value.card?.body).toContain('redis-le-moi');
+  });
+
+  it('finding 7 : l’intent restitué est le même avec ou sans cible résolue', async () => {
+    const sansPassage = makeAgent({ listInterventions: async () => ok([]) });
+    const refus = await sansPassage.ask('Facture ce passage');
+    expect(refus.ok).toBe(true);
+    if (!refus.ok) return;
+    expect(refus.value.intent).toBe('facturer_intervention');
+
+    const avecPassage = makeAgent({
+      listInterventions: async () => ok(facturable('completed')),
+      prepareInterventionInvoice: async (input) =>
+        ok({ interventionId: input.interventionId, invoiceId: 'inv-1', totalTtcCents: 12000 }),
+    });
+    const propose = await avecPassage.ask('Facture ce passage');
+    expect(propose.ok).toBe(true);
+    if (!propose.ok) return;
+    expect(propose.value.intent).toBe(refus.value.intent);
   });
 });

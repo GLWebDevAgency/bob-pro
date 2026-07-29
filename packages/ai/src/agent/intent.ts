@@ -1,3 +1,5 @@
+import { readInterventionDirective } from './intervention-directive';
+
 export type BobIntent =
   | 'contexte_ecran' // lire l'entite affichee : « cette facture », « ou suis-je ? »
   | 'payout'
@@ -180,106 +182,27 @@ export function detectIntent(message: string): BobIntent {
   // PR-15/16 — FICHE DE PASSAGE : AVANT le parc (« chez », « site » y collisionnent), AVANT
   // envoyer_facture/facture_directe (« envoie », « facture » y collisionnent). Le NOM de la
   // fiche est résolu contre les passages RÉELS dans le handler — jamais un id deviné.
-  // [Revue adversariale 28/07 — finding 5] ANNONCE de fin du passage dans le tour COURANT.
-  // Une consigne composite (« j'ai fini …, et envoie la fiche ») est d'abord une COMPLÉTION :
-  // la fiche n'existe pas avant elle, l'envoi ne peut pas aboutir, et partir à l'envoi laissait
-  // le passage `in_progress` pour toujours — le scénario §8 finissait en impasse. Ce n'est PAS
-  // le simple adjectif : « envoie la fiche du passage terminé hier » DÉCRIT une fiche, il ne
-  // termine rien — l'envoi garde alors son intent.
-  const annonceFinDePassage =
-    /\b(?:j.{0,3}ai (?:fini|termine)|on a (?:fini|termine)|c.{0,3}est (?:fini|termine)|(?:le passage|l.{0,3}intervention|la visite|le depannage|le chantier) est (?:fini|termine)e?s?|termine (?:le passage|ce passage|l.{0,3}intervention|cette intervention|la visite)|cloture le passage)\b/.test(
-      normalizedMessage,
-    );
-  // Envoi de la fiche (sortant) : le mot fiche/passage/rapport EST requis — « envoie la
-  // facture » reste un envoi de facture. Négation ⇒ rien.
-  if (
-    !annonceFinDePassage &&
-    /\b(envoie|envoyer|envoies|transmets|transmettre|adresse|adresser|expedie|expedier)\b/.test(
-      normalizedMessage,
-    ) &&
-    /\b(fiche|fiches|rapport|rapports|compte rendu|passage|passages|intervention|interventions)\b/.test(
-      normalizedMessage,
-    ) &&
-    !/\b(devis|factures?|avoirs?|relances?)\b/.test(normalizedMessage) &&
-    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(envoie|envoyer|transmets|transmettre|adresse)\b|\b(envoie|envoyer|transmets|transmettre|adresse)\b.{0,30}\bpas\b/.test(
-      normalizedMessage,
-    )
-  )
-    return 'envoyer_fiche_passage';
-  // Facturer un PASSAGE (« facture cette intervention », « facture ce passage ») : le mot
-  // intervention/passage est REQUIS — « facture 380 € à Mme Girard » reste une facture directe.
-  const demandeFacturationPassage =
-    /\b(facture|facturer|factures)\b/.test(normalizedMessage) &&
-    // Une référence DÉMONSTRATIVE au passage, jamais le simple mot « intervention » : la
-    // facture directe dictée (« facture 500 € HT à Durand pour l'intervention sur site »)
-    // garde son intent — un MONTANT dit exclut d'ailleurs toujours ce chemin.
-    /\b(ce passage|cette intervention|cette visite|ce depannage|le passage|la visite|l\W{0,3}intervention de)\b/.test(
-      normalizedMessage,
-    ) &&
-    !/(€|\beuros?\b|\bht\b|\bttc\b|\btva\b|\d+\s*(e|eur))/.test(normalizedMessage) &&
-    !/\b(annuelle?s?|contrats?|situations?)\b/.test(normalizedMessage) &&
-    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(facture|facturer)\b|\b(facture|facturer)\b.{0,30}\bpas\b/.test(
-      normalizedMessage,
-    );
-  // [Vérification finale 29/07] MÊME garde que l'envoi, sur la branche JUMELLE : un passage se
-  // facture depuis `completed`/`signed` — une consigne composite (« c'est terminé, facture ce
-  // passage ») est donc D'ABORD une complétion. Sans cette garde, Bob répondait « Aucun passage
-  // concerné » sur un passage bien réel, le laissait `in_progress` POUR TOUJOURS et perdait le
-  // résumé dicté dans le même geste. Ce n'est PAS l'adjectif : « facture le passage terminé
-  // hier » DÉCRIT le passage, il n'annonce aucune fin — la facturation garde alors son intent.
-  if (!annonceFinDePassage && demandeFacturationPassage) return 'facturer_intervention';
-  // Terminer le passage : « c'est terminé », « j'ai fini chez RATP », « passage terminé ».
-  // Les clôtures comptables (« clôture du mois ») et les devis/factures gardent leur intent.
-  if (
-    /\b(termine|terminee?s?|terminer|fini|finie?s?|finir|cloture le passage|j.{0,3}ai fini|c.{0,3}est fini|c.{0,3}est termine)\b/.test(
-      normalizedMessage,
-    ) &&
-    // [finding 5] L'ANNONCE de fin suffit à elle seule : sans cette branche, une consigne
-    // écartée de l'envoi (« envoie la fiche, j'ai fini ») ne serait plus captée par PERSONNE.
-    (annonceFinDePassage ||
-      /\b(interventions?|passages?|chantier|site|chez)\b/.test(normalizedMessage) ||
-      /^\s*(c.{0,3}est (fini|termine)|j.{0,3}ai fini|termine)\b/.test(normalizedMessage)) &&
-    // [Vérification finale 29/07] Le mot « facture » de la consigne composite « …, facture ce
-    // passage » désigne le geste SUIVANT, jamais une pièce comptable : le laisser disqualifier
-    // la complétion renvoyait ces consignes à `unknown` (Bob ne fait RIEN) ou pire à
-    // `envoyer_facture` (un sortant sur une facture qui n'existe pas). Tout autre emploi
-    // (« j'ai fini la facture », « le devis est terminé ») garde son exclusion.
-    !(demandeFacturationPassage
-      ? /\b(devis|mois|cloture comptable|exercice|tva)\b/
-      : /\b(devis|factures?|mois|cloture comptable|exercice|tva)\b/
-    ).test(normalizedMessage) &&
-    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(termine|terminer|fini|finir)\b/.test(
-      normalizedMessage,
-    )
-  )
+  //
+  // [Revue de vérification 29/07 — ROUTAGE PAR L'ÉTAT, BORNÉ AUX GESTES DE PASSAGE] La consigne
+  // est lue CLAUSE PAR CLAUSE (cf. `intervention-directive.ts`) : aucune garde lexicale ne voit
+  // le message entier, aucune clause n'en éteint une autre. Ici on ne fait qu'ORIENTER vers le
+  // bon handler ; l'arbitrage réel d'une consigne composite appartient à l'ÉTAT du passage,
+  // résolu dans le handler contre les fiches réelles.
+  //
+  // L'annonce de fin ne capte le tour QUE si la consigne ne demande rien d'autre qu'un geste de
+  // passage. « C'est terminé, envoie la facture au client » n'est PAS une fin de passage : c'est
+  // un envoi de facture — la clause aval garde son intent d'origine et le geste demandé
+  // s'exécute. Sans cette borne, toute annonce de fin détournait la trésorerie, les dépenses,
+  // les visites à programmer et l'émission de facture vers un passage dont il n'était pas
+  // question. En revanche, dès qu'un geste de FICHE est demandé (envoyer la fiche, facturer ce
+  // passage), l'annonce reprend l'autorité : le handler termine puis enchaîne.
+  const passage = readInterventionDirective(message);
+  if (passage.announcesCompletion && !(passage.downstream === null && passage.divertsElsewhere))
     return 'terminer_intervention';
-  // Faire signer : « fais signer », « le client signe » — ouvre le PAD (micro suspendu), le
-  // tracé ne se dicte jamais. Le mot signature/signer est requis ; un devis signé garde son
-  // intent (le mot devis exclut).
-  if (
-    // Geste IMPÉRATIF de signature uniquement : « c'est prêt à signer ? » (question d'état)
-    // garde son intent, jamais un pad ouvert sur une interrogation.
-    /\b(fais(?:-| )?(?:le |la )?signer|faire signer|fais(?:-| )?moi signer|prends? la signature|prendre la signature|(?:le |la )?client signe|signature (?:du|de la) client)\b/.test(
-      normalizedMessage,
-    ) &&
-    !/\b(devis|factures?|contrats?|bons? de commande)\b/.test(normalizedMessage) &&
-    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(signer|signe|signature)\b|\b(signer|signe|signature)\b.{0,30}\bpas\b/.test(
-      normalizedMessage,
-    )
-  )
-    return 'faire_signer_intervention';
-  // Démarrer le passage : « démarre l'intervention chez Carrefour », « je commence le passage ».
-  if (
-    /\b(demarre|demarrer|demarres|commence|commencer|commences|debute|debuter|lance|lancer)\b/.test(
-      normalizedMessage,
-    ) &&
-    /\b(interventions?|passages?|visites?|chantier|depannage)\b/.test(normalizedMessage) &&
-    !/\b(devis|factures?|relances?|scan)\b/.test(normalizedMessage) &&
-    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(demarre|demarrer|commence|commencer|debute|lance)\b/.test(
-      normalizedMessage,
-    )
-  )
-    return 'commencer_intervention';
+  if (passage.downstream === 'send') return 'envoyer_fiche_passage';
+  if (passage.downstream === 'bill') return 'facturer_intervention';
+  if (passage.downstream === 'sign') return 'faire_signer_intervention';
+  if (passage.startsPassage) return 'commencer_intervention';
   // PR-11 — PARC D'ÉQUIPEMENTS : AVANT les gestes documentaires, la dépense dictée et
   // voir_chantiers (« site », « chantier », « ajoute », « mets » y collisionnent).
   // Retrait (« la vitrine froide est déposée, retire-la du parc ») : le mot parc/équipement

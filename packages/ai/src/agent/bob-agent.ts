@@ -36,6 +36,17 @@ import {
 } from './contract-command';
 import { contractLabelRefusalSaid, inspectContractLabel } from './contract-label-guard';
 import {
+  explainInterventionAsides,
+  explainInterventionBlock,
+  explainWithheldDownstream,
+  interventionRequestFor,
+  readInterventionDirective,
+  requestedGesture,
+  resolveInterventionGesture,
+  type InterventionDownstream,
+  type InterventionGesture,
+} from './intervention-directive';
+import {
   type AgentAskPayload,
   type AgentCapability,
   type AgentContext,
@@ -252,6 +263,14 @@ export interface PendingAction {
   expiresAt?: string;
   /** Pour un plan multi-étapes : la suite d'actions à exécuter en lot après confirmation. */
   batch?: BatchItem[];
+  /**
+   * ENCHAÎNEMENT ANNONCÉ à la proposition (« ensuite je te propose le brouillon de facture »).
+   * Il voyage avec la proposition parce que c'est CELUI QUI LA TIENT qui doit tenir la promesse :
+   * une fois la mutation confirmée, la carte propose la commande de suivi. Aucune autorité n'y
+   * est déléguée — la commande repasse par ask() et refait toute la résolution, avec SA propre
+   * confirmation. Absent = Bob n'a rien promis, et ne propose donc rien.
+   */
+  chain?: AgentChainOffer;
 }
 
 /** Choix proposé en cas d'ambiguïté (rendu comme boutons / modale côté UI). */
@@ -1253,6 +1272,144 @@ export function purchaseOrderLinkedRun(input: {
     },
     choices: [{ label: 'Oui — crée la facture', value: `Fais la facture du devis ${ref}` }],
     spokenPrompt: 'C’est noté. Je crée la facture avec ce bon de commande ?',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR-15/16 — FICHE DE PASSAGE : le geste RÉEL est décidé par l'ÉTAT du passage
+// (`intervention-directive.ts`), jamais par le lexique de la consigne. Ces
+// tables traduisent le geste résolu en outil, en intent, en verbe parlé et en
+// commande canonique — une source unique, aucune chaîne recopiée.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const INTERVENTION_GESTURE_BY_INTENT: Partial<Record<BobIntent, InterventionGesture>> = {
+  commencer_intervention: 'start',
+  terminer_intervention: 'complete',
+  faire_signer_intervention: 'sign',
+  envoyer_fiche_passage: 'send',
+  facturer_intervention: 'bill',
+};
+
+const INTERVENTION_INTENT_BY_GESTURE: Record<InterventionGesture, BobIntent> = {
+  start: 'commencer_intervention',
+  complete: 'terminer_intervention',
+  sign: 'faire_signer_intervention',
+  send: 'envoyer_fiche_passage',
+  bill: 'facturer_intervention',
+};
+
+const INTERVENTION_TOOL_BY_GESTURE: Record<InterventionGesture, string> = {
+  start: 'commencer_intervention',
+  complete: 'terminer_intervention',
+  // La signature n'a pas d'outil : le tracé ne se dicte jamais — Bob ouvre le pad.
+  sign: 'faire_signer_intervention',
+  send: 'envoyer_fiche_passage',
+  bill: 'facturer_intervention',
+};
+
+/** Verbe du geste, tel que Bob le DIT (« aucun passage à facturer »). */
+const INTERVENTION_GESTURE_LABEL: Record<InterventionGesture, string> = {
+  start: 'démarrer',
+  complete: 'terminer',
+  sign: 'faire signer',
+  send: 'envoyer la fiche',
+  bill: 'facturer',
+};
+
+/**
+ * Commande CANONIQUE d'un geste sur un passage. Rejouée VERBATIM par ask(), qui refait TOUTE
+ * l'autorité : résolution contre les passages réels, routage par l'état, confirmation propre.
+ * Le geste aval éventuel est redit dans la commande — une consigne composite ne perd jamais sa
+ * suite en passant par une question de désambiguïsation.
+ */
+function interventionCommand(
+  gesture: InterventionGesture,
+  id: string,
+  then: InterventionDownstream | null = null,
+): string {
+  const suite =
+    then === null
+      ? ''
+      : then === 'sign'
+        ? ' et fais signer ce passage'
+        : then === 'send'
+          ? ' et envoie la fiche de passage'
+          : ' et facture ce passage';
+  if (gesture === 'start') return `Démarre l'intervention ${id}`;
+  if (gesture === 'complete') return `Termine l'intervention ${id}${suite}`;
+  if (gesture === 'sign') return `Fais signer l'intervention ${id}`;
+  if (gesture === 'send') return `Envoie la fiche de passage ${id}`;
+  return `Facture le passage ${id}`;
+}
+
+/**
+ * ENCHAÎNEMENT ANNONCÉ — « ensuite je te propose … ». La promesse est TENUE par celui qui tient
+ * la proposition : une fois la mutation confirmée, la carte propose la commande de suivi.
+ * Rien n'est délégué et rien n'est exécuté d'avance : la commande repasse par ask(), avec SA
+ * propre confirmation (une confirmation SÉPARÉE par mutation, jamais deux gestes fusionnés).
+ */
+export interface AgentChainOffer {
+  /** Commande canonique du geste suivant — rejouée verbatim par ask(). */
+  readonly followUp: string;
+  /** Libellé du bouton de suivi. */
+  readonly label: string;
+  /** Question posée à l'écran ET à la voix, une fois le geste courant exécuté. */
+  readonly question: string;
+}
+
+/**
+ * Tient la promesse sur un run TERMINÉ. Sans enchaînement annoncé, le run passe intact ; un run
+ * qui propose déjà quelque chose n'est jamais écrasé. Exportée pour que TOUT hôte qui confirme
+ * par son propre runtime (client local, /ai/confirm HTTP) rende le MÊME parcours.
+ */
+export function withAnnouncedChain(run: AgentRun, chain: AgentChainOffer | undefined): AgentRun {
+  if (chain === undefined || run.kind !== 'done' || (run.choices?.length ?? 0) > 0) return run;
+  return {
+    ...run,
+    card: { ...run.card, body: `${run.card.body}\n${chain.question}` },
+    choices: [{ label: chain.label, value: chain.followUp }],
+    spokenPrompt: chain.question,
+  };
+}
+
+/**
+ * Ce que Bob ANNONCE avant confirmation et ce qu'il PROPOSERA après : une source unique pour les
+ * deux — la promesse ne peut pas diverger du geste réellement offert.
+ */
+function interventionChainOffer(
+  then: InterventionDownstream,
+  id: string,
+): { offer: AgentChainOffer; announcement: string } {
+  if (then === 'sign')
+    return {
+      offer: {
+        followUp: interventionCommand('sign', id),
+        label: 'Oui — passe la signature',
+        question: 'Je te passe la signature du client ? Elle se trace, elle ne se dicte pas.',
+      },
+      announcement:
+        ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.',
+    };
+  if (then === 'send')
+    return {
+      offer: {
+        followUp: interventionCommand('send', id),
+        label: 'Oui — envoie la fiche',
+        question:
+          'J’envoie la fiche de passage au client ? L’envoi a sa PROPRE confirmation : rien ne part sans elle.',
+      },
+      announcement:
+        ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.',
+    };
+  return {
+    offer: {
+      followUp: interventionCommand('bill', id),
+      label: 'Oui — prépare le brouillon',
+      question:
+        'Je prépare le brouillon de facture de ce passage ? Rien n’est émis, rien n’est envoyé sans toi.',
+    },
+    announcement:
+      ' Ensuite je te propose le brouillon de facture — il aura sa PROPRE confirmation, rien n’est émis sans elle.',
   };
 }
 
@@ -5594,6 +5751,12 @@ export class BobAgent {
       // ciblée dont les followUps portent l'id (le tour suivant ne reboucle jamais).
       // Confirmations : groupées aux mutations de fiche, et TOUJOURS séparée pour le sortant.
       const listInterventions = this.deps.actions.listInterventions?.bind(this.deps.actions);
+      const directive = readInterventionDirective(message);
+      // §3.7 — RIEN N'EST JETÉ EN SILENCE : ce que la consigne demande d'autre (un geste qui vit
+      // ailleurs, ou une demande que Bob n'a pas su lire) est DIT dans la MÊME carte, quel que
+      // soit le chemin emprunté par ce tour.
+      const asideNote = explainInterventionAsides(directive.asides);
+      const withAside = (body: string): string => (asideNote === '' ? body : `${body} ${asideNote}`);
       if (!listInterventions) {
         return ok({
           kind: 'answer',
@@ -5602,7 +5765,9 @@ export class BobAgent {
           plan: ['Vérifier la capacité de l’hôte'],
           card: {
             title: 'Fiche de passage indisponible',
-            body: 'Je ne peux pas piloter les passages depuis cet appareil. Rien n’a été modifié — passe par la fiche.',
+            body: withAside(
+              'Je ne peux pas piloter les passages depuis cet appareil. Rien n’a été modifié — passe par la fiche.',
+            ),
           },
         });
       }
@@ -5614,25 +5779,22 @@ export class BobAgent {
         reference ?? '',
       ].join(' ');
 
-      // États ÉLIGIBLES par geste — un passage signé ne se re-démarre pas, une fiche non
-      // terminée ne s'envoie pas : le refus est dérivé de l'état RÉEL, jamais d'un statut deviné.
-      const eligible = all.value.filter((intervention) => {
-        if (intent === 'commencer_intervention') return intervention.status === 'scheduled';
-        if (intent === 'terminer_intervention') return intervention.status === 'in_progress';
-        if (intent === 'faire_signer_intervention') return intervention.status === 'completed';
-        if (intent === 'envoyer_fiche_passage')
-          return intervention.status === 'completed' || intervention.status === 'signed';
-        // facturer_intervention : hors contrat (direction 6) et pas déjà couvert par une pièce
-        // VIVANTE. L'extinction se fait par l'ÉTAT RÉEL : une facture annulée (avoir) ou une
-        // pièce introuvable rallument le droit — MÊME règle que PrepareInterventionInvoiceDraft.
-        return (
-          (intervention.status === 'completed' || intervention.status === 'signed') &&
-          intervention.contractId === null &&
-          (intervention.billedInvoiceId === null ||
-            intervention.billedInvoiceStatus === null ||
-            intervention.billedInvoiceStatus === 'cancelled')
-        );
-      });
+      // [Revue de vérification 29/07 — LECTURE CLAUSE PAR CLAUSE, PUIS ROUTAGE PAR L'ÉTAT] La
+      // DEMANDE est lue clause par clause (geste classé + TOUS les gestes de fiche de la même
+      // dictée, dans l'ordre dit) ; c'est l'ÉTAT RÉEL du passage qui tranche. Une consigne
+      // composite « annonce de fin + geste aval » n'a qu'une lecture sensée : passage en cours →
+      // on termine PUIS on enchaîne ; passage déjà terminé ou signé → le « c'est terminé » n'est
+      // qu'un rappel, on exécute DIRECTEMENT le geste aval. Aucune garde lexicale ne voit le
+      // message entier : une clause ne peut plus en éteindre une autre.
+      const request = interventionRequestFor(
+        INTERVENTION_GESTURE_BY_INTENT[intent] ?? 'complete',
+        directive,
+      );
+      // Un passage est ÉLIGIBLE dès qu'un des deux gestes de la consigne lui est possible :
+      // c'est la même autorité qui filtrera ensuite le geste exact sur la fiche retenue.
+      const eligible = all.value.filter(
+        (intervention) => resolveInterventionGesture(request, intervention) !== null,
+      );
 
       // Site dicté (« chez Carrefour ») résolu contre les sites RÉELS des passages éligibles.
       const siteResolution = resolveSpokenChantier({
@@ -5648,89 +5810,102 @@ export class BobAgent {
         ],
         customerName: null,
       });
-      const siteScoped =
-        siteResolution.matched.length === 1
-          ? eligible.filter(
-              (intervention) => intervention.chantierId === siteResolution.matched[0]!.id,
-            )
-          : eligible;
       // Le client peut aussi être nommé (« chez RATP ») : filtre supplémentaire honnête.
       const conversationTokens = new Set(
         normalized(conversation)
           .split(/[^a-z0-9]+/)
           .filter((word) => word.length >= 3),
       );
-      const byCustomer = siteScoped.filter((intervention) =>
-        destinationNameTokens(intervention.customerNom).some((word) =>
-          conversationTokens.has(word),
-        ),
-      );
-      const byId = siteScoped.filter(
-        (intervention) =>
-          normalized(intervention.id).length >= 3 &&
-          containsExactTokens(normalized(conversation), normalized(intervention.id)),
-      );
-      const pool =
-        byId.length > 0
+      // MÊME cadrage (site dit, client dit, id dit) appliqué aux passages éligibles ET à TOUS
+      // les passages : sans le second, Bob ne saurait pas dire pourquoi rien n'est éligible.
+      const scope = <T extends { id: string; chantierId: string; customerNom: string }>(
+        list: readonly T[],
+      ): T[] => {
+        const siteScoped =
+          siteResolution.matched.length === 1
+            ? list.filter(
+                (intervention) => intervention.chantierId === siteResolution.matched[0]!.id,
+              )
+            : [...list];
+        const byCustomer = siteScoped.filter((intervention) =>
+          destinationNameTokens(intervention.customerNom).some((word) =>
+            conversationTokens.has(word),
+          ),
+        );
+        const byId = siteScoped.filter(
+          (intervention) =>
+            normalized(intervention.id).length >= 3 &&
+            containsExactTokens(normalized(conversation), normalized(intervention.id)),
+        );
+        return byId.length > 0
           ? byId
           : siteResolution.matched.length === 1 || byCustomer.length === 0
             ? siteScoped
             : byCustomer;
+      };
+      const pool = scope(eligible);
       const target = pool.length === 1 ? pool[0]! : null;
-
-      const gestureLabel =
-        intent === 'commencer_intervention'
-          ? 'démarrer'
-          : intent === 'terminer_intervention'
-            ? 'terminer'
-            : intent === 'faire_signer_intervention'
-              ? 'faire signer'
-              : intent === 'envoyer_fiche_passage'
-                ? 'envoyer la fiche'
-                : 'facturer';
+      // Le geste RÉEL, décidé sur l'état du passage retenu — jamais sur le lexique du tour.
+      const resolution = target ? resolveInterventionGesture(request, target) : null;
+      // Sans passage résolu, le geste nommé est celui que la CONSIGNE demande — jamais celui que
+      // l'intent détecté suggère : c'est ce qui rend l'intent restitué (et donc la télémétrie
+      // des refus) identique entre les branches avec cible et sans cible (finding 7).
+      const gesture: InterventionGesture = resolution?.gesture ?? requestedGesture(request);
+      const gestureLabel = INTERVENTION_GESTURE_LABEL[gesture];
+      const effectiveIntent = INTERVENTION_INTENT_BY_GESTURE[gesture];
 
       if (!target) {
         if (pool.length === 0) {
-          // Rien d'éligible : Bob DIT pourquoi, avec l'état réel — jamais un échec muet.
-          const contractual = all.value.filter(
-            (intervention) =>
-              intent === 'facturer_intervention' && intervention.contractId !== null,
-          );
+          // Rien d'éligible : Bob DIT pourquoi, en citant l'ÉTAT RÉEL des passages qu'il a bien
+          // sous la main — jamais « Aucun passage concerné » quand il y en a un, jamais muet.
+          const candidats = scope(all.value);
           return ok({
             kind: 'answer',
-            intent,
+            intent: effectiveIntent,
             model,
-            plan: ['Vérifier les passages réels'],
+            plan: ['Lire l’état réel des passages'],
             card: {
-              title: 'Aucun passage concerné',
-              body:
-                contractual.length > 0
-                  ? 'Ce passage est une visite contractuelle : il est couvert par la facture annuelle du contrat — il ne se facture pas à part. Rien n’a été modifié.'
-                  : `Aucun passage à ${gestureLabel}${siteResolution.matched.length === 1 ? ` sur le site ${siteResolution.matched[0]!.nom}` : ''} pour l’instant. Rien n’a été modifié.`,
+              title: candidats.length === 0 ? 'Aucun passage concerné' : 'Rien à faire sur ce passage',
+              body: withAside(
+                candidats.length === 0
+                  ? `Aucun passage à ${gestureLabel}${siteResolution.matched.length === 1 ? ` sur le site ${siteResolution.matched[0]!.nom}` : ''} pour l’instant. Rien n’a été modifié.`
+                  : `${candidats
+                      .slice(0, 3)
+                      .map((intervention) =>
+                        explainInterventionBlock(
+                          intervention,
+                          request,
+                          `Le passage « ${intervention.kind} » (${intervention.chantierNom})`,
+                        ),
+                      )
+                      .join('\n')}\nRien n’a été modifié.`,
+              ),
             },
           });
         }
         const options = pool.slice(0, 4);
-        const commandOf = (intervention: { id: string }): string =>
-          intent === 'commencer_intervention'
-            ? `Démarre l'intervention ${intervention.id}`
-            : intent === 'terminer_intervention'
-              ? `Termine l'intervention ${intervention.id}`
-              : intent === 'faire_signer_intervention'
-                ? `Fais signer l'intervention ${intervention.id}`
-                : intent === 'envoyer_fiche_passage'
-                  ? `Envoie la fiche de passage ${intervention.id}`
-                  : `Facture le passage ${intervention.id}`;
+        // Chaque option repart du geste que SON état rend possible, suite comprise : une
+        // désambiguïsation ne perd jamais le geste aval de la consigne composite.
+        const commandOf = (intervention: (typeof options)[number]): string => {
+          const own = resolveInterventionGesture(request, intervention);
+          return interventionCommand(
+            own?.gesture ?? gesture,
+            intervention.id,
+            own?.then ?? null,
+          );
+        };
         return ok({
           kind: 'answer',
-          intent,
+          intent: effectiveIntent,
           model,
           plan: ['Lever l’ambiguïté du passage'],
           card: {
             title: 'Quel passage ?',
-            body: `Plusieurs passages peuvent être ${
-              intent === 'envoyer_fiche_passage' ? 'envoyés' : 'concernés'
-            } — dis-moi lequel. Rien n’a été modifié.`,
+            body: withAside(
+              `Plusieurs passages peuvent être ${
+                gesture === 'send' ? 'envoyés' : 'concernés'
+              } — dis-moi lequel. Rien n’a été modifié.`,
+            ),
           },
           choices: options.map((intervention) => ({
             label: `${intervention.kind} — ${intervention.chantierNom} (${intervention.customerNom})`,
@@ -5753,38 +5928,36 @@ export class BobAgent {
       }
 
       // « fais signer » : le tracé ne se DICTE jamais — Bob ouvre le pad (micro suspendu).
-      if (intent === 'faire_signer_intervention') {
+      // Le geste vient de l'ÉTAT : « c'est terminé, fais signer » sur un passage DÉJÀ terminé
+      // ouvre le pad tout de suite, au lieu de chercher à terminer ce qui l'est déjà.
+      if (gesture === 'sign') {
         return ok({
           kind: 'answer',
-          intent,
+          intent: effectiveIntent,
           model,
           plan: ['Résoudre le passage', 'Ouvrir le pad de signature'],
           card: {
             title: 'Signature sur place',
-            body: `J’ouvre la signature du passage « ${target.kind} » (${target.chantierNom}). Passe le téléphone au client : une signature se trace, elle ne se dicte pas. Valeur probante : signature simple (eIDAS).`,
+            body: withAside(
+              `J’ouvre la signature du passage « ${target.kind} » (${target.chantierNom}). Passe le téléphone au client : une signature se trace, elle ne se dicte pas. Valeur probante : signature simple (eIDAS).`,
+            ),
           },
           navigate: `intervention/${target.id}?action=sign`,
         });
       }
 
-      const toolName =
-        intent === 'commencer_intervention'
-          ? 'commencer_intervention'
-          : intent === 'terminer_intervention'
-            ? 'terminer_intervention'
-            : intent === 'envoyer_fiche_passage'
-              ? 'envoyer_fiche_passage'
-              : 'facturer_intervention';
-      const tool = this.tool(toolName);
+      const tool = this.tool(INTERVENTION_TOOL_BY_GESTURE[gesture]);
       if (!tool) {
         return ok({
           kind: 'answer',
-          intent,
+          intent: effectiveIntent,
           model,
           plan: ['Vérifier la capacité de l’hôte'],
           card: {
             title: 'Geste indisponible',
-            body: `Je ne peux pas ${gestureLabel} ce passage depuis cet appareil. Rien n’a été modifié — passe par la fiche.`,
+            body: withAside(
+              `Je ne peux pas ${gestureLabel} ce passage depuis cet appareil. Rien n’a été modifié — passe par la fiche.`,
+            ),
           },
         });
       }
@@ -5794,71 +5967,69 @@ export class BobAgent {
       // sur une PIÈCE DE PREUVE : l'extraction est bornée par les charnières factuelles DÉJÀ
       // résolues ici (sites et clients des passages réels), jamais gloutonne jusqu'au point.
       const summary =
-        intent === 'terminer_intervention'
+        gesture === 'complete'
           ? extractInterventionSummary(message, {
               siteNames: all.value.map((intervention) => intervention.chantierNom),
               customerNames: all.value.map((intervention) => intervention.customerNom),
             })
           : null;
       const args =
-        intent === 'terminer_intervention' && summary !== null
-          ? { interventionId: target.id, summary }
-          : { interventionId: target.id };
+        summary !== null ? { interventionId: target.id, summary } : { interventionId: target.id };
       const parsed = tool.parse(args);
       if (!parsed.ok) return err(parsed.error);
 
-      // §3.7 — consigne composite « c'est terminé, fais signer » : la complétion se confirme
-      // d'abord (la signature n'est possible QUE depuis `completed`), et Bob ANNONCE la suite
-      // sans jamais la fusionner — le pad s'ouvre après, sur son propre geste.
-      const signAsked =
-        intent === 'terminer_intervention' &&
-        /\b(fais(?:-| )?(?:le |la )?signer|faire signer|signature)\b/i.test(message);
-      // [Revue adversariale 28/07 — finding 5] Même chorégraphie pour « …, et envoie la fiche » :
-      // on TERMINE d'abord (la fiche n'existe pas avant), et Bob ANNONCE l'envoi — sortant, il
-      // gardera SA propre confirmation. Jamais deux gestes fusionnés dans une seule réponse.
-      const sendAsked =
-        intent === 'terminer_intervention' &&
-        /\b(envoie|envoies|envoyer|transmets|transmettre|adresse|adresser)\b/i.test(message) &&
-        /\b(fiche|rapport|compte rendu)\b/i.test(message);
-      // [Vérification finale 29/07] Branche JUMELLE : « c'est terminé, facture ce passage ». Le
-      // passage ne se facture qu'une fois terminé — on TERMINE d'abord, et Bob ANNONCE le
-      // brouillon. Il n'est jamais fusionné : la facturation garde SA propre confirmation.
-      const billAsked =
-        intent === 'terminer_intervention' &&
-        /\b(facture|factures|facturer)\b/i.test(message) &&
-        /\b(ce passage|cette intervention|cette visite|ce d[ée]pannage|le passage|la visite)\b/i.test(
-          message,
-        );
+      // §3.7 — consigne composite : le geste aval que l'ÉTAT laisse en attente (« c'est terminé,
+      // facture ce passage » sur un passage en cours). Il n'est JAMAIS fusionné : Bob l'annonce
+      // ici, et le PROPOSE réellement une fois la mutation confirmée — avec SA propre
+      // confirmation. Une seule source pour l'annonce et pour la proposition : elles ne peuvent
+      // pas diverger, donc la promesse ne peut pas rester sans suite.
+      const chained = resolution?.then ? interventionChainOffer(resolution.then, target.id) : null;
+      // §3.7 — RIEN N'EST JETÉ EN SILENCE : un geste aval COMPRIS mais impossible même après
+      // celui-ci (visite contractuelle, passage déjà facturé) est DIT ici, avec sa raison. Bob
+      // ne propose plus la complétion en taisant la seconde moitié de la consigne (finding 4).
+      const withheldNote = resolution?.withheld
+        ? ` ${explainWithheldDownstream(
+            target,
+            resolution.withheld,
+            `le passage « ${target.kind} » (${target.chantierNom})`,
+          )}`
+        : '';
+      const suite = `${chained?.announcement ?? ''}${withheldNote}${asideNote === '' ? '' : ` ${asideNote}`}`;
       const label =
-        intent === 'commencer_intervention'
+        gesture === 'start'
           ? `Démarrer le passage « ${target.kind} » sur le site ${target.chantierNom}`
-          : intent === 'terminer_intervention'
+          : gesture === 'complete'
             ? `Terminer le passage « ${target.kind} » sur le site ${target.chantierNom}${summary !== null ? ` avec le résumé « ${summary} »` : ''}`
-            : intent === 'envoyer_fiche_passage'
+            : gesture === 'send'
               ? `Envoyer la fiche de passage « ${target.kind} » (${target.chantierNom}) à ${target.customerNom}`
               : `Préparer le brouillon de facture du passage « ${target.kind} » (${target.chantierNom})`;
 
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
           kind: 'proposed',
-          intent,
+          intent: effectiveIntent,
           model,
           plan: ['Résoudre le passage', 'Attendre ta confirmation'],
           card: {
             title:
-              intent === 'envoyer_fiche_passage'
+              gesture === 'send'
                 ? 'Envoi à confirmer'
-                : intent === 'facturer_intervention'
+                : gesture === 'bill'
                   ? 'Brouillon à confirmer'
                   : 'Passage à confirmer',
             body:
-              intent === 'envoyer_fiche_passage'
-                ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti. Je confirme ?`
-                : intent === 'facturer_intervention'
-                  ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé. Je confirme ?`
-                  : `${label}.${signAsked ? ' Ensuite je te passe la signature du client — elle se trace, elle ne se dicte pas.' : ''}${sendAsked ? ' Ensuite je te propose d’envoyer la fiche — l’envoi aura sa PROPRE confirmation, rien ne part sans elle.' : ''}${billAsked ? ' Ensuite je te propose le brouillon de facture — il aura sa PROPRE confirmation, rien n’est émis sans elle.' : ''} Je confirme ?`,
+              gesture === 'send'
+                ? `${label}. Tant que tu n’as pas confirmé, RIEN n’est parti.${suite} Je confirme ?`
+                : gesture === 'bill'
+                  ? `${label}. Ce sera un BROUILLON : rien n’est émis, rien n’est envoyé.${suite} Je confirme ?`
+                  : `${label}.${suite} Je confirme ?`,
           },
-          pending: { tool: tool.name, args, label },
+          pending: {
+            tool: tool.name,
+            args,
+            label,
+            ...(chained ? { chain: chained.offer } : {}),
+          },
           spokenPrompt: buildSpokenConfirmation(label),
         });
       }
@@ -5867,39 +6038,47 @@ export class BobAgent {
       if (!run.ok) {
         // Refus du domaine (fiche verrouillée, visite contractuelle, garde B2C) : VERBATIM.
         const guard = domainGuardCard(run.error);
-        if (guard) return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        if (guard) return ok({ kind: 'answer', intent: effectiveIntent, model, plan: ['Restituer le refus du domaine'], card: guard });
         return err(run.error);
       }
       const output = run.value as { recipient?: unknown; invoiceId?: unknown };
-      const done =
-        intent === 'envoyer_fiche_passage' && typeof output?.recipient === 'string'
+      const done = `${
+        gesture === 'send' && typeof output?.recipient === 'string'
           ? `${label} — c’est parti (destinataire : ${output.recipient}).`
-          : intent === 'facturer_intervention' && typeof output?.invoiceId === 'string'
+          : gesture === 'bill' && typeof output?.invoiceId === 'string'
             ? `${label} — le brouillon est prêt. Relis-le, puis émets-le quand tu veux.`
-            : `${label} — c’est fait.`;
-      return ok({
-        kind: 'done',
-        intent,
-        model,
-        plan: [
-          intent === 'envoyer_fiche_passage'
-            ? 'Archiver puis envoyer la fiche'
-            : intent === 'facturer_intervention'
-              ? 'Préparer le brouillon de facture'
-              : 'Enregistrer le geste sur la fiche',
-        ],
-        card: {
-          title:
-            intent === 'commencer_intervention'
-              ? 'Passage démarré ✓'
-              : intent === 'terminer_intervention'
-                ? 'Passage terminé ✓'
-                : intent === 'envoyer_fiche_passage'
-                  ? 'Fiche envoyée ✓'
-                  : 'Brouillon prêt ✓',
-          body: done,
-        },
-      });
+            : `${label} — c’est fait.`
+      }${withheldNote}${asideNote === '' ? '' : ` ${asideNote}`}`;
+      // Exécution DIRECTE (autonomie haute) : l'enchaînement annoncé est proposé tout de suite —
+      // le geste aval garde SA confirmation, il n'est jamais exécuté dans la foulée.
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: effectiveIntent,
+            model,
+            plan: [
+              gesture === 'send'
+                ? 'Archiver puis envoyer la fiche'
+                : gesture === 'bill'
+                  ? 'Préparer le brouillon de facture'
+                  : 'Enregistrer le geste sur la fiche',
+            ],
+            card: {
+              title:
+                gesture === 'start'
+                  ? 'Passage démarré ✓'
+                  : gesture === 'complete'
+                    ? 'Passage terminé ✓'
+                    : gesture === 'send'
+                      ? 'Fiche envoyée ✓'
+                      : 'Brouillon prêt ✓',
+              body: done,
+            },
+          },
+          chained?.offer,
+        ),
+      );
     }
 
     if (intent === 'envoyer_devis') {
@@ -8987,13 +9166,36 @@ export class BobAgent {
         card: { title: 'Conditions enregistrées ✓', body: `${pending.label} — c’est noté pour les prochaines factures.` },
       });
     }
-    return ok({
-      kind: 'done',
-      intent: intentForTool(pending.tool),
-      model,
-      plan: ['Exécuter l’action confirmée'],
-      card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },
-    });
+    // PR-15 — le passage terminé confirmé mérite sa carte, et l'ENCHAÎNEMENT ANNONCÉ est TENU :
+    // le geste aval (signature, envoi de fiche, brouillon de facture) est réellement PROPOSÉ
+    // ici, avec SA propre confirmation. Sans cela, « ensuite je te propose … » ne serait suivi
+    // de rien — une promesse en l'air à la place d'un enchaînement.
+    if (pending.tool === 'terminer_intervention') {
+      return ok(
+        withAnnouncedChain(
+          {
+            kind: 'done',
+            intent: 'terminer_intervention',
+            model,
+            plan: ['Terminer le passage confirmé'],
+            card: { title: 'Passage terminé ✓', body: `${pending.label} — c’est fait.` },
+          },
+          pending.chain,
+        ),
+      );
+    }
+    return ok(
+      withAnnouncedChain(
+        {
+          kind: 'done',
+          intent: intentForTool(pending.tool),
+          model,
+          plan: ['Exécuter l’action confirmée'],
+          card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },
+        },
+        pending.chain,
+      ),
+    );
   }
 
   private requireEngine(): AgentRuntime {
