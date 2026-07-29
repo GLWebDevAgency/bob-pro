@@ -2,6 +2,12 @@
 
 > Statut : **Proposed**
 > Ambition : une expérience calme, précise, propriétaire et immédiatement compréhensible
+>
+> **Amendement A1 — 2026-07-29 · doctrine « matière Bob »** — § Architecture de profondeur et
+> § Anti-patterns. Source : directive du fondateur du 2026-07-29 ; autorité de matière
+> `packages/tokens/src/index.ts` (`surfaceTint`) + `packages/ui/src/components/bob-surface.tsx`.
+> Les huit principes, la personnalité visuelle, les moments de delight et la définition
+> d'« Apple-grade » sont inchangés.
 
 ## Promesse
 
@@ -73,12 +79,30 @@ range, Bob répond immédiatement. Il ne vient pas de confettis ou de rebonds sy
 
 L'interface comporte trois plans visuels :
 
-1. **Contenu** : cartes, documents, listes et données ; principalement opaques.
-2. **Action** : CTA, sélection, composer, toolbar et contrôles contextuels.
-3. **Navigation** : headers, tab bar, sheets et overlays ; peut utiliser une matière adaptative.
+1. **Contenu** : cartes, documents, listes et données ; opaques.
+2. **Action** : CTA, sélection, composer, toolbar et contrôles contextuels ; opaques.
+3. **Navigation** : headers, tab bar, sheets et overlays ; opaques.
 
-Le verre ou le blur appartiennent aux plans 2 et 3. Les appliquer aux cartes de contenu détruirait
-la hiérarchie et affaiblirait le contraste.
+> Amendé A1 · 2026-07-29 — **doctrine « matière Bob »**. Source : directive du fondateur du
+> 2026-07-29, « ce n'est pas forcément du verre liquide qu'on veut… en gardant NOS couleurs.
+> **Je NE VEUX PAS une UI transparente à la iOS.** »
+
+Les trois plans se distinguent par la **teinte, l'élévation et la bordure**, pas par la
+transparence. La matière de Bob est la **surface teintée opaque** : `surfaceTint` (2 apparences ×
+6 tons × `flat`/`raised`/`border`/`ink`/`inkMuted`, opacités pré-composées en hex) rendue par
+`BobSurface`. Elle vaut pour les trois plans, chrome compris.
+
+Une seule chose peut être floutée : la **retombée de bord**, cette zone non interactive qui dissout
+le contenu qui passe sous un chrome flottant — et son mode par défaut est lui aussi **sans flou**,
+en dégradé de notre couleur de fond. Le verre système (Liquid Glass) n'est pas employé : il impose
+la teinte de l'OS au moment précis où Bob doit affirmer la sienne, et il change d'aspect selon la
+version du système.
+
+Ce que la règle historique voulait protéger reste vrai et se dit mieux : appliquer une matière
+translucide aux cartes de contenu détruirait la hiérarchie et affaiblirait le contraste.
+
+> Rédaction initiale 2026-07-23 (supersédée par A1) : « Le verre ou le blur appartiennent aux
+> plans 2 et 3 » ; le plan Navigation « peut utiliser une matière adaptative ».
 
 ## Hiérarchie type d'un écran
 
@@ -146,6 +170,10 @@ ou justifié.
 ## Anti-patterns
 
 - Glassmorphism sur toutes les cartes.
+- **(ajouté A1 · 2026-07-29)** Verre système (Liquid Glass / `expo-glass-effect`) sur le chrome :
+  il remplace notre teinte par celle de l'OS.
+- **(ajouté A1 · 2026-07-29)** Une matière choisie par capability runtime : deux apparences à
+  concevoir, à mesurer et à certifier pour un seul produit.
 - Parallax décoratif sur les pages métier.
 - Compteurs animés à chaque ouverture d'onglet.
 - Typewriter lettre par lettre pour les réponses Bob.

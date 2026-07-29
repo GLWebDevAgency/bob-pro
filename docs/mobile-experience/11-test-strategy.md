@@ -2,6 +2,12 @@
 
 > Statut : **Proposed**
 > Périmètre : design, motion, navigation, contenu, accessibilité, performance et non-régression
+>
+> **Amendement A6 — 2026-07-29.** Quatre contrôles statiques sont **ajoutés** (interdiction
+> d'`expo-glass-effect`, interdiction d'un `rgba` translucide de surface d'information, `expo-blur`
+> hors de `packages/ui`, non-redéfinition des noms de tokens) et deux tests unitaires de surface
+> sont reformulés. **Aucun test n'est retiré**, la pyramide et la matrice appareils sont
+> inchangées.
 
 ## Principe
 
@@ -24,11 +30,25 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 
 - Garde d'import Clean Architecture.
 - Interdiction des durées/easing inline hors allowlist.
-- Interdiction d'import transitif Reanimated/Haptics/Glass.
+- Interdiction d'import transitif Reanimated/Haptics.
+- **(ajouté A1 · 2026-07-29)** Interdiction **totale** d'importer `expo-glass-effect`, dans tout le
+  dépôt : ce n'est pas une capability à encapsuler, c'est une matière hors doctrine.
+- **(ajouté A1 · 2026-07-29)** Interdiction d'un `rgba(...)` translucide comme fond d'une surface
+  porteuse d'information ; les fonds viennent de `surfaceTint`.
+- **(ajouté A2 · 2026-07-29)** `expo-blur` n'est importé nulle part dans `packages/ui` : il ne peut
+  entrer que par le port `renderBlurLayer`, injecté depuis `apps/mobile`.
+- **(ajouté A5 · 2026-07-29)** Aucun document de ce dossier ne redéfinit un nom déjà exporté par
+  `@bob/tokens` : contrôle des noms `motion.*` / `motionSemantic.*` cités dans les specs contre les
+  exports réels.
 - Route matrix exhaustive par rapport aux fichiers `app`.
 - Chaque clé de statut existe dans les trois personnalités.
 - Chaque motion intent possède une variante reduced.
-- Chaque surface adaptative possède fallback opaque.
+- **(amendé A9 · 2026-07-29)** Chaque surface est **opaque à la source** : son fond vient de
+  `surfaceTint`, jamais d'un `rgba` translucide ni d'une capability runtime. Le contrôle ne cherche
+  plus l'existence d'un fallback — il cherche l'existence d'un chemin **non opaque**, et échoue s'il
+  en trouve un. *Rédaction initiale 2026-07-23 (supersédée) : « Chaque surface adaptative possède
+  fallback opaque » — un test qui, depuis A1, validerait du code mort : une branche de repli
+  qu'aucune préférence ne peut atteindre.*
 - Chaque ID G/V/S/T apparaît dans la matrice de traçabilité.
 - Chaque ID possède exactement une ligne dans le registre de preuves ; `Verified` implique manifest,
   build, owner, reviewers et verdict admissible.
@@ -54,8 +74,10 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 - fond clair/sombre ;
 - modal transparente ;
 - transition route ;
-- reduce transparency ;
-- capability Glass/Blur absente ;
+- **(amendé A1 · 2026-07-29)** reduce transparency : le rendu est **identique** à la référence — la
+  préférence ne doit produire aucune différence de surface ;
+- **(amendé A2 · 2026-07-29)** port `renderBlurLayer` absent : la retombée de bord rend son repli
+  opaque unique, même géométrie et même courbe ;
 - increase contrast.
 
 ### Bob projection

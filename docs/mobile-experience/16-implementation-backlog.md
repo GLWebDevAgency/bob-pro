@@ -3,7 +3,14 @@
 Statut : **Proposed — non autorisé à l'implémentation tant que la gate de publication n'est pas levée**
 Source : audit et spécifications `docs/mobile-experience/`
 Propriétaires pressentis : Produit, Product Design, Mobile, QA, Accessibilité, Plateforme
-Dernière mise à jour : 2026-07-23
+Dernière mise à jour : 2026-07-29
+
+> **Amendement A6 — 2026-07-29.** Les livrables et preuves de sortie de `WP-0303` (tab bar) et
+> `WP-0307` (matière) sont précisés par A1 à A3. **Aucun `WP` n'est ajouté, supprimé, renuméroté ni
+> déplacé d'epic ; aucune gate ni dépendance ne change.** `GATE-NAV-DATA` conserve sa formulation :
+> `WP-0307` reste optionnel — ce qui devient optionnel n'est plus « le verre » mais le **mode
+> flouté** de la retombée de bord, le mode teinté étant livrable sans décision. Voir le
+> [journal des amendements](README.md#journal-des-amendements).
 
 ## 1. Mode d'emploi
 
@@ -74,7 +81,7 @@ relation produit ; une dépendance exécutable cite un `WP` exact ou l'une des g
 | `GATE-PUBLICATION` | WP-0001 | Cap canonique intégré ou rescoping signé ; freeze explicitement levé pour la tranche. | Baseline et spikes, aucun feature runtime. |
 | `GATE-BASELINE` | WP-0001 à WP-0008 | Baselines, inventaires, privacy plan, flags ; D01–D06 résolues sur preuves de décision. Une décision requise rejetée possède une alternative Accepted ; une capability optionnelle rejetée garde son ID, son fallback et une disposition `Rejected` ou `Deferred` signée. | Vague 1. |
 | `GATE-FOUNDATION` | WP-0101 à WP-0105 ; WP-0201 à WP-0210 ; WP-1201 à WP-1205 | Primitives, accessibilité, contenu, runtime et harness vérifiés ; tablette exclue à ce stade. | Navigation/données. |
-| `GATE-NAV-DATA` | `GATE-FOUNDATION` ; WP-0301 à WP-0306 ; WP-0308 ; WP-0401 à WP-0405 | Push/back/tabs/sheets/search/listes/données certifiés. WP-0307 verre reste optionnel. | Bob pilote et écrans quotidiens. |
+| `GATE-NAV-DATA` | `GATE-FOUNDATION` ; WP-0301 à WP-0306 ; WP-0308 ; WP-0401 à WP-0405 | Push/back/tabs/sheets/search/listes/données certifiés. **(corrigé A13 · 2026-07-29)** WP-0307 reste optionnel — et ce qui y est optionnel n'est plus « le verre », hors doctrine depuis A1, mais le **mode flouté** de la retombée de bord, le mode teinté sans flou étant le défaut livrable. | Bob pilote et écrans quotidiens. |
 | `GATE-BOB-PILOT` | `GATE-NAV-DATA` ; WP-0501 à WP-0508 ; WP-0509-01 ; Voice Trace/runtime publication certifiés | Projection, amplitude/fallback, barge-in, overlay, conversation, actions et accessibilité Bob vérifiés. La route legacy S32 reste hors pilote. | WP-0009. |
 | `GATE-PILOT` | WP-0009 | S05 + S01 + scénario borné S04 certifiés, P0/P1 fermés, compréhension retestée. | Migrations écran Vagues 4–6. |
 | `GATE-TABLET` | WP-0106, WP-0301, WP-0406 | Règles compact/large et composition iPad/split view vérifiées. | Certification large layout. |
@@ -138,11 +145,11 @@ E00 est un epic transverse, pas une phase calendaire : `WP-0001` à `WP-0008` s'
 |---|---:|---:|---|---|---|---|
 | WP-0301 | P0 | M | G10, G11, G19 | Inventorier chaque route : push, modal, sheet, full-screen, tab ; back behavior, deep link et layout compact/large. | WP-0003. | Table canonique 32 routes physiques + S33 agrégée, approuvée Product/Mobile. |
 | WP-0302 | P1 | L | G10 | Implémenter transitions de routes natives et continuité spatiale ; fallback OS/version ; aucun shared element sur promesse alpha non maîtrisée. | UX-ADR-002 Accepted, WP-0201, WP-0301. | E2E push/back/swipe/deep link, vidéos objet liste→détail et interruption. |
-| WP-0303 | P1 | L | G11 | Livrer le renderer de tabs retenu par D07 : badges, retap scroll-top, état par onglet, clavier/safe area. | UX-ADR-002 Accepted, D07 Accepted, WP-0301. | Tests cinq tabs, rotation, lecteur d'écran, fallback ; statut d'implémentation ADR mis à jour. |
+| WP-0303 | P1 | L | G11 | Livrer le renderer de tabs retenu par D07 : badges, retap scroll-top, état par onglet, clavier/safe area. **(amendé A3 · 2026-07-29, corrigé A8)** Plus les **six** comportements normatifs de [04 § Comportement normatif de la tab bar](./04-navigation-scroll-surfaces.md#comportement-normatif-de-la-tab-bar) — minimize-on-scroll, highlight glissant, scrub à ticks, retombée de bord, fade-through, **teinte icône/label pilotée par le highlight (double glyphe, opacité `1 − min(|position − index|, 1)`)** — avec **notre** matière (`colors.surface` opaque, rôles `navigation.*`) et sans restyler la `BottomTabBar` existante. **Le sixième n'est pas un raffinement optionnel : c'est l'EFFET nommé par la directive, et `G11` ne ferme pas sans lui.** | UX-ADR-002 Accepted, D07 Accepted, WP-0301. **(A3, précisé A7)** + UX-ADR-001 (mise en service de Reanimated, déclaré mais importé nulle part ; extension de Gesture Handler au chrome) et UX-ADR-006 (`expo-haptics`, seule dépendance absente) Accepted. | Tests cinq tabs, rotation, lecteur d'écran, fallback ; statut d'implémentation ADR mis à jour. **(A3)** + trace `PERF-13`, vidéo de chaque comportement, preuve que le scrub est désactivé sous lecteur d'écran et que le tick suit la préférence système sur les deux OS. **(A8)** + contraste échantillonné le long de l'interpolation de teinte (`navigation.assistantActive` inclus) et capture Reduced Motion sans course de couleur. |
 | WP-0304 | P0 | L | G01, G12 | Créer grand/compact header, sticky subheader et synchronisation barre système au scroll. | WP-0102, WP-0202. | Vidéos scroll lent/rapide/interrompu, pas de saut, flash ou contenu recouvert. |
 | WP-0305 | P1 | L | G07 | Implémenter la Sheet retenue : detents, drag 1:1, velocity, clavier, focus trap, dismissal, contenu scrollable et alternative accessible. | UX-ADR-002 Accepted, dépendance directe acceptée si tierce. | E2E geste/clavier/a11y/iOS/Android, stress test nested scroll. |
 | WP-0306 | P1 | M | G16 | Contrat Search : focus, debounce/cancel, requêtes obsolètes, récents, groupes, clavier, résultats et restauration. | WP-0301, API existante. | E2E complet et traces de rendu/réseau sans spinner pleine page. |
-| WP-0307 | P2 | M | G20 | Introduire blur/verre uniquement si D08 l'accepte, sur chrome utile, avec contraste, Reduce Transparency, fallback opaque et budget GPU ; sinon certifier l'absence de dépendance fonctionnelle au matériau. | UX-ADR-004 Accepted, D08 résolue, WP-0101, WP-0002. | Si Accepted : captures, trace GPU, lisibilité et plateforme ancienne. Si Rejected : audit du fallback opaque et disposition signée de WP/G20. |
+| WP-0307 | P2 | M | G20 | **(amendé A1/A2 · 2026-07-29)** Livrer la **retombée de bord** `ProgressiveBlurBob` : mode teinté sans flou par défaut (valeurs `patterns.bottomTabBar`), port injecté `renderBlurLayer`, repli opaque unique. N'activer le **mode flouté** que si D08 l'accepte, sur fond photographique uniquement, avec contraste et budget GPU tenus. **Aucune introduction de verre système** : `expo-glass-effect` ne sera pas adopté. | UX-ADR-004 Accepted (algorithme A1), D08 résolue, WP-0101, WP-0002. | **(A1/A2)** Contrôle statique zéro import `expo-glass-effect` ; captures Reduce Transparency identiques avant/après. Si le mode flouté est Accepted : trace GPU **sous scroll continu** (médiane et pire run), lisibilité sur fonds extrêmes, plateforme ancienne, repli opaque unique démontré. Si Rejected : audit du mode teinté et disposition signée de WP/G20. |
 | WP-0308 | P0 | M | G10, G11, G16 | Centraliser restauration route/scroll/focus/filtres/onglet, deep links chauds/froids et comportements back. | WP-0301 à WP-0306. | E2E interruption, background, lien externe, session expirée et retour multi-niveaux. |
 
 ## 6. E04 — Densité, listes et visualisation de données

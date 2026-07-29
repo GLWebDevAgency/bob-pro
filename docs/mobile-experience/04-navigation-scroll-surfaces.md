@@ -2,6 +2,20 @@
 
 > Statut : **Proposed**
 > IDs liés : G01, G07, G10, G11, G12, G16, G19, G20
+>
+> **Amendements 2026-07-29** (le corps daté du 2026-07-23 n'est pas réécrit ; chaque passage
+> remplacé reste cité sous « Rédaction initiale ») :
+>
+> - **A1 · doctrine « matière Bob »** — § Matières. Source : directive du fondateur du 2026-07-29,
+>   « Je NE VEUX PAS une UI transparente à la iOS » ; autorité de matière
+>   `packages/tokens/src/index.ts` (`surfaceTint`) + `packages/ui/src/components/bob-surface.tsx`.
+> - **A2 · retombée de bord `ProgressiveBlurBob`** — § Retombée de bord (nouveau). Source :
+>   plan P1 du fondateur `docs/superpowers/plans/beta-fly-services-p1-conception-ecrans.md` §1.3 ;
+>   technique étudiée dans `davidmokos/expo-glass-tabs` → `src/progressive-blur.tsx`.
+> - **A3 · comportement normatif de la tab bar** — § Tabs (exigences communes l. 85 et 91 amendées)
+>   et § Comportement normatif de la tab bar (nouveau). Source : directive du fondateur —
+>   « garder notre design system niveau couleur et identité, mais implémenter la même
+>   FONCTIONNALITÉ, COMPORTEMENT et EFFET que la tab bar de `davidmokos/expo-glass-tabs` ».
 
 ## Objectif
 
@@ -82,13 +96,24 @@ le « ou » avant toute migration.
 ### Exigences communes
 
 - cinq destinations stables ;
-- labels toujours présents et non tronqués au format standard ;
+- **(amendé A3 · 2026-07-29)** les labels sont présents et non tronqués **à l'état de repos de la
+  barre**. La barre **peut se minimiser au scroll** : labels repliés, **tous les onglets restant
+  visibles et atteignables**, cible ≥ 44 pt maintenue. Elle se ré-étend au scroll vers le haut, dès
+  le retour à moins de 24 px du sommet, et à **toute** interaction avec la barre ;
 - sélection perceptible par couleur, forme et état accessible ;
 - retap sur l'onglet actif : retour en haut ou comportement racine défini ;
 - état de navigation conservé par tab ;
 - badge annoncé avec sa signification ;
 - clavier, safe area et rotation testés ;
-- aucune animation slide entre tabs sœurs.
+- **(amendé A3 · 2026-07-29)** les **écrans** frères ne glissent jamais : le passage d'un onglet à
+  l'autre est un **fade-through**. L'**indicateur** de sélection, lui, **voyage** : un highlight
+  unique glisse d'un onglet à l'autre. Ces deux règles ne se contredisent pas — c'est exactement ce
+  que fait la référence normative (`fading-tab-slot.tsx` + `glass-tab-bar.tsx`).
+
+> Rédaction initiale 2026-07-23 (précisée par A3) : « labels toujours présents et non tronqués au
+> format standard » — interdisait littéralement le minimize-on-scroll — et « aucune animation slide
+> entre tabs sœurs » — que la référence **confirme** pour les écrans et **contredit** pour
+> l'indicateur.
 
 ### Options à prototyper
 
@@ -98,6 +123,245 @@ le « ou » avant toute migration.
 
 Le choix final appartient à `UX-ADR-002`. Native Tabs ne doit pas être adopté uniquement pour
 obtenir Liquid Glass ; l'identité, l'accessibilité, la restauration et la maturité API priment.
+
+> Amendé A3 · 2026-07-29 — cette dernière phrase est la seule ligne du dossier déjà conforme à la
+> doctrine « matière Bob ». Elle est **généralisée** : **ni Native Tabs ni aucun composant ne sera
+> adopté POUR obtenir Liquid Glass.** Le comportement, lui, se reprend intégralement — voir
+> ci-dessous.
+
+## Comportement normatif de la tab bar
+
+> Ajouté A3 · 2026-07-29. **Directive du fondateur** : « garder notre design system niveau couleur
+> et identité, mais implémenter la même **FONCTIONNALITÉ, COMPORTEMENT et EFFET** que la tab bar
+> de <https://github.com/davidmokos/expo-glass-tabs> ». C'est le **comportement** qui est demandé,
+> pas la matière.
+>
+> **Source d'autorité de comportement** : `github.com/davidmokos/expo-glass-tabs`
+> (`src/glass-tab-bar.tsx` 438 l., `src/minimize-context.tsx` 88 l., `src/fading-tab-slot.tsx`
+> 93 l., `src/progressive-blur.tsx` 43 l.). Voir [17 — Références](17-references.md#autorités-normatives).
+>
+> **Ligne de partage.** On reprend le COMPORTEMENT. On ne reprend PAS la MATIÈRE.
+
+Chaque comportement ci-dessous précise ce qu'on **reprend** et ce qu'on **abandonne**. Ce qu'on
+abandonne est toujours la même chose : la matière iOS.
+
+> **Décompte normatif (précisé A8 · 2026-07-29).** Ils sont **SIX**, exigés **en bloc** : §§ 1 à 6
+> ci-dessous. La directive nomme trois choses — **FONCTIONNALITÉ, COMPORTEMENT et EFFET** — et le
+> § 6 est le seul qui soit un **EFFET** au sens strict : il ne change ni la fonction ni la
+> topologie, il change ce que l'œil voit pendant que le highlight voyage. C'est précisément le
+> genre de ligne qu'un backlog laisse tomber en dernier ; elle est donc **exigée nommément** dans
+> `G11`, `WP-0303`, `D07` et les critères de `UX-ADR-002`. Livrer cinq comportements sur six
+> **ne satisfait pas** `G11`.
+
+| # | Comportement | Nature | Perdu si non livré |
+| --- | --- | --- | --- |
+| 1 | Minimize-on-scroll | Comportement + fonctionnalité | La signature de la barre |
+| 2 | Highlight glissant | Comportement | La continuité de la sélection |
+| 3 | Scrub à ticks | Fonctionnalité | Un moyen de navigation entier |
+| 4 | Flou de bord (retombée) | Effet | La dissolution du contenu sous le chrome |
+| 5 | Fade-through | Comportement | Le calme du changement d'onglet |
+| 6 | Teinte pilotée par le highlight | **Effet** | La lumière qui **voyage** — la barre redevient un commutateur |
+
+### 1. Minimize-on-scroll — la signature
+
+| Paramètre | Valeur normative | Note |
+| --- | --- | --- |
+| Source de vérité | **un seul** `progress` 0 → 1 partagé (`SharedValue`), plus un `target` qui empêche de relancer le ressort à chaque frame | Le `target` est le détail qui évite le stutter |
+| Déclencheur | worklet de scroll sur le **thread UI**, **jamais** de `setState` par frame | Cohérent avec [10 — Performance](10-performance-observability.md) § Règles d'implémentation |
+| Offset | `y = clamp(contentOffset.y, 0, max(contentSize − layout, 0))` | Le clamp existe pour que le rubber-band d'overscroll ne puisse pas inverser la direction une frame et faire clignoter la barre |
+| Zone morte | `dy > 3` → minimiser ; `dy < −3` → étendre ; entre −3 et +3, rien ne bouge | |
+| Retour haut forcé | `y < 24` → toujours étendue | |
+| Ressort | **380 ms, `dampingRatio` 1** (critique-amorti) | Un ressort, pas un timing : la direction du scroll s'inverse en permanence et un ressort recible en conservant la vélocité. Amorti critique parce qu'il anime de la **layout** |
+| Géométrie | hauteur **58 → 44 pt**, retrait latéral **animé de 0 → 34 pt par côté**, `borderRadius = hauteur / 2` recalculé à chaque frame | La pilule rétrécit dans **les deux** dimensions. Ce retrait ANIMÉ s'ajoute à la marge de safe area (12 pt, § Ce que la référence fait bien) : deux grandeurs distinctes, jamais la même |
+| Item et highlight | hauteur d'item **50 → 35 pt**, hauteur de highlight idem, **animées explicitement** et non déduites du contenu | Une taille dérivée du layout est en retard sur l'animation du thread UI. La hauteur VISIBLE descend sous 44 pt au repli, jamais la CIBLE TACTILE : le débord de retombée (§ Exigences communes) la maintient à ≥ 44 pt — c'est la règle d'accessibilité, et elle prime |
+| Labels | opacité 1 → 0 sur `progress ∈ [0 ; 0,4]` | Le label a disparu bien avant la fin du mouvement |
+| Ré-expansion forcée | à `onStart` du pan, `onEnd` du tap et `onPress` du Pressable | Toute interaction délibérée avec la barre la ré-étend |
+
+**Identité conservée** : la pilule reste `colors.surface` opaque, `radius.cardXl`,
+`controls.cardBorder`, `shadowNative.e2`. **Abandonné** : rien — `minimize-context.tsx` n'importe
+ni `expo-blur`, ni `expo-glass-effect`, ni aucune couleur. C'est du comportement pur, transposable
+tel quel.
+
+### 2. Highlight glissant à ressort interruptible
+
+| Paramètre | Valeur normative |
+| --- | --- |
+| Topologie | **un seul** bloc animé partagé, en absolu dans la capsule — pas un highlight par onglet |
+| Position | `translateX` **transform-only** (GPU, zéro travail de layout par frame) |
+| Géométrie | **calculée** (`largeur d'item = (largeur fenêtre − marges − inset) / nombre d'onglets`), **jamais mesurée par `onLayout`** |
+| Ressort | **420 ms, `dampingRatio` 0,82** — légèrement sous-amorti, micro-rebond de calage sans danger parce que transform-only |
+| Interruptibilité | par construction : un tab-hopping rapide recible en conservant la vélocité |
+| Écrivains | le tap, le relâchement du scrub, et un effet sur le focus |
+| Navigation programmatique | le highlight **voyage aussi** sur un deep link ou une action Bob à la voix — il ne saute pas |
+| Garde | jamais recalé pendant un drag : pendant un scrub, le doigt est propriétaire du highlight |
+
+**Identité conservée** : le highlight est un **aplat opaque** issu de `surfaceTint` (par exemple
+`surfaceTint.light.marine.raised` `#E2E9F2` sur la pilule blanche). **Abandonné** : le
+`rgba(255,255,255,0.14)` de la référence — un voile blanc translucide qui n'existe que parce qu'il
+est posé sur du verre sombre.
+
+### 3. Scrubbing au doigt avec ticks haptiques
+
+| Paramètre | Valeur normative |
+| --- | --- |
+| Reconnaissance | `Race(pan, tap)` sur **toute** la capsule |
+| Seuils du pan | `activeOffsetX ±6 pt` (au-delà, le pan gagne) ; `failOffsetY ±14 pt` (au-delà, le pan échoue et laisse passer le scroll) |
+| Seuils du tap | `maxDistance 16 pt`, `maxDuration 400 ms` — la tolérance par défaut (~2 pt) fait échouer les taps de vrais doigts |
+| Mapping | **1:1 strict, sans ressort pendant le drag** : l'indicateur doit se sentir attaché au doigt |
+| Géométrie | recalculée **live** sur le `progress` d'expansion : elle suit la barre pendant qu'elle s'ouvre |
+| Tick haptique | `selection`, au **franchissement de frontière** d'onglet, jamais un tick par frame |
+| Navigation | **au relâchement seulement** — changer d'écran pendant le scrub ferait sauter le contenu sous le doigt |
+| Fin de geste | recalage au ressort du highlight (§ 2) **puis** navigation ; garde contre la double-navigation quand le pan a échoué (le geste était un tap) |
+
+Le tick correspond exactement à la ligne « Sélection → `selection` » de la table haptique de
+[03 — Motion](03-motion-interaction-system.md) : rien à inventer.
+
+**Supériorités Bob obligatoires, absentes de la référence** :
+
+- le tick respecte la **préférence système** haptique et fonctionne sur **les deux OS** (la
+  référence le garde sous `Platform.OS === 'ios'`, ce qui est un choix de la lib, pas une
+  contrainte) ;
+- le scrub est **désactivé quand un lecteur d'écran est actif** : le détecteur de geste consomme
+  les touches, et sans cette coupure la barre deviendrait un bloc opaque au geste d'exploration
+  VoiceOver/TalkBack. Les `Pressable` reprennent alors la main.
+
+### 4. Flou de bord
+
+Le principe et la géométrie sont repris : zone de dissolution qui déborde d'environ **44 pt**
+au-dessus de la pilule, jamais de bord dur, non interactive, hauteur totale ≈ inset bas + hauteur
+de barre + débord.
+
+**Identité conservée** : c'est notre § Retombée de bord — `patterns.bottomTabBar.fade`, un dégradé
+de notre couleur de fond, **déjà livré** dans `packages/ui/src/components/bottom-tab-bar.tsx`.
+**Abandonné** : toute la matière de la référence — dix `BlurView` iOS empilées **et** un voile noir
+`rgba(0,0,0,.70)` en pied, qui sur notre fond `#EFF2F7` est une inversion complète d'identité.
+
+### 5. Slot d'écran qui s'efface (fade-through)
+
+| Paramètre | Valeur normative |
+| --- | --- |
+| Écran entrant | opacité 0 → 1 et échelle **0,985 → 1** en **280 ms** = `motionSemantic.replace`, courbe `easing.enter` |
+| Écran sortant | **aucune animation** : masqué instantanément — jamais deux écrans animés qui se croisent |
+| Premier rendu | le tout premier écran au lancement n'est pas animé |
+| Reduced Motion | **durée 0**, via `useReduceMotion()` |
+| Respect des options | `lazy`, `unmountOnBlur`, `freezeOnBlur`, `detachInactiveScreens` conservés |
+
+Cette référence **confirme** l'exigence commune : chez elle non plus les écrans frères ne glissent.
+La seule lacune à corriger est qu'elle **n'écoute pas Reduce Motion** ; notre version passe par
+`packages/ui/src/hooks/use-reduce-motion.ts`. La courbe est notre `easing.enter`, pas une bézier
+recopiée inline.
+
+> **Amendé A12 · 2026-07-29 — la durée du fade-through n'est plus un chiffre libre.** Un
+> fade-through est exactement le cas d'usage de `motionSemantic.replace`, que
+> [03 § Livrés — à consommer tels quels](03-motion-interaction-system.md#livrés--à-consommer-tels-quels)
+> désigne mot pour mot : « Fade-through, segment, filtre ». La valeur **livrée** de ce token est
+> **280 ms** — `packages/tokens/src/index.ts` l. 209, gelée par `packages/tokens/src/index.test.ts`
+> l. 98 (`expect(motionSemantic.replace).toBe(280)`) et par
+> `packages/ui/src/components/motion-presence.test.ts` l. 24. Le plan P1 du fondateur
+> ([`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md)
+> §1.4) énonce la même valeur — trois autorités concordantes, aucune ne dit 220. Elle reste sous le
+> plafond « transition fréquente ≤ 300 ms » de [10 — Performance](10-performance-observability.md).
+> Conformément à la [règle d'additivité](03-motion-interaction-system.md#règle-dadditivité), le
+> dossier **consomme** ce token, il ne le revalorise pas.
+>
+> *Rédaction A3 (supersédée) : « 220 ms ». Cette durée n'était adossée à aucun token ; elle
+> coïncide avec `motion.base` (`packages/tokens/src/index.ts` l. 186), qui appartient au registre
+> **historique** réservé aux écrans existants et ne régit pas les destinations sœurs. Le dossier
+> portait donc deux durées différentes — 280 ms en [03](03-motion-interaction-system.md) et
+> 220 ms ici et au [19 — Glossaire](19-glossary.md) — pour une seule et même transition.*
+
+### 6. Teinte icône/label pilotée par le highlight, pas par le focus
+
+Chaque onglet rend **deux glyphes superposés** — inactif dessous, actif par-dessus — et l'opacité
+du glyphe actif vaut `1 − min(|position du highlight − index|, 1)` : un crossfade linéaire sur
+exactement une largeur d'onglet. Le label interpole sa couleur sur la même distance.
+
+Conséquence : la teinte suit **le highlight**, pas le focus de navigation. Pendant un scrub les
+icônes s'allument au passage du doigt ; sur un tap, la lumière **voyage** avec l'indicateur au lieu
+de commuter d'un coup.
+
+**Identité conservée** : les rôles déjà certifiés AA de `bottom-tab-bar.logic.ts` —
+`navigation.active` `#0C2340`, `navigation.inactive` `#5B6B7B`, et la règle Bob propre à l'onglet
+Assistant `navigation.assistantActive` `#4338CA`, **qui doit survivre à l'interpolation** (elle n'a
+aucun équivalent dans la référence). Nos icônes maison prennent déjà une prop `color` : elles se
+prêtent au double rendu sans modification. **Abandonné** : les teintes de chrome sombre de la
+référence, son `fontSize: 9.5` — **(corrigé A13 · 2026-07-29)** notre label d'onglet reste à
+**10 pt**, valeur **livrée** : `font('meta')` (Hanken Grotesk 600) posé puis explicitement ramené
+par `fontSize: 10` dans `packages/ui/src/components/bottom-tab-bar.tsx` l. 94, en paire certifiée
+AA avec les rôles `navigation.*`. On ne la change pas pour ressembler à la référence — et
+SF Symbols (`expo-symbols`, inexistant sur Android).
+
+> *Rédaction A3 (fausse, supersédée par A13) : « notre label reste à 10 pt `font('meta')`, sous
+> peine de passer sous le plancher de lisibilité en plein soleil ». Deux faits faux. **Un**,
+> `font('meta')` ne vaut pas 10 pt : il résout `type.meta` = **12 pt** Hanken Grotesk 600
+> (`packages/tokens/src/index.ts` l. 147) ; le 10 pt vient d'un override explicite du composant, et
+> l'écrire autrement laisserait croire qu'on peut obtenir la taille du label en citant le token
+> seul. **Deux**, aucun « plancher de lisibilité » n'est défini par ce dossier, et le dépôt rend
+> déjà du 9,5 pt (`apps/mobile/src/components/PieceDetailView.tsx` l. 346) : la justification
+> invoquée était contredite par le code qu'elle prétendait protéger. Le motif réel du refus est
+> plus simple et vérifiable — nous avons **notre** valeur livrée et certifiée, la référence n'a pas
+> autorité sur notre typographie ([17 § Ligne de partage](17-references.md#autorités-normatives) :
+> on reprend le comportement, pas la matière).*
+
+**Ce que ce comportement exige en plus (ajouté A8 · 2026-07-29)** — parce qu'il est le seul à
+interpoler une **couleur** et non une géométrie :
+
+| Contrainte | Valeur normative |
+| --- | --- |
+| Contraste en cours d'interpolation | Le rapport de contraste doit rester **AA sur toute la course**, pas seulement aux deux extrémités. Les deux bornes sont certifiées ; le chemin entre elles ne l'est pas automatiquement, en particulier `navigation.assistantActive` `#4338CA` → `navigation.inactive` `#5B6B7B`. À prouver par échantillonnage, pas par raisonnement. |
+| Reduced Motion | La teinte **commute** à l'état final, sans course : `useReduceMotion()`, durée 0, même couleur d'arrivée. Aucune position intermédiaire n'est rendue. |
+| Lecteur d'écran | La teinte est **décorative** : la sélection est portée par `accessibilityState.selected`, jamais par la couleur seule. Scrub désactivé (§ 3), donc la teinte suit alors le focus et non le doigt — c'est le même code, avec un highlight qui ne bouge que par saut. |
+| Coût de rendu | **Deux glyphes par onglet** (dix pour cinq onglets) sont montés en permanence. À mesurer dans `PERF-13`, pas à supposer négligeable. |
+| Interpolation | Sur la **distance au highlight**, jamais sur un booléen de focus : c'est ce qui fait voyager la lumière au lieu de la commuter. |
+
+### Ce que la référence ne fait PAS — et que Bob ne doit pas perdre en la copiant
+
+Le silence de la référence n'est pas une norme. Sur ces cinq points, notre kit est **supérieur** et
+ne doit pas régresser pour lui ressembler :
+
+| Point | Référence | Exigence Bob |
+| --- | --- | --- |
+| Retap sur l'onglet actif | **Non traité** — `router.navigate` sur la route courante est un no-op | Retour en haut (§ Exigences communes) |
+| Clavier | **Aucune gestion** — barre en `position: absolute; bottom: 0` | Comportement défini et testé |
+| Rôles d'accessibilité | **Non posés** par la barre | `accessibilityRole` `tablist`/`tab` + `accessibilityState.selected`, **déjà** dans `bottom-tab-bar.tsx` |
+| Reduce Motion / Reduce Transparency | **Aucune gestion, nulle part** dans le paquet | `useReduceMotion()` obligatoire ; Reduce Transparency sans objet (surfaces opaques) |
+| Badge | Non traité | Annoncé avec sa signification |
+
+Ce que la référence fait bien et qu'on reprend tel quel : le calcul de safe area
+(`max(inset bas − 16, 12)`, marge latérale 12 pt) et la géométrie recalculée à la rotation.
+
+### Bornes de livraison
+
+1. Ces comportements sont livrés par le **nouveau** composant. La `BottomTabBar` existante n'est ni
+   restylée ni supprimée tant que la refonte visuelle est reportée (directive 5 du fondateur).
+2. **(corrigé A7 · 2026-07-29 — vérifié dans `apps/mobile/package.json`)** Les deux bibliothèques du
+   portage n'ont **pas** le même statut, et A3 les avait mises à tort dans le même sac :
+   - `react-native-reanimated` **`4.5.0`** et son runtime `react-native-worklets` **`0.10.0`** sont
+     **déclarés** dans `apps/mobile/package.json` — ajoutés le 2026-07-28 par `251271dc`
+     (« prescrits par SDK 57 »), donc **après** le snapshot `2515ddf3` du dossier — mais
+     **importés par aucun fichier** de `apps/mobile` ni de `packages/ui/src`. Le portage en est le
+     **premier usage réel** : c'est un runtime à mettre en service, pas une dépendance à ajouter.
+   - `react-native-gesture-handler` **`^2.32.0`** est déclaré **et déjà utilisé** : le
+     `GestureHandlerRootView` est monté à la racine (`apps/mobile/app/_layout.tsx`) et deux écrans
+     consomment `Swipeable` (`app/catalogue.tsx`, `src/components/PieceDetailView.tsx`). Le portage
+     **n'introduit pas** cette dépendance ; il étend son usage au **chrome** (`Race(pan, tap)`,
+     § 3), là où elle ne servait qu'au contenu — ce qui déplace le risque du « premier build natif »
+     vers le **conflit de gestes** avec les `Swipeable` existants et le scroll (`R40`).
+   - Reste **une seule** dépendance réellement absente : `expo-haptics`, introuvable dans tous les
+     `package.json` du dépôt.
+
+   Tout le motion actuel reste en `Animated` RN avec `useNativeDriver`. Ces faits relèvent de
+   `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-006` : aucune dépendance n'est ajoutée par le présent
+   document.
+
+   *Rédaction A3 (fausse, supersédée) : « les deux sont installés (4.5.0 et 2.32.0) mais aucun
+   fichier de `apps/mobile` ni de `packages/ui/src` ne les importe ». Gesture Handler est importé
+   depuis `75de6545`, ce que
+   [09 § État de dépendances observé](09-technical-architecture.md#état-de-dépendances-observé)
+   disait déjà correctement — l'amendement recréait donc la contradiction qu'il prétendait lever.*
+3. Aucune valeur ci-dessus n'est un « réglage » d'un token existant : les deux ressorts nécessaires
+   sont des **ajouts** au kit, spécifiés dans
+   [03 — Motion](03-motion-interaction-system.md#ajouts-nécessaires-au-portage-de-la-tab-bar).
 
 ## Headers et StatusBar
 
@@ -186,12 +450,110 @@ Le zoom partagé :
 
 ## Matières
 
-- Opaque pour contenu, cartes, documents et zones de texte longues.
-- Blur/verre possible pour tab bar, toolbar et contrôles flottants.
+> Amendé A1 · 2026-07-29 — doctrine « matière Bob ». Source : directive du fondateur, « ce n'est
+> pas forcément du verre liquide qu'on veut… en gardant NOS couleurs. **Je NE VEUX PAS une UI
+> transparente à la iOS.** » Autorité : `packages/tokens/src/index.ts` (`surfaceTint`) et
+> `packages/ui/src/components/bob-surface.tsx`.
+
+- **Surface teintée opaque partout, chrome compris.** Contenu, cartes, documents, zones de texte
+  longues, **et aussi** tab bar, toolbars et contrôles flottants : `surfaceTint` / `BobSurface`,
+  opacités pré-composées en hex. La `BottomTabBar` livrée en est la référence (pilule
+  `colors.surface` + `controls.cardBorder` + `shadowNative.e2` + `radius.cardXl`).
+- **Seule la RETOMBÉE peut être floutée** : la zone non interactive qui dissout le contenu sous un
+  chrome flottant (`ProgressiveBlurBob`, § Retombée de bord). Jamais le fond d'une surface qui
+  porte une information.
+- **Le verre système n'est pas une option.** Liquid Glass / `expo-glass-effect` impose la teinte du
+  système et varie par OS et par version : il ne peut pas porter l'identité Bob. Sa mention dans ce
+  dossier sert uniquement à dire qu'on ne l'emploie pas.
 - Contraste vérifié sur chaque fond réel, pas sur une maquette unie.
-- Reduce Transparency remplace par une surface opaque sémantique.
-- Android ancien et iOS non compatible utilisent un fallback sans différence fonctionnelle.
-- Le blur n'est pas animé en entrée/sortie en Reduced Motion.
+- **Reduce Transparency n'a rien à remplacer** : les surfaces sont déjà opaques. La préférence ne
+  déclenche aucun chemin de rendu alternatif, donc aucun chemin non testé.
+- Android ancien et iOS non compatible affichent **exactement la même surface** : il n'y a plus de
+  fallback de matière, donc plus de divergence fonctionnelle ou esthétique par OS.
+- Le blur n'est pas animé, ni en entrée/sortie, ni en Reduced Motion, ni jamais.
+
+> Rédaction initiale 2026-07-23 (supersédée par A1) : « Blur/verre possible pour tab bar, toolbar
+> et contrôles flottants » et « Reduce Transparency remplace par une surface opaque sémantique ».
+> Ces deux lignes faisaient du verre la matière de premier choix du chrome et de l'opaque un repli.
+
+## Retombée de bord — `ProgressiveBlurBob`
+
+> Ajouté A2 · 2026-07-29. Source normative : plan P1 du fondateur,
+> [`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md)
+> §1.3. Technique étudiée dans `davidmokos/expo-glass-tabs` → `src/progressive-blur.tsx` (43 l.),
+> présent à l'identique dans `davidmokos/revolut-expo-clone`. Implémentation de référence déjà
+> livrée : `patterns.bottomTabBar` (`packages/tokens/src/index.ts`) rendu par
+> `packages/ui/src/components/bottom-tab-bar.tsx`.
+
+### Ce que c'est
+
+Un chrome flottant (tab bar, barre d'action de fiche, toolbar de visualiseur) laisse le contenu
+défiler **dessous**. Sans traitement, le contenu vient buter sur le bord du chrome et on lit une
+ligne de coupe. La **retombée de bord** est la zone qui dissout ce contenu avant qu'il n'atteigne
+le chrome. Elle est décorative, non interactive (`pointerEvents="none"`), et ne contient jamais de
+texte ni d'information.
+
+### Mode nominal — teinté, sans aucun flou (défaut)
+
+`ProgressiveBlurBob` rend **par défaut** un dégradé de notre couleur de fond, **zéro échantillon de
+flou**, en un seul draw call :
+
+| Paramètre | Valeur normative | Source |
+| --- | --- | --- |
+| Stops de couleur | `['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7']` | `patterns.bottomTabBar.fade` |
+| Positions | `[0, 0.32, 0.6]` — transparent au sommet, 92 % à 32 %, **opaque dès 60 %** | `patterns.bottomTabBar.fadeLocations` |
+| Hauteur totale | `inset de sécurité + hauteur du chrome + 44 pt de débord` | Géométrie de la référence (`BLUR_BLEED`) |
+| Ancre | `bottom` pour un chrome bas, `top` pour un chrome haut ; le point opaque est toujours au bord ancré | Référence |
+| Interaction | `pointerEvents="none"` | Référence |
+| Animation | **jamais animée**, dans aucun mode | Plan P1 §1.3 |
+
+C'est la **même courbe de dissolution** que la référence, mais dans notre couleur, opaque par
+construction, sans une seule ligne de noir, et déjà livrée.
+
+### Mode flouté — option bornée, teintée Bob
+
+Réservé aux fonds où une teinte plate ne suffit pas parce que le fond **est une image** : scan,
+aperçu de document, visualiseur photo. Jamais sur un fond de l'app.
+
+| Paramètre | Valeur normative | Justification |
+| --- | --- | --- |
+| Topologie | N couches **frères** dans un même parent — **jamais imbriquées** | La retombée vient de la géométrie, pas d'un masque |
+| Profil de hauteurs | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %` (tronqué aux N premières) | Profil exact de la référence |
+| Intensité par couche | **uniforme et faible** (référence : 5 pour chacune) | L'intensité effective vient du recouvrement, pas d'une rampe |
+| Intensité effective | ~5 × N au bord ancré → ~5 à l'extrémité, par marches de 5 | Nombre de couches couvrant le pixel à la distance f du bord |
+| N (couches floutées) | **plafonné ; `N = 0` est le défaut** | Chaque couche est un échantillonnage GPU permanent sous scroll |
+| Voile | **teinté Bob** — dégradé de notre couleur de fond, aux mêmes stops que le mode nominal | La référence pose `rgba(0,0,0,.70)`, inversion complète d'identité sur notre fond `#EFF2F7` |
+| Rendu de couche | **port injecté `renderBlurLayer`** (doctrine `PrefsStorage`) | `@bob/ui` ne prend aucune dépendance ; `expo-blur` reste dans `apps/mobile` |
+| Repli | **repli opaque UNIQUE** = le mode nominal | Un seul chemin de secours, donc un seul chemin à tester |
+
+### Quand le repli opaque unique s'applique — sans exception
+
+1. port `renderBlurLayer` absent (cas par défaut de `@bob/ui`) ;
+2. **Reduce Transparency actif** ;
+3. Android en rendu dégradé ;
+4. budget de performance non tenu sur l'appareil médian.
+
+Dans les quatre cas, l'utilisateur voit la **même géométrie, la même courbe et la même couleur** :
+seuls les échantillons de flou disparaissent. Aucune information, aucune cible et aucun contraste
+ne change.
+
+### Pourquoi notre version est meilleure que son modèle
+
+Le `ProgressiveBlur` de la référence n'écoute **aucune** préférence d'accessibilité. Sous Reduce
+Transparency, iOS dégrade chacune de ses dix `UIVisualEffectView` en matériau quasi opaque : la
+retombée progressive s'effondre en **dalle dure** et le voile `rgba(0,0,0,.70)` subsiste par-dessus
+— un bandeau sombre opaque en pied d'écran. Notre version n'a pas ce problème parce qu'elle **n'a
+rien à dégrader** : elle est déjà opaque et déjà dans notre couleur.
+
+### Contradiction levée
+
+Deux documents canoniques posaient « jamais de blur imbriqué »
+([09 — Architecture](09-technical-architecture.md), [10 — Performance](10-performance-observability.md))
+et semblaient donc interdire la technique prescrite par le plan P1. Vérification faite dans le code
+de la référence : les couches sont des **frères** dans un même parent et il n'y a **aucun masque**.
+La règle ne visait pas cette technique ; elle était imprécise. Les deux documents ont été amendés
+pour distinguer le blur imbriqué (interdit), le blur de fond d'une surface d'information (interdit)
+et l'empilement de frères en zone non interactive (autorisé et **borné par un budget**).
 
 ## Adaptation tablette
 
@@ -225,6 +587,11 @@ compositions.
 - [ ] Sheets testées avec clavier, drag, focus et Reduce Motion.
 - [ ] Tabs testées retap, badge, safe area, rotation et restauration.
 - [ ] Scroll ne saute pas pendant collapse ou layout transition.
-- [ ] Matières possèdent fallback opaque et contraste vérifié.
+- [ ] **(amendé A9 · 2026-07-29)** Matières **opaques par construction** (`surfaceTint` /
+      `BobSurface`) et contraste vérifié. Aucune surface n'a de « fallback opaque » : l'opaque n'est
+      plus un repli, c'est le rang normal. Seule la retombée de bord en mode flouté doit démontrer
+      son repli — qui consiste à rendre cette même surface teintée.
+      *Rédaction initiale 2026-07-23 (supersédée) : « Matières possèdent fallback opaque et
+      contraste vérifié ».*
 - [ ] Layouts tablette et split view conservent toutes les actions.
 - [ ] Aucune route ne change de sens métier ou de contrat backend.
