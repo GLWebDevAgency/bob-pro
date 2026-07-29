@@ -2,6 +2,77 @@
 
 > Statut : **Proposed reference set**
 > Sources web vérifiées le 2026-07-22 ; à revalider avant chaque phase
+>
+> **Amendement A4 — 2026-07-29 · autorités normatives**
+> Ajoute la section « Autorités normatives » ci-dessous. Motif : ni les deux références désignées
+> par le fondateur, ni le kit « matière Bob » déjà livré n'étaient cités dans les 5 603 lignes de ce
+> dossier. Les tables existantes (Apple, Material, Expo/RN, Reanimated, accessibilité, voix) ne sont
+> pas réécrites ; deux lignes reçoivent un caveat daté.
+
+## Autorités normatives
+
+> Ajouté A4 · 2026-07-29. Cette section a **deux étages**, et l'étage 2 est **subordonné** à
+> l'étage 1. Elle est référencée depuis [01](01-experience-vision.md),
+> [03](03-motion-interaction-system.md), [04](04-navigation-scroll-surfaces.md),
+> [08](08-accessibility-adaptive-design.md), [09](09-technical-architecture.md),
+> [10](10-performance-observability.md), et depuis
+> [UX-ADR-002](adr/UX-ADR-002-navigation-surfaces.md) et
+> [UX-ADR-004](adr/UX-ADR-004-adaptive-appearance.md).
+
+### Étage 1 — Autorité de MATIÈRE, interne (la plus forte)
+
+Le kit « matière Bob » est **livré, testé et consommé en production P1**. Il ne s'agit pas d'une
+intention de design : c'est du code exécutable avec ses tests.
+
+| Norme exécutable | Chemin | Ce qu'elle fixe |
+| --- | --- | --- |
+| Tokens de surface | `packages/tokens/src/index.ts` (l. 214-257) | `surfaceTint` : 2 apparences × 6 tons × `{flat, raised, border, ink, inkMuted}`, opacités **pré-composées en hex**. Le commentaire du bloc **est** la doctrine : « surfaces TEINTÉES OPAQUES (jamais la transparence iOS) ». |
+| Tokens de motion | `packages/tokens/src/index.ts` (l. 184-212) | `motion` (historique : `fast` 200, `base` 220, `content` 360, `ambient` 1500) et `motionSemantic` (additif : `feedbackIn` 80, `feedbackOut` 160, `exitFast` 140, `enterFast` 180, `enter` 240, `replace` 280, `spring` `{damping 26, stiffness 300, mass 1}`). |
+| Contrastes | `packages/tokens/src/index.test.ts` | `ink`/`inkMuted` certifiés AA sur `flat` **et** `raised`, pour les 12 specs. |
+| Surface | `packages/ui/src/components/bob-surface.tsx` + `.logic.ts` + `.test.ts` | `tone` × `emphasis` (`flat`/`raised`/`floating`), bordure 1 pt `border` ou 2 pt `ink` en Increase Contrast, `shadowNative.e2` en `floating`. Aucune `BlurView`, aucun `rgba`, aucune capability runtime. |
+| Présence et remplacement | `packages/ui/src/components/motion-presence.tsx` + `.logic.ts` | `useRowPresence`, `PresenceRow` (enter 240 + `translateY` 6 → 0, exit 140), `MorphReplace` (replace 280 en 2 × 140, échelle 0,96 → 1, interruptible). Transform/opacity uniquement. |
+| Mouvement réduit | `packages/ui/src/hooks/use-reduce-motion.ts` | Implémentation **unique**. Règle produit inscrite dans le fichier : ambient **coupé**, transitions d'UI à **durée 0**. |
+| Chrome de référence | `packages/ui/src/components/bottom-tab-bar.tsx` + `.logic.ts` + `.test.ts` | Pilule `colors.surface` opaque, `radius.cardXl`, `controls.cardBorder`, `shadowNative.e2` ; rôles `navigation.active` / `navigation.assistantActive` / `navigation.inactive` ; `accessibilityRole` `tablist`/`tab` + `accessibilityState.selected` **déjà posés** ; mode flottant = retombée `patterns.bottomTabBar.fade`. |
+| Consommateurs livrés | `apps/mobile/app/equipements/[chantierId].tsx`, `apps/mobile/app/equipement/[id].tsx` | Preuve d'usage réel : `BobSurface` (tones `warning`/`neutral`/`marine`), `useRowPresence` + `PresenceRow`, `MorphReplace`. |
+| Plan qui a livré le kit | [`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md) §1 | Spécifie `surfaceTint`, `BobSurface`, `ProgressiveBlurBob` (§1.3), `motionSemantic`, et le cadre « 100 % additif ». |
+
+**Phrase d'autorité.** Ce kit est livré, testé et consommé en production P1. **Aucune
+spécification de ce dossier ne peut redéfinir un token existant ni proposer une matière
+concurrente ; elle peut seulement s'y ajouter. En cas de divergence entre un document et le code du
+kit, LE CODE FAIT FOI.**
+
+### Étage 2 — Autorité de COMPORTEMENT, externe (subordonnée à l'étage 1)
+
+| Référence | Rôle désigné par le fondateur | Ce qu'on en prend | Ce qu'on n'en prend pas |
+| --- | --- | --- | --- |
+| [`davidmokos/expo-glass-tabs`](https://github.com/davidmokos/expo-glass-tabs) — npm `expo-glass-tabs` 0.1.1, MIT, David Mokos. 4 fichiers, 662 l. de source : `glass-tab-bar.tsx` (438), `fading-tab-slot.tsx` (93), `minimize-context.tsx` (88), `progressive-blur.tsx` (43). | Référence de **FONCTIONNALITÉ, COMPORTEMENT et EFFET** de la barre du bas. | Les gestes, les seuils, les ressorts, les enchaînements et le sens du mouvement — détaillés dans [04 § Comportement normatif de la tab bar](04-navigation-scroll-surfaces.md#comportement-normatif-de-la-tab-bar). | `expo-glass-effect`, `GlassView`, `glassEffectStyle`, les `rgba` translucides, le voile noir, la palette sombre, SF Symbols (`expo-symbols`), le label à 9,5 pt. |
+| [`davidmokos/revolut-expo-clone`](https://github.com/davidmokos/revolut-expo-clone) | Référence d'**INSPIRATION UI**, notamment son `ProgressiveBlur`. | La technique de retombée par empilement (§ [04 § Retombée de bord](04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob)) ; la discipline de thème centralisé ; le chiffre héros scindé entier/centimes en `tabular-nums` ; le chrome flottant avec padding compensatoire ; `borderCurve: 'continuous'` ; la sobriété du press feedback. | Le fond noir absolu `#000000` et l'identité sombre permanente (Bob est force-light avec une couture navy → clair), `expo-glass-effect` sous toutes ses formes, les hex de catégories système iOS, SF Symbols, l'avatar servi depuis une URL distante. |
+
+**Ligne de partage, mot pour mot.**
+
+> **On reprend le COMPORTEMENT. On ne reprend PAS la MATIÈRE.** Concrètement : on reprend les
+> gestes, les seuils, les ressorts, les enchaînements et le sens du mouvement ; on ne reprend ni
+> `expo-glass-effect`, ni `GlassView`, ni `glassEffectStyle`, ni les `rgba` translucides, ni le
+> voile noir, ni la palette sombre, ni les SF Symbols.
+
+**Note de fait, utile aux relecteurs.** Les 4 fichiers de `src/lib/glass-tab-bar/` du clone Revolut
+sont une copie **octet pour octet** de `expo-glass-tabs` (`diff` = 0 sur les quatre). Il n'y a donc
+qu'**une** référence de comportement ; le clone n'en est que la démonstration. Ne pas les traiter
+comme deux sources indépendantes.
+
+**Ce que la référence NE fait PAS.** Son silence n'est pas une norme. Aucun builder ne doit prendre
+ces absences pour des décisions :
+
+| Sujet | État dans la référence |
+| --- | --- |
+| Reduce Motion | Aucune gestion, nulle part dans le paquet. |
+| Reduce Transparency | Aucune gestion ; `progressive-blur.tsx` ne teste rien. |
+| Clavier | Aucune gestion : barre en `position: absolute; bottom: 0`, sans évitement. |
+| Retap sur l'onglet actif | Non traité : `router.navigate` sur la route courante est un no-op, donc pas de « retour en haut ». |
+| Rôles d'accessibilité | La barre ne pose ni `accessibilityRole="tablist"/"tab"` ; le détecteur de geste qui consomme les touches est un risque VoiceOver non traité. |
+
+Sur ces cinq points, **notre kit est supérieur à la référence** et ne doit pas régresser pour lui
+ressembler.
 
 ## Cap de publication canonique intégré
 
@@ -57,7 +128,7 @@ le rescoping explicite du feature freeze.
 | [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views) | Geste direct, chrome lié au scroll et absence de scroll-jacking. |
 | [Sheets](https://developer.apple.com/design/human-interface-guidelines/sheets) | Tâche courte, dismissal évident et modalité adaptée. |
 | [Generative AI](https://developer.apple.com/design/human-interface-guidelines/generative-ai) | États spécifiques et vrais, contrôle utilisateur, erreur et prochaine action claires. |
-| [WWDC 2025 — Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/) | Morph de la couche fonctionnelle, usage parcimonieux et adaptation système. |
+| [WWDC 2025 — Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/) | Morph de la couche fonctionnelle, usage parcimonieux et adaptation système. **(caveat A4 · 2026-07-29)** Référence de **principe** uniquement : le matériau lui-même n'est pas employé par Bob, car il impose la teinte du système. Voir [UX-ADR-004 § Algorithme de surface](adr/UX-ADR-004-adaptive-appearance.md). |
 | [WWDC 2024 — Zoom transitions](https://developer.apple.com/videos/play/wwdc2024/10145/) | Continuité spatiale objet → destination. |
 | [WWDC 2018 — Fluid interfaces](https://developer.apple.com/videos/play/wwdc2018/803/) | Interfaces réactives, dynamiques, interruptibles et redirigeables. |
 | [Apple Design Awards 2026](https://www.apple.com/newsroom/2026/06/apple-reveals-winners-of-the-2026-apple-design-awards/) | Barre qualitative pour interaction, inclusivité, innovation et craft. |
@@ -86,8 +157,8 @@ application générique Material.
 | [Zoom transition](https://docs.expo.dev/router/advanced/zoom-transition/) | Carte → détail sur iOS compatible. | iOS/versionné, alpha ; jamais sans fallback. |
 | [Stack toolbar](https://docs.expo.dev/router/advanced/stack-toolbar/) | Menus et actions de header natifs. | Support par plateforme à vérifier. |
 | [Expo Haptics](https://docs.expo.dev/versions/latest/sdk/haptics/) | Sélection, impact et notifications sémantiques. | Disponibilité et réglages système. |
-| [GlassEffect](https://docs.expo.dev/versions/latest/sdk/glass-effect/) | Matière de chrome sur iOS compatible. | Fallback View, Reduce Transparency et disponibilité runtime. |
-| [BlurView](https://docs.expo.dev/versions/latest/sdk/blur-view/) | Chrome flottant sur plateformes compatibles. | Coût GPU et limites Android selon API. |
+| [GlassEffect](https://docs.expo.dev/versions/latest/sdk/glass-effect/) | **(amendé A4 · 2026-07-29)** Aucun. **Ne sera pas adopté** : hors doctrine « matière Bob ». | Conservé dans cette bibliographie pour tracer la décision de non-adoption, pas comme candidat. |
+| [BlurView](https://docs.expo.dev/versions/latest/sdk/blur-view/) | **(amendé A4 · 2026-07-29)** Uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, en retombée de bord sur fond photographique. | Coût GPU et limites Android selon API ; jamais importé par `packages/ui` ; le défaut produit reste sans flou. |
 | [React Native Performance](https://reactnative.dev/docs/performance.html) | Budget frame et tests en release. | Ne jamais profiler uniquement en dev. |
 | [AccessibilityInfo](https://reactnative.dev/docs/accessibilityinfo) | Reduce Motion, Reduce Transparency et préférence de crossfade. | Matrice de support plateforme. |
 
