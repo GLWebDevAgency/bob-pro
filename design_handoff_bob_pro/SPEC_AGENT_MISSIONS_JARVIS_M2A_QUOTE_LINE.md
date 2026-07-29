@@ -165,6 +165,30 @@ Contraintes :
 La V2 remplace la V1 uniquement quand la capability M2-A est admise. Elle accepte plusieurs faits
 dans un tour afin que l'utilisateur ne répète pas sa phrase après navigation.
 
+### 6.1 Négociation et isolement N/N-1
+
+La version de frame sémantique ne doit jamais fuiter par la capability V1 actuelle. M2-A-1 pose
+donc le support serveur d'un protocole AgentMission `2`, additif au protocole `1` :
+
+- un client V1 continue de demander `agentMissionProtocolVersion=1`, reçoit une capability
+  `bam1_*` et ne peut lire ou muter que les phases M1-C ;
+- un client M2-A demande explicitement `agentMissionProtocolVersion=2` et ne peut recevoir une
+  capability `bam2_*` que si le master
+  `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true` **et** le release flag
+  `bob.agent_missions.quote.m2a` est activé pour cet utilisateur ;
+- le protocole demandé, le préfixe de capability, le binding durable de lease et la preuve portée
+  jusqu'à l'UoW doivent être identiques ; toute divergence échoue fermée ;
+- les endpoints M2-A et les nouvelles phases refusent une preuve V1 avant toute lecture métier ;
+- les endpoints et codecs V1 restent de forme exacte. Une mission déjà en phase M2-A n'est jamais
+  projetée dans un codec V1 : l'ancien client reçoit une erreur explicite de mise à niveau et
+  aucune autorité d'écriture ;
+- l'application mobile publiée continue à demander V1 pendant M2-A-1/M2-A-2. Le basculement de sa
+  négociation vers V2, sa projection et les preuves device appartiennent à M2-A-3.
+
+Le master M2-A vaut `false` dans tous les environnements à l'atterrissage. Il est invalide au boot
+si le master V1 et le keyring AgentMission ne sont pas eux-mêmes complets. Aucune « tolérance » ne
+rabaisse silencieusement une demande V2 vers V1.
+
 ```ts
 interface QuoteCreationSemanticFrameV2 {
   readonly schema: 'bob.semantic.quote-creation';
@@ -317,6 +341,12 @@ interface AgentMissionQuoteLineWork {
   readonly housingOlderThan2y: boolean | null;
   readonly energyRenovation: boolean | null;
   readonly requiredFact: QuoteLineRequiredFact | null;
+  /**
+   * Axe orthogonal à `state` : distingue une recherche encore due d'une décision explicite de
+   * ligne libre. Sans ce marqueur, une continuation rejouerait indéfiniment la recherche après
+   * le choix « créer une ligne libre ».
+   */
+  readonly catalogueResolution: 'pending' | 'free' | 'selected';
   readonly catalogueItemId: string | null;
   readonly expectedCatalogueRevision: number | null;
   readonly proposalId: string | null;
@@ -334,6 +364,16 @@ Contraintes SQL :
 - `revision` et `ordinal` entiers positifs bornés ;
 - checks de cohérence par état : choix catalogue, question ou proposition ne peuvent pas
   coexister de façon contradictoire ;
+- `catalogueResolution='selected'` si et seulement si la fence
+  `(catalogueItemId, expectedCatalogueRevision)` est complète ; `pending|free` exigent les deux
+  valeurs nulles ;
+- `awaiting_catalogue_choice` exige `catalogueResolution='pending'` ;
+- `awaiting_details + pending` n'est admis que pour
+  `requiredFact='service_reference'` : toute autre question exige que la recherche ait déjà
+  convergé vers `free` ou `selected` ;
+- une correction explicite de `serviceReference` remet la résolution à `pending`, efface la
+  fence catalogue et toute proposition ; un item supprimé ou révisé produit le même retour
+  explicite avant une nouvelle recherche ;
 - prix en centimes, quantité en millièmes, taux dans l'union fermée existante ;
 - RLS activée et forcée, policies owner/tenant, rôle runtime non-propriétaire ;
 - toute écriture exige aussi
@@ -432,6 +472,18 @@ Politique :
 - item supprimé/modifié : invalider la décision ou proposition, relancer la résolution et
   expliquer honnêtement ; jamais copier une ancienne valeur silencieusement.
 
+Le résultat courant est persisté sur le work item :
+
+- avant recherche et pendant un choix présenté : `catalogueResolution='pending'` ;
+- zéro résultat ou choix explicite « créer une ligne libre » :
+  `catalogueResolution='free'` ;
+- choix d'une entrée réelle relue à la bonne révision :
+  `catalogueResolution='selected'` avec sa fence.
+
+Le journal conserve la provenance (« zéro résultat » ou « choix libre »), mais il n'est jamais
+utilisé comme substitut de l'état courant. Un événement passé ne constitue pas une fence
+transactionnelle et ne doit pas être reparcouru pour deviner si une recherche reste due.
+
 Une entrée catalogue complète seulement les faits absents. Le libellé, la catégorie et l'unité
 catalogue sont les valeurs proposées de référence. Un prix ou une quantité explicitement dits par
 l'utilisateur ne sont jamais écrasés par le catalogue : le diff affiche l'écart. Une contradiction
@@ -476,6 +528,28 @@ awaiting_line_confirmation
 Un tour peut avancer automatiquement à travers toutes les lectures/résolutions sans décision. Il
 s'arrête au premier choix réel, champ obligatoire manquant ou confirmation. Une seule décision est
 active à la fois.
+
+### 9.1 Frontière atomique M2-A-1 → M2-A-2
+
+M2-A-1 sait consommer le choix catalogue sans fabriquer une question, une TVA ou une proposition
+qui appartiennent à M2-A-2 :
+
+1. il revalide décision, brouillon, tête de file et item catalogue sous les verrous prévus ;
+2. il écrit seulement `catalogueResolution` et, pour `selected`, la fence
+   `(catalogueItemId, expectedCatalogueRevision)` ; il ne copie encore aucun libellé, prix, unité,
+   catégorie ou taux catalogue ;
+3. il remet le work item en `queued`, `requiredFact=null`, `proposal*=null` ;
+4. il place la mission en `awaiting_lines`, consomme la décision et émet
+   `catalogue_choice_selected` ;
+5. la continuation M2-A-2 relit ensuite ce work item et reste l'unique propriétaire du merge des
+   faits utilisateur/catalogue, des contradictions, de la TVA, des questions et de la
+   proposition.
+
+Ce `queued` est une frontière système transitoire, jamais un état présenté comme terminal à
+l'utilisateur. Tant que M2-A-2 n'est pas livré, le flag M2-A reste OFF. À l'activation finale, la
+commande de choix n'acquitte sa réponse canonique qu'après la continuation jusqu'au prochain état
+stable. Cette frontière évite les deux mensonges possibles : inventer un `requiredFact` déjà connu
+ou produire une proposition financière incomplète.
 
 ## 10. Décisions et proposition scellées
 
@@ -634,6 +708,17 @@ propre révision et son propre événement, résout la nouvelle tête et converg
 ce terminal. Un replay relit les deux reçus ; une panne de la continuation ne révoque pas la ligne
 déjà confirmée et reste retryable.
 
+Une continuation dérivée hérite exactement de la forme d'autorité de sa commande parente :
+
+- parent vocal : `realtimeSessionId` et contexte appliqué présents, `turnId` absent car le
+  `commandId` système est dérivé ;
+- parent tactile autonome : les champs session/contexte sont tous null ;
+- toute forme partielle ou toute fabrication d'un ancien binding est interdite.
+
+Cette union fermée préserve la parité tactile : une continuation n'exige jamais une session
+Realtime inexistante et ne réutilise jamais une session terminée pour donner artificiellement de
+l'autorité à un tap.
+
 ## 14. API, mobile et réponse canonique
 
 Les endpoints mission existants restent la seule surface. Les commandes additives sont
@@ -706,7 +791,9 @@ Les unions JSON et CHECK PostgreSQL étant fermés, le rollout est append-only :
 1. **M2-A-0 / expand** : table de work items, RLS/FK/indexes, correction du CHECK catalogue
    `subscription`, ports et parseurs purs, sans writer de feature ;
 2. **M2-A-1 / expand mission** : nouvelles phases, décisions et événements dans des contraintes
-   `NOT VALID`, sans retirer les contraintes actives ;
+   `NOT VALID`, ajout expand-safe de
+   `catalogueResolution TEXT NOT NULL DEFAULT 'pending'` et élargissement de la cohérence
+   `queued`, sans retirer les contraintes actives ;
 3. **validate** : validation séparée ;
 4. **cutover** : flag OFF, writers N-1 drainés, remplacement atomique des anciennes contraintes ;
 5. déploiement writer N ;
@@ -728,12 +815,12 @@ lire. Il ne reçoit jamais une capability M2-A et ne peut pas ouvrir la mission 
 
 ### 15.1 Trains de livraison — une seule PR active à la fois
 
-| Train | Résultat atomique | Statut maximal avant la fin |
-|---|---|---|
-| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` |
-| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` |
-| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `implemented` |
-| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `certified` |
+| Train | Résultat atomique | Statut actuel | Promotion maximale du train |
+|---|---|---|---|
+| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` | `implemented` |
+| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `specified` | `implemented` |
+| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `specified` | `implemented` |
+| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `specified` | `certified` |
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
@@ -777,6 +864,33 @@ vocaux bruts avant activation. L'absence de cette certification interdit de prom
 `certified`, sans bloquer les tests locaux M2-A.
 
 ## 17. Critères d'acceptation binaires
+
+### 17.0 Gate du train M2-A-1
+
+M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
+
+- [ ] le serveur négocie V1 et V2 sans fallback, une capability V1 ne peut ni lire ni muter une
+      phase M2-A et le mobile courant continue à demander V1 ;
+- [ ] la frame V2 est fermée à chaque profondeur, bornée à 20 opérations/lignes et 32 KiB, sans
+      historique textuel Bob ni donnée catalogue/client projetée vers le LLM ;
+- [ ] les décimaux sont convertis par arithmétique exacte de chaînes/entiers ; aucune conversion
+      flottante, troncature d'unité ou multiplication/arrondi caché ;
+- [ ] `start`, résolution client et choix ordinal stagent toutes les lignes normalisées ordonnées
+      dans la même UoW que leur événement utilisateur, avec un fingerprint unique et un replay
+      sans second insert ;
+- [ ] la recherche catalogue 0/1/2..5/≥6 est tenantée, stable, limitée à six lectures, verrouille
+      les lignes présentées et prouve son plan à volumétrie multi-tenant ;
+- [ ] une décision catalogue scelle draft, tête de file, work revision, candidats et révisions ;
+      voix et API choisissent le même `choiceId` ;
+- [ ] zéro résultat/ligne libre écrit `catalogueResolution='free'`, un item réel relu écrit
+      `selected`, puis la frontière retourne `queued` sans copier de valeur catalogue et sans
+      créer de `requiredFact`, TVA, diff ou proposition ;
+- [ ] annulation et expiration suppriment tous les work items dans leur transaction ; les writers
+      et readers N-1 restent valides après expand, validate et cutover ;
+- [ ] les contraintes M1-C historiques restent byte-for-byte inchangées et sont figées avant que
+      le générateur M2-A-1 soit introduit ;
+- [ ] core, AI, API, client, migrations, PostgreSQL réel, RLS/anti-IDOR, typecheck, lint, build et
+      reviews adversariales sont verts depuis un checkout propre.
 
 ### Compréhension et contexte
 
