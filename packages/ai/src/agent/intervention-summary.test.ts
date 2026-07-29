@@ -231,6 +231,26 @@ describe('§3.7 — « note » NOM COMMUN n’ouvre plus de résumé (faux posit
     expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
   });
 
+  /**
+   * [Revue de vérification 29/07 — finding 6] Le TIRET avait été mis au même rang que le
+   * deux-points : il suffisait à passer outre la règle du déterminant, et « cette note - à
+   * archiver » redevenait un faux positif d'amorce — un fragment MUTILÉ sur une pièce de preuve.
+   * Seul le deux-points est un geste de dictée ; le tiret ponctue aussi bien une apposition.
+   */
+  it('le TIRET ne dispense plus de la règle du déterminant (« cette note - à archiver » est muet)', () => {
+    const muets = [
+      'cette note - à archiver',
+      'cette note — à archiver',
+      'la note – à ranger dans le dossier',
+      'une note - pour le client',
+    ];
+    const echecs = muets.flatMap((phrase) => {
+      const resume = extractInterventionSummary(phrase, { siteNames: ['Docks Rouen'] });
+      return resume === null ? [] : [`« ${phrase} » → « ${resume} » (attendu : silence)`];
+    });
+    expect(echecs.length === 0 ? '' : echecs.join('\n')).toBe('');
+  });
+
   it('NON-RÉGRESSION : les amorces légitimes écrivent toujours le segment utile', () => {
     const legitimes: readonly [string, string][] = [
       ['c’est terminé, note-le : joint refait', 'joint refait'],

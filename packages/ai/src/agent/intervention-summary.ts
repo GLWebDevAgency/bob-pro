@@ -77,6 +77,18 @@ const DETERMINANT_AVANT_NOTE =
   /\b(?:un|une|le|la|les|de|du|des|ma|ta|sa|mes|tes|ses|nos|vos|notre|votre|leur|leurs|ce|cet|cette|ces|aucune|quelques?|petite|grande|meme|autre)\s+$/;
 
 /**
+ * [Revue de vérification 29/07 — le TIRET n'est PAS un geste de dictée] Le DEUX-POINTS, lui, en
+ * est un : « petite note : joint refait » et « une note : joint refait » RÉSUMENT, et les refuser
+ * rendait `null` là où « joint refait » devait partir sur la fiche (régression mesurée en A/B).
+ * Le TIRET, en revanche, ponctue aussi bien une APPOSITION sur un objet : « cette note - à
+ * archiver » n'a jamais résumé un passage, et le laisser passer outre la règle du déterminant
+ * remettait un fragment MUTILÉ sur une pièce de preuve. Seul le deux-points dispense donc de la
+ * règle ; le tiret retombe sous elle, ce qui laisse intact « note - filtre changé » (aucun
+ * déterminant devant « note ») et rend « cette note - à archiver » muet.
+ */
+const SEPARATEUR_DE_DICTEE = /:/;
+
+/**
  * Une amorce NUE (« note », « résumé ») n'ouvre un résumé que si la dictée la PONCTUE — sinon
  * ce n'est qu'un mot de la phrase, et le segment ouvert derrière lui écrivait un fragment
  * MUTILÉ sur la pièce de preuve (« prends note du numéro de série 4589 » → « du numéro de
@@ -85,7 +97,9 @@ const DETERMINANT_AVANT_NOTE =
 function amorceOuvreUnResume(folded: string, match: RegExpExecArray): boolean {
   const mot = match[1] ?? '';
   if (AMORCE_PRONOMINALE.test(mot)) return true;
-  if ((match[2] ?? '').length === 0) return false;
+  const separateur = match[2] ?? '';
+  if (separateur.length === 0) return false;
+  if (SEPARATEUR_DE_DICTEE.test(separateur)) return true;
   return !(mot.startsWith('note') && DETERMINANT_AVANT_NOTE.test(folded.slice(0, match.index)));
 }
 
