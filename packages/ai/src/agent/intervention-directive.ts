@@ -70,6 +70,21 @@ import {
  * │  par un test qui le nomme (`intervention-directive.test.ts`) : visible et mesurable,      │
  * │  jamais découvert par surprise.                                                           │
  * └──────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ * ┌─ IMPRÉCISIONS RÉSIDUELLES ASSUMÉES — même chantier, même raison ─────────────────────────┐
+ * │  Les motifs ci-dessous reconnaissent des tournures, pas du sens : quelques formes leur    │
+ * │  échappent encore, mesurées et laissées telles quelles après huit passes. « Envoie la     │
+ * │  fiche TECHNIQUE » est lu comme une fiche de passage (le qualificatif adjectival n'est    │
+ * │  pas borné, seul le complément en « de/du/des » l'est) ; « … au client qui a PAYÉ » perd  │
+ * │  le geste (accents repliés, « paye » rejoint le lexique des pièces sociales) ; « facture  │
+ * │  le passage à Carrefour » perd le sien (un nom propre nu après « à » est pris pour un nom │
+ * │  composé, comme « passage à niveau ») ; « la fiche du passage à niveau » n'applique pas   │
+ * │  cette même règle. AUCUNE de ces formes ne produit une donnée fausse ni une mutation      │
+ * │  silencieuse : au pire un geste n'est pas capté (l'artisan reformule), au mieux il est    │
+ * │  proposé et TOUTE mutation reste confirmée. Chaque règle ajoutée pour les fermer en a     │
+ * │  ouvert d'autres — c'est la limite d'une analyse lexicale, pas un défaut d'écriture. Le   │
+ * │  remède est le même chantier : ces consignes appartiennent au chemin LLM.                 │
+ * └──────────────────────────────────────────────────────────────────────────────────────────┘
  */
 
 /** Geste AVAL d'une consigne composite — ce que l'artisan enchaîne après la fin du passage. */

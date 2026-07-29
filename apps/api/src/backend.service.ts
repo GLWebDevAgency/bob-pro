@@ -338,7 +338,7 @@ import {
   CONTRACT_LIFECYCLE_TOOLS,
   intentForTool,
   // PR-15/16 — parité des hôtes : l'enchaînement ANNONCÉ est tenu par le chemin serveur comme
-  // par BobAgent.confirm et LocalBobClient.confirmBob (une seule fonction pour les trois).
+  // par BobAgent.confirm et par le client local (confirmBob) — une seule fonction pour les trois.
   withAnnouncedChain,
   type AgentChainOffer,
   redactPII,
@@ -5963,7 +5963,7 @@ export class BackendService {
           {
             kind: 'done',
             // PARITÉ : l'intent reflète l'OUTIL confirmé, comme BobAgent.confirm et
-            // LocalBobClient.confirmBob — jamais figé sur `unknown`, sinon la télémétrie des
+            // le client local (confirmBob) — jamais figé sur `unknown`, sinon la télémétrie des
             // confirmations serveur (donc de la production) ne dit rien de ce qui a été fait.
             intent: intentForTool(planned[0]!.tool),
             model: 'agent-runtime',
