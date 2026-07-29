@@ -429,12 +429,13 @@ test('le diagnostic PostgreSQL ne conserve que SQLSTATE et autorité non-PII', (
   const summary = summarizeK2PostgresFailure(`
 ERROR:  23514: new row for relation "agent_missions" violates check constraint "agent_missions_kind_check"
 DETAIL:  Failing row contains (company-secret, owner-secret).
+LINE 42: INSERT INTO public.agent_missions
 CONSTRAINT NAME:  agent_missions_kind_check
 LOCATION:  ExecConstraints, execMain.c:2094
   `);
   assert.equal(
     summary,
-    'sqlstate=23514,constraint=agent_missions_kind_check',
+    'sqlstate=23514,line=42,constraint=agent_missions_kind_check',
   );
   assert.doesNotMatch(summary, /company-secret|owner-secret/u);
   assert.equal(

@@ -661,12 +661,14 @@ export function summarizeK2PostgresFailure(stderr) {
     /(?:ERROR|FATAL):\s+([0-9A-Z]{5}):/u.exec(text)?.[1] ?? 'unknown';
   const constraint =
     /CONSTRAINT NAME:\s+([A-Za-z_][A-Za-z0-9_]{0,127})/u.exec(text)?.[1];
+  const sourceLine = /(?:^|\n)LINE\s+([1-9][0-9]{0,8}):/u.exec(text)?.[1];
   const authority =
     /\b(AGENT_MISSION_[A-Z0-9_:.-]{1,200})\b/u.exec(
       text,
     )?.[1];
   return [
     `sqlstate=${sqlState}`,
+    ...(sourceLine ? [`line=${sourceLine}`] : []),
     ...(constraint ? [`constraint=${constraint}`] : []),
     ...(authority ? [`authority=${authority}`] : []),
   ].join(',');
