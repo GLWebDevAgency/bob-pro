@@ -2,6 +2,12 @@
 
 > Statut : **Proposed — non autorisée à implémenter tant que la gate de publication n'est pas levée**
 > Unité : cycle de delivery calibré par l'équipe, pas promesse calendaire
+>
+> **Amendement A6 — 2026-07-29.** Un pilote technique de la Vague 2 est reformulé par A1 (le verre
+> n'est plus une matière à replier). **L'ordre des vagues, les gates, les critères de sortie et les
+> scénarios de capacité sont inchangés** : aucun amendement du 2026-07-29 n'avance ni ne retarde
+> une vague. La refonte visuelle reste reportée ; les nouveaux écrans anticipent avec le kit livré,
+> aucun écran existant n'est restylé.
 
 Cette roadmap fixe l'ordre et les gates. Le périmètre exact des 77 exigences se lit dans la
 [matrice de traçabilité](./15-traceability-matrix.md), le travail exécutable dans le
@@ -162,7 +168,9 @@ Pilotes techniques obligatoires :
 3. une tab avec retap scroll-to-top ;
 4. une longue liste avec insertion/suppression ;
 5. un changement de montant exact et accessible ;
-6. un fallback sans verre, zoom ni haptique.
+6. **(amendé A1 · 2026-07-29)** un fallback sans zoom ni haptique. Le verre est retiré de ce
+   pilote : il n'y a plus de matière à replier, la surface étant teintée et opaque par
+   construction. Ce qui se pilote à sa place est le **repli opaque unique** de la retombée de bord.
 
 Gate d'autorité `GATE-NAV-DATA` : aucune migration des écrans transactionnels avant preuve que
 navigation, clavier, deep links et performance ne régressent pas.

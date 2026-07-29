@@ -2,6 +2,11 @@
 
 > Statut du registre : **Proposed**
 > Portée : décisions préparatoires du programme mobile experience
+>
+> **Amendement A6 — 2026-07-29.** Les lignes D07 et D08 sont amendées pour refléter A1 à A3
+> (doctrine « matière Bob », retombée `ProgressiveBlurBob`, comportement de la tab bar). Le cycle
+> de décision, les deux axes de statut, les owners et les cibles sont **inchangés** ; aucune
+> décision ne passe de statut. Voir le [journal des amendements](../README.md#journal-des-amendements).
 
 Ces ADR locaux évitent d'entrer en collision avec les ADR produit/runtime actifs dans `docs/adr`.
 Ils peuvent être promus plus tard dans le registre global après acceptation et résolution des
@@ -38,8 +43,8 @@ ligne sans owner nommé ne peut pas passer à `Decision-ready`.
 | D04 | Cible finale thème adaptatif complet, force-light seulement transitoire. | [UX-ADR-004](UX-ADR-004-adaptive-appearance.md) | Proposed · Not started | Design owner + Accessibility · **à affecter** | Vague 0 / WP-0004 | WP-0101–0102, WP-0304, G01–G02 |
 | D05 | Budgets, instrumentation allowlistée et rollback. | [UX-ADR-005](UX-ADR-005-performance-observability.md) | Proposed · Not started | QA/performance owner · **à affecter** | Vague 0 / WP-0004 | WP-0002, WP-0006, WP-0210, G21 |
 | D06 | Haptique Expo sémantique, bornée et sûre pour l'audio. | [UX-ADR-006](UX-ADR-006-haptic-feedback.md) | Proposed · Not started | Mobile + Bob Live owners · **à affecter** | Vague 0 / WP-0004 | WP-0204, G06 |
-| D07 | Renderer de tabs final : custom Bob ou Native Tabs certifié ; choix figé au démarrage. | Décision consignée dans UX-ADR-002 ou ADR de supersession. | Proposed · Not started | Product/Design/Mobile · **à affecter** | Avant WP-0303 | WP-0303, G11 |
-| D08 | Verre/blur activé ou non par capability, sans rôle fonctionnel ; décision optionnelle pour le reste du programme. | Décision consignée dans UX-ADR-004. | Proposed · Not started | Design/Mobile/A11y · **à affecter** | Avant WP-0307 | WP-0307, G20 uniquement |
+| D07 | Renderer de tabs final : custom Bob ou Native Tabs certifié ; choix figé au démarrage. **(amendé A3 · 2026-07-29, corrigé A8 : le renderer retenu doit porter les SIX comportements normatifs de la barre — y compris la teinte pilotée par le highlight, l'EFFET nommé par la directive ; `UITabBar` iOS 26 s'effondrant sur une seule icône au repli, et ne donnant accès ni au double glyphe ni à l'interpolation sur la position de l'indicateur, elle ne peut pas les satisfaire.)** | Décision consignée dans UX-ADR-002 ou ADR de supersession. | Proposed · Not started | Product/Design/Mobile · **à affecter** | Avant WP-0303 | WP-0303, G11 |
+| D08 | ~~Verre/blur activé ou non par capability~~ **(amendé A1/A2 · 2026-07-29)** Le verre système est **hors doctrine** : il n'y a plus de décision à prendre sur lui. Ce qui reste à décider est borné : **activer ou non le mode flouté** de `ProgressiveBlurBob` sur fond photographique, sachant que le mode teinté sans flou est le défaut livrable. | Décision consignée dans UX-ADR-004 (§ Algorithme de surface) et budget dans [10 — Performance](../10-performance-observability.md). | Proposed · Not started | Design/Mobile/A11y · **à affecter** | Avant WP-0307 | WP-0307, G20 uniquement |
 | D09 | Disponibilité des événements outil et amplitudes entrée/sortie ; fallback exact. | Contrat d'événements joint à UX-ADR-003. | Proposed · Not started | Bob Live/runtime owner · **à affecter** | Avant WP-0501/0503 | V03, V05, V06 |
 | D10 | Maintien, façade ou dépréciation de `/voix`. | ADR de compatibilité à créer si suppression. | Proposed · Not started | Product + Bob Live owner · **à affecter** | Avant WP-0509-02 en Vague 6 | S32 uniquement ; ne bloque pas le pilote S05 |
 | D11 | Politique des surfaces auth agrégées vs routes dédiées. | Route matrix acceptée sous WP-0301. | Proposed · Not started | Auth/Mobile owner · **à affecter** | Avant WP-1104 | S30, S31, S33 |
@@ -48,8 +53,12 @@ ligne sans owner nommé ne peut pas passer à `Decision-ready`.
 ## Mise à jour du registre
 
 - Toute transition de statut indique date, décideurs, lien vers preuve et résultat dans cette table.
-- Le caractère optionnel de D08 limite son blocage à WP-0307/G20 ; son statut suit néanmoins le
-  même cycle que les autres décisions et le programme conserve son fallback opaque.
+- **(amendé A9 · 2026-07-29)** Le caractère optionnel de D08 limite son blocage à WP-0307/G20 ; son
+  statut suit néanmoins le même cycle que les autres décisions, et si D08 est rejetée le programme
+  **livre quand même sa matière nominale** — la surface teintée, mode sans flou. Ce n'est pas un
+  repli : c'est le rang 1 de l'algorithme de surface.
+  *Rédaction initiale (supersédée) : « le programme conserve son fallback opaque » — formulation
+  d'avant A1, où l'opaque était le dernier recours et non le défaut.*
 - Un ADR `Accepted` n'est pas réécrit pour changer sa décision. Un nouvel ADR le supersède en liant
   l'ancien et en expliquant la migration.
 - Après implémentation, le statut d'implémentation et le [registre de preuves](../18-evidence-register.md)

@@ -85,6 +85,15 @@ parité vocale de chaque nouveau flux.
 - R4 : SignaturePad @bob/ui existe (SVG+PanResponder, tracé jeté — signQuote n'accepte que signerName) ; « Signer sur place » actuel = ConfirmSheet booléenne SANS tracé ; sendQuote renvoie déjà signatureToken (lien sign-web) ; Share/expo-sharing dispo.
 - R6 : lignes modifiables UNIQUEMENT en draft (assertDraft ; signed = terminal) ; agrégat sans updateLine (add/remove only) ; AUCUN deleteInvoice dans la pile ; Swipeable classique dispo (reanimated = dép fantôme, NE PAS utiliser ReanimatedSwipeable) ; capacités agent quote.line.update DÉJÀ publiées mais non câblées.
 
+> **Note de fait — 2026-07-29 (le constat daté du 14/07 n'est pas réécrit).** « reanimated = dép
+> fantôme » n'est plus exact : le commit `251271dc` (2026-07-28) a **déclaré**
+> `react-native-reanimated` `4.5.0` et `react-native-worklets` `0.10.0` dans
+> `apps/mobile/package.json`, prescrits par le SDK 57. **La prescription tient toujours**, pour une
+> autre raison : **aucun fichier** de `apps/mobile` ni de `packages/ui/src` n'importe Reanimated, et
+> sa mise en service est conditionnée à `UX-ADR-001`
+> (`docs/mobile-experience/adr/UX-ADR-001-motion-runtime.md`). Donc toujours `Swipeable` classique,
+> jamais `ReanimatedSwipeable`, tant que cet ADR n'est pas accepté.
+
 ## ARBITRAGES (documentés pour fondateur + challenge GPT)
 1. Devis SIGNÉ = contrat : ni édition de lignes, ni changement du % d'acompte à la génération. Le choix R5 sur devis signé = {acompte signé X %, 100 %} ; sans acompte signé → 100 % direct. Les presets restent au moment de la CRÉATION. (Changer l'acompte après signature = altérer ce que le client a signé.)
 2. Édition de lignes (swipe) : devis DRAFT uniquement — l'UI n'affiche pas ce que le domaine interdit. Un devis signé à corriger = nouveau devis/révision (chantier ultérieur si souhaité).

@@ -3,6 +3,16 @@
 > Statut : **Proposed**
 > Dernière vérification du code : commit `2515ddf3`
 > IDs liés : G21, G22, V03, V07, V10–V14 et tous les écrans animés
+>
+> **Amendements 2026-07-29** (le corps daté du 2026-07-23 n'est pas réécrit) :
+>
+> - **A2 · retombée de bord** — § Règles d'implémentation (règle « blur imbriqué » précisée) et
+>   § Budget de la retombée de bord (nouveau). Source : plan P1 du fondateur
+>   [`beta-fly-services-p1-conception-ecrans.md`](../superpowers/plans/beta-fly-services-p1-conception-ecrans.md)
+>   §1.3 ; étude du code de `davidmokos/expo-glass-tabs` → `src/progressive-blur.tsx`.
+> - **A3 · tab bar** — § Règles d'implémentation (exception nommée d'animation de layout) et
+>   scénario `PERF-13`. Source : directive du fondateur du 2026-07-29 sur le comportement de la
+>   barre du bas.
 
 ## Objectif
 
@@ -79,7 +89,7 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 | Mémoire/listeners | Mobile tech lead | Tendance positive ou delta retenu hors seuil | Stop ring, renderer legacy, correction cleanup. |
 | Bob visuel | Bob Live owner + QA voix | SLO, audio, CPU/GPU/énergie hors seuil | Flag Bob visuel OFF, transport sûr conservé. |
 | Scanner/médias | Mobile + QA appareil | Mémoire, énergie ou niveau thermique hors seuil | Effet/capability OFF, pipeline fonctionnel conservé. |
-| Blur/verre | Design + Mobile + A11y | Contraste, GPU ou batterie hors seuil | Fallback opaque. |
+| Retombée de bord floutée **(amendé A2)** | Design + Mobile + A11y | Contraste, GPU ou batterie hors seuil sous scroll continu | Repli opaque unique (mode teinté). Aucune autre matière n'est concernée : le reste de l'UI est déjà opaque. |
 | Faux succès/exécution fantôme | QA + owner métier/Security | Toute occurrence | Stop release, incident P0 ; aucun waiver. |
 
 ## Scénarios de profiling
@@ -98,6 +108,7 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 | PERF-10 | Bob Live 5 min | Audio input/output, amplitude, transcript, tool card, barge-in. |
 | PERF-11 | Background/foreground × 10 | Cleanup loops, session, restauration. |
 | PERF-12 | Dynamic Type 200 % | Layout, reflow, scroll et sheets. |
+| PERF-13 **(ajouté A3, étendu A8)** | Tab bar : scroll long avec repli/dépli répétés, tab-hopping rapide, scrub au doigt d'un bout à l'autre | Animation de layout de la barre, highlight transform-only, worklet de scroll, ticks haptiques et retombée de bord simultanés. Mesurer aussi la **latence du tick** par rapport au franchissement. **(A8)** + le **double rendu d'icônes** du sixième comportement : deux glyphes superposés par onglet, donc **dix** icônes montées en permanence pour cinq onglets, plus l'interpolation de couleur du label à chaque frame. Ce coût est constant, pas proportionnel au geste : le mesurer aussi **barre au repos**, sinon il disparaît dans le bruit du scrub. |
 
 ## Méthode
 
@@ -120,13 +131,51 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 
 - Pas de `setState` React par frame d'amplitude ou de scroll.
 - Pas d'animation de `width/height/top/left` par frame si transform/draw convient.
+  **Exception nommée (A3 · 2026-07-29)** : le **repli/dépli de la tab bar** anime `height` et
+  `marginHorizontal` — c'est la géométrie même du comportement demandé, une pilule qui rétrécit
+  dans les deux dimensions, qu'aucun `transform` ne reproduit sans déformer le contenu. Conditions
+  de l'exception : ressort **critique-amorti** (380 ms, `dampingRatio` 1) pour n'avoir ni overshoot
+  ni queue de stabilisation, animation pilotée par un **worklet** sans `setState`, et profilage
+  `PERF-13` joint. Aucune autre animation de layout par frame n'est autorisée par cette exception.
 - Les layout transitions de liste sont bornées aux éléments visibles/affectés.
 - Les images utilisent tailles et cache adaptés ; pas de re-décodage pendant morph.
-- Blur/verre n'est pas imbriqué.
+- **(amendé A2 · 2026-07-29)** Trois cas distincts, là où le texte du 2026-07-23 n'en connaissait
+  qu'un :
+  - **interdit** — blur **imbriqué** : une surface floutée dont le sous-arbre contient une autre
+    surface floutée (double échantillonnage, contraste imprévisible) ;
+  - **interdit** — blur comme **fond d'une surface porteuse d'information** (carte, ligne,
+    formulaire, montant) : ces surfaces sont teintées opaques (`BobSurface`) ;
+  - **autorisé et borné** — **retombée de bord par empilement de couches frères**, en zone non
+    interactive (`pointerEvents="none"`), pour dissoudre le contenu sous un chrome flottant. Voir
+    § Budget de la retombée de bord.
 - Les shadows lourdes sont testées Android.
 - Les listeners et loops sont annulés au blur/background/unmount.
 - Une animation invisible n'est pas simplement mise à opacity 0 tout en continuant.
 - Les charts ne recalculent pas toute la série à chaque frame JS.
+
+## Budget de la retombée de bord
+
+> Ajouté A2 · 2026-07-29. Spécification fonctionnelle :
+> [04 — Navigation § Retombée de bord](04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+
+Ce que coûte réellement la technique de la référence n'est pas un principe : ce sont **dix
+échantillonnages de flou qui se recouvrent sur environ 120 pt de haut, en permanence, sous un
+scroll**. C'est un coût GPU continu, pas ponctuel — d'où un budget, et non une interdiction.
+
+| Règle | Valeur normative |
+| --- | --- |
+| Mode par défaut | **Teinté, `N = 0` couche floutée.** Un `LinearGradient`, un draw call. |
+| Retombées floutées par bord d'écran | **Au plus une.** Jamais deux zones floutées superposées. |
+| Hauteur maximale d'une retombée | `inset de sécurité + hauteur du chrome + 44 pt de débord`. |
+| Profil de hauteurs si `N > 0` | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %`, tronqué aux `N` premières. |
+| Plafond de `N` | Fixé par `PERF-CALIBRATION` sur l'appareil médian, jamais par le confort visuel. |
+| Animation | Aucune, dans aucun mode. Une retombée n'anime ni sa hauteur, ni son intensité, ni son opacité. |
+| Fonds éligibles au mode flouté | Uniquement les fonds **photographiques** (scan, aperçu de document, visualiseur). Jamais un fond de l'app. |
+| Preuve exigée | Profilage **sous scroll continu**, médiane **et pire run**, sur appareil médian et pire cas supporté, jointe au work package. |
+| Coupures obligatoires | Port `renderBlurLayer` absent, Reduce Transparency, Android dégradé, budget non tenu → **repli opaque unique**. |
+
+Sans preuve de profilage sous scroll continu, une retombée floutée vaut `NOT RUN` et le mode
+teinté reste seul autorisé.
 
 ## Bob Live
 
@@ -203,10 +252,12 @@ pour masquer une régression déjà observée. Sans manifest signé, toute preuv
 | Slow frames > seuil | Geler progression ring, profiler. |
 | Échec accessibilité critique | Stop rollout. |
 | Memory leak monotone | Stop, corriger cleanup. |
-| Matière illisible/bug OS | Capability OFF/fallback opaque. |
+| Retombée floutée illisible ou hors budget | Repli opaque unique (mode teinté). **(amendé A2)** |
 
 ## Critères d'acceptation
 
+- [ ] **(ajouté A2)** Toute retombée floutée est profilée sous scroll continu (médiane et pire
+      run) et respecte le § Budget de la retombée de bord ; à défaut, le mode teinté est livré.
 - [ ] Baseline et protocole reproductible attachés.
 - [ ] Tous les scénarios pertinents profilés en release.
 - [ ] Budgets absolus et relatifs tenus.

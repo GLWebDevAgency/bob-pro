@@ -2,6 +2,11 @@
 
 > Statut : **Proposed**
 > Nature : critères binaires ; une case non prouvée reste ouverte
+>
+> **Amendement A6 — 2026-07-29.** Deux cases sont précisées par A1/A2 (Reduce Transparency, blur
+> profilé) et une case de matière est **ajoutée** à la DoD composant. **Aucune case n'est
+> supprimée ni assouplie** : la preuve exigée devient plus facile à produire parce que la matière
+> est plus simple, pas parce que l'exigence baisse.
 
 ## Règle
 
@@ -76,6 +81,10 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
 
 - [ ] API documentée et sémantique.
 - [ ] Tokens uniquement, aucune valeur arbitraire non justifiée.
+- [ ] **(ajouté A1 · 2026-07-29)** **Matière conforme** : la surface vient de `surfaceTint` /
+      `BobSurface` ; zéro `rgba` translucide, zéro import `expo-glass-effect`, zéro dépendance à
+      une capability de matière. Un composant qui n'aurait d'aspect correct qu'avec une matière
+      système n'est pas Done.
 - [ ] Nominal, press, focus, selected, disabled, loading, success et error.
 - [ ] Entrée et sortie si l'une existe.
 - [ ] Interruption/unmount sans fuite.
@@ -157,7 +166,9 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
 - [ ] Information non dépendante de la couleur.
 - [ ] Dynamic Type et Bold Text.
 - [ ] Reduce Motion et crossfade préféré.
-- [ ] Reduce Transparency et fallback opaque.
+- [ ] **(amendé A1 · 2026-07-29)** Reduce Transparency : captures avant/après **identiques** — les
+      surfaces sont opaques par construction, il n'y a pas de fallback à exercer. Seule exception :
+      une retombée de bord en mode flouté, qui doit rendre son repli opaque unique.
 - [ ] VoiceOver/TalkBack : ordre, labels, valeurs, focus, annonces.
 - [ ] Gestes avec alternatives tap.
 - [ ] Clavier/autofill/dictée selon écran.
@@ -172,7 +183,9 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
 - [ ] Android médian et iPhone réel.
 - [ ] Pas de boucle/listener après blur/background/unmount.
 - [ ] Mémoire conforme au seuil et au protocole figés dans `PERF-CALIBRATION` après répétition.
-- [ ] Blur/verre et images profilés.
+- [ ] **(amendé A2 · 2026-07-29)** Images profilées ; toute retombée de bord en mode flouté
+      profilée **sous scroll continu** (médiane et pire run) et conforme au § Budget de la retombée
+      de bord. Le verre système n'est pas concerné : il n'est pas employé.
 - [ ] Bob/scan : CPU, GPU, batterie/température mesurés et conformes aux seuils `PERF-CALIBRATION`.
 - [ ] SLO voix absolus et régression relative tenus.
 - [ ] Dashboard/alertes/rollback opérationnels.

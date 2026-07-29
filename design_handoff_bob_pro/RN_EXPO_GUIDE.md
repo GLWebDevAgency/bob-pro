@@ -8,9 +8,9 @@ Comment reproduire **exactement** Bob Pro en RN/Expo. À lire avant d'écrire un
 
 ```bash
 npx create-expo-app bob-pro -t tabs   # expo-router déjà câblé
-# UI / rendu fidèle
+# UI / rendu fidèle — PAS d'expo-blur : le défaut Bob est sans flou (voir note ci-dessous)
 npx expo install react-native-reanimated react-native-svg expo-linear-gradient \
-  expo-blur react-native-safe-area-context @gorhom/bottom-sheet expo-haptics \
+  react-native-safe-area-context @gorhom/bottom-sheet expo-haptics \
   react-native-gesture-handler @shopify/react-native-skia
 # fonts
 npx expo install expo-font @expo-google-fonts/schibsted-grotesk @expo-google-fonts/hanken-grotesk
@@ -19,9 +19,23 @@ npm i zustand
 ```
 
 - **expo-router** → cf. `NAVIGATION_MAP.md` (arborescence §4).
-- **Reanimated** pour toutes les animations (jamais `Animated` legacy).
+- **Reanimated** pour toutes les animations (jamais `Animated` legacy). **(caveat A16 · 2026-07-29)**
+  Vaut pour du **neuf**. Sur l'app livrée, le motion actuel est en `Animated` RN avec
+  `useNativeDriver`, et le choix de runtime appartient à
+  [UX-ADR-001](../docs/mobile-experience/adr/UX-ADR-001-motion-runtime.md), encore `Proposed` :
+  ce guide ne le tranche pas, et aucun écran livré n'est réécrit pour lui (directive 5).
 - **@gorhom/bottom-sheet** pour les feuilles (`create`, `profile`, `catalogue`, `new-client`, `doc`).
 - **Skia** optionnel (courbe de trésorerie, anneau de score) — sinon `react-native-svg` suffit.
+- **(amendé 2026-07-29 ; commande corrigée A15)** **`expo-blur` n'est pas une dépendance du
+  produit** et n'est déclaré nulle part dans le dépôt. Le défaut Bob est **sans flou**. Il ne peut
+  entrer que par le port injecté `renderBlurLayer` de `ProgressiveBlurBob`, depuis `apps/mobile`,
+  et jamais par `@bob/ui` — voir §4 ci-dessous et
+  [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+  *Rédaction A10 (supersédée) : la note était juste, mais la commande `npx expo install` trois
+  lignes plus haut installait toujours `expo-blur`. Une commande exécutable qui contredit sa propre
+  note est pire qu'une phrase fausse — quelqu'un la lance, et la dépendance entre par la porte que
+  la doctrine ferme. `expo-blur` est retiré de la commande ; s'il devient un jour nécessaire, c'est
+  une décision de `D08` et une installation **dans `apps/mobile` seulement**, derrière le port.*
 
 ---
 
@@ -74,13 +88,22 @@ export const Money = ({value, style}) =>
 
 ## 4. Table de traduction Web → RN (à connaître par cœur)
 
+> **Amendé le 2026-07-29 — doctrine « matière Bob ».** Une ligne de cette table prescrivait un flou
+> système à **teinte sombre** ; c'est exactement ce que la directive du fondateur exclut (« Je NE
+> VEUX PAS une UI transparente à la iOS »). Le `backdrop-filter` du proto **web** ne se traduit pas
+> par un `BlurView` : il se traduit par une **surface teintée opaque** de notre palette. Autorité :
+> [UX-ADR-004 § Algorithme de surface](../docs/mobile-experience/adr/UX-ADR-004-adaptive-appearance.md)
+> et [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+> Les prototypes `.dc.html` de ce dossier gardent leurs `backdrop-filter` : ce sont des artefacts
+> **web**, pas des prescriptions RN.
+
 | Web (proto) | React Native |
 |---|---|
 | `box-shadow: 0 8px 22px rgba(13,38,68,.06)` | `tokens.shadowNative.e2` (iOS `shadow*` + Android `elevation`) |
 | `background: linear-gradient(168deg,…)` | `<LinearGradient colors={[…]} locations={[…]} {...angle(168)} />` (§5) |
 | `position: fixed` / surcouche | route `presentation:'modal'` **ou** `<View style={StyleSheet.absoluteFill}>` |
 | `overflow-y: auto` | `<ScrollView>` (jamais un `<View>` scrollable) |
-| `backdrop-filter: blur(6px)` | `<BlurView intensity={20} tint="dark">` (expo-blur) |
+| `backdrop-filter: blur(6px)` | **(amendé 2026-07-29)** `<BobSurface tone=… emphasis=…>` — surface **teintée opaque** (`surfaceTint`), aucune transparence, aucune capability runtime. Le flou n'est admis **que** en retombée de bord non interactive, via `ProgressiveBlurBob` et son port `renderBlurLayer` — jamais comme fond d'une surface qui porte une information. ~~`<BlurView intensity={20} tint="dark">` (expo-blur)~~ : `tint="dark"` inverse notre identité sur fond `#EFF2F7`, et `expo-blur` n'est déclaré nulle part dans le dépôt. |
 | `font-variant-numeric: tabular-nums` | `fontVariant:['tabular-nums']` |
 | `letter-spacing: -.5px` | `letterSpacing:-0.5` (dp, pas px) |
 | `width: calc(100% - 32px)` | `marginHorizontal:16` sur un élément `alignSelf:'stretch'` |
@@ -162,17 +185,29 @@ Le `marginTop:-30` **après** le dégradé fait chevaucher la couture (le header
 
 ## 8. Animations (Reanimated) — durées & courbes figées
 
+> **Amendé A16 · 2026-07-29 — trois lignes recalées sur le code livré.** Ce tableau annonce des
+> « durées figées » : elles doivent donc être celles du kit, pas celles du proto web. Les valeurs
+> normatives de press vivent en
+> [03 § Press states](../docs/mobile-experience/03-motion-interaction-system.md#press-states).
+
 | Élément | Anim | Détail |
 |---|---|---|
-| FAB / Pressable | scale press | `withTiming(0.94, {duration:90})` + `expo-haptics` `Light` |
+| Boutons pleins (`Button`, `FAB`) | scale press | **(corrigé A16)** échelle **0,94 instantanée**, sans durée — `BUTTON_PRESSED_SCALE` (`packages/ui/src/components/button.logic.ts` l. 46) |
+| Toute autre surface interactive (`PressableScale`) | scale + opacity | **(corrigé A16)** échelle **0,98** + opacité **0,9**, **90 ms** in / **150 ms** out — `pressable-scale.logic.ts` ; cible tactile ≥ **44 pt**. Haptique **seulement** sur un geste significatif accepté, jamais sur chaque ouverture de row (table haptique de 03) |
 | Feuille bottom | spring entrée | `@gorhom/bottom-sheet` ; snap `[0.6, 0.95]`, `damping:50` |
 | Anneau de score (diagnostic) | strokeDashoffset | `withTiming(target, {duration:900, easing: Easing.out(Easing.cubic)})` |
 | Onde vocale | boucle | 5 barres `withRepeat(withTiming(h,{duration:420}),-1,true)`, déphasées |
-| Balayage OCR (scan) | ligne translateY | `withRepeat(withTiming(H,{duration:1400}),-1,false)` |
+| Balayage OCR (scan) | ligne translateY | **(corrigé A16)** aller **1 100 ms**, retour idem (`SCAN_SWEEP_DURATION_MS`, `apps/mobile/src/scan/scan-reading-motion.ts`) ; en reduced-motion, **aucun déplacement** : battement d'opacité 0,35 → 0,9 sur `motion.ambient` = **1 500 ms** |
 | Écran succès | scale+fade check | `withSpring(1,{damping:9})` sur le cercle vert |
 | « Bob écrit… » | 3 points | opacity `withRepeat`, décalage 160 ms |
-| Toast | translateY+opacity | entrée `withالسpring`, sortie auto à 2,4 s |
+| Toast | translateY+opacity | **(corrigé A16)** entrée `withSpring`, `bottom: 122`, sortie auto à **2,4 s** (`AUTO_DISMISS_MS = 2400`, `packages/ui/src/components/toast.tsx`) |
 | Entrée de liste | **aucune** au repos | ⚠ jamais `opacity:0` initial sur du contenu affiché (règle d'or) |
+
+*Rédactions supersédées par A16 : « FAB / Pressable — `withTiming(0.94, {duration:90})` +
+`expo-haptics` `Light` » mélangeait l'échelle du `Button` (0,94, instantanée) avec la durée du
+`PressableScale` (90 ms) et prescrivait 0,94 à toute surface pressable, là où le kit livre 0,98 ;
+« Balayage OCR — `duration:1400` » contredisait `SCAN_SWEEP_DURATION_MS = 1100` ; et la ligne Toast
+portait un identifiant corrompu, `withالسpring`, qui ne compile pas.*
 
 ---
 
