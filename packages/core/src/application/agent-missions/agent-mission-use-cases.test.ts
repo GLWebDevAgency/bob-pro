@@ -3009,6 +3009,7 @@ describe('AgentMission application M1-A', () => {
       housingOlderThan2y: null,
       energyRenovation: null,
       requiredFact: null,
+      catalogueResolution: 'pending',
       catalogueItemId: null,
       expectedCatalogueRevision: null,
       proposalId: null,
@@ -3092,6 +3093,7 @@ describe('AgentMission application M1-A', () => {
       revision: 2,
       state: 'awaiting_details',
       requiredFact: 'vat_rate',
+      catalogueResolution: 'free',
       updatedAt: '2026-07-26T10:00:01.000Z',
     };
     expect(await run((transaction) => transaction.quoteLineWork.updateCas({

@@ -178,6 +178,13 @@ donc le support serveur d'un protocole AgentMission `2`, additif au protocole `1
   `bob.agent_missions.quote.m2a` est activé pour cet utilisateur ;
 - le protocole demandé, le préfixe de capability, le binding durable de lease et la preuve portée
   jusqu'à l'UoW doivent être identiques ; toute divergence échoue fermée ;
+- `agent_missions.protocolVersion SMALLINT NOT NULL DEFAULT 1` persiste le protocole propriétaire
+  de chaque mission et devient immuable. Une mission V2 garde cette identité lorsqu'elle traverse
+  une phase commune telle que `awaiting_lines` ;
+- avant toute projection ou mutation, l'UoW exige
+  `proof.protocolVersion === mission.protocolVersion`. Une preuve V1 ne peut donc pas reprendre
+  une mission V2 après fermeture de sa session, et une preuve V2 ne peut pas s'approprier une
+  mission historique V1 ;
 - les endpoints M2-A et les nouvelles phases refusent une preuve V1 avant toute lecture métier ;
 - les endpoints et codecs V1 restent de forme exacte. Une mission déjà en phase M2-A n'est jamais
   projetée dans un codec V1 : l'ancien client reçoit une erreur explicite de mise à niveau et
@@ -793,7 +800,8 @@ Les unions JSON et CHECK PostgreSQL étant fermés, le rollout est append-only :
 2. **M2-A-1 / expand mission** : nouvelles phases, décisions et événements dans des contraintes
    `NOT VALID`, ajout expand-safe de
    `catalogueResolution TEXT NOT NULL DEFAULT 'pending'` et élargissement de la cohérence
-   `queued`, sans retirer les contraintes actives ;
+   `queued`, ajout de `agent_missions.protocolVersion SMALLINT NOT NULL DEFAULT 1` avec CHECK
+   fermé `1|2` et trigger d'immuabilité, sans retirer les contraintes actives ;
 3. **validate** : validation séparée ;
 4. **cutover** : flag OFF, writers N-1 drainés, remplacement atomique des anciennes contraintes ;
 5. déploiement writer N ;
@@ -812,6 +820,9 @@ forme exacte historique :
 Le test couvre aussi un **reader N-1** : GET puis décodage du `QuoteDraftPayloadV1` exact avant,
 pendant et après M2-A. Le slot ne contient aucun work item, donc un ancien client continue à le
 lire. Il ne reçoit jamais une capability M2-A et ne peut pas ouvrir la mission en écriture.
+Le writer N-1 omet `protocolVersion` et obtient donc exactement `1` par défaut ; une tentative de
+modifier cette colonne après insertion est refusée. Les phases M2-A et leurs événements exigent
+`protocolVersion=2` dans les contraintes SQL finales.
 
 ### 15.1 Trains de livraison — une seule PR active à la fois
 
@@ -871,6 +882,8 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 
 - [ ] le serveur négocie V1 et V2 sans fallback, une capability V1 ne peut ni lire ni muter une
       phase M2-A et le mobile courant continue à demander V1 ;
+- [ ] le protocole de la mission est persisté, immuable et doit correspondre à celui de la lease ;
+      V1→mission V2 et V2→mission V1 échouent avant lecture du payload ou des work items ;
 - [ ] la frame V2 est fermée à chaque profondeur, bornée à 20 opérations/lignes et 32 KiB, sans
       historique textuel Bob ni donnée catalogue/client projetée vers le LLM ;
 - [ ] les décimaux sont convertis par arithmétique exacte de chaînes/entiers ; aucune conversion

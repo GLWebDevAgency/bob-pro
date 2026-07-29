@@ -33,6 +33,7 @@ function queued(
     housingOlderThan2y: null,
     energyRenovation: null,
     requiredFact: null,
+    catalogueResolution: 'pending',
     catalogueItemId: null,
     expectedCatalogueRevision: null,
     proposalId: null,
@@ -53,9 +54,11 @@ describe('parseAgentMissionQuoteLineWork', () => {
     queued({
       state: 'awaiting_details',
       requiredFact: 'vat_rate',
+      catalogueResolution: 'free',
     }),
     queued({
       state: 'awaiting_confirmation',
+      catalogueResolution: 'selected',
       catalogueItemId: 'catalogue-1',
       expectedCatalogueRevision: 2,
       proposalId: PROPOSAL_ID,
@@ -115,6 +118,7 @@ describe('parseAgentMissionQuoteLineWork', () => {
     ['priceBasis', 'guess', 'invalid_value'],
     ['housingOlderThan2y', 'yes', 'invalid_value'],
     ['requiredFact', 'customer', 'invalid_value'],
+    ['catalogueResolution', 'unknown', 'invalid_value'],
     ['catalogueItemId', 'catalogue/1', 'invalid_identifier'],
     ['expectedCatalogueRevision', 0, 'invalid_revision'],
     ['proposalId', 'not-a-uuid', 'invalid_uuid'],
@@ -156,8 +160,9 @@ describe('parseAgentMissionQuoteLineWork', () => {
 
   it.each([
     [
-      'queued ne porte pas de catalogue',
+      'catalogue pending ne porte pas de fence',
       queued({
+        catalogueResolution: 'pending',
         catalogueItemId: 'catalogue-1',
         expectedCatalogueRevision: 1,
       }),
@@ -167,6 +172,7 @@ describe('parseAgentMissionQuoteLineWork', () => {
       queued({
         state: 'awaiting_details',
         requiredFact: 'vat_rate',
+        catalogueResolution: 'selected',
         catalogueItemId: 'catalogue-1',
       }),
     ],
@@ -181,6 +187,7 @@ describe('parseAgentMissionQuoteLineWork', () => {
       'la proposition est un triplet atomique',
       queued({
         state: 'awaiting_confirmation',
+        catalogueResolution: 'free',
         proposalId: PROPOSAL_ID,
         proposalRevision: 1,
       }),
@@ -202,6 +209,7 @@ describe('parseAgentMissionQuoteLineWork', () => {
       'la confirmation exige tous les faits',
       queued({
         state: 'awaiting_confirmation',
+        catalogueResolution: 'free',
         unit: null,
         proposalId: PROPOSAL_ID,
         proposalRevision: 1,
@@ -218,6 +226,37 @@ describe('parseAgentMissionQuoteLineWork', () => {
         reason: 'inconsistent_state',
       },
     });
+  });
+
+  it.each([
+    queued({ catalogueResolution: 'free' }),
+    queued({
+      catalogueResolution: 'selected',
+      catalogueItemId: 'catalogue-1',
+      expectedCatalogueRevision: 3,
+    }),
+  ])('accepte queued comme frontière système après résolution catalogue', (value) => {
+    expect(parseAgentMissionQuoteLineWork(value)).toEqual({ ok: true, value });
+  });
+
+  it('interdit une question métier tant que le catalogue reste non résolu', () => {
+    expect(parseAgentMissionQuoteLineWork(queued({
+      state: 'awaiting_details',
+      requiredFact: 'unit_price',
+      catalogueResolution: 'pending',
+    }))).toMatchObject({
+      ok: false,
+      error: {
+        field: 'state',
+        reason: 'inconsistent_state',
+      },
+    });
+    expect(parseAgentMissionQuoteLineWork(queued({
+      state: 'awaiting_details',
+      serviceReference: null,
+      requiredFact: 'service_reference',
+      catalogueResolution: 'pending',
+    }))).toMatchObject({ ok: true });
   });
 
   it('rejette une horloge qui régresse', () => {

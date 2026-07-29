@@ -190,6 +190,7 @@ export * from './application/agent-missions/advance-quote-agent-mission';
 export * from './application/agent-missions/decide-quote-agent-mission';
 export * from './application/agent-missions/resolve-customer-reference';
 export * from './application/agent-missions/quote-line-work';
+export * from './application/agent-missions/quote-line-candidate';
 export * from './application/quote-drafts/apply-quote-draft-transition';
 export * from './application/accounting/derive-sig';
 export * from './application/accounting/derive-closing-review';

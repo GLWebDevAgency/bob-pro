@@ -50,6 +50,15 @@ export const AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS = [
 export type AgentMissionQuoteLineRequiredFact =
   (typeof AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS)[number];
 
+export const AGENT_MISSION_QUOTE_LINE_CATALOGUE_RESOLUTIONS = [
+  'pending',
+  'free',
+  'selected',
+] as const;
+
+export type AgentMissionQuoteLineCatalogueResolution =
+  (typeof AGENT_MISSION_QUOTE_LINE_CATALOGUE_RESOLUTIONS)[number];
+
 export const AGENT_MISSION_QUOTE_LINE_PRICE_BASES = [
   'per_unit',
   'total',
@@ -84,6 +93,7 @@ export interface AgentMissionQuoteLineWork {
   readonly housingOlderThan2y: boolean | null;
   readonly energyRenovation: boolean | null;
   readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+  readonly catalogueResolution: AgentMissionQuoteLineCatalogueResolution;
   readonly catalogueItemId: string | null;
   readonly expectedCatalogueRevision: number | null;
   readonly proposalId: string | null;
@@ -131,6 +141,7 @@ export const AGENT_MISSION_QUOTE_LINE_WORK_KEYS = [
   'housingOlderThan2y',
   'energyRenovation',
   'requiredFact',
+  'catalogueResolution',
   'catalogueItemId',
   'expectedCatalogueRevision',
   'proposalId',
@@ -229,6 +240,15 @@ function validateStateCoherence(
   if (!allNull(catalogueFence) && !allPresent(catalogueFence)) {
     return fail('catalogue', 'inconsistent_state');
   }
+  if (
+    (value['catalogueResolution'] === 'selected') !== allPresent(catalogueFence)
+    || (
+      value['catalogueResolution'] !== 'selected'
+      && !allNull(catalogueFence)
+    )
+  ) {
+    return fail('catalogueResolution', 'inconsistent_state');
+  }
 
   const price = [value['unitPriceCents'], value['priceBasis']];
   if (!allNull(price) && !allPresent(price)) {
@@ -247,19 +267,24 @@ function validateStateCoherence(
   switch (value['state']) {
     case 'queued':
       return value['requiredFact'] === null
-        && allNull(catalogueFence)
         && allNull(proposal)
         ? null
         : fail('state', 'inconsistent_state');
     case 'awaiting_catalogue_choice':
       return value['serviceReference'] !== null
         && value['requiredFact'] === null
+        && value['catalogueResolution'] === 'pending'
         && allNull(catalogueFence)
         && allNull(proposal)
         ? null
         : fail('state', 'inconsistent_state');
     case 'awaiting_details':
-      return value['requiredFact'] !== null && allNull(proposal)
+      return value['requiredFact'] !== null
+        && (
+          value['catalogueResolution'] !== 'pending'
+          || value['requiredFact'] === 'service_reference'
+        )
+        && allNull(proposal)
         ? null
         : fail('state', 'inconsistent_state');
     case 'awaiting_confirmation':
@@ -271,6 +296,7 @@ function validateStateCoherence(
         && value['requestedVatRate'] !== null
         && value['priceBasis'] !== null
         && value['requiredFact'] === null
+        && value['catalogueResolution'] !== 'pending'
         && allPresent(proposal)
         ? null
         : fail('state', 'inconsistent_state');
@@ -393,6 +419,14 @@ export function parseAgentMissionQuoteLineWork(
     return fail('requiredFact', 'invalid_value');
   }
   if (
+    !isOneOf(
+      AGENT_MISSION_QUOTE_LINE_CATALOGUE_RESOLUTIONS,
+      input['catalogueResolution'],
+    )
+  ) {
+    return fail('catalogueResolution', 'invalid_value');
+  }
+  if (
     input['catalogueItemId'] !== null
     && !isCustomPrestationId(input['catalogueItemId'])
   ) {
@@ -452,6 +486,7 @@ export function parseAgentMissionQuoteLineWork(
       housingOlderThan2y: input['housingOlderThan2y'],
       energyRenovation: input['energyRenovation'],
       requiredFact: input['requiredFact'] as AgentMissionQuoteLineRequiredFact | null,
+      catalogueResolution: input['catalogueResolution'],
       catalogueItemId: input['catalogueItemId'] as string | null,
       expectedCatalogueRevision: input['expectedCatalogueRevision'] as number | null,
       proposalId: input['proposalId'] as string | null,
