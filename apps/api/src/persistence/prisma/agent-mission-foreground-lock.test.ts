@@ -2,7 +2,7 @@ import type {
   AgentMissionRealtimeAuthorityProof,
   AgentMissionTransaction,
 } from '@bob/core';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PrismaAgentMissionDraftFence,
@@ -66,14 +66,17 @@ function postgresFailure(sqlState: string): {
   };
 }
 
-function prismaTransactionFailure(error: string): {
-  readonly code: 'P2028';
-  readonly meta: { readonly error: string };
-} {
-  return {
-    code: 'P2028',
-    meta: { error },
-  };
+function prismaTransactionFailure(error: string): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(
+    `Invalid prisma.$queryRawUnsafe() invocation:
+
+Transaction API error: ${error}`,
+    {
+      code: 'P2028',
+      clientVersion: '6.19.3',
+      meta: { error },
+    },
+  );
 }
 
 function boundaryFailingPrisma(error: unknown): PrismaService {
@@ -257,7 +260,10 @@ describe('AgentMission foreground lock — erreurs bornées', () => {
 
   it('traduit aussi une transaction Prisma expirée, mais ne masque pas un autre P2028', async () => {
     const expired = boundaryFailingPrisma(prismaTransactionFailure(
-      'A query cannot be executed on an expired transaction. The timeout for this transaction was 15 ms.',
+      'Transaction already closed: A query cannot be executed on an expired transaction. '
+      + 'The timeout for this transaction was 20 ms, however 115 ms passed since the start '
+      + 'of the transaction. Consider increasing the interactive transaction timeout or '
+      + 'doing less work in the transaction.',
     ));
     await expect(new PrismaAgentMissionDraftFence(expired).runLegacyMutationIfUnowned(
       OWNER,

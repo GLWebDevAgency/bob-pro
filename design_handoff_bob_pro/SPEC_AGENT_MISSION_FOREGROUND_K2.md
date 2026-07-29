@@ -301,8 +301,10 @@ PostgreSQL, pas par la mémoire du processus.
 - [x] Une annulation SQL dans le callback transactionnel force un rollback réel après écriture ;
       `57014` et les formes timeout/expiration de Prisma `P2028` deviennent des indisponibilités
       bornées et réessayables, avec raison finie, métrique et log structuré sur les writers mission
-      **et** manuel, sans exécuter le callback après expiration ni exposer l'erreur brute. Les
-      autres erreurs `P2028` restent des pannes et ne sont pas maquillées en contention.
+      **et** manuel, sans exécuter le callback après expiration ni exposer l'erreur brute. La forme
+      exacte émise par une vraie transaction interactive Prisma 6.19.3 expirée est certifiée sur
+      PostgreSQL 17 ; les autres erreurs `P2028` restent des pannes et ne sont pas maquillées en
+      contention.
 - [x] Une simulation de deux kinds prouve que le second actif reçoit `unique_violation`.
 - [x] Les Data API roles Supabase n'obtiennent aucun nouveau droit.
 - [x] Tous les résultats M1-C existants restent inchangés.

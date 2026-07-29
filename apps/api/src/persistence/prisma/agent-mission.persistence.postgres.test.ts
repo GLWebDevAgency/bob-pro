@@ -36,7 +36,10 @@ import {
 import {
   fingerprintAgentMissionHmacKey,
 } from '../../agent-missions/agent-mission-fingerprint-key-version';
-import { PrismaService } from './prisma.service';
+import {
+  PrismaService,
+  type IsolatedOwnerTransactionOptions,
+} from './prisma.service';
 
 const RUN_CERT = process.env.RUN_AGENT_MISSION_POSTGRES_CERT === 'true';
 const DISPOSABLE = process.env.AGENT_MISSION_CERT_DATABASE_IS_DISPOSABLE === 'true';
@@ -1262,6 +1265,40 @@ describe.skipIf(!RUN_CERT)(
         reason: 'query_canceled',
       });
       expect(await admin.quoteDraftSlot.count({ where: owner })).toBe(0);
+    });
+
+    it('traduit une expiration P2028 émise par la vraie transaction interactive Prisma', async () => {
+      const owner = {
+        companyId: companyA,
+        ownerUserId: `owner-prisma-expired-${randomUUID()}`,
+      };
+      const expiringPrisma = {
+        withIsolatedOwner: <T>(
+          companyId: string,
+          ownerUserId: string,
+          work: (transaction: Prisma.TransactionClient) => Promise<T>,
+          options: IsolatedOwnerTransactionOptions,
+        ) => workerA.withIsolatedOwner(companyId, ownerUserId, work, {
+          ...options,
+          timeoutMs: 500,
+        }),
+      } as PrismaService;
+      let callbackReached = false;
+
+      const result = await new PrismaAgentMissionDraftFence(expiringPrisma)
+        .runLegacyMutationIfUnowned(owner, async () => {
+          callbackReached = true;
+          await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+          const transaction = workerA.client() as Prisma.TransactionClient;
+          await transaction.$queryRaw`SELECT 1`;
+          return 'unreachable';
+        });
+
+      expect(callbackReached).toBe(true);
+      expect(result).toEqual({
+        status: 'foreground_unavailable',
+        reason: 'transaction_timeout',
+      });
     });
 
     it('converge aussi sous deux replays simultanés du même commandId', async () => {

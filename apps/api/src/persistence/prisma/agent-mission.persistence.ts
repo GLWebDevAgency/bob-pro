@@ -197,7 +197,9 @@ function prismaTransactionTimeout(error: unknown): boolean {
   return typeof detail === 'string'
     && (
       detail === 'Unable to start a transaction in the given time.'
-      || /^A .+ cannot be executed on an expired transaction\./u.test(detail)
+      || /^(?:Transaction already closed: )?A (?:query|commit|rollback) cannot be executed on an expired transaction\./u.test(
+        detail,
+      )
     );
 }
 
