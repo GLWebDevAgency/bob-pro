@@ -203,11 +203,26 @@ test('le timeout interrompt réellement une requête suspendue via le signal tra
     {
       fetchImpl: async (_url, { signal }) =>
         await new Promise((_resolve, reject) => {
+          // `AbortSignal.timeout()` utilise un timer non référencé dans Node 24 : sans une garde
+          // référencée, un faux test vert local peut être annulé par le runner CI avant l'abort.
+          // Cette garde maintient le test vivant et échoue explicitement si le signal ne part pas.
+          const garde = setTimeout(
+            () => reject(new Error('le signal de timeout ne s’est pas déclenché')),
+            1_000,
+          );
           if (signal.aborted) {
+            clearTimeout(garde);
             reject(signal.reason);
             return;
           }
-          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(garde);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
         }),
       timeoutMs: 20,
     },
