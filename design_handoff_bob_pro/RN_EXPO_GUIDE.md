@@ -22,6 +22,10 @@ npm i zustand
 - **Reanimated** pour toutes les animations (jamais `Animated` legacy).
 - **@gorhom/bottom-sheet** pour les feuilles (`create`, `profile`, `catalogue`, `new-client`, `doc`).
 - **Skia** optionnel (courbe de trésorerie, anneau de score) — sinon `react-native-svg` suffit.
+- **(amendé 2026-07-29)** **`expo-blur` n'est pas une dépendance du produit** et n'est déclaré nulle
+  part dans le dépôt. Le défaut Bob est **sans flou**. Il ne peut entrer que par le port injecté
+  `renderBlurLayer` de `ProgressiveBlurBob`, depuis `apps/mobile`, et jamais par `@bob/ui` — voir
+  §4 ci-dessous et [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
 
 ---
 
@@ -74,13 +78,22 @@ export const Money = ({value, style}) =>
 
 ## 4. Table de traduction Web → RN (à connaître par cœur)
 
+> **Amendé le 2026-07-29 — doctrine « matière Bob ».** Une ligne de cette table prescrivait un flou
+> système à **teinte sombre** ; c'est exactement ce que la directive du fondateur exclut (« Je NE
+> VEUX PAS une UI transparente à la iOS »). Le `backdrop-filter` du proto **web** ne se traduit pas
+> par un `BlurView` : il se traduit par une **surface teintée opaque** de notre palette. Autorité :
+> [UX-ADR-004 § Algorithme de surface](../docs/mobile-experience/adr/UX-ADR-004-adaptive-appearance.md)
+> et [04 § Retombée de bord](../docs/mobile-experience/04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob).
+> Les prototypes `.dc.html` de ce dossier gardent leurs `backdrop-filter` : ce sont des artefacts
+> **web**, pas des prescriptions RN.
+
 | Web (proto) | React Native |
 |---|---|
 | `box-shadow: 0 8px 22px rgba(13,38,68,.06)` | `tokens.shadowNative.e2` (iOS `shadow*` + Android `elevation`) |
 | `background: linear-gradient(168deg,…)` | `<LinearGradient colors={[…]} locations={[…]} {...angle(168)} />` (§5) |
 | `position: fixed` / surcouche | route `presentation:'modal'` **ou** `<View style={StyleSheet.absoluteFill}>` |
 | `overflow-y: auto` | `<ScrollView>` (jamais un `<View>` scrollable) |
-| `backdrop-filter: blur(6px)` | `<BlurView intensity={20} tint="dark">` (expo-blur) |
+| `backdrop-filter: blur(6px)` | **(amendé 2026-07-29)** `<BobSurface tone=… emphasis=…>` — surface **teintée opaque** (`surfaceTint`), aucune transparence, aucune capability runtime. Le flou n'est admis **que** en retombée de bord non interactive, via `ProgressiveBlurBob` et son port `renderBlurLayer` — jamais comme fond d'une surface qui porte une information. ~~`<BlurView intensity={20} tint="dark">` (expo-blur)~~ : `tint="dark"` inverse notre identité sur fond `#EFF2F7`, et `expo-blur` n'est déclaré nulle part dans le dépôt. |
 | `font-variant-numeric: tabular-nums` | `fontVariant:['tabular-nums']` |
 | `letter-spacing: -.5px` | `letterSpacing:-0.5` (dp, pas px) |
 | `width: calc(100% - 32px)` | `marginHorizontal:16` sur un élément `alignSelf:'stretch'` |
