@@ -4,7 +4,7 @@ Statut : **Proposed**
 Owner attendu : Content owner · **à affecter**
 Dernière mise à jour : 2026-07-29 (amendements A1/A2/A3 : entrées matière, retombée et tab bar ;
 A8 : teinte pilotée par le highlight ; A12 : durée du fade-through ; A13 : affirmation « verre
-système »)
+système » ; A14 : Reduce Transparency)
 
 Ce glossaire fixe le sens des termes employés dans ce dossier. Lorsqu'un terme du backend possède
 une définition canonique plus précise, celle-ci prévaut ; la définition ci-dessous explique son
@@ -65,7 +65,7 @@ usage dans le programme d'expérience.
 | P0/P1/P2/P3 | Sévérité/priorité : P0 bloque vérité/sécurité/release ; P1 qualité principale ; P2 amélioration importante ; P3 exploration optionnelle. |
 | Motion intent | Rôle sémantique d'un mouvement (`press`, `selection`, `layout`, etc.), distinct d'une durée codée dans un écran. |
 | Reduced Motion | Préférence système réduisant translation, zoom, profondeur et boucles tout en conservant sens et actions. |
-| Reduce Transparency | Préférence système imposant des surfaces plus opaques ; le fallback ne perd aucune fonction. |
+| Reduce Transparency | **(amendé A14 · 2026-07-29)** Préférence système réduisant les matériaux translucides. Chez Bob elle **n'a aucune surface à remplacer** : la surface teintée opaque (`surfaceTint` / `BobSurface`) est le **rang normal**, pas un repli — capture avant/après identique au pixel. Son seul effet possible est de **retirer les échantillons de flou** de la [retombée de bord](04-navigation-scroll-surfaces.md#retombée-de-bord--progressiveblurbob) si son mode flouté est un jour activé : même géométrie, même courbe, même couleur, aucune fonction ni aucun contraste perdus. Elle n'active donc **aucun chemin de rendu alternatif**. *(Rédaction initiale supersédée : « Préférence système imposant des surfaces plus opaques ; le fallback ne perd aucune fonction » — dernière survivance de l'algorithme d'avant A1, où l'opaque était un repli déclenché par cette préférence.)* |
 | Crossfade | Fondu de remplacement sans déplacement spatial, utilisé notamment en mouvement réduit. |
 | Hero transition | Transformation rare d'un objet vers son détail ; elle reste un enrichissement avec fallback push. |
 | Card | Conteneur de contenu/action dans une page. Le mot ne désigne pas une présentation de route ; sur grande largeur on parle de panneau de détail. |
