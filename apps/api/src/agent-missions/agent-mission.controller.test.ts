@@ -243,6 +243,14 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         },
         selectCustomerCas: async () => null,
       },
+      quoteLineWork: {
+        listForUpdate: async () => [],
+        findByIdForUpdate: async () => null,
+        insertMany: async () => 'inserted',
+        updateCas: async () => 'revision_conflict',
+        delete: async () => 'not_found',
+        deleteAll: async () => 0,
+      },
       quoteScreen: {
         observeForUpdate: async () => ({
           status: 'rejected',

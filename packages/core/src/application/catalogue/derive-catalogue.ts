@@ -131,12 +131,104 @@ export interface CataloguePrestation extends CustomPrestation {
   readonly indicative: boolean;
 }
 
-/** minuscules + sans accents (œ → oe) + ponctuation → espaces. */
-function normalizeLabel(input: string): string {
-  return input
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/œ/gi, 'oe')
+/**
+ * Contrat Unicode partagé avec le générateur SQL M2-A.
+ *
+ * Les plages Latin sont translittérées selon leur décomposition NFD. Les caractères qui ne se
+ * décomposent pas sont listés comme expansions explicites. Les marques combinantes sont retirées
+ * avant que la ponctuation restante devienne un séparateur. Le SQL est généré depuis ces trois
+ * listes : ajouter une règle ici sans régénérer la migration casse volontairement le build.
+ */
+export const CATALOGUE_SEARCH_LATIN_RANGES = [
+  '00c0-024f',
+  '1e00-1eff',
+  '2c60-2c7f',
+  'a720-a7ff',
+  'ab30-ab6f',
+] as const;
+
+export const CATALOGUE_SEARCH_IGNORED_MARK_RANGES = [
+  '0300-036f',
+  '1ab0-1aff',
+  '1dc0-1dff',
+  '20d0-20ff',
+  'fe20-fe2f',
+] as const;
+
+export const CATALOGUE_SEARCH_EXPANSIONS = [
+  // U+212B se décompose en NFD côté core mais vit hors des plages Latin générées en SQL.
+  // L'expansion explicite garde donc PostgreSQL strictement aligné sur `normalize('NFD')`.
+  'Å=a',
+  'Œ=oe',
+  'œ=oe',
+  'Æ=ae',
+  'æ=ae',
+  'ẞ=ss',
+  'ß=ss',
+  'Þ=th',
+  'þ=th',
+  'Ð=d',
+  'ð=d',
+  'Đ=d',
+  'đ=d',
+  'Ł=l',
+  'ł=l',
+  'Ø=o',
+  'ø=o',
+  'Ħ=h',
+  'ħ=h',
+  'ı=i',
+  'Ŋ=n',
+  'ŋ=n',
+  'Ŧ=t',
+  'ŧ=t',
+  'Ə=e',
+  'ə=e',
+] as const;
+
+function parseCatalogueSearchRange(range: string): readonly [number, number] {
+  const [startToken, endToken] = range.split('-');
+  const start = Number.parseInt(startToken ?? '', 16);
+  const end = Number.parseInt(endToken ?? '', 16);
+  if (
+    !Number.isSafeInteger(start)
+    || !Number.isSafeInteger(end)
+    || start < 0
+    || end < start
+    || end > 0x10ffff
+  ) {
+    throw new Error(`CATALOGUE_SEARCH_RANGE_INVALID:${range}`);
+  }
+  return [start, end];
+}
+
+const CATALOGUE_SEARCH_IGNORED_MARK_BOUNDS =
+  CATALOGUE_SEARCH_IGNORED_MARK_RANGES.map(parseCatalogueSearchRange);
+
+function isIgnoredCatalogueSearchMark(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  return codePoint !== undefined
+    && CATALOGUE_SEARCH_IGNORED_MARK_BOUNDS.some(
+      ([start, end]) => codePoint >= start && codePoint <= end,
+    );
+}
+
+/**
+ * Clé de recherche partagée avec l'index PostgreSQL M2-A :
+ * minuscules + sans accents (œ → oe) + ponctuation → espaces.
+ */
+export function normalizeCatalogueSearchKey(input: string): string {
+  const expanded = CATALOGUE_SEARCH_EXPANSIONS.reduce((value, encodedRule) => {
+    const separator = encodedRule.indexOf('=');
+    return value.replaceAll(
+      encodedRule.slice(0, separator),
+      encodedRule.slice(separator + 1),
+    );
+  }, input);
+  const withoutMarks = [...expanded.normalize('NFD')]
+    .filter((character) => !isIgnoredCatalogueSearchMark(character))
+    .join('');
+  return withoutMarks
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -182,9 +274,9 @@ export function searchCatalogue(
   prestations: readonly CataloguePrestation[],
   query: string,
 ): CataloguePrestation[] {
-  const normalizedQuery = normalizeLabel(query);
+  const normalizedQuery = normalizeCatalogueSearchKey(query);
   if (normalizedQuery === '') return [...prestations];
   return prestations.filter((prestation) =>
-    normalizeLabel(prestation.label).includes(normalizedQuery),
+    normalizeCatalogueSearchKey(prestation.label).includes(normalizedQuery),
   );
 }

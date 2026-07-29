@@ -28,6 +28,10 @@ DECLARE
     pg_catalog.to_regrole('bob_agent_mission_fingerprint_readiness');
   readiness_row_count INTEGER;
   readiness_invalid_count INTEGER;
+  quote_line_work_table_oid OID;
+  quote_line_work_guard_oid OID;
+  quote_line_work_trigger_count INTEGER;
+  quote_line_work_policy_count INTEGER;
 BEGIN
   SELECT *
     INTO STRICT runtime_role
@@ -65,9 +69,130 @@ BEGIN
       pg_catalog.pg_get_userbyid(reachable_role_oid);
   END LOOP;
 
+  quote_line_work_table_oid :=
+    pg_catalog.to_regclass('public.agent_mission_quote_line_work');
+  quote_line_work_guard_oid :=
+    pg_catalog.to_regprocedure('public.guard_agent_mission_quote_line_work_v1()');
+  SELECT pg_catalog.count(*)::INTEGER
+    INTO quote_line_work_trigger_count
+    FROM pg_catalog.pg_trigger AS trigger
+   WHERE trigger.tgrelid = quote_line_work_table_oid
+     AND NOT trigger.tgisinternal;
+  IF quote_line_work_guard_oid IS NULL
+     OR quote_line_work_trigger_count <> 1
+     OR NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_trigger AS trigger
+        WHERE trigger.tgrelid = quote_line_work_table_oid
+          AND trigger.tgname = 'agent_mission_quote_line_work_guard_v1'
+          AND NOT trigger.tgisinternal
+          AND trigger.tgenabled = 'O'
+          AND trigger.tgtype = 31
+          AND trigger.tgfoid = quote_line_work_guard_oid
+          AND trigger.tgqual IS NULL
+          AND trigger.tgnargs = 0
+          AND trigger.tgattr = ''::pg_catalog.int2vector
+     ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_QUOTE_LINE_WORK_GUARD_TRIGGER_DRIFT';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc AS procedure
+     WHERE procedure.oid = quote_line_work_guard_oid
+       AND NOT procedure.prosecdef
+       AND NOT procedure.proleakproof
+       AND procedure.provolatile = 'v'
+       AND procedure.proparallel = 'u'
+       AND procedure.pronargs = 0
+       AND procedure.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+       AND procedure.proconfig = ARRAY[
+         'search_path=pg_catalog, public'
+       ]::TEXT[]
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_QUOTE_LINE_WORK_GUARD_FUNCTION_DRIFT';
+  END IF;
+
+  SELECT pg_catalog.count(*)::INTEGER
+    INTO quote_line_work_policy_count
+    FROM pg_catalog.pg_policy AS policy
+   WHERE policy.polrelid = quote_line_work_table_oid;
+  IF quote_line_work_policy_count <> 4 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_QUOTE_LINE_WORK_POLICY_INVENTORY_DRIFT';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM (
+        VALUES
+          (
+            'agent_mission_quote_line_work_owner_select'::TEXT,
+            'r'::"char",
+            'companyId=current_setting''app.current_company_id'',trueANDownerUserId=NULLIFcurrent_setting''app.current_user_id'',true,'''''::TEXT,
+            NULL::TEXT
+          ),
+          (
+            'agent_mission_quote_line_work_owner_insert'::TEXT,
+            'a'::"char",
+            NULL::TEXT,
+            'companyId=current_setting''app.current_company_id'',trueANDownerUserId=NULLIFcurrent_setting''app.current_user_id'',true,''''ANDmissionId=NULLIFcurrent_setting''app.current_agent_mission_id'',true,'''''::TEXT
+          ),
+          (
+            'agent_mission_quote_line_work_owner_update'::TEXT,
+            'w'::"char",
+            'companyId=current_setting''app.current_company_id'',trueANDownerUserId=NULLIFcurrent_setting''app.current_user_id'',true,''''ANDmissionId=NULLIFcurrent_setting''app.current_agent_mission_id'',true,'''''::TEXT,
+            'companyId=current_setting''app.current_company_id'',trueANDownerUserId=NULLIFcurrent_setting''app.current_user_id'',true,''''ANDmissionId=NULLIFcurrent_setting''app.current_agent_mission_id'',true,'''''::TEXT
+          ),
+          (
+            'agent_mission_quote_line_work_owner_delete'::TEXT,
+            'd'::"char",
+            'companyId=current_setting''app.current_company_id'',trueANDownerUserId=NULLIFcurrent_setting''app.current_user_id'',true,''''ANDmissionId=NULLIFcurrent_setting''app.current_agent_mission_id'',true,'''''::TEXT,
+            NULL::TEXT
+          )
+      ) AS expected(policy_name, policy_command, expected_using, expected_check)
+      LEFT JOIN pg_catalog.pg_policy AS policy
+        ON policy.polrelid = quote_line_work_table_oid
+       AND policy.polname = expected.policy_name
+       AND policy.polcmd = expected.policy_command
+     WHERE policy.oid IS NULL
+        OR NOT policy.polpermissive
+        OR policy.polroles IS DISTINCT FROM ARRAY[0::OID]
+        OR (
+          CASE
+            WHEN policy.polqual IS NULL THEN NULL
+            ELSE pg_catalog.regexp_replace(
+              pg_catalog.replace(
+                pg_catalog.pg_get_expr(policy.polqual, policy.polrelid),
+                '::text',
+                ''
+              ),
+              '[[:space:]()"]',
+              '',
+              'g'
+            )
+          END
+        ) IS DISTINCT FROM expected.expected_using
+        OR (
+          CASE
+            WHEN policy.polwithcheck IS NULL THEN NULL
+            ELSE pg_catalog.regexp_replace(
+              pg_catalog.replace(
+                pg_catalog.pg_get_expr(policy.polwithcheck, policy.polrelid),
+                '::text',
+                ''
+              ),
+              '[[:space:]()"]',
+              '',
+              'g'
+            )
+          END
+        ) IS DISTINCT FROM expected.expected_check
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_QUOTE_LINE_WORK_POLICY_DEFINITION_DRIFT';
+  END IF;
+
   FOREACH table_name IN ARRAY ARRAY[
     'agent_missions',
     'agent_mission_events',
+    'agent_mission_quote_line_work',
     'agent_mission_fingerprint_key_version_floors',
     'agent_mission_fingerprint_key_bindings'
   ]::TEXT[] LOOP
@@ -162,6 +287,41 @@ BEGIN
     END IF;
   END LOOP;
 
+  FOREACH privilege_name IN ARRAY ARRAY[
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE'
+  ]::TEXT[] LOOP
+    IF NOT pg_catalog.has_table_privilege(
+      current_user,
+      'public.agent_mission_quote_line_work',
+      privilege_name
+    ) THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_RUNTIME_REQUIRED_PRIVILEGE_MISSING:agent_mission_quote_line_work:%',
+        privilege_name;
+    END IF;
+  END LOOP;
+  FOREACH privilege_name IN ARRAY ARRAY[
+    'TRUNCATE', 'REFERENCES', 'TRIGGER'
+  ]::TEXT[] LOOP
+    IF pg_catalog.has_table_privilege(
+      current_user,
+      'public.agent_mission_quote_line_work',
+      privilege_name
+    ) THEN
+      RAISE EXCEPTION
+        'AGENT_MISSION_RUNTIME_FORBIDDEN_PRIVILEGE:agent_mission_quote_line_work:%',
+        privilege_name;
+    END IF;
+  END LOOP;
+  IF pg_catalog.has_any_column_privilege(
+    current_user,
+    'public.agent_mission_quote_line_work',
+    'REFERENCES'
+  ) THEN
+    RAISE EXCEPTION
+      'AGENT_MISSION_RUNTIME_COLUMN_PRIVILEGE_FORBIDDEN:agent_mission_quote_line_work:REFERENCES';
+  END IF;
+
   IF EXISTS (
     SELECT 1
       FROM pg_catalog.pg_class AS relation
@@ -173,6 +333,7 @@ BEGIN
        AND relation.relname IN (
          'agent_missions',
          'agent_mission_events',
+         'agent_mission_quote_line_work',
          'agent_mission_fingerprint_key_version_floors',
          'agent_mission_fingerprint_key_bindings'
        )
@@ -190,6 +351,7 @@ BEGIN
        AND relation.relname IN (
          'agent_missions',
          'agent_mission_events',
+         'agent_mission_quote_line_work',
          'agent_mission_fingerprint_key_version_floors',
          'agent_mission_fingerprint_key_bindings'
        )
@@ -203,6 +365,7 @@ BEGIN
   FOREACH function_name IN ARRAY ARRAY[
     'guard_agent_mission_mutation_v1()',
     'guard_quote_draft_agent_mission_v1()',
+    'guard_agent_mission_quote_line_work_v1()',
     'reject_agent_mission_event_mutation_v1()',
     'guard_agent_mission_event_append_v1()',
     'require_agent_mission_event_v1()',
@@ -335,6 +498,7 @@ BEGIN
          WHERE relation.oid IN (
            'public.agent_missions'::pg_catalog.regclass,
            'public.agent_mission_events'::pg_catalog.regclass,
+           'public.agent_mission_quote_line_work'::pg_catalog.regclass,
            'public.agent_mission_fingerprint_key_version_floors'::pg_catalog.regclass,
            'public.agent_mission_fingerprint_key_bindings'::pg_catalog.regclass
          )
@@ -344,6 +508,7 @@ BEGIN
          WHERE function.oid IN (
            'public.guard_agent_mission_mutation_v1()'::pg_catalog.regprocedure,
            'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
+           'public.guard_agent_mission_quote_line_work_v1()'::pg_catalog.regprocedure,
            'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
            'public.guard_agent_mission_event_append_v1()'::pg_catalog.regprocedure,
            'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
@@ -428,6 +593,7 @@ BEGIN
            WHERE relation.oid IN (
              'public.agent_missions'::pg_catalog.regclass,
              'public.agent_mission_events'::pg_catalog.regclass,
+             'public.agent_mission_quote_line_work'::pg_catalog.regclass,
              'public.agent_mission_fingerprint_key_version_floors'::pg_catalog.regclass,
              'public.agent_mission_fingerprint_key_bindings'::pg_catalog.regclass
            )
@@ -437,6 +603,7 @@ BEGIN
            WHERE function.oid IN (
              'public.guard_agent_mission_mutation_v1()'::pg_catalog.regprocedure,
              'public.guard_quote_draft_agent_mission_v1()'::pg_catalog.regprocedure,
+             'public.guard_agent_mission_quote_line_work_v1()'::pg_catalog.regprocedure,
              'public.reject_agent_mission_event_mutation_v1()'::pg_catalog.regprocedure,
              'public.guard_agent_mission_event_append_v1()'::pg_catalog.regprocedure,
              'public.require_agent_mission_event_v1()'::pg_catalog.regprocedure,
@@ -457,6 +624,7 @@ BEGIN
     FOREACH table_name IN ARRAY ARRAY[
       'agent_missions',
       'agent_mission_events',
+      'agent_mission_quote_line_work',
       'agent_mission_fingerprint_key_version_floors',
       'agent_mission_fingerprint_key_bindings'
     ]::TEXT[] LOOP
@@ -488,6 +656,7 @@ BEGIN
     FOREACH function_name IN ARRAY ARRAY[
       'guard_agent_mission_mutation_v1()',
       'guard_quote_draft_agent_mission_v1()',
+      'guard_agent_mission_quote_line_work_v1()',
       'reject_agent_mission_event_mutation_v1()',
       'guard_agent_mission_event_append_v1()',
       'require_agent_mission_event_v1()',

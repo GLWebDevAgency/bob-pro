@@ -24,6 +24,7 @@ BEGIN
        AND relation.relname IN (
          'agent_missions',
          'agent_mission_events',
+         'agent_mission_quote_line_work',
          'realtime_admission_cancellation_fences',
          'release_flags',
          'release_flag_subjects',
@@ -31,7 +32,7 @@ BEGIN
          'agent_mission_fingerprint_key_version_floors',
          'agent_mission_fingerprint_key_bindings'
        )
-  ) <> 8 THEN
+  ) <> 9 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT';
   END IF;
 
@@ -43,6 +44,7 @@ BEGIN
        AND function.proname IN (
          'guard_agent_mission_mutation_v1',
          'guard_quote_draft_agent_mission_v1',
+         'guard_agent_mission_quote_line_work_v1',
          'reject_agent_mission_event_mutation_v1',
          'guard_agent_mission_event_append_v1',
          'require_agent_mission_event_v1',
@@ -67,7 +69,7 @@ BEGIN
            AND function.pronargs = 1
          )
        )
-  ) <> 14 THEN
+  ) <> 15 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT';
   END IF;
 
@@ -82,6 +84,7 @@ BEGIN
          AND relation.relname IN (
            'agent_missions',
            'agent_mission_events',
+           'agent_mission_quote_line_work',
            'realtime_admission_cancellation_fences',
            'release_flags',
            'release_flag_subjects',
@@ -99,6 +102,7 @@ BEGIN
          AND function.proname IN (
            'guard_agent_mission_mutation_v1',
            'guard_quote_draft_agent_mission_v1',
+           'guard_agent_mission_quote_line_work_v1',
            'reject_agent_mission_event_mutation_v1',
            'guard_agent_mission_event_append_v1',
            'require_agent_mission_event_v1',
@@ -144,6 +148,11 @@ WITH desired_acl(relation_name, granted_privileges, revoked_privileges) AS (
       'agent_mission_events'::TEXT,
       'SELECT, INSERT'::TEXT,
       'UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'::TEXT
+    ),
+    (
+      'agent_mission_quote_line_work'::TEXT,
+      'SELECT, INSERT, UPDATE, DELETE'::TEXT,
+      'TRUNCATE, REFERENCES, TRIGGER'::TEXT
     ),
     (
       'realtime_admission_cancellation_fences'::TEXT,
@@ -206,6 +215,7 @@ SELECT pg_catalog.format(
  WHERE relation.relname IN (
    'agent_missions',
    'agent_mission_events',
+   'agent_mission_quote_line_work',
    'realtime_admission_cancellation_fences',
    'release_flags',
    'release_flag_subjects',
@@ -249,6 +259,7 @@ SELECT pg_catalog.format(
  WHERE function.proname IN (
    'guard_agent_mission_mutation_v1',
    'guard_quote_draft_agent_mission_v1',
+   'guard_agent_mission_quote_line_work_v1',
    'reject_agent_mission_event_mutation_v1',
    'guard_agent_mission_event_append_v1',
    'require_agent_mission_event_v1',
