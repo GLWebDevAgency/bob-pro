@@ -35,8 +35,9 @@ Ces amendements **ne modifient aucun code applicatif, n'ajoutent aucune dépenda
 aucun écran**. Ils ne changent ni le nombre d'exigences (77), ni les gates, ni les statuts, ni les
 owners — tous restent **à affecter**.
 
-**Portée hors dossier.** `A10`, `A11`, `A12`, `A15` et `A16` amendent des documents canoniques **hors**
-`docs/mobile-experience` (le handoff design). Ils y sont journalisés parce qu'une doctrine qui
+**Portée hors dossier.** `A7`, `A10`, `A11`, `A12`, `A15` et `A16` amendent des documents canoniques
+**hors** `docs/mobile-experience` — trois fichiers du handoff design : `NAVIGATION_MAP.md`,
+`RN_EXPO_GUIDE.md` et `SPEC_LOT_RETOURS_DEVICE_20260714.md`. Ils y sont journalisés parce qu'une doctrine qui
 n'est propagée que dans son propre dossier laisse la contradiction se reformer ailleurs — c'est
 exactement ce que ces amendements corrigent. Les prototypes `.dc.html` et `.jsx` du handoff
 ne sont pas touchés : ce sont des artefacts **web** historiques, pas des prescriptions RN.
@@ -150,9 +151,9 @@ responsabilité.
 La mise à jour d'un owner nommé, d'un snapshot ou d'un statut se fait dans ce registre et dans
 l'en-tête du document au même changement. Le registre est l'autorité si un ancien export diverge.
 
-**Amendements du 2026-07-29.** Les documents 00, 01, 02, 03, 04, 08, 09, 10, 11, 12, 14, 15, 16, 17,
-18, 19, `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-004` portent en tête un encadré daté (A1 → A9) qui
-nomme sa source et sa portée. La colonne « Dernière référence » ci-dessus reste valable : ces
+**Amendements du 2026-07-29.** Vingt-et-un documents de ce dossier portent en tête un encadré daté
+(`A1` → `A16`) qui nomme sa source et sa portée ; la liste fait foi dans les fichiers eux-mêmes,
+pas ici — une énumération recopiée devient fausse au premier amendement suivant. La colonne « Dernière référence » ci-dessus reste valable : ces
 amendements n'actualisent **pas** le snapshot de code `2515ddf3` du corps historique — ils ajoutent
 une seconde référence, le kit « matière Bob » livré et testé, dont les chemins exacts sont listés
 dans [17 § Autorités normatives](17-references.md#autorités-normatives). Aucun owner n'est affecté

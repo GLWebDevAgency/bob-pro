@@ -228,7 +228,9 @@ Bob Live et ne peut pas être dégradé pour synchroniser un morph.
 
 ## Assistant
 
-- Nouveau message utilisateur : fade + 4–6 dp, 180–220 ms.
+- Nouveau message utilisateur : fade + 4–6 dp, sur `motionSemantic.enter` (240 ms, `packages/tokens`)
+  — la fourchette « 180–220 ms » d'origine n'était adossée à aucun token et coïncidait avec le
+  registre historique `motion.base`, réservé aux écrans déjà livrés.
 - Message Bob : bloc/phrase, pas typewriter.
 - Carte outil : layout transition entre proposition, en cours, résultat et erreur.
 - Auto-scroll seulement si l'utilisateur est proche du bas.
