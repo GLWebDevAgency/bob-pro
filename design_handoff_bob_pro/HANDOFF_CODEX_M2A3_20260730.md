@@ -77,3 +77,73 @@
 
 Commande de reprise conversationnelle : **« reprends M2-A-3 depuis
 `HANDOFF_CODEX_M2A3_20260730.md` »**.
+
+## Checkpoint pré-redémarrage — 30 juillet 2026
+
+État figé à `agent/gpt/m2a3-realtime-loop@466c6286`. Le worktree est propre et le commit est
+déjà présent sur `origin/agent/gpt/m2a3-realtime-loop`. `origin/main` est toujours
+`cd6092d7d407ba96129f49c8fc82733ee7ccabb0` : aucun rebase n'est requis tant que cette référence
+n'avance pas.
+
+### Plan actif
+
+1. Synchronisation branche, claims et spec : **terminée**.
+2. Raccordement OpenAI WebRTC, runtime et recovery mobile au protocole V2 : **prochaine action**.
+3. Surface mobile mission et parité voix↔toucher ; fermeture des writers legacy : à faire.
+4. Certifications PostgreSQL reprise/concurrence : à faire.
+5. Validations, reviews adversariales, staging exact-SHA et appareils : à faire.
+6. Une seule PR après certification : à faire.
+
+### Audit mobile déjà effectué
+
+- `apps/mobile/src/realtime/webrtc-realtime-transport.ts` envoie encore
+  `REALTIME_AGENT_MISSION_PROTOCOL_VERSION` (V1). OpenAI WebRTC doit envoyer exactement
+  `REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION` (V2).
+- `apps/mobile/src/realtime/mistral-realtime-transport.ts` doit rester strictement V1 ; Mistral
+  est hors de ce train et aucun fallback V2→V1 n'est autorisé.
+- `apps/mobile/src/agent/agent-mission-runtime.ts` refuse actuellement toute session autre que
+  V1 et n'expose que lecture, ACK, décision client et handoff. Il doit accepter le discriminant
+  V1/V2, conserver la compatibilité M1-C V1, et exposer les mutations V2 avec refus fermé quand
+  une session V1 tente une opération M2-A.
+- `apps/mobile/src/agent/agent-mission-recovery.tsx` et
+  `agent-mission-recovery-state.ts` lisent encore la reprise V1. La reprise froide M2-A doit
+  appeler `getCurrentQuoteAgentMissionResumeV2` et transporter le couple cohérent
+  `{ mission, presentation }`.
+- `apps/mobile/src/agent/realtime-session.ts` porte encore les noms et gardes
+  `resumeMissionV1` / `requireMissionV1ForStart`. Le contrôleur doit demander un protocole
+  attendu explicite (`1 | 2 | null`) ; la reprise M2-A exige exactement V2 et échoue fermée si
+  le transport négocié ne le fournit pas.
+- `apps/mobile/src/agent/quote-screen-mission-coordinator.ts` ne transporte pas encore
+  `presentation`. Le binding `ready` doit garder mission, choix réels et présentation issus du
+  même snapshot autoritaire.
+- `apps/mobile/src/agent/use-quote-screen-mission-binding.ts` transforme actuellement
+  automatiquement `awaiting_lines` en `handoff_required`. Ce comportement doit être supprimé :
+  `awaiting_lines` reste une mission ouverte avec Bob actif.
+- `apps/mobile/app/devis/new.tsx` contient encore l'UI de reprise V1 et le handoff historique.
+  La surface M2-A doit être extraite en composant focalisé, i18n et accessible, et rendre les
+  quatre phases : saisie de ligne, choix catalogue réel, détail manquant, confirmation avec diff.
+- Les méthodes et codecs V2 nécessaires existent déjà dans `@bob/api-client` :
+  lecture courante, ACK, sélection client, staging de lignes, choix catalogue, patch de ligne,
+  décision de proposition et reprise froide V2 stricte.
+
+### Invariants à ne pas perdre au redémarrage
+
+- OpenAI seul négocie V2 ; Mistral reste V1.
+- Une mission propriétaire du slot rend tous les parseurs et writers legacy inertes.
+- Un choix tactile et la réponse vocale utilisent le même identifiant scellé et les mêmes fences.
+- `awaiting_lines` ne coupe pas Bob et ne force pas de handoff manuel.
+- La reprise froide hydrate sans parole ni navigation automatique.
+- Aucun mock, libellé inventé ou montant fabriqué : affichage depuis la projection autoritaire.
+- Les preuves appareils, acoustiques et PostgreSQL restent explicitement non certifiées tant
+  qu'elles n'ont pas été exécutées.
+
+### Première séquence après redémarrage
+
+1. Lire ce handoff, puis vérifier `git status --short --branch`, `origin/main` et
+   `refs/agents/*`.
+2. Renouveler les claims GPT si leur TTL a expiré.
+3. Inspecter `agent-session.tsx` et les tests des transports/runtime/recovery avant toute édition.
+4. Livrer un premier commit atomique « transport + runtime + reprise V2 », avec tests ciblés,
+   typecheck et lint mobiles.
+
+Phrase de reprise courte : **« reprends M2-A-3 au checkpoint pré-redémarrage »**.
