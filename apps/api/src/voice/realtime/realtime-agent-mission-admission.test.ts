@@ -13,10 +13,14 @@ import {
 const COMPANY_ID = 'company-1';
 const USER_ID = 'user-1';
 
-function releaseFlag(enabled: boolean) {
+function releaseFlag(
+  enabled: boolean,
+  key: 'bob.agent_missions.quote.v1' | 'bob.agent_missions.quote.m2a' =
+    'bob.agent_missions.quote.v1',
+) {
   return ReleaseFlag.rehydrate({
     id: 'flag-1',
-    key: 'bob.agent_missions.quote.v1',
+    key,
     environment: 'staging',
     globallyEnabled: enabled,
     killSwitchActive: false,
@@ -55,6 +59,13 @@ function v1Input() {
   };
 }
 
+function v2Input() {
+  return {
+    ...v1Input(),
+    negotiation: { requested: 'v2', protocolVersion: 2 } as const,
+  };
+}
+
 describe('RealtimeAgentMissionAdmissionGate', () => {
   it('lie une capability canonique à la décision flag exécutée sous l’identité utilisateur', async () => {
     const store = persistence(releaseFlag(true));
@@ -84,6 +95,41 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
     expect(store.findByKey).toHaveBeenCalledWith(
       'staging',
       'bob.agent_missions.quote.v1',
+    );
+  });
+
+  it('n’accorde V2 que sur son master et son release flag, sans fallback V1', async () => {
+    const store = persistence(releaseFlag(true, 'bob.agent_missions.quote.m2a'));
+    const entropy = vi.fn(() => Buffer.alloc(32, 21));
+    const v1Only = new DurableRealtimeAgentMissionAdmissionGate(
+      store.value,
+      'staging',
+      entropy,
+    );
+    await expect(v1Only.prepare(v2Input())).resolves.toEqual({
+      capability: null,
+      binding: null,
+    });
+    expect(store.runWithIdentity).not.toHaveBeenCalled();
+    expect(entropy).not.toHaveBeenCalled();
+
+    const m2a = new DurableRealtimeAgentMissionAdmissionGate(
+      store.value,
+      'staging',
+      entropy,
+      [1, 2],
+    );
+    const prepared = await m2a.prepare(v2Input());
+    expect(prepared.capability).toMatch(/^bam2_[A-Za-z0-9_-]{43}$/u);
+    expect(prepared.binding).toMatchObject({
+      protocolVersion: 2,
+      releaseFlagKey: 'bob.agent_missions.quote.m2a',
+      releaseEnvironment: 'staging',
+      releaseFlagVersion: 7,
+    });
+    expect(store.findByKey).toHaveBeenCalledWith(
+      'staging',
+      'bob.agent_missions.quote.m2a',
     );
   });
 
@@ -166,6 +212,7 @@ describe('RealtimeAgentMissionAdmissionGate', () => {
       store.value,
       {
         BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'false',
+        BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'false',
       } as Env,
     );
     expect(gate).toBeInstanceOf(DisabledRealtimeAgentMissionAdmissionGate);

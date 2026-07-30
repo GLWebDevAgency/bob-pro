@@ -1,14 +1,26 @@
 import type {
   AcknowledgeQuoteScreenOutput,
+  AgentMissionQuoteLineCandidateV1,
   AgentMissionViewV1,
   AppError,
   CancelQuoteAgentMissionOutput,
   DecideQuoteAgentMissionOutput,
   Result,
+  StageQuoteAgentMissionLinesOutput,
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
 
+/**
+ * Version demandée par le mobile publié tant que M2-A-3 n'a pas certifié la projection device.
+ *
+ * Ne pas remplacer cette constante par `2` : le support M2-A est additif et explicite via
+ * `REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION`.
+ */
 export const REALTIME_AGENT_MISSION_PROTOCOL_VERSION = 1 as const;
+export const REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION = 2 as const;
+export type RealtimeAgentMissionProtocolVersion =
+  | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+  | typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
 
 export interface RealtimeAgentMissionStartQuoteInput {
   readonly commandId: string;
@@ -60,6 +72,59 @@ export type RealtimeAgentMissionQuoteDecisionInput =
       }
   );
 
+interface RealtimeAgentMissionQuoteLineCommandBase {
+  readonly missionId: string;
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+}
+
+export interface RealtimeAgentMissionStageQuoteLinesInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly lines: readonly AgentMissionQuoteLineCandidateV1[];
+}
+
+export interface RealtimeAgentMissionCatalogueChoiceInput
+extends RealtimeAgentMissionQuoteLineCommandBase {
+  readonly decisionId: string;
+  readonly choiceSetRevision: number;
+  readonly pendingLineId: string;
+  readonly expectedWorkRevision: number;
+  readonly choiceId: string;
+  readonly additionalLines: readonly AgentMissionQuoteLineCandidateV1[];
+}
+
+export interface RealtimeAgentMissionLineContinuation {
+  readonly outcome:
+    | 'catalogue_not_found'
+    | 'choices_presented'
+    | 'empty'
+    | 'deferred_to_m2a2'
+    | 'superseded'
+    | 'replayed';
+  readonly pendingLineId: string | null;
+  readonly presentedChoiceCount: number;
+}
+
+export interface RealtimeAgentMissionStageQuoteLinesOutput
+extends Omit<StageQuoteAgentMissionLinesOutput, 'mission'> {
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+}
+
+export interface RealtimeAgentMissionCatalogueChoiceOutput {
+  readonly outcome: 'selected' | 'invalidated' | 'replayed';
+  readonly resolution: 'free' | 'selected' | null;
+  readonly invalidationReason:
+    | 'candidate_unavailable'
+    | 'choice_set_stale'
+    | null;
+  readonly mission: AgentMissionViewV1;
+  readonly continuation: RealtimeAgentMissionLineContinuation;
+}
+
 /**
  * Capability Bob Live volatile.
  *
@@ -67,8 +132,8 @@ export type RealtimeAgentMissionQuoteDecisionInput =
  * champ privé natif et ajoute elle-même le header. Le handle est transférable entre couches,
  * mais ni sérialisable ni reconstructible à partir de son `realtimeSessionId`.
  */
-export interface RealtimeAgentMissionSession {
-  readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+interface RealtimeAgentMissionSessionCommon {
+  readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
   readonly realtimeSessionId: string;
   readonly disposed: boolean;
   getCurrentQuoteCreation(
@@ -93,3 +158,25 @@ export interface RealtimeAgentMissionSession {
   /** Efface immédiatement la capability et rend toute méthode réseau inopérante. */
   dispose(): void;
 }
+
+export interface RealtimeAgentMissionSessionV1
+extends RealtimeAgentMissionSessionCommon {
+  readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+}
+
+export interface RealtimeAgentMissionSessionV2
+extends RealtimeAgentMissionSessionCommon {
+  readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
+  stageQuoteLines(
+    input: RealtimeAgentMissionStageQuoteLinesInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionStageQuoteLinesOutput, AppError>>;
+  decideQuoteCatalogueChoice(
+    input: RealtimeAgentMissionCatalogueChoiceInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeAgentMissionCatalogueChoiceOutput, AppError>>;
+}
+
+export type RealtimeAgentMissionSession =
+  | RealtimeAgentMissionSessionV1
+  | RealtimeAgentMissionSessionV2;

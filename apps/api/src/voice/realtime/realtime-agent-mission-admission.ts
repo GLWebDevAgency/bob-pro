@@ -10,12 +10,17 @@ import {
 import type { Persistence } from '../../persistence/persistence';
 import {
   isRealtimeCompanyId,
+  REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY,
   REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY,
+  type RealtimeAgentMissionQuoteReleaseFlagKey,
   type RealtimeAgentMissionAdmissionBinding,
   type RealtimeProviderId,
 } from './realtime-admission';
 import {
+  AGENT_MISSION_PROTOCOL_M2A_VERSION,
+  AGENT_MISSION_PROTOCOL_VERSION,
   issueRealtimeAgentMissionCapability,
+  type AgentMissionProtocolVersion,
   type RealtimeAgentMissionNegotiationRequest,
 } from './realtime-agent-mission-negotiation';
 
@@ -74,7 +79,7 @@ export function agentMissionPrincipalBindingHash(
     .digest('hex');
 }
 
-function runtimeAllowsV1(input: {
+function runtimeAllowsAgentMission(input: {
   providerId: RealtimeProviderId;
   transport: 'webrtc' | 'mistral-pcm';
   speechDelivery: 'openai-native-webrtc-v1' | 'audited-signed-url-v1';
@@ -104,6 +109,8 @@ implements RealtimeAgentMissionAdmissionGate {
     private readonly persistence: Pick<Persistence, 'cabinet' | 'runWithIdentity'>,
     private readonly releaseEnvironment: ReleaseFlagEnvironment,
     private readonly capabilityEntropy?: () => Uint8Array,
+    private readonly allowedProtocolVersions:
+      readonly AgentMissionProtocolVersion[] = [AGENT_MISSION_PROTOCOL_VERSION],
   ) {
     this.evaluateFlag = new EvaluateReleaseFlag(persistence.cabinet.flags);
   }
@@ -111,11 +118,20 @@ implements RealtimeAgentMissionAdmissionGate {
   async prepare(
     input: Parameters<RealtimeAgentMissionAdmissionGate['prepare']>[0],
   ): Promise<RealtimeAgentMissionAdmissionPreparation> {
+    const protocolVersion =
+      input.negotiation.requested === 'v1' || input.negotiation.requested === 'v2'
+        ? input.negotiation.protocolVersion
+        : null;
     if (
-      input.negotiation.requested !== 'v1'
-      || !runtimeAllowsV1(input)
+      protocolVersion === null
+      || !this.allowedProtocolVersions.includes(protocolVersion)
+      || !runtimeAllowsAgentMission(input)
     ) return NO_AGENT_MISSION;
 
+    const releaseFlagKey: RealtimeAgentMissionQuoteReleaseFlagKey =
+      protocolVersion === AGENT_MISSION_PROTOCOL_VERSION
+        ? REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY
+        : REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
     const principalBindingHash = agentMissionPrincipalBindingHash(
       input.companyId,
       input.userId,
@@ -126,7 +142,7 @@ implements RealtimeAgentMissionAdmissionGate {
         input.userId,
         () => this.evaluateFlag.execute({
           environment: this.releaseEnvironment,
-          key: REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY,
+          key: releaseFlagKey,
           userId: input.userId,
         }),
       );
@@ -143,18 +159,29 @@ implements RealtimeAgentMissionAdmissionGate {
     }
 
     const issued = this.capabilityEntropy === undefined
-      ? issueRealtimeAgentMissionCapability()
-      : issueRealtimeAgentMissionCapability(this.capabilityEntropy);
+      ? issueRealtimeAgentMissionCapability(protocolVersion)
+      : issueRealtimeAgentMissionCapability(protocolVersion, this.capabilityEntropy);
+    const binding: RealtimeAgentMissionAdmissionBinding =
+      protocolVersion === AGENT_MISSION_PROTOCOL_VERSION
+        ? Object.freeze({
+            protocolVersion: AGENT_MISSION_PROTOCOL_VERSION,
+            capabilityHash: issued.capabilityHash,
+            releaseFlagKey: REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY,
+            releaseEnvironment: this.releaseEnvironment,
+            releaseFlagVersion: decision.value.flagVersion as number,
+            principalBindingHash,
+          })
+        : Object.freeze({
+            protocolVersion: AGENT_MISSION_PROTOCOL_M2A_VERSION,
+            capabilityHash: issued.capabilityHash,
+            releaseFlagKey: REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY,
+            releaseEnvironment: this.releaseEnvironment,
+            releaseFlagVersion: decision.value.flagVersion as number,
+            principalBindingHash,
+          });
     return Object.freeze({
       capability: issued.capability,
-      binding: Object.freeze({
-        protocolVersion: 1,
-        capabilityHash: issued.capabilityHash,
-        releaseFlagKey: REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY,
-        releaseEnvironment: this.releaseEnvironment,
-        releaseFlagVersion: decision.value.flagVersion as number,
-        principalBindingHash,
-      }),
+      binding,
     });
   }
 }
@@ -182,5 +209,9 @@ export function buildRealtimeAgentMissionAdmissionGate(
   return new DurableRealtimeAgentMissionAdmissionGate(
     persistence,
     env.CABINET_RELEASE_ENV,
+    undefined,
+    env.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED === 'true'
+      ? [AGENT_MISSION_PROTOCOL_VERSION, AGENT_MISSION_PROTOCOL_M2A_VERSION]
+      : [AGENT_MISSION_PROTOCOL_VERSION],
   );
 }

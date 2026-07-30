@@ -11,6 +11,7 @@ import { type AppError, appConflict } from '../result';
 import {
   agentMissionDomainError,
   canonicalAgentMissionCommand,
+  deleteAgentMissionQuoteLineWorkInTransaction,
   draftReferenceForMission,
   expireAgentMissionInTransaction,
   guardAgentMissionReplayForeground,
@@ -213,6 +214,12 @@ export class CancelQuoteAgentMission {
           occurredAt: now,
         });
         if (!cancelled.ok) abort(agentMissionDomainError(cancelled.error));
+        const cleaned = await deleteAgentMissionQuoteLineWorkInTransaction({
+          transaction,
+          owner,
+          missionId: mission.id,
+        });
+        if (!cleaned.ok) abort(cleaned.error);
         const updated = await transaction.missions.updateCas({
           mission: cancelled.value.mission,
           expectedRevision: input.expectedRevision,

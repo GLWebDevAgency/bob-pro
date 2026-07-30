@@ -34,8 +34,8 @@ const PHONE_FR = /(?:\+33|0)[\s.-]?[1-9](?:[\s.-]?\d{2}){4}\b/gu;
 const SIREN_SIRET = /\b\d{9}(?:\d{5})?\b/gu;
 /** Jeton porteur : JWT Supabase, `Authorization: Bearer …`, clé de service. */
 const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]+)?/gu;
-/** Capability one-shot Bob AgentMission : préfixe versionné + 32 octets base64url. */
-const AGENT_MISSION_CAPABILITY = /bam1_[A-Za-z0-9_-]{43}/gu;
+/** Capability one-shot Bob AgentMission : préfixe de protocole supporté + 32 octets base64url. */
+const AGENT_MISSION_CAPABILITY = /bam(?:1|2)_[A-Za-z0-9_-]{43}/gu;
 const BEARER = /\b(?:Bearer|Basic|token|api[_-]?key)\s*[:=]?\s*[A-Za-z0-9._~+/=-]{12,}/giu;
 /** PAN bancaire : 4 groupes de 4 chiffres, séparateur optionnel. */
 const CARD = /\b\d{4}(?:[ -]?\d{4}){3}\b/gu;

@@ -49,6 +49,7 @@ DECLARE
     'supplier_memory_profiles',
     'bank_balance_snapshots',
     'catalogue_prestations',
+    'catalogue_prestation_search_tokens',
     'chantiers',
     'chantier_notes',
     'chantier_photos',
@@ -327,20 +328,23 @@ CREATE POLICY agent_mission_quote_line_work_owner_delete
 REVOKE ALL ON TABLE agent_missions FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_events FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;
+REVOKE ALL ON TABLE catalogue_prestations FROM PUBLIC;
+REVOKE ALL ON TABLE catalogue_prestation_search_tokens FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_fingerprint_key_version_floors FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_fingerprint_key_bindings FROM PUBLIC;
-REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v2() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
-REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v2() FROM PUBLIC;
 REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
-REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v2() FROM PUBLIC;
 REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_catalogue_prestation_revision_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_fingerprint_key_floor_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_fingerprint_key_binding_immutable_v1() FROM PUBLIC;
 
--- Après la première release, ces deux fonctions appartiennent à l'autorité readiness NOLOGIN.
+-- Après la première release, ces fonctions appartiennent à des autorités NOLOGIN dédiées.
 -- Le rejeu RLS doit donc révoquer sous leur propriétaire exact : le déployeur Supabase n'hérite
--- volontairement pas de ce rôle et une révocation directe casserait la deuxième release.
+-- volontairement pas de ces rôles et une révocation directe casserait la deuxième release.
 SELECT pg_catalog.format(
   'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;',
   owner.rolname,
@@ -350,6 +354,7 @@ SELECT pg_catalog.format(
   FROM pg_catalog.pg_proc AS function
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
  WHERE function.oid IN (
+   'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
    'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
    'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
  )
@@ -359,7 +364,45 @@ SELECT pg_catalog.format(
 DO $$
 DECLARE
   exposed_role text;
+  column_name text;
 BEGIN
+  FOR column_name IN
+    SELECT attribute.attname
+      FROM pg_catalog.pg_attribute AS attribute
+     WHERE attribute.attrelid = 'public.catalogue_prestations'::pg_catalog.regclass
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+       AND attribute.attacl IS NOT NULL
+     ORDER BY attribute.attnum
+  LOOP
+    EXECUTE pg_catalog.format(
+      'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE catalogue_prestations FROM PUBLIC',
+      column_name,
+      column_name,
+      column_name,
+      column_name
+    );
+  END LOOP;
+
+  FOR column_name IN
+    SELECT attribute.attname
+      FROM pg_catalog.pg_attribute AS attribute
+     WHERE attribute.attrelid =
+           'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+       AND attribute.attnum > 0
+       AND NOT attribute.attisdropped
+       AND attribute.attacl IS NOT NULL
+     ORDER BY attribute.attnum
+  LOOP
+    EXECUTE pg_catalog.format(
+      'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE catalogue_prestation_search_tokens FROM PUBLIC',
+      column_name,
+      column_name,
+      column_name,
+      column_name
+    );
+  END LOOP;
+
   FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role']::text[] LOOP
     IF pg_catalog.to_regrole(exposed_role) IS NOT NULL THEN
       EXECUTE pg_catalog.format(
@@ -375,6 +418,51 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE catalogue_prestations FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON TABLE catalogue_prestation_search_tokens FROM %I',
+        exposed_role
+      );
+      FOR column_name IN
+        SELECT attribute.attname
+          FROM pg_catalog.pg_attribute AS attribute
+         WHERE attribute.attrelid = 'public.catalogue_prestations'::pg_catalog.regclass
+           AND attribute.attnum > 0
+           AND NOT attribute.attisdropped
+           AND attribute.attacl IS NOT NULL
+         ORDER BY attribute.attnum
+      LOOP
+        EXECUTE pg_catalog.format(
+          'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE catalogue_prestations FROM %I',
+          column_name,
+          column_name,
+          column_name,
+          column_name,
+          exposed_role
+        );
+      END LOOP;
+      FOR column_name IN
+        SELECT attribute.attname
+          FROM pg_catalog.pg_attribute AS attribute
+         WHERE attribute.attrelid =
+               'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+           AND attribute.attnum > 0
+           AND NOT attribute.attisdropped
+           AND attribute.attacl IS NOT NULL
+         ORDER BY attribute.attnum
+      LOOP
+        EXECUTE pg_catalog.format(
+          'REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE catalogue_prestation_search_tokens FROM %I',
+          column_name,
+          column_name,
+          column_name,
+          column_name,
+          exposed_role
+        );
+      END LOOP;
+      EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON TABLE agent_mission_fingerprint_key_version_floors FROM %I',
         exposed_role
       );
@@ -383,7 +471,7 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_mutation_v1() FROM %I',
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_mutation_v2() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
@@ -391,7 +479,7 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v1() FROM %I',
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v2() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
@@ -399,11 +487,15 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v1() FROM %I',
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v2() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
         'REVOKE ALL PRIVILEGES ON FUNCTION require_agent_mission_event_v1() FROM %I',
+        exposed_role
+      );
+      EXECUTE pg_catalog.format(
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_catalogue_prestation_revision_v1() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
@@ -430,6 +522,7 @@ SELECT pg_catalog.format(
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
  CROSS JOIN pg_catalog.pg_roles AS exposed_role
  WHERE function.oid IN (
+   'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
    'public.guard_agent_mission_fingerprint_key_binding_present_v1()'::pg_catalog.regprocedure,
    'public.agent_mission_fingerprint_key_readiness(integer[])'::pg_catalog.regprocedure
  )
@@ -439,6 +532,11 @@ SELECT pg_catalog.format(
 
 DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestations;
 CREATE POLICY tenant_isolation ON catalogue_prestations
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestation_search_tokens;
+CREATE POLICY tenant_isolation ON catalogue_prestation_search_tokens
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

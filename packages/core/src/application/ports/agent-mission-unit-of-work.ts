@@ -1,5 +1,8 @@
 import { type Instant } from '../../shared-kernel/time';
 import {
+  type AgentMissionProtocolVersion,
+} from '../../domain/agent/agent-mission';
+import {
   type AgentMissionEventRepositoryPort,
   type AgentMissionOwner,
   type AgentMissionQuoteDraftRepositoryPort,
@@ -11,10 +14,15 @@ import {
   type CustomerCandidateSearchPort,
 } from './customer-candidate-search';
 import {
+  type CatalogueCandidateSearchPort,
+} from './catalogue-candidate-search';
+import {
   type AgentMissionQuoteLineWorkRepositoryPort,
 } from './agent-mission-quote-line-work';
 
 export interface AgentMissionRealtimeAuthorityProof {
+  /** Version corrélée au préfixe bam*, au binding de lease et à la mission durable. */
+  readonly protocolVersion: AgentMissionProtocolVersion;
   /**
    * Empreintes HMAC sujet dérivées côté serveur depuis le keyring Bob Live courant et retenu.
    * Le client ne choisit jamais cette liste.
@@ -100,6 +108,7 @@ export interface AgentMissionTransaction {
   readonly quoteLineWork: AgentMissionQuoteLineWorkRepositoryPort;
   readonly quoteScreen: AgentMissionQuoteScreenAuthorityPort;
   readonly customers: CustomerCandidateSearchPort & CustomerCandidateReadPort;
+  readonly catalogueCandidates: CatalogueCandidateSearchPort;
 }
 
 export type AgentMissionCompanyUnavailableReason = 'missing' | 'closed';

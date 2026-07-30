@@ -276,7 +276,10 @@ function negotiationResult(
   binding:
     | Record<never, never>
     | { agentMissionProtocolVersion: null; agentMissionCapability: null }
-    | { agentMissionProtocolVersion: 1; agentMissionCapability: string },
+    | {
+        agentMissionProtocolVersion: 1 | 2;
+        agentMissionCapability: string;
+      },
 ): Result<RealtimeCallBootstrap, AppError> {
   return {
     ok: true,
@@ -343,6 +346,7 @@ describe('RealtimeVoiceService', () => {
         'user-1',
       ),
       sessionId: '20000000-0000-4000-8000-000000000001',
+      protocolVersion: 1,
       capabilityHash: hashRealtimeAgentMissionCapability(capability),
     });
     expect(logger.audit).toHaveBeenCalledWith(
@@ -411,6 +415,33 @@ describe('RealtimeVoiceService', () => {
     )).toEqual({
       requested: 'v1',
       outcome: 'accepted',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    const capabilityV2 = `bam2_${Buffer.alloc(32, 8).toString('base64url')}`;
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 2 },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: 2,
+        agentMissionCapability: capabilityV2,
+      }),
+    )).toEqual({
+      requested: 'v2',
+      outcome: 'accepted',
+      provider: 'openai',
+      transport: 'webrtc',
+    });
+    expect(agentMissionNegotiationMetricLabels(
+      { agentMissionProtocolVersion: 2 },
+      'openai',
+      negotiationResult({
+        agentMissionProtocolVersion: 1,
+        agentMissionCapability: capability,
+      }),
+    )).toEqual({
+      requested: 'v2',
+      outcome: 'refused',
       provider: 'openai',
       transport: 'webrtc',
     });
@@ -612,6 +643,7 @@ describe('RealtimeVoiceService', () => {
         ownerUserId: 'user-1',
       },
       proof: {
+        protocolVersion: 1,
         subjectHashCandidates: [
           admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1'),
         ],
@@ -1884,7 +1916,7 @@ describe('RealtimeVoiceService', () => {
   it('refuse une version Mission inconnue au lieu de la rabattre sur le parcours historique', () => {
     expect(parseRealtimeCallBody({
       sdp: OFFER_SDP,
-      agentMissionProtocolVersion: 2,
+      agentMissionProtocolVersion: 3,
     })).toMatchObject({
       ok: false,
       error: {

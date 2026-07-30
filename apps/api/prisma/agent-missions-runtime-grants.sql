@@ -25,6 +25,8 @@ BEGIN
          'agent_missions',
          'agent_mission_events',
          'agent_mission_quote_line_work',
+         'catalogue_prestations',
+         'catalogue_prestation_search_tokens',
          'realtime_admission_cancellation_fences',
          'release_flags',
          'release_flag_subjects',
@@ -32,7 +34,7 @@ BEGIN
          'agent_mission_fingerprint_key_version_floors',
          'agent_mission_fingerprint_key_bindings'
        )
-  ) <> 9 THEN
+  ) <> 11 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT';
   END IF;
 
@@ -42,14 +44,16 @@ BEGIN
       JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = function.pronamespace
      WHERE namespace.nspname = 'public'
        AND function.proname IN (
-         'guard_agent_mission_mutation_v1',
+         'guard_agent_mission_mutation_v2',
          'guard_quote_draft_agent_mission_v1',
-         'guard_agent_mission_quote_line_work_v1',
+         'guard_agent_mission_quote_line_work_v2',
          'reject_agent_mission_event_mutation_v1',
-         'guard_agent_mission_event_append_v1',
+         'guard_agent_mission_event_append_v2',
          'require_agent_mission_event_v1',
          'guard_realtime_agent_mission_capability_immutable_v1',
-         'guard_realtime_agent_mission_bootstrap_receipt_v1',
+         'guard_realtime_agent_mission_bootstrap_receipt_v2',
+         'guard_catalogue_prestation_revision_v1',
+         'sync_catalogue_prestation_search_tokens_v1',
          'guard_realtime_admission_cancellation_fence_v1',
          'sync_realtime_admission_cancellation_schedule_v1',
          'revalidate_agent_mission_release_flag_v1',
@@ -69,7 +73,7 @@ BEGIN
            AND function.pronargs = 1
          )
        )
-  ) <> 15 THEN
+  ) <> 17 THEN
     RAISE EXCEPTION 'AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT';
   END IF;
 
@@ -85,6 +89,8 @@ BEGIN
            'agent_missions',
            'agent_mission_events',
            'agent_mission_quote_line_work',
+           'catalogue_prestations',
+           'catalogue_prestation_search_tokens',
            'realtime_admission_cancellation_fences',
            'release_flags',
            'release_flag_subjects',
@@ -100,14 +106,16 @@ BEGIN
         JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = function.pronamespace
        WHERE namespace.nspname = 'public'
          AND function.proname IN (
-           'guard_agent_mission_mutation_v1',
+           'guard_agent_mission_mutation_v2',
            'guard_quote_draft_agent_mission_v1',
-           'guard_agent_mission_quote_line_work_v1',
+           'guard_agent_mission_quote_line_work_v2',
            'reject_agent_mission_event_mutation_v1',
-           'guard_agent_mission_event_append_v1',
+           'guard_agent_mission_event_append_v2',
            'require_agent_mission_event_v1',
            'guard_realtime_agent_mission_capability_immutable_v1',
-           'guard_realtime_agent_mission_bootstrap_receipt_v1',
+           'guard_realtime_agent_mission_bootstrap_receipt_v2',
+           'guard_catalogue_prestation_revision_v1',
+           'sync_catalogue_prestation_search_tokens_v1',
            'guard_realtime_admission_cancellation_fence_v1',
            'sync_realtime_admission_cancellation_schedule_v1',
            'revalidate_agent_mission_release_flag_v1',
@@ -153,6 +161,16 @@ WITH desired_acl(relation_name, granted_privileges, revoked_privileges) AS (
       'agent_mission_quote_line_work'::TEXT,
       'SELECT, INSERT, UPDATE, DELETE'::TEXT,
       'TRUNCATE, REFERENCES, TRIGGER'::TEXT
+    ),
+    (
+      'catalogue_prestations'::TEXT,
+      'SELECT, INSERT, UPDATE, DELETE'::TEXT,
+      'TRUNCATE, REFERENCES, TRIGGER'::TEXT
+    ),
+    (
+      'catalogue_prestation_search_tokens'::TEXT,
+      'SELECT'::TEXT,
+      'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'::TEXT
     ),
     (
       'realtime_admission_cancellation_fences'::TEXT,
@@ -216,6 +234,8 @@ SELECT pg_catalog.format(
    'agent_missions',
    'agent_mission_events',
    'agent_mission_quote_line_work',
+   'catalogue_prestations',
+   'catalogue_prestation_search_tokens',
    'realtime_admission_cancellation_fences',
    'release_flags',
    'release_flag_subjects',
@@ -257,14 +277,16 @@ SELECT pg_catalog.format(
    AND namespace.nspname = 'public'
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
  WHERE function.proname IN (
-   'guard_agent_mission_mutation_v1',
+   'guard_agent_mission_mutation_v2',
    'guard_quote_draft_agent_mission_v1',
-   'guard_agent_mission_quote_line_work_v1',
+   'guard_agent_mission_quote_line_work_v2',
    'reject_agent_mission_event_mutation_v1',
-   'guard_agent_mission_event_append_v1',
+   'guard_agent_mission_event_append_v2',
    'require_agent_mission_event_v1',
    'guard_realtime_agent_mission_capability_immutable_v1',
-   'guard_realtime_agent_mission_bootstrap_receipt_v1',
+   'guard_realtime_agent_mission_bootstrap_receipt_v2',
+   'guard_catalogue_prestation_revision_v1',
+   'sync_catalogue_prestation_search_tokens_v1',
    'guard_realtime_admission_cancellation_fence_v1',
    'sync_realtime_admission_cancellation_schedule_v1',
    'revalidate_agent_mission_release_flag_v1',

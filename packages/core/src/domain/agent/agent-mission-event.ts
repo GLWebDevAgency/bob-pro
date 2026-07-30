@@ -15,6 +15,10 @@ export const AGENT_MISSION_EVENT_TYPES = [
   'customer_choice_presented',
   'customer_selected',
   'decision_invalidated',
+  'line_candidates_staged',
+  'catalogue_not_found',
+  'catalogue_choices_presented',
+  'catalogue_choice_selected',
   'mission_cancelled',
   'mission_expired',
 ] as const;
@@ -46,7 +50,11 @@ export type AgentMissionStartDirectDraftOutcome =
 export const AGENT_MISSION_START_CONFLICT_OUTCOMES = ['draft_conflict'] as const;
 export type AgentMissionStartConflictOutcome =
   (typeof AGENT_MISSION_START_CONFLICT_OUTCOMES)[number];
-export const AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES = ['mission_expired'] as const;
+export const AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES = [
+  'mission_expired',
+  'catalogue_not_found',
+  'catalogue_choices_presented',
+] as const;
 export const AGENT_MISSION_CORRELATION_SCREEN_ACK_EVENT_TYPES = [
   'screen_acknowledged',
 ] as const;
@@ -54,6 +62,8 @@ export const AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES = [
   'customer_not_found',
   'customer_choice_presented',
   'customer_selected',
+  'catalogue_not_found',
+  'catalogue_choices_presented',
 ] as const;
 export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'mission_started',
@@ -67,6 +77,8 @@ export const AGENT_MISSION_CORRELATION_USER_EVENT_TYPES = [
   'customer_choice_presented',
   'customer_selected',
   'decision_invalidated',
+  'line_candidates_staged',
+  'catalogue_choice_selected',
   'mission_cancelled',
 ] as const;
 export const AGENT_MISSION_DRAFT_START_EVENT_TYPES = ['mission_started'] as const;
@@ -80,6 +92,10 @@ export const AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES = [
   'customer_not_found',
   'customer_choice_presented',
   'decision_invalidated',
+  'line_candidates_staged',
+  'catalogue_not_found',
+  'catalogue_choices_presented',
+  'catalogue_choice_selected',
   'mission_cancelled',
   'mission_expired',
 ] as const;
@@ -121,10 +137,38 @@ export const AGENT_MISSION_EVENT_CUSTOMER_SELECTED_DATA_KEYS = [
   'choiceSetHash',
 ] as const;
 export const AGENT_MISSION_EVENT_REASON_DATA_KEYS = ['kind', 'reason'] as const;
+export const AGENT_MISSION_EVENT_LINE_STAGED_DATA_KEYS = [
+  'kind',
+  'stagedCount',
+  'firstQueueOrdinal',
+  'lastQueueOrdinal',
+] as const;
+export const AGENT_MISSION_EVENT_CATALOGUE_NOT_FOUND_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'workRevisionAfter',
+  'result',
+] as const;
+export const AGENT_MISSION_EVENT_CATALOGUE_PRESENTED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'expectedWorkRevision',
+  'candidateCount',
+  'choiceSetHash',
+] as const;
+export const AGENT_MISSION_EVENT_CATALOGUE_SELECTED_DATA_KEYS = [
+  'kind',
+  'pendingLineId',
+  'workRevisionAfter',
+  'resolution',
+  'choiceId',
+  'choiceSetHash',
+] as const;
 export const AGENT_MISSION_SCREEN_ACK_NEXT_PHASES = [
   'awaiting_customer',
   'awaiting_customer_choice',
   'awaiting_lines',
+  'awaiting_catalogue_choice',
 ] as const;
 export const AGENT_MISSION_CUSTOMER_NOT_FOUND_RESULTS = ['none', 'too_many'] as const;
 export const AGENT_MISSION_STAGED_CUSTOMER_RESOLUTION_RESULTS = [
@@ -159,7 +203,11 @@ export type AgentMissionEventDataV1 =
   | { readonly kind: AgentMissionKindOnlyEventType }
   | {
       readonly kind: 'screen_acknowledged';
-      readonly nextPhase: 'awaiting_customer' | 'awaiting_customer_choice' | 'awaiting_lines';
+      readonly nextPhase:
+        | 'awaiting_customer'
+        | 'awaiting_customer_choice'
+        | 'awaiting_lines'
+        | 'awaiting_catalogue_choice';
     }
   | {
       readonly kind: 'customer_resolution_staged';
@@ -188,6 +236,33 @@ export type AgentMissionEventDataV1 =
   | {
       readonly kind: 'decision_invalidated';
       readonly reason: 'candidate_unavailable' | 'draft_changed' | 'choice_set_stale';
+    }
+  | {
+      readonly kind: 'line_candidates_staged';
+      readonly stagedCount: number;
+      readonly firstQueueOrdinal: number;
+      readonly lastQueueOrdinal: number;
+    }
+  | {
+      readonly kind: 'catalogue_not_found';
+      readonly pendingLineId: string;
+      readonly workRevisionAfter: number;
+      readonly result: 'none';
+    }
+  | {
+      readonly kind: 'catalogue_choices_presented';
+      readonly pendingLineId: string;
+      readonly expectedWorkRevision: number;
+      readonly candidateCount: number;
+      readonly choiceSetHash: string;
+    }
+  | {
+      readonly kind: 'catalogue_choice_selected';
+      readonly pendingLineId: string;
+      readonly workRevisionAfter: number;
+      readonly resolution: 'free' | 'selected';
+      readonly choiceId: string;
+      readonly choiceSetHash: string;
     }
   | {
       readonly kind: 'mission_cancelled';
@@ -366,7 +441,11 @@ function validateData(
     }
     data = {
       kind: eventType,
-      nextPhase: value['nextPhase'] as 'awaiting_customer' | 'awaiting_customer_choice' | 'awaiting_lines',
+      nextPhase: value['nextPhase'] as
+        | 'awaiting_customer'
+        | 'awaiting_customer_choice'
+        | 'awaiting_lines'
+        | 'awaiting_catalogue_choice',
     };
   } else if (eventType === 'customer_resolution_staged') {
     if (
@@ -429,6 +508,58 @@ function validateData(
       kind: eventType,
       reason: value['reason'] as 'candidate_unavailable' | 'draft_changed' | 'choice_set_stale',
     };
+  } else if (eventType === 'line_candidates_staged') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_LINE_STAGED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      stagedCount: value['stagedCount'] as number,
+      firstQueueOrdinal: value['firstQueueOrdinal'] as number,
+      lastQueueOrdinal: value['lastQueueOrdinal'] as number,
+    };
+  } else if (eventType === 'catalogue_not_found') {
+    if (
+      !exactKeys(value, AGENT_MISSION_EVENT_CATALOGUE_NOT_FOUND_DATA_KEYS)
+      || value['result'] !== 'none'
+    ) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      workRevisionAfter: value['workRevisionAfter'] as number,
+      result: 'none',
+    };
+  } else if (eventType === 'catalogue_choices_presented') {
+    if (!exactKeys(value, AGENT_MISSION_EVENT_CATALOGUE_PRESENTED_DATA_KEYS)) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      expectedWorkRevision: value['expectedWorkRevision'] as number,
+      candidateCount: value['candidateCount'] as number,
+      choiceSetHash: value['choiceSetHash'] as string,
+    };
+  } else if (eventType === 'catalogue_choice_selected') {
+    if (
+      !exactKeys(value, AGENT_MISSION_EVENT_CATALOGUE_SELECTED_DATA_KEYS)
+      || (
+        value['resolution'] !== 'free'
+        && value['resolution'] !== 'selected'
+      )
+    ) {
+      return invalid('data', 'invalid_shape');
+    }
+    data = {
+      kind: eventType,
+      pendingLineId: value['pendingLineId'] as string,
+      workRevisionAfter: value['workRevisionAfter'] as number,
+      resolution: value['resolution'],
+      choiceId: value['choiceId'] as string,
+      choiceSetHash: value['choiceSetHash'] as string,
+    };
   } else if (eventType === 'mission_cancelled') {
     if (
       !exactKeys(value, AGENT_MISSION_EVENT_REASON_DATA_KEYS)
@@ -479,6 +610,62 @@ function validateData(
       }
     } else if (data.choiceId !== null || data.choiceSetHash !== null) {
       return invalid('data', 'inconsistent_event');
+    }
+  }
+
+  if (data.kind === 'line_candidates_staged') {
+    if (
+      !isSafeRevision(data.stagedCount, false)
+      || data.stagedCount > 20
+      || !isSafeRevision(data.firstQueueOrdinal, false)
+      || !isSafeRevision(data.lastQueueOrdinal, false)
+      || data.lastQueueOrdinal - data.firstQueueOrdinal + 1 !== data.stagedCount
+    ) {
+      return invalid('data', 'inconsistent_event');
+    }
+  }
+
+  if (
+    data.kind === 'catalogue_not_found'
+    || data.kind === 'catalogue_choices_presented'
+    || data.kind === 'catalogue_choice_selected'
+  ) {
+    if (!isCanonicalUuid(data.pendingLineId)) {
+      return invalid('data.pendingLineId', 'invalid_uuid');
+    }
+  }
+
+  if (data.kind === 'catalogue_not_found') {
+    if (!isSafeRevision(data.workRevisionAfter, false)) {
+      return invalid('data.workRevisionAfter', 'invalid_revision');
+    }
+  }
+
+  if (data.kind === 'catalogue_choices_presented') {
+    if (!isSafeRevision(data.expectedWorkRevision, false)) {
+      return invalid('data.expectedWorkRevision', 'invalid_revision');
+    }
+    if (
+      !Number.isSafeInteger(data.candidateCount)
+      || data.candidateCount < 1
+      || data.candidateCount > 5
+    ) {
+      return invalid('data.candidateCount', 'invalid_value');
+    }
+    if (!SHA256.test(data.choiceSetHash)) {
+      return invalid('data.choiceSetHash', 'invalid_digest');
+    }
+  }
+
+  if (data.kind === 'catalogue_choice_selected') {
+    if (!isSafeRevision(data.workRevisionAfter, false)) {
+      return invalid('data.workRevisionAfter', 'invalid_revision');
+    }
+    if (!isCanonicalUuid(data.choiceId)) {
+      return invalid('data.choiceId', 'invalid_uuid');
+    }
+    if (!SHA256.test(data.choiceSetHash)) {
+      return invalid('data.choiceSetHash', 'invalid_digest');
     }
   }
 
@@ -559,7 +746,9 @@ function validateCorrelation(input: {
     const hasSession = input.realtimeSessionId !== null;
     const hasTurn = input.turnId !== null;
     const hasContext = input.contextRevision !== null && input.contextDigest !== null;
-    if (!hasSession || hasTurn || !hasContext) {
+    const standaloneContinuation = !hasSession && !hasTurn && !hasContext;
+    const sessionContinuation = hasSession && !hasTurn && hasContext;
+    if (!standaloneContinuation && !sessionContinuation) {
       return invalid('correlation', 'inconsistent_event');
     }
     if (

@@ -460,7 +460,11 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
   async acknowledgeAgentMissionBootstrap(
     input: RealtimeAgentMissionBootstrapAcknowledgementInput,
   ): Promise<RealtimeAgentMissionBootstrapAcknowledgementResult> {
-    if (!validSessionLookup(input) || !SUBJECT_HASH_PATTERN.test(input.capabilityHash)) {
+    if (
+      !validSessionLookup(input)
+      || (input.protocolVersion !== 1 && input.protocolVersion !== 2)
+      || !SUBJECT_HASH_PATTERN.test(input.capabilityHash)
+    ) {
       return { ok: false, reason: 'malformed' };
     }
     // Ce double refuse déjà toute réservation V1 : il ne doit jamais fabriquer un reçu/capability.

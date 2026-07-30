@@ -7,12 +7,16 @@ import type {
   AgentMissionRealtimeAuthorityProof,
   AgentMissionTransaction,
   AgentMissionUnitOfWorkPort,
+  AgentMissionViewV1,
 } from '@bob/core';
 import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
   AgentMission,
+  ContinueQuoteAgentMissionLineQueue,
+  DecideQuoteAgentMissionCatalogueChoice,
   DecideQuoteAgentMission,
+  StageQuoteAgentMissionLines,
   StartQuoteAgentMission,
   toAgentMissionView,
 } from '@bob/core';
@@ -28,9 +32,14 @@ const OWNER = Object.freeze({
   ownerUserId: 'owner-1',
 });
 const PROOF = Object.freeze({
+  protocolVersion: 1,
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
   capabilityHash: 'c'.repeat(64),
+}) satisfies AgentMissionRealtimeAuthorityProof;
+const PROOF_V2 = Object.freeze({
+  ...PROOF,
+  protocolVersion: 2,
 }) satisfies AgentMissionRealtimeAuthorityProof;
 const FINGERPRINTS: AgentMissionFingerprintPort = {
   sign: () => null,
@@ -40,6 +49,55 @@ const MISSION_ID = '20000000-0000-4000-8000-000000000001';
 const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
 const ACK_COMMAND_ID = '10000000-0000-4000-8000-000000000003';
 const NOW = '2026-07-29T00:00:00.000Z';
+const LINE = Object.freeze({
+  serviceReference: 'Main-d’œuvre plomberie',
+  categoryHint: 'labor',
+  quantityDecimal: '2',
+  unitReference: 'heure',
+  unitPriceDecimal: '55',
+  currency: 'EUR',
+  priceBasis: 'per_unit',
+  vatRateHint: null,
+});
+
+function m2aView(
+  phase: AgentMissionViewV1['phase'],
+  revision: number,
+): AgentMissionViewV1 {
+  return {
+    id: MISSION_ID,
+    kind: 'quote_creation',
+    status: 'active',
+    actionable: true,
+    phase,
+    revision,
+    payloadVersion: 1,
+    payload: {
+      schema: 'bob.agent-mission.quote-creation',
+      version: 1,
+      draft: {
+        sessionId: 'quote-draft-session-1',
+        slotRevision: 2,
+        contentRevision: 1,
+      },
+      decision: null,
+      stagedCustomerResolution: null,
+    },
+    currentBinding: {
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      screenName: '/devis/new',
+      screenInstanceId: 'quote-screen-1',
+      acknowledgedAt: NOW,
+    },
+    idleExpiresAt: '2026-07-30T00:00:00.000Z',
+    hardExpiresAt: '2026-08-05T00:00:00.000Z',
+    terminalAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
 
 function continuationFixtures() {
   const started = AgentMission.start({
@@ -119,6 +177,12 @@ function authorization(
   operation: AgentMissionHttpAuthorization['operation'],
 ): AgentMissionHttpAuthorization {
   return Object.freeze({ operation, owner: OWNER, proof: PROOF });
+}
+
+function authorizationV2(
+  operation: AgentMissionHttpAuthorization['operation'],
+): AgentMissionHttpAuthorization {
+  return Object.freeze({ operation, owner: OWNER, proof: PROOF_V2 });
 }
 
 class RejectingUnitOfWork implements AgentMissionUnitOfWorkPort {
@@ -512,6 +576,7 @@ describe('AgentMissionService metrics', () => {
       contextRevision: 4,
       contextDigest: 'f'.repeat(64),
       customerReference: 'Camping les Pins',
+      lines: [],
     });
 
     expect(StartQuoteAgentMission.prototype.execute).toHaveBeenCalledWith({
@@ -528,6 +593,7 @@ describe('AgentMissionService metrics', () => {
         },
       },
       customerReference: 'Camping les Pins',
+      lines: [],
     });
   });
 
@@ -569,6 +635,7 @@ describe('AgentMissionService metrics', () => {
         choiceSetRevision: 3,
         choiceId: '40000000-0000-4000-8000-000000000001',
       },
+      lines: [],
     });
 
     expect(DecideQuoteAgentMission.prototype.execute).toHaveBeenNthCalledWith(1, {
@@ -581,6 +648,7 @@ describe('AgentMissionService metrics', () => {
         action: 'select_screen_customer',
         customerId: 'customer-camping',
       },
+      lines: [],
     });
     expect(DecideQuoteAgentMission.prototype.execute).toHaveBeenNthCalledWith(2, {
       ...OWNER,
@@ -602,6 +670,189 @@ describe('AgentMissionService metrics', () => {
         choiceSetRevision: 3,
         choiceId: '40000000-0000-4000-8000-000000000001',
       },
+      lines: [],
     });
+  });
+
+  it('stage les lignes voix puis attend la continuation durable avant de répondre', async () => {
+    const stagedMission = m2aView('awaiting_lines', 4);
+    const convergedMission = m2aView('awaiting_catalogue_choice', 5);
+    vi.spyOn(StageQuoteAgentMissionLines.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'staged',
+        mission: stagedMission,
+        stagedCount: 1,
+        firstQueueOrdinal: 1,
+        lastQueueOrdinal: 1,
+      },
+    });
+    vi.spyOn(
+      ContinueQuoteAgentMissionLineQueue.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'choices_presented',
+        mission: convergedMission,
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        presentedChoiceCount: 2,
+      },
+    });
+    const { service, logger } = harness(new RejectingUnitOfWork('state'));
+
+    const result = await service.stageLinesFromVoiceTurn({
+      authorization: authorizationV2('stage_quote_lines'),
+      missionId: MISSION_ID,
+      turnId: '10000000-0000-4000-8000-000000000020',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [LINE],
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'staged',
+        mission: { phase: 'awaiting_catalogue_choice', revision: 5 },
+        continuation: {
+          outcome: 'choices_presented',
+          presentedChoiceCount: 2,
+        },
+      },
+    });
+    expect(StageQuoteAgentMissionLines.prototype.execute).toHaveBeenCalledWith({
+      ...OWNER,
+      authority: PROOF_V2,
+      missionId: MISSION_ID,
+      commandId: '10000000-0000-4000-8000-000000000020',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [LINE],
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: '10000000-0000-4000-8000-000000000020',
+          contextRevision: 4,
+          contextDigest: 'f'.repeat(64),
+        },
+      },
+    });
+    expect(ContinueQuoteAgentMissionLineQueue.prototype.execute)
+      .toHaveBeenCalledWith({
+        ...OWNER,
+        authority: PROOF_V2,
+        missionId: MISSION_ID,
+        parentCommandId: '10000000-0000-4000-8000-000000000020',
+      });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'agent_mission.line_candidates_staged',
+      expect.objectContaining({
+        actor: 'user_voice',
+        stagedCount: 1,
+        continuationOutcome: 'choices_presented',
+      }),
+    );
+  });
+
+  it('fait converger le même choiceId catalogue au toucher et à la voix avant ACK', async () => {
+    const selectedMission = m2aView('awaiting_lines', 6);
+    vi.spyOn(
+      DecideQuoteAgentMissionCatalogueChoice.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        resolution: 'selected',
+        invalidationReason: null,
+        mission: selectedMission,
+      },
+    });
+    vi.spyOn(
+      ContinueQuoteAgentMissionLineQueue.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'deferred_to_m2a2',
+        mission: selectedMission,
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        presentedChoiceCount: 0,
+      },
+    });
+    const { service } = harness(new RejectingUnitOfWork('state'));
+    const common = {
+      missionId: MISSION_ID,
+      expectedMissionRevision: 5,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: '30000000-0000-4000-8000-000000000001',
+      choiceSetRevision: 5,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+      choiceId: '40000000-0000-4000-8000-000000000001',
+      additionalLines: [],
+    } as const;
+
+    const tap = await service.decideCatalogueChoice({
+      authorization: authorizationV2('decide_catalogue_choice'),
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000030',
+    });
+    const voice = await service.decideCatalogueChoiceFromVoiceTurn({
+      authorization: authorizationV2('decide_catalogue_choice'),
+      ...common,
+      turnId: '10000000-0000-4000-8000-000000000031',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+    });
+
+    expect(tap).toMatchObject({
+      ok: true,
+      value: {
+        resolution: 'selected',
+        continuation: { outcome: 'deferred_to_m2a2' },
+      },
+    });
+    expect(voice).toMatchObject({
+      ok: true,
+      value: {
+        resolution: 'selected',
+        continuation: { outcome: 'deferred_to_m2a2' },
+      },
+    });
+    const calls = vi.mocked(
+      DecideQuoteAgentMissionCatalogueChoice.prototype.execute,
+    ).mock.calls;
+    expect(calls[0]?.[0]).toMatchObject({
+      choiceId: common.choiceId,
+      origin: { actor: 'user_tap', correlation: null },
+    });
+    expect(calls[1]?.[0]).toMatchObject({
+      choiceId: common.choiceId,
+      commandId: '10000000-0000-4000-8000-000000000031',
+      origin: {
+        actor: 'user_voice',
+        correlation: {
+          realtimeSessionId: REALTIME_SESSION_ID,
+          turnId: '10000000-0000-4000-8000-000000000031',
+          contextRevision: 4,
+          contextDigest: 'f'.repeat(64),
+        },
+      },
+    });
+    expect(ContinueQuoteAgentMissionLineQueue.prototype.execute)
+      .toHaveBeenCalledTimes(2);
   });
 });

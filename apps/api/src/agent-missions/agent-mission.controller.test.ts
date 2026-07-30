@@ -71,6 +71,35 @@ function serviceSpies() {
         mission: { id: '20000000-0000-4000-8000-000000000001' },
       },
     })),
+    stageLines: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'staged',
+        stagedCount: 1,
+        firstQueueOrdinal: 1,
+        lastQueueOrdinal: 1,
+        continuation: {
+          outcome: 'choices_presented',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          presentedChoiceCount: 2,
+        },
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
+    decideCatalogueChoice: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        outcome: 'selected',
+        resolution: 'selected',
+        invalidationReason: null,
+        continuation: {
+          outcome: 'deferred_to_m2a2',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          presentedChoiceCount: 0,
+        },
+        mission: { id: '20000000-0000-4000-8000-000000000001' },
+      },
+    })),
   };
 }
 
@@ -95,10 +124,21 @@ const DATABASE_NOW = '2026-07-26T12:00:00.000Z';
 const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
 const TEST_CAPABILITY = `bam1_${Buffer.alloc(32, 7).toString('base64url')}`;
 const TEST_PROOF = Object.freeze({
+  protocolVersion: 1,
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
   capabilityHash: 'c'.repeat(64),
 }) satisfies AgentMissionRealtimeAuthorityProof;
+const QUOTE_LINE = Object.freeze({
+  serviceReference: 'Main-d’œuvre plomberie',
+  categoryHint: 'labor',
+  quantityDecimal: '2',
+  unitReference: 'heure',
+  unitPriceDecimal: '55',
+  currency: 'EUR',
+  priceBasis: 'per_unit',
+  vatRateHint: null,
+});
 
 function testAuthorization(
   operation: AgentMissionHttpAuthorization['operation'],
@@ -262,6 +302,10 @@ class RecordingAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
         findById: async () => null,
         findByIds: async () => [],
       },
+      catalogueCandidates: {
+        search: async () => ({ candidates: [], truncated: false }),
+        getById: async () => null,
+      },
     });
     return { status: 'executed', value };
   }
@@ -325,6 +369,14 @@ describe('AgentMissionController M1-A', () => {
       HTTP_CODE_METADATA,
       AgentMissionController.prototype.decide,
     )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.stageLines,
+    )).toBe(200);
+    expect(Reflect.getMetadata(
+      HTTP_CODE_METADATA,
+      AgentMissionController.prototype.decideCatalogueChoice,
+    )).toBe(200);
   });
 
   it.each([
@@ -349,6 +401,14 @@ describe('AgentMissionController M1-A', () => {
       null,
       undefined,
     )],
+    ['line staging', (candidate: AgentMissionController) => candidate.stageLines(
+      'not-a-uuid',
+      null,
+      undefined,
+    )],
+    ['catalogue choice', (candidate: AgentMissionController) => (
+      candidate.decideCatalogueChoice('not-a-uuid', null, undefined)
+    )],
   ] as const)(
     'l’autorité production refuse %s avant validation métier et appel de service',
     async (_operation, invoke) => {
@@ -367,6 +427,8 @@ describe('AgentMissionController M1-A', () => {
       expect(spies.cancel).not.toHaveBeenCalled();
       expect(spies.acknowledgeScreen).not.toHaveBeenCalled();
       expect(spies.decide).not.toHaveBeenCalled();
+      expect(spies.stageLines).not.toHaveBeenCalled();
+      expect(spies.decideCatalogueChoice).not.toHaveBeenCalled();
     },
   );
 
@@ -450,6 +512,75 @@ describe('AgentMissionController M1-A', () => {
     expect(result).toBeInstanceOf(HttpException);
     expect((result as HttpException).getStatus()).toBe(422);
     expect(spies.decide).not.toHaveBeenCalled();
+  });
+
+  it('mappe le staging et le même choiceId catalogue sans accepter de donnée forgée', async () => {
+    const authority = testAuthority();
+    const { controller: candidate, spies } = controller(authority);
+    const missionId = '20000000-0000-4000-8000-000000000001';
+    const common = {
+      expectedMissionRevision: 4,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+    };
+
+    await candidate.stageLines(missionId, {
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000020',
+      lines: [QUOTE_LINE],
+    }, TEST_CAPABILITY);
+    await candidate.decideCatalogueChoice(missionId, {
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000021',
+      expectedMissionRevision: 5,
+      decisionId: '30000000-0000-4000-8000-000000000001',
+      choiceSetRevision: 5,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+      choiceId: '40000000-0000-4000-8000-000000000001',
+      additionalLines: [],
+    }, TEST_CAPABILITY);
+
+    expect(spies.stageLines).toHaveBeenCalledWith({
+      authorization: testAuthorization('stage_quote_lines'),
+      missionId,
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000020',
+      lines: [QUOTE_LINE],
+    });
+    expect(spies.decideCatalogueChoice).toHaveBeenCalledWith({
+      authorization: testAuthorization('decide_catalogue_choice'),
+      missionId,
+      ...common,
+      expectedMissionRevision: 5,
+      commandId: '10000000-0000-4000-8000-000000000021',
+      decisionId: '30000000-0000-4000-8000-000000000001',
+      choiceSetRevision: 5,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+      choiceId: '40000000-0000-4000-8000-000000000001',
+      additionalLines: [],
+    });
+    expect(authority.prepare).toHaveBeenNthCalledWith(
+      1,
+      'stage_quote_lines',
+      TEST_CAPABILITY,
+    );
+    expect(authority.prepare).toHaveBeenNthCalledWith(
+      2,
+      'decide_catalogue_choice',
+      TEST_CAPABILITY,
+    );
+
+    const forged = await candidate.stageLines(missionId, {
+      ...common,
+      commandId: '10000000-0000-4000-8000-000000000022',
+      lines: [{ ...QUOTE_LINE, catalogueItemId: 'forged-catalogue-id' }],
+    }, TEST_CAPABILITY).catch((error: unknown) => error);
+    expect(forged).toBeInstanceOf(HttpException);
+    expect((forged as HttpException).getStatus()).toBe(422);
+    expect(spies.stageLines).toHaveBeenCalledOnce();
   });
 
   it('une autorité de test explicite ouvre le contrat exact, jamais un champ forgé', async () => {

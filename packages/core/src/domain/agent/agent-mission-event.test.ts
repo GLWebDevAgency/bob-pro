@@ -96,6 +96,37 @@ function dataFor(type: AgentMissionEventType): AgentMissionEventDataV1 {
       };
     case 'decision_invalidated':
       return { kind: type, reason: 'candidate_unavailable' };
+    case 'line_candidates_staged':
+      return {
+        kind: type,
+        stagedCount: 2,
+        firstQueueOrdinal: 21,
+        lastQueueOrdinal: 22,
+      };
+    case 'catalogue_not_found':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        workRevisionAfter: 3,
+        result: 'none',
+      };
+    case 'catalogue_choices_presented':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        expectedWorkRevision: 2,
+        candidateCount: 2,
+        choiceSetHash: DIGEST,
+      };
+    case 'catalogue_choice_selected':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        workRevisionAfter: 3,
+        resolution: 'selected',
+        choiceId: CHOICE_ID,
+        choiceSetHash: DIGEST,
+      };
     case 'mission_cancelled':
       return { kind: type, reason: 'manual_handoff' };
     case 'mission_expired':
@@ -105,14 +136,24 @@ function dataFor(type: AgentMissionEventType): AgentMissionEventDataV1 {
 
 function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnapshot {
   const isStart = eventType === 'mission_started';
-  const actor = eventType === 'screen_acknowledged' || eventType === 'mission_expired'
+  const systemContinuation = (
+    eventType === 'catalogue_not_found'
+    || eventType === 'catalogue_choices_presented'
+  );
+  const actor = (
+    eventType === 'screen_acknowledged'
+    || eventType === 'mission_expired'
+    || systemContinuation
+  )
     ? 'system'
     : 'user_tap';
   const needsScreenContext = eventType === 'screen_acknowledged';
   return event({
     eventType,
     actor,
-    commandId: eventType === 'mission_expired' ? SYSTEM_COMMAND_ID : COMMAND_ID,
+    commandId: eventType === 'mission_expired' || systemContinuation
+      ? SYSTEM_COMMAND_ID
+      : COMMAND_ID,
     sequence: isStart ? 1 : 4,
     missionRevisionBefore: isStart ? 0 : 3,
     missionRevisionAfter: isStart ? 1 : 4,
@@ -422,11 +463,7 @@ describe('AgentMissionEvent', () => {
 });
 
 describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet draft', () => {
-  const userEvents = AGENT_MISSION_EVENT_TYPES.filter(
-    (type): type is Exclude<AgentMissionEventType, 'screen_acknowledged' | 'mission_expired'> => (
-      type !== 'screen_acknowledged' && type !== 'mission_expired'
-    ),
-  );
+  const userEvents = AGENT_MISSION_CORRELATION_USER_EVENT_TYPES;
   const userOnlyEvents = userEvents.filter(
     (type) => !(AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES as readonly string[]).includes(type),
   );
@@ -438,6 +475,10 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
     'customer_not_found',
     'customer_choice_presented',
     'decision_invalidated',
+    'line_candidates_staged',
+    'catalogue_not_found',
+    'catalogue_choices_presented',
+    'catalogue_choice_selected',
     'mission_cancelled',
     'mission_expired',
   ] as const satisfies readonly AgentMissionEventType[];
@@ -482,7 +523,7 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
   });
 
   it.each(AGENT_MISSION_SYSTEM_CONTINUATION_EVENT_TYPES)(
-    '%s accepte uniquement une continuation UUIDv8 corrélée à l’ACK',
+    '%s accepte une continuation UUIDv8 autonome ou corrélée à l’ACK',
     (eventType) => {
       const base = validEventFor(eventType);
       const data = eventType === 'customer_selected'
@@ -505,6 +546,13 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
         data,
       };
       expect(AgentMissionEvent.record(continuation).ok).toBe(true);
+      expect(AgentMissionEvent.record({
+        ...continuation,
+        realtimeSessionId: null,
+        turnId: null,
+        contextRevision: null,
+        contextDigest: null,
+      }).ok).toBe(true);
       expect(AgentMissionEvent.record({
         ...continuation,
         commandId: COMMAND_ID,

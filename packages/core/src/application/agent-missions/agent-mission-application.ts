@@ -107,8 +107,9 @@ export function resolveQuoteAgentMissionLookup(
   lookup: AgentMissionLookup | null,
 ): Result<AgentMission | null, AppError> {
   if (lookup === null) return ok(null);
-  return lookup.status === 'known'
-    ? ok(lookup.mission)
+  if (lookup.status === 'known') return ok(lookup.mission);
+  return lookup.status === 'unsupported_protocol'
+    ? err(appConflict('agent_mission_protocol', 'upgrade_required'))
     : err(appConflict('agent_mission_kind', 'unsupported_kind'));
 }
 
@@ -117,8 +118,9 @@ export function resolveQuoteAgentMissionEventLookup(
   lookup: AgentMissionEventLookup | null,
 ): Result<AgentMissionEvent | null, AppError> {
   if (lookup === null) return ok(null);
-  return lookup.status === 'known'
-    ? ok(lookup.event)
+  if (lookup.status === 'known') return ok(lookup.event);
+  return lookup.status === 'unsupported_protocol'
+    ? err(appConflict('agent_mission_protocol', 'upgrade_required'))
     : err(appConflict('agent_mission_kind', 'unsupported_kind'));
 }
 
@@ -142,7 +144,7 @@ export async function resolveQuoteAgentMissionForUpdate(input: {
     return resolveQuoteAgentMissionLookup(lookup);
   }
   if (
-    foreground.status === 'unsupported_kind'
+    foreground.status !== 'known'
     || foreground.mission.id !== input.missionId
   ) {
     return err(appConflict('agent_mission_foreground', 'active_mission_exists'));
@@ -225,6 +227,55 @@ export function isCanonicalAgentMissionUserCommandOrigin(
     || !SHA256.test(candidate['contextDigest'])
   ) return false;
   return true;
+}
+
+export type AgentMissionEventCorrelation = {
+  readonly realtimeSessionId: string;
+  readonly turnId: string | null;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+};
+
+/**
+ * Résout la corrélation réellement autorisée par le binding durable et le lease serveur.
+ *
+ * Un tap autonome reste entièrement non corrélé. Une commande voix/tap corrélée ne peut jamais
+ * substituer le contexte fourni par le client à celui effectivement appliqué au transport.
+ */
+export function resolveAgentMissionEventCorrelation(
+  transaction: AgentMissionTransaction,
+  mission: AgentMission,
+  origin: AgentMissionUserCommandOrigin,
+): Result<AgentMissionEventCorrelation | undefined, AppError> {
+  if (origin.actor === 'user_tap' && origin.correlation === null) {
+    return ok(undefined);
+  }
+  const binding = mission.currentBinding;
+  const applied = transaction.realtime.appliedContext;
+  if (
+    binding === null
+    || applied === null
+    || transaction.realtime.realtimeSessionId !== binding.realtimeSessionId
+    || applied.revision !== binding.contextRevision
+    || applied.digest !== binding.contextDigest
+  ) {
+    return err(appConflict('agent_mission_decision', 'context_stale'));
+  }
+  const supplied = origin.correlation;
+  if (
+    supplied === null
+    || supplied.realtimeSessionId !== binding.realtimeSessionId
+    || supplied.contextRevision !== binding.contextRevision
+    || supplied.contextDigest !== binding.contextDigest
+  ) {
+    return err(appConflict('agent_mission_decision', 'context_stale'));
+  }
+  return ok({
+    realtimeSessionId: binding.realtimeSessionId,
+    turnId: origin.actor === 'user_voice' ? origin.correlation.turnId : null,
+    contextRevision: binding.contextRevision,
+    contextDigest: binding.contextDigest,
+  });
 }
 
 /**
@@ -417,6 +468,15 @@ export type AgentMissionSystemCommandInput =
       readonly ownerUserId: string;
       readonly missionId: string;
       readonly acknowledgementMissionRevision: number;
+    }
+  | {
+      readonly operation: 'continue_quote_line_catalogue';
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly missionId: string;
+      readonly parentEventType: AgentMissionEventSnapshot['eventType'];
+      readonly parentCommandId: string;
+      readonly parentMissionRevision: number;
     };
 
 export function deriveAgentMissionSystemCommandId(
@@ -433,14 +493,25 @@ export function deriveAgentMissionSystemCommandId(
         input.effectiveReason,
         input.effectiveExpiresAt,
       ]
-    : [
+    : input.operation === 'consume_staged_customer_resolution'
+      ? [
         'bob.agent-mission.system-command.uuid-v8.v1',
         input.operation,
         input.companyId,
         input.ownerUserId,
         input.missionId,
         input.acknowledgementMissionRevision,
-      ];
+      ]
+      : [
+          'bob.agent-mission.system-command.uuid-v8.v1',
+          input.operation,
+          input.companyId,
+          input.ownerUserId,
+          input.missionId,
+          input.parentEventType,
+          input.parentCommandId,
+          input.parentMissionRevision,
+        ];
   const hex = sha256Hex(JSON.stringify(canonical));
   return [
     hex.slice(0, 8),
@@ -623,6 +694,32 @@ export function rejectedAgentMissionCapability(
   return appForbidden('agent_mission_capability_invalid');
 }
 
+/**
+ * Le trigger work refuse toute mutation dès que le parent devient terminal. Le nettoyage doit
+ * donc précéder le CAS terminal et prouver qu'aucune ligne verrouillée n'a échappé au DELETE.
+ */
+export async function deleteAgentMissionQuoteLineWorkInTransaction(input: {
+  readonly transaction: AgentMissionTransaction;
+  readonly owner: AgentMissionOwner;
+  readonly missionId: string;
+}): Promise<Result<void, AppError>> {
+  const locked = await input.transaction.quoteLineWork.listForUpdate({
+    ...input.owner,
+    missionId: input.missionId,
+  });
+  const deleted = await input.transaction.quoteLineWork.deleteAll({
+    ...input.owner,
+    missionId: input.missionId,
+  });
+  return deleted === locked.length
+    ? ok(undefined)
+    : err({
+        kind: 'dependency',
+        port: 'agent_mission_quote_line_work',
+        cause: 'incomplete_terminal_cleanup',
+      });
+}
+
 export async function expireAgentMissionInTransaction(input: {
   readonly transaction: AgentMissionTransaction;
   readonly owner: AgentMissionOwner;
@@ -672,6 +769,12 @@ export async function expireAgentMissionInTransaction(input: {
       cause: 'effective_expiry_reason_drift',
     });
   }
+  const cleaned = await deleteAgentMissionQuoteLineWorkInTransaction({
+    transaction: input.transaction,
+    owner: input.owner,
+    missionId: input.mission.id,
+  });
+  if (!cleaned.ok) return cleaned;
   const updated = await input.transaction.missions.updateCas({
     mission: expired.value.mission,
     expectedRevision: input.mission.revision,

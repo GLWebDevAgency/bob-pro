@@ -73,7 +73,25 @@ describe('Bob Live — validation de la politique d’admission', () => {
     validRealtimeEnv();
     const env = loadEnv();
     expect(env.BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED).toBe('false');
+    expect(env.BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED).toBe('false');
     expect(resolveAgentMissionHmacKeyRing(env)).toBeNull();
+  });
+
+  it('interdit le master M2-A sans le socle V1 et accepte son bloc complet dormant', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(
+      /BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true exige BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED=true/u,
+    );
+
+    const missionSecret = Buffer.alloc(32, 10).toString('base64url');
+    vi.stubEnv('BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED', 'true');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEY_VERSION', '1');
+    vi.stubEnv('BOB_AGENT_MISSION_HMAC_KEYRING', JSON.stringify({ 1: missionSecret }));
+    expect(loadEnv()).toMatchObject({
+      BOB_AGENT_MISSIONS_QUOTE_V1_ENABLED: 'true',
+      BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED: 'true',
+    });
   });
 
   it('impose le bloc AgentMission tout-ou-rien et absent lorsque le master est OFF', () => {

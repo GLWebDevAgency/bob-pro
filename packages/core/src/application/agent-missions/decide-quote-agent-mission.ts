@@ -1,4 +1,5 @@
 import {
+  AGENT_MISSION_PROTOCOL_M2A,
   type AgentMission,
   type AgentMissionTransition,
 } from '../../domain/agent/agent-mission';
@@ -21,7 +22,6 @@ import {
 } from '../ports/agent-mission-repository';
 import {
   type AgentMissionRealtimeAuthorityProof,
-  type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
 } from '../ports/agent-mission-unit-of-work';
 import { type IdGeneratorPort } from '../ports/services';
@@ -38,6 +38,7 @@ import {
   missingAgentMission,
   recordAgentMissionEvent,
   rejectedAgentMissionCapability,
+  resolveAgentMissionEventCorrelation,
   requireAgentMissionFingerprint,
   resolveQuoteAgentMissionEventLookup,
   resolveQuoteAgentMissionLookup,
@@ -50,6 +51,14 @@ import {
   type AgentMissionViewV1,
 } from './agent-mission-application';
 import { isCanonicalAgentMissionDraftSessionId } from './agent-mission-identifiers';
+import {
+  type AgentMissionQuoteLineCandidateV1,
+  type NormalizedAgentMissionQuoteLineCandidateV1,
+  normalizeAgentMissionQuoteLineCandidate,
+} from './quote-line-candidate';
+import {
+  stageQuoteAgentMissionLinesInTransaction,
+} from './stage-quote-agent-mission-lines';
 
 const POSTGRES_INT_MAX = 2_147_483_647;
 const MAX_IDENTIFIER_LENGTH = 200;
@@ -80,6 +89,8 @@ export interface DecideQuoteAgentMissionInput extends AgentMissionOwner {
   readonly expectedDraftContentRevision: number;
   readonly origin: AgentMissionUserCommandOrigin;
   readonly decision: QuoteAgentMissionCustomerDecision;
+  /** Lignes comprises dans le même tour M2-A ; absentes chez le writer V1. */
+  readonly lines?: readonly AgentMissionQuoteLineCandidateV1[];
 }
 
 export type QuoteAgentMissionCustomerDecisionEffect =
@@ -302,46 +313,6 @@ function draftMatches(
     && slot.payload.draft.customer === null;
 }
 
-function verifiedCorrelation(
-  transaction: AgentMissionTransaction,
-  mission: AgentMission,
-  origin: AgentMissionUserCommandOrigin,
-): {
-  readonly realtimeSessionId: string;
-  readonly turnId: string | null;
-  readonly contextRevision: number;
-  readonly contextDigest: string;
-} {
-  const binding = mission.currentBinding;
-  const applied = transaction.realtime.appliedContext;
-  if (
-    binding === null
-    || applied === null
-    || transaction.realtime.realtimeSessionId !== binding.realtimeSessionId
-    || applied.revision !== binding.contextRevision
-    || applied.digest !== binding.contextDigest
-  ) {
-    abort(appConflict('agent_mission_decision', 'context_stale'));
-  }
-  const supplied = origin.correlation;
-  if (
-    supplied !== null
-    && (
-      supplied.realtimeSessionId !== binding.realtimeSessionId
-      || supplied.contextRevision !== binding.contextRevision
-      || supplied.contextDigest !== binding.contextDigest
-    )
-  ) {
-    abort(appConflict('agent_mission_decision', 'context_stale'));
-  }
-  return {
-    realtimeSessionId: binding.realtimeSessionId,
-    turnId: origin.actor === 'user_voice' ? origin.correlation.turnId : null,
-    contextRevision: binding.contextRevision,
-    contextDigest: binding.contextDigest,
-  };
-}
-
 function customerIdForDecision(
   mission: AgentMission,
   decision: Exclude<
@@ -381,6 +352,51 @@ function invalidationValue(
   return transition.value;
 }
 
+function normalizeDecisionLines(
+  input: unknown,
+): Result<readonly NormalizedAgentMissionQuoteLineCandidateV1[], AppError> {
+  if (!Array.isArray(input) || input.length > 20) {
+    return validation('lines', 'Vingt lignes maximum.');
+  }
+  const normalized: NormalizedAgentMissionQuoteLineCandidateV1[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const parsed = normalizeAgentMissionQuoteLineCandidate(input[index]);
+    if (!parsed.ok) {
+      return validation(
+        `lines[${index}].${parsed.error.field}`,
+        `Ligne invalide (${parsed.error.reason}).`,
+      );
+    }
+    normalized.push(parsed.value);
+  }
+  return ok(Object.freeze(normalized));
+}
+
+function canonicalDecisionLine(
+  line: NormalizedAgentMissionQuoteLineCandidateV1,
+): readonly unknown[] {
+  return [
+    line.serviceReference,
+    line.category,
+    line.quantityMilli,
+    line.unit,
+    line.unitPriceCents,
+    line.requestedVatRate,
+    line.priceBasis,
+  ];
+}
+
+export function canonicalAgentMissionCustomerDecisionCommandM2A(input: {
+  readonly baseCanonical: string;
+  readonly normalizedLines: readonly NormalizedAgentMissionQuoteLineCandidateV1[];
+}): string {
+  return JSON.stringify([
+    'bob.agent-mission.command.customer-decision.m2a.v1',
+    input.baseCanonical,
+    input.normalizedLines.map(canonicalDecisionLine),
+  ]);
+}
+
 export class DecideQuoteAgentMission {
   constructor(private readonly deps: DecideQuoteAgentMissionDeps) {}
 
@@ -416,6 +432,14 @@ export class DecideQuoteAgentMission {
     }
     const parsedDecision = parseDecision(input.decision);
     if (!parsedDecision.ok) return parsedDecision;
+    const lines = normalizeDecisionLines(input.lines ?? []);
+    if (!lines.ok) return lines;
+    if (
+      lines.value.length > 0
+      && input.authority.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+    ) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
     if (
       input.origin.actor === 'user_voice'
       && parsedDecision.value.action === 'select_screen_customer'
@@ -439,7 +463,7 @@ export class DecideQuoteAgentMission {
       companyId: input.companyId,
       ownerUserId: input.ownerUserId,
     };
-    const canonical = canonicalAgentMissionCustomerDecisionCommand({
+    const baseCanonical = canonicalAgentMissionCustomerDecisionCommand({
       ...owner,
       missionId: input.missionId,
       commandId: input.commandId,
@@ -450,6 +474,12 @@ export class DecideQuoteAgentMission {
       origin: input.origin,
       decision: parsedDecision.value,
     });
+    const canonical = input.authority.protocolVersion === AGENT_MISSION_PROTOCOL_M2A
+      ? canonicalAgentMissionCustomerDecisionCommandM2A({
+          baseCanonical,
+          normalizedLines: lines.value,
+        })
+      : baseCanonical;
 
     try {
       const execution = await this.deps.unitOfWork.runQuoteCreationOwner(
@@ -543,10 +573,28 @@ export class DecideQuoteAgentMission {
           if (mission.revision !== input.expectedMissionRevision) {
             abort(appConflict('agent_mission', 'stale_revision'));
           }
-          const correlation = verifiedCorrelation(transaction, mission, input.origin);
+          const correlationResult = resolveAgentMissionEventCorrelation(
+            transaction,
+            mission,
+            input.origin,
+          );
+          if (!correlationResult.ok) abort(correlationResult.error);
+          const correlation = correlationResult.value;
           const slot = await transaction.quoteDrafts.getForUpdate(owner);
           if (slot === null || !draftMatches(slot, mission, input)) {
             abort(appConflict('agent_mission_quote_draft', 'draft_stale'));
+          }
+          if (lines.value.length > 0) {
+            const staged = await stageQuoteAgentMissionLinesInTransaction({
+              transaction,
+              owner,
+              mission,
+              candidates: input.lines ?? [],
+              origin: input.origin.actor,
+              occurredAt: now,
+              ids: this.deps.ids,
+            });
+            if (!staged.ok) abort(staged.error);
           }
 
           const commitMissionOnly = async (
@@ -575,7 +623,7 @@ export class DecideQuoteAgentMission {
               ids: this.deps.ids,
               draftBefore: reference,
               draftAfter: reference,
-              correlation,
+              ...(correlation === undefined ? {} : { correlation }),
             });
             if (!event.ok) abort(event.error);
             await transaction.events.append(event.value);
@@ -751,7 +799,7 @@ export class DecideQuoteAgentMission {
               ids: this.deps.ids,
               draftBefore: reference,
               draftAfter: reference,
-              correlation,
+              ...(correlation === undefined ? {} : { correlation }),
             });
             if (!event.ok) abort(event.error);
             await transaction.events.append(event.value);
@@ -863,7 +911,7 @@ export class DecideQuoteAgentMission {
             ids: this.deps.ids,
             draftBefore: draftReference(slot),
             draftAfter: selectedReference,
-            correlation,
+            ...(correlation === undefined ? {} : { correlation }),
           });
           if (!event.ok) abort(event.error);
           await transaction.events.append(event.value);

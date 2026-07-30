@@ -107,6 +107,63 @@ SELECT pg_catalog.format(
  ORDER BY attribute.attnum, exposed_role.rolname
 \gexec
 
+-- La projection catalogue M2-A reste une surface runtime SELECT-only, jamais PostgREST.
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.catalogue_prestation_search_tokens FROM PUBLIC; RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid =
+   'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+\gexec
+
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.catalogue_prestation_search_tokens FROM %I; RESET ROLE;',
+  owner.rolname,
+  exposed_role.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ CROSS JOIN pg_catalog.pg_roles AS exposed_role
+ WHERE relation.oid =
+   'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+   AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
+\gexec
+
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; REVOKE SELECT (%I), INSERT (%I), UPDATE (%I), REFERENCES (%I) ON TABLE public.catalogue_prestation_search_tokens FROM %I; RESET ROLE;',
+  owner.rolname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  attribute.attname,
+  exposed_role.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+  JOIN pg_catalog.pg_attribute AS attribute
+    ON attribute.attrelid = relation.oid
+   AND attribute.attnum > 0
+   AND NOT attribute.attisdropped
+   AND attribute.attacl IS NOT NULL
+ CROSS JOIN pg_catalog.pg_roles AS exposed_role
+ WHERE relation.oid =
+   'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+   AND exposed_role.rolname IN ('anon', 'authenticated', 'service_role')
+ ORDER BY attribute.attnum, exposed_role.rolname
+\gexec
+
+SELECT pg_catalog.format(
+  'SET LOCAL ROLE %I; DROP POLICY IF EXISTS tenant_isolation ON public.catalogue_prestation_search_tokens; CREATE POLICY tenant_isolation ON public.catalogue_prestation_search_tokens USING ("companyId" = current_setting(''app.current_company_id'', true)) WITH CHECK ("companyId" = current_setting(''app.current_company_id'', true)); RESET ROLE;',
+  owner.rolname
+)
+  FROM pg_catalog.pg_class AS relation
+  JOIN pg_catalog.pg_roles AS owner ON owner.oid = relation.relowner
+ WHERE relation.oid =
+   'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+\gexec
+
 -- Le fence d'annulation est une autorité runtime tenantée, jamais une surface PostgREST.
 SELECT pg_catalog.format(
   'SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON TABLE public.realtime_admission_cancellation_fences FROM PUBLIC; RESET ROLE;',
@@ -175,7 +232,8 @@ SELECT pg_catalog.format(
   JOIN pg_catalog.pg_roles AS owner ON owner.oid = function.proowner
  WHERE function.oid IN (
    'public.guard_realtime_agent_mission_capability_immutable_v1()'::pg_catalog.regprocedure,
-   'public.guard_realtime_agent_mission_bootstrap_receipt_v1()'::pg_catalog.regprocedure,
+   'public.guard_realtime_agent_mission_bootstrap_receipt_v2()'::pg_catalog.regprocedure,
+   'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
    'public.guard_realtime_admission_cancellation_fence_v1()'::pg_catalog.regprocedure,
    'public.sync_realtime_admission_cancellation_schedule_v1()'::pg_catalog.regprocedure,
    'public.guard_agent_mission_fingerprint_key_floor_v1()'::pg_catalog.regprocedure,
@@ -196,7 +254,8 @@ SELECT pg_catalog.format(
  CROSS JOIN pg_catalog.pg_roles AS exposed_role
  WHERE function.oid IN (
    'public.guard_realtime_agent_mission_capability_immutable_v1()'::pg_catalog.regprocedure,
-   'public.guard_realtime_agent_mission_bootstrap_receipt_v1()'::pg_catalog.regprocedure,
+   'public.guard_realtime_agent_mission_bootstrap_receipt_v2()'::pg_catalog.regprocedure,
+   'public.sync_catalogue_prestation_search_tokens_v1()'::pg_catalog.regprocedure,
    'public.guard_realtime_admission_cancellation_fence_v1()'::pg_catalog.regprocedure,
    'public.sync_realtime_admission_cancellation_schedule_v1()'::pg_catalog.regprocedure,
    'public.guard_agent_mission_fingerprint_key_floor_v1()'::pg_catalog.regprocedure,

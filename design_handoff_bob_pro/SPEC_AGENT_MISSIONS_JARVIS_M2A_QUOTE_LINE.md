@@ -4,6 +4,8 @@
 
 **Train M2-A-0 : implemented dans `4c844111`, flag public OFF ; non certified**
 
+**Train M2-A-1 : implemented, flag public OFF ; non certified**
+
 **Date : 29 juillet 2026**
 
 **Objectifs servis : O4, O5, O6 et O7**
@@ -165,6 +167,37 @@ Contraintes :
 La V2 remplace la V1 uniquement quand la capability M2-A est admise. Elle accepte plusieurs faits
 dans un tour afin que l'utilisateur ne répète pas sa phrase après navigation.
 
+### 6.1 Négociation et isolement N/N-1
+
+La version de frame sémantique ne doit jamais fuiter par la capability V1 actuelle. M2-A-1 pose
+donc le support serveur d'un protocole AgentMission `2`, additif au protocole `1` :
+
+- un client V1 continue de demander `agentMissionProtocolVersion=1`, reçoit une capability
+  `bam1_*` et ne peut lire ou muter que les phases M1-C ;
+- un client M2-A demande explicitement `agentMissionProtocolVersion=2` et ne peut recevoir une
+  capability `bam2_*` que si le master
+  `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=true` **et** le release flag
+  `bob.agent_missions.quote.m2a` est activé pour cet utilisateur ;
+- le protocole demandé, le préfixe de capability, le binding durable de lease et la preuve portée
+  jusqu'à l'UoW doivent être identiques ; toute divergence échoue fermée ;
+- `agent_missions.protocolVersion SMALLINT NOT NULL DEFAULT 1` persiste le protocole propriétaire
+  de chaque mission et devient immuable. Une mission V2 garde cette identité lorsqu'elle traverse
+  une phase commune telle que `awaiting_lines` ;
+- avant toute projection ou mutation, l'UoW exige
+  `proof.protocolVersion === mission.protocolVersion`. Une preuve V1 ne peut donc pas reprendre
+  une mission V2 après fermeture de sa session, et une preuve V2 ne peut pas s'approprier une
+  mission historique V1 ;
+- les endpoints M2-A et les nouvelles phases refusent une preuve V1 avant toute lecture métier ;
+- les endpoints et codecs V1 restent de forme exacte. Une mission déjà en phase M2-A n'est jamais
+  projetée dans un codec V1 : l'ancien client reçoit une erreur explicite de mise à niveau et
+  aucune autorité d'écriture ;
+- l'application mobile publiée continue à demander V1 pendant M2-A-1/M2-A-2. Le basculement de sa
+  négociation vers V2, sa projection et les preuves device appartiennent à M2-A-3.
+
+Le master M2-A vaut `false` dans tous les environnements à l'atterrissage. Il est invalide au boot
+si le master V1 et le keyring AgentMission ne sont pas eux-mêmes complets. Aucune « tolérance » ne
+rabaisse silencieusement une demande V2 vers V1.
+
 ```ts
 interface QuoteCreationSemanticFrameV2 {
   readonly schema: 'bob.semantic.quote-creation';
@@ -238,7 +271,8 @@ type QuoteLineCandidatePatchV1 =
 
 Règles :
 
-- un tool call exact et unique, `additionalProperties: false`, au plus 20 opérations et 20 lignes ;
+- un tool call exact et unique, `additionalProperties: false`, contenant exactement une opération
+  autoritaire enrichie d'au plus 20 lignes ;
 - chaînes bornées, trimées, sans caractères de contrôle ; frame totale ≤ 32 KiB ;
 - les nombres et montants restent des chaînes décimales canoniques dans la frame, puis deviennent
   quantité millième et centimes par résolveurs purs ;
@@ -262,13 +296,20 @@ Matrice d'autorisation :
 | inactive | `start_quote_creation` ; les lignes sont staged mais non exécutées |
 | étapes client | `set_customer_reference`, `select_presented_choice` ; leurs lignes sont staged dans la même commande |
 | `awaiting_lines` | `append_line_candidates` |
-| `awaiting_catalogue_choice` | `select_presented_choice`, nouveau `service_reference` |
-| `awaiting_line_details` | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite |
-| `awaiting_line_confirmation` | confirmer, rejeter ou patch explicite |
+| `awaiting_catalogue_choice` | `select_presented_choice` en M2-A-1 ; correction explicite de `service_reference` en M2-A-2 |
+| `awaiting_line_details` *(M2-A-2 uniquement)* | `patch_pending_line` pour le `requiredFact` courant ou une correction explicite |
+| `awaiting_line_confirmation` *(M2-A-2 uniquement)* | confirmer, rejeter ou patch explicite |
 
-Toute autre combinaison échoue sans écriture. Une phrase comportant plusieurs opérations reste
-ordonnée ; le serveur applique au plus une transition autoritaire par commande puis poursuit par
-des continuations système idempotentes.
+Toute autre combinaison échoue sans écriture. En M2-A-1, une phrase composite est représentée par
+une seule opération enrichie de ses lignes (`start`, sélection client ou sélection catalogue avec
+`lines`) ; le serveur applique au plus une transition autoritaire par commande puis poursuit par
+des continuations système idempotentes. Les séquences de plusieurs transitions sémantiques dans
+un même tool call restent fermées jusqu'au train qui saura toutes les consommer dans l'ordre.
+
+La correction du libellé pendant un choix catalogue ne doit pas être simulée par
+`append_line_candidates` : cela créerait une seconde ligne au lieu de corriger la tête. M2-A-1
+refuse donc cette tournure sans mutation ; M2-A-2 l'introduit avec le patch persistant de la tête,
+la remise explicite de `catalogueResolution='pending'` et une nouvelle recherche idempotente.
 
 La commande et son fingerprint couvrent conjointement la décision client et ses lignes. Les work
 items sont insérés dans la même transaction que `customer_selected` ou la nouvelle résolution ;
@@ -299,7 +340,12 @@ interface AgentMissionQuoteLineWork {
   readonly companyId: string;
   readonly ownerUserId: string;
   readonly missionId: string;
-  readonly ordinal: number; // 1..20, unique dans la mission
+  /**
+   * Séquence INT4 strictement positive et monotone dans la mission. La borne de 20 porte sur le
+   * NOMBRE d'items encore en file, pas sur cet ordinal : supprimer la tête 1 ne doit jamais
+   * autoriser une nouvelle ligne à repasser avant les restes 2..20.
+   */
+  readonly ordinal: number;
   readonly revision: number;
   readonly state:
     | 'queued'
@@ -317,6 +363,12 @@ interface AgentMissionQuoteLineWork {
   readonly housingOlderThan2y: boolean | null;
   readonly energyRenovation: boolean | null;
   readonly requiredFact: QuoteLineRequiredFact | null;
+  /**
+   * Axe orthogonal à `state` : distingue une recherche encore due d'une décision explicite de
+   * ligne libre. Sans ce marqueur, une continuation rejouerait indéfiniment la recherche après
+   * le choix « créer une ligne libre ».
+   */
+  readonly catalogueResolution: 'pending' | 'free' | 'selected';
   readonly catalogueItemId: string | null;
   readonly expectedCatalogueRevision: number | null;
   readonly proposalId: string | null;
@@ -330,17 +382,32 @@ interface AgentMissionQuoteLineWork {
 Contraintes SQL :
 
 - FK composite `(missionId, companyId, ownerUserId)` vers la mission ;
-- unicité `(missionId, ordinal)` et au plus 20 lignes imposé sous verrou mission par le use case ;
-- `revision` et `ordinal` entiers positifs bornés ;
+- unicité `(missionId, ordinal)` ; `ordinal` est un INT4 positif monotone, jamais réutilisé ;
+- au plus 20 work items **présents** imposé sous verrou mission par le use case, avec calcul du
+  prochain ordinal depuis le maximum existant et refus avant débordement INT4 ;
+- `revision` et `ordinal` entiers positifs bornés à INT4 ;
 - checks de cohérence par état : choix catalogue, question ou proposition ne peuvent pas
   coexister de façon contradictoire ;
+- `catalogueResolution='selected'` si et seulement si la fence
+  `(catalogueItemId, expectedCatalogueRevision)` est complète ; `pending|free` exigent les deux
+  valeurs nulles ;
+- `awaiting_catalogue_choice` exige `catalogueResolution='pending'` ;
+- `awaiting_details + pending` n'est admis que pour
+  `requiredFact='service_reference'` : toute autre question exige que la recherche ait déjà
+  convergé vers `free` ou `selected` ;
+- une correction explicite de `serviceReference` remet la résolution à `pending`, efface la
+  fence catalogue et toute proposition ; un item supprimé ou révisé produit le même retour
+  explicite avant une nouvelle recherche ;
 - prix en centimes, quantité en millièmes, taux dans l'union fermée existante ;
 - RLS activée et forcée, policies owner/tenant, rôle runtime non-propriétaire ;
 - toute écriture exige aussi
   `missionId = nullif(current_setting('app.current_agent_mission_id', true), '')::uuid` ; ce
   setting n'est posé qu'après validation de la capability et verrou de la mission ;
 - aucun grant implicite `anon`, `authenticated`, `service_role` ni `PUBLIC` ;
-- identité `(id, companyId, ownerUserId, missionId, ordinal, createdAt)` immuable par trigger ;
+- identité `(id, companyId, ownerUserId, missionId, ordinal, origin, createdAt)` immuable par
+  trigger ; une provenance voix/toucher ne peut jamais être réécrite après coup ;
+- insertion et mutation refusées si la mission parente n'est pas en protocole `2`, même si un
+  appelant V1 atteint accidentellement le port ;
 - grants runtime minimaux CRUD, certifiés ; aucun rôle de lecture général ne contourne la policy ;
 - suppression en cascade seulement avec la mission, jamais avec un item catalogue ;
 - index `(companyId, ownerUserId, missionId, ordinal)` pour la reprise.
@@ -370,7 +437,8 @@ le work item supprimé existe encore.
 Annuler, expirer ou compléter la mission supprime tous ses work items dans la même transaction.
 Ils n'entrent pas dans la rétention audit de 90 jours : le journal conserve seulement leurs
 identifiants/digests non sensibles. Un trigger refuse l'insertion ou la mise à jour d'un work item
-si la mission parente n'est plus `active`.
+si la mission parente n'est plus `active`. La suppression explicite des work items précède donc
+le CAS terminal de la mission ; l'ordre inverse serait refusé par ce trigger.
 
 ## 8. Recherche catalogue réelle 0/1/N
 
@@ -404,16 +472,44 @@ L'adapter Prisma :
   sixième existe ; aucune fausse ligne « sentinelle » n'entre dans le type candidat ;
 - retourne la `revision` réelle, le libellé, catégorie, unité, prix et taux uniquement au service
   résolveur, jamais au LLM ;
+- retourne `0` avant SQL pour une requête vide après normalisation ; toute entrée tenant/requête
+  invalide échoue fermée avant le port et l'adapter, elle ne devient jamais un faux résultat vide ;
 - s'exécute dans la même transaction tenantée que la transition qui présente les choix.
 
 `AgentMissionTransaction` expose ce port sous `catalogueCandidates`. L'adapter est construit avec
 le `Prisma.TransactionClient` courant et verrouille `FOR SHARE` les lignes réellement présentées.
 La confirmation relit `(companyId, id, revision)` dans cette même frontière transactionnelle.
 
-La recherche possède un index tenant-first compatible avec sa normalisation. Le choix exact
-(`searchKey` versionnée, casse/accents/ligatures/ponctuation) et l'index PostgreSQL sont décrits
+La recherche possède des index tenant-first compatibles avec sa normalisation. Le choix exact
+(`searchKey` versionnée, casse/accents/ligatures/ponctuation) et les index PostgreSQL sont décrits
 dans la migration ; un scan de toutes les lignes du tenant n'est pas une certification acceptable
 pour le SLO vocal.
+
+Le `GIN(to_tsvector(...))` historique de M2-A-0 ne constitue **pas** cette preuve : sous
+`FORCE RLS`, PostgreSQL ne pousse pas l'opérateur `@@`, non `LEAKPROOF`, à travers la barrière de
+sécurité et le plan retombe sur un scan. M2-A-1 introduit donc
+`catalogue_prestation_search_tokens`, une projection transactionnelle qui ne contient que
+`(companyId, token normalisé, catalogueItemId)`. Sa clé primaire commence par
+`(companyId, token)` ; sa FK composite vers le catalogue cascade les suppressions ; un trigger
+`SECURITY DEFINER`, sans droit d'exécution runtime ni Data API, remplace les tokens dans la même
+transaction qu'un insert ou changement de libellé. Le trigger reste soumis à RLS et exige donc le
+contexte tenant réel de l'écriture. La borne token de 1 000 caractères est sourcée depuis le core :
+elle couvre les 500 caractères bruts acceptés, y compris une expansion intégrale `œ → oe`; seuls
+les tokens plus longs, qu'aucune requête acceptée ne peut adresser, sont omis.
+
+La fonction de trigger appartient après provisioning à un rôle global dédié
+`bob_catalogue_search_token_sync`, `NOLOGIN`, `NOBYPASSRLS` et sans héritage. Ce rôle ne reçoit
+que les privilèges colonne/table nécessaires pour remplacer les tokens du tenant courant ; il ne
+possède ni la table, ni le schéma, ni une adhésion à un rôle privilégié. Le certificat vérifie son
+owner exact, son profil, son corps canonique et son comportement sous deux tenants **après** le
+split des propriétaires Supabase-like. Une fonction déplacée vers le schema owner `BYPASSRLS`
+échoue donc la release au lieu de transformer `row_security=on` en simple décoration.
+
+La recherche tokenisée exige **tous** les tokens distincts de la requête par égalité B-tree
+leakproof. La table de projection est elle-même sous `ENABLE` + `FORCE RLS`; le runtime n'obtient
+que `SELECT`, et `PUBLIC`, `anon`, `authenticated`, `service_role` n'obtiennent aucun privilège
+table, colonne ou fonction. La certification charge une volumétrie multi-tenant puis prouve la clé
+tenant-token sous plan par défaut et sous `force_generic_plan`.
 
 Les CHECK SQL actuels du catalogue omettent encore `subscription` dans les catégories et `2,1`
 dans les taux alors que `CATALOGUE_CATEGORIES` et `VAT_RATES` les autorisent. M2-A-0 corrige ces
@@ -432,6 +528,18 @@ Politique :
 - item supprimé/modifié : invalider la décision ou proposition, relancer la résolution et
   expliquer honnêtement ; jamais copier une ancienne valeur silencieusement.
 
+Le résultat courant est persisté sur le work item :
+
+- avant recherche et pendant un choix présenté : `catalogueResolution='pending'` ;
+- zéro résultat ou choix explicite « créer une ligne libre » :
+  `catalogueResolution='free'` ;
+- choix d'une entrée réelle relue à la bonne révision :
+  `catalogueResolution='selected'` avec sa fence.
+
+Le journal conserve la provenance (« zéro résultat » ou « choix libre »), mais il n'est jamais
+utilisé comme substitut de l'état courant. Un événement passé ne constitue pas une fence
+transactionnelle et ne doit pas être reparcouru pour deviner si une recherche reste due.
+
 Une entrée catalogue complète seulement les faits absents. Le libellé, la catégorie et l'unité
 catalogue sont les valeurs proposées de référence. Un prix ou une quantité explicitement dits par
 l'utilisateur ne sont jamais écrasés par le catalogue : le diff affiche l'écart. Une contradiction
@@ -441,7 +549,7 @@ provenance `user_voice`; il ne devient contenu financier qu'à la confirmation.
 
 ## 9. Machine à états M2-A
 
-Phases additives :
+Phases additives de la cible complète :
 
 ```ts
 type QuoteCreationMissionPhaseM2A =
@@ -450,6 +558,11 @@ type QuoteCreationMissionPhaseM2A =
   | 'awaiting_line_details'
   | 'awaiting_line_confirmation';
 ```
+
+Le train M2-A-1 n'ouvre **que** `awaiting_catalogue_choice`. Les phases
+`awaiting_line_details` et `awaiting_line_confirmation`, leurs décisions et leurs handlers sont
+introduits atomiquement par M2-A-2. Une phase sans handler de reprise est interdite dans les unions
+core, les CHECK SQL et le protocole exposé au client.
 
 Transitions :
 
@@ -477,9 +590,37 @@ Un tour peut avancer automatiquement à travers toutes les lectures/résolutions
 s'arrête au premier choix réel, champ obligatoire manquant ou confirmation. Une seule décision est
 active à la fois.
 
+### 9.1 Frontière atomique M2-A-1 → M2-A-2
+
+M2-A-1 sait consommer le choix catalogue sans fabriquer une question, une TVA ou une proposition
+qui appartiennent à M2-A-2 :
+
+1. il revalide décision, brouillon, tête de file et item catalogue sous les verrous prévus ;
+2. il écrit seulement `catalogueResolution` et, pour `selected`, la fence
+   `(catalogueItemId, expectedCatalogueRevision)` ; il ne copie encore aucun libellé, prix, unité,
+   catégorie ou taux catalogue ;
+3. il remet le work item en `queued`, `requiredFact=null`, `proposal*=null` ;
+4. il place la mission en `awaiting_lines`, consomme la décision et émet
+   `catalogue_choice_selected` ;
+5. la continuation M2-A-2 relit ensuite ce work item et reste l'unique propriétaire du merge des
+   faits utilisateur/catalogue, des contradictions, de la TVA, des questions et de la
+   proposition.
+
+Ce `queued` est une frontière système transitoire, jamais un état présenté comme terminal à
+l'utilisateur. Tant que M2-A-2 n'est pas livré, le flag M2-A reste OFF. À l'activation finale, la
+commande de choix n'acquitte sa réponse canonique qu'après la continuation jusqu'au prochain état
+stable. Cette frontière évite les deux mensonges possibles : inventer un `requiredFact` déjà connu
+ou produire une proposition financière incomplète.
+
 ## 10. Décisions et proposition scellées
 
-Deux nouveaux kinds fermés complètent `QuoteMissionDecisionV1`.
+Deux kinds fermés complètent à terme `QuoteMissionDecisionV1`, mais pas dans le même train :
+
+- M2-A-1 introduit uniquement `CatalogueDecisionV1` avec ses transitions complètes ;
+- M2-A-2 introduit `LineConfirmationDecisionV1` avec questions, TVA, diff et confirmation.
+
+Il est interdit d'ajouter un kind au payload persistant avant que son parseur, tous ses handlers,
+sa reprise et ses preuves de corrélation soient livrés dans le même commit.
 
 ```ts
 interface CatalogueDecisionV1 {
@@ -634,6 +775,17 @@ propre révision et son propre événement, résout la nouvelle tête et converg
 ce terminal. Un replay relit les deux reçus ; une panne de la continuation ne révoque pas la ligne
 déjà confirmée et reste retryable.
 
+Une continuation dérivée hérite exactement de la forme d'autorité de sa commande parente :
+
+- parent vocal : `realtimeSessionId` et contexte appliqué présents, `turnId` absent car le
+  `commandId` système est dérivé ;
+- parent tactile autonome : les champs session/contexte sont tous null ;
+- toute forme partielle ou toute fabrication d'un ancien binding est interdite.
+
+Cette union fermée préserve la parité tactile : une continuation n'exige jamais une session
+Realtime inexistante et ne réutilise jamais une session terminée pour donner artificiellement de
+l'autorité à un tap.
+
 ## 14. API, mobile et réponse canonique
 
 Les endpoints mission existants restent la seule surface. Les commandes additives sont
@@ -706,7 +858,14 @@ Les unions JSON et CHECK PostgreSQL étant fermés, le rollout est append-only :
 1. **M2-A-0 / expand** : table de work items, RLS/FK/indexes, correction du CHECK catalogue
    `subscription`, ports et parseurs purs, sans writer de feature ;
 2. **M2-A-1 / expand mission** : nouvelles phases, décisions et événements dans des contraintes
-   `NOT VALID`, sans retirer les contraintes actives ;
+   `NOT VALID` — uniquement `awaiting_catalogue_choice`, `CatalogueDecisionV1` et les événements
+   catalogue de ce train — ajout expand-safe de
+   `catalogueResolution TEXT NOT NULL DEFAULT 'pending'` et élargissement de la cohérence
+   `queued`, ajout de `agent_missions.protocolVersion SMALLINT NOT NULL DEFAULT 1` avec CHECK
+   fermé `1|2` et trigger d'immuabilité, sans retirer les contraintes actives ; correction
+   append-only de l'ordinal en INT4 monotone, provenance immuable, parent protocole `2`, révision
+   catalogue `old+1`, ACL Data API catalogue fermées et projection de tokens tenantée, synchronisée
+   atomiquement et indexée par égalité sous FORCE RLS ;
 3. **validate** : validation séparée ;
 4. **cutover** : flag OFF, writers N-1 drainés, remplacement atomique des anciennes contraintes ;
 5. déploiement writer N ;
@@ -722,18 +881,32 @@ forme exacte historique :
 - après cutover ;
 - sous rôle non-superuser avec FORCE RLS.
 
+**Fermeture explicite du writer dormant M2-A-0.** Le trigger final des work items exige un parent
+en protocole `2`; il est donc impossible de préserver en parallèle un writer work-item M2-A-0
+attaché à une mission V1. Ce n'est pas présenté comme une simple correction : M2-A-1 ferme ce
+writer non activé, exige la table `agent_mission_quote_line_work` vide avant l'expand et refuse la
+migration avec une erreur nommée si une ligne existe. Impact produit : aucun, puisque le flag M2-A
+est resté OFF et aucun client publié ne possède cette capacité. Repli : réconcilier explicitement
+les lignes de test ou abandonner leur mission avant de rejouer la migration; aucun backfill
+sémantique ni suppression automatique n'est autorisé. La compatibilité writer N-1 prouvée
+ci-dessus porte donc sur les surfaces réellement actives — mission, événement, lease, reçu et
+catalogue — et non sur ce writer dormant fermé.
+
 Le test couvre aussi un **reader N-1** : GET puis décodage du `QuoteDraftPayloadV1` exact avant,
 pendant et après M2-A. Le slot ne contient aucun work item, donc un ancien client continue à le
 lire. Il ne reçoit jamais une capability M2-A et ne peut pas ouvrir la mission en écriture.
+Le writer N-1 omet `protocolVersion` et obtient donc exactement `1` par défaut ; une tentative de
+modifier cette colonne après insertion est refusée. Les phases M2-A et leurs événements exigent
+`protocolVersion=2` dans les contraintes SQL finales.
 
 ### 15.1 Trains de livraison — une seule PR active à la fois
 
-| Train | Résultat atomique | Statut maximal avant la fin |
-|---|---|---|
-| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` |
-| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` |
-| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `implemented` |
-| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `certified` |
+| Train | Résultat atomique | Statut actuel | Promotion maximale du train |
+|---|---|---|---|
+| M2-A-0 | schéma work items + RLS + contrat core + parité catalogue SQL | `implemented` | `implemented` |
+| M2-A-1 | frame V2, staging initial, recherche 0/1/N, continuation et choix API | `implemented` | `implemented` |
+| M2-A-2 | questions persistées, TVA, proposition, primitive partagée et confirmation | `specified` | `implemented` |
+| M2-A-3 | projection mobile, parité voix/tap, reprise et certification device/staging | `specified` | `certified` |
 
 Chaque PR est fusionnée et sa CI verte avant d'ouvrir la suivante. Aucun sous-train n'est présenté
 comme une fonctionnalité finie ; le flag reste OFF jusqu'à M2-A-3.
@@ -759,6 +932,31 @@ Ces preuves donnent à M2-A-0 le statut `implemented`, pas `certified`. La certi
 staging exact-SHA et les preuves produit voix/toucher/appareil restent dues dans les trains
 suivants ; aucune capacité M2-A n'est activée en public par ce commit.
 
+### 15.3 Preuves du train M2-A-1
+
+Les preuves locales reproductibles du 30 juillet 2026 sont :
+
+- suites complètes : core `2 887/2 887`, AI `871/871`, client API `474/474`, API
+  `2 726/2 726` avec `371` certificats opt-in ignorés hors contexte ;
+- contrats de release : `527/527`, un scénario explicitement ignoré ; générateurs M2-A-1,
+  fondation M2-A et historique tous en mode `--check` ;
+- certificat AgentMission PostgreSQL 17 sous déployeur/runtime non-superuser : `56/56`, avec
+  writer et reader N-1, RLS/anti-IDOR, replay, concurrence voix/tap et plan catalogue tenanté ;
+- reproduction Supabase locale isolée : `154` migrations, release predeploy puis postdeploy,
+  transfert d'ownership, second rejeu de `rls.sql`, autorité trigger
+  `NOLOGIN`/`NOBYPASSRLS`, et preuve réelle deux tenants terminée par
+  `RLS owner-split replay certified with a non-superuser deployer` ;
+- typecheck et lint des quatre couches modifiées ainsi que du monorepo, builds topologiques et
+  gardes d'artefact core/AI/client/API verts ;
+- trois reviews adversariales correctness/DoD, architecture/parité et sécurité/release :
+  aucun P0/P1 ouvert après correction du rejeu owner-aware ;
+- master `BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false`, release flag et tous ses sujets
+  exactement OFF.
+
+Ces preuves donnent à M2-A-1 le statut `implemented`, pas `certified`. Le mobile publié continue
+à négocier V1 et aucune capacité M2-A n'est exposée. La certification staging exact-SHA, la
+projection voix/toucher et la preuve appareil restent dues à M2-A-3.
+
 ## 16. Observabilité M2-A
 
 M2-A émet des mesures allowlistées corrélées par IDs pseudonymisés :
@@ -777,6 +975,46 @@ vocaux bruts avant activation. L'absence de cette certification interdit de prom
 `certified`, sans bloquer les tests locaux M2-A.
 
 ## 17. Critères d'acceptation binaires
+
+### 17.0 Gate du train M2-A-1
+
+M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
+
+- [x] le serveur négocie V1 et V2 sans fallback, une capability V1 ne peut ni lire ni muter une
+      phase M2-A et le mobile courant continue à demander V1 ;
+- [x] le protocole de la mission est persisté, immuable et doit correspondre à celui de la lease ;
+      V1→mission V2 et V2→mission V1 échouent avant lecture du payload ou des work items ;
+- [x] la frame V2 est fermée à chaque profondeur, bornée à une opération, 20 lignes et 32 KiB, sans
+      historique textuel Bob ni donnée catalogue/client projetée vers le LLM ;
+- [x] les décimaux sont convertis par arithmétique exacte de chaînes/entiers ; aucune conversion
+      flottante, troncature d'unité ou multiplication/arrondi caché ;
+- [x] `start`, résolution client et choix ordinal stagent toutes les lignes normalisées ordonnées
+      dans la même UoW que leur événement utilisateur, avec un fingerprint unique et un replay
+      sans second insert ;
+- [x] la recherche catalogue 0/1/2..5/≥6 est tenantée, stable, limitée à six lectures, verrouille
+      les lignes présentées et prouve son plan à volumétrie multi-tenant ;
+- [x] une décision catalogue scelle draft, tête de file, work revision, candidats et révisions ;
+      voix et API choisissent le même `choiceId` ;
+- [x] zéro résultat/ligne libre écrit `catalogueResolution='free'`, un item réel relu écrit
+      `selected`, puis la frontière retourne `queued` sans copier de valeur catalogue et sans
+      créer de `requiredFact`, TVA, diff ou proposition ;
+- [x] annulation et expiration suppriment tous les work items dans leur transaction ; les writers
+      actifs et readers N-1 restent valides après expand, validate et cutover, tandis que le
+      writer work-item dormant est refusé explicitement comme documenté en §15 ;
+- [x] la file accepte au plus 20 items présents mais conserve un ordinal monotone après suppression
+      de tête ; `origin` est immuable et aucun work item ne peut appartenir à une mission V1 ;
+- [x] toute mutation réelle d'un item catalogue force `revision = old + 1`, ses ACL table **et
+      colonnes** sont fermées à `PUBLIC`, `anon`, `authenticated`, `service_role`; sa projection
+      de tokens est transactionnelle, sous FORCE RLS et sans droit de mutation runtime ; son
+      trigger appartient à un rôle `NOLOGIN`/`NOBYPASSRLS` aux ACL minimales, certifié après
+      owner-split sur deux tenants, et la recherche token utilise sa clé tenantée certifiée sous
+      plan générique comme sous plan par défaut ;
+- [x] une continuation système issue d'une voix conserve session+contexte sans `turnId`; une
+      continuation issue d'un tap autonome conserve une corrélation entièrement nulle ;
+- [x] les contraintes M1-C historiques restent byte-for-byte inchangées et sont figées avant que
+      le générateur M2-A-1 soit introduit ;
+- [x] core, AI, API, client, migrations, PostgreSQL réel, RLS/anti-IDOR, typecheck, lint, build et
+      reviews adversariales sont verts depuis un checkout propre.
 
 ### Compréhension et contexte
 
@@ -822,7 +1060,8 @@ vocaux bruts avant activation. L'absence de cette certification interdit de prom
 ### Non-régression
 
 - [ ] M1-C client, reprise et ACK restent verts ;
-- [ ] writer N-1 reste valide après chaque étape SQL ;
+- [ ] writer N-1 des surfaces actives reste valide après chaque étape SQL et la tentative de
+      migrer avec un work item M2-A0 existant refuse tout le train sans mutation ;
 - [ ] reader N-1 relit le même `QuoteDraftPayloadV1` pendant toute la mission ;
 - [ ] wizard manuel hors mission reste fonctionnel ;
 - [ ] aucune intention devis ne traverse simultanément AgentMission et le parseur regex local.

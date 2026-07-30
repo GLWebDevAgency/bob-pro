@@ -76,9 +76,14 @@ const REALTIME_SESSION_ID = '30000000-0000-4000-8000-000000000001';
 const TURN_ID = '30000000-0000-4000-8000-000000000002';
 const SECOND_TURN_ID = '30000000-0000-4000-8000-000000000003';
 const AUTHORITY = Object.freeze({
+  protocolVersion: 1,
   subjectHashCandidates: Object.freeze(['a'.repeat(64)]),
   principalBindingHash: 'b'.repeat(64),
   capabilityHash: 'c'.repeat(64),
+}) satisfies AgentMissionRealtimeAuthorityProof;
+const AUTHORITY_M2A = Object.freeze({
+  ...AUTHORITY,
+  protocolVersion: 2,
 }) satisfies AgentMissionRealtimeAuthorityProof;
 
 interface MemoryState {
@@ -267,6 +272,7 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       const snapshot = mission.toSnapshot();
       return sameOwner(owner, snapshot)
         && snapshot.kind === 'quote_creation'
+        && snapshot.protocolVersion === 2
         && snapshot.status === 'active';
     };
     const transaction: AgentMissionTransaction = {
@@ -525,6 +531,17 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           ) {
             return 'revision_conflict';
           }
+          if (
+            current.companyId !== canonical.companyId
+            || current.ownerUserId !== canonical.ownerUserId
+            || current.missionId !== canonical.missionId
+            || current.id !== canonical.id
+            || current.ordinal !== canonical.ordinal
+            || current.origin !== canonical.origin
+            || current.createdAt !== canonical.createdAt
+          ) {
+            throw new Error('AGENT_MISSION_QUOTE_LINE_WORK_IDENTITY_IMMUTABLE');
+          }
           beforeWrite();
           nextState.quoteLineWork.set(workItem.id, canonical);
           return 'updated';
@@ -607,6 +624,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           return nextState.customers.filter((customer) => ids.has(customer.customerId));
         },
       },
+      catalogueCandidates: {
+        search: async () => ({ candidates: [], truncated: false }),
+        getById: async () => null,
+      },
     };
     const output = await work(transaction);
     this.state = nextState;
@@ -636,7 +657,10 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   }
 }
 
-function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
+function useCases(
+  unitOfWork = new MemoryAgentMissionUnitOfWork(),
+  authority: AgentMissionRealtimeAuthorityProof = AUTHORITY,
+) {
   const deps = {
     unitOfWork,
     fingerprints: FINGERPRINTS,
@@ -658,33 +682,33 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
         > & Partial<Pick<StartQuoteAgentMissionCommand, 'origin' | 'customerReference'>>,
       ) => start.execute({
         ...input,
-        authority: AUTHORITY,
+        authority,
         origin: input.origin ?? { actor: 'user_tap', correlation: null },
         customerReference: input.customerReference ?? null,
       }),
     },
     get: {
-      execute: (owner: AgentMissionOwner) => get.execute(owner, AUTHORITY),
+      execute: (owner: AgentMissionOwner) => get.execute(owner, authority),
     },
     cancel: {
       execute: (
         input: Omit<CancelQuoteAgentMissionInput, 'authority'>,
-      ) => cancel.execute({ ...input, authority: AUTHORITY }),
+      ) => cancel.execute({ ...input, authority }),
     },
     acknowledge: {
       execute: (
         input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
-      ) => acknowledge.execute({ ...input, authority: AUTHORITY }),
+      ) => acknowledge.execute({ ...input, authority }),
     },
     advance: {
       execute: (
         input: Omit<AdvanceQuoteAgentMissionInput, 'authority'>,
-      ) => advance.execute({ ...input, authority: AUTHORITY }),
+      ) => advance.execute({ ...input, authority }),
     },
     decide: {
       execute: (
         input: Omit<DecideQuoteAgentMissionInput, 'authority'>,
-      ) => decide.execute({ ...input, authority: AUTHORITY }),
+      ) => decide.execute({ ...input, authority }),
     },
   };
 }
@@ -692,8 +716,8 @@ function useCases(unitOfWork = new MemoryAgentMissionUnitOfWork()) {
 async function preparedCustomerDecisionMission(input: {
   readonly customers: readonly CustomerCandidateReference[];
   readonly customerReference: string | null;
-}) {
-  const suite = useCases();
+}, authority: AgentMissionRealtimeAuthorityProof = AUTHORITY) {
+  const suite = useCases(new MemoryAgentMissionUnitOfWork(), authority);
   suite.unitOfWork.setCustomers(input.customers);
   const started = await suite.start.execute({
     ...OWNER,
@@ -2300,10 +2324,10 @@ describe('AgentMission application M1-A', () => {
       eventType: 'customer_selected',
       actor: 'user_tap',
       commandId: DECISION_COMMAND,
-      realtimeSessionId: REALTIME_SESSION_ID,
+      realtimeSessionId: null,
       turnId: null,
-      contextRevision: suite.contextRevision,
-      contextDigest: suite.contextDigest,
+      contextRevision: null,
+      contextDigest: null,
       data: {
         kind: 'customer_selected',
         source: 'screen_selection',
@@ -2355,6 +2379,64 @@ describe('AgentMission application M1-A', () => {
       },
     });
     expect(suite.unitOfWork.snapshot()).toEqual(beforeBlockedReplay);
+  });
+
+  it('sélectionne le client et conserve les lignes M2-A dans la même transaction', async () => {
+    const suite = await preparedCustomerDecisionMission({
+      customers: [{
+        customerId: 'customer-camping',
+        canonicalName: 'Camping les Pins — nom DB',
+      }],
+      customerReference: null,
+    }, AUTHORITY_M2A);
+    const draft = suite.mission.payload.draft;
+    if (draft === null) return;
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: DECISION_COMMAND,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: draft.sessionId,
+      expectedDraftSlotRevision: draft.slotRevision,
+      expectedDraftContentRevision: draft.contentRevision,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      } as const,
+      lines: [{
+        serviceReference: 'Contrat 4 saisons',
+        categoryHint: 'subscription' as const,
+        quantityDecimal: '3',
+        unitReference: 'machine',
+        unitPriceDecimal: '400',
+        currency: 'EUR' as const,
+        priceBasis: 'per_unit' as const,
+        vatRateHint: null,
+      }],
+    };
+
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        mission: { phase: 'awaiting_lines' },
+      },
+    });
+    expect([...suite.unitOfWork.snapshot().quoteLineWork.values()]).toEqual([
+      expect.objectContaining({
+        serviceReference: 'Contrat 4 saisons',
+        quantityMilli: 3_000,
+        unitPriceCents: 40_000,
+        unit: 'machine',
+        priceBasis: 'per_unit',
+      }),
+    ]);
+    expect(await suite.decide.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().quoteLineWork.size).toBe(1);
   });
 
   it('résout une référence vocale contre la BDD et sélectionne le nom canonique dans la même commande', async () => {
@@ -2982,8 +3064,59 @@ describe('AgentMission application M1-A', () => {
     },
   );
 
+  it('stage les lignes du start M2-A dans le même reçu et les rejoue sans second insert', async () => {
+    const suite = useCases(new MemoryAgentMissionUnitOfWork(), AUTHORITY_M2A);
+    const command = {
+      ...OWNER,
+      commandId: START_COMMAND,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      lines: [{
+        serviceReference: 'Entretien vitrines demain',
+        categoryHint: 'labor' as const,
+        quantityDecimal: '2',
+        unitReference: 'passage',
+        unitPriceDecimal: null,
+        currency: null,
+        priceBasis: null,
+        vatRateHint: null,
+      }],
+    };
+
+    const started = await suite.start.execute(command);
+    expect(started).toMatchObject({
+      ok: true,
+      value: { outcome: 'created' },
+    });
+    const after = suite.unitOfWork.snapshot();
+    expect([...after.quoteLineWork.values()]).toEqual([
+      expect.objectContaining({
+        serviceReference: 'Entretien vitrines demain',
+        ordinal: 1,
+        origin: 'user_tap',
+        catalogueResolution: 'pending',
+      }),
+    ]);
+
+    expect(await suite.start.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    expect(suite.unitOfWork.snapshot().quoteLineWork.size).toBe(1);
+    expect(await suite.start.execute({
+      ...command,
+      lines: [{ ...command.lines[0]!, quantityDecimal: '3' }],
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'fingerprint_mismatch',
+      },
+    });
+  });
+
   it('garde le double mémoire strictement aligné sur insert/savepoint/scope/CAS PostgreSQL', async () => {
-    const suite = useCases();
+    const suite = useCases(new MemoryAgentMissionUnitOfWork(), AUTHORITY_M2A);
     const started = await suite.start.execute({
       ...OWNER,
       commandId: START_COMMAND,
@@ -3009,6 +3142,7 @@ describe('AgentMission application M1-A', () => {
       housingOlderThan2y: null,
       energyRenovation: null,
       requiredFact: null,
+      catalogueResolution: 'pending',
       catalogueItemId: null,
       expectedCatalogueRevision: null,
       proposalId: null,
@@ -3022,7 +3156,7 @@ describe('AgentMission application M1-A', () => {
     ): Promise<T> => {
       const result = await suite.unitOfWork.runQuoteCreationOwner(
         OWNER,
-        AUTHORITY,
+        AUTHORITY_M2A,
         work,
       );
       if (result.status !== 'executed') {
@@ -3087,11 +3221,21 @@ describe('AgentMission application M1-A', () => {
       expectedRevision: 1,
     }))).toBe('revision_conflict');
 
+    await expect(run((transaction) => transaction.quoteLineWork.updateCas({
+      workItem: {
+        ...workItem,
+        origin: 'user_tap',
+        revision: 2,
+      },
+      expectedRevision: 1,
+    }))).rejects.toThrow('AGENT_MISSION_QUOTE_LINE_WORK_IDENTITY_IMMUTABLE');
+
     const revised: AgentMissionQuoteLineWork = {
       ...workItem,
       revision: 2,
       state: 'awaiting_details',
       requiredFact: 'vat_rate',
+      catalogueResolution: 'free',
       updatedAt: '2026-07-26T10:00:01.000Z',
     };
     expect(await run((transaction) => transaction.quoteLineWork.updateCas({

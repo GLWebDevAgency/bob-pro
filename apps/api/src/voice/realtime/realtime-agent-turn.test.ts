@@ -168,6 +168,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
+          protocolVersion: 1 as const,
           subjectHashCandidates: ['a'.repeat(64)],
           principalBindingHash: 'b'.repeat(64),
           capabilityHash: 'c'.repeat(64),
@@ -218,6 +219,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
+          protocolVersion: 1 as const,
           subjectHashCandidates: ['a'.repeat(64)],
           principalBindingHash: 'b'.repeat(64),
           capabilityHash: 'c'.repeat(64),
@@ -260,6 +262,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
+          protocolVersion: 1,
           subjectHashCandidates: ['a'.repeat(64)],
           principalBindingHash: 'b'.repeat(64),
           capabilityHash: 'c'.repeat(64),
@@ -299,6 +302,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
+          protocolVersion: 1,
           subjectHashCandidates: ['a'.repeat(64)],
           principalBindingHash: 'b'.repeat(64),
           capabilityHash: 'c'.repeat(64),
@@ -338,6 +342,7 @@ describe('RealtimeBobAgentTurnAdapter', () => {
       agentMissionAuthority: {
         owner: { companyId: 'company-1', ownerUserId: 'user-1' },
         proof: {
+          protocolVersion: 1,
           subjectHashCandidates: ['a'.repeat(64)],
           principalBindingHash: 'b'.repeat(64),
           capabilityHash: 'c'.repeat(64),

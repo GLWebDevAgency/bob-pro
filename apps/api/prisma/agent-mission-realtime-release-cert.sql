@@ -19,6 +19,11 @@ SELECT pg_catalog.set_config(
   :'release_flag_kill_switch',
   true
 );
+SELECT pg_catalog.set_config(
+  'app.agent_mission_cert_m2a_release_flag_version',
+  :'m2a_release_flag_version',
+  true
+);
 
 SELECT current_user = :'app_role' AS agent_mission_realtime_runtime_role_matches
 \gset
@@ -60,6 +65,8 @@ DECLARE
     pg_catalog.current_setting('app.agent_mission_cert_release_flag_version')::INTEGER;
   expected_release_flag_kill_switch BOOLEAN :=
     pg_catalog.current_setting('app.agent_mission_cert_release_flag_kill_switch')::BOOLEAN;
+  expected_m2a_release_flag_version INTEGER :=
+    pg_catalog.current_setting('app.agent_mission_cert_m2a_release_flag_version')::INTEGER;
   wrong_lower_release_flag_version INTEGER;
   wrong_upper_release_flag_version INTEGER;
   exact_release_flag_revalidation BOOLEAN;
@@ -69,7 +76,8 @@ DECLARE
   constraint_definition TEXT;
 BEGIN
   IF expected_release_environment NOT IN ('development', 'staging', 'production')
-     OR expected_release_flag_version < 1 THEN
+     OR expected_release_flag_version < 1
+     OR expected_m2a_release_flag_version < 1 THEN
     RAISE EXCEPTION 'AgentMission release flag certificate input is invalid';
   END IF;
   wrong_lower_release_flag_version :=
@@ -320,7 +328,7 @@ BEGIN
   IF capability_constraint.contype <> 'c'
      OR NOT capability_constraint.convalidated
      OR pg_catalog.pg_get_constraintdef(capability_constraint.oid, TRUE) <>
-       'CHECK ((("agentMissionProtocolVersion" IS NULL) = ("agentMissionProtocolBoundAt" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionCapabilityHash" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionReleaseFlagVersion" IS NULL) AND ("agentMissionProtocolVersion" IS NULL OR "agentMissionProtocolVersion" = 1 AND isfinite("agentMissionProtocolBoundAt") AND "agentMissionProtocolBoundAt" = "reservedAt" AND "agentMissionCapabilityHash" ~ ''^[a-f0-9]{64}$''::text AND "agentMissionReleaseFlagVersion" >= 1 AND "agentMissionReleaseFlagVersion" <= 2147483647)) IS TRUE)' THEN
+       'CHECK ((("agentMissionProtocolVersion" IS NULL) = ("agentMissionProtocolBoundAt" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionCapabilityHash" IS NULL) AND ("agentMissionProtocolVersion" IS NULL) = ("agentMissionReleaseFlagVersion" IS NULL) AND ("agentMissionProtocolVersion" IS NULL OR ("agentMissionProtocolVersion" = ANY (ARRAY[1, 2])) AND isfinite("agentMissionProtocolBoundAt") AND "agentMissionProtocolBoundAt" = "reservedAt" AND "agentMissionCapabilityHash" ~ ''^[a-f0-9]{64}$''::text AND "agentMissionReleaseFlagVersion" >= 1 AND "agentMissionReleaseFlagVersion" <= 2147483647)) IS TRUE)' THEN
     RAISE EXCEPTION 'AgentMission realtime lease constraint definition drift';
   END IF;
 
@@ -335,7 +343,7 @@ BEGIN
   IF capability_constraint.contype <> 'c'
      OR NOT capability_constraint.convalidated
      OR constraint_definition <>
-       'CHECK (("agentMissionBootstrapAcknowledgedAt" IS NULL OR "agentMissionProtocolVersion" = 1 AND "agentMissionProtocolBoundAt" IS NOT NULL AND "agentMissionCapabilityHash" IS NOT NULL AND isfinite("agentMissionBootstrapAcknowledgedAt") AND "agentMissionBootstrapAcknowledgedAt" >= "agentMissionProtocolBoundAt" AND "agentMissionBootstrapAcknowledgedAt" <= "hardExpiresAt") IS TRUE)' THEN
+       'CHECK (("agentMissionBootstrapAcknowledgedAt" IS NULL OR ("agentMissionProtocolVersion" = ANY (ARRAY[1, 2])) AND "agentMissionProtocolBoundAt" IS NOT NULL AND "agentMissionCapabilityHash" IS NOT NULL AND isfinite("agentMissionBootstrapAcknowledgedAt") AND "agentMissionBootstrapAcknowledgedAt" >= "agentMissionProtocolBoundAt" AND "agentMissionBootstrapAcknowledgedAt" <= "hardExpiresAt") IS TRUE)' THEN
     RAISE EXCEPTION
       'AgentMission bootstrap receipt constraint definition drift: %',
       constraint_definition;
@@ -406,7 +414,7 @@ BEGIN
     INTO STRICT receipt_guard
     FROM pg_catalog.pg_proc AS function
    WHERE function.oid =
-     'public.guard_realtime_agent_mission_bootstrap_receipt_v1()'::pg_catalog.regprocedure;
+     'public.guard_realtime_agent_mission_bootstrap_receipt_v2()'::pg_catalog.regprocedure;
   IF receipt_guard.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype
      OR receipt_guard.proowner <> lease_relation.relowner
      OR receipt_guard.prosecdef
@@ -426,7 +434,7 @@ BEGIN
         WHERE language.lanname = 'plpgsql'
      )
      OR pg_catalog.md5(receipt_guard.prosrc) <>
-       'cc7d684675783921cfc6ae9eb1220f81'
+       'a2bb870907ccfbacd676ae09dd4fcc2c'
      OR pg_catalog.has_function_privilege(current_user, receipt_guard.oid, 'EXECUTE')
      OR EXISTS (
        SELECT 1
@@ -447,7 +455,7 @@ BEGIN
     FROM pg_catalog.pg_trigger AS trigger_row
    WHERE trigger_row.tgrelid = lease_relation.oid
      AND trigger_row.tgname =
-       'realtime_lease_agent_mission_receipt_insert_v1';
+       'realtime_lease_agent_mission_receipt_insert_v2';
   IF receipt_insert_trigger.tgfoid <> receipt_guard.oid
      OR receipt_insert_trigger.tgtype <> 7
      OR receipt_insert_trigger.tgenabled <> 'O'
@@ -470,7 +478,7 @@ BEGIN
     FROM pg_catalog.pg_trigger AS trigger_row
    WHERE trigger_row.tgrelid = lease_relation.oid
      AND trigger_row.tgname =
-       'realtime_lease_agent_mission_receipt_update_v1';
+       'realtime_lease_agent_mission_receipt_update_v2';
   SELECT ARRAY[attribute.attnum::SMALLINT]
     INTO STRICT expected_trigger_attributes
     FROM pg_catalog.pg_attribute AS attribute
@@ -1165,6 +1173,22 @@ BEGIN
        expected_release_flag_version
      ) THEN
     RAISE EXCEPTION 'AgentMission release flag wrong key was accepted';
+  END IF;
+  IF NOT public.revalidate_agent_mission_release_flag_v1(
+       'bob.agent_missions.quote.m2a',
+       expected_release_environment,
+       expected_m2a_release_flag_version
+     )
+     OR public.revalidate_agent_mission_release_flag_v1(
+       'bob.agent_missions.quote.m2a',
+       expected_release_environment,
+       CASE
+         WHEN expected_m2a_release_flag_version < 2147483647
+           THEN expected_m2a_release_flag_version + 1
+         ELSE 0
+       END
+     ) THEN
+    RAISE EXCEPTION 'AgentMission M2-A disabled flag exact version revalidation drift';
   END IF;
 END;
 $agent_mission_realtime_release_certificate$;

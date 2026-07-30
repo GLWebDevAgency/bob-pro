@@ -4,6 +4,7 @@ import {
   isCanonicalAgentMissionOpaqueIdentifier,
   isCanonicalAgentMissionUserCommandId,
   isCanonicalAgentMissionUuid,
+  normalizeAgentMissionQuoteLineCandidate,
   type AcknowledgeQuoteScreenOutput,
   type AgentMissionViewV1,
   type AppError,
@@ -14,17 +15,32 @@ import {
 } from '@bob/core';
 import {
   decodeAgentMissionCancel,
+  decodeAgentMissionCancelV2,
+  decodeAgentMissionCatalogueChoice,
   decodeAgentMissionCurrent,
+  decodeAgentMissionCurrentV2,
   decodeAgentMissionDecision,
+  decodeAgentMissionDecisionV2,
   decodeAgentMissionScreenAck,
+  decodeAgentMissionScreenAckV2,
+  decodeAgentMissionStageQuoteLines,
   decodeAgentMissionStart,
+  decodeAgentMissionStartV2,
 } from './agent-mission-codec';
 import {
+  REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionAcknowledgeQuoteScreenInput,
   type RealtimeAgentMissionCancelQuoteInput,
+  type RealtimeAgentMissionCatalogueChoiceInput,
+  type RealtimeAgentMissionCatalogueChoiceOutput,
+  type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionQuoteDecisionInput,
   type RealtimeAgentMissionSession,
+  type RealtimeAgentMissionSessionV1,
+  type RealtimeAgentMissionSessionV2,
+  type RealtimeAgentMissionStageQuoteLinesInput,
+  type RealtimeAgentMissionStageQuoteLinesOutput,
   type RealtimeAgentMissionStartQuoteInput,
 } from './agent-mission-session';
 
@@ -77,24 +93,95 @@ function exactInput(value: unknown, fields: readonly string[]): boolean {
   return keys.length === fields.length && fields.every((field) => Object.hasOwn(value, field));
 }
 
-class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
+function quoteLineCandidateIssue(
+  value: unknown,
+  field: 'lines' | 'additionalLines',
+  allowEmpty: boolean,
+): { readonly field: string; readonly message: string } | null {
+  if (
+    !Array.isArray(value)
+    || value.length > 20
+    || (!allowEmpty && value.length === 0)
+  ) {
+    return {
+      field,
+      message: allowEmpty
+        ? 'Vingt lignes maximum.'
+        : 'Entre une et vingt lignes sont requises.',
+    };
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const parsed = normalizeAgentMissionQuoteLineCandidate(value[index]);
+    if (!parsed.ok) {
+      return {
+        field: `${field}[${index}].${parsed.error.field}`,
+        message: `Ligne invalide (${parsed.error.reason}).`,
+      };
+    }
+  }
+  return null;
+}
+
+function quoteLineCommandIssue(input: {
+  readonly commandId: string;
+  readonly expectedMissionRevision: number;
+  readonly expectedDraftSessionId: string;
+  readonly expectedDraftSlotRevision: number;
+  readonly expectedDraftContentRevision: number;
+}): { readonly field: string; readonly message: string } | null {
+  if (!isCanonicalAgentMissionUserCommandId(input.commandId)) {
+    return { field: 'commandId', message: 'UUID v4 canonique requis.' };
+  }
+  if (!revision(input.expectedMissionRevision)) {
+    return {
+      field: 'expectedMissionRevision',
+      message: 'Révision positive requise.',
+    };
+  }
+  if (!draftSessionId(input.expectedDraftSessionId)) {
+    return {
+      field: 'expectedDraftSessionId',
+      message: 'Session de brouillon canonique requise.',
+    };
+  }
+  if (!revision(input.expectedDraftSlotRevision)) {
+    return {
+      field: 'expectedDraftSlotRevision',
+      message: 'Révision de slot positive requise.',
+    };
+  }
+  if (!revision(input.expectedDraftContentRevision, true)) {
+    return {
+      field: 'expectedDraftContentRevision',
+      message: 'Révision de contenu requise.',
+    };
+  }
+  return null;
+}
+
+class HttpRealtimeAgentMissionSessionBase<
+TProtocol extends RealtimeAgentMissionProtocolVersion,
+> {
   #capability: string | null;
+  #protocolVersion: TProtocol;
   #request: HttpAgentMissionRequester | null;
   #realtimeSessionId: string;
 
   constructor(input: {
     readonly realtimeSessionId: string;
     readonly capability: string;
+    readonly protocolVersion: TProtocol;
     readonly request: HttpAgentMissionRequester;
   }) {
     this.#realtimeSessionId = input.realtimeSessionId;
     this.#capability = input.capability;
+    this.#protocolVersion = input.protocolVersion;
     this.#request = input.request;
     Object.freeze(this);
   }
 
-  get protocolVersion(): typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION {
-    return REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+  get protocolVersion(): TProtocol {
+    return this.#protocolVersion;
   }
 
   get realtimeSessionId(): string {
@@ -109,7 +196,9 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
     return this.call<{ readonly mission: AgentMissionViewV1 | null }>({
       method: 'GET',
       path: '/agent-missions/current/quote-creation',
-      decode: decodeAgentMissionCurrent,
+      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        ? decodeAgentMissionCurrentV2
+        : decodeAgentMissionCurrent,
       signal,
     });
   }
@@ -128,7 +217,9 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
       method: 'POST',
       path: '/agent-missions/quote-creation/start',
       body: { commandId: input.commandId },
-      decode: decodeAgentMissionStart,
+      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        ? decodeAgentMissionStartV2
+        : decodeAgentMissionStart,
       signal,
     });
   }
@@ -173,7 +264,9 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
         expectedMissionRevision: input.expectedMissionRevision,
         reason: input.reason ?? 'user_cancelled',
       },
-      decode: decodeAgentMissionCancel,
+      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        ? decodeAgentMissionCancelV2
+        : decodeAgentMissionCancel,
       signal,
     });
   }
@@ -243,7 +336,9 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
         expectedDraftSlotRevision: input.expectedDraftSlotRevision,
         expectedDraftContentRevision: input.expectedDraftContentRevision,
       },
-      decode: decodeAgentMissionScreenAck,
+      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        ? decodeAgentMissionScreenAckV2
+        : decodeAgentMissionScreenAck,
       signal,
     });
   }
@@ -357,7 +452,9 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
       method: 'POST',
       path: `/agent-missions/${encodeURIComponent(missionId)}/decisions`,
       body,
-      decode: (value) => decodeAgentMissionDecision(value, missionId),
+      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+        ? (value) => decodeAgentMissionDecisionV2(value, missionId)
+        : (value) => decodeAgentMissionDecision(value, missionId),
       signal,
     });
   }
@@ -367,7 +464,7 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
     this.#request = null;
   }
 
-  private call<T>(
+  protected call<T>(
     input: Omit<HttpAgentMissionRequest<T>, 'headers' | 'timeoutMs'>,
   ): Promise<Result<T, AppError>> {
     const capability = this.#capability;
@@ -381,10 +478,172 @@ class HttpRealtimeAgentMissionSession implements RealtimeAgentMissionSession {
   }
 }
 
+class HttpRealtimeAgentMissionSessionV1
+extends HttpRealtimeAgentMissionSessionBase<
+typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
+>
+implements RealtimeAgentMissionSessionV1 {}
+
+class HttpRealtimeAgentMissionSessionV2
+extends HttpRealtimeAgentMissionSessionBase<
+typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+>
+implements RealtimeAgentMissionSessionV2 {
+  stageQuoteLines(
+    input: RealtimeAgentMissionStageQuoteLinesInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<RealtimeAgentMissionStageQuoteLinesOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!exactInput(input, [
+      'missionId',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'lines',
+    ])) {
+      return validation<RealtimeAgentMissionStageQuoteLinesOutput>(
+        'command',
+        'Commande de staging exacte requise.',
+      );
+    }
+    const commonIssue = quoteLineCommandIssue(input);
+    if (commonIssue !== null) {
+      return validation<RealtimeAgentMissionStageQuoteLinesOutput>(
+        commonIssue.field,
+        commonIssue.message,
+      );
+    }
+    const lineIssue = quoteLineCandidateIssue(input.lines, 'lines', false);
+    if (lineIssue !== null) {
+      return validation<RealtimeAgentMissionStageQuoteLinesOutput>(
+        lineIssue.field,
+        lineIssue.message,
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<RealtimeAgentMissionStageQuoteLinesOutput>({
+      method: 'POST',
+      path: `/agent-missions/${encodeURIComponent(missionId)}/quote-lines`,
+      body,
+      decode: (value) => decodeAgentMissionStageQuoteLines(value, missionId),
+      signal,
+    });
+  }
+
+  decideQuoteCatalogueChoice(
+    input: RealtimeAgentMissionCatalogueChoiceInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!exactInput(input, [
+      'missionId',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'pendingLineId',
+      'expectedWorkRevision',
+      'choiceId',
+      'additionalLines',
+    ])) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        'command',
+        'Commande de choix catalogue exacte requise.',
+      );
+    }
+    const commonIssue = quoteLineCommandIssue(input);
+    if (commonIssue !== null) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        commonIssue.field,
+        commonIssue.message,
+      );
+    }
+    for (const [field, value] of [
+      ['decisionId', input.decisionId],
+      ['pendingLineId', input.pendingLineId],
+      ['choiceId', input.choiceId],
+    ] as const) {
+      if (!isCanonicalAgentMissionUuid(value)) {
+        return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+          field,
+          'UUID canonique requis.',
+        );
+      }
+    }
+    if (!revision(input.choiceSetRevision)) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        'choiceSetRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (!revision(input.expectedWorkRevision)) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        'expectedWorkRevision',
+        'Révision positive requise.',
+      );
+    }
+    const lineIssue = quoteLineCandidateIssue(
+      input.additionalLines,
+      'additionalLines',
+      true,
+    );
+    if (lineIssue !== null) {
+      return validation<RealtimeAgentMissionCatalogueChoiceOutput>(
+        lineIssue.field,
+        lineIssue.message,
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<RealtimeAgentMissionCatalogueChoiceOutput>({
+      method: 'POST',
+      path: `/agent-missions/${encodeURIComponent(missionId)}/catalogue-choices`,
+      body,
+      decode: (value) => decodeAgentMissionCatalogueChoice(value, missionId),
+      signal,
+    });
+  }
+}
+
 export function createHttpRealtimeAgentMissionSession(input: {
+  readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+  readonly realtimeSessionId: string;
+  readonly capability: string;
+  readonly request: HttpAgentMissionRequester;
+}): RealtimeAgentMissionSessionV1;
+export function createHttpRealtimeAgentMissionSession(input: {
+  readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
+  readonly realtimeSessionId: string;
+  readonly capability: string;
+  readonly request: HttpAgentMissionRequester;
+}): RealtimeAgentMissionSessionV2;
+export function createHttpRealtimeAgentMissionSession(input: {
+  readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
   readonly realtimeSessionId: string;
   readonly capability: string;
   readonly request: HttpAgentMissionRequester;
 }): RealtimeAgentMissionSession {
-  return new HttpRealtimeAgentMissionSession(input);
+  return input.protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+    ? new HttpRealtimeAgentMissionSessionV2({
+        ...input,
+        protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
+      })
+    : new HttpRealtimeAgentMissionSessionV1({
+        ...input,
+        protocolVersion: REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
+      });
 }

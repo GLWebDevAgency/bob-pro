@@ -36,10 +36,14 @@ export class GetActiveAgentMission {
         const now = await transaction.databaseNow();
         const foreground = await transaction.missions.findForeground(owner);
         if (foreground === null) return ok(null);
-        if (foreground.status === 'unsupported_kind') {
+        if (foreground.status !== 'known') {
           return err(appConflict(
-            'agent_mission_foreground',
-            'active_mission_exists',
+            foreground.status === 'unsupported_protocol'
+              ? 'agent_mission_protocol'
+              : 'agent_mission_foreground',
+            foreground.status === 'unsupported_protocol'
+              ? 'upgrade_required'
+              : 'active_mission_exists',
           ));
         }
         return toAgentMissionView(foreground.mission, now);

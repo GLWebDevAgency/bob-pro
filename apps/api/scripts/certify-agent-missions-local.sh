@@ -226,6 +226,8 @@ SQL
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-release-flag-authority-role.sql"
 "$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-role.sql"
+"$PSQL_BIN" "$DEPLOYER_BOOTSTRAP_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/catalogue-search-token-authority-role.sql"
 
 owner_membership_count="$(
   "$PSQL_BIN" "$SUPER_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
@@ -589,6 +591,9 @@ INSERT INTO public.companies (
 ) VALUES (
   'writer-n1-company', 'Writer N-1', 'EI', '901000009', '90100000900009',
   'certification', 'reel_normal', '1 rue N-1', '75001', 'Paris'
+), (
+  'writer-n1-neighbor', 'Writer N-1 voisin', 'EI', '901000017', '90100001700017',
+  'certification', 'reel_normal', '2 rue N-1', '75002', 'Paris'
 );
 
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
@@ -2339,6 +2344,166 @@ COMMIT;
 SQL
 }
 
+certify_m2a1_realtime_writer_n1() {
+  writer_stage="$1"
+  writer_session_id="$2"
+  writer_subject_hash="$3"
+  writer_lease_token_hash="$4"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v writer_stage="$writer_stage" \
+    -v writer_session_id="$writer_session_id" \
+    -v writer_subject_hash="$writer_subject_hash" \
+    -v writer_lease_token_hash="$writer_lease_token_hash" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a1-realtime-n1', true);
+SELECT set_config('bob.cert.m2a1_realtime_stage', :'writer_stage', true);
+SELECT set_config('bob.cert.m2a1_realtime_session_id', :'writer_session_id', true);
+SELECT set_config('bob.cert.m2a1_realtime_reserved_at', clock_timestamp()::TEXT, true);
+
+-- Forme admission N-1 exacte : protocole 1, sans aucune valeur M2-A.
+INSERT INTO public.realtime_session_leases (
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+  "providerId", "providerCallId", "reaperTokenHash", "reservedAt",
+  "leaseExpiresAt", "hardExpiresAt", "activatedAt", "updatedAt", version,
+  "agentMissionProtocolVersion", "agentMissionProtocolBoundAt",
+  "agentMissionCapabilityHash", "agentMissionReleaseFlagVersion"
+) VALUES (
+  'writer-n1-company',
+  :'writer_subject_hash',
+  :'writer_session_id'::UUID,
+  :'writer_lease_token_hash',
+  'active',
+  'openai',
+  'm2a1-n1-' || :'writer_stage',
+  NULL,
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ
+    + INTERVAL '10 minutes',
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ
+    + INTERVAL '20 minutes',
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ,
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ,
+  1,
+  1,
+  current_setting('bob.cert.m2a1_realtime_reserved_at')::TIMESTAMPTZ,
+  repeat('a', 64),
+  1
+);
+
+UPDATE public.realtime_session_leases
+   SET "agentMissionBootstrapAcknowledgedAt" = clock_timestamp(),
+       "updatedAt" = clock_timestamp(),
+       version = 2
+ WHERE "companyId" = 'writer-n1-company'
+   AND "sessionId" = :'writer_session_id'::UUID;
+
+DO $m2a1_realtime_writer_n1$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.realtime_session_leases
+     WHERE "companyId" = 'writer-n1-company'
+       AND "sessionId" =
+         current_setting('bob.cert.m2a1_realtime_session_id')::UUID
+       AND "agentMissionProtocolVersion" = 1
+       AND "agentMissionBootstrapAcknowledgedAt" IS NOT NULL
+       AND version = 2
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_REALTIME_WRITER_N1_DRIFT:%',
+      current_setting('bob.cert.m2a1_realtime_stage');
+  END IF;
+END;
+$m2a1_realtime_writer_n1$;
+COMMIT;
+SQL
+}
+
+certify_m2a1_catalogue_revision_fence() {
+  catalogue_stage="$1"
+  catalogue_id="$2"
+
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v catalogue_stage="$catalogue_stage" \
+    -v catalogue_id="$catalogue_id" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-catalogue', true);
+SELECT set_config('bob.cert.m2a1_catalogue_stage', :'catalogue_stage', true);
+SELECT set_config('bob.cert.m2a1_catalogue_id', :'catalogue_id', true);
+
+UPDATE public.catalogue_prestations
+   SET label = 'Remplacement certifié ' || :'catalogue_stage',
+       revision = 2,
+       "updatedAt" = clock_timestamp()
+ WHERE "companyId" = 'writer-n1-company'
+   AND id = :'catalogue_id'
+   AND revision = 1;
+
+DO $m2a1_catalogue_revision$
+DECLARE
+  rejected BOOLEAN := FALSE;
+  rejection_message TEXT;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+     FROM public.catalogue_prestations
+     WHERE "companyId" = 'writer-n1-company'
+       AND id = current_setting('bob.cert.m2a1_catalogue_id')
+       AND revision = 2
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_CATALOGUE_CAS_DRIFT:%',
+      current_setting('bob.cert.m2a1_catalogue_stage');
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'writer-n1-company'
+       AND "catalogueItemId" =
+         current_setting('bob.cert.m2a1_catalogue_id')
+       AND token IN ('skoda', 'lodz', 'strasse')
+  ) OR (
+    SELECT pg_catalog.count(*)
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'writer-n1-company'
+       AND "catalogueItemId" =
+         current_setting('bob.cert.m2a1_catalogue_id')
+       AND token IN (
+         'remplacement',
+         'certifie',
+         current_setting('bob.cert.m2a1_catalogue_stage')
+       )
+  ) <> 3 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_CATALOGUE_TOKEN_SYNC_DRIFT:%',
+      current_setting('bob.cert.m2a1_catalogue_stage');
+  END IF;
+
+  BEGIN
+    UPDATE public.catalogue_prestations
+       SET revision = 4,
+           "updatedAt" = clock_timestamp()
+     WHERE "companyId" = 'writer-n1-company'
+       AND id = current_setting('bob.cert.m2a1_catalogue_id');
+  EXCEPTION WHEN check_violation THEN
+    GET STACKED DIAGNOSTICS rejection_message = MESSAGE_TEXT;
+    rejected := rejection_message =
+      'CATALOGUE_PRESTATION_IDENTITY_OR_REVISION_INVALID';
+  END;
+  IF NOT rejected THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_CATALOGUE_REVISION_JUMP_ACCEPTED:%',
+      current_setting('bob.cert.m2a1_catalogue_stage');
+  END IF;
+END;
+$m2a1_catalogue_revision$;
+COMMIT;
+SQL
+}
+
 certify_m2a_quote_draft_reader_n1 pre-expand
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
@@ -2952,6 +3117,611 @@ $quote_line_cascade$;
 ROLLBACK;
 SQL
 
+# M2-A-1 : le work writer M2-A-0 n'a jamais été activé. La migration ferme explicitement cette
+# forme dormante plutôt que d'inventer un backfill. La preuve négative doit voir la ligne malgré
+# FORCE RLS, refuser tout le train, puis laisser la base octet-logiquement intacte.
+m2a1_preflight_work_count="$(
+  "$PSQL_BIN" "$DIRECT_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+ALTER TABLE public.agent_mission_quote_line_work NO FORCE ROW LEVEL SECURITY;
+SELECT count(*) FROM public.agent_mission_quote_line_work;
+ROLLBACK;
+SQL
+)"
+if [ "$m2a1_preflight_work_count" != "0" ]; then
+  echo "AgentMission M2-A-1 found an unexpected preexisting work item" >&2
+  exit 1
+fi
+
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-work', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'd0000000-0000-4000-8000-000000000001',
+  true
+);
+INSERT INTO public.agent_mission_quote_line_work (
+  "id", "companyId", "ownerUserId", "missionId", "ordinal", "revision",
+  "state", "origin", "createdAt", "updatedAt"
+) VALUES (
+  'e9000000-0000-4000-8000-000000000001'::UUID,
+  'writer-n1-company',
+  'writer-m2a-work',
+  'd0000000-0000-4000-8000-000000000001'::UUID,
+  1,
+  1,
+  'queued',
+  'user_voice',
+  clock_timestamp(),
+  clock_timestamp()
+);
+COMMIT;
+SQL
+
+M2A1_PREFLIGHT_LOG="$(
+  mktemp "${TMPDIR:-/tmp}/bob-agent-mission-m2a1-preflight.XXXXXX"
+)"
+if "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730100000_agent_mission_catalogue_choice_expand/migration.sql" \
+  >"$M2A1_PREFLIGHT_LOG" 2>&1
+then
+  cat "$M2A1_PREFLIGHT_LOG" >&2
+  echo "AgentMission M2-A-1 accepted a dormant preexisting work item" >&2
+  exit 1
+fi
+if ! grep -Fq \
+  'AGENT_MISSION_M2A1_PREEXISTING_LINE_WORK_UNSUPPORTED' \
+  "$M2A1_PREFLIGHT_LOG"
+then
+  cat "$M2A1_PREFLIGHT_LOG" >&2
+  echo "AgentMission M2-A-1 preflight failed for an unrelated reason" >&2
+  exit 1
+fi
+rm -f "$M2A1_PREFLIGHT_LOG"
+M2A1_PREFLIGHT_LOG=""
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+ALTER TABLE public.agent_mission_quote_line_work NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.release_flags NO FORCE ROW LEVEL SECURITY;
+DO $m2a1_preflight_rollback$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'agent_missions'
+       AND column_name = 'protocolVersion'
+  )
+  OR EXISTS (
+    SELECT 1
+      FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'agent_mission_quote_line_work'
+       AND column_name = 'catalogueResolution'
+  )
+  OR to_regprocedure(
+    'public.guard_realtime_agent_mission_bootstrap_receipt_v2()'
+  ) IS NOT NULL
+  OR EXISTS (
+    SELECT 1
+      FROM public.release_flags
+     WHERE key = 'bob.agent_missions.quote.m2a'
+  )
+  OR NOT EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE id = 'e9000000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_PREFLIGHT_ROLLBACK_DRIFT';
+  END IF;
+END;
+$m2a1_preflight_rollback$;
+ROLLBACK;
+SQL
+
+"$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a-work', true);
+SELECT set_config(
+  'app.current_agent_mission_id',
+  'd0000000-0000-4000-8000-000000000001',
+  true
+);
+DELETE FROM public.agent_mission_quote_line_work
+ WHERE id = 'e9000000-0000-4000-8000-000000000001'::UUID;
+DO $m2a1_preflight_cleanup$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_mission_quote_line_work
+     WHERE id = 'e9000000-0000-4000-8000-000000000001'::UUID
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_PREFLIGHT_CLEANUP_FAILED';
+  END IF;
+END;
+$m2a1_preflight_cleanup$;
+COMMIT;
+SQL
+
+# Reproduit les défauts Supabase : privilège table + ACL colonne accordés à PostgREST avant la
+# migration. Les DEFAULT PRIVILEGES empoisonnent aussi la future table/fonction ; l'expand doit
+# refermer les trois niveaux, pas seulement les objets préexistants.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
+GRANT SELECT ON TABLE
+  public.agent_missions,
+  public.agent_mission_events,
+  public.agent_mission_quote_line_work,
+  public.realtime_session_leases,
+  public.catalogue_prestations
+TO anon, authenticated, service_role;
+GRANT UPDATE ("revision") ON TABLE public.agent_missions
+  TO anon, authenticated, service_role;
+GRANT REFERENCES ("missionId") ON TABLE public.agent_mission_events
+  TO anon, authenticated, service_role;
+GRANT UPDATE ("ordinal") ON TABLE public.agent_mission_quote_line_work
+  TO anon, authenticated, service_role;
+GRANT UPDATE ("version") ON TABLE public.realtime_session_leases
+  TO anon, authenticated, service_role;
+GRANT UPDATE ("revision") ON TABLE public.catalogue_prestations
+  TO anon, authenticated, service_role;
+RESET ROLE;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730100000_agent_mission_catalogue_choice_expand/migration.sql"
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $m2a1_expand_acl_fence$
+DECLARE
+  exposed_role TEXT;
+  relation_name TEXT;
+  function_name TEXT;
+BEGIN
+  FOREACH exposed_role IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
+    FOREACH relation_name IN ARRAY ARRAY[
+      'agent_missions',
+      'agent_mission_events',
+      'agent_mission_quote_line_work',
+      'realtime_session_leases',
+      'catalogue_prestations',
+      'catalogue_prestation_search_tokens'
+    ] LOOP
+      IF has_table_privilege(
+        exposed_role,
+        'public.' || relation_name,
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+      ) THEN
+        RAISE EXCEPTION 'AGENT_MISSION_M2A1_DATA_API_TABLE_ACL_SURVIVED:%:%',
+          exposed_role, relation_name;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_attribute AS attribute
+         WHERE attribute.attrelid =
+               ('public.' || relation_name)::pg_catalog.regclass
+           AND attribute.attnum > 0
+           AND NOT attribute.attisdropped
+           AND (
+             has_column_privilege(
+               exposed_role,
+               'public.' || relation_name,
+               attribute.attname,
+               'SELECT'
+             )
+             OR has_column_privilege(
+               exposed_role,
+               'public.' || relation_name,
+               attribute.attname,
+               'INSERT'
+             )
+             OR has_column_privilege(
+               exposed_role,
+               'public.' || relation_name,
+               attribute.attname,
+               'UPDATE'
+             )
+             OR has_column_privilege(
+               exposed_role,
+               'public.' || relation_name,
+               attribute.attname,
+               'REFERENCES'
+             )
+           )
+      ) THEN
+        RAISE EXCEPTION 'AGENT_MISSION_M2A1_DATA_API_COLUMN_ACL_SURVIVED:%:%',
+          exposed_role, relation_name;
+      END IF;
+    END LOOP;
+
+    FOREACH function_name IN ARRAY ARRAY[
+      'guard_agent_mission_mutation_v2',
+      'guard_agent_mission_event_append_v2',
+      'guard_agent_mission_quote_line_work_v2',
+      'guard_realtime_agent_mission_bootstrap_receipt_v2',
+      'guard_catalogue_prestation_revision_v1',
+      'sync_catalogue_prestation_search_tokens_v1'
+    ] LOOP
+      IF has_function_privilege(
+        exposed_role,
+        ('public.' || function_name || '()')::pg_catalog.regprocedure,
+        'EXECUTE'
+      ) THEN
+        RAISE EXCEPTION 'AGENT_MISSION_M2A1_DATA_API_FUNCTION_ACL_SURVIVED:%:%',
+          exposed_role, function_name;
+      END IF;
+    END LOOP;
+  END LOOP;
+END;
+$m2a1_expand_acl_fence$;
+
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+ALTER TABLE public.catalogue_prestation_search_tokens
+  NO FORCE ROW LEVEL SECURITY;
+DO $m2a1_catalogue_backfill$
+BEGIN
+  IF (
+    SELECT pg_catalog.count(*)
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = 'writer-n1-company'
+       AND "catalogueItemId" = 'catalogue-m2a-n1-cutover'
+       AND token IN ('skoda', 'lodz', 'strasse', 'cutover')
+  ) <> 4 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_CATALOGUE_BACKFILL_DRIFT';
+  END IF;
+END;
+$m2a1_catalogue_backfill$;
+ROLLBACK;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  REVOKE SELECT ON TABLES FROM anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.catalogue_prestation_search_tokens TO bob_app;
+RESET ROLE;
+SQL
+
+certify_agent_mission_event_writer \
+  writer-m2a1-expand \
+  e0000000-0000-4000-8000-000000000001 \
+  e0000000-0000-4000-8000-000000000002 \
+  e0000000-0000-4000-8000-000000000003 \
+  e0000000-0000-4000-8000-000000000004 \
+  e0000000-0000-4000-8000-000000000005 \
+  e0000000-0000-4000-8000-000000000006
+certify_m2a_catalogue_writer_n1 \
+  m2a1expand \
+  catalogue-m2a1-n1-expand
+certify_m2a1_catalogue_revision_fence \
+  m2a1expand \
+  catalogue-m2a1-n1-expand
+certify_m2a_quote_draft_reader_n1 m2a1expand
+certify_m2a1_realtime_writer_n1 \
+  m2a1expand \
+  e0100000-0000-4000-8000-000000000001 \
+  e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 \
+  e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730100100_agent_mission_catalogue_choice_validate/migration.sql"
+
+certify_agent_mission_event_writer \
+  writer-m2a1-validate \
+  e1000000-0000-4000-8000-000000000001 \
+  e1000000-0000-4000-8000-000000000002 \
+  e1000000-0000-4000-8000-000000000003 \
+  e1000000-0000-4000-8000-000000000004 \
+  e1000000-0000-4000-8000-000000000005 \
+  e1000000-0000-4000-8000-000000000006
+certify_m2a_catalogue_writer_n1 \
+  m2a1validate \
+  catalogue-m2a1-n1-validate
+certify_m2a1_catalogue_revision_fence \
+  m2a1validate \
+  catalogue-m2a1-n1-validate
+certify_m2a_quote_draft_reader_n1 m2a1validate
+certify_m2a1_realtime_writer_n1 \
+  m2a1validate \
+  e1100000-0000-4000-8000-000000000001 \
+  e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3 \
+  e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4
+
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$ROOT_DIR/apps/api/prisma/migrations/20260730100200_agent_mission_catalogue_choice_cutover/migration.sql"
+
+certify_agent_mission_event_writer \
+  writer-m2a1-cutover \
+  e2000000-0000-4000-8000-000000000001 \
+  e2000000-0000-4000-8000-000000000002 \
+  e2000000-0000-4000-8000-000000000003 \
+  e2000000-0000-4000-8000-000000000004 \
+  e2000000-0000-4000-8000-000000000005 \
+  e2000000-0000-4000-8000-000000000006
+certify_m2a_catalogue_writer_n1 \
+  m2a1cutover \
+  catalogue-m2a1-n1-cutover
+certify_m2a1_catalogue_revision_fence \
+  m2a1cutover \
+  catalogue-m2a1-n1-cutover
+certify_m2a_quote_draft_reader_n1 m2a1cutover
+certify_m2a1_realtime_writer_n1 \
+  m2a1cutover \
+  e2100000-0000-4000-8000-000000000001 \
+  e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5 \
+  e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6
+
+# Le plan certifié reprend la forme exacte de l'adapter : trois branches indexables, intersection
+# de tous les tokens distincts, déduplication par rang puis verrou des six vraies lignes. Deux
+# tenants partagent volontairement les mêmes tokens pour rendre toute fuite observable.
+for m2a1_plan_tenant in writer-n1-company writer-n1-neighbor
+do
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v plan_tenant="$m2a1_plan_tenant" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+SELECT set_config('app.current_company_id', :'plan_tenant', true);
+SELECT set_config('app.current_user_id', 'writer-m2a1-index-cert', true);
+INSERT INTO public.catalogue_prestations (
+  "id", "companyId", "label", "category", "unit", "unitPriceHt", "vatRate",
+  "revision", "createdAt", "updatedAt"
+)
+SELECT
+  :'plan_tenant' || '-catalogue-m2a1-plan-' || ordinal::TEXT,
+  :'plan_tenant',
+  CASE
+    WHEN ordinal % 997 = 0 THEN 'Pompe hydroforage cible ' || ordinal::TEXT
+    ELSE 'Prestation catalogue générique ' || ordinal::TEXT
+  END,
+  'labor',
+  'heure',
+  5500,
+  20,
+  1,
+  clock_timestamp(),
+  clock_timestamp()
+FROM pg_catalog.generate_series(1, 10000) AS ordinal;
+COMMIT;
+SQL
+done
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+SET ROLE bob_schema_owner;
+ANALYZE public.catalogue_prestations;
+ANALYZE public.catalogue_prestation_search_tokens;
+RESET ROLE;
+SQL
+
+m2a1_catalogue_plans="$(
+  "$PSQL_BIN" "$DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', 'writer-n1-company', true);
+SELECT set_config('app.current_user_id', 'writer-m2a1-index-cert', true);
+PREPARE m2a1_catalogue_search(TEXT, TEXT, TEXT, TEXT, INTEGER) AS
+WITH matching_ids AS (
+  SELECT exact_match."id", 0::SMALLINT AS match_rank
+    FROM public.catalogue_prestations AS exact_match
+   WHERE exact_match."companyId" = $1
+     AND exact_match."searchKey" = $2
+  UNION ALL
+  SELECT prefix_match."id", 1::SMALLINT AS match_rank
+    FROM public.catalogue_prestations AS prefix_match
+   WHERE prefix_match."companyId" = $1
+     AND prefix_match."searchKey" ~>=~ $2
+     AND prefix_match."searchKey" ~<~ ($2 || '{')
+     AND prefix_match."searchKey" <> $2
+  UNION ALL
+  SELECT search_token."catalogueItemId", 2::SMALLINT AS match_rank
+    FROM public.catalogue_prestation_search_tokens AS search_token
+   WHERE search_token."companyId" = $1
+     AND search_token.token IN ($3, $4)
+   GROUP BY search_token."companyId", search_token."catalogueItemId"
+  HAVING pg_catalog.count(*) = $5
+),
+ranked_ids AS (
+  SELECT matching_id."id", pg_catalog.min(matching_id.match_rank) AS match_rank
+    FROM matching_ids AS matching_id
+   GROUP BY matching_id."id"
+)
+SELECT c."id", ranked_id.match_rank
+  FROM ranked_ids AS ranked_id
+  JOIN public.catalogue_prestations AS c
+    ON c."companyId" = $1
+   AND c."id" = ranked_id."id"
+ ORDER BY
+   ranked_id.match_rank ASC,
+   c."searchKey" COLLATE "C" ASC,
+   c."id" ASC
+ LIMIT 6
+ FOR SHARE OF c;
+
+SELECT 'M2A1_PLAN_CUSTOM';
+EXPLAIN (COSTS OFF)
+EXECUTE m2a1_catalogue_search(
+  'writer-n1-company',
+  'hydroforage pompe',
+  'hydroforage',
+  'pompe',
+  2
+);
+SET LOCAL plan_cache_mode = force_generic_plan;
+SELECT 'M2A1_PLAN_GENERIC';
+EXPLAIN (COSTS OFF)
+EXECUTE m2a1_catalogue_search(
+  'writer-n1-company',
+  'hydroforage pompe',
+  'hydroforage',
+  'pompe',
+  2
+);
+SELECT 'M2A1_PLAN_RESULT';
+EXECUTE m2a1_catalogue_search(
+  'writer-n1-company',
+  'hydroforage pompe',
+  'hydroforage',
+  'pompe',
+  2
+);
+SELECT 'M2A1_PLAN_RESULT_END';
+ROLLBACK;
+SQL
+)"
+m2a1_catalogue_custom_plan="$(
+  printf '%s\n' "$m2a1_catalogue_plans" \
+    | awk '
+      $0 == "M2A1_PLAN_CUSTOM" { capture = 1; next }
+      $0 == "M2A1_PLAN_GENERIC" { capture = 0 }
+      capture { print }
+    '
+)"
+m2a1_catalogue_generic_plan="$(
+  printf '%s\n' "$m2a1_catalogue_plans" \
+    | awk '
+      $0 == "M2A1_PLAN_GENERIC" { capture = 1; next }
+      $0 == "M2A1_PLAN_RESULT" { capture = 0 }
+      capture { print }
+    '
+)"
+for m2a1_catalogue_plan in \
+  "$m2a1_catalogue_custom_plan" \
+  "$m2a1_catalogue_generic_plan"
+do
+  case "$m2a1_catalogue_plan" in
+    *catalogue_search_tokens_pkey*) ;;
+    *)
+      printf '%s\n' "$m2a1_catalogue_plans" >&2
+      echo "AgentMission M2-A-1 token plan does not use the tenant-token primary key" >&2
+      exit 1
+      ;;
+  esac
+  case "$m2a1_catalogue_plan" in
+    *"Seq Scan on catalogue_prestation_search_tokens"*)
+      printf '%s\n' "$m2a1_catalogue_plans" >&2
+      echo "AgentMission M2-A-1 token plan performs a sequential scan" >&2
+      exit 1
+      ;;
+  esac
+done
+m2a1_catalogue_result="$(
+  printf '%s\n' "$m2a1_catalogue_plans" \
+    | awk '
+      $0 == "M2A1_PLAN_RESULT" { capture = 1; next }
+      $0 == "M2A1_PLAN_RESULT_END" { capture = 0 }
+      capture { print }
+    '
+)"
+m2a1_catalogue_result_count="$(
+  printf '%s\n' "$m2a1_catalogue_result" \
+    | grep -c '^writer-n1-company-catalogue-m2a1-plan-[0-9][0-9]*|2$' \
+    || true
+)"
+if [ "$m2a1_catalogue_result_count" -ne 6 ]; then
+  printf '%s\n' "$m2a1_catalogue_plans" >&2
+  echo "AgentMission M2-A-1 token search result leaked or lost a tenant" >&2
+  exit 1
+fi
+
+for m2a1_plan_tenant in writer-n1-company writer-n1-neighbor
+do
+  "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v plan_tenant="$m2a1_plan_tenant" <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+SELECT set_config('app.current_company_id', :'plan_tenant', true);
+SELECT set_config('app.current_user_id', 'writer-m2a1-index-cert', true);
+DELETE FROM public.catalogue_prestations
+ WHERE "companyId" = :'plan_tenant'
+   AND id LIKE :'plan_tenant' || '-catalogue-m2a1-plan-%';
+DO $m2a1_catalogue_plan_cleanup$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.catalogue_prestations
+     WHERE "companyId" = current_setting('app.current_company_id')
+       AND id LIKE current_setting('app.current_company_id') ||
+         '-catalogue-m2a1-plan-%'
+  ) OR EXISTS (
+    SELECT 1
+      FROM public.catalogue_prestation_search_tokens
+     WHERE "companyId" = current_setting('app.current_company_id')
+       AND "catalogueItemId" LIKE current_setting('app.current_company_id') ||
+         '-catalogue-m2a1-plan-%'
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_CATALOGUE_PLAN_CLEANUP_FAILED';
+  END IF;
+END;
+$m2a1_catalogue_plan_cleanup$;
+COMMIT;
+SQL
+done
+
+# Les flags restent exactement OFF et FORCE RLS doit avoir été restauré après l'écriture globale.
+"$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SET LOCAL ROLE bob_schema_owner;
+ALTER TABLE public.release_flags NO FORCE ROW LEVEL SECURITY;
+DO $m2a1_flag_exact$
+BEGIN
+  IF (
+    SELECT count(*)
+      FROM public.release_flags
+     WHERE key = 'bob.agent_missions.quote.m2a'
+       AND NOT enabled
+       AND NOT "killSwitch"
+       AND version = 1
+       AND "updatedByUserId" = 'system:migration'
+  ) <> 3 THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_RELEASE_FLAG_DRIFT';
+  END IF;
+END;
+$m2a1_flag_exact$;
+ROLLBACK;
+
+DO $m2a1_force_rls_restored$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_class AS relation
+     WHERE relation.oid IN (
+       'public.release_flags'::pg_catalog.regclass,
+       'public.agent_missions'::pg_catalog.regclass,
+       'public.agent_mission_events'::pg_catalog.regclass,
+       'public.agent_mission_quote_line_work'::pg_catalog.regclass,
+       'public.catalogue_prestations'::pg_catalog.regclass,
+       'public.catalogue_prestation_search_tokens'::pg_catalog.regclass
+     )
+       AND (NOT relation.relrowsecurity OR NOT relation.relforcerowsecurity)
+  ) THEN
+    RAISE EXCEPTION 'AGENT_MISSION_M2A1_FORCE_RLS_NOT_RESTORED';
+  END IF;
+END;
+$m2a1_force_rls_restored$;
+SQL
+
+"$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+  -v app_role=bob_app \
+  -f "$ROOT_DIR/apps/api/prisma/catalogue-search-token-authority-provision.sql"
+
 "$PSQL_BIN" "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
   -v app_role=bob_app \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-fingerprint-readiness-authority-provision.sql"
@@ -3512,6 +4282,7 @@ fi
   -v release_env=staging \
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
+  -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
 
 # Le certificat doit refuser tout ACL résiduel vers un rôle arbitraire, même si le runtime et les
@@ -3523,7 +4294,7 @@ CREATE ROLE bob_agent_mission_realtime_acl_rogue
 SQL
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
-GRANT EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v1()
+GRANT EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v2()
   TO bob_agent_mission_realtime_acl_rogue;
 RESET ROLE;
 SQL
@@ -3533,6 +4304,7 @@ if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -v release_env=staging \
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
+  -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
   >/dev/null 2>&1
 then
@@ -3540,7 +4312,7 @@ then
 fi
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 SET ROLE bob_schema_owner;
-REVOKE EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v1()
+REVOKE EXECUTE ON FUNCTION public.guard_realtime_agent_mission_bootstrap_receipt_v2()
   FROM bob_agent_mission_realtime_acl_rogue;
 RESET ROLE;
 SQL
@@ -3561,6 +4333,7 @@ if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -v release_env=staging \
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
+  -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
   >/dev/null 2>&1
 then
@@ -3590,6 +4363,7 @@ if "$PSQL_BIN" "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -v release_env=staging \
   -v release_flag_version=1 \
   -v release_flag_kill_switch=false \
+  -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql" \
   >/dev/null 2>&1
 then
@@ -3655,6 +4429,7 @@ esac
   -v release_env=staging \
   -v release_flag_version="$agent_mission_release_flag_version" \
   -v release_flag_kill_switch="$agent_mission_release_flag_kill_switch" \
+  -v m2a_release_flag_version=1 \
   -f "$ROOT_DIR/apps/api/prisma/agent-mission-realtime-release-cert.sql"
 
 "$PSQL_BIN" "$DIRECT_URL" -X -v ON_ERROR_STOP=1 <<'SQL'

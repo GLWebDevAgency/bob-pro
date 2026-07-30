@@ -183,9 +183,17 @@ function validReserve(input: RealtimeAdmissionReserveInput): boolean {
     && (
       binding === null
       || (
-        binding.protocolVersion === 1
+        (
+          (
+            binding.protocolVersion === 1
+            && binding.releaseFlagKey === 'bob.agent_missions.quote.v1'
+          )
+          || (
+            binding.protocolVersion === 2
+            && binding.releaseFlagKey === 'bob.agent_missions.quote.m2a'
+          )
+        )
         && isRealtimeSubjectHash(binding.capabilityHash)
-        && binding.releaseFlagKey === 'bob.agent_missions.quote.v1'
         && (
           binding.releaseEnvironment === 'development'
           || binding.releaseEnvironment === 'staging'
@@ -218,7 +226,9 @@ function validSessionLookup(input: RealtimeAdmissionSessionLookupInput): boolean
 function validAgentMissionBootstrapAcknowledgement(
   input: RealtimeAgentMissionBootstrapAcknowledgementInput,
 ): boolean {
-  return validSessionLookup(input) && isRealtimeSubjectHash(input.capabilityHash);
+  return validSessionLookup(input)
+    && (input.protocolVersion === 1 || input.protocolVersion === 2)
+    && isRealtimeSubjectHash(input.capabilityHash);
 }
 
 function capabilityHashesMatch(left: string, right: string): boolean {
@@ -580,7 +590,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
         UPDATE realtime_session_leases
            SET state = 'active', "activatedAt" = clock_timestamp(),
                "leaseExpiresAt" = CASE
-                 WHEN "agentMissionProtocolVersion" = 1
+                 WHEN "agentMissionProtocolVersion" IS NOT NULL
                       AND "agentMissionBootstrapAcknowledgedAt" IS NULL
                    THEN "leaseExpiresAt"
                  ELSE LEAST(
@@ -658,7 +668,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
            AND state = 'active'
            AND "providerId" IS NOT NULL
            AND "providerCallId" IS NOT NULL
-           AND "agentMissionProtocolVersion" = 1
+           AND "agentMissionProtocolVersion" IS NOT NULL
            AND "agentMissionBootstrapAcknowledgedAt" IS NULL
            AND "leaseExpiresAt" > clock_timestamp()
            AND "hardExpiresAt" > clock_timestamp()
@@ -929,7 +939,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
           row.state !== 'active'
           || row.providerId === null
           || row.providerCallId === null
-          || row.agentMissionProtocolVersion !== 1
+          || row.agentMissionProtocolVersion !== input.protocolVersion
           || row.agentMissionProtocolBoundAt === null
           || row.agentMissionCapabilityHash === null
         ) return { ok: false as const, reason: 'state' as const };
@@ -967,7 +977,7 @@ export class PrismaRealtimeAdmission implements RealtimeAdmissionPort {
              AND state = 'active'
              AND "providerId" = ${row.providerId}
              AND "providerCallId" = ${row.providerCallId}
-             AND "agentMissionProtocolVersion" = 1
+             AND "agentMissionProtocolVersion" = ${input.protocolVersion}
              AND "agentMissionCapabilityHash" = ${storedCapabilityHash}
              AND "agentMissionBootstrapAcknowledgedAt" IS NULL
              AND "leaseExpiresAt" > clock_timestamp()

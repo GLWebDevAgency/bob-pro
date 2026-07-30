@@ -27,6 +27,7 @@ export * from './agent/bob-agent';
 export * from './agent/intent-ownership';
 export * from './agent/runtime-tool-intent';
 export * from './agent/mission-understanding/quote-creation';
+export * from './agent/mission-understanding/quote-creation-v2';
 export {
   type CompanyMemoryPort,
   type RememberSupplierInput,

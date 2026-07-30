@@ -3,9 +3,13 @@ import {
   AcknowledgeQuoteScreen,
   AdvanceQuoteAgentMission,
   CancelQuoteAgentMission,
+  ContinueQuoteAgentMissionLineQueue,
+  DecideQuoteAgentMissionCatalogueChoice,
   GetActiveAgentMission,
+  StageQuoteAgentMissionLines,
   StartQuoteAgentMission,
   createEmptyQuoteDraftPayload,
+  deriveAgentMissionSystemCommandId,
   parseQuoteDraftPayload,
   sha256Hex,
   type AgentMissionFingerprintPort,
@@ -99,9 +103,11 @@ let authorizeOwner: (
 
 function certificationAuthorityProof(
   owner: AgentMissionOwner,
+  protocolVersion: 1 | 2 = 1,
 ): AgentMissionRealtimeAuthorityProof {
-  const key = `${owner.companyId}\u0000${owner.ownerUserId}`;
+  const key = `${owner.companyId}\u0000${owner.ownerUserId}\u0000${protocolVersion}`;
   return Object.freeze({
+    protocolVersion,
     subjectHashCandidates: Object.freeze([
       sha256Hex(`agent-mission-cert-subject:${key}`),
     ]),
@@ -154,7 +160,11 @@ function acknowledge(uow: AgentMissionUnitOfWorkPort) {
   return {
     execute: async (
       input: Omit<AcknowledgeQuoteScreenInput, 'authority'>,
-    ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
+      authority?: AgentMissionRealtimeAuthorityProof,
+    ) => useCase.execute({
+      ...input,
+      authority: authority ?? await authorizeOwner(input),
+    }),
   };
 }
 
@@ -167,16 +177,46 @@ function advance(uow: AgentMissionUnitOfWorkPort) {
   return {
     execute: async (
       input: Omit<AdvanceQuoteAgentMissionInput, 'authority'>,
-    ) => useCase.execute({ ...input, authority: await authorizeOwner(input) }),
+      authority?: AgentMissionRealtimeAuthorityProof,
+    ) => useCase.execute({
+      ...input,
+      authority: authority ?? await authorizeOwner(input),
+    }),
   };
 }
 
 function get(uow: AgentMissionUnitOfWorkPort) {
   const useCase = new GetActiveAgentMission({ unitOfWork: uow });
   return {
-    execute: async (owner: AgentMissionOwner) =>
-      useCase.execute(owner, await authorizeOwner(owner)),
+    execute: async (
+      owner: AgentMissionOwner,
+      authority?: AgentMissionRealtimeAuthorityProof,
+    ) => useCase.execute(owner, authority ?? await authorizeOwner(owner)),
   };
+}
+
+function stageLines(uow: AgentMissionUnitOfWorkPort) {
+  return new StageQuoteAgentMissionLines({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
+}
+
+function continueLineQueue(uow: AgentMissionUnitOfWorkPort) {
+  return new ContinueQuoteAgentMissionLineQueue({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
+}
+
+function decideCatalogueChoice(uow: AgentMissionUnitOfWorkPort) {
+  return new DecideQuoteAgentMissionCatalogueChoice({
+    unitOfWork: uow,
+    fingerprints: FINGERPRINTS,
+    ids: ids(),
+  });
 }
 
 function faultAfterWrite(
@@ -245,6 +285,7 @@ function faultAfterWrite(
         },
         quoteScreen: tx.quoteScreen,
         customers: tx.customers,
+        catalogueCandidates: tx.catalogueCandidates,
       };
       return work(wrapped);
       }),
@@ -296,6 +337,69 @@ describe.skipIf(!RUN_CERT)(
       Promise<AgentMissionRealtimeAuthorityProof>
     >();
 
+    async function provisionCertificationAuthority(
+      owner: AgentMissionOwner,
+      protocolVersion: 1 | 2,
+    ): Promise<AgentMissionRealtimeAuthorityProof> {
+      const key = `${owner.companyId}\u0000${owner.ownerUserId}\u0000${protocolVersion}`;
+      const existing = authorityByOwner.get(key);
+      if (existing !== undefined) return existing;
+      const creating = (async (): Promise<AgentMissionRealtimeAuthorityProof> => {
+        const authority = certificationAuthorityProof(owner, protocolVersion);
+        const subjectHash = authority.subjectHashCandidates[0];
+        if (subjectHash === undefined) {
+          throw new Error('AgentMission PostgreSQL subject hash fixture is missing.');
+        }
+        const sessionId = randomUUID();
+        const reservedAt = new Date();
+        await deployer.$transaction(async (transaction) => {
+          await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
+          await transaction.$executeRaw`
+            SELECT set_config('app.current_company_id', ${owner.companyId}, true)
+          `;
+          await transaction.$executeRaw`
+            SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
+          `;
+          await transaction.realtimeSessionLease.create({
+            data: {
+              companyId: owner.companyId,
+              subjectHash,
+              sessionId,
+              leaseTokenHash: sha256Hex(`agent-mission-cert-lease:${key}`),
+              state: 'active',
+              providerId: 'openai',
+              providerCallId: `agent-mission-cert-${sessionId}`,
+              reservedAt,
+              leaseExpiresAt: new Date(reservedAt.getTime() + 10 * 60_000),
+              hardExpiresAt: new Date(reservedAt.getTime() + 20 * 60_000),
+              activatedAt: reservedAt,
+              agentMissionProtocolVersion: protocolVersion,
+              agentMissionProtocolBoundAt: reservedAt,
+              agentMissionCapabilityHash: authority.capabilityHash,
+              agentMissionReleaseFlagVersion: 1,
+              updatedAt: reservedAt,
+            },
+          });
+          await transaction.realtimeSessionLease.update({
+            where: {
+              realtime_session_lease_subject: {
+                companyId: owner.companyId,
+                subjectHash,
+              },
+            },
+            // Le trigger remplace cette sentinelle par clock_timestamp() et n'autorise qu'une
+            // transition NULL -> reçu sur une lease déjà persistée.
+            data: {
+              agentMissionBootstrapAcknowledgedAt: reservedAt,
+            },
+          });
+        });
+        return authority;
+      })();
+      authorityByOwner.set(key, creating);
+      return creating;
+    }
+
     beforeAll(async () => {
       if (!DISPOSABLE) {
         throw new Error(
@@ -319,65 +423,7 @@ describe.skipIf(!RUN_CERT)(
         workerA.$connect(),
         workerB.$connect(),
       ]);
-      authorizeOwner = async (owner) => {
-        const key = `${owner.companyId}\u0000${owner.ownerUserId}`;
-        const existing = authorityByOwner.get(key);
-        if (existing !== undefined) return existing;
-        const creating = (async (): Promise<AgentMissionRealtimeAuthorityProof> => {
-          const authority = certificationAuthorityProof(owner);
-          const subjectHash = authority.subjectHashCandidates[0];
-          if (subjectHash === undefined) {
-            throw new Error('AgentMission PostgreSQL subject hash fixture is missing.');
-          }
-          const sessionId = randomUUID();
-          const reservedAt = new Date();
-          await deployer.$transaction(async (transaction) => {
-            await transaction.$executeRawUnsafe('SET LOCAL ROLE bob_schema_owner');
-            await transaction.$executeRaw`
-              SELECT set_config('app.current_company_id', ${owner.companyId}, true)
-            `;
-            await transaction.$executeRaw`
-              SELECT set_config('app.current_user_id', ${owner.ownerUserId}, true)
-            `;
-            await transaction.realtimeSessionLease.create({
-              data: {
-                companyId: owner.companyId,
-                subjectHash,
-                sessionId,
-                leaseTokenHash: sha256Hex(`agent-mission-cert-lease:${key}`),
-                state: 'active',
-                providerId: 'openai',
-                providerCallId: `agent-mission-cert-${sessionId}`,
-                reservedAt,
-                leaseExpiresAt: new Date(reservedAt.getTime() + 10 * 60_000),
-                hardExpiresAt: new Date(reservedAt.getTime() + 20 * 60_000),
-                activatedAt: reservedAt,
-                agentMissionProtocolVersion: 1,
-                agentMissionProtocolBoundAt: reservedAt,
-                agentMissionCapabilityHash: authority.capabilityHash,
-                agentMissionReleaseFlagVersion: 1,
-                updatedAt: reservedAt,
-              },
-            });
-            await transaction.realtimeSessionLease.update({
-              where: {
-                realtime_session_lease_subject: {
-                  companyId: owner.companyId,
-                  subjectHash,
-                },
-              },
-              // Le trigger remplace cette sentinelle par clock_timestamp() et n'autorise qu'une
-              // transition NULL -> reçu sur une lease V1 déjà persistée.
-              data: {
-                agentMissionBootstrapAcknowledgedAt: reservedAt,
-              },
-            });
-          });
-          return authority;
-        })();
-        authorityByOwner.set(key, creating);
-        return creating;
-      };
+      authorizeOwner = (owner) => provisionCertificationAuthority(owner, 1);
       for (const [companyId, suffix] of [
         [companyA, '1'],
         [companyB, '2'],
@@ -421,13 +467,15 @@ describe.skipIf(!RUN_CERT)(
     async function publishQuoteScreenContext(
       owner: AgentMissionOwner,
       rawContext?: Readonly<Record<string, unknown>>,
-      options: Readonly<{ apply?: boolean }> = {},
+      options: Readonly<{ apply?: boolean; protocolVersion?: 1 | 2 }> = {},
     ): Promise<{
       readonly sessionId: string;
       readonly revision: number;
       readonly digest: string;
     }> {
-      const authority = await authorizeOwner(owner);
+      const authority = options.protocolVersion === 2
+        ? await provisionCertificationAuthority(owner, 2)
+        : await authorizeOwner(owner);
       const subjectHash = authority.subjectHashCandidates[0];
       if (subjectHash === undefined) {
         throw new Error('AgentMission context fixture subject hash is missing.');
@@ -596,6 +644,109 @@ describe.skipIf(!RUN_CERT)(
       return advanced.value.mission;
     }
 
+    async function prepareM2AQuoteLineMission(
+      owner: AgentMissionOwner,
+      serviceReference: string | null,
+    ) {
+      const authority = await provisionCertificationAuthority(owner, 2);
+      const context = await publishQuoteScreenContext(
+        owner,
+        undefined,
+        { protocolVersion: 2 },
+      );
+      const turnId = randomUUID();
+      const started = await start(uowA).execute({
+        ...owner,
+        commandId: turnId,
+        customerReference: 'Camping Les Pins',
+        lines: serviceReference === null
+          ? []
+          : [{
+              serviceReference,
+              categoryHint: 'labor',
+              quantityDecimal: '2',
+              unitReference: 'heure',
+              unitPriceDecimal: '55',
+              currency: 'EUR',
+              priceBasis: 'per_unit',
+              vatRateHint: null,
+            }],
+        origin: {
+          actor: 'user_voice',
+          correlation: {
+            realtimeSessionId: context.sessionId,
+            turnId,
+            contextRevision: context.revision,
+            contextDigest: context.digest,
+          },
+        },
+      }, authority);
+      if (!started.ok || started.value.mission.payload.draft === null) {
+        throw new Error(`M2-A start failed:${JSON.stringify(started)}`);
+      }
+      const missionId = started.value.mission.id;
+      const startDraft = started.value.mission.payload.draft;
+      const acknowledgementCommandId = randomUUID();
+      const acknowledged = await acknowledge(uowA).execute({
+        ...owner,
+        missionId,
+        commandId: acknowledgementCommandId,
+        expectedMissionRevision: started.value.mission.revision,
+        realtimeSessionId: context.sessionId,
+        contextRevision: context.revision,
+        contextDigest: context.digest,
+        draftSessionId: startDraft.sessionId,
+        expectedDraftSlotRevision: startDraft.slotRevision,
+        expectedDraftContentRevision: startDraft.contentRevision,
+      }, authority);
+      if (!acknowledged.ok) {
+        throw new Error(`M2-A ACK failed:${JSON.stringify(acknowledged)}`);
+      }
+      const advanced = await advance(uowA).execute({
+        ...owner,
+        missionId,
+        acknowledgementCommandId,
+      }, authority);
+      if (!advanced.ok || advanced.value.mission.phase !== 'awaiting_lines') {
+        throw new Error(`M2-A advance failed:${JSON.stringify(advanced)}`);
+      }
+      const parentCommandId = deriveAgentMissionSystemCommandId({
+        operation: 'consume_staged_customer_resolution',
+        ...owner,
+        missionId,
+        acknowledgementMissionRevision:
+          acknowledged.value.receipt.missionRevisionAfter,
+      });
+      return {
+        authority,
+        context,
+        mission: advanced.value.mission,
+        parentCommandId,
+      };
+    }
+
+    async function readQuoteLineWorkThroughOwnerBoundary(
+      uow: PrismaAgentMissionUnitOfWork,
+      owner: AgentMissionOwner,
+      authority: AgentMissionRealtimeAuthorityProof,
+      missionId: string,
+    ): Promise<readonly AgentMissionQuoteLineWork[]> {
+      const execution = await uow.runQuoteCreationOwner(
+        owner,
+        authority,
+        (transaction) => transaction.quoteLineWork.listForUpdate({
+          ...owner,
+          missionId,
+        }),
+      );
+      if (execution.status !== 'executed') {
+        throw new Error(
+          `M2-A quote line work inspection rejected:${JSON.stringify(execution)}`,
+        );
+      }
+      return execution.value;
+    }
+
     afterAll(async () => {
       await Promise.allSettled([
         workerA?.$disconnect(),
@@ -681,6 +832,10 @@ describe.skipIf(!RUN_CERT)(
         eventUpdate: boolean;
         eventDelete: boolean;
         eventTruncate: boolean;
+        catalogueTokenSelect: boolean;
+        catalogueTokenInsert: boolean;
+        catalogueTokenUpdate: boolean;
+        catalogueTokenDelete: boolean;
       }>>`
         SELECT
           has_table_privilege('bob_app', 'public.agent_missions', 'SELECT')
@@ -702,7 +857,27 @@ describe.skipIf(!RUN_CERT)(
           has_table_privilege('bob_app', 'public.agent_mission_events', 'DELETE')
             AS "eventDelete",
           has_table_privilege('bob_app', 'public.agent_mission_events', 'TRUNCATE')
-            AS "eventTruncate"
+            AS "eventTruncate",
+          has_table_privilege(
+            'bob_app',
+            'public.catalogue_prestation_search_tokens',
+            'SELECT'
+          ) AS "catalogueTokenSelect",
+          has_table_privilege(
+            'bob_app',
+            'public.catalogue_prestation_search_tokens',
+            'INSERT'
+          ) AS "catalogueTokenInsert",
+          has_table_privilege(
+            'bob_app',
+            'public.catalogue_prestation_search_tokens',
+            'UPDATE'
+          ) AS "catalogueTokenUpdate",
+          has_table_privilege(
+            'bob_app',
+            'public.catalogue_prestation_search_tokens',
+            'DELETE'
+          ) AS "catalogueTokenDelete"
       `;
       expect(runtimeAcl).toEqual([{
         missionSelect: true,
@@ -715,6 +890,10 @@ describe.skipIf(!RUN_CERT)(
         eventUpdate: false,
         eventDelete: false,
         eventTruncate: false,
+        catalogueTokenSelect: true,
+        catalogueTokenInsert: false,
+        catalogueTokenUpdate: false,
+        catalogueTokenDelete: false,
       }]);
 
       const exposedPrivileges = await admin.$queryRaw<Array<{
@@ -740,7 +919,12 @@ describe.skipIf(!RUN_CERT)(
             ('public.agent_mission_events', 'INSERT'),
             ('public.agent_mission_events', 'UPDATE'),
             ('public.agent_mission_events', 'DELETE'),
-            ('public.agent_mission_events', 'TRUNCATE')
+            ('public.agent_mission_events', 'TRUNCATE'),
+            ('public.catalogue_prestation_search_tokens', 'SELECT'),
+            ('public.catalogue_prestation_search_tokens', 'INSERT'),
+            ('public.catalogue_prestation_search_tokens', 'UPDATE'),
+            ('public.catalogue_prestation_search_tokens', 'DELETE'),
+            ('public.catalogue_prestation_search_tokens', 'TRUNCATE')
         ) AS tested(object_name, privilege_name)
         WHERE has_table_privilege(
           exposed.role_name,
@@ -757,7 +941,7 @@ describe.skipIf(!RUN_CERT)(
         ) AS exposed(role_name)
         WHERE has_function_privilege(
           exposed.role_name,
-          'public.guard_agent_mission_mutation_v1()',
+          'public.guard_agent_mission_mutation_v2()',
           'EXECUTE'
         )
           OR has_function_privilege(
@@ -772,7 +956,7 @@ describe.skipIf(!RUN_CERT)(
           )
           OR has_function_privilege(
             exposed.role_name,
-            'public.guard_agent_mission_event_append_v1()',
+            'public.guard_agent_mission_event_append_v2()',
             'EXECUTE'
           )
           OR has_function_privilege(
@@ -787,7 +971,12 @@ describe.skipIf(!RUN_CERT)(
           )
           OR has_function_privilege(
             exposed.role_name,
-            'public.guard_realtime_agent_mission_bootstrap_receipt_v1()',
+            'public.guard_realtime_agent_mission_bootstrap_receipt_v2()',
+            'EXECUTE'
+          )
+          OR has_function_privilege(
+            exposed.role_name,
+            'public.sync_catalogue_prestation_search_tokens_v1()',
             'EXECUTE'
           )
       `;
@@ -849,9 +1038,19 @@ describe.skipIf(!RUN_CERT)(
         companyId: companyA,
         ownerUserId: `owner-quote-line-work-b-${randomUUID()}`,
       };
+      const [authorityA, authorityB] = await Promise.all([
+        provisionCertificationAuthority(ownerA, 2),
+        provisionCertificationAuthority(ownerB, 2),
+      ]);
       const [startedA, startedB] = await Promise.all([
-        start(uowA).execute({ ...ownerA, commandId: randomUUID() }),
-        start(uowB).execute({ ...ownerB, commandId: randomUUID() }),
+        start(uowA).execute(
+          { ...ownerA, commandId: randomUUID() },
+          authorityA,
+        ),
+        start(uowB).execute(
+          { ...ownerB, commandId: randomUUID() },
+          authorityB,
+        ),
       ]);
       if (!startedA.ok || !startedB.ok) {
         throw new Error(
@@ -875,6 +1074,7 @@ describe.skipIf(!RUN_CERT)(
         revision: 1,
         state: 'queued',
         origin: 'user_voice',
+        catalogueResolution: 'pending',
         serviceReference: 'Main-d’œuvre plomberie',
         category: 'labor',
         quantityMilli: 2_000,
@@ -898,9 +1098,12 @@ describe.skipIf(!RUN_CERT)(
         owner: AgentMissionOwner,
         work: (transaction: AgentMissionTransaction) => Promise<T>,
       ): Promise<T> => {
+        const authority = owner.ownerUserId === ownerA.ownerUserId
+          ? authorityA
+          : authorityB;
         const result = await uow.runQuoteCreationOwner(
           owner,
-          await authorizeOwner(owner),
+          authority,
           work,
         );
         if (result.status !== 'executed') {
@@ -994,6 +1197,7 @@ describe.skipIf(!RUN_CERT)(
         ...workA,
         revision: 2,
         state: 'awaiting_details',
+        catalogueResolution: 'free',
         requiredFact: 'vat_rate',
         updatedAt: new Date(Date.parse(createdAt) + 1_000).toISOString(),
       };
@@ -1037,6 +1241,459 @@ describe.skipIf(!RUN_CERT)(
           missionId: missionB.id,
         }),
       )).toBe(1);
+    });
+
+    it('recherche réellement le catalogue sous RLS sans faire fuiter le tenant voisin', async () => {
+      const ownerA = {
+        companyId: companyA,
+        ownerUserId: `owner-catalogue-search-a-${randomUUID()}`,
+      };
+      const ownerB = {
+        companyId: companyB,
+        ownerUserId: `owner-catalogue-search-b-${randomUUID()}`,
+      };
+      const [authorityA, authorityB] = await Promise.all([
+        provisionCertificationAuthority(ownerA, 2),
+        provisionCertificationAuthority(ownerB, 2),
+      ]);
+      const catalogueIdA = `catalogue-plomberie-${randomUUID()}`;
+      const catalogueDecoyIdA = `catalogue-decoy-${randomUUID()}`;
+      const catalogueIdB = `catalogue-foreign-${randomUUID()}`;
+      const manyCatalogueIds = Array.from(
+        { length: 6 },
+        (_, index) => `catalogue-inspection-${index + 1}-${randomUUID()}`,
+      );
+      await Promise.all([
+        workerA.withIsolatedOwner(
+          companyA,
+          ownerA.ownerUserId,
+          async (transaction) => {
+            await transaction.cataloguePrestation.createMany({
+              data: [
+                {
+                  id: catalogueIdA,
+                  companyId: companyA,
+                  label: 'Main-d’œuvre plomberie',
+                  category: 'labor',
+                  unit: 'heure',
+                  unitPriceHt: 5500,
+                  vatRate: new Prisma.Decimal(20),
+                  revision: 1,
+                },
+                {
+                  id: catalogueDecoyIdA,
+                  companyId: companyA,
+                  label: 'Plomberie dépannage',
+                  category: 'labor',
+                  unit: 'heure',
+                  unitPriceHt: 7700,
+                  vatRate: new Prisma.Decimal(20),
+                  revision: 1,
+                },
+                ...manyCatalogueIds.map((id, index) => ({
+                  id,
+                  companyId: companyA,
+                  label: `Inspection chaudière zone ${index + 1}`,
+                  category: 'labor' as const,
+                  unit: 'heure',
+                  unitPriceHt: 8_000 + index,
+                  vatRate: new Prisma.Decimal(20),
+                  revision: 1,
+                })),
+              ],
+            });
+          },
+          { maxWaitMs: 5_000, timeoutMs: 10_000, readOnly: false },
+        ),
+        workerB.withIsolatedOwner(
+          companyB,
+          ownerB.ownerUserId,
+          (transaction) => transaction.cataloguePrestation.create({
+            data: {
+              id: catalogueIdB,
+              companyId: companyB,
+              label: 'Main-d’œuvre plomberie',
+              category: 'labor',
+              unit: 'heure',
+              unitPriceHt: 9900,
+              vatRate: new Prisma.Decimal(20),
+              revision: 1,
+            },
+          }),
+          { maxWaitMs: 5_000, timeoutMs: 10_000, readOnly: false },
+        ),
+      ]);
+      const runSearch = async (
+        uow: PrismaAgentMissionUnitOfWork,
+        owner: AgentMissionOwner,
+        authority: AgentMissionRealtimeAuthorityProof,
+      ) => {
+        const result = await uow.runQuoteCreationOwner(
+          owner,
+          authority,
+          async (transaction) => ({
+            candidates: await transaction.catalogueCandidates.search({
+              companyId: owner.companyId,
+              query: 'plomberie œuvre main',
+              limit: 6,
+            }),
+            foreignById: await transaction.catalogueCandidates.getById({
+              companyId: owner.companyId,
+              id: owner.companyId === companyA ? catalogueIdB : catalogueIdA,
+            }),
+          }),
+        );
+        if (result.status !== 'executed') {
+          throw new Error(`catalogue search rejected:${JSON.stringify(result)}`);
+        }
+        return result.value;
+      };
+
+      const [resultA, resultB] = await Promise.all([
+        runSearch(uowA, ownerA, authorityA),
+        runSearch(uowB, ownerB, authorityB),
+      ]);
+      expect(resultA.candidates).toMatchObject({
+        truncated: false,
+        candidates: [{
+          id: catalogueIdA,
+          label: 'Main-d’œuvre plomberie',
+          unitPriceHT: 5500,
+          revision: 1,
+          matchKind: 'token',
+        }],
+      });
+      expect(resultB.candidates).toMatchObject({
+        truncated: false,
+        candidates: [{
+          id: catalogueIdB,
+          unitPriceHT: 9900,
+          matchKind: 'token',
+        }],
+      });
+      expect(resultA.foreignById).toBeNull();
+      expect(resultB.foreignById).toBeNull();
+
+      const searchShapes = await uowA.runQuoteCreationOwner(
+        ownerA,
+        authorityA,
+        async (transaction) => ({
+          none: await transaction.catalogueCandidates.search({
+            companyId: companyA,
+            query: 'Prestation réellement absente',
+            limit: 6,
+          }),
+          exact: await transaction.catalogueCandidates.search({
+            companyId: companyA,
+            query: 'Main-d’œuvre plomberie',
+            limit: 6,
+          }),
+          many: await transaction.catalogueCandidates.search({
+            companyId: companyA,
+            query: 'Inspection chaudière',
+            limit: 6,
+          }),
+        }),
+      );
+      expect(searchShapes.status).toBe('executed');
+      if (searchShapes.status !== 'executed') return;
+      expect(searchShapes.value.none).toEqual({
+        candidates: [],
+        truncated: false,
+      });
+      expect(searchShapes.value.exact).toMatchObject({
+        candidates: [{
+          id: catalogueIdA,
+          matchKind: 'exact',
+        }],
+        truncated: false,
+      });
+      expect(searchShapes.value.many).toMatchObject({
+        candidates: [
+          { id: manyCatalogueIds[0], matchKind: 'prefix' },
+          { id: manyCatalogueIds[1], matchKind: 'prefix' },
+          { id: manyCatalogueIds[2], matchKind: 'prefix' },
+          { id: manyCatalogueIds[3], matchKind: 'prefix' },
+          { id: manyCatalogueIds[4], matchKind: 'prefix' },
+        ],
+        truncated: true,
+      });
+    });
+
+    it('traverse M2-A V2 sur PostgreSQL réel : stage, choix voix/tap concurrent, replay et fence V1', async () => {
+      const owner: AgentMissionOwner = {
+        companyId: companyA,
+        ownerUserId: `owner-m2a-catalogue-choice-${randomUUID()}`,
+      };
+      const catalogueItemId = `catalogue-m2a-choice-${randomUUID()}`;
+      const catalogueLabel = `Diagnostic étanchéité ${randomUUID()}`;
+      await workerA.withIsolatedOwner(
+        owner.companyId,
+        owner.ownerUserId,
+        (transaction) => transaction.cataloguePrestation.create({
+          data: {
+            id: catalogueItemId,
+            companyId: owner.companyId,
+            label: catalogueLabel,
+            category: 'labor',
+            unit: 'heure',
+            unitPriceHt: 5_500,
+            vatRate: new Prisma.Decimal(20),
+            revision: 1,
+          },
+        }),
+        { maxWaitMs: 5_000, timeoutMs: 10_000, readOnly: false },
+      );
+      const prepared = await prepareM2AQuoteLineMission(owner, null);
+      const draft = prepared.mission.payload.draft;
+      if (draft === null) throw new Error('M2-A mission lost its draft');
+      const stageTurnId = randomUUID();
+      const stageInput = {
+        ...owner,
+        authority: prepared.authority,
+        missionId: prepared.mission.id,
+        commandId: stageTurnId,
+        expectedMissionRevision: prepared.mission.revision,
+        expectedDraftSessionId: draft.sessionId,
+        expectedDraftSlotRevision: draft.slotRevision,
+        expectedDraftContentRevision: draft.contentRevision,
+        origin: {
+          actor: 'user_voice' as const,
+          correlation: {
+            realtimeSessionId: prepared.context.sessionId,
+            turnId: stageTurnId,
+            contextRevision: prepared.context.revision,
+            contextDigest: prepared.context.digest,
+          },
+        },
+        lines: [{
+          serviceReference: catalogueLabel,
+          categoryHint: 'labor' as const,
+          quantityDecimal: '2',
+          unitReference: 'heure',
+          unitPriceDecimal: '55',
+          currency: 'EUR' as const,
+          priceBasis: 'per_unit' as const,
+          vatRateHint: null,
+        }],
+      };
+      const staged = await stageLines(uowA).execute(stageInput);
+      expect(staged).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'staged',
+          stagedCount: 1,
+          firstQueueOrdinal: 1,
+          lastQueueOrdinal: 1,
+        },
+      });
+      if (!staged.ok) return;
+      await expect(stageLines(uowB).execute(stageInput)).resolves.toMatchObject({
+        ok: true,
+        value: { outcome: 'replayed', stagedCount: 1 },
+      });
+
+      const continued = await continueLineQueue(uowA).execute({
+        ...owner,
+        authority: prepared.authority,
+        missionId: prepared.mission.id,
+        parentCommandId: stageTurnId,
+      });
+      expect(continued).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'choices_presented',
+          mission: {
+            phase: 'awaiting_catalogue_choice',
+          },
+          presentedChoiceCount: 2,
+        },
+      });
+      if (!continued.ok) return;
+      expect(await admin.agentMission.findUniqueOrThrow({
+        where: { id: prepared.mission.id },
+      })).toMatchObject({ protocolVersion: 2 });
+      const choiceMission = continued.value.mission;
+      const choiceDraft = choiceMission.payload.draft;
+      const decision = choiceMission.payload.decision;
+      if (choiceDraft === null || decision?.kind !== 'catalogue') {
+        throw new Error('M2-A catalogue decision projection is missing');
+      }
+      expect(decision.candidates).toEqual([{
+        choiceId: expect.any(String),
+        catalogueItemId,
+        expectedCatalogueRevision: 1,
+      }]);
+      const selectedChoiceId = decision.candidates[0]?.choiceId;
+      if (selectedChoiceId === undefined) {
+        throw new Error('M2-A selected choice is missing');
+      }
+      const voiceTurnId = randomUUID();
+      const tapCommandId = randomUUID();
+      const commonChoice = {
+        ...owner,
+        authority: prepared.authority,
+        missionId: choiceMission.id,
+        expectedMissionRevision: choiceMission.revision,
+        expectedDraftSessionId: choiceDraft.sessionId,
+        expectedDraftSlotRevision: choiceDraft.slotRevision,
+        expectedDraftContentRevision: choiceDraft.contentRevision,
+        decisionId: decision.decisionId,
+        choiceSetRevision: decision.choiceSetRevision,
+        pendingLineId: decision.pendingLineId,
+        expectedWorkRevision: decision.expectedWorkRevision,
+        choiceId: selectedChoiceId,
+        additionalLines: [],
+      };
+      const voiceChoice = {
+        ...commonChoice,
+        commandId: voiceTurnId,
+        origin: {
+          actor: 'user_voice' as const,
+          correlation: {
+            realtimeSessionId: prepared.context.sessionId,
+            turnId: voiceTurnId,
+            contextRevision: prepared.context.revision,
+            contextDigest: prepared.context.digest,
+          },
+        },
+      };
+      const tapChoice = {
+        ...commonChoice,
+        commandId: tapCommandId,
+        origin: { actor: 'user_tap' as const, correlation: null },
+      };
+      const concurrentChoices = await Promise.all([
+        decideCatalogueChoice(uowA).execute(voiceChoice),
+        decideCatalogueChoice(uowB).execute(tapChoice),
+      ]);
+      const accepted = concurrentChoices.filter((result) => result.ok);
+      const rejected = concurrentChoices.filter((result) => !result.ok);
+      expect(accepted).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(accepted[0]).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'selected',
+          resolution: 'selected',
+        },
+      });
+      const winningInput = concurrentChoices[0]?.ok ? voiceChoice : tapChoice;
+      await expect(decideCatalogueChoice(uowB).execute(winningInput)).resolves.toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'replayed',
+          resolution: 'selected',
+        },
+      });
+      await expect(continueLineQueue(uowA).execute({
+        ...owner,
+        authority: prepared.authority,
+        missionId: choiceMission.id,
+        parentCommandId: winningInput.commandId,
+      })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'deferred_to_m2a2',
+          mission: { phase: 'awaiting_lines' },
+        },
+      });
+      expect(await admin.agentMissionEvent.count({
+        where: {
+          missionId: choiceMission.id,
+          eventType: 'catalogue_choice_selected',
+        },
+      })).toBe(1);
+      const workAfterChoice = await readQuoteLineWorkThroughOwnerBoundary(
+        uowA,
+        owner,
+        prepared.authority,
+        choiceMission.id,
+      );
+      expect(workAfterChoice).toMatchObject([{
+        state: 'queued',
+        catalogueResolution: 'selected',
+        catalogueItemId,
+        expectedCatalogueRevision: 1,
+        revision: 3,
+      }]);
+
+      const authorityV1 = await provisionCertificationAuthority(owner, 1);
+      const workBeforeMismatch = await readQuoteLineWorkThroughOwnerBoundary(
+        uowA,
+        owner,
+        prepared.authority,
+        choiceMission.id,
+      );
+      await expect(get(uowA).execute(owner, authorityV1)).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission_protocol',
+          reason: 'upgrade_required',
+        },
+      });
+      expect(await readQuoteLineWorkThroughOwnerBoundary(
+        uowA,
+        owner,
+        prepared.authority,
+        choiceMission.id,
+      )).toEqual(workBeforeMismatch);
+    });
+
+    it('résout réellement zéro candidat en ligne libre et rejoue la continuation sans duplication', async () => {
+      const owner: AgentMissionOwner = {
+        companyId: companyA,
+        ownerUserId: `owner-m2a-catalogue-empty-${randomUUID()}`,
+      };
+      const prepared = await prepareM2AQuoteLineMission(
+        owner,
+        `Prestation absente ${randomUUID()}`,
+      );
+      const first = await continueLineQueue(uowA).execute({
+        ...owner,
+        authority: prepared.authority,
+        missionId: prepared.mission.id,
+        parentCommandId: prepared.parentCommandId,
+      });
+      expect(first).toMatchObject({
+        ok: true,
+        value: {
+          outcome: 'catalogue_not_found',
+          mission: {
+            phase: 'awaiting_lines',
+          },
+          presentedChoiceCount: 0,
+        },
+      });
+      await expect(continueLineQueue(uowB).execute({
+        ...owner,
+        authority: prepared.authority,
+        missionId: prepared.mission.id,
+        parentCommandId: prepared.parentCommandId,
+      })).resolves.toMatchObject({
+        ok: true,
+        value: { outcome: 'replayed' },
+      });
+      expect(await admin.agentMission.findUniqueOrThrow({
+        where: { id: prepared.mission.id },
+      })).toMatchObject({ protocolVersion: 2 });
+      expect(await readQuoteLineWorkThroughOwnerBoundary(
+        uowA,
+        owner,
+        prepared.authority,
+        prepared.mission.id,
+      )).toMatchObject([{
+        state: 'queued',
+        catalogueResolution: 'free',
+        revision: 2,
+      }]);
+      expect(await admin.agentMissionEvent.count({
+        where: {
+          missionId: prepared.mission.id,
+          eventType: 'catalogue_not_found',
+        },
+      })).toBe(1);
     });
 
     it('ferme get/start/cancel/screen-ack avant le reçu durable puis ouvre exactement après ACK', async () => {
@@ -1175,6 +1832,7 @@ describe.skipIf(!RUN_CERT)(
         subjectHashCandidates: authority.subjectHashCandidates,
         principalBindingHash: authority.principalBindingHash,
         sessionId: realtimeSessionId,
+        protocolVersion: authority.protocolVersion,
         capabilityHash: authority.capabilityHash,
       };
       const acknowledged = await admission.acknowledgeAgentMissionBootstrap(receiptInput);
@@ -1279,6 +1937,7 @@ describe.skipIf(!RUN_CERT)(
       const [receipt, termination] = await Promise.all([
         receiptAdmission.acknowledgeAgentMissionBootstrap({
           ...identity,
+          protocolVersion: authority.protocolVersion,
           capabilityHash: authority.capabilityHash,
         }),
         reaperAdmission.claimTermination(identity),

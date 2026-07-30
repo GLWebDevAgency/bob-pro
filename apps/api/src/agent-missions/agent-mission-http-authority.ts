@@ -1,5 +1,6 @@
 import type { Provider } from '@nestjs/common';
 import {
+  appConflict,
   appForbidden,
   appUnavailable,
   err,
@@ -18,6 +19,7 @@ import {
 import {
   hashRealtimeAgentMissionCapability,
   isRealtimeAgentMissionCapability,
+  realtimeAgentMissionCapabilityProtocolVersion,
 } from '../voice/realtime/realtime-agent-mission-negotiation';
 import { isRealtimeCompanyId } from '../voice/realtime/realtime-admission';
 import {
@@ -33,6 +35,8 @@ export type AgentMissionHttpOperation =
   | 'start_quote_creation'
   | 'acknowledge_quote_screen'
   | 'decide_quote_creation'
+  | 'stage_quote_lines'
+  | 'decide_catalogue_choice'
   | 'cancel_quote_creation';
 
 export type AgentMissionCapabilityMetricOperation =
@@ -40,7 +44,10 @@ export type AgentMissionCapabilityMetricOperation =
   | 'start'
   | 'cancel'
   | 'screen_ack'
-  | 'decision';
+  | 'decision'
+  | 'line_stage'
+  | 'catalogue_choice'
+  | 'line_continuation';
 
 export function agentMissionCapabilityMetricOperation(
   operation: AgentMissionHttpOperation,
@@ -51,6 +58,8 @@ export function agentMissionCapabilityMetricOperation(
     case 'cancel_quote_creation': return 'cancel';
     case 'acknowledge_quote_screen': return 'screen_ack';
     case 'decide_quote_creation': return 'decision';
+    case 'stage_quote_lines': return 'line_stage';
+    case 'decide_catalogue_choice': return 'catalogue_choice';
   }
 }
 
@@ -101,6 +110,24 @@ export class DurableAgentMissionHttpAuthority implements AgentMissionHttpAuthori
       });
       return err(appForbidden('agent_mission_capability_invalid'));
     }
+    const protocolVersion =
+      realtimeAgentMissionCapabilityProtocolVersion(presentedCapability);
+    if (protocolVersion === null) {
+      return err(appForbidden('agent_mission_capability_invalid'));
+    }
+    if (
+      (
+        operation === 'stage_quote_lines'
+        || operation === 'decide_catalogue_choice'
+      )
+      && protocolVersion !== 2
+    ) {
+      this.metrics.agentMissionCapabilityRejections.inc({
+        operation: agentMissionCapabilityMetricOperation(operation),
+        reason: 'state',
+      });
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
     const bindings = realtimeSubjectBindings(
       this.settings,
       principal.companyId,
@@ -116,6 +143,7 @@ export class DurableAgentMissionHttpAuthority implements AgentMissionHttpAuthori
         ownerUserId: principal.userId,
       }),
       proof: Object.freeze({
+        protocolVersion,
         subjectHashCandidates: Object.freeze([
           bindings.subjectHash,
           ...bindings.historicalSubjectBindings.map((binding) => binding.subjectHash),

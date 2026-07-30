@@ -21,6 +21,8 @@ const [
   authorityProvision,
   fingerprintReadinessAuthorityRole,
   fingerprintReadinessAuthorityProvision,
+  catalogueSearchTokenAuthorityRole,
+  catalogueSearchTokenAuthorityProvision,
   realtimeRlsReplay,
   rlsOwnerSplitCertificate,
   reaperReleaseCertificate,
@@ -53,6 +55,8 @@ const [
     path.join(apiDir, 'prisma/agent-mission-fingerprint-readiness-authority-provision.sql'),
     'utf8',
   ),
+  readFile(path.join(apiDir, 'prisma/catalogue-search-token-authority-role.sql'), 'utf8'),
+  readFile(path.join(apiDir, 'prisma/catalogue-search-token-authority-provision.sql'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/agent-mission-realtime-rls-replay.sql'), 'utf8'),
   readFile(path.join(scriptDir, 'certify-rls-owner-split.sh'), 'utf8'),
   readFile(path.join(apiDir, 'prisma/realtime-reaper-release-cert.sql'), 'utf8'),
@@ -510,6 +514,14 @@ test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale
   );
   assert.match(
     runtimeGrants,
+    /'catalogue_prestations'::TEXT,[\s\S]*?'SELECT, INSERT, UPDATE, DELETE'::TEXT,[\s\S]*?'TRUNCATE, REFERENCES, TRIGGER'/u,
+  );
+  assert.match(
+    runtimeGrants,
+    /'catalogue_prestation_search_tokens'::TEXT,[\s\S]*?'SELECT'::TEXT,[\s\S]*?'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'/u,
+  );
+  assert.match(
+    runtimeGrants,
     /'realtime_admission_cancellation_fences'::TEXT,[\s\S]*?'SELECT, INSERT, DELETE'::TEXT,[\s\S]*?'UPDATE, TRUNCATE, REFERENCES, TRIGGER'/u,
   );
   assert.match(runtimeGrants, /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u);
@@ -578,12 +590,14 @@ test('le certificat s’exécute comme runtime non-superuser et ferme Data API +
     assert.match(releaseCertificate, new RegExp(`'${role}'`, 'u'));
   }
   for (const functionName of [
-    'guard_agent_mission_mutation_v1',
+    'guard_agent_mission_mutation_v2',
     'guard_quote_draft_agent_mission_v1',
-    'guard_agent_mission_quote_line_work_v1',
+    'guard_agent_mission_quote_line_work_v2',
     'reject_agent_mission_event_mutation_v1',
-    'guard_agent_mission_event_append_v1',
+    'guard_agent_mission_event_append_v2',
     'require_agent_mission_event_v1',
+    'guard_catalogue_prestation_revision_v1',
+    'sync_catalogue_prestation_search_tokens_v1',
   ]) {
     assert.match(releaseCertificate, new RegExp(`${functionName}\\\\?\\(\\)`, 'u'));
   }
@@ -711,35 +725,35 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     rls,
-    /REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;[\s\S]*?REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v1\(\) FROM PUBLIC;/u,
+    /REVOKE ALL ON TABLE agent_mission_quote_line_work FROM PUBLIC;[\s\S]*?REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v2\(\) FROM PUBLIC;/u,
   );
   assert.match(
     rls,
-    /REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v1\(\) FROM %I/u,
+    /REVOKE ALL PRIVILEGES ON TABLE agent_mission_quote_line_work FROM %I[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v2\(\) FROM %I/u,
   );
   assert.match(
     runtimeGrants,
-    /'agent_mission_quote_line_work'[\s\S]*?\) <> 9 THEN[\s\S]*?AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT/u,
+    /'agent_mission_quote_line_work'[\s\S]*?'catalogue_prestation_search_tokens'[\s\S]*?\) <> 11 THEN[\s\S]*?AGENT_MISSION_RUNTIME_TABLE_INVENTORY_DRIFT/u,
   );
   assert.match(
     runtimeGrants,
-    /'guard_agent_mission_quote_line_work_v1'[\s\S]*?\) <> 15 THEN[\s\S]*?AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT/u,
+    /'guard_agent_mission_quote_line_work_v2'[\s\S]*?'guard_catalogue_prestation_revision_v1'[\s\S]*?'sync_catalogue_prestation_search_tokens_v1'[\s\S]*?\) <> 17 THEN[\s\S]*?AGENT_MISSION_RUNTIME_FUNCTION_INVENTORY_DRIFT/u,
   );
   assert.match(
     runtimeGrants,
-    /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I[\s\S]*?'guard_agent_mission_quote_line_work_v1'/u,
+    /REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I[\s\S]*?'guard_agent_mission_quote_line_work_v2'/u,
   );
   const executeGrant = runtimeGrants.slice(
     runtimeGrants.indexOf('GRANT EXECUTE ON FUNCTION %s TO %I'),
   );
   assert.doesNotMatch(
     executeGrant,
-    /guard_agent_mission_quote_line_work_v1/u,
+    /guard_agent_mission_quote_line_work_v2/u,
     'La fonction de trigger M2-A ne doit jamais devenir une API exécutable.',
   );
   assert.match(
     releaseCertificate,
-    /quote_line_work_trigger_count <> 1[\s\S]*?agent_mission_quote_line_work_guard_v1[\s\S]*?trigger\.tgenabled = 'O'[\s\S]*?trigger\.tgtype = 31[\s\S]*?trigger\.tgqual IS NULL[\s\S]*?trigger\.tgnargs = 0[\s\S]*?trigger\.tgattr = ''::pg_catalog\.int2vector[\s\S]*?guard_agent_mission_quote_line_work_v1/u,
+    /quote_line_work_trigger_count <> 1[\s\S]*?agent_mission_quote_line_work_guard_v2[\s\S]*?trigger\.tgenabled = 'O'[\s\S]*?trigger\.tgtype = 31[\s\S]*?trigger\.tgqual IS NULL[\s\S]*?trigger\.tgnargs = 0[\s\S]*?trigger\.tgattr = ''::pg_catalog\.int2vector[\s\S]*?guard_agent_mission_quote_line_work_v2/u,
   );
   assert.match(
     releaseCertificate,
@@ -755,6 +769,18 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     releaseCertificate,
+    /catalogue_search_token_sync_oid[\s\S]*?trigger\.tgtype = 21[\s\S]*?procedure\.prosecdef[\s\S]*?row_security=on[\s\S]*?CATALOGUE_SEARCH_TOKEN_FUNCTION_DRIFT/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /catalogue_search_tokens_item_company_fkey[\s\S]*?constraint\.conkey[\s\S]*?constraint\.confkey[\s\S]*?catalogue_search_tokens_pkey[\s\S]*?catalogue_search_tokens_token_check[\s\S]*?catalogue_search_tokens_company_item_idx/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /catalogue_search_token_policy_count <> 1[\s\S]*?tenant_isolation[\s\S]*?CATALOGUE_SEARCH_TOKEN_POLICY_DRIFT/u,
+  );
+  assert.match(
+    releaseCertificate,
     /app\.current_company_id[\s\S]*?app\.current_user_id[\s\S]*?app\.current_agent_mission_id/u,
   );
   assert.match(
@@ -763,7 +789,7 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     releaseCertificate,
-    /'public\.guard_agent_mission_quote_line_work_v1\(\)'::pg_catalog\.regprocedure[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
+    /'public\.guard_agent_mission_quote_line_work_v2\(\)'::pg_catalog\.regprocedure[\s\S]*?DATA_API_OWNER_MEMBERSHIP_FORBIDDEN/u,
   );
   assert.match(
     releaseCertificate,
@@ -771,7 +797,7 @@ test('M2-A ferme exactement work items, capability, trigger et policies RLS', ()
   );
   assert.match(
     releaseCertificate,
-    /FOREACH function_name IN ARRAY ARRAY\[[\s\S]*?'guard_agent_mission_quote_line_work_v1\(\)'[\s\S]*?DATA_API_FUNCTION_EXECUTE_FORBIDDEN/u,
+    /FOREACH function_name IN ARRAY ARRAY\[[\s\S]*?'guard_agent_mission_quote_line_work_v2\(\)'[\s\S]*?DATA_API_FUNCTION_EXECUTE_FORBIDDEN/u,
   );
 });
 
@@ -937,6 +963,10 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     realtimeReleaseCertificate,
+    /agentMissionProtocolVersion" = ANY \(ARRAY\[1, 2\]\)[\s\S]*?AgentMission realtime lease constraint definition drift/u,
+  );
+  assert.match(
+    realtimeReleaseCertificate,
     /guard_realtime_agent_mission_capability_immutable_v1\(\)[\s\S]*?capability_trigger\.tgtype <> 19[\s\S]*?expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes/u,
   );
   assert.match(
@@ -945,7 +975,7 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     realtimeReleaseCertificate,
-    /guard_realtime_agent_mission_bootstrap_receipt_v1\(\)[\s\S]*?receipt_insert_trigger\.tgtype <> 7[\s\S]*?receipt_update_trigger\.tgtype <> 19[\s\S]*?expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes/u,
+    /guard_realtime_agent_mission_bootstrap_receipt_v2\(\)[\s\S]*?receipt_insert_trigger\.tgtype <> 7[\s\S]*?receipt_update_trigger\.tgtype <> 19[\s\S]*?expected_trigger_attributes IS DISTINCT FROM actual_trigger_attributes/u,
   );
   assert.match(
     realtimeReleaseCertificate,
@@ -973,7 +1003,7 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     runtimeGrants,
-    /guard_realtime_agent_mission_capability_immutable_v1[\s\S]*?guard_realtime_agent_mission_bootstrap_receipt_v1[\s\S]*?\) <> 15[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u,
+    /guard_realtime_agent_mission_capability_immutable_v1[\s\S]*?guard_realtime_agent_mission_bootstrap_receipt_v2[\s\S]*?guard_catalogue_prestation_revision_v1[\s\S]*?sync_catalogue_prestation_search_tokens_v1[\s\S]*?\) <> 17[\s\S]*?REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I/u,
   );
   assert.match(realtimeReleaseCertificate, /pg_temp, public, pg_catalog/u);
   assert.match(
@@ -1000,11 +1030,19 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   assert.match(release, /CABINET_RELEASE_ENV is required/u);
   assert.match(
     release,
+    /BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false is required[\s\S]*?must remain false until M2-A-3 certification/u,
+  );
+  assert.match(
+    release,
     /release_flag_snapshot="\$\([\s\S]*?bob\.agent_missions\.quote\.v1[\s\S]*?release_flag_kill_switch="\$\{release_flag_snapshot#\*\|\}"[\s\S]*?-v release_env="\$CABINET_RELEASE_ENV"[\s\S]*?-v release_flag_version="\$release_flag_version"[\s\S]*?-v release_flag_kill_switch="\$release_flag_kill_switch"/u,
   );
   assert.match(
+    release,
+    /m2a_release_flag_snapshot="\$\([\s\S]*?release_flag_subjects[\s\S]*?subject\.enabled[\s\S]*?flag\.key = 'bob\.agent_missions\.quote\.m2a'[\s\S]*?m2a_release_flag_enabled[\s\S]*?m2a_enabled_subject_exists[\s\S]*?every tenant override must remain exactly OFF[\s\S]*?-v m2a_release_flag_version="\$m2a_release_flag_version"/u,
+  );
+  assert.match(
     realtimeReleaseCertificate,
-    /expected_release_environment[\s\S]*?expected_release_flag_version[\s\S]*?expected_release_flag_kill_switch[\s\S]*?wrong_lower_release_flag_version[\s\S]*?wrong_upper_release_flag_version/u,
+    /expected_release_environment[\s\S]*?expected_release_flag_version[\s\S]*?expected_release_flag_kill_switch[\s\S]*?expected_m2a_release_flag_version[\s\S]*?wrong_lower_release_flag_version[\s\S]*?wrong_upper_release_flag_version/u,
   );
   assert.match(
     realtimeReleaseCertificate,
@@ -1020,6 +1058,15 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   );
   assert.match(
     realtimeReleaseCertificate,
+    /bob\.agent_missions\.quote\.m2a[\s\S]*?expected_m2a_release_flag_version[\s\S]*?AgentMission M2-A disabled flag exact version revalidation drift/u,
+  );
+  assert.equal(
+    (ci.match(/BOB_AGENT_MISSIONS_QUOTE_M2A_ENABLED=false/gu) ?? []).length,
+    (ci.match(/sh apps\/api\/scripts\/release\.sh/gu) ?? []).length,
+    'chaque release PostgreSQL éphémère doit armer explicitement le master M2-A OFF',
+  );
+  assert.match(
+    realtimeReleaseCertificate,
     /bob_mistral_bootstrap_reaper[\s\S]*?lease_column IN \('companyId', 'sessionId'\)/u,
   );
   assert.match(
@@ -1029,6 +1076,68 @@ test('la capability realtime est provisionnée sous un owner NOLOGIN avant sa ce
   for (const role of ['anon', 'authenticated', 'service_role']) {
     assert.match(realtimeReleaseCertificate, new RegExp(`'${role}'`, 'u'));
   }
+});
+
+test('le trigger de tokens catalogue garde une autorité NOBYPASSRLS exacte après provisioning', () => {
+  const migrate = release.indexOf('prisma migrate deploy');
+  const ensureBeforeMigrate = release.lastIndexOf(
+    '\nensure_catalogue_search_token_authority_role\n',
+    migrate,
+  );
+  const rlsReplay = release.indexOf('-f apps/api/prisma/rls.sql');
+  const provision = release.indexOf(
+    '\nprovision_catalogue_search_token_authority\n',
+    rlsReplay,
+  );
+  const certificate = release.indexOf('certify_agent_mission_release_acl', provision);
+  assert.ok(ensureBeforeMigrate >= 0 && ensureBeforeMigrate < migrate);
+  assert.ok(rlsReplay > migrate && provision > rlsReplay && certificate > provision);
+
+  assert.match(catalogueSearchTokenAuthorityRole, /SET createrole_self_grant = 'set'/u);
+  assert.match(
+    catalogueSearchTokenAuthorityRole,
+    /CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS[\s\S]*?bob_catalogue_search_token_sync/u,
+  );
+  assert.doesNotMatch(
+    catalogueSearchTokenAuthorityRole,
+    /GRANT\s+bob_catalogue_search_token_sync\s+TO\s+(?:postgres|bob_app)/u,
+  );
+  assert.match(
+    catalogueSearchTokenAuthorityProvision,
+    /GRANT SELECT \("companyId", "catalogueItemId"\), INSERT \("companyId", "catalogueItemId", token\), DELETE[\s\S]*?ALTER FUNCTION %s OWNER TO bob_catalogue_search_token_sync/u,
+  );
+  assert.match(
+    catalogueSearchTokenAuthorityProvision,
+    /GRANT bob_catalogue_search_token_sync TO %I WITH INHERIT FALSE, SET TRUE[\s\S]*?ALTER FUNCTION %s OWNER TO bob_catalogue_search_token_sync[\s\S]*?REVOKE bob_catalogue_search_token_sync FROM %I/u,
+  );
+  assert.match(
+    catalogueSearchTokenAuthorityProvision,
+    /SECURITY DEFINER[\s\S]*?SET search_path = pg_catalog[\s\S]*?SET row_security = on[\s\S]*?md5\(helper\.prosrc\)[\s\S]*?94327712057244bbe60cc428a22df471/u,
+  );
+  assert.match(
+    catalogueSearchTokenAuthorityProvision,
+    /REVOKE CREATE ON SCHEMA public FROM bob_catalogue_search_token_sync[\s\S]*?has_table_privilege\([\s\S]*?'DELETE'[\s\S]*?has_column_privilege\([\s\S]*?'token'[\s\S]*?'INSERT'/u,
+  );
+  assert.match(
+    releaseCertificate,
+    /bob_catalogue_search_token_sync[\s\S]*?procedure\.proowner = catalogue_search_token_authority_oid[\s\S]*?94327712057244bbe60cc428a22df471[\s\S]*?AGENT_MISSION_CATALOGUE_SEARCH_TOKEN_AUTHORITY_ACL_DRIFT/u,
+  );
+  assert.doesNotMatch(
+    rls,
+    /^REVOKE ALL ON FUNCTION sync_catalogue_prestation_search_tokens_v1\(\) FROM PUBLIC;$/mu,
+  );
+  assert.doesNotMatch(
+    rls,
+    /EXECUTE pg_catalog\.format\(\s*'REVOKE ALL PRIVILEGES ON FUNCTION sync_catalogue_prestation_search_tokens_v1\(\) FROM %I'/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM PUBLIC; SET LOCAL ROLE %I;[\s\S]*?'public\.sync_catalogue_prestation_search_tokens_v1\(\)'::pg_catalog\.regprocedure/u,
+  );
+  assert.match(
+    rls,
+    /SET LOCAL ROLE %I; REVOKE ALL PRIVILEGES ON FUNCTION %s FROM %I; SET LOCAL ROLE %I;[\s\S]*?'public\.sync_catalogue_prestation_search_tokens_v1\(\)'::pg_catalog\.regprocedure/u,
+  );
 });
 
 test('le fence d’annulation est certifié comme autorité tenantée et invisible aux rôles globaux', () => {
@@ -1116,10 +1225,34 @@ test('le fence d’annulation est certifié comme autorité tenantée et invisib
 });
 
 test('local et CI statique exercent les mêmes ACL que release', () => {
+  for (const migration of [
+    '20260730100000_agent_mission_catalogue_choice_expand',
+    '20260730100100_agent_mission_catalogue_choice_validate',
+    '20260730100200_agent_mission_catalogue_choice_cutover',
+  ]) {
+    assert.match(localCertificate, new RegExp(migration, 'u'));
+  }
+  assert.match(
+    localCertificate,
+    /AGENT_MISSION_M2A1_PREEXISTING_LINE_WORK_UNSUPPORTED[\s\S]*?AGENT_MISSION_M2A1_PREFLIGHT_ROLLBACK_DRIFT[\s\S]*?AGENT_MISSION_M2A1_PREFLIGHT_CLEANUP_FAILED/u,
+  );
+  assert.match(
+    localCertificate,
+    /PREPARE m2a1_catalogue_search[\s\S]*?plan_cache_mode = force_generic_plan[\s\S]*?catalogue_search_tokens_pkey[\s\S]*?m2a1_catalogue_result_count/u,
+  );
+  for (const catalogueCertificateMarker of [
+    'AGENT_MISSION_M2A1_CATALOGUE_TOKEN_SYNC_DRIFT',
+    'AGENT_MISSION_M2A1_CATALOGUE_BACKFILL_DRIFT',
+    'AGENT_MISSION_M2A1_CATALOGUE_PLAN_CLEANUP_FAILED',
+  ]) {
+    assert.match(localCertificate, new RegExp(catalogueCertificateMarker, 'u'));
+  }
   assert.match(localCertificate, /agent-missions-runtime-grants\.sql/u);
   assert.match(localCertificate, /agent-missions-release-cert\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-role\.sql/u);
   assert.match(localCertificate, /agent-mission-release-flag-authority-provision\.sql/u);
+  assert.match(localCertificate, /catalogue-search-token-authority-role\.sql/u);
+  assert.match(localCertificate, /catalogue-search-token-authority-provision\.sql/u);
   assert.match(localCertificate, /manage-agent-mission-fingerprint-key-versions\.mjs" stage/u);
   assert.match(
     localCertificate,
@@ -1330,6 +1463,14 @@ test('la CI sépare la preuve AgentMission PostgreSQL 17 du owner-split Supabase
   assert.match(
     rlsOwnerSplitCertificate,
     /relation\.relowner <> owner_oid[\s\S]*?app_is_active_cabinet_member\(text\)[\s\S]*?app_has_cabinet_role\(text,public\."CabinetRole"\[\]\)[\s\S]*?function\.proowner = owner_oid[\s\S]*?function\.prosecdef[\s\S]*?helper_count <> 2[\s\S]*?RLS_OWNER_SPLIT_CERT_CABINET_HELPER_OWNER_DRIFT/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /bob_catalogue_search_token_sync[\s\S]*?catalogue_sync\.proowner <> catalogue_sync_owner_oid[\s\S]*?catalogue_sync_role\.rolbypassrls[\s\S]*?RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_AUTHORITY_DRIFT/u,
+  );
+  assert.match(
+    rlsOwnerSplitCertificate,
+    /rls-owner-split-token-company-a[\s\S]*?Inspection chaudière alpha[\s\S]*?rls-owner-split-token-company-b[\s\S]*?Entretien vitrine beta[\s\S]*?Maintenance chaudière alpha[\s\S]*?RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_TENANT_A_DRIFT[\s\S]*?RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_CROSS_TENANT_LEAK[\s\S]*?Nettoyage vitrine beta[\s\S]*?RLS_OWNER_SPLIT_CERT_CATALOGUE_TOKEN_TENANT_B_DRIFT/u,
   );
   assert.match(
     rlsOwnerSplitCertificate,

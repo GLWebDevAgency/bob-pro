@@ -6,6 +6,7 @@ import {
   AGENT_MISSION_MAX_PAYLOAD_BYTES,
   AGENT_MISSION_RETENTION_MS,
   AgentMission,
+  computeQuoteMissionCatalogueChoiceSetHash,
   computeQuoteMissionChoiceSetHash,
   type AgentMissionResult,
   type AgentMissionTransition,
@@ -23,6 +24,7 @@ const CHOICE_3 = '00000000-0000-4000-8000-000000000007';
 const CHOICE_4 = '00000000-0000-4000-8000-000000000008';
 const CHOICE_5 = '00000000-0000-4000-8000-000000000009';
 const CHOICE_6 = '00000000-0000-4000-8000-00000000000a';
+const PENDING_LINE_ID = '00000000-0000-4000-8000-00000000000b';
 const CREATED_AT = '2026-07-22T10:00:00.000Z';
 const DIGEST = 'a'.repeat(64);
 
@@ -139,6 +141,50 @@ function awaitingChoice(): AgentMission {
   })).mission;
 }
 
+function awaitingLinesV2(): AgentMission {
+  const started = value(AgentMission.start({
+    id: MISSION_ID,
+    companyId: 'company-1',
+    ownerUserId: 'owner-1',
+    protocolVersion: 2,
+    createdAt: CREATED_AT,
+    stagedCustomerResolution: null,
+    startOutcome: 'no_slot',
+    draft: draft(),
+  })).mission;
+  return value(started.acknowledgeQuoteScreen({
+    expectedRevision: 1,
+    binding: binding(),
+    observedDraft: draft(),
+    draftHasCustomer: true,
+    occurredAt: at(1),
+  })).mission;
+}
+
+function awaitingCatalogueChoice(): AgentMission {
+  return value(awaitingLinesV2().presentCatalogueChoices({
+    expectedRevision: 2,
+    decisionId: DECISION_1,
+    pendingLineId: PENDING_LINE_ID,
+    expectedWorkRevision: 2,
+    expectedDraft: draft(),
+    candidates: [
+      {
+        choiceId: CHOICE_1,
+        catalogueItemId: 'catalogue-1',
+        expectedCatalogueRevision: 4,
+      },
+      {
+        choiceId: CHOICE_2,
+        catalogueItemId: 'catalogue-2',
+        expectedCatalogueRevision: 7,
+      },
+    ],
+    freeLineChoiceId: CHOICE_3,
+    occurredAt: at(2),
+  })).mission;
+}
+
 function expectTransition(
   transition: AgentMissionTransition,
   before: number,
@@ -156,6 +202,54 @@ function expectTransition(
 }
 
 describe('AgentMission — création et enveloppe M1', () => {
+  it('normalise le writer N-1 omis en protocole V1', () => {
+    expect(noSlotMission().protocolVersion).toBe(1);
+    expect(noSlotMission().toSnapshot().protocolVersion).toBe(1);
+  });
+
+  it('persiste le protocole V2 et le conserve à travers transition et réhydratation', () => {
+    const started = value(AgentMission.start({
+      id: MISSION_ID,
+      companyId: 'company-1',
+      ownerUserId: 'owner-1',
+      protocolVersion: 2,
+      createdAt: CREATED_AT,
+      stagedCustomerResolution: null,
+      startOutcome: 'no_slot',
+      draft: draft(),
+    })).mission;
+    const acknowledged = value(started.acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: false,
+      occurredAt: at(1),
+    })).mission;
+
+    expect(acknowledged.protocolVersion).toBe(2);
+    expect(acknowledged.toSnapshot().protocolVersion).toBe(2);
+    expect(value(AgentMission.rehydrate(acknowledged.toSnapshot())).protocolVersion).toBe(2);
+  });
+
+  it.each([0, 3, undefined] as const)(
+    'refuse une version de protocole explicite non supportée (%s)',
+    (protocolVersion) => {
+      expect((AgentMission.start as (input: unknown) => AgentMissionResult<unknown>)({
+        id: MISSION_ID,
+        companyId: 'company-1',
+        ownerUserId: 'owner-1',
+        protocolVersion,
+        createdAt: CREATED_AT,
+        stagedCustomerResolution: null,
+        startOutcome: 'no_slot',
+        draft: draft(),
+      })).toMatchObject({
+        ok: false,
+        error: { field: 'protocolVersion', reason: 'invalid_value' },
+      });
+    },
+  );
+
   it.each(['no_slot', 'empty_slot_adopted'] as const)(
     'démarre %s à la révision 1 avec un brouillon lié et les TTL V1 exacts',
     (startOutcome) => {
@@ -397,6 +491,266 @@ describe('AgentMission — création et enveloppe M1', () => {
   });
 });
 
+describe('AgentMission — frontière catalogue M2-A-1', () => {
+  const catalogueHashInput = {
+    missionId: MISSION_ID,
+    choiceSetRevision: 3,
+    decisionId: DECISION_1,
+    pendingLineId: PENDING_LINE_ID,
+    expectedDraft: draft(),
+    expectedWorkRevision: 2,
+    candidates: [
+      {
+        choiceId: CHOICE_1,
+        catalogueItemId: 'catalogue-1',
+        expectedCatalogueRevision: 4,
+      },
+      {
+        choiceId: CHOICE_2,
+        catalogueItemId: 'catalogue-2',
+        expectedCatalogueRevision: 7,
+      },
+    ],
+    freeLineChoiceId: CHOICE_3,
+  } as const;
+
+  it('scelle draft, tête, work et révisions catalogue sans valeur métier', () => {
+    const first = value(computeQuoteMissionCatalogueChoiceSetHash(catalogueHashInput));
+    const second = value(computeQuoteMissionCatalogueChoiceSetHash(catalogueHashInput));
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[a-f0-9]{64}$/u);
+    expect(value(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      expectedWorkRevision: 3,
+    }))).not.toBe(first);
+    expect(value(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      expectedDraft: draft('quote-session-1', 2, 0),
+    }))).not.toBe(first);
+    expect(value(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      candidates: [{
+        ...catalogueHashInput.candidates[0],
+        expectedCatalogueRevision: 5,
+      }],
+    }))).not.toBe(first);
+  });
+
+  it('refuse toute clé, choiceId ou catalogueItemId dupliqué', () => {
+    expect(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      transcript: 'secret',
+    } as never)).toMatchObject({
+      ok: false,
+      error: { field: '$', reason: 'invalid_shape' },
+    });
+    expect(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      freeLineChoiceId: CHOICE_1,
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'candidates[0].choiceId', reason: 'invalid_value' },
+    });
+    expect(computeQuoteMissionCatalogueChoiceSetHash({
+      ...catalogueHashInput,
+      candidates: [
+        catalogueHashInput.candidates[0],
+        {
+          ...catalogueHashInput.candidates[1],
+          catalogueItemId: catalogueHashInput.candidates[0].catalogueItemId,
+        },
+      ],
+    })).toMatchObject({
+      ok: false,
+      error: { field: 'candidates[1].catalogueItemId', reason: 'invalid_value' },
+    });
+  });
+
+  it('présente 1..5 choix uniquement sous protocole V2 et réhydrate la décision', () => {
+    expect(noSlotMission().acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).toMatchObject({ ok: true });
+    const v1Lines = value(noSlotMission().acknowledgeQuoteScreen({
+      expectedRevision: 1,
+      binding: binding(),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(1),
+    })).mission;
+    expect(v1Lines.presentCatalogueChoices({
+      expectedRevision: 2,
+      decisionId: DECISION_1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 2,
+      expectedDraft: draft(),
+      candidates: catalogueHashInput.candidates,
+      freeLineChoiceId: CHOICE_3,
+      occurredAt: at(2),
+    })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent_mission_invalid_transition',
+        action: 'present_catalogue_choices',
+      },
+    });
+
+    const mission = awaitingCatalogueChoice();
+    expect(mission.phase).toBe('awaiting_catalogue_choice');
+    expect(mission.protocolVersion).toBe(2);
+    expect(mission.payload.decision).toMatchObject({
+      kind: 'catalogue',
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      pendingLineId: PENDING_LINE_ID,
+      expectedDraft: draft(),
+      expectedWorkRevision: 2,
+      candidates: catalogueHashInput.candidates,
+      freeLineChoiceId: CHOICE_3,
+    });
+    const rehydrated = value(AgentMission.rehydrate(mission.toSnapshot()));
+    expect(rehydrated.payload.decision).toEqual(mission.payload.decision);
+  });
+
+  it('conserve la décision lors d’un nouvel ACK exact de l’écran', () => {
+    const mission = awaitingCatalogueChoice();
+    const rebound = value(mission.acknowledgeQuoteScreen({
+      expectedRevision: 3,
+      binding: binding(at(3)),
+      observedDraft: draft(),
+      draftHasCustomer: true,
+      occurredAt: at(3),
+    }));
+    expect(rebound.mission.phase).toBe('awaiting_catalogue_choice');
+    expect(rebound.mission.payload.decision).toEqual(mission.payload.decision);
+    expect(rebound.event.data).toEqual({
+      kind: 'screen_acknowledged',
+      nextPhase: 'awaiting_catalogue_choice',
+    });
+  });
+
+  it.each([
+    {
+      choiceId: CHOICE_3,
+      observedResolution: { kind: 'free' as const },
+      expectedResolution: { kind: 'free' as const },
+    },
+    {
+      choiceId: CHOICE_1,
+      observedResolution: {
+        kind: 'selected' as const,
+        catalogueItemId: 'catalogue-1',
+        catalogueRevision: 4,
+      },
+      expectedResolution: {
+        kind: 'selected' as const,
+        catalogueItemId: 'catalogue-1',
+        expectedCatalogueRevision: 4,
+      },
+    },
+  ])('consomme le même choiceId $choiceId vers $expectedResolution.kind', ({
+    choiceId,
+    observedResolution,
+    expectedResolution,
+  }) => {
+    const mission = awaitingCatalogueChoice();
+    const selected = value(mission.selectCatalogueChoice({
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 2,
+      observedDraft: draft(),
+      observedResolution,
+      workRevisionAfter: 3,
+      occurredAt: at(3),
+    }));
+
+    expect(selected.resolution).toEqual(expectedResolution);
+    expect(selected.transition.mission.phase).toBe('awaiting_lines');
+    expect(selected.transition.mission.payload.decision).toBeNull();
+    expect(selected.transition.event.data).toMatchObject({
+      kind: 'catalogue_choice_selected',
+      pendingLineId: PENDING_LINE_ID,
+      workRevisionAfter: 3,
+      resolution: expectedResolution.kind,
+      choiceId,
+    });
+  });
+
+  it('refuse choix, work, draft et révision catalogue non scellés', () => {
+    const mission = awaitingCatalogueChoice();
+    const base = {
+      expectedRevision: 3,
+      decisionId: DECISION_1,
+      choiceSetRevision: 3,
+      choiceId: CHOICE_1,
+      pendingLineId: PENDING_LINE_ID,
+      expectedWorkRevision: 2,
+      observedDraft: draft(),
+      observedResolution: {
+        kind: 'selected' as const,
+        catalogueItemId: 'catalogue-1',
+        catalogueRevision: 4,
+      },
+      workRevisionAfter: 3,
+      occurredAt: at(3),
+    };
+    expect(mission.selectCatalogueChoice({
+      ...base,
+      choiceId: CHOICE_6,
+    })).toMatchObject({ ok: false, error: { reason: 'choice_id' } });
+    expect(mission.selectCatalogueChoice({
+      ...base,
+      expectedWorkRevision: 3,
+    })).toMatchObject({ ok: false, error: { reason: 'work_revision' } });
+    expect(mission.selectCatalogueChoice({
+      ...base,
+      observedDraft: draft('quote-session-1', 2, 0),
+    })).toMatchObject({ ok: false, error: { reason: 'draft_reference' } });
+    expect(mission.selectCatalogueChoice({
+      ...base,
+      observedResolution: {
+        ...base.observedResolution,
+        catalogueRevision: 5,
+      },
+    })).toMatchObject({ ok: false, error: { reason: 'catalogue_revision' } });
+  });
+
+  it('enregistre zéro résultat sans décision et invalide une décision périmée', () => {
+    const notFound = value(awaitingLinesV2().recordCatalogueNotFound({
+      expectedRevision: 2,
+      pendingLineId: PENDING_LINE_ID,
+      workRevisionAfter: 2,
+      occurredAt: at(2),
+    }));
+    expect(notFound.mission.phase).toBe('awaiting_lines');
+    expect(notFound.mission.payload.decision).toBeNull();
+    expect(notFound.event.data).toEqual({
+      kind: 'catalogue_not_found',
+      pendingLineId: PENDING_LINE_ID,
+      workRevisionAfter: 2,
+      result: 'none',
+    });
+
+    const invalidated = value(awaitingCatalogueChoice().invalidateCatalogueDecision({
+      expectedRevision: 3,
+      reason: 'candidate_unavailable',
+      occurredAt: at(3),
+    }));
+    expect(invalidated.mission.phase).toBe('awaiting_lines');
+    expect(invalidated.mission.payload.decision).toBeNull();
+    expect(invalidated.event.data).toEqual({
+      kind: 'decision_invalidated',
+      reason: 'candidate_unavailable',
+    });
+  });
+});
+
 describe('AgentMission — hash et parseur exact', () => {
   it('produit un hash stable qui lie mission, révision, décision, ordre, choix et cible réelle', () => {
     const base = {
@@ -466,6 +820,15 @@ describe('AgentMission — hash et parseur exact', () => {
   it('rehydrate un snapshot exact et rejette clés inconnues, hash forgé et état impossible', () => {
     const snapshot = conflictMission().toSnapshot();
     expect(AgentMission.rehydrate(snapshot).ok).toBe(true);
+    const { protocolVersion: _protocolVersion, ...withoutProtocolVersion } = snapshot;
+    expect(AgentMission.rehydrate(withoutProtocolVersion)).toMatchObject({
+      ok: false,
+      error: { field: '$', reason: 'invalid_shape' },
+    });
+    expect(AgentMission.rehydrate({ ...snapshot, protocolVersion: 3 })).toMatchObject({
+      ok: false,
+      error: { field: 'protocolVersion', reason: 'invalid_value' },
+    });
     expect(AgentMission.rehydrate({ ...snapshot, transcript: 'secret' })).toMatchObject({
       ok: false,
       error: { field: '$', reason: 'invalid_shape' },

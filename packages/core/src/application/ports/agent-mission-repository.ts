@@ -1,6 +1,7 @@
 import {
   type AgentMission,
   type AgentMissionKind,
+  type AgentMissionProtocolVersion,
 } from '../../domain/agent/agent-mission';
 import { type AgentMissionEvent } from '../../domain/agent/agent-mission-event';
 import {
@@ -30,6 +31,12 @@ export type AgentMissionLookup =
       readonly status: 'unsupported_kind';
       readonly missionId: string;
       readonly kind: string;
+    }
+  | {
+      readonly status: 'unsupported_protocol';
+      readonly missionId: string;
+      readonly kind: 'quote_creation';
+      readonly protocolVersion: AgentMissionProtocolVersion;
     };
 
 export type AgentMissionForeground = AgentMissionLookup;
@@ -43,6 +50,12 @@ export type AgentMissionEventLookup =
       readonly status: 'unsupported_kind';
       readonly missionId: string;
       readonly kind: string;
+    }
+  | {
+      readonly status: 'unsupported_protocol';
+      readonly missionId: string;
+      readonly kind: 'quote_creation';
+      readonly protocolVersion: AgentMissionProtocolVersion;
     };
 
 export interface AgentMissionReadRepositoryPort {

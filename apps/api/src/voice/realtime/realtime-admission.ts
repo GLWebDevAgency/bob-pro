@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import type { ReleaseFlagEnvironment } from '@bob/core';
 import { resolveBobLiveEnv, type Env } from '../../config/env';
 import type { RealtimeGlobalCapacityExpectation } from './realtime-capacity';
-import { AGENT_MISSION_PROTOCOL_VERSION } from './realtime-agent-mission-negotiation';
+import type {
+  AgentMissionProtocolVersion,
+} from './realtime-agent-mission-negotiation';
 import type { RealtimeContextSnapshot } from './realtime-context';
 export {
   prepareRealtimeContext,
@@ -18,8 +20,16 @@ const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
 const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
-export const REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY =
+export const REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY =
   'bob.agent_missions.quote.v1' as const;
+export const REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY =
+  'bob.agent_missions.quote.m2a' as const;
+/** Compatibilité source V1 ; les nouveaux appels choisissent leur clé par protocole. */
+export const REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY =
+  REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY;
+export type RealtimeAgentMissionQuoteReleaseFlagKey =
+  | typeof REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY
+  | typeof REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
 
 export type RealtimeAdmissionDenial =
   | 'global_capacity'
@@ -151,7 +161,7 @@ export type RealtimeTerminationClaimResult =
   | { ok: false; reason: 'unavailable' };
 
 export interface RealtimeAgentMissionAdmissionProof {
-  protocolVersion: typeof AGENT_MISSION_PROTOCOL_VERSION;
+  protocolVersion: AgentMissionProtocolVersion;
   capabilityHash: string;
   releaseFlagVersion: number;
 }
@@ -178,14 +188,22 @@ export type RealtimeAdmissionResult =
  * Preuve préparée côté serveur pour l'unique INSERT d'admission. Elle ne contient que le hash de
  * la capability ; son secret one-shot reste dans l'orchestrateur HTTP.
  */
-export interface RealtimeAgentMissionAdmissionBinding {
-  protocolVersion: typeof AGENT_MISSION_PROTOCOL_VERSION;
+interface RealtimeAgentMissionAdmissionBindingCommon {
   capabilityHash: string;
-  releaseFlagKey: typeof REALTIME_AGENT_MISSION_QUOTE_RELEASE_FLAG_KEY;
   releaseEnvironment: ReleaseFlagEnvironment;
   releaseFlagVersion: number;
   principalBindingHash: string;
 }
+
+export type RealtimeAgentMissionAdmissionBinding =
+  | (RealtimeAgentMissionAdmissionBindingCommon & {
+      protocolVersion: 1;
+      releaseFlagKey: typeof REALTIME_AGENT_MISSION_QUOTE_V1_RELEASE_FLAG_KEY;
+    })
+  | (RealtimeAgentMissionAdmissionBindingCommon & {
+      protocolVersion: 2;
+      releaseFlagKey: typeof REALTIME_AGENT_MISSION_QUOTE_M2A_RELEASE_FLAG_KEY;
+    });
 
 export interface RealtimeAdmissionReserveInput {
   companyId: string;
@@ -243,6 +261,8 @@ export interface RealtimeAdmissionSessionLookupInput {
 
 export interface RealtimeAgentMissionBootstrapAcknowledgementInput
 extends RealtimeAdmissionSessionLookupInput {
+  /** Version dérivée côté serveur du préfixe bam* présenté, jamais choisie par le client JSON. */
+  protocolVersion: AgentMissionProtocolVersion;
   /** SHA-256 canonique de la capability présentée ; le secret brut ne traverse jamais le port. */
   capabilityHash: string;
 }

@@ -96,10 +96,14 @@ export class GetResumableQuoteAgentMission {
             ? ok(Object.freeze({ mission: null }) as QuoteAgentMissionResumeView)
             : unavailable('orphaned_draft_mission_owner');
         }
-        if (foreground.status === 'unsupported_kind') {
+        if (foreground.status !== 'known') {
           return err(appConflict(
-            'agent_mission_foreground',
-            'active_mission_exists',
+            foreground.status === 'unsupported_protocol'
+              ? 'agent_mission_protocol'
+              : 'agent_mission_foreground',
+            foreground.status === 'unsupported_protocol'
+              ? 'upgrade_required'
+              : 'active_mission_exists',
           ));
         }
         const mission = foreground.mission;
