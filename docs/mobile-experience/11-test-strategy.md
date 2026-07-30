@@ -18,6 +18,14 @@
 >
 > **Amendement A18 — 2026-07-30.** § Tests composants : la préférence d'accessibilité **inconnue**
 > devient un cas de test à part entière.
+>
+> **Amendement A28 — 2026-07-30.** § Tests statiques : l'encadré d'état réel affirmait « pas de
+> répertoire `scripts/` » **dans le commit même qui créait `scripts/`**, dix lignes au-dessus du
+> contrôle qui y vit. Le fait est rectifié, le constat de fond conservé ; un contrôle d'intégrité
+> des tableaux et un contrôle « zéro `hitSlop` sur la tab bar » sont ajoutés à la liste.
+>
+> **Amendement A29 — 2026-07-30.** § Tests statiques : deux contrôles de la couture du port de
+> flou — pas de mode flouté au-dessus d'une liste virtualisée, et ordre de montage imposé.
 
 ## Principe
 
@@ -38,15 +46,22 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 
 ## Tests statiques
 
-> **État réel, ajouté A27 · 2026-07-30.** **Aucun** des contrôles listés ci-dessous n'existe
-> aujourd'hui dans le dépôt — vérifié le 2026-07-30 : pas de répertoire `scripts/`, aucun job de CI
-> dédié, et le `package.json` racine n'expose que `build`, `test`, `typecheck`, `lint` et `dev`. Ce
+> **État réel, ajouté A27 · 2026-07-30 — rectifié A28 le même jour.** **Aucun** des contrôles
+> listés ci-dessous n'existe aujourd'hui dans le dépôt : aucun job de CI dédié, et le
+> `package.json` racine n'expose que `build`, `test`, `typecheck`, `lint` et `dev`. Ce
 > sont des **contrôles à écrire**, pas des contrôles en vigueur. Tant qu'un contrôle n'est pas
 > exécutable par une commande, il vaut `NOT RUN` au sens de
 > [12 — DoD](12-definition-of-done.md#règle-na-limitation-et-waiver) et **ne peut être invoqué comme
 > preuve par aucun work package** — en particulier `WP-0303` et `WP-0307`, dont les preuves de
 > sortie citent un « contrôle statique ». Le premier lot qui a besoin d'un de ces contrôles le livre
 > avec son code ; il ne le suppose pas acquis parce qu'il est écrit ici.
+>
+> *Rédaction A27 (fausse, supersédée par A28) : « vérifié le 2026-07-30 : pas de répertoire
+> `scripts/` ». Le répertoire `scripts/` **existe** — il a été créé par le commit qui a écrit cette
+> phrase, et le contrôle n° 2 ci-dessous s'y trouve, dix lignes plus bas. C'est exactement la
+> famille d'erreur qu'A27 prétendait fermer : un document qui affirme un fait que le dépôt
+> contredit. Le constat de fond, lui, reste vrai et n'est pas relâché — aucun contrôle de la liste
+> ci-dessous n'existe.*
 >
 > **Deux** contrôles existent aujourd'hui, et seulement eux :
 >
@@ -61,7 +76,10 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 >    `PressableScale`) citées à l'identique par [17](17-references.md#autorités-normatives), table
 >    de contraste de [04 § 2](04-navigation-scroll-surfaces.md#2-highlight-glissant-à-ressort-interruptible)
 >    **recalculée** depuis `packages/tokens`, présence de `PERF-13` dans la stratégie, sources Expo
->    pinées sur une version, et résolution de toutes les ancres de liens internes. Sans dépendance
+>    pinées sur une version, résolution de toutes les ancres de liens internes, et
+>    **(ajouté A28 · 2026-07-30)** intégrité des tableaux Markdown — aucune ligne vide ne coupe un
+>    tableau, défaut qui sortait silencieusement `A17`→`A27` du journal des amendements et
+>    `R43`/`R44` du registre des risques. Sans dépendance
 >    ni accès réseau ; **non branché** à la CI — le brancher relève de
 >    [13 — Gouvernance](13-delivery-governance.md), pas d'un auteur de document. Il ne remplace
 >    aucun contrôle de la liste ci-dessous : il ferme la famille d'erreurs que ce dossier a
@@ -76,6 +94,17 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
   porteuse d'information ; les fonds viennent de `surfaceTint`.
 - **(ajouté A2 · 2026-07-29)** `expo-blur` n'est importé nulle part dans `packages/ui` : il ne peut
   entrer que par le port `renderBlurLayer`, injecté depuis `apps/mobile`.
+- **(ajouté A29 · 2026-07-30)** **Mode flouté et liste virtualisée ne coexistent pas** : aucun
+  module ne monte à la fois un `ProgressiveBlurBob` avec `layers > 0` et un `FlashList`,
+  `FlatList`, `SectionList` ou `VirtualizedList`. Motif : un `BlurView` posé au-dessus d'un contenu
+  dynamique recyclé **ne se rafraîchit pas** — le rendu est faux et aucun test de comportement ne
+  rougit ([04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet)).
+- **(ajouté A29 · 2026-07-30)** Dans un shell d'écran flouté, `ProgressiveBlurBob` est le
+  **dernier** enfant du conteneur, et le `BlurTargetView` y est monté **avant** lui : l'ordre de
+  montage est une contrainte officielle d'`expo-blur`, pas une préférence de style.
+- **(ajouté A28 · 2026-07-30)** **Zéro `hitSlop`** sur les `Pressable` de la tab bar portée : sa
+  cible est tenue par la hauteur du `Pressable` lui-même
+  ([04 § Cibles tactiles et Dynamic Type](04-navigation-scroll-surfaces.md#cibles-tactiles-et-dynamic-type)).
 - **(ajouté A5 · 2026-07-29)** Aucun document de ce dossier ne redéfinit un nom déjà exporté par
   `@bob/tokens` : contrôle des noms `motion.*` / `motionSemantic.*` cités dans les specs contre les
   exports réels.
@@ -153,8 +182,10 @@ Pour chaque primitive :
 - Reduce Motion/Transparency ;
 - **(ajouté A18 · 2026-07-30)** préférence **inconnue** au premier rendu : le composant se comporte
   en variante réduite, et ne rejoue **aucune** animation quand la préférence se résout ensuite ;
-- **(ajouté A17 · 2026-07-30)** cible tactile **mesurée** à l'état le plus compact du composant, et
-  non déduite d'une zone décorative ;
+- **(ajouté A17 · 2026-07-30 ; précisé A28)** cible tactile **mesurée** (`measure()`) à l'état le
+  plus compact du composant, non déduite d'une zone décorative **ni d'un style** ; si un `hitSlop`
+  est employé, il est **contenu dans le padding du parent** — un `hitSlop` qui déborde n'est jamais
+  dispatché ;
 - VoiceOver/TalkBack props ;
 - unmount pendant animation ;
 - double tap ;
@@ -169,7 +200,11 @@ rotation ; reduced motion ; une seule sheet ; retour focus.
 
 - sélection ; retap ; badge ; état préservé ; deep link ; clavier ; safe area ; rotation ;
 screen reader ; flag figé au démarrage.
-- **(ajouté A17/A19/A22/A23 · 2026-07-30)** cible tactile mesurée **à l'état replié** et à ~200 % ;
+- **(ajouté A17/A19/A22/A23 · 2026-07-30 ; mécanisme tranché A28)** cible tactile mesurée **à
+  l'état replié** et à ~200 %, **sur le `Pressable` lui-même**, rectangle contenu dans celui de la
+  pilule, voisins non chevauchants, **zéro `hitSlop`**, plus la **preuve de touche** aux deux bords
+  et l'absence de cible dans la retombée — les cinq mesures de
+  [04 § Cibles tactiles et Dynamic Type](04-navigation-scroll-surfaces.md#cibles-tactiles-et-dynamic-type) ;
   labels non tronqués puis retirés au palier prévu ; navigation de fin de scrub **dans la même
   frame** que le recalage du ressort (et non après lui) ; contraste des trois rôles `navigation.*`
   mesuré **sur la teinte de highlight retenue**, pas seulement sur la pilule.

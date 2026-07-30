@@ -19,6 +19,15 @@
 > § Alertes et rollback. Motif : `PERF-13` **existait** comme scénario mais ne disait ni **quoi**
 > mesurer, ni **avec quel seuil**, ni **quoi faire** au dépassement — un budget qu'on ne sait pas
 > franchir n'est pas un budget. Aucun seuil existant n'est relâché.
+>
+> **Amendement A28 — 2026-07-30 · contradiction avec [04](04-navigation-scroll-surfaces.md) soldée**
+> — § Budget de la retombée, ligne « Hauteur maximale ». La ligne conservait « hauteur du chrome »
+> alors que le § Retombée de bord de 04 avait été corrigé en « hauteur **ÉTENDUE** du chrome ».
+> Deux documents d'autorité donnaient deux formules pour la même enveloppe.
+>
+> **Amendement A29 — 2026-07-30 · liste virtualisée** — § Budget de la retombée, ligne nouvelle.
+> Un `BlurView` posé au-dessus d'un contenu dynamique recyclé ne se rafraîchit pas : le rendu est
+> faux et **aucun test ne rougit**. `N = 0` obligatoire jusqu'à preuve filmée du contraire.
 
 ## Objectif
 
@@ -217,8 +226,9 @@ scroll**. C'est un coût GPU continu, pas ponctuel — d'où un budget, et non u
 | --- | --- |
 | Mode par défaut | **Teinté, `N = 0` couche floutée.** Un `LinearGradient`, un draw call. |
 | Retombées floutées par bord d'écran | **Au plus une.** Jamais deux zones floutées superposées. |
-| Hauteur maximale d'une retombée | `inset de sécurité + hauteur du chrome + 44 pt de débord`. |
-| Profil de hauteurs si `N > 0` | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %`, tronqué aux `N` premières. |
+| Hauteur maximale d'une retombée | **(corrigé A28 · 2026-07-30)** `inset de sécurité + hauteur ÉTENDUE du chrome + 44 pt de débord`. L'enveloppe est dimensionnée **une fois**, sur l'état le plus haut du chrome, et n'est ensuite ni animée ni transformée — [04 § Pourquoi l'enveloppe est fixe](04-navigation-scroll-surfaces.md#pourquoi-lenveloppe-est-fixe-et-non-recalculée-par-frame). *Rédaction A2 (supersédée) : « hauteur du chrome » — ambigu sur un chrome dont la hauteur s'anime, et donc incompatible avec la ligne « Animation : aucune » deux lignes plus bas.* |
+| Profil de hauteurs si `N > 0` | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %`, tronqué aux `N` premières. **(précisé A29)** Calculé par `@bob/ui`, jamais par l'application : le port ne choisit que le matériau. |
+| Au-dessus d'une liste virtualisée **(ajouté A29 · 2026-07-30)** | **`N = 0` obligatoire.** Un `BlurView` monté au-dessus d'un contenu dynamique recyclé (`FlashList`, `FlatList`, `SectionList`, `VirtualizedList`) **ne se rafraîchit pas** — limitation officielle `expo-blur`. Le flou reste alors figé sur une image périmée **sans qu'aucun test ne rougisse** : c'est le pire mode de défaillance du dossier, un rendu faux et silencieux. Levée uniquement sur preuve filmée de rafraîchissement ([04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet)). |
 | Plafond de `N` | Fixé par `PERF-CALIBRATION` sur l'appareil médian, jamais par le confort visuel. |
 | Animation | Aucune, dans aucun mode. Une retombée n'anime ni sa hauteur, ni son intensité, ni son opacité. |
 | Fonds éligibles au mode flouté | Uniquement les fonds **photographiques** (scan, aperçu de document, visualiseur). Jamais un fond de l'app. |

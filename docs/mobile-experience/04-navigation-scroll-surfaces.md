@@ -36,6 +36,18 @@
 > - **A25 · SDK de référence Expo 57 / RN 0.86** — § Bornes de livraison.
 > - **A27 · moyens et invariants distingués** — §§ 2 et 6 : la géométrie calculée et le double
 >   glyphe sont des **moyens** de référence, pas les exigences ; l'a11y des glyphes est posée.
+>   **(portée complétée A28)** A27 a également ajouté § Pourquoi l'enveloppe est fixe et non
+>   recalculée par frame et corrigé la ligne « Hauteur totale » du § Mode nominal ; le présent index
+>   ne le déclarait pas.
+> - **A28 · un seul mécanisme de cible tactile, exécutable sur Android** — § Exigences communes,
+>   § 1 (ligne « Géométrie »), § Cibles tactiles et Dynamic Type, table des régimes, § 4,
+>   § Matières et § Critères d'acceptation. A17 complétait la cible par un `hitSlop` qui déborde la
+>   pilule : un tel `hitSlop` n'est **jamais dispatché**, sur aucun des deux OS. La cible est
+>   désormais tenue par la **hauteur du `Pressable` lui-même**, avec cinq mesures d'acceptation.
+> - **A29 · couture du port `renderBlurLayer`** — § Couture du port (nouveau) et § Quand le repli
+>   opaque unique s'applique (cinquième cas). Le contrat de props A20 était exact mais s'arrêtait
+>   avant la frontière de paquet : type du port, propriétaire du `BlurTargetView`, passage de la
+>   `ref`, englobement par construction et cas de la liste virtualisée.
 
 ## Objectif
 
@@ -120,9 +132,10 @@ le « ou » avant toute migration.
   tronqués **à l'état de repos de la barre** — et lorsque la taille de texte système ne le permet
   plus, ils sont **retirés**, jamais tronqués (§ Cibles tactiles et Dynamic Type). La barre **peut
   se minimiser au scroll** : labels repliés, **tous les onglets restant visibles et atteignables**,
-  **cible tactile ≥ 44 pt (iOS) / 48 dp (Android) maintenue par le `Pressable` de l'onglet et son
-  `hitSlop`** — jamais par une zone décorative. Elle se ré-étend au scroll vers le haut, dès le
-  retour à moins de 24 px du sommet, et à **toute** interaction avec la barre ;
+  **cible tactile ≥ 44 pt (iOS) / 48 dp (Android) maintenue par la hauteur mesurée du `Pressable`
+  de l'onglet** — jamais par une zone décorative, jamais par un `hitSlop` qui déborde la pilule
+  (**corrigé A28 · 2026-07-30**, § Cibles tactiles et Dynamic Type). Elle se ré-étend au scroll vers
+  le haut, dès le retour à moins de 24 px du sommet, et à **toute** interaction avec la barre ;
 - sélection perceptible par couleur, forme et état accessible ;
 - retap sur l'onglet actif : retour en haut ou comportement racine défini ;
 - état de navigation conservé par tab ;
@@ -195,7 +208,7 @@ abandonne est toujours la même chose : la matière iOS.
 | Zone morte | `dy > 3` → minimiser ; `dy < −3` → étendre ; entre −3 et +3, rien ne bouge | |
 | Retour haut forcé | `y < 24` → toujours étendue | |
 | Ressort | **380 ms, `dampingRatio` 1** (critique-amorti) | Un ressort, pas un timing : la direction du scroll s'inverse en permanence et un ressort recible en conservant la vélocité. Amorti critique parce qu'il anime de la **layout** |
-| Géométrie | hauteur **VISIBLE** `hauteurÉtendue → hauteurRepliée`, retrait latéral **animé de 0 → 34 pt par côté**, `borderRadius = hauteur / 2` recalculé à chaque frame | La pilule rétrécit dans **les deux** dimensions. Ce retrait ANIMÉ s'ajoute à la marge de safe area (12 pt, § Ce que la référence fait bien) : deux grandeurs distinctes, jamais la même. **(corrigé A19 · 2026-07-30)** Les deux hauteurs sont **calculées**, pas littérales — `58 → 44 pt` est leur valeur à la taille de texte standard, voir § Cibles tactiles et Dynamic Type |
+| Géométrie | hauteur **VISIBLE** `hauteurÉtendue → hauteurRepliée`, retrait latéral **animé de 0 → 34 pt par côté**, `borderRadius = hauteur / 2` recalculé à chaque frame | La pilule rétrécit dans **les deux** dimensions. Ce retrait ANIMÉ s'ajoute à la marge de safe area (12 pt, § Ce que la référence fait bien) : deux grandeurs distinctes, jamais la même. **(corrigé A19 · 2026-07-30 ; précisé A28)** Les deux hauteurs sont **calculées**, pas littérales, et la pilule se déduit du `Pressable` — `58 → 44 pt` est leur valeur à la taille standard **sur iOS** ; sur Android le repli s'arrête à **48 dp**. Voir § Cibles tactiles et Dynamic Type |
 | Item et highlight | hauteur du **VISUEL INTÉRIEUR** (capsule de highlight + bloc icône/label) `50 → 35 pt` à la taille de texte standard, **animée explicitement** et non déduite du contenu | Une taille dérivée du layout est en retard sur l'animation du thread UI. **(corrigé A17 · 2026-07-30)** Seul le **visuel** descend à 35 pt : le `Pressable` de l'onglet, lui, ne descend **jamais** sous 44 pt (iOS) / 48 dp (Android) — voir § Cibles tactiles et Dynamic Type |
 | Labels | opacité 1 → 0 sur `progress ∈ [0 ; 0,4]` | Le label a disparu bien avant la fin du mouvement |
 | Ré-expansion forcée | à `onStart` du pan, `onEnd` du tap et `onPress` du Pressable | Toute interaction délibérée avec la barre la ré-étend |
@@ -218,14 +231,77 @@ tel quel.
 géométrie de la référence. Le visuel intérieur (capsule de highlight, bloc icône/label) peut, lui,
 descendre à 35 pt : il est **dessiné dans** le `Pressable`, il ne le redimensionne pas.
 
-Lorsque la pilule repliée est plus courte que la cible — cas nominal sur Android, où 48 dp dépasse
-une pilule à 44 —, le complément vient d'un `hitSlop` **vertical** sur le `Pressable` de l'onglet,
-jamais horizontal : deux onglets voisins ne doivent pas se recouvrir
-([08](08-accessibility-adaptive-design.md#cibles-tactiles) : « `hitSlop` ne crée pas de zones qui
-se chevauchent de façon ambiguë »). Ce débord tombe dans la zone de retombée, qui est
-`pointerEvents="none"` et ne dispute donc aucune touche. Condition d'exécution vérifiable : aucun
-ancêtre du `Pressable` ne pose `overflow: 'hidden'` — un parent qui rogne annule le `hitSlop` sur
-Android.
+**Un seul mécanisme, et c'est la surface pressable elle-même.**
+**(tranché A28 · 2026-07-30)** La cible est tenue par la **hauteur mesurée du `Pressable`**.
+Aucun `hitSlop`, aucune zone voisine, aucun débord n'entre dans le calcul de la cible de la tab
+bar. La règle est donc une **contrainte de layout**, pas une compensation :
+
+```text
+CIBLE            = 44 pt (iOS) | 48 dp (Android)          ← plancher absolu, jamais compensé
+hauteurPressable = max(CIBLE, hauteurVisuelIntérieur)     ← à tout instant de l'animation
+hauteurPilule    = hauteurPressable + 2 × rythmeExtérieur ← la pilule se déduit du Pressable
+rythmeExtérieur  = interpolation de `progress`, 4 → 0 pt  ← c'est LUI qui s'anime, pas la cible
+```
+
+La pilule est **calculée à partir** du `Pressable`, et non l'inverse. Le repli ne rétrécit donc
+jamais la cible : il consomme le rythme extérieur, puis s'arrête. Valeurs à la taille de texte
+standard, entièrement dérivées des chiffres déjà posés au § 1 :
+
+| État | Visuel intérieur | `hauteurPressable` | `rythmeExtérieur` | `hauteurPilule` |
+| --- | ---: | ---: | ---: | ---: |
+| Étendu (`progress = 0`) | 50 pt | 50 pt (> CIBLE) | 4 pt | **58 pt** sur les deux OS |
+| Replié (`progress = 1`) | 35 pt | **44 pt** (iOS) / **48 dp** (Android) | 0 | **44 pt** (iOS) / **48 dp** (Android) |
+
+Le `44` de la référence est une valeur **iOS**. Sur Android la pilule repliée mesure **48 dp** :
+elle n'est jamais « plus courte que la cible », parce que la cible la définit. Le visuel de 35 pt
+est centré dans les 44/48 : c'est la seule construction qui tient sur les **deux** OS.
+
+> **Pourquoi pas un `hitSlop` (rédaction A17, supersédée par A28).** A17 complétait la cible par un
+> « `hitSlop` vertical tombant dans la zone de retombée, qui est `pointerEvents="none"` », sous la
+> condition « aucun ancêtre en `overflow: 'hidden'` ». Ce mécanisme est **non exécutable**, pour
+> trois raisons cumulatives :
+>
+> 1. **Un `hitSlop` ne franchit pas les bornes d'un ancêtre.** La descente de la recherche de cible
+>    n'entre dans un enfant que si le point est **déjà** dans les bornes du parent — Android
+>    (`TouchTargetHelper.findTouchTargetView`, qui n'élargit du `hitSlop` que l'enfant testé, jamais
+>    ses ancêtres) comme iOS (`hitTest:` s'arrête dès qu'un `pointInside:` de superview est faux).
+>    Un `hitSlop` qui déborde la pilule n'est donc **jamais dispatché**, quelle que soit la valeur
+>    d'`overflow`.
+> 2. **La condition posée était vraie mais insuffisante**, et présentée comme LA condition
+>    vérifiable. `overflow: 'hidden'` est une cause de plus d'annulation ; son absence ne rend rien
+>    atteignable.
+> 3. **Le budget n'existait pas.** Sur la barre livrée, la pilule ne porte que
+>    `paddingVertical: 8` (`packages/ui/src/components/bottom-tab-bar.tsx` l. 60) : tout `hitSlop`
+>    supérieur à 8 sort de la pilule, donc du parent du `Pressable`, donc du dispatch. Et la
+>    retombée n'y change rien : c'est un **frère du conteneur de la pilule** (le `LinearGradient`
+>    l. 110-117), jamais un **ancêtre** du `Pressable` — elle ne participe à aucun moment à la
+>    descente de la recherche de cible, en plus d'être `pointerEvents="none"` (l. 111).
+>
+> Un implémenteur qui aurait suivi A17 aurait livré une cible **< 48 dp sur Android** en croyant
+> l'avoir tenue. Le `hitSlop` reste légitime **ailleurs** — à l'intérieur du padding d'un parent,
+> cf. `hitSlop: 6` du `Button` en taille `compact`
+> ([03 § Bouton principal](03-motion-interaction-system.md#bouton-principal)) — mais il ne tient
+> **aucune** cible de cette barre.
+
+**Critère d'acceptation — mesurable, pas intentionnel.** Sur build release, aux deux tailles de
+texte **100 %** et **~200 %**, sur iOS et sur Android, à `progress = 1` (barre entièrement
+repliée) :
+
+1. `measure()` sur le `Pressable` de **chacun** des cinq onglets → `height ≥ 44.0` (iOS) /
+   `≥ 48.0` (Android) et `width ≥ 44.0 / 48.0` ;
+2. le rectangle mesuré de chaque `Pressable` est **entièrement contenu** dans le rectangle mesuré
+   de la pilule — l'écart vertical de part et d'autre vaut exactement `rythmeExtérieur`, soit `0`
+   au repli. Aucune cible ne dépasse de son conteneur ;
+3. deux `Pressable` voisins ne se recouvrent pas (intersection des rectangles = ∅) ;
+4. **preuve de touche**, la seule qui prouve le dispatch : un tap à 1 dp **à l'intérieur** du bord
+   haut puis du bord bas de chaque `Pressable` sélectionne cet onglet ; un tap à 1 dp
+   **au-dessus** du bord haut de la pilule ne sélectionne **rien** — ce qui démontre qu'aucune
+   cible fantôme ne vit dans la retombée ;
+5. aucun `hitSlop` n'est déclaré sur les `Pressable` de la barre : contrôle statique, pas revue
+   visuelle.
+
+Le verdict est `FAIL` si l'une de ces cinq mesures manque : une cible « visiblement assez grande »
+n'est pas une cible mesurée.
 
 > **Ce qui était faux (rédaction A3, supersédée par A17).** « La hauteur VISIBLE descend sous 44 pt
 > au repli, jamais la CIBLE TACTILE : **le débord de retombée** (§ Exigences communes) la maintient
@@ -233,17 +309,29 @@ Android.
 > § Retombée de bord, ligne « Interaction », et
 > [10 § Règles d'implémentation](10-performance-observability.md#règles-dimplémentation). Une vue
 > qui ne reçoit aucune touche ne peut porter aucune cible : le raisonnement inversait la cause. La
-> cible se tient par le `Pressable` et son `hitSlop`, comme dans la barre **livrée**
-> (`minHeight: 44`, `packages/ui/src/components/bottom-tab-bar.tsx` l. 78).
+> cible se tient par le `Pressable` **lui-même**, comme dans la barre **livrée**, qui pose bien la
+> cible sur le `Pressable` (`minHeight: 44`,
+> `packages/ui/src/components/bottom-tab-bar.tsx` l. 78).
+> *(A17 disait ici « par le `Pressable` **et son `hitSlop`** » — corrigé A28 : le `hitSlop` ne
+> franchit pas les bornes de la pilule, il ne peut donc rien compléter ici.)*
+>
+> **Défaut de code signalé, non corrigé.** La même ligne 78 pose `minHeight: 44` **sans distinction
+> de plateforme**, et le contenu de l'onglet mesure ~39 pt (icône 23 + `gap` 3 + label ~13) : la
+> cible livrée vaut donc **44 dp sur Android**, sous le plancher de 48 dp que le présent paragraphe
+> pose comme absolu. Ce n'est pas une erreur de document — c'est un écart du **code**, hors du
+> présent lot documentaire et hors de la borne de livraison n° 1 (« la `BottomTabBar` existante
+> n'est ni restylée ni supprimée »). Il est consigné au
+> [README § Défauts de code signalés](README.md#journal-des-amendements) et **n'est pas corrigé
+> ici**.
 
 **Ce qui s'adapte, ce qui reste fixe, ce qui passe sur plusieurs lignes.**
 
 | Grandeur | Régime | Règle normative |
 | --- | --- | --- |
-| Hauteur étendue de la pilule | **S'adapte** | `hauteurÉtendue = max(58 pt, hauteur mesurée du contenu à la taille de texte courante)`. 58 pt est un **plancher à la taille standard**, jamais un plafond. |
-| Hauteur repliée de la pilule | **S'adapte par son plancher** | `hauteurRepliée = max(44 pt iOS / 48 dp Android, hauteur de l'icône + rythme)`. Au repli il n'y a plus de label : la hauteur ne dépend plus du texte, seulement du plancher de cible. |
-| Visuel intérieur (highlight, bloc icône/label) | **S'adapte** | Interpolé entre les deux hauteurs ci-dessus, moins le rythme intérieur. `50 → 35 pt` est sa valeur à la taille standard. |
-| Cible tactile | **Fixe — plancher absolu** | 44 pt iOS / 48 dp Android. Un plancher ne rétrécit pas ; il ne s'échelonne pas non plus avec le texte. |
+| Hauteur étendue de la pilule | **S'adapte** | `hauteurÉtendue = hauteurPressable(0) + 2 × 4 pt`, avec `hauteurPressable(0) = max(CIBLE, hauteur mesurée du contenu à la taille de texte courante)`. **58 pt** est sa valeur à la taille standard, donc un **plancher**, jamais un plafond. |
+| Hauteur repliée de la pilule | **Se déduit de la cible** | **(corrigé A28 · 2026-07-30)** `hauteurRepliée = hauteurPressable(1) = max(CIBLE, hauteur de l'icône + rythme intérieur)`, le rythme **extérieur** valant 0 au repli. Soit **44 pt sur iOS** et **48 dp sur Android** à la taille standard : sur Android elle ne vaut **jamais** 44. *Rédaction A19 (supersédée) : « `max(44 pt iOS / 48 dp Android, hauteur de l'icône + rythme)` » — la formule était juste, mais la prose voisine décrivait encore une pilule Android à 44, que cette même formule interdit.* |
+| Visuel intérieur (highlight, bloc icône/label) | **S'adapte** | Interpolé entre les deux hauteurs ci-dessus, moins le rythme intérieur. `50 → 35 pt` est sa valeur à la taille standard. Il est **dessiné dans** le `Pressable` et ne le redimensionne jamais. |
+| Cible tactile | **Fixe — plancher absolu** | `CIBLE` = 44 pt iOS / 48 dp Android, portée par la **hauteur du `Pressable`** et par rien d'autre. Un plancher ne rétrécit pas ; il ne s'échelonne pas non plus avec le texte ; il ne se complète pas par un `hitSlop`. |
 | Retrait latéral animé `0 → 34 pt`, marge de safe area 12 pt | **Fixe** | Grandeurs horizontales, sans texte : la taille de police ne les concerne pas. |
 | `borderRadius = hauteur / 2` | **Fixe en tant que fonction** | C'est une formule, pas une constante : elle suit automatiquement la hauteur adaptée. |
 | Débord de la retombée (44 pt) | **Fixe** | Zone décorative sans texte (§ Retombée de bord). |
@@ -352,8 +440,12 @@ Le tick correspond exactement à la ligne « Sélection → `selection` » de la
 ### 4. Flou de bord
 
 Le principe et la géométrie sont repris : zone de dissolution qui déborde d'environ **44 pt**
-au-dessus de la pilule, jamais de bord dur, non interactive, hauteur totale ≈ inset bas + hauteur
-de barre + débord.
+au-dessus de la pilule, jamais de bord dur, non interactive, hauteur totale = inset bas + hauteur
+**ÉTENDUE** de la barre + débord — **(corrigé A28 · 2026-07-30 : « hauteur de barre » était
+ambigu sur la seule barre du dossier dont la hauteur s'anime. L'enveloppe est dimensionnée une
+fois, sur l'état le plus haut ; voir § Pourquoi l'enveloppe est fixe et non recalculée par
+frame.)** Sur cette barre, la retombée est **toujours** en mode nominal teinté : le mode flouté ne
+coexiste jamais avec un chrome dont la hauteur s'anime.
 
 **Identité conservée** : c'est notre § Retombée de bord — `patterns.bottomTabBar.fade`, un dégradé
 de notre couleur de fond, **déjà livré** dans `packages/ui/src/components/bottom-tab-bar.tsx`.
@@ -607,8 +699,16 @@ Le zoom partagé :
   système et varie par OS et par version : il ne peut pas porter l'identité Bob. Sa mention dans ce
   dossier sert uniquement à dire qu'on ne l'emploie pas.
 - Contraste vérifié sur chaque fond réel, pas sur une maquette unie.
-- **Reduce Transparency n'a rien à remplacer** : les surfaces sont déjà opaques. La préférence ne
-  déclenche aucun chemin de rendu alternatif, donc aucun chemin non testé.
+- **Reduce Transparency n'a rien à remplacer sur les SURFACES** : elles sont déjà opaques. Sur
+  elles, la préférence ne déclenche aucun chemin de rendu alternatif, donc aucun chemin non testé.
+  **(portée corrigée A28 · 2026-07-30)** Elle n'est pas pour autant « sans effet » dans tout le
+  dossier : la **retombée de bord en mode flouté** est la seule matière du produit qui échantillonne
+  quoi que ce soit, et Reduce Transparency — **active ou encore inconnue** — y déclenche le repli
+  opaque unique (§ Quand le repli opaque unique s'applique, cas 2, et
+  [08 § Préférences d'accessibilité et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu)).
+  *Rédaction A1 (supersédée) : « La préférence ne déclenche aucun chemin de rendu alternatif » —
+  vraie des surfaces, fausse du seul composant qui a un mode flouté ; A18 posait une règle
+  fail-closed sur une préférence que cette phrase déclarait sans objet.*
 - Android ancien et iOS non compatible affichent **exactement la même surface** : il n'y a plus de
   fallback de matière, donc plus de divergence fonctionnelle ou esthétique par OS.
 - Le blur n'est pas animé, ni en entrée/sortie, ni en Reduced Motion, ni jamais.
@@ -688,12 +788,12 @@ aperçu de document, visualiseur photo. Jamais sur un fond de l'app.
 | Paramètre | Valeur normative | Justification |
 | --- | --- | --- |
 | Topologie | N couches **frères** dans un même parent — **jamais imbriquées** | La retombée vient de la géométrie, pas d'un masque |
-| Profil de hauteurs | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %` (tronqué aux N premières) | Profil exact de la référence |
+| Profil de hauteurs | `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %` (tronqué aux N premières) | Profil exact de la référence. **(précisé A29 · 2026-07-30)** Il est calculé par **`@bob/ui`** et transmis couche par couche au port (`heightPercent`, `style`) : `apps/mobile` choisit le matériau, jamais la géométrie — § Couture du port |
 | Intensité par couche | **uniforme et faible** (référence : 5 pour chacune) | L'intensité effective vient du recouvrement, pas d'une rampe |
 | Intensité effective | ~5 × N au bord ancré → ~5 à l'extrémité, par marches de 5 | Nombre de couches couvrant le pixel à la distance f du bord |
 | N (couches floutées) | **plafonné ; `N = 0` est le défaut** | Chaque couche est un échantillonnage GPU permanent sous scroll |
 | Voile | **teinté Bob** — dégradé de notre couleur de fond, aux mêmes stops que le mode nominal | La référence pose `rgba(0,0,0,.70)`, inversion complète d'identité sur notre fond `#EFF2F7` |
-| Rendu de couche | **port injecté `renderBlurLayer`** (doctrine `PrefsStorage`) | `@bob/ui` ne prend aucune dépendance ; `expo-blur` reste dans `apps/mobile` |
+| Rendu de couche | **port injecté `renderBlurLayer`** (doctrine `PrefsStorage`) — signature, propriétaire du `BlurTargetView` et passage de la `ref` : § Couture du port | `@bob/ui` ne prend aucune dépendance ; `expo-blur` reste dans `apps/mobile` |
 | Repli | **repli opaque UNIQUE** = le mode nominal | Un seul chemin de secours, donc un seul chemin à tester |
 
 ### Contrat exécutable du port `renderBlurLayer` — `expo-blur`, Expo SDK 57
@@ -727,7 +827,7 @@ d'autre : ni voile, ni dégradé — le voile teinté Bob reste un `LinearGradie
 | --- | --- | --- |
 | iOS | flou possible | `BlurView` (`intensity`, `tint`) ; ni `blurTarget`, ni `blurMethod` (props Android). |
 | **Android ≥ 31** (Android 12) | flou possible | `BlurTargetView` + `blurTarget` + `blurMethod="dimezisBlurViewSdk31Plus"`. Chemin efficace `RenderNode`, introduit par SDK 31. |
-| **Android < 31** | **N0 — aucun flou** | Le port **n'est pas monté** : `renderBlurLayer` rend `null` et `ProgressiveBlurBob` sert son repli opaque unique. On ne se contente pas de laisser `dimezisBlurViewSdk31Plus` retomber sur `'none'` : `'none'` rendrait une vue **semi-transparente**, hors doctrine. |
+| **Android < 31** | **N0 — aucun flou** | Le port **n'a rien à monter** : `renderBlurLayer` rend `null` **pour tous les index** (règle *tout ou rien*, § Couture du port) et `ProgressiveBlurBob` sert son repli opaque unique. On ne se contente pas de laisser `dimezisBlurViewSdk31Plus` retomber sur `'none'` : `'none'` rendrait une vue **semi-transparente**, hors doctrine. |
 
 **Limite connue, à traiter comme une coupure** : un `BlurTargetView` ne traverse pas la frontière
 d'un `Modal` React Native (expo/expo#44165). Or `scan-document`, `devis/new` et `facture/new` sont
@@ -735,16 +835,183 @@ des **full-screen modals** dans la carte de routes ci-dessus, et le mode flouté
 fonds photographiques du scan. Sur Android, une retombée floutée rendue **à l'intérieur d'un
 `Modal`** sert donc le repli opaque unique, sans exception ni contournement.
 
+### Couture du port — qui rend quoi, de part et d'autre de la frontière de paquet
+
+> Ajouté A29 · 2026-07-30. Le contrat de props ci-dessus est exact et **n'est pas modifié**. Il
+> s'arrête cependant là où commence la seule chose que ce dossier devait spécifier : la **couture**
+> entre `@bob/ui`, qui rend les couches, et `apps/mobile`, qui détient `expo-blur`. Trois trous
+> obligeaient à deviner — la signature du port, le propriétaire du `BlurTargetView`, et le passage
+> de sa `ref` à travers la frontière. Ce paragraphe les ferme, assez précisément pour que le kit
+> s'écrive **sans deviner**.
+
+#### 1. Signature du port — le type exact
+
+`renderBlurLayer` n'est pas un nom de prop : c'est une fonction typée, injectée en prop de
+`ProgressiveBlurBob`. Les deux seuls types importés viennent de `react` et de `react-native` ; rien
+d'`expo-blur` n'apparaît dans `@bob/ui`.
+
+```ts
+// packages/ui/src/components/progressive-blur-bob.types.ts — AUCUN import d'expo-blur
+import type { ReactElement } from 'react';
+import type { StyleProp, ViewStyle } from 'react-native';
+
+/** Description d'UNE couche, entièrement calculée par `@bob/ui`. */
+export interface BlurLayerSpec {
+  /** Rang de la couche. 0 = la plus haute (100 %), N−1 = la plus courte. */
+  readonly index: number;
+  /** Nombre total de couches demandées (`N`). Invariant : `0 <= index < layerCount`. */
+  readonly layerCount: number;
+  /** Hauteur de la couche en POURCENTAGE de la hauteur d'enveloppe, profil § Mode flouté. */
+  readonly heightPercent: number;
+  /** Intensité `expo-blur`, identique pour toutes les couches (valeur Bob : 5). */
+  readonly intensity: number;
+  /** Teinte `expo-blur`. Jamais `'dark'` — contrainte du contrat de props ci-dessus. */
+  readonly tint: 'light' | 'default';
+  /** Bord ancré de la retombée : `'bottom'` pour un chrome bas, `'top'` pour un chrome haut. */
+  readonly anchor: 'top' | 'bottom';
+  /** Position absolue déjà résolue par `@bob/ui`. À appliquer TEL QUEL, sans recalcul. */
+  readonly style: StyleProp<ViewStyle>;
+}
+
+/** Rend une couche, et rien d'autre : ni voile, ni dégradé, ni conteneur. */
+export type RenderBlurLayer = (spec: BlurLayerSpec) => ReactElement | null;
+
+export interface ProgressiveBlurBobProps {
+  readonly anchor: 'top' | 'bottom';
+  /** Hauteur d'enveloppe en points — fixe, § Pourquoi l'enveloppe est fixe. */
+  readonly height: number;
+  /** `N`. `0` = mode nominal teinté, seul défaut livrable. */
+  readonly layers?: number;
+  /** Port injecté. ABSENT = repli opaque unique, sans autre condition. */
+  readonly renderBlurLayer?: RenderBlurLayer;
+}
+```
+
+**Règles de la signature**, toutes vérifiables :
+
+| Règle | Énoncé |
+| --- | --- |
+| Retour | `ReactElement` = couche rendue ; `null` = pas de couche. |
+| **Tout ou rien** | Pour un même montage, le port rend `N` éléments **ou** `null` pour tous les index. Une pile partielle est **interdite** : elle produirait une courbe de dissolution qui n'est ni celle du mode flouté ni celle du repli. |
+| Détection du repli | Si le port renvoie `null` pour `index === 0`, `ProgressiveBlurBob` n'appelle plus le port et sert le **repli opaque unique**. C'est le seul chemin de bascule ; il n'y en a pas d'autre. |
+| Propriété du profil | Le profil `100 / 88 / 76 / …` et le `style` de chaque couche sont calculés par **`@bob/ui`**, jamais par `apps/mobile`. Le port ne peut donc pas déformer la courbe : il choisit le **matériau**, pas la géométrie. |
+| Voile | Le voile teinté Bob est un `LinearGradient` **frère**, rendu par `@bob/ui`, dans les deux modes. Le port ne le rend jamais. |
+
+#### 2. Qui possède le `BlurTargetView`, et à quel niveau de layout
+
+`BlurTargetView` doit envelopper le **contenu à flouter** — qui vit **hors** de
+`ProgressiveBlurBob`. Il appartient donc à `apps/mobile`, et il se monte au niveau du **shell
+d'écran**, dans le conteneur commun qui porte à la fois le contenu défilant et le chrome flottant :
+
+```tsx
+// apps/mobile/src/experience/blur/blurred-screen-shell.tsx — le SEUL endroit qui importe expo-blur
+// Noms `BlurView` / `BlurTargetView` : ceux du contrat de props ci-dessus, aucun autre introduit.
+<View style={{ flex: 1 }}>                        {/* parent commun, espace de coordonnées unique */}
+  <BlurTargetView ref={blurTargetRef} style={StyleSheet.absoluteFill}>
+    {children}                                    {/* le contenu défilant, ce qui est échantillonné */}
+  </BlurTargetView>
+
+  <ProgressiveBlurBob                             {/* DERNIER enfant — voir § 4 */}
+    anchor="bottom"
+    height={enveloppe}
+    layers={N}
+    renderBlurLayer={renderBlurLayer}             {/* la closure ci-dessous */}
+  />
+</View>
+```
+
+| Question | Réponse normative |
+| --- | --- |
+| Propriétaire | `apps/mobile`. `@bob/ui` ne le monte pas, ne le nomme pas, ne le type pas. |
+| Niveau de layout | Le **shell d'écran** : le parent commun `flex: 1` qui contient le contenu **et** le chrome. Ni plus haut (un `BlurTargetView` racine échantillonnerait le chrome lui-même), ni plus bas (il manquerait le contenu qui défile). |
+| Relation aux couches | Les `BlurView` sont des **frères** du `BlurTargetView`, jamais ses descendants : sinon la cible s'échantillonnerait elle-même. |
+| Quantité | **Un seul** `BlurTargetView` par écran. Les `N` couches pointent toutes vers lui — c'est ce que dit la ligne « Topologie » du contrat, et c'est ici qu'elle devient exécutable. |
+
+#### 3. Comment la `ref` traverse la frontière — elle ne la traverse pas
+
+C'est le point qui rend le reste possible : **la `ref` ne franchit jamais la frontière de paquet.**
+`@bob/ui` ne la voit pas, ne la type pas et n'a donc aucune raison d'importer `expo-blur`. Le port
+est une **closure** créée dans `apps/mobile`, qui capture la `ref` dans sa portée lexicale :
+
+```tsx
+// apps/mobile/src/experience/blur/render-blur-layer.tsx
+const blurTargetRef = useRef<View | null>(null);
+
+const renderBlurLayer = useCallback<RenderBlurLayer>((spec) => {
+  if (!canBlurHere) return null;              // Android < 31, dans un Modal, liste virtualisée,
+                                              // Reduce Transparency active OU inconnue, hors budget
+  return (
+    <BlurView
+      key={spec.index}
+      style={spec.style}                      // géométrie de @bob/ui, appliquée telle quelle
+      intensity={spec.intensity}
+      tint={spec.tint}
+      blurTarget={blurTargetRef}              // Android — la ref, capturée, jamais passée à @bob/ui
+      blurMethod="dimezisBlurViewSdk31Plus"   // Android — écrite explicitement, jamais omise
+    />
+  );
+}, [canBlurHere]);
+```
+
+`canBlurHere` est résolu **une fois par montage**, jamais par frame, et il est `false` par défaut :
+c'est la traduction directe de § Quand le repli opaque unique s'applique. `@bob/ui` n'a besoin
+d'aucune de ces conditions — il ne connaît que « le port a rendu quelque chose » ou « il a rendu
+`null` ».
+
+#### 4. L'englobement des couches, garanti par construction
+
+La contrainte officielle est géométrique : *« as long as all of the `BlurView`s fit into the bounds
+of a single `BlurTargetView` »*. Elle n'est **pas** garantie par le simple fait d'écrire du code —
+elle l'est par la **structure** ci-dessus, et pour une raison unique :
+
+1. le `BlurTargetView` est en `StyleSheet.absoluteFill` dans le parent commun : son rectangle est
+   **exactement** celui du parent ;
+2. la retombée est ancrée au même parent (`position: 'absolute', left: 0, right: 0, bottom: 0`) et
+   toutes ses couches sont positionnées **dans** son enveloppe ;
+3. deux rectangles exprimés dans le **même espace de coordonnées**, l'un occupant tout le parent,
+   l'autre contenu dans le parent : l'inclusion est un fait de layout, pas une mesure à refaire.
+
+**La seule façon de casser cet invariant** est de donner à l'enveloppe une hauteur supérieure à
+celle du shell. Assertion de développement obligatoire, `__DEV__` uniquement :
+`height <= hauteur mesurée du shell` — sinon `ProgressiveBlurBob` sert le repli opaque et journalise
+l'écart. Aucune mesure n'est faite en production : l'invariant est structurel.
+
+#### 5. Ordre de montage, et le cas de la liste virtualisée
+
+Second point officiel, celui qui invalide silencieusement le rendu : *« the blur effect does not
+update when `BlurView` is rendered before dynamic content using, for example, `FlatList` »*. Un flou
+figé ne fait rougir **aucun** test : il rend une image, simplement périmée.
+
+**Fait vérifié dans le dépôt le 2026-07-30** : `@shopify/flash-list` **`^2.0.2`** est déclaré dans
+`apps/mobile/package.json` et n'est **importé par aucun fichier** de `apps/mobile` ni de
+`packages/ui/src`. Le risque est donc encore entièrement devant nous — c'est le bon moment pour le
+fermer.
+
+| Règle | Énoncé | Comment on le vérifie |
+| --- | --- | --- |
+| **Ordre imposé** | Dans le parent commun, le `BlurTargetView` (donc le contenu) est monté **avant** la retombée. `ProgressiveBlurBob` est le **dernier** enfant du shell, sans exception. | Contrôle statique sur le shell d'écran : `ProgressiveBlurBob` est le dernier élément retourné. |
+| **Interdiction au-dessus d'une liste virtualisée** | Tant qu'aucune preuve filmée ne démontre le rafraîchissement, le **mode flouté est interdit** au-dessus d'un `FlashList`, `FlatList`, `SectionList` ou `VirtualizedList` : la retombée sert le **repli opaque unique**. C'est la **cinquième** coupure, au même rang que les quatre autres. | Contrôle statique : aucun écran ne monte à la fois un de ces quatre composants et un `ProgressiveBlurBob` avec `layers > 0` ([11 § Tests statiques](11-test-strategy.md#tests-statiques)). |
+| **Preuve de levée** | Vidéo : liste virtualisée d'au moins 200 cellules **hétérogènes** défilant 10 s sous la retombée ; on compare le contenu échantillonné à `t` et `t + 30` frames. Le flou doit **changer avec la liste**. Un flou identique = `FAIL`. | Manifest `PERF-CALIBRATION`, joint à `WP-0307`. Sans lui, l'interdiction reste. |
+
+Cette coupure coûte peu, et c'est voulu : le mode flouté est déjà réservé aux **fonds
+photographiques** (scan, aperçu, visualiseur), qui ne sont pas des listes. Elle ferme une porte que
+la doctrine tenait déjà entrouverte — mais elle la ferme de façon **vérifiable**, ce qui n'était pas
+le cas.
+
 ### Quand le repli opaque unique s'applique — sans exception
 
-1. port `renderBlurLayer` absent (cas par défaut de `@bob/ui`) ;
+1. port `renderBlurLayer` absent (cas par défaut de `@bob/ui`), ou port rendant `null` pour la
+   couche d'index `0` ;
 2. **Reduce Transparency actif** — ou **encore inconnu** au premier rendu (règle fail-closed,
    [08 § Préférences et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu)) ;
 3. Android **< 31**, ou Android en rendu dégradé, ou retombée à l'intérieur d'un `Modal` sur
    Android ;
-4. budget de performance non tenu sur l'appareil médian.
+4. budget de performance non tenu sur l'appareil médian ;
+5. **(ajouté A29 · 2026-07-30)** retombée posée au-dessus d'une **liste virtualisée**
+   (`FlashList`, `FlatList`, `SectionList`, `VirtualizedList`), tant que la preuve de
+   rafraîchissement du § Couture du port n'est pas fournie.
 
-Dans les quatre cas, l'utilisateur voit la **même géométrie, la même courbe et la même couleur** :
+Dans les cinq cas, l'utilisateur voit la **même géométrie, la même courbe et la même couleur** :
 seuls les échantillons de flou disparaissent. Aucune information, aucune cible et aucun contraste
 ne change.
 
@@ -797,9 +1064,12 @@ compositions.
 - [ ] StatusBar lisible sur le premier, milieu et dernier frame.
 - [ ] Sheets testées avec clavier, drag, focus et Reduce Motion.
 - [ ] Tabs testées retap, badge, safe area, rotation et restauration.
-- [ ] **(ajouté A17 · 2026-07-30)** Cible tactile de chaque onglet **mesurée** ≥ 44 pt (iOS) /
-      48 dp (Android) à l'état **replié**, cibles voisines non chevauchantes, et aucun ancêtre
-      `overflow: 'hidden'` n'annule le `hitSlop`.
+- [ ] **(ajouté A17 · 2026-07-30 ; mécanisme tranché A28)** Cible tactile de chaque onglet
+      **mesurée** ≥ 44 pt (iOS) / 48 dp (Android) à l'état **replié** et à ~200 %, portée par la
+      hauteur du `Pressable` lui-même, rectangle du `Pressable` **contenu** dans celui de la pilule,
+      cibles voisines non chevauchantes, **zéro `hitSlop`** sur la barre, et preuve de touche aux
+      deux bords — les cinq mesures de
+      [§ Cibles tactiles et Dynamic Type](#cibles-tactiles-et-dynamic-type).
 - [ ] **(ajouté A19 · 2026-07-30)** Barre recettée à ~150 % et ~200 % : label sur une puis deux
       lignes, puis icônes seules ; **zéro troncature**, `allowFontScaling` jamais désactivé,
       hauteurs recalculées et non littérales.
@@ -809,6 +1079,11 @@ compositions.
 - [ ] **(ajouté A20 · 2026-07-30)** Si le mode flouté est activé : `BlurTargetView` + `blurTarget` +
       `blurMethod="dimezisBlurViewSdk31Plus"` présents et vérifiés ; Android < 31, Android dégradé
       et retombée dans un `Modal` servent le repli opaque unique.
+- [ ] **(ajouté A29 · 2026-07-30)** Couture du port vérifiée : `@bob/ui` n'importe ni `expo-blur`
+      ni sa `ref` ; **un seul** `BlurTargetView` par écran, monté par `apps/mobile` au shell
+      d'écran, **avant** la retombée ; `ProgressiveBlurBob` **dernier enfant** du shell ; port
+      **tout ou rien** ; assertion `__DEV__` d'englobement ; et **aucun** écran ne combine mode
+      flouté et liste virtualisée sans la preuve filmée de rafraîchissement.
 - [ ] Scroll ne saute pas pendant collapse ou layout transition.
 - [ ] **(amendé A9 · 2026-07-29)** Matières **opaques par construction** (`surfaceTint` /
       `BobSurface`) et contraste vérifié. Aucune surface n'a de « fallback opaque » : l'opaque n'est

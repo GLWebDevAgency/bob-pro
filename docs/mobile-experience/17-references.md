@@ -19,6 +19,8 @@
 > - **A25 · versions réellement intégrées** — § Politique de version, tableau nouveau.
 > - **A20 · documentation `expo-blur` pinée sur SDK 57** — ligne `BlurView` de la table Expo/RN ;
 >   `versions/latest` proscrit.
+> - **A29 · limitations officielles `expo-blur`** — même ligne : englobement dans un
+>   `BlurTargetView` unique, et non-rafraîchissement au-dessus d'un contenu dynamique.
 
 ## Autorités normatives
 
@@ -192,7 +194,7 @@ application générique Material.
 | [Stack toolbar](https://docs.expo.dev/router/advanced/stack-toolbar/) | Menus et actions de header natifs. | Support par plateforme à vérifier. |
 | [Expo Haptics — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/haptics/) | Sélection, impact et notifications sémantiques. | **(pinée A20 · 2026-07-30)** Disponibilité et réglages système. Non déclaré dans le dépôt ; l'ajout dépend d'`UX-ADR-006` **Accepted** et de la certification acoustique. |
 | [GlassEffect — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/glass-effect/) | **(amendé A4 · 2026-07-29)** Aucun. **Ne sera pas adopté** : hors doctrine « matière Bob ». | Conservé dans cette bibliographie pour tracer la décision de non-adoption, pas comme candidat. |
-| [BlurView — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/blur-view/) | **(amendé A4 · 2026-07-29 ; pinée A20 · 2026-07-30)** Uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, en retombée de bord sur fond photographique. Contrat de props exécutable : [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). | Consultée le 2026-07-30. `…/versions/latest/…` est **proscrit** dans ce dossier : il change de contenu sans changer d'URL. Android **< 31** = aucun flou ; `blurMethod` par défaut `'none'` rend une vue **semi-transparente**, hors doctrine ; `experimentalBlurMethod` dépréciée. Jamais importé par `packages/ui`. |
+| [BlurView — SDK 57 (pinée)](https://docs.expo.dev/versions/v57.0.0/sdk/blur-view/) | **(amendé A4 · 2026-07-29 ; pinée A20 · 2026-07-30)** Uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, en retombée de bord sur fond photographique. Contrat de props exécutable : [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). | Consultée le 2026-07-30. `…/versions/latest/…` est **proscrit** dans ce dossier : il change de contenu sans changer d'URL. Android **< 31** = aucun flou ; `blurMethod` par défaut `'none'` rend une vue **semi-transparente**, hors doctrine ; `experimentalBlurMethod` dépréciée. **(complété A29 · 2026-07-30)** Deux limitations officielles de plus, toutes deux structurantes : les `BlurView` doivent **tenir dans les bornes d'un seul** `BlurTargetView`, et le flou **ne se met pas à jour** quand la `BlurView` est rendue **avant** un contenu dynamique (`FlatList` et assimilés) — voir [04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet). Jamais importé par `packages/ui`. |
 | [React Native Performance](https://reactnative.dev/docs/performance.html) | Budget frame et tests en release. | Ne jamais profiler uniquement en dev. |
 | [AccessibilityInfo](https://reactnative.dev/docs/accessibilityinfo) | Reduce Motion, Reduce Transparency et préférence de crossfade. | Matrice de support plateforme. |
 
