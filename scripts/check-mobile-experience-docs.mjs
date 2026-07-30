@@ -23,12 +23,23 @@
  *       (y compris dans un `code span`) ajoute une colonne fantôme qui tronque la ligne.
  *   C9  Affirmations d'ABSENCE de chemin (A28) : « pas de répertoire `x/` » est faux si `x/`
  *       existe. C'est la famille d'erreur exacte qu'A27 a commise en écrivant « pas de répertoire
- *       `scripts/` » dans le commit qui créait `scripts/`.
+ *       `scripts/` » dans le commit qui créait `scripts/`. ÉLARGI A30 : la formulation SANS nom de
+ *       chose — « aucun `scripts/` » — passait au travers ; c'est précisément celle qui avait
+ *       survécu dans la colonne « Source » de la rangée A27 du journal.
  *   C10 Affirmations d'ABSENCE de dépendance (A28) : « absents de tous les `package.json` » est
  *       faux si l'un des paquets nommés y figure.
+ *   C11 Bornes d'amendements (A30) : toute borne « A1 → AN » écrite dans le socle vaut le dernier
+ *       amendement RÉELLEMENT déclaré au journal. Le socle en portait deux valeurs différentes
+ *       dans le même fichier — dont l'une, trois mots avant la phrase qui met en garde contre les
+ *       énumérations recopiées.
+ *   C12 Index d'amendements (A30) : si le journal déclare qu'un amendement touche un document,
+ *       l'encadré de tête de ce document le cite. Sinon la règle existe mais reste introuvable là
+ *       où elle s'applique — cas d'A18, absent de l'index de 04 alors qu'il l'amende en trois
+ *       endroits. Une énumération recopiée n'est admissible que si un contrôle la tient.
  *
  * CE QU'IL NE VÉRIFIE PAS. Les gardes d'import, la matrice de routes, les IDs de traçabilité :
- * ce sont d'autres contrôles, à écrire avec les lots qui en ont besoin.
+ * ce sont d'autres contrôles, à écrire avec les lots qui en ont besoin. C12 vérifie la PRÉSENCE
+ * d'un identifiant dans l'encadré de tête, pas l'exactitude de la portée qui y est décrite.
  *
  * USAGE   node scripts/check-mobile-experience-docs.mjs
  * SORTIE  0 = conforme, 1 = au moins un écart. Aucune dépendance, aucun accès réseau.
@@ -270,9 +281,16 @@ ok('C8', `${tables} tableaux Markdown vérifiés — aucune coupure, largeur con
 // A27 a écrit « vérifié le 2026-07-30 : pas de répertoire `scripts/` » DANS le commit qui créait
 // `scripts/check-mobile-experience-docs.mjs`. Une affirmation d'absence est un fait de dépôt : elle
 // se vérifie comme les autres.
+// (élargi A30) La formulation SANS nom de chose — « aucun `scripts/`, aucun job CI » — passait au
+// travers du premier motif, qui exige « répertoire|dossier|fichier|script » avant le backtick.
+// C'est exactement la phrase qui a survécu dans la colonne « Source » de la rangée A27, après
+// qu'A28 l'eut soldée ailleurs. Le troisième motif la couvre, MAIS il exige que la chose nommée
+// contienne un `/` : sans cette borne il attrapait « aucun `package.json` du dépôt ne déclare ces
+// paquets » (A24), qui est une affirmation d'absence de DÉPENDANCE — le domaine de C10, pas de C9.
 const ABSENCE = [
   /(?:pas|aucun|absence)\s+(?:de\s+)?(?:répertoire|dossier|fichier|script)\s+`([^`]+)`/gi,
   /`([^`]+)`\s+n[’']existe\s+pas\s+(?:encore\s+)?dans\s+le\s+dépôt/gi,
+  /(?:aucune?|pas\s+de)\s+`([\w@.-]*\/[\w@./-]*)`/gi,
 ];
 // Même convention éditoriale que C2 : une affirmation d'absence PÉRIMÉE peut rester citée, à
 // condition de porter sa supersession sur la même ligne. Les guillemets seuls ne suffisent pas —
@@ -330,6 +348,92 @@ for (const file of ALL) {
   });
 }
 ok('C10', `${absents} dépendance(s) déclarée(s) absente(s) vérifiée(s) sur ${manifests.length} package.json`);
+
+// ── journal des amendements : source unique pour C11 et C12 ──────────────────
+// Le tableau du README est l'autorité sur QUELS documents un amendement touche ; l'encadré de
+// chaque fichier est l'autorité sur OÙ il l'amende. Les deux contrôles ci-dessous ne font que
+// tenir cette répartition, qu'aucun humain ne peut relire à chaque amendement.
+const README = 'docs/mobile-experience/README.md';
+const journal = read(README);
+// Cellules d'une rangée Markdown, coupées sur les `|` NON échappés (même règle que C8).
+const cells = (row) => {
+  const out = [];
+  let current = '';
+  for (let i = 0; i < row.length; i += 1) {
+    if (row[i] === '|' && row[i - 1] !== '\\') { out.push(current); current = ''; } else current += row[i];
+  }
+  out.push(current);
+  return out.slice(1, -1).map((c) => c.trim());
+};
+const amendments = [];
+for (const line of journal.split('\n')) {
+  const m = /^\|\s*\*\*A(\d+)\*\*\s*\|/.exec(line);
+  if (!m) continue;
+  const parts = cells(line);
+  amendments.push({ id: `A${m[1]}`, n: Number(m[1]), touched: parts[parts.length - 1] ?? '' });
+}
+if (amendments.length === 0) fail('C11', `${README} : aucune rangée d’amendement lue — le journal a changé de forme`);
+const lastAmendment = Math.max(0, ...amendments.map((a) => a.n));
+
+// ── C11 · bornes d'amendements ───────────────────────────────────────────────
+// « A1 → A27 » écrit trois mots avant « une énumération recopiée devient fausse au premier
+// amendement suivant », dans un fichier dont l'en-tête disait « A1 → A29 ».
+// DEUX EXCLUSIONS, toutes deux nécessaires et toutes deux vérifiées par test négatif :
+//   · les RANGÉES DU JOURNAL (`| **A6** | … propagation d'A1 → A5 … |`) : elles décrivent la
+//     portée d'UN amendement passé, pas l'étendue courante du dossier. Les inclure ferait rougir
+//     l'histoire à chaque nouvel amendement, c'est-à-dire l'inverse du but ;
+//   · les spans entre GUILLEMETS « … » : c'est ainsi qu'on cite une rédaction supersédée, même
+//     convention qu'en C2. Le marqueur de supersession ne peut pas servir ici — la prose est
+//     enveloppée à 100 colonnes et la borne tombe régulièrement sur la ligne SUIVANTE.
+const BOUNDS = /`?A1`?\s*(?:→|->|–|—)\s*`?A(\d+)`?/g;
+let bounds = 0;
+for (const file of ALL) {
+  read(file).split('\n').forEach((line, i) => {
+    if (/^\s*(?:>\s*)*\|/.test(line)) return;              // rangée de tableau (journal inclus)
+    const quoted = line.replace(/«[^»]*»/g, '');           // citations retirées
+    BOUNDS.lastIndex = 0;
+    for (const m of quoted.matchAll(BOUNDS)) {
+      bounds += 1;
+      if (Number(m[1]) !== lastAmendment) {
+        fail('C11', `${file}:${i + 1} annonce les bornes « A1 → A${m[1]} » alors que le journal déclare A${lastAmendment}`);
+      }
+    }
+  });
+}
+ok('C11', `${bounds} borne(s) d’amendements vérifiée(s) contre le journal (dernier : A${lastAmendment})`);
+
+// ── C12 · index d'amendements de chaque document ─────────────────────────────
+// A18 amende 04 en trois endroits et n'apparaissait pas dans son index de tête : la règle existe,
+// mais reste introuvable là où elle s'applique. L'encadré de tête = tout ce qui précède le premier
+// titre de niveau 2 ; un identifiant peut y figurer en entrée détaillée OU dans la ligne compacte
+// « Amendements portés dans le corps ». C12 vérifie la présence, pas l'exactitude de la portée.
+// LIMITE ASSUMÉE : dans un document dont le premier `##` arrive tard (19 — Glossaire, l. 103), la
+// fenêtre couvre de fait le corps. Le contrôle y dégénère en « l'amendement laisse une trace »,
+// ce qui reste la garantie utile ; il ne faut simplement pas lui prêter plus de portée qu'il n'en
+// a sur ces fichiers-là.
+const LINKED = /\]\(((?:\.\.\/)*[\w@./-]+\.md)(?:#[^)]*)?\)/g;
+const headerOf = (src) => {
+  const out = [];
+  for (const line of src.split('\n')) {
+    if (/^##\s/.test(line)) break;
+    out.push(line);
+  }
+  return out.join('\n');
+};
+const headers = new Map();
+for (const file of SOCLE) headers.set(file, headerOf(read(file)));
+let indexed = 0;
+for (const { id, touched } of amendments) {
+  for (const m of touched.matchAll(LINKED)) {
+    const resolved = join('docs/mobile-experience', m[1]).replace(/\\/g, '/');
+    if (resolved === README || !headers.has(resolved)) continue; // « ce fichier » et hors socle
+    indexed += 1;
+    if (!new RegExp(`\\b${id}\\b`).test(headers.get(resolved))) {
+      fail('C12', `${README} déclare que ${id} touche ${resolved} — l’encadré de tête de ce document ne le cite pas`);
+    }
+  }
+}
+ok('C12', `${indexed} couple(s) amendement×document vérifié(s) contre les index de tête`);
 
 // ── rapport ──────────────────────────────────────────────────────────────────
 for (const line of checks) console.log(`  ok   ${line}`);
