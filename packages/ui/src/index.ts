@@ -69,3 +69,57 @@ export * from './components/toast';
 // Flux (réserve C03 — devis C21)
 export * from './components/stepper';
 export * from './components/signature-pad';
+
+// ----------------------------------------------------------------------------
+// KIT « MATIÈRE BOB » — retombée de bord (04 § Retombée de bord)
+// `@bob/ui` n'importe NI `expo-blur` NI aucune dépendance nouvelle : le port est INJECTÉ par
+// l'application, et le voile teinté — celui qui porte NOTRE identité — est rendu ici.
+// ----------------------------------------------------------------------------
+export {
+  ProgressiveBlurBob,
+  type ProgressiveBlurBobViewProps,
+} from './components/progressive-blur-bob';
+export {
+  defineBlurPort,
+  isSealedBlurPort,
+  resolveBlurPort,
+  type ResolvedBlurPort,
+} from './components/progressive-blur-bob.port';
+export type {
+  BlurLayerSpec,
+  ProgressiveBlurBobProps,
+  RenderBlurLayer,
+} from './components/progressive-blur-bob.types';
+export {
+  BLUR_PORT_FAILURE_WARNINGS,
+  DEFAULT_EDGE_FALLOFF_LAYERS,
+  EDGE_FALLOFF_HEIGHT_PROFILE,
+  MAX_EDGE_FALLOFF_LAYERS,
+  blurLayerStyle,
+  bobTintShareAt,
+  edgeFalloffHeight,
+  edgeVeilGradient,
+  edgeWashGradient,
+  effectiveIntensityAt,
+  layerHeightPoints,
+  layerVisibility,
+  progressiveBlurPlan,
+  progressiveBlurWarnings,
+  resolveBlurMaterial,
+  resolveBlurTint,
+  veilOpacityAt,
+  veilResidual,
+  visibleLayerCount,
+  washRampAt,
+  type BlurAnchor,
+  type BlurPortFailure,
+  type BlurPortStatus,
+  type BlurRenderCapability,
+  type BlurSurfaceUnder,
+  type BobBlurMaterial,
+  type EdgeFalloffMode,
+  type EdgeFalloffReason,
+  type ProgressiveBlurPlan,
+  type TransparencyPreference,
+} from './components/progressive-blur-bob.logic';
+export { useTransparencyPreference } from './hooks/use-transparency-preference';
