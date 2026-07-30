@@ -25,6 +25,10 @@
 > **Amendement A20 — 2026-07-30 · contrat `expo-blur`** — ligne `Expo Blur` du tableau de
 > dépendances. Le port existait, son contrat de props n'était écrit nulle part.
 >
+> **Amendement A29 — 2026-07-30 · couture du port** — même ligne. Le contrat de props
+> existait, la frontière de paquet restait indevinable : qui monte le `BlurTargetView`, à quel
+> niveau de layout, et comment sa `ref` l'atteint sans que `packages/ui` importe `expo-blur`.
+>
 > **Amendement A18 — 2026-07-30 · préférences fail-CLOSED** — § Politique motion. `MotionMode` ne
 > savait pas dire « je ne sais pas encore ».
 
@@ -42,7 +46,7 @@ navigation dans le domaine et sans donner à la présentation une autorité mét
 | Reanimated | **(corrigé A7 · 2026-07-29)** **Déclaré directement** dans `apps/mobile` depuis `251271dc` (`react-native-reanimated` `4.5.0` + `react-native-worklets` `0.10.0`, prescrits par SDK 57), mais **importé par aucun fichier** de `apps/mobile` ni de `packages/ui/src`. Déclarer n'est pas adopter : le runtime reste à mettre en service. *Rédaction 2026-07-23, exacte au snapshot `2515ddf3`, supersédée par le fait : « présent transitivement dans le lock, pas dépendance directe mobile ».* | `UX-ADR-001`. |
 | Gesture Handler | Déclaré et utilisé. **(précisé A7 · 2026-07-29 : `^2.32.0` ; `GestureHandlerRootView` à la racine et deux `Swipeable` de contenu — aucun usage dans le chrome ni dans `packages/ui/src`.)** | Réutiliser pour gestures autorisées. |
 | Expo Haptics | Non déclaré directement. | Ajouter seulement après `UX-ADR-006` Accepted et certification acoustique. |
-| Expo Blur | Non déclaré directement. | **(amendé A1 · 2026-07-29 ; contrat A20 · 2026-07-30)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. Si `D08` l'active, le contrat de props est **exécutable et unique** — `BlurTargetView` + `blurTarget` + `blurMethod="dimezisBlurViewSdk31Plus"`, Android **< 31 = rang N0 sans flou**, `experimentalBlurMethod` interdite : voir [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). |
+| Expo Blur | Non déclaré directement. | **(amendé A1 · 2026-07-29 ; contrat A20 · 2026-07-30)** Optionnel et borné : uniquement derrière le port `renderBlurLayer` de `ProgressiveBlurBob`, jamais importé par `packages/ui`. Le défaut produit reste sans flou. Si `D08` l'active, le contrat de props est **exécutable et unique** — `BlurTargetView` + `blurTarget` + `blurMethod="dimezisBlurViewSdk31Plus"`, Android **< 31 = rang N0 sans flou**, `experimentalBlurMethod` interdite : voir [04 § Contrat exécutable du port `renderBlurLayer`](04-navigation-scroll-surfaces.md#contrat-exécutable-du-port-renderblurlayer--expo-blur-expo-sdk-57). **(complété A29 · 2026-07-30)** La **couture** est écrite avec le contrat : type du port, propriétaire du `BlurTargetView` (`apps/mobile`, au shell d'écran), `ref` capturée par closure — donc jamais typée dans `@bob/ui` —, englobement garanti par construction, et interdiction au-dessus d'une liste virtualisée : [04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet). |
 | Expo Glass (`expo-glass-effect`) | Non déclaré directement. | **(amendé A1 · 2026-07-29)** **Ne sera pas adopté.** Hors doctrine « matière Bob » : le verre système impose la teinte de l'OS, pas la nôtre. Contrôle statique d'import à ajouter. |
 | Skia | Non déclaré mobile directement. | Spike uniquement si Bob/chart le justifie. |
 | FlashList | Déclaré. | Conserver pour longues listes et profiler transitions. |
