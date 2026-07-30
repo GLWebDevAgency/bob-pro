@@ -7,6 +7,13 @@
 > (doctrine « matière Bob », retombée `ProgressiveBlurBob`, comportement de la tab bar). Le cycle
 > de décision, les deux axes de statut, les owners et les cibles sont **inchangés** ; aucune
 > décision ne passe de statut. Voir le [journal des amendements](../README.md#journal-des-amendements).
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A8`, `A9`, `A23`, `A27`. Le
+> [journal des amendements](../README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 Ces ADR locaux évitent d'entrer en collision avec les ADR produit/runtime actifs dans `docs/adr`.
 Ils peuvent être promus plus tard dans le registre global après acceptation et résolution des

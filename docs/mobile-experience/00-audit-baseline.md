@@ -10,6 +10,13 @@
 > A1/A2. **Aucun constat n'est modifié dans sa description** : la baseline reste la photographie du
 > commit `2515ddf3` du 2026-07-22. Le kit « matière Bob » livré depuis est postérieur à cette
 > baseline et vit dans [17 § Autorités normatives](17-references.md#autorités-normatives).
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A7`, `A25`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Résumé exécutif
 

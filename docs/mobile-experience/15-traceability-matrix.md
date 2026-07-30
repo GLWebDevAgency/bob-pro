@@ -9,6 +9,13 @@ Dernière mise à jour : 2026-07-29
 > preuve binaire renforcée, ainsi que deux lignes de la table des décisions exigées. **La couverture
 > reste 77/77** : aucun identifiant n'est ajouté, supprimé, recyclé ni déplacé d'epic. Voir le
 > [journal des amendements](README.md#journal-des-amendements).
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A3`, `A8`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## 1. Contrat de traçabilité
 

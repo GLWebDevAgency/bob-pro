@@ -11,6 +11,19 @@ Dernière mise à jour : 2026-07-29
 > `WP-0307` reste optionnel — ce qui devient optionnel n'est plus « le verre » mais le **mode
 > flouté** de la retombée de bord, le mode teinté étant livrable sans décision. Voir le
 > [journal des amendements](README.md#journal-des-amendements).
+>
+> **Amendement A30 — 2026-07-30 · preuve de sortie de `WP-0307` alignée sur l'ordre réel** — la
+> preuve exigeait « `ProgressiveBlurBob` dernier enfant », ce qui rendait le chrome inmontable.
+> Elle exige désormais l'ordre `CONTENU → RETOMBÉE → CHROME` et l'absence de
+> `zIndex`/`elevation`/token d'ombre sur la retombée. **Aucun `WP` n'est ajouté, supprimé,
+> renuméroté ni déplacé ; aucune gate ni dépendance ne change.**
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A8`, `A13`, `A27`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## 1. Mode d'emploi
 
@@ -149,7 +162,7 @@ E00 est un epic transverse, pas une phase calendaire : `WP-0001` à `WP-0008` s'
 | WP-0304 | P0 | L | G01, G12 | Créer grand/compact header, sticky subheader et synchronisation barre système au scroll. | WP-0102, WP-0202. | Vidéos scroll lent/rapide/interrompu, pas de saut, flash ou contenu recouvert. |
 | WP-0305 | P1 | L | G07 | Implémenter la Sheet retenue : detents, drag 1:1, velocity, clavier, focus trap, dismissal, contenu scrollable et alternative accessible. | UX-ADR-002 Accepted, dépendance directe acceptée si tierce. | E2E geste/clavier/a11y/iOS/Android, stress test nested scroll. |
 | WP-0306 | P1 | M | G16 | Contrat Search : focus, debounce/cancel, requêtes obsolètes, récents, groupes, clavier, résultats et restauration. | WP-0301, API existante. | E2E complet et traces de rendu/réseau sans spinner pleine page. |
-| WP-0307 | P2 | M | G20 | **(amendé A1/A2 · 2026-07-29)** Livrer la **retombée de bord** `ProgressiveBlurBob` : mode teinté sans flou par défaut (valeurs `patterns.bottomTabBar`), port injecté `renderBlurLayer`, repli opaque unique. N'activer le **mode flouté** que si D08 l'accepte, sur fond photographique uniquement, avec contraste et budget GPU tenus. **Aucune introduction de verre système** : `expo-glass-effect` ne sera pas adopté. | UX-ADR-004 Accepted (algorithme A1), D08 résolue, WP-0101, WP-0002. | **(A1/A2)** Contrôle statique zéro import `expo-glass-effect` ; captures Reduce Transparency identiques avant/après. Si le mode flouté est Accepted : trace GPU **sous scroll continu** (médiane et pire run), lisibilité sur fonds extrêmes, plateforme ancienne, repli opaque unique démontré. **(ajouté A29 · 2026-07-30)** + couture du port vérifiée — `@bob/ui` sans import ni type `expo-blur`, un seul `BlurTargetView` monté par `apps/mobile` au shell d'écran **avant** la retombée, `ProgressiveBlurBob` dernier enfant, port **tout ou rien**, assertion `__DEV__` d'englobement — et, si une liste virtualisée est en jeu, **preuve filmée** que le flou se rafraîchit avec le contenu ; à défaut, `N = 0` et repli opaque. Si Rejected : audit du mode teinté et disposition signée de WP/G20. |
+| WP-0307 | P2 | M | G20 | **(amendé A1/A2 · 2026-07-29)** Livrer la **retombée de bord** `ProgressiveBlurBob` : mode teinté sans flou par défaut (valeurs `patterns.bottomTabBar`), port injecté `renderBlurLayer`, repli opaque unique. N'activer le **mode flouté** que si D08 l'accepte, sur fond photographique uniquement, avec contraste et budget GPU tenus. **Aucune introduction de verre système** : `expo-glass-effect` ne sera pas adopté. | UX-ADR-004 Accepted (algorithme A1), D08 résolue, WP-0101, WP-0002. | **(A1/A2)** Contrôle statique zéro import `expo-glass-effect` ; captures Reduce Transparency identiques avant/après. Si le mode flouté est Accepted : trace GPU **sous scroll continu** (médiane et pire run), lisibilité sur fonds extrêmes, plateforme ancienne, repli opaque unique démontré. **(ajouté A29 · 2026-07-30 ; ordre corrigé A30)** + couture du port vérifiée — `@bob/ui` sans import ni type `expo-blur`, un seul `BlurTargetView` monté par `apps/mobile` au shell d'écran, **ordre de peinture `CONTENU → RETOMBÉE → CHROME`** (`ProgressiveBlurBob` déclaré après le `BlurTargetView` et avant le chrome, et **aucun** `zIndex`/`elevation`/token d'ombre sur la retombée), port **tout ou rien**, assertion `__DEV__` d'englobement — et, si une liste virtualisée est en jeu, **preuve filmée** que le flou se rafraîchit avec le contenu ; à défaut, `N = 0` et repli opaque. *(Rédaction A29, supersédée : « `ProgressiveBlurBob` dernier enfant » — le chrome serait passé sous la retombée.)* Si Rejected : audit du mode teinté et disposition signée de WP/G20. |
 | WP-0308 | P0 | M | G10, G11, G16 | Centraliser restauration route/scroll/focus/filtres/onglet, deep links chauds/froids et comportements back. | WP-0301 à WP-0306. | E2E interruption, background, lien externe, session expirée et retour multi-niveaux. |
 
 ## 6. E04 — Densité, listes et visualisation de données

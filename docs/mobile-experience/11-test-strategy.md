@@ -26,6 +26,21 @@
 >
 > **Amendement A29 — 2026-07-30.** § Tests statiques : deux contrôles de la couture du port de
 > flou — pas de mode flouté au-dessus d'une liste virtualisée, et ordre de montage imposé.
+>
+> **Amendement A30 — 2026-07-30 · le contrôle d'ordre de montage était inapplicable** — § Tests
+> statiques. Le contrôle d'`A29` exigeait que `ProgressiveBlurBob` soit « le dernier enfant du
+> conteneur » : il aurait fait échouer tout shell portant son chrome à la place que
+> [04](04-navigation-scroll-surfaces.md) lui assigne. Réécrit sur l'ordre réel
+> `CONTENU → RETOMBÉE → CHROME`, et complété par l'interdiction de `zIndex`/`elevation` sur la
+> retombée. Trois contrôles sont par ailleurs ajoutés au validateur livré (`C11`, `C12`, `C9`
+> élargi) — § Tests statiques, encadré d'état réel.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A9`, `A17`, `A19`, `A22`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Principe
 
@@ -79,8 +94,16 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 >    pinées sur une version, résolution de toutes les ancres de liens internes, et
 >    **(ajouté A28 · 2026-07-30)** intégrité des tableaux Markdown — aucune ligne vide ne coupe un
 >    tableau, défaut qui sortait silencieusement `A17`→`A27` du journal des amendements et
->    `R43`/`R44` du registre des risques. Sans dépendance
->    ni accès réseau ; **non branché** à la CI — le brancher relève de
+>    `R43`/`R44` du registre des risques. **(complété A30 · 2026-07-30)** Trois familles de plus,
+>    toutes commises par ce dossier et toutes revenues après avoir été soldées à la main :
+>    **bornes d'amendements divergentes** (`C11` — un fichier qui annonce des bornes s'arrêtant
+>    avant le dernier amendement du journal, deux fois dans le même fichier),
+>    **index d'amendements incomplet** (`C12` — un document que le journal déclare amendé, dont
+>    l'encadré de tête ne cite pas l'amendement : cas d'`A18` dans
+>    [04](04-navigation-scroll-surfaces.md)), et **affirmation d'absence sans nom de chose**
+>    (`C9` élargi — la formulation **fausse** « aucun `scripts/` » passait, là où « pas de
+>    répertoire `scripts/` » échouait déjà).
+>    Sans dépendance ni accès réseau ; **non branché** à la CI — le brancher relève de
 >    [13 — Gouvernance](13-delivery-governance.md), pas d'un auteur de document. Il ne remplace
 >    aucun contrôle de la liste ci-dessous : il ferme la famille d'erreurs que ce dossier a
 >    réellement commise, celle où un document affirme un fait que le dépôt contredit.
@@ -99,9 +122,18 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
   `FlatList`, `SectionList` ou `VirtualizedList`. Motif : un `BlurView` posé au-dessus d'un contenu
   dynamique recyclé **ne se rafraîchit pas** — le rendu est faux et aucun test de comportement ne
   rougit ([04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet)).
-- **(ajouté A29 · 2026-07-30)** Dans un shell d'écran flouté, `ProgressiveBlurBob` est le
-  **dernier** enfant du conteneur, et le `BlurTargetView` y est monté **avant** lui : l'ordre de
-  montage est une contrainte officielle d'`expo-blur`, pas une préférence de style.
+- **(ajouté A29 · 2026-07-30 ; corrigé A30)** Dans un shell d'écran flouté, l'ordre de déclaration
+  est **`CONTENU → RETOMBÉE → CHROME`** : le `BlurTargetView` d'abord, `ProgressiveBlurBob`
+  **après** lui, le chrome flottant **après** la retombée. Le premier ordre est une contrainte
+  officielle d'`expo-blur` (le flou ne se rafraîchit pas s'il est déclaré avant le contenu qu'il
+  échantillonne) ; le second est une contrainte de rendu (le voile est opaque dès 60 % vers le bord
+  ancré : un chrome déclaré avant la retombée est peint **dessous**, donc masqué). Le contrôle
+  vérifie aussi que la retombée ne porte **ni `zIndex`, ni `elevation`, ni token d'ombre** — sur
+  Android l'`elevation` trie l'ordre de dessin et primerait sur la déclaration, ce qui ferait
+  diverger le rendu des deux OS
+  ([04 § Couture du port](04-navigation-scroll-surfaces.md#couture-du-port--qui-rend-quoi-de-part-et-dautre-de-la-frontière-de-paquet)).
+  *Rédaction A29 (supersédée) : « `ProgressiveBlurBob` est le dernier enfant du conteneur » — un
+  contrôle qui aurait fait échouer tout shell portant son chrome à la bonne place.*
 - **(ajouté A28 · 2026-07-30)** **Zéro `hitSlop`** sur les `Pressable` de la tab bar portée : sa
   cible est tenue par la hauteur du `Pressable` lui-même
   ([04 § Cibles tactiles et Dynamic Type](04-navigation-scroll-surfaces.md#cibles-tactiles-et-dynamic-type)).
