@@ -7,6 +7,13 @@
 > profilé) et une case de matière est **ajoutée** à la DoD composant. **Aucune case n'est
 > supprimée ni assouplie** : la preuve exigée devient plus facile à produire parce que la matière
 > est plus simple, pas parce que l'exigence baisse.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A17`, `A18`, `A23`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Règle
 

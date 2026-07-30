@@ -23,6 +23,14 @@
 >   « Géométrie » et « Item et highlight ») et § Cibles tactiles et Dynamic Type (nouveau). A3
 >   justifiait une cible ≥ 44 pt par « le débord de retombée » ; la retombée est
 >   `pointerEvents="none"` et ne reçoit donc **aucune** touche.
+> - **A18 · préférences d'accessibilité fail-CLOSED au premier rendu** — § 6 (ligne
+>   « Reduced Motion » : tant que la préférence est inconnue, la teinte **commute**, elle n'anime
+>   pas), § Matières (portée de « Reduce Transparency sans effet ») et § Quand le repli opaque
+>   unique s'applique, cas 2 : une préférence **encore inconnue** se replie du côté sûr.
+>   **(index complété A30 · 2026-07-30)** A18 amende bien ce document — ses marqueurs datés sont
+>   aux trois endroits ci-dessus — mais le présent index ne le déclarait pas, exactement comme il
+>   ne déclarait pas la portée réelle d'A27 avant A28. Un index d'amendements incomplet fait croire
+>   qu'une règle n'existe pas ici ; il est désormais tenu par le contrôle `C12` du validateur.
 > - **A19 · géométrie qui survit à Dynamic Type** — § Cibles tactiles et Dynamic Type (nouveau).
 >   A3 posait des hauteurs en points fixes sur une barre qui contient du texte, contre
 >   [08 § Typographie](08-accessibility-adaptive-design.md#typographie) (« pas de hauteur fixe sur
@@ -48,6 +56,21 @@
 >   opaque unique s'applique (cinquième cas). Le contrat de props A20 était exact mais s'arrêtait
 >   avant la frontière de paquet : type du port, propriétaire du `BlurTargetView`, passage de la
 >   `ref`, englobement par construction et cas de la liste virtualisée.
+> - **A30 · l'ordre de peinture, et le chrome dans le squelette** — § Couture du port (sous-§§ 2, 4
+>   et 5), § Cibles tactiles et Dynamic Type (mesure n° 2) et § Critères d'acceptation. A29 posait
+>   deux règles inconciliables : le chrome vit dans le parent commun (sous-§ 2) **et**
+>   `ProgressiveBlurBob` est le « dernier enfant du shell, sans exception » (sous-§ 5). En React
+>   Native le frère déclaré en dernier est peint **au-dessus** : le chrome passait sous un voile
+>   opaque dès 60 %. L'ordre est tranché — **`CONTENU → RETOMBÉE → CHROME`** —, le squelette montre
+>   désormais le chrome, et l'autorité de l'ordre (déclaration, jamais `zIndex`/`elevation`) est
+>   écrite. Arbitrage : la **barre livrée** déclare déjà le `LinearGradient` avant la pilule.
+>   Plus la mesure n° 2 des cibles tactiles, fausse de la bordure de 1 pt que `measure()` compte.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au point
+> d'application, pas dans cet index : `A7`, `A8`, `A9`, `A12`, `A13`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération n'est
+> admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs` la tient
+> à jour — une énumération que rien ne vérifie devient fausse au premier amendement suivant.
 
 ## Objectif
 
@@ -239,22 +262,35 @@ bar. La règle est donc une **contrainte de layout**, pas une compensation :
 ```text
 CIBLE            = 44 pt (iOS) | 48 dp (Android)          ← plancher absolu, jamais compensé
 hauteurPressable = max(CIBLE, hauteurVisuelIntérieur)     ← à tout instant de l'animation
-hauteurPilule    = hauteurPressable + 2 × rythmeExtérieur ← la pilule se déduit du Pressable
 rythmeExtérieur  = interpolation de `progress`, 4 → 0 pt  ← c'est LUI qui s'anime, pas la cible
+hauteurPilule    = hauteurPressable + 2 × rythmeExtérieur ← boîte INTÉRIEURE (padding-box)
+épaisseurBordure = 1 pt                                   ← `borderWidth: 1` de la pilule (Bob)
+hauteurMesurée   = hauteurPilule + 2 × épaisseurBordure   ← ce que rend `measure()` (border-box)
 ```
 
 La pilule est **calculée à partir** du `Pressable`, et non l'inverse. Le repli ne rétrécit donc
 jamais la cible : il consomme le rythme extérieur, puis s'arrête. Valeurs à la taille de texte
 standard, entièrement dérivées des chiffres déjà posés au § 1 :
 
-| État | Visuel intérieur | `hauteurPressable` | `rythmeExtérieur` | `hauteurPilule` |
-| --- | ---: | ---: | ---: | ---: |
-| Étendu (`progress = 0`) | 50 pt | 50 pt (> CIBLE) | 4 pt | **58 pt** sur les deux OS |
-| Replié (`progress = 1`) | 35 pt | **44 pt** (iOS) / **48 dp** (Android) | 0 | **44 pt** (iOS) / **48 dp** (Android) |
+| État | Visuel intérieur | `hauteurPressable` | `rythmeExtérieur` | `hauteurPilule` (intérieure) | `hauteurMesurée` **(A30)** |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Étendu (`progress = 0`) | 50 pt | 50 pt (> CIBLE) | 4 pt | **58 pt** sur les deux OS | 60 pt |
+| Replié (`progress = 1`) | 35 pt | **44 pt** (iOS) / **48 dp** (Android) | 0 | **44 pt** (iOS) / **48 dp** (Android) | 46 pt (iOS) / 50 dp (Android) |
 
 Le `44` de la référence est une valeur **iOS**. Sur Android la pilule repliée mesure **48 dp** :
 elle n'est jamais « plus courte que la cible », parce que la cible la définit. Le visuel de 35 pt
 est centré dans les 44/48 : c'est la seule construction qui tient sur les **deux** OS.
+
+**(précisé A30 · 2026-07-30) `hauteurPilule` est la boîte intérieure, pas le rectangle mesuré.**
+Notre identité ajoute à la pilule une bordure de **1 pt** (`borderWidth: 1` + `borderColor:
+controls.cardBorder`, `packages/ui/src/components/bottom-tab-bar.tsx` l. 58-59) — la référence
+`expo-glass-tabs` n'en a pas, d'où l'écart de 2 pt avec ses chiffres — et `measure()`
+rend la **boîte de bordure**. Les `58 → 44` ci-dessus sont donc la boîte **intérieure** — celle
+dans laquelle le `Pressable` est disposé — et le rectangle **mesuré** de la pilule vaut 2 pt de
+plus : **60 pt** étendu, **46 pt** (iOS) / **50 dp** (Android) replié. Le plancher de cible n'est
+pas concerné : il porte sur le `Pressable`, dont la hauteur ne contient aucune bordure. Sans cette
+distinction, la mesure n° 2 ci-dessous serait fausse d'exactement 1 pt par côté — et un build
+**conforme** échouerait un critère d'acceptation.
 
 > **Pourquoi pas un `hitSlop` (rédaction A17, supersédée par A28).** A17 complétait la cible par un
 > « `hitSlop` vertical tombant dans la zone de retombée, qui est `pointerEvents="none"` », sous la
@@ -289,9 +325,16 @@ repliée) :
 
 1. `measure()` sur le `Pressable` de **chacun** des cinq onglets → `height ≥ 44.0` (iOS) /
    `≥ 48.0` (Android) et `width ≥ 44.0 / 48.0` ;
-2. le rectangle mesuré de chaque `Pressable` est **entièrement contenu** dans le rectangle mesuré
-   de la pilule — l'écart vertical de part et d'autre vaut exactement `rythmeExtérieur`, soit `0`
-   au repli. Aucune cible ne dépasse de son conteneur ;
+2. **(reformulé A30 · 2026-07-30)** le rectangle mesuré de chaque `Pressable` est **entièrement
+   contenu** dans le rectangle mesuré de la pilule — `pressable.top ≥ pilule.top` et
+   `pressable.bottom ≤ pilule.bottom` — et les deux écarts verticaux sont **égaux entre eux** et
+   valent `rythmeExtérieur + épaisseurBordure`. À la taille de texte standard, cela fait **5 pt**
+   de chaque côté à `progress = 0` et **1 pt** de chaque côté à `progress = 1` : la valeur n'est
+   jamais nulle, parce que la bordure de la pilule est comptée dans son rectangle mesuré. Tolérance
+   `± 0,5 pt` (arrondi de pixel), et aucune cible ne dépasse de son conteneur.
+   *Rédaction A28 (supersédée) : « l'écart vertical de part et d'autre vaut exactement
+   `rythmeExtérieur`, soit `0` au repli » — vrai de la boîte intérieure, faux de ce que `measure()`
+   rend : la mesure était donc fausse dans les **deux** états, de 1 pt par côté* ;
 3. deux `Pressable` voisins ne se recouvrent pas (intersection des rectangles = ∅) ;
 4. **preuve de touche**, la seule qui prouve le dispatch : un tap à 1 dp **à l'intérieur** du bord
    haut puis du bord bas de chaque `Pressable` sélectionne cet onglet ; un tap à 1 dp
@@ -897,34 +940,57 @@ export interface ProgressiveBlurBobProps {
 | Propriété du profil | Le profil `100 / 88 / 76 / …` et le `style` de chaque couche sont calculés par **`@bob/ui`**, jamais par `apps/mobile`. Le port ne peut donc pas déformer la courbe : il choisit le **matériau**, pas la géométrie. |
 | Voile | Le voile teinté Bob est un `LinearGradient` **frère**, rendu par `@bob/ui`, dans les deux modes. Le port ne le rend jamais. |
 
-#### 2. Qui possède le `BlurTargetView`, et à quel niveau de layout
+#### 2. Qui possède le `BlurTargetView`, à quel niveau de layout, et dans quel ordre de peinture
 
 `BlurTargetView` doit envelopper le **contenu à flouter** — qui vit **hors** de
 `ProgressiveBlurBob`. Il appartient donc à `apps/mobile`, et il se monte au niveau du **shell
-d'écran**, dans le conteneur commun qui porte à la fois le contenu défilant et le chrome flottant :
+d'écran**, dans le conteneur commun qui porte le contenu défilant, la retombée **et** le chrome
+flottant. **(tranché A30 · 2026-07-30)** Ces trois enfants ne sont pas interchangeables : ils sont
+déclarés dans un **ordre imposé**, `CONTENU → RETOMBÉE → CHROME`, et le squelette **montre le
+chrome** — un squelette qui cache la pièce en litige n'est pas un contrat.
 
 ```tsx
 // apps/mobile/src/experience/blur/blurred-screen-shell.tsx — le SEUL endroit qui importe expo-blur
 // Noms `BlurView` / `BlurTargetView` : ceux du contrat de props ci-dessus, aucun autre introduit.
+// ORDRE DE PEINTURE — CONTENU → RETOMBÉE → CHROME. En React Native, le frère déclaré EN DERNIER
+// est peint AU-DESSUS de ses aînés : l'ordre de déclaration EST la spécification de profondeur.
 <View style={{ flex: 1 }}>                        {/* parent commun, espace de coordonnées unique */}
+  {/* 1 — CONTENU : le seul sous-arbre échantillonné */}
   <BlurTargetView ref={blurTargetRef} style={StyleSheet.absoluteFill}>
-    {children}                                    {/* le contenu défilant, ce qui est échantillonné */}
+    {children}                                    {/* le contenu défilant */}
   </BlurTargetView>
 
-  <ProgressiveBlurBob                             {/* DERNIER enfant — voir § 4 */}
+  {/* 2 — RETOMBÉE : APRÈS le contenu (contrainte officielle expo-blur, § 5), donc peinte sur lui */}
+  <ProgressiveBlurBob
     anchor="bottom"
     height={enveloppe}
     layers={N}
     renderBlurLayer={renderBlurLayer}             {/* la closure ci-dessous */}
   />
+
+  {/* 3 — CHROME : déclaré APRÈS la retombée, donc peint AU-DESSUS d'elle. C'est la seule place
+         possible : le voile de la retombée est OPAQUE dès 60 % vers le bord ancré (§ Mode
+         nominal), exactement là où vit la pilule. Sous la retombée, le chrome disparaît. */}
+  <BottomTabBar … />                              {/* ou toolbar, ou barre d'action de fiche */}
 </View>
 ```
+
+**Une seule retombée par bord, et c'est celle du shell.** La `BottomTabBar` livrée rend **sa
+propre** retombée quand elle reçoit `floating` (`bottom-tab-bar.tsx` l. 105-129 : un conteneur
+absolu bas, le `LinearGradient` de `patterns.bottomTabBar.fade`, puis la pilule). Dans un shell qui
+monte `ProgressiveBlurBob`, le chrome est donc rendu **sans** `floating` — sinon deux retombées se
+superposent sur le même bord, ce que [10 § Budget de la retombée](10-performance-observability.md#budget-de-la-retombée-de-bord)
+interdit (« au plus une »), et l'enveloppe mesurée cesserait de correspondre à celle qui est
+calculée. C'est l'unique adaptation demandée au chrome par ce montage.
 
 | Question | Réponse normative |
 | --- | --- |
 | Propriétaire | `apps/mobile`. `@bob/ui` ne le monte pas, ne le nomme pas, ne le type pas. |
-| Niveau de layout | Le **shell d'écran** : le parent commun `flex: 1` qui contient le contenu **et** le chrome. Ni plus haut (un `BlurTargetView` racine échantillonnerait le chrome lui-même), ni plus bas (il manquerait le contenu qui défile). |
+| Niveau de layout | Le **shell d'écran** : le parent commun `flex: 1` qui contient le contenu, la retombée **et** le chrome. Ni plus haut (un `BlurTargetView` racine échantillonnerait le chrome lui-même), ni plus bas (il manquerait le contenu qui défile). |
+| **Ordre de peinture** **(A30)** | **`CONTENU → RETOMBÉE → CHROME`**, dans cet ordre de déclaration, et il est **normatif dans les deux sens** : la retombée après le contenu parce qu'`expo-blur` l'exige (§ 5) ; le chrome après la retombée parce que la retombée existe pour **dissoudre le contenu avant qu'il n'atteigne le chrome** (§ Ce que c'est), pas pour le recouvrir. C'est aussi ce que fait la **barre livrée** : `bottom-tab-bar.tsx` déclare le `LinearGradient` (l. 110) **avant** le conteneur de la pilule (l. 118). |
+| **Autorité de l'ordre** **(A30)** | L'**ordre de déclaration**, seul. Aucun `zIndex` n'est prescrit, et la retombée ne porte **ni `zIndex`, ni `elevation`, ni token d'ombre** (`shadowNative.*` porte une `elevation`). Motif : sur Android, l'ordre de dessin d'un `ViewGroup` est trié par `Z = elevation + translationZ` et **prime sur l'ordre de déclaration**, alors qu'iOS ignore `elevation` et suit la déclaration. Deux leviers en désaccord ne se départagent donc pas — ils produisent **deux rendus différents selon l'OS**. Le désaccord est interdit, pas arbitré. Sur la barre livrée les deux leviers concordent déjà : le gradient n'a pas d'`elevation`, la pilule porte `shadowNative.e2` (`elevation: 5`) et est déclarée en dernier. |
 | Relation aux couches | Les `BlurView` sont des **frères** du `BlurTargetView`, jamais ses descendants : sinon la cible s'échantillonnerait elle-même. |
+| **Relation au chrome** **(A30)** | Le chrome est un **frère** du `BlurTargetView`, jamais son descendant : il n'est donc **jamais échantillonné**, et le déclarer après la retombée ne réintroduit pas le chrome dans le flou. C'est ce qui rend l'ordre `→ CHROME` compatible avec la contrainte de § 5, qui ne porte que sur le contenu **échantillonné**. |
 | Quantité | **Un seul** `BlurTargetView` par écran. Les `N` couches pointent toutes vers lui — c'est ce que dit la ligne « Topologie » du contrat, et c'est ici qu'elle devient exécutable. |
 
 #### 3. Comment la `ref` traverse la frontière — elle ne la traverse pas
@@ -971,6 +1037,16 @@ elle l'est par la **structure** ci-dessus, et pour une raison unique :
 3. deux rectangles exprimés dans le **même espace de coordonnées**, l'un occupant tout le parent,
    l'autre contenu dans le parent : l'inclusion est un fait de layout, pas une mesure à refaire.
 
+**(vérifié A30 · 2026-07-30) L'ordre de peinture ne touche pas cet invariant.** L'ajout du chrome
+comme **troisième frère**, déclaré après la retombée (§ 2), ne modifie **ni** le rectangle du
+`BlurTargetView` — toujours `absoluteFill` du même parent —, **ni** celui de l'enveloppe, toujours
+ancrée à ce même parent. L'inclusion des `BlurView` reste donc vraie pour la même raison qu'avant :
+elle ne dépend que de la **géométrie** de deux rectangles frères, jamais de leur **rang de
+déclaration**. Et le chrome n'y participe pas : il n'est ni un `BlurView`, ni un descendant du
+`BlurTargetView` (§ 2, ligne « Relation au chrome »). Les trois points ci-dessus se relisent mot
+pour mot après le changement d'ordre — c'est le test que doit passer toute évolution de cette
+structure.
+
 **La seule façon de casser cet invariant** est de donner à l'enveloppe une hauteur supérieure à
 celle du shell. Assertion de développement obligatoire, `__DEV__` uniquement :
 `height <= hauteur mesurée du shell` — sinon `ProgressiveBlurBob` sert le repli opaque et journalise
@@ -989,7 +1065,7 @@ fermer.
 
 | Règle | Énoncé | Comment on le vérifie |
 | --- | --- | --- |
-| **Ordre imposé** | Dans le parent commun, le `BlurTargetView` (donc le contenu) est monté **avant** la retombée. `ProgressiveBlurBob` est le **dernier** enfant du shell, sans exception. | Contrôle statique sur le shell d'écran : `ProgressiveBlurBob` est le dernier élément retourné. |
+| **Ordre imposé** **(corrigé A30 · 2026-07-30)** | Dans le parent commun, `ProgressiveBlurBob` est monté **APRÈS** le `BlurTargetView` — donc après le contenu échantillonné, ce que la limitation officielle exige — et **AVANT** le chrome flottant. La contrainte d'`expo-blur` porte sur le **contenu échantillonné**, pas sur le chrome : celui-ci est un **frère** du `BlurTargetView` (§ 2), n'est donc jamais échantillonné, et le déclarer après la retombée ne peut pas figer le flou. *Rédaction A29 (supersédée) : « `ProgressiveBlurBob` est le dernier enfant du shell, sans exception ». Cette formule interdisait de monter le chrome dans le parent que le § 2 lui assigne : déclaré avant la retombée, il passait **sous** un voile opaque dès 60 % vers le bord ancré, c'est-à-dire exactement là où vit la pilule. Elle contredisait § Ce que c'est (« dissout ce contenu avant qu'il n'atteigne le chrome ») et la barre livrée, qui déclare le `LinearGradient` avant la pilule pour que la pilule gagne.* | Contrôle statique sur le shell d'écran : `ProgressiveBlurBob` est déclaré après le `BlurTargetView` et avant le premier élément de chrome ; et la retombée ne porte ni `zIndex`, ni `elevation`, ni token d'ombre ([11 § Tests statiques](11-test-strategy.md#tests-statiques)). |
 | **Interdiction au-dessus d'une liste virtualisée** | Tant qu'aucune preuve filmée ne démontre le rafraîchissement, le **mode flouté est interdit** au-dessus d'un `FlashList`, `FlatList`, `SectionList` ou `VirtualizedList` : la retombée sert le **repli opaque unique**. C'est la **cinquième** coupure, au même rang que les quatre autres. | Contrôle statique : aucun écran ne monte à la fois un de ces quatre composants et un `ProgressiveBlurBob` avec `layers > 0` ([11 § Tests statiques](11-test-strategy.md#tests-statiques)). |
 | **Preuve de levée** | Vidéo : liste virtualisée d'au moins 200 cellules **hétérogènes** défilant 10 s sous la retombée ; on compare le contenu échantillonné à `t` et `t + 30` frames. Le flou doit **changer avec la liste**. Un flou identique = `FAIL`. | Manifest `PERF-CALIBRATION`, joint à `WP-0307`. Sans lui, l'interdiction reste. |
 
@@ -1079,11 +1155,15 @@ compositions.
 - [ ] **(ajouté A20 · 2026-07-30)** Si le mode flouté est activé : `BlurTargetView` + `blurTarget` +
       `blurMethod="dimezisBlurViewSdk31Plus"` présents et vérifiés ; Android < 31, Android dégradé
       et retombée dans un `Modal` servent le repli opaque unique.
-- [ ] **(ajouté A29 · 2026-07-30)** Couture du port vérifiée : `@bob/ui` n'importe ni `expo-blur`
-      ni sa `ref` ; **un seul** `BlurTargetView` par écran, monté par `apps/mobile` au shell
-      d'écran, **avant** la retombée ; `ProgressiveBlurBob` **dernier enfant** du shell ; port
-      **tout ou rien** ; assertion `__DEV__` d'englobement ; et **aucun** écran ne combine mode
-      flouté et liste virtualisée sans la preuve filmée de rafraîchissement.
+- [ ] **(ajouté A29 · 2026-07-30 ; ordre corrigé A30)** Couture du port vérifiée : `@bob/ui`
+      n'importe ni `expo-blur` ni sa `ref` ; **un seul** `BlurTargetView` par écran, monté par
+      `apps/mobile` au shell d'écran ; **ordre de peinture `CONTENU → RETOMBÉE → CHROME`** —
+      `ProgressiveBlurBob` déclaré **après** le `BlurTargetView` et **avant** le chrome, aucun
+      `zIndex` ni `elevation` ni token d'ombre sur la retombée ; port **tout ou rien** ; assertion
+      `__DEV__` d'englobement ; et **aucun** écran ne combine mode flouté et liste virtualisée sans
+      la preuve filmée de rafraîchissement.
+      *Rédaction A29 (supersédée A30) : « `ProgressiveBlurBob` dernier enfant du shell » — le
+      chrome, que le § 2 monte dans ce même parent, passait alors sous la retombée.*
 - [ ] Scroll ne saute pas pendant collapse ou layout transition.
 - [ ] **(amendé A9 · 2026-07-29)** Matières **opaques par construction** (`surfaceTint` /
       `BobSurface`) et contraste vérifié. Aucune surface n'a de « fallback opaque » : l'opaque n'est

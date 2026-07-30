@@ -8,6 +8,13 @@
 > scénarios de capacité sont inchangés** : aucun amendement du 2026-07-29 n'avance ni ne retarde
 > une vague. La refonte visuelle reste reportée ; les nouveaux écrans anticipent avec le kit livré,
 > aucun écran existant n'est restylé.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A27`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 Cette roadmap fixe l'ordre et les gates. Le périmètre exact des 77 exigences se lit dans la
 [matrice de traçabilité](./15-traceability-matrix.md), le travail exécutable dans le

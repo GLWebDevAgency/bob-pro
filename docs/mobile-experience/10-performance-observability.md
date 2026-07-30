@@ -28,6 +28,19 @@
 > **Amendement A29 — 2026-07-30 · liste virtualisée** — § Budget de la retombée, ligne nouvelle.
 > Un `BlurView` posé au-dessus d'un contenu dynamique recyclé ne se rafraîchit pas : le rendu est
 > faux et **aucun test ne rougit**. `N = 0` obligatoire jusqu'à preuve filmée du contraire.
+>
+> **Amendement A30 — 2026-07-30 · une ligne de synthèse se lit seule** — § Budget de la retombée,
+> ligne « Coupures obligatoires », et § Protocole `PERF-13` (cas obligatoires). La ligne n'énumérait
+> que **quatre** coupures là où [04](04-navigation-scroll-surfaces.md) en pose **cinq** — il
+> manquait Android < 31, la retombée dans un `Modal`, l'état « préférence encore inconnue » et la
+> liste virtualisée. Un lecteur qui s'arrête à la synthèse autorise ce que le dossier interdit.
+>
+> **(ajouté A30 · 2026-07-30) Amendements portés dans le corps** — leur marqueur daté est au
+> point d'application, pas dans cet encadré : `A8`, `A18`. Le
+> [journal des amendements](README.md#journal-des-amendements) fait foi ; cette énumération
+> n'est admissible que parce que le contrôle `C12` de `scripts/check-mobile-experience-docs.mjs`
+> la tient à jour — une énumération que rien ne vérifie devient fausse au premier amendement
+> suivant.
 
 ## Objectif
 
@@ -158,8 +171,10 @@ sortent pas de l'appareil : ils ne figurent pas dans § Métriques autorisées, 
 **Cas obligatoires en plus des quatre passes**, chacun sur les deux OS :
 
 - **Reduce Motion actif dès le cold start** : ni repli animé, ni course de teinte, ni ressort de
-  highlight — le tout **dès le premier frame** (règle fail-closed,
-  [08](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu)) ;
+  highlight — le tout **dès le premier frame** (règle fail-closed **A18 · 2026-07-30**,
+  [08](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu)) ; la
+  préférence **encore inconnue** compte comme active, elle n'est pas un troisième cas de test
+  facultatif ;
 - **lecteur d'écran actif** : scrub désactivé, `Pressable` opérants, aucune touche consommée ;
 - **préférence haptique système désactivée** : aucun tick, aucune autre régression ;
 - **~200 % de taille de texte** : cibles ≥ 44/48 mesurées et labels non tronqués
@@ -233,7 +248,7 @@ scroll**. C'est un coût GPU continu, pas ponctuel — d'où un budget, et non u
 | Animation | Aucune, dans aucun mode. Une retombée n'anime ni sa hauteur, ni son intensité, ni son opacité. |
 | Fonds éligibles au mode flouté | Uniquement les fonds **photographiques** (scan, aperçu de document, visualiseur). Jamais un fond de l'app. |
 | Preuve exigée | Profilage **sous scroll continu**, médiane **et pire run**, sur appareil médian et pire cas supporté, jointe au work package. |
-| Coupures obligatoires | Port `renderBlurLayer` absent, Reduce Transparency, Android dégradé, budget non tenu → **repli opaque unique**. |
+| Coupures obligatoires **(complété A30 · 2026-07-30)** | Les **cinq** cas de [04 § Quand le repli opaque unique s'applique](04-navigation-scroll-surfaces.md#quand-le-repli-opaque-unique-sapplique--sans-exception), sans en retrancher aucun : **(1)** port `renderBlurLayer` absent ou rendant `null` à l'index `0` ; **(2)** **Reduce Transparency** active **ou encore inconnue** ; **(3)** Android **< 31**, Android en rendu dégradé, ou retombée à l'intérieur d'un `Modal` ; **(4)** budget de performance non tenu sur l'appareil médian ; **(5)** retombée au-dessus d'une **liste virtualisée** — voir la ligne dédiée ci-dessus. Dans tous ces cas → **repli opaque unique**. *Rédaction A2 (supersédée) : « port absent, Reduce Transparency, Android dégradé, budget non tenu » — quatre cas là où 04 en pose cinq ; il manquait Android < 31, le `Modal`, l'état « préférence inconnue » et la liste virtualisée. Une ligne de synthèse se lit seule : incomplète, elle autorise ce que le document interdit.* |
 
 Sans preuve de profilage sous scroll continu, une retombée floutée vaut `NOT RUN` et le mode
 teinté reste seul autorisé.
