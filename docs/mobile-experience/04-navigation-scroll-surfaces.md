@@ -16,6 +16,26 @@
 >   et § Comportement normatif de la tab bar (nouveau). Source : directive du fondateur —
 >   « garder notre design system niveau couleur et identité, mais implémenter la même
 >   FONCTIONNALITÉ, COMPORTEMENT et EFFET que la tab bar de `davidmokos/expo-glass-tabs` ».
+>
+> **Amendements 2026-07-30** (mêmes règles : rien n'est réécrit silencieusement) :
+>
+> - **A17 · la retombée ne porte aucune cible tactile** — § Exigences communes, § 1 (lignes
+>   « Géométrie » et « Item et highlight ») et § Cibles tactiles et Dynamic Type (nouveau). A3
+>   justifiait une cible ≥ 44 pt par « le débord de retombée » ; la retombée est
+>   `pointerEvents="none"` et ne reçoit donc **aucune** touche.
+> - **A19 · géométrie qui survit à Dynamic Type** — § Cibles tactiles et Dynamic Type (nouveau).
+>   A3 posait des hauteurs en points fixes sur une barre qui contient du texte, contre
+>   [08 § Typographie](08-accessibility-adaptive-design.md#typographie) (« pas de hauteur fixe sur
+>   un bloc contenant du texte ») et `R12`.
+> - **A20 · contrat `expo-blur` Android/Expo 57** — § Mode flouté. Le contrat ne nommait ni
+>   `BlurTargetView`, ni `blurTarget`, ni `blurMethod` : il n'était pas exécutable.
+> - **A22 · scrub — le ressort ne barre pas la navigation** — § 3, lignes « Navigation » et
+>   « Fin de geste ».
+> - **A23 · contraste du highlight mesuré** — § 2. L'exemple de teinte de highlight
+>   (`surfaceTint.light.marine.raised` `#E2E9F2`) est **sous AA** avec `navigation.inactive`.
+> - **A25 · SDK de référence Expo 57 / RN 0.86** — § Bornes de livraison.
+> - **A27 · moyens et invariants distingués** — §§ 2 et 6 : la géométrie calculée et le double
+>   glyphe sont des **moyens** de référence, pas les exigences ; l'a11y des glyphes est posée.
 
 ## Objectif
 
@@ -96,10 +116,13 @@ le « ou » avant toute migration.
 ### Exigences communes
 
 - cinq destinations stables ;
-- **(amendé A3 · 2026-07-29)** les labels sont présents et non tronqués **à l'état de repos de la
-  barre**. La barre **peut se minimiser au scroll** : labels repliés, **tous les onglets restant
-  visibles et atteignables**, cible ≥ 44 pt maintenue. Elle se ré-étend au scroll vers le haut, dès
-  le retour à moins de 24 px du sommet, et à **toute** interaction avec la barre ;
+- **(amendé A3 · 2026-07-29 ; corrigé A17/A19 · 2026-07-30)** les labels sont présents et non
+  tronqués **à l'état de repos de la barre** — et lorsque la taille de texte système ne le permet
+  plus, ils sont **retirés**, jamais tronqués (§ Cibles tactiles et Dynamic Type). La barre **peut
+  se minimiser au scroll** : labels repliés, **tous les onglets restant visibles et atteignables**,
+  **cible tactile ≥ 44 pt (iOS) / 48 dp (Android) maintenue par le `Pressable` de l'onglet et son
+  `hitSlop`** — jamais par une zone décorative. Elle se ré-étend au scroll vers le haut, dès le
+  retour à moins de 24 px du sommet, et à **toute** interaction avec la barre ;
 - sélection perceptible par couleur, forme et état accessible ;
 - retap sur l'onglet actif : retour en haut ou comportement racine défini ;
 - état de navigation conservé par tab ;
@@ -172,8 +195,8 @@ abandonne est toujours la même chose : la matière iOS.
 | Zone morte | `dy > 3` → minimiser ; `dy < −3` → étendre ; entre −3 et +3, rien ne bouge | |
 | Retour haut forcé | `y < 24` → toujours étendue | |
 | Ressort | **380 ms, `dampingRatio` 1** (critique-amorti) | Un ressort, pas un timing : la direction du scroll s'inverse en permanence et un ressort recible en conservant la vélocité. Amorti critique parce qu'il anime de la **layout** |
-| Géométrie | hauteur **58 → 44 pt**, retrait latéral **animé de 0 → 34 pt par côté**, `borderRadius = hauteur / 2` recalculé à chaque frame | La pilule rétrécit dans **les deux** dimensions. Ce retrait ANIMÉ s'ajoute à la marge de safe area (12 pt, § Ce que la référence fait bien) : deux grandeurs distinctes, jamais la même |
-| Item et highlight | hauteur d'item **50 → 35 pt**, hauteur de highlight idem, **animées explicitement** et non déduites du contenu | Une taille dérivée du layout est en retard sur l'animation du thread UI. La hauteur VISIBLE descend sous 44 pt au repli, jamais la CIBLE TACTILE : le débord de retombée (§ Exigences communes) la maintient à ≥ 44 pt — c'est la règle d'accessibilité, et elle prime |
+| Géométrie | hauteur **VISIBLE** `hauteurÉtendue → hauteurRepliée`, retrait latéral **animé de 0 → 34 pt par côté**, `borderRadius = hauteur / 2` recalculé à chaque frame | La pilule rétrécit dans **les deux** dimensions. Ce retrait ANIMÉ s'ajoute à la marge de safe area (12 pt, § Ce que la référence fait bien) : deux grandeurs distinctes, jamais la même. **(corrigé A19 · 2026-07-30)** Les deux hauteurs sont **calculées**, pas littérales — `58 → 44 pt` est leur valeur à la taille de texte standard, voir § Cibles tactiles et Dynamic Type |
+| Item et highlight | hauteur du **VISUEL INTÉRIEUR** (capsule de highlight + bloc icône/label) `50 → 35 pt` à la taille de texte standard, **animée explicitement** et non déduite du contenu | Une taille dérivée du layout est en retard sur l'animation du thread UI. **(corrigé A17 · 2026-07-30)** Seul le **visuel** descend à 35 pt : le `Pressable` de l'onglet, lui, ne descend **jamais** sous 44 pt (iOS) / 48 dp (Android) — voir § Cibles tactiles et Dynamic Type |
 | Labels | opacité 1 → 0 sur `progress ∈ [0 ; 0,4]` | Le label a disparu bien avant la fin du mouvement |
 | Ré-expansion forcée | à `onStart` du pan, `onEnd` du tap et `onPress` du Pressable | Toute interaction délibérée avec la barre la ré-étend |
 
@@ -182,23 +205,111 @@ abandonne est toujours la même chose : la matière iOS.
 ni `expo-blur`, ni `expo-glass-effect`, ni aucune couleur. C'est du comportement pur, transposable
 tel quel.
 
+#### Cibles tactiles et Dynamic Type
+
+> Ajouté A17/A19 · 2026-07-30. Ce paragraphe **borne** la géométrie de § 1 et de § 2. Il n'ajoute
+> aucun comportement : il dit lesquels des chiffres ci-dessus sont des **planchers**, lesquels sont
+> **calculés**, et lequel n'est **jamais** négociable.
+
+**La cible tactile ne dépend pas du visuel.** Le `Pressable` d'un onglet conserve
+`minHeight` **44 pt** sur iOS et **48 dp** sur Android — à l'état étendu comme à l'état replié,
+à toutes les tailles de texte. C'est le minimum produit de
+[08 § Cibles tactiles](08-accessibility-adaptive-design.md#cibles-tactiles) et il **prime** sur la
+géométrie de la référence. Le visuel intérieur (capsule de highlight, bloc icône/label) peut, lui,
+descendre à 35 pt : il est **dessiné dans** le `Pressable`, il ne le redimensionne pas.
+
+Lorsque la pilule repliée est plus courte que la cible — cas nominal sur Android, où 48 dp dépasse
+une pilule à 44 —, le complément vient d'un `hitSlop` **vertical** sur le `Pressable` de l'onglet,
+jamais horizontal : deux onglets voisins ne doivent pas se recouvrir
+([08](08-accessibility-adaptive-design.md#cibles-tactiles) : « `hitSlop` ne crée pas de zones qui
+se chevauchent de façon ambiguë »). Ce débord tombe dans la zone de retombée, qui est
+`pointerEvents="none"` et ne dispute donc aucune touche. Condition d'exécution vérifiable : aucun
+ancêtre du `Pressable` ne pose `overflow: 'hidden'` — un parent qui rogne annule le `hitSlop` sur
+Android.
+
+> **Ce qui était faux (rédaction A3, supersédée par A17).** « La hauteur VISIBLE descend sous 44 pt
+> au repli, jamais la CIBLE TACTILE : **le débord de retombée** (§ Exigences communes) la maintient
+> à ≥ 44 pt. » La retombée de bord est **décorative et non interactive** — `pointerEvents="none"`,
+> § Retombée de bord, ligne « Interaction », et
+> [10 § Règles d'implémentation](10-performance-observability.md#règles-dimplémentation). Une vue
+> qui ne reçoit aucune touche ne peut porter aucune cible : le raisonnement inversait la cause. La
+> cible se tient par le `Pressable` et son `hitSlop`, comme dans la barre **livrée**
+> (`minHeight: 44`, `packages/ui/src/components/bottom-tab-bar.tsx` l. 78).
+
+**Ce qui s'adapte, ce qui reste fixe, ce qui passe sur plusieurs lignes.**
+
+| Grandeur | Régime | Règle normative |
+| --- | --- | --- |
+| Hauteur étendue de la pilule | **S'adapte** | `hauteurÉtendue = max(58 pt, hauteur mesurée du contenu à la taille de texte courante)`. 58 pt est un **plancher à la taille standard**, jamais un plafond. |
+| Hauteur repliée de la pilule | **S'adapte par son plancher** | `hauteurRepliée = max(44 pt iOS / 48 dp Android, hauteur de l'icône + rythme)`. Au repli il n'y a plus de label : la hauteur ne dépend plus du texte, seulement du plancher de cible. |
+| Visuel intérieur (highlight, bloc icône/label) | **S'adapte** | Interpolé entre les deux hauteurs ci-dessus, moins le rythme intérieur. `50 → 35 pt` est sa valeur à la taille standard. |
+| Cible tactile | **Fixe — plancher absolu** | 44 pt iOS / 48 dp Android. Un plancher ne rétrécit pas ; il ne s'échelonne pas non plus avec le texte. |
+| Retrait latéral animé `0 → 34 pt`, marge de safe area 12 pt | **Fixe** | Grandeurs horizontales, sans texte : la taille de police ne les concerne pas. |
+| `borderRadius = hauteur / 2` | **Fixe en tant que fonction** | C'est une formule, pas une constante : elle suit automatiquement la hauteur adaptée. |
+| Débord de la retombée (44 pt) | **Fixe** | Zone décorative sans texte (§ Retombée de bord). |
+| Label d'onglet | **Passe sur plusieurs lignes, puis disparaît** | Voir le palier ci-dessous. |
+
+**Palier du label** — déterministe et testable à `PERF-12` / matrice `~150 %` / `~200 %` :
+
+1. tant que le label tient sur **une** ligne dans la largeur d'item : une ligne ;
+2. sinon, tant qu'il tient sur **deux** lignes : `numberOfLines={2}`, la pilule grandit d'autant.
+   `adjustsFontSizeToFit` est **interdit** — il casserait silencieusement l'échelle typographique et
+   rendrait le 10 pt du label encore plus petit ;
+3. sinon, la barre passe **icônes seules** au repos : le label est **retiré**, jamais tronqué. Le
+   nom reste porté par `accessibilityLabel` (déjà posé,
+   `packages/ui/src/components/bottom-tab-bar.tsx` l. 73) et la sélection par
+   `accessibilityState.selected` : aucune information n'est perdue, seule une redondance visuelle
+   l'est.
+
+`allowFontScaling` n'est **jamais** désactivé pour préserver la pilule
+([08 § Typographie](08-accessibility-adaptive-design.md#typographie)). Conséquence directe :
+`numberOfLines={1}` de la barre livrée n'est pas transposable tel quel dans le portage — il
+tronquerait, ce que l'exigence commune interdit.
+
 ### 2. Highlight glissant à ressort interruptible
 
 | Paramètre | Valeur normative |
 | --- | --- |
 | Topologie | **un seul** bloc animé partagé, en absolu dans la capsule — pas un highlight par onglet |
 | Position | `translateX` **transform-only** (GPU, zéro travail de layout par frame) |
-| Géométrie | **calculée** (`largeur d'item = (largeur fenêtre − marges − inset) / nombre d'onglets`), **jamais mesurée par `onLayout`** |
+| Géométrie | **(précisé A27 · 2026-07-30)** **Invariant** : la position du highlight ne dépend d'aucune mesure asynchrone — aucune frame de retard, aucun saut au premier rendu. **Moyen de référence** : la largeur d'item est **calculée** (`(largeur fenêtre − marges − inset) / nombre d'onglets`). `onLayout` est interdit **comme source de la géométrie animée** ; il reste permis pour une assertion de test ou une mesure non animée. |
 | Ressort | **420 ms, `dampingRatio` 0,82** — légèrement sous-amorti, micro-rebond de calage sans danger parce que transform-only |
 | Interruptibilité | par construction : un tab-hopping rapide recible en conservant la vélocité |
 | Écrivains | le tap, le relâchement du scrub, et un effet sur le focus |
 | Navigation programmatique | le highlight **voyage aussi** sur un deep link ou une action Bob à la voix — il ne saute pas |
 | Garde | jamais recalé pendant un drag : pendant un scrub, le doigt est propriétaire du highlight |
 
-**Identité conservée** : le highlight est un **aplat opaque** issu de `surfaceTint` (par exemple
-`surfaceTint.light.marine.raised` `#E2E9F2` sur la pilule blanche). **Abandonné** : le
-`rgba(255,255,255,0.14)` de la référence — un voile blanc translucide qui n'existe que parce qu'il
-est posé sur du verre sombre.
+**Identité conservée** : le highlight est un **aplat opaque** issu de `surfaceTint`.
+**Abandonné** : le `rgba(255,255,255,0.14)` de la référence — un voile blanc translucide qui
+n'existe que parce qu'il est posé sur du verre sombre.
+
+> **Amendé A23 · 2026-07-30 — la teinte du highlight est une contrainte de contraste, pas un
+> exemple.** Le highlight passe **sous les labels**, y compris sous des labels encore inactifs :
+> il devient donc un **fond de texte**, et les trois rôles `navigation.*` doivent y rester AA. La
+> teinte retenue doit satisfaire `contraste(rôle, highlight) ≥ 4,5:1` **pour les trois rôles**, le
+> plus serré étant toujours `navigation.inactive` `#5B6B7B`. Relevé sur les tons `surfaceTint.light`
+> (formule WCAG 2.x, mêmes bornes que `packages/tokens/src/index.test.ts` :
+> `WCAG_AA_NORMAL_TEXT = 4.5`) :
+>
+> | Teinte candidate | `navigation.active` `#0C2340` | `navigation.assistantActive` `#4338CA` | `navigation.inactive` `#5B6B7B` | Verdict |
+> | --- | ---: | ---: | ---: | --- |
+> | `marine.flat` `#F4F7FB` | 14,69 | 7,36 | **5,10** | AA |
+> | `ai.flat` `#F6F4FD` | 14,49 | 7,26 | **5,03** | AA |
+> | `neutral.raised` `#EAEEF3` | 13,55 | 6,78 | **4,70** | AA |
+> | `marine.raised` `#E2E9F2` | 12,91 | 6,46 | **4,48** | **sous AA** |
+> | `neutral.border` `#E0E6EE` | 12,57 | 6,29 | **4,36** | **sous AA** |
+> | `marine.border` `#D3DEEC` | 11,60 | 5,81 | **4,02** | **sous AA** |
+>
+> *Rédaction A3 (supersédée) : « par exemple `surfaceTint.light.marine.raised` `#E2E9F2` sur la
+> pilule blanche ». L'exemple est retiré : `#E2E9F2` fait tomber `navigation.inactive` à **4,48:1**,
+> sous le seuil AA du texte normal — et le label d'onglet est du texte normal (10 pt). L'affirmation
+> du § 6 selon laquelle les rôles sont « déjà certifiés AA » reste vraie **sur la pilule**
+> `colors.surface` `#FFFFFF` (5,48:1), pas sur un fond de highlight arbitraire : la certification
+> livrée porte sur un couple, pas sur une couleur.*
+>
+> Le choix final appartient à `UX-ADR-002`/`D07`. Il ne peut pas être obtenu en assombrissant
+> `navigation.inactive` : ce serait revaloriser un token livré et consommé, interdit par la
+> [règle d'additivité](03-motion-interaction-system.md#règle-dadditivité).
 
 ### 3. Scrubbing au doigt avec ticks haptiques
 
@@ -210,11 +321,24 @@ est posé sur du verre sombre.
 | Mapping | **1:1 strict, sans ressort pendant le drag** : l'indicateur doit se sentir attaché au doigt |
 | Géométrie | recalculée **live** sur le `progress` d'expansion : elle suit la barre pendant qu'elle s'ouvre |
 | Tick haptique | `selection`, au **franchissement de frontière** d'onglet, jamais un tick par frame |
-| Navigation | **au relâchement seulement** — changer d'écran pendant le scrub ferait sauter le contenu sous le doigt |
-| Fin de geste | recalage au ressort du highlight (§ 2) **puis** navigation ; garde contre la double-navigation quand le pan a échoué (le geste était un tap) |
+| Navigation | **au relâchement seulement, jamais pendant le drag** — changer d'écran sous le doigt ferait sauter le contenu |
+| Fin de geste **(levé A22 · 2026-07-30)** | au relâchement, le **recalage au ressort** du highlight (§ 2) et la **navigation** partent dans la **même frame**. La navigation **n'attend pas** que le ressort se stabilise : un ressort n'est pas une porte. Garde contre la double-navigation quand le pan a échoué (le geste était un tap) |
 
 Le tick correspond exactement à la ligne « Sélection → `selection` » de la table haptique de
 [03 — Motion](03-motion-interaction-system.md) : rien à inventer.
+
+> **Ambiguïté levée A22 · 2026-07-30.** La rédaction A3 disait « recalage au ressort du highlight
+> (§ 2) **puis** navigation ». Lu comme une séquence temporelle, ce « puis » impose d'attendre la
+> fin d'un ressort de **420 ms** avant de naviguer — ce qui viole frontalement la règle
+> fondamentale n° 3 de [03](03-motion-interaction-system.md#règles-fondamentales) (« une animation
+> ne bloque pas un tap ni un résultat backend ») et le budget « transition fréquente ≤ 300 ms » de
+> [10](10-performance-observability.md#budgets-initiaux-proposés). « Puis » ne décrivait pas un
+> ordre temporel mais une **dépendance de valeur** : l'onglet cible est lu **avant** de lancer le
+> ressort, parce que c'est lui qui fixe la position d'arrivée. Les deux effets sont ensuite
+> **simultanés** — le ressort continue de tourner pendant que le fade-through de l'écran entrant
+> (§ 5) a déjà commencé. Preuve attendue : vidéo au ralenti d'un scrub d'un bout à l'autre montrant
+> que le premier frame du fade-through de l'écran entrant tombe **avant** la stabilisation du
+> highlight, jamais après.
 
 **Supériorités Bob obligatoires, absentes de la référence** :
 
@@ -272,9 +396,19 @@ recopiée inline.
 
 ### 6. Teinte icône/label pilotée par le highlight, pas par le focus
 
-Chaque onglet rend **deux glyphes superposés** — inactif dessous, actif par-dessus — et l'opacité
-du glyphe actif vaut `1 − min(|position du highlight − index|, 1)` : un crossfade linéaire sur
-exactement une largeur d'onglet. Le label interpole sa couleur sur la même distance.
+**Invariant (l'exigence).** La teinte de l'icône et du label est une fonction **continue** de la
+distance au highlight, `1 − min(|position du highlight − index|, 1)` : un crossfade linéaire sur
+exactement une largeur d'onglet. Aucun booléen de focus n'intervient.
+
+**Moyen de référence (précisé A27 · 2026-07-30).** Deux glyphes superposés — inactif dessous, actif
+par-dessus — dont on anime l'opacité du glyphe supérieur. C'est le moyen de la référence, et celui
+qu'on retient par défaut parce qu'il est transform/opacity pur. Il n'est **pas** l'exigence : toute
+technique donnant la même fonction continue satisfait § 6, à trois conditions cumulatives —
+(1) le contraste est **échantillonné** le long de la course, pas déduit ; (2) le coût **au repos**
+n'excède pas celui du double glyphe, mesuré à `PERF-13` ; (3) la variante Reduced Motion commute
+sans rendre de position intermédiaire. Une interpolation de la prop `color` d'un glyphe unique est
+donc recevable si elle passe ces trois portes — et elle supprime au passage le doublon
+d'accessibilité ci-dessous.
 
 Conséquence : la teinte suit **le highlight**, pas le focus de navigation. Pendant un scrub les
 icônes s'allument au passage du doigt ; sur un tap, la lumière **voyage** avec l'indicateur au lieu
@@ -308,9 +442,10 @@ interpoler une **couleur** et non une géométrie :
 
 | Contrainte | Valeur normative |
 | --- | --- |
-| Contraste en cours d'interpolation | Le rapport de contraste doit rester **AA sur toute la course**, pas seulement aux deux extrémités. Les deux bornes sont certifiées ; le chemin entre elles ne l'est pas automatiquement, en particulier `navigation.assistantActive` `#4338CA` → `navigation.inactive` `#5B6B7B`. À prouver par échantillonnage, pas par raisonnement. |
-| Reduced Motion | La teinte **commute** à l'état final, sans course : `useReduceMotion()`, durée 0, même couleur d'arrivée. Aucune position intermédiaire n'est rendue. |
+| Contraste en cours d'interpolation **(précisé A23 · 2026-07-30)** | Le rapport de contraste doit rester **AA sur toute la course**, pas seulement aux deux extrémités — et l'échantillonnage est **à deux dimensions** : la couleur du texte **et** le fond réellement derrière le pixel, qui est tantôt la pilule `colors.surface` `#FFFFFF`, tantôt la capsule de highlight qui passe dessous (§ 2). Les bornes ne sont certifiées que sur la pilule ; ni le chemin, ni le fond de highlight ne le sont automatiquement, en particulier `navigation.assistantActive` `#4338CA` → `navigation.inactive` `#5B6B7B`. À prouver par échantillonnage, pas par raisonnement. |
+| Reduced Motion | La teinte **commute** à l'état final, sans course : `useReduceMotion()`, durée 0, même couleur d'arrivée. Aucune position intermédiaire n'est rendue. **(précisé A18 · 2026-07-30)** Tant que la préférence n'est pas connue, on est dans l'état **replié** de la règle fail-closed : on commute, on n'anime pas. |
 | Lecteur d'écran | La teinte est **décorative** : la sélection est portée par `accessibilityState.selected`, jamais par la couleur seule. Scrub désactivé (§ 3), donc la teinte suit alors le focus et non le doigt — c'est le même code, avec un highlight qui ne bouge que par saut. |
+| Accessibilité des glyphes **(ajouté A27 · 2026-07-30)** | Les glyphes sont **décoratifs** et doivent être **retirés de l'arbre d'accessibilité** : `accessible={false}` + `importantForAccessibility="no-hide-descendants"` sur chaque `<Svg>`, ou sur le conteneur qui les porte tous les deux. Sans cela, TalkBack peut annoncer **deux** éléments par onglet — c'est le moyen « double glyphe » qui crée le doublon, pas l'invariant. Le nom accessible reste porté par le `Pressable` (`accessibilityRole="tab"` + `accessibilityLabel`, déjà posés dans `packages/ui/src/components/bottom-tab-bar.tsx` l. 71-74). Les icônes livrées (`apps/mobile/src/components/icons.tsx`) ne portent **aucune** de ces props aujourd'hui : le portage les ajoute, il ne les suppose pas. |
 | Coût de rendu | **Deux glyphes par onglet** (dix pour cinq onglets) sont montés en permanence. À mesurer dans `PERF-13`, pas à supposer négligeable. |
 | Interpolation | Sur la **distance au highlight**, jamais sur un booléen de focus : c'est ce qui fait voyager la lumière au lieu de la commuter. |
 
@@ -353,6 +488,12 @@ Ce que la référence fait bien et qu'on reprend tel quel : le calcul de safe ar
    Tout le motion actuel reste en `Animated` RN avec `useNativeDriver`. Ces faits relèvent de
    `UX-ADR-001`, `UX-ADR-002` et `UX-ADR-006` : aucune dépendance n'est ajoutée par le présent
    document.
+
+   **(ajouté A25 · 2026-07-30)** Ces versions se lisent sur le SDK **réellement intégré** :
+   **Expo 57.0.8, React Native 0.86.0, React 19.2.3, Expo Router 57.0.8**
+   (`apps/mobile/package.json`, vérifié le 2026-07-30). Toute matrice de compatibilité produite par
+   `WP-0004` part de ces versions, et non de « Expo 56 / RN 0.85 » — voir
+   [17 § Politique de version](17-references.md#politique-de-version).
 
    *Rédaction A3 (fausse, supersédée) : « les deux sont installés (4.5.0 et 2.32.0) mais aucun
    fichier de `apps/mobile` ni de `packages/ui/src` ne les importe ». Gesture Handler est importé
@@ -502,13 +643,42 @@ flou**, en un seul draw call :
 | --- | --- | --- |
 | Stops de couleur | `['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7']` | `patterns.bottomTabBar.fade` |
 | Positions | `[0, 0.32, 0.6]` — transparent au sommet, 92 % à 32 %, **opaque dès 60 %** | `patterns.bottomTabBar.fadeLocations` |
-| Hauteur totale | `inset de sécurité + hauteur du chrome + 44 pt de débord` | Géométrie de la référence (`BLUR_BLEED`) |
+| Hauteur totale | `inset de sécurité + hauteur ÉTENDUE du chrome + 44 pt de débord` | Géométrie de la référence (`BLUR_BLEED`). **(précisé A27 · 2026-07-30)** L'enveloppe est dimensionnée une fois sur l'état **le plus haut** du chrome — voir § Pourquoi l'enveloppe est fixe |
 | Ancre | `bottom` pour un chrome bas, `top` pour un chrome haut ; le point opaque est toujours au bord ancré | Référence |
 | Interaction | `pointerEvents="none"` | Référence |
 | Animation | **jamais animée**, dans aucun mode | Plan P1 §1.3 |
 
 C'est la **même courbe de dissolution** que la référence, mais dans notre couleur, opaque par
 construction, sans une seule ligne de noir, et déjà livrée.
+
+#### Pourquoi l'enveloppe est fixe et non recalculée par frame
+
+> Ajouté A27 · 2026-07-30. Contradiction levée : la ligne « Hauteur totale » fait dépendre la
+> retombée de la hauteur du chrome, alors que la ligne « Animation » interdit d'animer cette même
+> retombée — et la hauteur du chrome, elle, **s'anime** (§ 1). Les deux règles ne peuvent tenir que
+> si l'on dit **quelle** hauteur de chrome on prend.
+
+L'enveloppe est calculée **une fois**, sur la hauteur **étendue** du chrome — donc sur son état le
+plus haut — et ne bouge plus. Le repli de la barre se produit **à l'intérieur** de cette enveloppe.
+Trois raisons, dans cet ordre :
+
+1. **La règle « jamais animée » est tenue littéralement.** Une hauteur recalculée à chaque frame
+   serait une animation de layout par frame, que
+   [10 § Règles d'implémentation](10-performance-observability.md#règles-dimplémentation) n'autorise
+   que par une **exception nommée**, et cette exception ne couvre que le repli/dépli de la barre.
+2. **Le surplus est invisible en mode nominal.** La retombée est un dégradé de
+   **notre couleur de fond** (`#EFF2F7`), opaque dès 60 % de sa hauteur : quand la barre rétrécit,
+   la bande opaque qui dépasse est exactement la couleur du fond de l'écran. Elle ne se voit pas.
+   Cette propriété n'existe que parce que la matière est opaque et dans notre teinte — c'est un
+   bénéfice direct de la doctrine A1, pas une coïncidence.
+3. **Un `transform: scaleY` serait pire qu'une hauteur.** Étirer le dégradé déplace ses stops
+   (`[0 ; 0,32 ; 0,6]`) : la courbe de dissolution changerait de forme à chaque frame, et le point
+   opaque quitterait le bord ancré. La retombée n'est donc **ni redimensionnée, ni transformée**.
+
+En **mode flouté**, le raisonnement 2 tombe : des échantillons de flou révèlent le décalage, parce
+qu'ils échantillonnent le contenu et non une teinte. C'est la raison de fond pour laquelle le mode
+flouté est réservé aux **fonds photographiques** (scan, aperçu, visualiseur), dont le chrome ne se
+minimise pas. **Une retombée floutée ne coexiste jamais avec un chrome dont la hauteur s'anime.**
 
 ### Mode flouté — option bornée, teintée Bob
 
@@ -526,11 +696,52 @@ aperçu de document, visualiseur photo. Jamais sur un fond de l'app.
 | Rendu de couche | **port injecté `renderBlurLayer`** (doctrine `PrefsStorage`) | `@bob/ui` ne prend aucune dépendance ; `expo-blur` reste dans `apps/mobile` |
 | Repli | **repli opaque UNIQUE** = le mode nominal | Un seul chemin de secours, donc un seul chemin à tester |
 
+### Contrat exécutable du port `renderBlurLayer` — `expo-blur`, Expo SDK 57
+
+> Ajouté A20 · 2026-07-30. Ce contrat **débloque** le kit de matière : il sera écrit d'après lui.
+> Source pinée : documentation Expo SDK 57, `expo-blur`,
+> <https://docs.expo.dev/versions/v57.0.0/sdk/blur-view/>, consultée le 2026-07-30.
+> `expo-blur` n'est déclaré dans **aucun** `package.json` du dépôt : son installation est une
+> décision `D08`, et elle a lieu dans `apps/mobile` uniquement, jamais dans `packages/ui`.
+
+Le port `renderBlurLayer` est injecté depuis `apps/mobile`. Il rend **une** couche de flou et rien
+d'autre : ni voile, ni dégradé — le voile teinté Bob reste un `LinearGradient` **frère**, rendu par
+`@bob/ui`. Contrat de props, tel que l'API le pose :
+
+| Élément | Valeur normative | Plateforme | Pourquoi |
+| --- | --- | --- | --- |
+| Composant flouteur | `BlurView` (`expo-blur`) | iOS + Android | — |
+| Conteneur du contenu flouté | **`BlurTargetView`** — le contenu à flouter est **enveloppé** dedans | Android | Depuis SDK 55, Android n'échantillonne plus l'arrière-plan implicitement : il faut lui **désigner** la cible. |
+| Liaison | la **ref** du `BlurTargetView` est passée au `BlurView` par la prop **`blurTarget`** (`RefObject<View \| null>`) | Android | C'est le seul lien entre la couche et ce qu'elle floute. Sans lui, aucun flou. |
+| Méthode | **`blurMethod="dimezisBlurViewSdk31Plus"`**, écrit explicitement | Android | Défaut de la prop = **`'none'`**, qui ne floute pas et rend **une vue semi-transparente** — précisément la matière hors doctrine. L'oubli de la prop produit donc la faute, silencieusement. |
+| Méthode **interdite** | `blurMethod="dimezisBlurView"` | Android | Sous SDK 31 elle retombe sur `RenderScript`, coût GPU permanent sous scroll : hors budget (§ [10 — Budget de la retombée](10-performance-observability.md#budget-de-la-retombée-de-bord)). |
+| Prop **interdite** | `experimentalBlurMethod` | Android | **Dépréciée** dans l'API courante (mappée sur `blurMethod`, avertissement runtime). |
+| `intensity` | **uniforme et faible** (référence : 5 par couche) | iOS + Android | L'intensité effective vient du **recouvrement** des frères, pas d'une rampe. |
+| `tint` | jamais `'dark'` | iOS + Android | La couleur perçue vient de **notre** dégradé frère, pas du matériau système. |
+| `blurReductionFactor` | **défaut `4`**, non modifié sans profilage | Android | Réglage d'appariement d'intensité Android↔iOS ; le changer déplace le budget GPU. |
+| Topologie | les `N` couches sont **frères** et pointent **toutes vers le même** `BlurTargetView` | iOS + Android | Un seul échantillonnage de cible, donc aucune imbrication — la règle de [09](09-technical-architecture.md#surfaces-et-apparence) et [10](10-performance-observability.md#règles-dimplémentation) est tenue par construction. |
+
+**Rangs par version d'Android**, sans zone grise :
+
+| Contexte | Rang | Ce qui est rendu |
+| --- | --- | --- |
+| iOS | flou possible | `BlurView` (`intensity`, `tint`) ; ni `blurTarget`, ni `blurMethod` (props Android). |
+| **Android ≥ 31** (Android 12) | flou possible | `BlurTargetView` + `blurTarget` + `blurMethod="dimezisBlurViewSdk31Plus"`. Chemin efficace `RenderNode`, introduit par SDK 31. |
+| **Android < 31** | **N0 — aucun flou** | Le port **n'est pas monté** : `renderBlurLayer` rend `null` et `ProgressiveBlurBob` sert son repli opaque unique. On ne se contente pas de laisser `dimezisBlurViewSdk31Plus` retomber sur `'none'` : `'none'` rendrait une vue **semi-transparente**, hors doctrine. |
+
+**Limite connue, à traiter comme une coupure** : un `BlurTargetView` ne traverse pas la frontière
+d'un `Modal` React Native (expo/expo#44165). Or `scan-document`, `devis/new` et `facture/new` sont
+des **full-screen modals** dans la carte de routes ci-dessus, et le mode flouté vise justement les
+fonds photographiques du scan. Sur Android, une retombée floutée rendue **à l'intérieur d'un
+`Modal`** sert donc le repli opaque unique, sans exception ni contournement.
+
 ### Quand le repli opaque unique s'applique — sans exception
 
 1. port `renderBlurLayer` absent (cas par défaut de `@bob/ui`) ;
-2. **Reduce Transparency actif** ;
-3. Android en rendu dégradé ;
+2. **Reduce Transparency actif** — ou **encore inconnu** au premier rendu (règle fail-closed,
+   [08 § Préférences et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu)) ;
+3. Android **< 31**, ou Android en rendu dégradé, ou retombée à l'intérieur d'un `Modal` sur
+   Android ;
 4. budget de performance non tenu sur l'appareil médian.
 
 Dans les quatre cas, l'utilisateur voit la **même géométrie, la même courbe et la même couleur** :
@@ -586,6 +797,18 @@ compositions.
 - [ ] StatusBar lisible sur le premier, milieu et dernier frame.
 - [ ] Sheets testées avec clavier, drag, focus et Reduce Motion.
 - [ ] Tabs testées retap, badge, safe area, rotation et restauration.
+- [ ] **(ajouté A17 · 2026-07-30)** Cible tactile de chaque onglet **mesurée** ≥ 44 pt (iOS) /
+      48 dp (Android) à l'état **replié**, cibles voisines non chevauchantes, et aucun ancêtre
+      `overflow: 'hidden'` n'annule le `hitSlop`.
+- [ ] **(ajouté A19 · 2026-07-30)** Barre recettée à ~150 % et ~200 % : label sur une puis deux
+      lignes, puis icônes seules ; **zéro troncature**, `allowFontScaling` jamais désactivé,
+      hauteurs recalculées et non littérales.
+- [ ] **(ajouté A23 · 2026-07-30)** Teinte de highlight retenue par `D07` **mesurée** ≥ 4,5:1 avec
+      les trois rôles `navigation.*`, et contraste échantillonné le long de l'interpolation sur les
+      **deux** fonds réels (pilule et highlight).
+- [ ] **(ajouté A20 · 2026-07-30)** Si le mode flouté est activé : `BlurTargetView` + `blurTarget` +
+      `blurMethod="dimezisBlurViewSdk31Plus"` présents et vérifiés ; Android < 31, Android dégradé
+      et retombée dans un `Modal` servent le repli opaque unique.
 - [ ] Scroll ne saute pas pendant collapse ou layout transition.
 - [ ] **(amendé A9 · 2026-07-29)** Matières **opaques par construction** (`surfaceTint` /
       `BobSurface`) et contraste vérifié. Aucune surface n'a de « fallback opaque » : l'opaque n'est

@@ -11,6 +11,17 @@
 > **Portée.** § Tokens temporels, § Profils de ressort, § Press states. Les règles fondamentales,
 > la taxonomie, les courbes, les relations, l'haptique, les layout transitions, le Reduced Motion
 > et les critères d'acceptation sont inchangés.
+>
+> **Amendements 2026-07-30**
+>
+> - **A18 · Reduced Motion fail-CLOSED** — § Reduced Motion. `useReduceMotion()` répond `false` au
+>   premier rendu (lecture asynchrone) : le dossier prescrivait donc d'animer avant de savoir.
+>   Règle et preuve dans
+>   [08 § Préférences d'accessibilité et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu).
+> - **A26 · `Button` et `Toast` recalés sur le code livré** — § Press states, § Bouton principal,
+>   § Livrés. Trois prescriptions décrivaient un composant que le dépôt ne contient pas.
+>   Source : `packages/ui/src/components/button.tsx`, `button.logic.ts`, `toast.tsx`.
+> - **A17 · cible tactile** — § Icône seule.
 
 ## Règle d'additivité
 
@@ -194,14 +205,36 @@ son inventaire de consommateurs et son GO — pas une ligne de ce document.
 
 ### Bouton principal
 
-- press-in 80 ms (`motionSemantic.feedbackIn`) ;
-- **échelle 0,94 — valeur livrée** ;
-- légère baisse de luminosité/élévation ;
-- release par `motionSemantic.spring` ;
-- disabled : aucune compression, contraste accessible ;
-- loading : largeur et label stables si possible, indicateur sémantique ;
-- success : seulement après événement autoritaire ; icône/texte remplacent le progress ;
-- error : retour contrôlé avec message inline, pas de shake prolongé.
+> **Amendé A26 · 2026-07-30 — ce paragraphe décrivait un bouton que le dépôt ne contient pas.**
+> Le `Button` livré applique son échelle **dans la fonction de style du `Pressable`**
+> (`style={({ pressed }) => …}`, `packages/ui/src/components/button.tsx`) : la compression est
+> **instantanée dans les deux sens**, sans durée, sans easing et sans ressort. Il n'y a ni press-in
+> de 80 ms, ni release par `motionSemantic.spring` — et la table § Press states du même document
+> disait déjà « instantané », deux lignes plus haut. Le dossier se contredisait lui-même.
+
+**Valeurs livrées, normatives** (`button.tsx` + `button.logic.ts`) :
+
+- **échelle 0,94, instantanée** — `BUTTON_PRESSED_SCALE`, appliquée sans transition ;
+- **hauteur et largeur minimales 48** — `BUTTON_MIN_HEIGHT = 48`, posé en `minHeight` **et**
+  `minWidth` sur la taille `regular` ; la cible dépasse donc le minimum produit de 44 pt, elle ne
+  l'effleure pas. En taille `compact`, il n'y a **pas** de `minHeight` : la cible est obtenue par
+  `hitSlop: 6` autour d'un contenu d'environ 36 pt — **à mesurer, pas à supposer**
+  ([08 § Cibles tactiles](08-accessibility-adaptive-design.md#cibles-tactiles)) ;
+- **disabled** : aucune compression (`pressed && !disabled`), fond `controls.segmentedTrack`, texte
+  `neutrals.slate300` ;
+- **loading** : l'`ActivityIndicator` **remplace l'icône de tête**, le libellé reste en place et
+  l'icône de queue est retirée — largeur et label stables, conformément à l'intention.
+
+**Ce qui n'existe pas encore dans le composant livré**, et qui reste une **cible** de `WP-0205`
+(primitives d'état), pas une description :
+
+- `success` après événement autoritaire, avec icône/texte remplaçant le progress ;
+- `error` avec message inline et sans shake prolongé ;
+- baisse de luminosité/élévation au press.
+
+Le `Button` livré n'expose ni `success`, ni `error` : la DoD composant
+([12](12-definition-of-done.md#dod-composant-partagé)) les exige d'un composant **migré**, pas du
+composant actuel. Écrire l'inverse laisserait croire que la case est déjà cochée.
 
 ### Carte/row
 
@@ -213,9 +246,40 @@ son inventaire de consommateurs et son GO — pas une ligne de ce document.
 
 ### Icône seule
 
-- surface tactile ≥ 44 pt iOS et cible Android conforme ;
+- surface tactile ≥ 44 pt iOS et ≥ 48 dp Android ;
+- **(précisé A17 · 2026-07-30)** cette surface est celle du **`Pressable`** et de son `hitSlop` ; un
+  glyphe de 23 pt dans une cible de 44 pt est le cas nominal, pas une dérogation. Aucune vue
+  décorative (`pointerEvents="none"`) ne tient une cible ;
 - feedback porté par la surface entière, pas seulement le glyph ;
-- label accessible décrivant le résultat.
+- label accessible décrivant le résultat ; le glyphe lui-même est retiré de l'arbre
+  d'accessibilité.
+
+### Toast — valeurs livrées
+
+> Ajouté A26 · 2026-07-30. Source : `packages/ui/src/components/toast.tsx`.
+
+| Grandeur | Valeur **livrée** | Note |
+| --- | --- | --- |
+| Moteur | `Animated` RN, `useNativeDriver: true` | **Pas** de ressort, **pas** de Reanimated. |
+| Entrée | opacité 0 → 1 et `translateY` 16 → 0 en **200 ms** | 200 ms n'est **aucun** token : ni `enterFast` (180), ni `enter` (240). |
+| Sortie | **180 ms**, puis démontage | Idem : ni `exitFast` (140), ni `feedbackOut` (160). |
+| Auto-dismiss | **2 400 ms** (`AUTO_DISMISS_MS`) | Timer nettoyé au démontage. |
+| Reduce Motion | durée 0 sur l'entrée **et** la sortie | Via `useReduceMotion()` — donc soumis à la règle fail-closed d'A18. |
+| Interaction | `pointerEvents="none"` | **Le toast livré ne reçoit aucune touche.** |
+| Accessibilité | `accessibilityRole="alert"` + `accessibilityLiveRegion="polite"` | Annonce sans déplacer le focus, conforme à [08 § Annonces](08-accessibility-adaptive-design.md#annonces). |
+
+Deux conséquences que le dossier doit assumer plutôt que contourner :
+
+1. **La ligne « `enterFast` 180 ms · toast » du catalogue de tokens est une intention pour du
+   NEUF**, pas une description du composant livré. Aligner le `Toast` sur 180 ms serait restyler un
+   composant livré — interdit par la [règle d'additivité](#règle-dadditivité) et la directive 5,
+   et cela demanderait une PR de composant avec son inventaire de consommateurs.
+2. **Un Undo ne peut pas vivre dans ce `Toast`.** Avec `pointerEvents="none"`, aucun bouton posé
+   dedans n'est atteignable — ni au doigt, ni au Switch Control.
+   [07 § Notifications et toasts](07-content-design.md#notifications-et-toasts) exige qu'une action
+   réversible propose un Undo « assez longtemps et accessible » : cet Undo doit donc vivre sur une
+   **autre** surface tant que le `Toast` n'est pas migré. C'est une contrainte de conception, pas un
+   détail d'implémentation.
 
 ## Haptique
 
@@ -298,6 +362,16 @@ idle → pending → success
 Le changement de préférence pendant l'exécution termine proprement l'animation en cours et place
 l'interface dans son état final.
 
+> **Amendé A18 · 2026-07-30 — la préférence a trois états, et l'inconnu se replie.** Cette table
+> décrit la réponse quand Reduce Motion est **connu**. Il ne l'est pas au premier rendu :
+> `useReduceMotion()` (`packages/ui/src/hooks/use-reduce-motion.ts`) lit
+> `AccessibilityInfo.isReduceMotionEnabled()` **de façon asynchrone**. Tant que la valeur est
+> inconnue, la variante **réduite** s'applique — durée 0, état final immédiat, aucune boucle
+> ambiante démarrée. On n'anime pas avant de savoir : animer par défaut serait un fail-OPEN sur une
+> préférence d'accessibilité, et le seul utilisateur qui en paie le prix est celui qui l'a activée.
+> La règle complète, la façon d'éviter le flash inverse et la preuve exigée sont dans
+> [08 § Préférences d'accessibilité et premier rendu](08-accessibility-adaptive-design.md#préférences-daccessibilité-et-premier-rendu).
+
 ## Budget de concurrence
 
 - Une animation hero maximum.
@@ -312,6 +386,8 @@ l'interface dans son état final.
 - [ ] Tous les composants utilisent des tokens sémantiques, aucune durée inline non justifiée.
 - [ ] Press, loading, success, error et disabled sont filmés et testés.
 - [ ] Chaque animation possède une variante Reduced Motion.
+- [ ] **(ajouté A18)** Chaque composant animé se comporte en variante **réduite** tant que la
+      préférence est inconnue, et ne rejoue rien lorsqu'elle se résout.
 - [ ] L'interruption au milieu converge vers l'état correct.
 - [ ] Une re-navigation ne rejoue pas les entrées nominales.
 - [ ] Focus et position de scroll survivent aux layout transitions.

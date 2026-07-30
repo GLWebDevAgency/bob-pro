@@ -1,8 +1,22 @@
 # UX-ADR-006 — Retours haptiques mobiles
 
+> **Amendement A25 — 2026-07-30 · SDK cible actualisé**
+> **Source.** `apps/mobile/package.json`, lu le 2026-07-30 (`expo ~57.0.8`).
+> **Portée.** § Preuves minimales, première puce. Décision, options et critères inchangés.
+>
+> **Amendement A24 — 2026-07-30 · le bootstrap qui contournait cet ADR**
+> **Fait.** [`RN_EXPO_GUIDE.md`](../../../design_handoff_bob_pro/RN_EXPO_GUIDE.md) §1 **installait**
+> `expo-haptics` dans sa commande `npx expo install`, alors que cet ADR est `Proposed`, que
+> [09](../09-technical-architecture.md#état-de-dépendances-observé) conditionne l'ajout à
+> « `UX-ADR-006` Accepted **et** certification acoustique », et que
+> [04 § Bornes de livraison](../04-navigation-scroll-surfaces.md#bornes-de-livraison) le nomme comme
+> « la seule dépendance réellement absente ». La commande a été retirée : une commande exécutable
+> prime toujours sur la prose qui l'entoure — quelqu'un la lance, et la décision est prise sans
+> décideur.
+
 ## Statut
 
-Proposed — 2026-07-23
+Proposed — 2026-07-23 · amendé A24/A25 le 2026-07-30 (bootstrap retiré, SDK cible)
 
 ## Décideurs attendus
 
@@ -42,7 +56,9 @@ Contrôle fin, mais maintenance native, disparités et surface de test dispropor
 
 ## Preuves minimales pour accepter la décision
 
-- version `expo-haptics` compatible Expo SDK 56 confirmée et ajout direct planifié ;
+- **(corrigé A25 · 2026-07-30)** version `expo-haptics` compatible **Expo SDK 57** confirmée par
+  `npx expo install --check` et ajout direct planifié — dans `apps/mobile` uniquement.
+  *Rédaction 2026-07-23 (supersédée) : « compatible Expo SDK 56 ».* ;
 - harness non publié sur au moins un iPhone et deux classes Android ;
 - mapping événement→intention revu par Design/Accessibilité ;
 - Voice Trace et capture acoustique avant/après pendant activation haptique ;

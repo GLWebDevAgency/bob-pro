@@ -125,7 +125,9 @@ risque pour le train publié.
 
 Gate d'autorité `GATE-BASELINE` : aucune primitive partagée n'est modifiée avant l'acceptation de
 la baseline et des ADR UX structurants. Sa composition WP exacte est définie dans le
-[backlog exécutable](./16-implementation-backlog.md#gates-executables).
+[backlog exécutable](./16-implementation-backlog.md#14-gates-exécutables-et-fondations-minimales).
+**(corrigé A27 · 2026-07-30 : l'ancre `#gates-executables` ne correspondait à aucun titre — le
+renvoi tombait en haut du fichier et la composition WP de la gate restait introuvable.)**
 
 ## Vague 1 — Fondations adaptatives, motion et contenu
 

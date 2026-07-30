@@ -92,6 +92,12 @@ transparence. La matière de Bob est la **surface teintée opaque** : `surfaceTi
 6 tons × `flat`/`raised`/`border`/`ink`/`inkMuted`, opacités pré-composées en hex) rendue par
 `BobSurface`. Elle vaut pour les trois plans, chrome compris.
 
+> **(précisé A23 · 2026-07-30)** `ink`/`inkMuted` appartiennent à la **table de tokens**, pas au
+> composant : `BobSurface` pose le fond, la bordure et l'ombre, et laisse la couleur du texte à
+> l'appelant. La lisibilité d'une surface teintée est donc une propriété du **couple** texte/fond,
+> vérifiée au point d'usage — voir
+> [UX-ADR-004 § Ce que `BobSurface` ne fait PAS](adr/UX-ADR-004-adaptive-appearance.md#ce-que-bobsurface-ne-fait-pas--ink-et-highcontrast-ne-se-propagent-pas).
+
 Une seule chose peut être floutée : la **retombée de bord**, cette zone non interactive qui dissout
 le contenu qui passe sous un chrome flottant — et son mode par défaut est lui aussi **sans flou**,
 en dégradé de notre couleur de fond. Le verre système (Liquid Glass) n'est pas employé : il impose

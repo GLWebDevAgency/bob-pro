@@ -47,7 +47,12 @@ de certification ni de promesse marketing.
 - clés et variantes de texte dans `packages/i18n` ;
 - captures de handoff et de production disponibles ;
 - architecture Bob Live, reducer de session, overlay global et composants vocaux ;
-- configuration Expo SDK 56, React Native 0.85 et Expo Router.
+- configuration Expo SDK 56, React Native 0.85 et Expo Router. **(actualisé A25 · 2026-07-30 : ce
+  constat reste exact **au snapshot `2515ddf3`** et n'est pas réécrit ; la configuration réellement
+  intégrée est aujourd'hui **Expo 57.0.8 / RN 0.86.0 / React 19.2.3 / Expo Router 57.0.8**
+  — `apps/mobile/package.json`. Comme pour `B10`/`A7`, la baseline garde son millésime, mais aucune
+  gate ne doit plus certifier une compatibilité « Expo 56 » : voir
+  [17 § Versions réellement intégrées](17-references.md#versions-réellement-intégrées).)**
 
 ## Faits structurants observés
 
