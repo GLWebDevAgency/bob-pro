@@ -17,7 +17,6 @@ import {
   StartQuoteAgentMission,
   appConflict,
   appUnavailable,
-  deriveAgentMissionSystemCommandId,
   err,
   type AgentMissionFingerprintPort,
   type AgentMissionQuoteLineCandidateV1,
@@ -76,6 +75,11 @@ extends Omit<DecideQuoteAgentMissionCatalogueChoiceOutput, 'mission'> {
 export interface AcknowledgeQuoteScreenServiceOutputV2
 extends AcknowledgeQuoteScreenOutput {
   readonly presentation: QuoteAgentMissionPresentationV1;
+}
+
+export interface GetCurrentQuoteAgentMissionServiceOutputV2 {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
 }
 
 export type DecideQuoteAgentMissionServiceOutputV2 =
@@ -315,6 +319,36 @@ export class AgentMissionService {
       authorization.proof,
     )
       .then((result) => result.ok ? { ok: true, value: { mission: result.value } } : result);
+  }
+
+  async getCurrentV2(
+    authorization: AgentMissionServiceAuthorization,
+  ): Promise<Result<GetCurrentQuoteAgentMissionServiceOutputV2, AppError>> {
+    if (authorization.proof.protocolVersion !== 2) {
+      return err(appConflict('agent_mission_protocol', 'upgrade_required'));
+    }
+    const current = await this.getCurrent(authorization);
+    if (!current.ok) return current;
+    const mission = current.value.mission;
+    if (mission !== null) {
+      return this.attachCurrentLinePresentation(
+        authorization.owner,
+        Object.freeze({ mission }),
+      );
+    }
+    const resumed = await this.readCurrentResumeV2(authorization.owner);
+    if (!resumed.ok) return resumed;
+    if (resumed.value.mission !== null || resumed.value.presentation !== null) {
+      return err({
+        kind: 'dependency',
+        port: 'agent_mission_command_projection',
+        cause: 'mission_changed_after_read',
+      });
+    }
+    return {
+      ok: true,
+      value: Object.freeze({ mission: null, presentation: null }),
+    };
   }
 
   async getCurrentResume(): Promise<
@@ -645,36 +679,26 @@ export class AgentMissionService {
     if (
       input.authorization.proof.protocolVersion === 2
       && mission.status === 'active'
-      && mission.phase === 'awaiting_lines'
+      && (
+        mission.phase === 'awaiting_lines'
+        || mission.phase === 'awaiting_catalogue_choice'
+        || mission.phase === 'awaiting_line_details'
+        || mission.phase === 'awaiting_line_confirmation'
+      )
     ) {
-      const parentCommandId = advanced.value.outcome === 'superseded'
-        ? (
-            mission.revision === acknowledged.value.receipt.missionRevisionAfter
-              ? acknowledged.value.receipt.ackCommandId
-              : null
-          )
-        : deriveAgentMissionSystemCommandId({
-            operation: 'consume_staged_customer_resolution',
-            ...owner,
-            missionId: input.missionId,
-            acknowledgementMissionRevision:
-              acknowledged.value.receipt.missionRevisionAfter,
-          });
-      if (parentCommandId !== null) {
-        const continued = await this.continueLineQueue({
-          authorization: input.authorization,
-          missionId: input.missionId,
-          parentCommandId,
+      const continued = await this.continueLineQueue({
+        authorization: input.authorization,
+        missionId: input.missionId,
+        parentCommandId: acknowledged.value.receipt.ackCommandId,
+      });
+      if (!continued.ok) {
+        this.metrics.agentMissionScreenAcks.inc({
+          outcome: agentMissionScreenAckMetricOutcome(continued),
         });
-        if (!continued.ok) {
-          this.metrics.agentMissionScreenAcks.inc({
-            outcome: agentMissionScreenAckMetricOutcome(continued),
-          });
-          return continued;
-        }
-        mission = continued.value.mission;
-        continuationOutcome = continued.value.continuation.outcome;
+        return continued;
       }
+      mission = continued.value.mission;
+      continuationOutcome = continued.value.continuation.outcome;
     }
 
     const acknowledgedValue = Object.freeze({

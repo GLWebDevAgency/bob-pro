@@ -10,7 +10,9 @@ import {
   type RealtimeQuoteMissionGateway,
 } from './realtime-quote-mission-orchestrator';
 import type {
+  DecideQuoteAgentMissionLineProposalServiceOutput,
   DecideQuoteAgentMissionCatalogueChoiceServiceOutput,
+  PatchQuoteAgentMissionLineServiceOutput,
   StageQuoteAgentMissionLinesServiceOutput,
 } from '../../agent-missions/agent-mission.service';
 
@@ -58,6 +60,88 @@ const EMPTY_PRESENTATION = Object.freeze({
   proposalStatus: Object.freeze({ kind: 'absent' }),
   proposal: null,
 }) satisfies QuoteAgentMissionPresentationV1;
+
+function presentationForMission(
+  value: AgentMissionViewV1 | null,
+): QuoteAgentMissionPresentationV1 | null {
+  if (value === null) return null;
+  const decision = value.payload.decision;
+  if (value.phase === 'awaiting_catalogue_choice' && decision?.kind === 'catalogue') {
+    return Object.freeze({
+      ...EMPTY_PRESENTATION,
+      pendingLine: Object.freeze({
+        pendingLineId: decision.pendingLineId,
+        expectedWorkRevision: decision.expectedWorkRevision,
+      }),
+      decision: Object.freeze({
+        kind: decision.kind,
+        decisionId: decision.decisionId,
+        choiceSetRevision: decision.choiceSetRevision,
+        pendingLineId: decision.pendingLineId,
+        expectedDraft: decision.expectedDraft,
+        expectedWorkRevision: decision.expectedWorkRevision,
+        choices: Object.freeze(decision.candidates.map((candidate) => Object.freeze({
+          choiceId: candidate.choiceId,
+          catalogueItemId: candidate.catalogueItemId,
+          expectedCatalogueRevision: candidate.expectedCatalogueRevision,
+        }))),
+        freeLineChoiceId: decision.freeLineChoiceId,
+        choiceSetHash: decision.choiceSetHash,
+      }),
+      catalogueChoices: Object.freeze(decision.candidates.map((candidate, index) => (
+        Object.freeze({
+          choiceId: candidate.choiceId,
+          available: true,
+          label: `Prestation ${index + 1}`,
+          category: 'labor' as const,
+          unit: 'heure',
+          unitPriceCents: 5_500,
+          vatRate: 20 as const,
+        })
+      ))),
+      freeLineChoiceId: decision.freeLineChoiceId,
+    });
+  }
+  if (value.phase === 'awaiting_line_details') {
+    return Object.freeze({
+      ...EMPTY_PRESENTATION,
+      requiredFact: 'unit_price',
+      pendingLine: Object.freeze({
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedWorkRevision: 2,
+      }),
+    });
+  }
+  if (value.phase === 'awaiting_line_confirmation' && decision?.kind === 'line_confirmation') {
+    return Object.freeze({
+      ...EMPTY_PRESENTATION,
+      pendingLine: Object.freeze({
+        pendingLineId: decision.pendingLineId,
+        expectedWorkRevision: decision.expectedWorkRevision,
+      }),
+      decision,
+      proposalStatus: Object.freeze({ kind: 'available' }),
+      proposal: Object.freeze({
+        proposalId: decision.proposalId,
+        diffHash: decision.diffHash,
+        line: Object.freeze({
+          label: 'Main-d’œuvre plomberie',
+          category: 'labor',
+          qty: 2,
+          unitPriceHT: 5_500,
+          vatRate: 20,
+          unit: 'heures',
+        }),
+        catalogue: Object.freeze({
+          itemId: 'catalogue-first',
+          revision: 3,
+          label: 'Heure de main-d’œuvre plomberie',
+        }),
+      }),
+    });
+  }
+  return EMPTY_PRESENTATION;
+}
 
 function llm(call: LlmToolCall): LlmPort {
   return {
@@ -178,10 +262,94 @@ function catalogueMission(): AgentMissionViewV1 {
   });
 }
 
+function cataloguePresentationWithUnavailableOrdinal(
+  value: AgentMissionViewV1,
+  ordinal: number,
+): QuoteAgentMissionPresentationV1 {
+  const presentation = presentationForMission(value);
+  if (presentation === null) throw new Error('catalogue presentation required');
+  return Object.freeze({
+    ...presentation,
+    catalogueChoices: Object.freeze(
+      presentation.catalogueChoices.map((choice, index) => (
+        index + 1 === ordinal
+          ? Object.freeze({
+              ...choice,
+              available: false,
+              label: null,
+              category: null,
+              unit: null,
+              unitPriceCents: null,
+              vatRate: null,
+            })
+          : choice
+      )),
+    ),
+  });
+}
+
+function lineConfirmationMission(): AgentMissionViewV1 {
+  return mission({
+    phase: 'awaiting_line_confirmation',
+    revision: 8,
+    payload: {
+      schema: 'bob.agent-mission.quote-creation',
+      version: 1,
+      draft: {
+        sessionId: 'draft-session-1',
+        slotRevision: 2,
+        contentRevision: 1,
+      },
+      decision: {
+        kind: 'line_confirmation',
+        decisionId: '40000000-0000-4000-8000-000000000020',
+        choiceSetRevision: 8,
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        proposalId: '70000000-0000-4000-8000-000000000001',
+        proposalRevision: 1,
+        expectedDraft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        expectedWorkRevision: 2,
+        expectedCatalogue: {
+          itemId: 'catalogue-first',
+          revision: 3,
+        },
+        expectedVatContextDigest: 'd'.repeat(64),
+        diffHash: 'f'.repeat(64),
+        choices: [
+          {
+            choiceId: '50000000-0000-4000-8000-000000000020',
+            action: 'confirm_line',
+          },
+          {
+            choiceId: '50000000-0000-4000-8000-000000000021',
+            action: 'edit_line',
+          },
+          {
+            choiceId: '50000000-0000-4000-8000-000000000022',
+            action: 'cancel_line',
+          },
+        ],
+        choiceSetHash: 'e'.repeat(64),
+      },
+      stagedCustomerResolution: null,
+    },
+  });
+}
+
 function harness(input: {
   readonly call: LlmToolCall;
   readonly current?: AgentMissionViewV1 | null;
+  readonly currentPresentation?: QuoteAgentMissionPresentationV1 | null;
+  readonly currentAfterUnderstanding?: AgentMissionViewV1 | null;
+  readonly currentPresentationAfterUnderstanding?:
+    QuoteAgentMissionPresentationV1 | null;
   readonly currentAfterDecision?: AgentMissionViewV1 | null;
+  readonly currentPresentationAfterDecision?:
+    QuoteAgentMissionPresentationV1 | null;
   readonly started?: AgentMissionViewV1;
   readonly decided?: AgentMissionViewV1;
   readonly decisionOutcome?: 'selected' | 'invalidated' | 'presented' | 'not_found' | 'replayed';
@@ -192,6 +360,10 @@ function harness(input: {
   readonly catalogueChoiceValue?:
     DecideQuoteAgentMissionCatalogueChoiceServiceOutput;
   readonly catalogueChoiceFailure?: 'conflict' | 'throws';
+  readonly patchValue?: PatchQuoteAgentMissionLineServiceOutput;
+  readonly patchFailure?: 'conflict' | 'throws';
+  readonly lineDecisionValue?: DecideQuoteAgentMissionLineProposalServiceOutput;
+  readonly lineDecisionFailure?: 'conflict' | 'throws';
 }) {
   let currentReadCount = 0;
   const getCurrent = vi.fn<RealtimeQuoteMissionGateway['getCurrent']>(async () => {
@@ -202,6 +374,41 @@ function harness(input: {
     return {
       ok: true,
       value: { mission: selected },
+    };
+  });
+  let currentV2ReadCount = 0;
+  const getCurrentV2 = vi.fn<
+    RealtimeQuoteMissionGateway['getCurrentV2']
+  >(async () => {
+    const isUnderstandingRefresh = currentV2ReadCount === 1;
+    const isPostDecisionRefresh = currentV2ReadCount >= 2;
+    const selected = isPostDecisionRefresh
+      ? (
+          'currentAfterDecision' in input
+            ? input.currentAfterDecision ?? null
+            : input.decided ?? input.current ?? null
+        )
+      : isUnderstandingRefresh && 'currentAfterUnderstanding' in input
+        ? input.currentAfterUnderstanding ?? null
+        : input.current ?? null;
+    const selectedPresentation = isPostDecisionRefresh
+      ? (
+          'currentPresentationAfterDecision' in input
+            ? input.currentPresentationAfterDecision ?? null
+            : presentationForMission(selected)
+        )
+      : isUnderstandingRefresh && 'currentPresentationAfterUnderstanding' in input
+        ? input.currentPresentationAfterUnderstanding ?? null
+        : 'currentPresentation' in input
+          ? input.currentPresentation ?? null
+          : presentationForMission(selected);
+    currentV2ReadCount += 1;
+    return {
+      ok: true,
+      value: {
+        mission: selected,
+        presentation: selectedPresentation,
+      },
     };
   });
   const startFromVoiceTurn = vi.fn<RealtimeQuoteMissionGateway['startFromVoiceTurn']>(
@@ -285,11 +492,12 @@ function harness(input: {
         },
       };
     }
+    const detailsMission = mission({ phase: 'awaiting_line_details', revision: 5 });
     return {
       ok: true,
       value: input.stageValue ?? {
         outcome: 'staged',
-        mission: mission({ phase: 'awaiting_line_details', revision: 5 }),
+        mission: detailsMission,
         stagedCount: 1,
         firstQueueOrdinal: 1,
         lastQueueOrdinal: 1,
@@ -300,7 +508,7 @@ function harness(input: {
           requiredFact: 'unit_price',
           proposalId: null,
         },
-        presentation: EMPTY_PRESENTATION,
+        presentation: presentationForMission(detailsMission)!,
       },
     };
   });
@@ -320,13 +528,14 @@ function harness(input: {
         },
       };
     }
+    const detailsMission = mission({ phase: 'awaiting_line_details', revision: 7 });
     return {
       ok: true,
       value: input.catalogueChoiceValue ?? {
         outcome: 'selected',
         resolution: 'selected',
         invalidationReason: null,
-        mission: mission({ phase: 'awaiting_line_details', revision: 7 }),
+        mission: detailsMission,
         continuation: {
           outcome: 'details_requested',
           pendingLineId: '60000000-0000-4000-8000-000000000001',
@@ -334,16 +543,100 @@ function harness(input: {
           requiredFact: 'unit_price',
           proposalId: null,
         },
-        presentation: EMPTY_PRESENTATION,
+        presentation: presentationForMission(detailsMission)!,
+      },
+    };
+  });
+  const patchLineFromVoiceTurn = vi.fn<
+    RealtimeQuoteMissionGateway['patchLineFromVoiceTurn']
+  >(async () => {
+    if (input.patchFailure === 'throws') throw new Error('response lost');
+    if (input.patchFailure === 'conflict') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission',
+          reason: 'stale_revision',
+        },
+      };
+    }
+    const confirmationMission = lineConfirmationMission();
+    return {
+      ok: true,
+      value: input.patchValue ?? {
+        outcome: 'patched',
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        workRevisionAfter: 3,
+        mission: confirmationMission,
+        continuation: {
+          outcome: 'proposal_presented',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: '70000000-0000-4000-8000-000000000001',
+        },
+        presentation: presentationForMission(confirmationMission)!,
+      },
+    };
+  });
+  const decideLineProposalFromVoiceTurn = vi.fn<
+    RealtimeQuoteMissionGateway['decideLineProposalFromVoiceTurn']
+  >(async () => {
+    if (input.lineDecisionFailure === 'throws') {
+      throw new Error('response lost');
+    }
+    if (input.lineDecisionFailure === 'conflict') {
+      return {
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'agent_mission',
+          reason: 'stale_revision',
+        },
+      };
+    }
+    const nextMission = mission({
+      phase: 'awaiting_lines',
+      revision: 10,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 3,
+          contentRevision: 2,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    return {
+      ok: true,
+      value: input.lineDecisionValue ?? {
+        outcome: 'confirmed',
+        invalidationReason: null,
+        mission: nextMission,
+        continuation: {
+          outcome: 'empty',
+          pendingLineId: null,
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: presentationForMission(nextMission)!,
       },
     };
   });
   const gateway: RealtimeQuoteMissionGateway = {
     getCurrent,
+    getCurrentV2,
     startFromVoiceTurn,
     decideFromVoiceTurn,
     stageLinesFromVoiceTurn,
     decideCatalogueChoiceFromVoiceTurn,
+    patchLineFromVoiceTurn,
+    decideLineProposalFromVoiceTurn,
   };
   const model = llm(input.call);
   const orchestrator = new RealtimeQuoteMissionOrchestrator(model, gateway);
@@ -351,10 +644,13 @@ function harness(input: {
     orchestrator,
     model,
     getCurrent,
+    getCurrentV2,
     startFromVoiceTurn,
     decideFromVoiceTurn,
     stageLinesFromVoiceTurn,
     decideCatalogueChoiceFromVoiceTurn,
+    patchLineFromVoiceTurn,
+    decideLineProposalFromVoiceTurn,
   };
 }
 
@@ -751,14 +1047,14 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
           requiredFact: null,
           proposalId: null,
         },
-        presentation: EMPTY_PRESENTATION,
+        presentation: presentationForMission(choices)!,
       },
     });
 
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'J’ai trouvé 2 prestations réelles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
+        'J’ai trouvé 2 prestations disponibles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
       speechPurpose: 'structured_choice',
     });
     expect(h.stageLinesFromVoiceTurn).toHaveBeenCalledWith({
@@ -815,6 +1111,29 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     ).not.toHaveProperty('catalogueItemId');
   });
 
+  it('V2 refuse sans mutation un ordinal catalogue devenu indisponible', async () => {
+    const current = catalogueMission();
+    const currentPresentation =
+      cataloguePresentationWithUnavailableOrdinal(current, 1);
+    const h = harness({
+      call: toolCallV2({
+        kind: 'select_presented_choice',
+        ordinal: 1,
+        lines: [],
+      }),
+      current,
+      currentPresentation,
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'La prestation numéro 1 n’est plus disponible dans ton catalogue. Rien n’a été sélectionné. Choisis une autre option affichée ou la ligne libre.',
+      speechPurpose: 'structured_choice',
+    });
+    expect(h.decideCatalogueChoiceFromVoiceTurn).not.toHaveBeenCalled();
+  });
+
   it('V2 mappe le dernier ordinal vers la ligne libre scellée', async () => {
     const current = catalogueMission();
     const h = harness({
@@ -849,6 +1168,316 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     );
   });
 
+  it('V2 répond au fait manquant avec le patch mono-champ et les fences fraîches', async () => {
+    const current = mission({
+      phase: 'awaiting_line_details',
+      revision: 6,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCallV2({
+        kind: 'patch_pending_line',
+        scope: 'answer_required_fact',
+        patch: {
+          field: 'unit_price',
+          decimal: '55',
+          currency: 'EUR',
+          basis: 'per_unit',
+        },
+      }),
+      current,
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
+    expect(h.model.complete).toHaveBeenCalledTimes(1);
+    expect(h.patchLineFromVoiceTurn).toHaveBeenCalledTimes(1);
+    expect(outcome).toMatchObject({
+      status: 'handled',
+      speechPurpose: 'structured_choice',
+    });
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('Main-d’œuvre plomberie'),
+    );
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('55\u00a0€ hors taxes par unité'),
+    );
+    expect(h.patchLineFromVoiceTurn).toHaveBeenCalledWith({
+      authorization: { owner: OWNER, proof: PROOF_V2 },
+      missionId: current.id,
+      turnId: TURN_ID,
+      realtimeSessionId: SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 6,
+      expectedDraftSessionId: 'draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      expectedWorkRevision: 2,
+      scope: 'answer_required_fact',
+      patch: {
+        field: 'unit_price',
+        decimal: '55',
+        currency: 'EUR',
+        basis: 'per_unit',
+      },
+    });
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
+    const modelInput = JSON.stringify(
+      vi.mocked(h.model.complete).mock.calls[0]?.[0],
+    );
+    expect(modelInput).not.toContain(
+      '60000000-0000-4000-8000-000000000001',
+    );
+    expect(modelInput).not.toContain('Heure de main-d’œuvre plomberie');
+  });
+
+  it('V2 refuse la mutation si la projection change pendant la compréhension', async () => {
+    const current = mission({
+      phase: 'awaiting_line_details',
+      revision: 6,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const changed = mission({
+      phase: 'awaiting_line_details',
+      revision: 7,
+      payload: current.payload,
+    });
+    const changedPresentation = Object.freeze({
+      ...presentationForMission(changed)!,
+      pendingLine: Object.freeze({
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedWorkRevision: 3,
+      }),
+    });
+    const h = harness({
+      call: toolCallV2({
+        kind: 'patch_pending_line',
+        scope: 'answer_required_fact',
+        patch: {
+          field: 'unit_price',
+          decimal: '55',
+          currency: 'EUR',
+          basis: 'per_unit',
+        },
+      }),
+      current,
+      currentAfterUnderstanding: changed,
+      currentPresentationAfterUnderstanding: changedPresentation,
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech: 'Quel prix unitaire dois-je appliquer à cette ligne ?',
+      speechPurpose: 'structured_choice',
+    });
+    expect(h.patchLineFromVoiceTurn).not.toHaveBeenCalled();
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(2);
+  });
+
+  it('V2 confirme avec le choiceId, le proposalId et tous les hashes relus', async () => {
+    const current = lineConfirmationMission();
+    const h = harness({
+      call: toolCallV2({ kind: 'confirm_current_proposal' }),
+      current,
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('La ligne est ajoutée au devis.'),
+    );
+    expect(h.decideLineProposalFromVoiceTurn).toHaveBeenCalledWith({
+      authorization: { owner: OWNER, proof: PROOF_V2 },
+      missionId: current.id,
+      turnId: TURN_ID,
+      realtimeSessionId: SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 8,
+      expectedDraftSessionId: 'draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decisionId: '40000000-0000-4000-8000-000000000020',
+      choiceSetRevision: 8,
+      choiceSetHash: 'e'.repeat(64),
+      choiceId: '50000000-0000-4000-8000-000000000020',
+      pendingLineId: '60000000-0000-4000-8000-000000000001',
+      proposalId: '70000000-0000-4000-8000-000000000001',
+      proposalRevision: 1,
+      expectedWorkRevision: 2,
+      expectedCatalogue: {
+        itemId: 'catalogue-first',
+        revision: 3,
+      },
+      diffHash: 'f'.repeat(64),
+    });
+    const modelInput = JSON.stringify(
+      vi.mocked(h.model.complete).mock.calls[0]?.[0],
+    );
+    expect(modelInput).not.toContain('Main-d’œuvre plomberie');
+    expect(modelInput).not.toContain(
+      '70000000-0000-4000-8000-000000000001',
+    );
+  });
+
+  it('V2 ne prononce jamais un faux succès quand une confirmation invalidée est rejouée', async () => {
+    const current = lineConfirmationMission();
+    const invalidatedMission = mission({
+      phase: 'awaiting_line_details',
+      revision: 9,
+    });
+    const h = harness({
+      call: toolCallV2({ kind: 'confirm_current_proposal' }),
+      current,
+      lineDecisionValue: {
+        outcome: 'replayed',
+        invalidationReason: 'candidate_unavailable',
+        mission: invalidatedMission,
+        continuation: {
+          outcome: 'details_requested',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          presentedChoiceCount: 0,
+          requiredFact: 'unit_price',
+          proposalId: null,
+        },
+        presentation: presentationForMission(invalidatedMission)!,
+      },
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(outcome).toEqual({
+      status: 'handled',
+      canonicalSpeech: 'Quel prix unitaire dois-je appliquer à cette ligne ?',
+      speechPurpose: 'structured_choice',
+    });
+    expect(
+      outcome.status === 'handled' ? outcome.canonicalSpeech : '',
+    ).not.toContain('ajoutée');
+  });
+
+  it('V2 distingue modifier de supprimer et consomme le choix edit_line', async () => {
+    const current = lineConfirmationMission();
+    const editMission = mission({
+      phase: 'awaiting_line_details',
+      revision: 10,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const editPresentation = Object.freeze({
+      ...presentationForMission(editMission)!,
+      requiredFact: null,
+    });
+    const h = harness({
+      call: toolCallV2({ kind: 'reject_current_proposal' }),
+      current,
+      lineDecisionValue: {
+        outcome: 'edit_requested',
+        invalidationReason: null,
+        mission: editMission,
+        continuation: {
+          outcome: 'details_requested',
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: editPresentation,
+      },
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('La ligne reste dans la mission'),
+    );
+    expect(
+      h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId,
+    ).toBe('50000000-0000-4000-8000-000000000021');
+  });
+
+  it('V2 annule seulement la ligne courante avec le choix cancel_line', async () => {
+    const current = lineConfirmationMission();
+    const nextMission = mission({
+      phase: 'awaiting_lines',
+      revision: 10,
+      payload: {
+        schema: 'bob.agent-mission.quote-creation',
+        version: 1,
+        draft: {
+          sessionId: 'draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        decision: null,
+        stagedCustomerResolution: null,
+      },
+    });
+    const h = harness({
+      call: toolCallV2({ kind: 'cancel_current_line' }),
+      current,
+      lineDecisionValue: {
+        outcome: 'cancelled',
+        invalidationReason: null,
+        mission: nextMission,
+        continuation: {
+          outcome: 'empty',
+          pendingLineId: null,
+          presentedChoiceCount: 0,
+          requiredFact: null,
+          proposalId: null,
+        },
+        presentation: presentationForMission(nextMission)!,
+      },
+    });
+
+    const outcome = await h.orchestrator.run(inputV2());
+
+    expect(outcome).toHaveProperty(
+      'canonicalSpeech',
+      expect.stringContaining('La ligne est retirée de la mission'),
+    );
+    expect(
+      h.decideLineProposalFromVoiceTurn.mock.calls[0]?.[0].choiceId,
+    ).toBe('50000000-0000-4000-8000-000000000022');
+  });
+
   it('V2 relit une réponse perdue avec sa projection V2, jamais le langage M1-C', async () => {
     const h = harness({
       call: toolCallV2({
@@ -876,10 +1505,45 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
       status: 'handled',
       canonicalSpeech:
-        'J’ai trouvé 2 prestations réelles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
+        'J’ai trouvé 2 prestations disponibles dans ton catalogue, plus l’option de créer une ligne libre. Elles sont conservées dans cet ordre pour ton choix.',
       speechPurpose: 'structured_choice',
     });
-    expect(h.getCurrent).toHaveBeenCalledTimes(2);
+    expect(h.getCurrentV2).toHaveBeenCalledTimes(3);
+  });
+
+  it('V2 décrit honnêtement les options catalogue indisponibles après convergence', async () => {
+    const converged = catalogueMission();
+    const h = harness({
+      call: toolCallV2({
+        kind: 'append_line_candidates',
+        lines: [LINE_ARGUMENTS],
+      }),
+      current: mission({
+        phase: 'awaiting_lines',
+        payload: {
+          schema: 'bob.agent-mission.quote-creation',
+          version: 1,
+          draft: {
+            sessionId: 'draft-session-1',
+            slotRevision: 2,
+            contentRevision: 1,
+          },
+          decision: null,
+          stagedCustomerResolution: null,
+        },
+      }),
+      currentAfterDecision: converged,
+      currentPresentationAfterDecision:
+        cataloguePresentationWithUnavailableOrdinal(converged, 1),
+      stageFailure: 'throws',
+    });
+
+    await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
+      status: 'handled',
+      canonicalSpeech:
+        'La prestation numéro 1 n’est plus disponible. 1 prestation reste disponible. La ligne libre reste le dernier choix affiché.',
+      speechPurpose: 'structured_choice',
+    });
   });
 
   it('propage l’interruption sans publier de réponse ni mutation', async () => {
@@ -893,6 +1557,7 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
       name: 'AbortError',
     });
     expect(h.getCurrent).not.toHaveBeenCalled();
+    expect(h.getCurrentV2).not.toHaveBeenCalled();
     expect(h.startFromVoiceTurn).not.toHaveBeenCalled();
   });
 });

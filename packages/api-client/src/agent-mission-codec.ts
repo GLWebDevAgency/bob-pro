@@ -217,11 +217,26 @@ export function decodeAgentMissionCurrent(
 
 export function decodeAgentMissionCurrentV2(
   value: unknown,
-): { readonly mission: AgentMissionViewV1 | null } | null {
-  return decodeAgentMissionCurrentForProtocol(
-    value,
+): {
+  readonly mission: AgentMissionViewV1 | null;
+  readonly presentation: QuoteAgentMissionPresentationV1 | null;
+} | null {
+  const response = record(value);
+  if (!response || !exactKeys(response, ['mission', 'presentation'])) return null;
+  if (response.mission === null) {
+    return response.presentation === null
+      ? Object.freeze({ mission: null, presentation: null })
+      : null;
+  }
+  const mission = decodeAgentMissionView(
+    response.mission,
     AGENT_MISSION_PROTOCOL_M2A,
   );
+  if (mission === null) return null;
+  const presentation = decodeCommandPresentation(response.presentation, mission);
+  return presentation === null
+    ? null
+    : Object.freeze({ mission, presentation });
 }
 
 const RESUME_MISSION_KEYS = [

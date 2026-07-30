@@ -384,7 +384,11 @@ export class AgentMissionController {
       'get_current_quote_creation',
       capability,
     );
-    return unwrap(await this.missions.getCurrent(authorization));
+    return unwrap(
+      authorization.proof.protocolVersion === 2
+        ? await this.missions.getCurrentV2(authorization)
+        : await this.missions.getCurrent(authorization),
+    );
   }
 
   @Get('current/quote-creation/resume')

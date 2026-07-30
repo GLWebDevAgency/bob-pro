@@ -1,4 +1,11 @@
 import { redactPII } from '../../guardrails/pii-redaction';
+import {
+  AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS,
+  normalizeAgentMissionQuoteLinePatch,
+  type AgentMissionQuoteLinePatchScope,
+  type AgentMissionQuoteLinePatchV1,
+  type AgentMissionQuoteLineRequiredFact,
+} from '@bob/core';
 import type {
   LlmMessage,
   LlmPort,
@@ -22,13 +29,16 @@ const MAX_PRESENTED_CHOICES = 6;
 const CATEGORY_HINTS = ['labor', 'supply', 'travel', 'subscription'] as const;
 const PRICE_BASES = ['per_unit', 'total'] as const;
 const VAT_RATE_HINTS = ['0', '2.1', '5.5', '10', '20'] as const;
+const PATCH_SCOPES = ['answer_required_fact', 'explicit_correction'] as const;
 
 export type QuoteCreationUnderstandingPhaseV2 =
   | 'inactive'
   | 'awaiting_customer'
   | 'awaiting_customer_choice'
   | 'awaiting_lines'
-  | 'awaiting_catalogue_choice';
+  | 'awaiting_catalogue_choice'
+  | 'awaiting_line_details'
+  | 'awaiting_line_confirmation';
 
 export interface QuoteLineCandidateV1 {
   readonly serviceReference: string | null;
@@ -61,6 +71,14 @@ export type QuoteCreationSemanticOperationV2 =
       readonly ordinal: 1 | 2 | 3 | 4 | 5 | 6;
       readonly lines: readonly QuoteLineCandidateV1[];
     }
+  | {
+      readonly kind: 'patch_pending_line';
+      readonly scope: AgentMissionQuoteLinePatchScope;
+      readonly patch: AgentMissionQuoteLinePatchV1;
+    }
+  | { readonly kind: 'confirm_current_proposal' }
+  | { readonly kind: 'reject_current_proposal' }
+  | { readonly kind: 'cancel_current_line' }
   | { readonly kind: 'unrelated' };
 
 export interface QuoteCreationSemanticFrameV2 {
@@ -74,8 +92,7 @@ export interface QuoteCreationUnderstandingInputV2 {
   readonly transcript: string;
   readonly phase: QuoteCreationUnderstandingPhaseV2;
   readonly presentedChoiceCount: number;
-  /** A1 n'expose aucune phase de collecte de fait : cette fence reste obligatoirement nulle. */
-  readonly requiredFact: null;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
   /**
    * Nullable volontairement : aucune timezone n'est inventée. M2-A-1 ne résout pas encore les
    * dates, mais la forme du contexte reste déjà exacte pour les trains suivants.
@@ -129,6 +146,85 @@ const LINES_SCHEMA = {
   type: 'array',
   items: LINE_SCHEMA,
   maxItems: MAX_LINES,
+} as const;
+
+const PATCH_SCHEMA = {
+  oneOf: [
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'service_reference' },
+        value: { type: 'string', maxLength: MAX_REFERENCE_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'category' },
+        value: { type: 'string', enum: [...CATEGORY_HINTS] },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'quantity' },
+        decimal: { type: 'string', maxLength: 64 },
+      },
+      required: ['field', 'decimal'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'unit' },
+        value: { type: 'string', maxLength: MAX_UNIT_LENGTH },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'unit_price' },
+        decimal: { type: 'string', maxLength: 64 },
+        currency: { const: 'EUR' },
+        basis: { type: 'string', enum: [...PRICE_BASES] },
+      },
+      required: ['field', 'decimal', 'currency', 'basis'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'vat_rate' },
+        value: { type: 'string', enum: [...VAT_RATE_HINTS] },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'housing_older_than_2y' },
+        value: { type: 'boolean' },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+    {
+      type: 'object',
+      properties: {
+        field: { const: 'energy_renovation' },
+        value: { type: 'boolean' },
+      },
+      required: ['field', 'value'],
+      additionalProperties: false,
+    },
+  ],
 } as const;
 
 const QUOTE_CREATION_V2_TOOL_NAME = 'mettre_a_jour_mission_devis_v2';
@@ -194,6 +290,34 @@ export const QUOTE_CREATION_UNDERSTANDING_TOOL_V2: LlmToolSpec = Object.freeze({
             },
             {
               type: 'object',
+              properties: {
+                kind: { const: 'patch_pending_line' },
+                scope: { type: 'string', enum: [...PATCH_SCOPES] },
+                patch: PATCH_SCHEMA,
+              },
+              required: ['kind', 'scope', 'patch'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: { kind: { const: 'confirm_current_proposal' } },
+              required: ['kind'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: { kind: { const: 'reject_current_proposal' } },
+              required: ['kind'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: { kind: { const: 'cancel_current_line' } },
+              required: ['kind'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
               properties: { kind: { const: 'unrelated' } },
               required: ['kind'],
               additionalProperties: false,
@@ -214,7 +338,10 @@ const SYSTEM_PROMPT_V2 = [
   "Conserve les noms métier tels qu'ils sont dits : « Contrat 4 saisons » reste un libellé.",
   "N'invente jamais un client, un prix, une quantité, une unité, une TVA, une date ou un choix.",
   "« 400 balles par machine » signifie prix unitaire 400 EUR, sans multiplication.",
-  "N'annonce jamais une correction de ligne : cette capacité n'est pas exposée dans ce protocole.",
+  "Une réponse courte à une question ciblée utilise answer_required_fact et corrige uniquement le champ requiredFact fourni.",
+  "Une correction nommée spontanément utilise explicit_correction ; ne déduis jamais un autre champ.",
+  "« Modifie » conserve la ligne et demande ses détails ; « annule cette ligne » retire uniquement la ligne courante.",
+  "Confirmer, modifier ou annuler une proposition n'est possible que dans la phase de confirmation.",
   "Un ordinal ne désigne que le jeu de choix actuellement présenté.",
 ].join(' ');
 
@@ -333,6 +460,66 @@ function parseLines(value: unknown): readonly QuoteLineCandidateV1[] | null {
     : Object.freeze(parsed as QuoteLineCandidateV1[]);
 }
 
+function parsePatch(value: unknown): AgentMissionQuoteLinePatchV1 | null {
+  if (!isRecord(value) || typeof value['field'] !== 'string') return null;
+  const normalized = normalizeAgentMissionQuoteLinePatch(value);
+  if (!normalized.ok) return null;
+  switch (value['field']) {
+    case 'service_reference': {
+      if (!exactKeys(value, ['field', 'value'])) return null;
+      const canonical = canonicalSingleLine(value['value'], MAX_REFERENCE_LENGTH);
+      return canonical === null
+        ? null
+        : Object.freeze({ field: value['field'], value: canonical });
+    }
+    case 'category':
+      return exactKeys(value, ['field', 'value']) && isOneOf(CATEGORY_HINTS, value['value'])
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    case 'quantity': {
+      if (!exactKeys(value, ['field', 'decimal'])) return null;
+      const decimal = canonicalDecimal(value['decimal'], 3);
+      return decimal === null
+        ? null
+        : Object.freeze({ field: value['field'], decimal });
+    }
+    case 'unit': {
+      if (!exactKeys(value, ['field', 'value'])) return null;
+      const canonical = canonicalSingleLine(value['value'], MAX_UNIT_LENGTH);
+      return canonical === null
+        ? null
+        : Object.freeze({ field: value['field'], value: canonical });
+    }
+    case 'unit_price': {
+      if (
+        !exactKeys(value, ['field', 'decimal', 'currency', 'basis'])
+        || value['currency'] !== 'EUR'
+        || !isOneOf(PRICE_BASES, value['basis'])
+      ) return null;
+      const decimal = canonicalDecimal(value['decimal'], 2);
+      return decimal === null
+        ? null
+        : Object.freeze({
+            field: value['field'],
+            decimal,
+            currency: value['currency'],
+            basis: value['basis'],
+          });
+    }
+    case 'vat_rate':
+      return exactKeys(value, ['field', 'value']) && isOneOf(VAT_RATE_HINTS, value['value'])
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    case 'housing_older_than_2y':
+    case 'energy_renovation':
+      return exactKeys(value, ['field', 'value']) && typeof value['value'] === 'boolean'
+        ? Object.freeze({ field: value['field'], value: value['value'] })
+        : null;
+    default:
+      return null;
+  }
+}
+
 function phaseAllows(
   phase: QuoteCreationUnderstandingPhaseV2,
   operation: QuoteCreationSemanticOperationV2,
@@ -349,6 +536,20 @@ function phaseAllows(
       return operation.kind === 'append_line_candidates' || operation.kind === 'unrelated';
     case 'awaiting_catalogue_choice':
       return operation.kind === 'select_presented_choice'
+        || (
+          operation.kind === 'patch_pending_line'
+          && operation.scope === 'explicit_correction'
+          && operation.patch.field === 'service_reference'
+        )
+        || operation.kind === 'unrelated';
+    case 'awaiting_line_details':
+      return operation.kind === 'patch_pending_line'
+        || operation.kind === 'unrelated';
+    case 'awaiting_line_confirmation':
+      return operation.kind === 'patch_pending_line'
+        || operation.kind === 'confirm_current_proposal'
+        || operation.kind === 'reject_current_proposal'
+        || operation.kind === 'cancel_current_line'
         || operation.kind === 'unrelated';
   }
 }
@@ -357,7 +558,7 @@ function parseOperation(
   value: unknown,
   input: Pick<
     QuoteCreationUnderstandingInputV2,
-    'phase' | 'presentedChoiceCount'
+    'phase' | 'presentedChoiceCount' | 'requiredFact'
   >,
 ): QuoteCreationSemanticOperationV2 | null {
   if (!isRecord(value) || typeof value['kind'] !== 'string') return null;
@@ -405,6 +606,34 @@ function parseOperation(
         lines,
       });
     }
+  } else if (value['kind'] === 'patch_pending_line') {
+    if (
+      !exactKeys(value, ['kind', 'scope', 'patch'])
+      || !isOneOf(PATCH_SCOPES, value['scope'])
+    ) return null;
+    const patch = parsePatch(value['patch']);
+    if (
+      patch !== null
+      && (
+        value['scope'] === 'explicit_correction'
+        || (
+          input.requiredFact !== null
+          && patch.field === input.requiredFact
+        )
+      )
+    ) {
+      operation = Object.freeze({
+        kind: value['kind'],
+        scope: value['scope'],
+        patch,
+      });
+    }
+  } else if (
+    value['kind'] === 'confirm_current_proposal'
+    || value['kind'] === 'reject_current_proposal'
+    || value['kind'] === 'cancel_current_line'
+  ) {
+    if (exactKeys(value, ['kind'])) operation = Object.freeze({ kind: value['kind'] });
   } else if (value['kind'] === 'unrelated') {
     if (exactKeys(value, ['kind'])) operation = Object.freeze({ kind: value['kind'] });
   }
@@ -430,6 +659,7 @@ export function parseQuoteCreationSemanticToolCallV2(input: {
   readonly call: LlmToolCall;
   readonly phase: QuoteCreationUnderstandingPhaseV2;
   readonly presentedChoiceCount: number;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
   readonly model: string;
 }): QuoteCreationSemanticFrameV2 | null {
   if (
@@ -485,7 +715,11 @@ function validInput(input: QuoteCreationUnderstandingInputV2): boolean {
   const choicePhase = input.phase === 'awaiting_customer_choice'
     || input.phase === 'awaiting_catalogue_choice';
   if (choicePhase !== (input.presentedChoiceCount > 0)) return false;
-  return input.requiredFact === null;
+  if (
+    input.requiredFact !== null
+    && !AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS.includes(input.requiredFact)
+  ) return false;
+  return input.requiredFact === null || input.phase === 'awaiting_line_details';
 }
 
 function conversation(input: QuoteCreationUnderstandingInputV2): LlmMessage[] {
@@ -538,6 +772,7 @@ export async function understandQuoteCreationTurnV2(
     call: completion.toolCalls[0],
     phase: input.phase,
     presentedChoiceCount: input.presentedChoiceCount,
+    requiredFact: input.requiredFact,
     model: completion.model,
   });
   return frame === null

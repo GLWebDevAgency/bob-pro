@@ -11,6 +11,7 @@ import {
   type AppError,
   type CancelQuoteAgentMissionOutput,
   type DecideQuoteAgentMissionOutput,
+  type QuoteAgentMissionPresentationV1,
   type Result,
   type StartQuoteAgentMissionOutput,
 } from '@bob/core';
@@ -69,6 +70,15 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
 > = TProtocol extends typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
   ? RealtimeAgentMissionQuoteDecisionOutputV2
   : DecideQuoteAgentMissionOutput;
+
+type CurrentQuoteCreationOutputFor<
+TProtocol extends RealtimeAgentMissionProtocolVersion,
+> = TProtocol extends typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+  ? {
+      readonly mission: AgentMissionViewV1 | null;
+      readonly presentation: QuoteAgentMissionPresentationV1 | null;
+    }
+  : { readonly mission: AgentMissionViewV1 | null };
 
 export interface HttpAgentMissionRequest<T> {
   readonly method: 'GET' | 'POST';
@@ -214,13 +224,17 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
     return this.#capability === null || this.#request === null;
   }
 
-  getCurrentQuoteCreation(signal?: AbortSignal) {
-    return this.call<{ readonly mission: AgentMissionViewV1 | null }>({
+  getCurrentQuoteCreation(
+    signal?: AbortSignal,
+  ): Promise<Result<CurrentQuoteCreationOutputFor<TProtocol>, AppError>> {
+    return this.call<CurrentQuoteCreationOutputFor<TProtocol>>({
       method: 'GET',
       path: '/agent-missions/current/quote-creation',
-      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-        ? decodeAgentMissionCurrentV2
-        : decodeAgentMissionCurrent,
+      decode: (
+        this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+          ? decodeAgentMissionCurrentV2
+          : decodeAgentMissionCurrent
+      ) as (value: unknown) => CurrentQuoteCreationOutputFor<TProtocol> | null,
       signal,
     });
   }

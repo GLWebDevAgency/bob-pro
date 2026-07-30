@@ -19,6 +19,7 @@ import {
   ContinueQuoteAgentMissionLineResolution,
   DecideQuoteAgentMissionCatalogueChoice,
   DecideQuoteAgentMission,
+  GetActiveAgentMission,
   GetResumableQuoteAgentMissionV2,
   StageQuoteAgentMissionLines,
   StartQuoteAgentMission,
@@ -460,6 +461,85 @@ describe('AgentMissionService metrics', () => {
     expect(persistence.createAgentMissionResumeV2UnitOfWork).not.toHaveBeenCalled();
   });
 
+  it('refuse getCurrentV2 avec une capability V1 avant toute lecture', async () => {
+    const { service, persistence } = harness(null);
+
+    await expect(service.getCurrentV2(
+      authorization('get_current_quote_creation'),
+    )).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_protocol',
+        reason: 'upgrade_required',
+      },
+    });
+    expect(persistence.createAgentMissionUnitOfWork).not.toHaveBeenCalled();
+    expect(persistence.createAgentMissionResumeV2UnitOfWork).not.toHaveBeenCalled();
+  });
+
+  it('lie getCurrentV2 à la mission complète et à la projection du même snapshot', async () => {
+    const view = m2aView('awaiting_line_details', 4);
+    vi.spyOn(GetActiveAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: view,
+    });
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: resumeProjection(view),
+    });
+    const { service } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
+
+    await expect(service.getCurrentV2(
+      authorizationV2('get_current_quote_creation'),
+    )).resolves.toEqual({
+      ok: true,
+      value: {
+        mission: view,
+        presentation: EMPTY_PRESENTATION,
+      },
+    });
+  });
+
+  it('ferme getCurrentV2 si la projection change entre les deux lectures', async () => {
+    const view = m2aView('awaiting_line_details', 4);
+    const changed = m2aView('awaiting_line_details', 5);
+    vi.spyOn(GetActiveAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: view,
+    });
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: resumeProjection(changed),
+    });
+    const { service } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
+
+    await expect(service.getCurrentV2(
+      authorizationV2('get_current_quote_creation'),
+    )).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'agent_mission_command_projection',
+        cause: 'mission_changed_after_command',
+      },
+    });
+  });
+
   it('convertit une panne du snapshot froid en indisponibilité sans faux mission:null', async () => {
     const resume: AgentMissionResumeUnitOfWorkPort = {
       readQuoteCreationOwner: async () => {
@@ -870,6 +950,106 @@ describe('AgentMissionService metrics', () => {
       },
     });
   });
+
+  it.each([
+    ['awaiting_line_details', 'details_requested'],
+    ['awaiting_line_confirmation', 'proposal_presented'],
+  ] as const)(
+    'un nouvel ACK reprend durablement une tête %s interrompue avant continuation',
+    async (phase, continuationOutcome) => {
+      const acknowledgedMission = m2aView(phase, 10);
+      const convergedMission = m2aView(phase, 11);
+      const receipt = {
+        ackCommandId: ACK_COMMAND_ID,
+        missionId: MISSION_ID,
+        missionRevisionAfter: 9,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 5,
+        contextDigest: 'a'.repeat(64),
+        occurredAt: NOW,
+      };
+      vi.spyOn(AcknowledgeQuoteScreen.prototype, 'execute').mockResolvedValue({
+        ok: true,
+        value: {
+          outcome: 'acknowledged',
+          receipt,
+          mission: acknowledgedMission,
+        },
+      });
+      vi.spyOn(AdvanceQuoteAgentMission.prototype, 'execute').mockResolvedValue({
+        ok: true,
+        value: {
+          outcome: 'superseded',
+          mission: acknowledgedMission,
+        },
+      });
+      vi.spyOn(
+        ContinueQuoteAgentMissionLineResolution.prototype,
+        'execute',
+      ).mockResolvedValue({
+        ok: true,
+        value: {
+          outcome: continuationOutcome,
+          mission: convergedMission,
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          requiredFact: continuationOutcome === 'details_requested'
+            ? 'unit_price'
+            : null,
+          proposalId: continuationOutcome === 'proposal_presented'
+            ? '70000000-0000-4000-8000-000000000001'
+            : null,
+          continuationReceipt: null,
+        },
+      });
+      const queueSpy = vi.spyOn(
+        ContinueQuoteAgentMissionLineQueue.prototype,
+        'execute',
+      ).mockRejectedValue(new Error('queue ne doit pas être appelée'));
+      vi.spyOn(
+        GetResumableQuoteAgentMissionV2.prototype,
+        'execute',
+      ).mockResolvedValue({
+        ok: true,
+        value: resumeProjection(convergedMission),
+      });
+      const { service } = harness(
+        new RejectingUnitOfWork('state'),
+        null,
+        new ResumeV2NullUnitOfWork(),
+      );
+
+      await expect(service.acknowledgeScreen({
+        authorization: authorizationV2('acknowledge_quote_screen'),
+        missionId: MISSION_ID,
+        commandId: ACK_COMMAND_ID,
+        expectedMissionRevision: 8,
+        realtimeSessionId: REALTIME_SESSION_ID,
+        contextRevision: 5,
+        contextDigest: 'a'.repeat(64),
+        draftSessionId: 'quote-draft-session-1',
+        expectedDraftSlotRevision: 2,
+        expectedDraftContentRevision: 1,
+      })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          mission: {
+            phase,
+            revision: 11,
+          },
+          presentation: EMPTY_PRESENTATION,
+        },
+      });
+      expect(
+        ContinueQuoteAgentMissionLineResolution.prototype.execute,
+      ).toHaveBeenCalledWith({
+        ...OWNER,
+        authority: PROOF_V2,
+        missionId: MISSION_ID,
+        parentCommandId: ACK_COMMAND_ID,
+      });
+      expect(queueSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it('réutilise le turnId comme commandId et construit seule la provenance voix', async () => {
     vi.spyOn(StartQuoteAgentMission.prototype, 'execute').mockResolvedValue({

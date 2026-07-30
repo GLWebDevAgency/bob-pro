@@ -14,13 +14,9 @@ import type {
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
 
-/**
- * Version demandée par le mobile publié tant que M2-A-3 n'a pas certifié la projection device.
- *
- * Ne pas remplacer cette constante par `2` : le support M2-A est additif et explicite via
- * `REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION`.
- */
+/** Contrat N-1 conservé byte-for-byte pour les clients déjà publiés. */
 export const REALTIME_AGENT_MISSION_PROTOCOL_VERSION = 1 as const;
+/** Contrat M2-A demandé explicitement par le transport GPT/OpenAI M2-A-3. */
 export const REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION = 2 as const;
 export type RealtimeAgentMissionProtocolVersion =
   | typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION
@@ -207,9 +203,6 @@ interface RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: RealtimeAgentMissionProtocolVersion;
   readonly realtimeSessionId: string;
   readonly disposed: boolean;
-  getCurrentQuoteCreation(
-    signal?: AbortSignal,
-  ): Promise<Result<{ readonly mission: AgentMissionViewV1 | null }, AppError>>;
   startQuoteCreation(
     input: RealtimeAgentMissionStartQuoteInput,
     signal?: AbortSignal,
@@ -233,11 +226,20 @@ interface RealtimeAgentMissionSessionCommon {
 export interface RealtimeAgentMissionSessionV1
 extends RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_VERSION;
+  getCurrentQuoteCreation(
+    signal?: AbortSignal,
+  ): Promise<Result<{ readonly mission: AgentMissionViewV1 | null }, AppError>>;
 }
 
 export interface RealtimeAgentMissionSessionV2
 extends RealtimeAgentMissionSessionCommon {
   readonly protocolVersion: typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION;
+  getCurrentQuoteCreation(
+    signal?: AbortSignal,
+  ): Promise<Result<{
+    readonly mission: AgentMissionViewV1 | null;
+    readonly presentation: QuoteAgentMissionPresentationV1 | null;
+  }, AppError>>;
   acknowledgeQuoteScreen(
     input: RealtimeAgentMissionAcknowledgeQuoteScreenInput,
     signal?: AbortSignal,

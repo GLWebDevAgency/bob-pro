@@ -37,6 +37,10 @@ import { AgentMissionService } from './agent-mission.service';
 function serviceSpies() {
   return {
     getCurrent: vi.fn(async () => ({ ok: true as const, value: { mission: null } })),
+    getCurrentV2: vi.fn(async () => ({
+      ok: true as const,
+      value: { mission: null, presentation: null },
+    })),
     getCurrentResume: vi.fn(async () => ({
       ok: true as const,
       value: { mission: null },
@@ -133,6 +137,10 @@ const TEST_PROOF = Object.freeze({
   principalBindingHash: 'b'.repeat(64),
   capabilityHash: 'c'.repeat(64),
 }) satisfies AgentMissionRealtimeAuthorityProof;
+const TEST_PROOF_V2 = Object.freeze({
+  ...TEST_PROOF,
+  protocolVersion: 2,
+}) satisfies AgentMissionRealtimeAuthorityProof;
 const QUOTE_LINE = Object.freeze({
   serviceReference: 'Main-d’œuvre plomberie',
   categoryHint: 'labor',
@@ -146,19 +154,22 @@ const QUOTE_LINE = Object.freeze({
 
 function testAuthorization(
   operation: AgentMissionHttpAuthorization['operation'],
+  proof: AgentMissionRealtimeAuthorityProof = TEST_PROOF,
 ): AgentMissionHttpAuthorization {
   return Object.freeze({
     operation,
     owner: Object.freeze({ companyId: 'company-1', ownerUserId: 'owner-1' }),
-    proof: TEST_PROOF,
+    proof,
   });
 }
 
-function testAuthority(): AgentMissionHttpAuthority {
+function testAuthority(
+  proof: AgentMissionRealtimeAuthorityProof = TEST_PROOF,
+): AgentMissionHttpAuthority {
   return {
     prepare: vi.fn((operation, capability) => (
       capability === TEST_CAPABILITY
-        ? { ok: true as const, value: testAuthorization(operation) }
+        ? { ok: true as const, value: testAuthorization(operation, proof) }
         : {
             ok: false as const,
             error: {
@@ -346,6 +357,23 @@ const TEST_FINGERPRINTS: AgentMissionFingerprintPort = {
 };
 
 describe('AgentMissionController M1-A', () => {
+  it('conserve le GET capability V1 exact et exige la projection pour V2', async () => {
+    const v1 = controller(testAuthority());
+    await expect(v1.controller.getCurrent(TEST_CAPABILITY)).resolves.toEqual({
+      mission: null,
+    });
+    expect(v1.spies.getCurrent).toHaveBeenCalledOnce();
+    expect(v1.spies.getCurrentV2).not.toHaveBeenCalled();
+
+    const v2 = controller(testAuthority(TEST_PROOF_V2));
+    await expect(v2.controller.getCurrent(TEST_CAPABILITY)).resolves.toEqual({
+      mission: null,
+      presentation: null,
+    });
+    expect(v2.spies.getCurrentV2).toHaveBeenCalledOnce();
+    expect(v2.spies.getCurrent).not.toHaveBeenCalled();
+  });
+
   it('expose la reprise JWT sans authority capability et rejette toute query', async () => {
     const authority = testAuthority();
     const { controller: candidate, spies } = controller(authority);

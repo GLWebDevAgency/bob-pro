@@ -728,6 +728,12 @@ describe('Realtime AgentMission capability handle', () => {
       expect(init?.headers).toMatchObject({
         'x-bob-agent-mission-capability': CAPABILITY_V2,
       });
+      if (path === '/agent-missions/current/quote-creation') {
+        return new Response(JSON.stringify({
+          mission: catalogueView,
+          presentation: cataloguePresentation(catalogueView),
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       if (
         path
         === `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`
@@ -922,6 +928,16 @@ describe('Realtime AgentMission capability handle', () => {
     expect(JSON.stringify(handle)).toBe('{}');
     expect(JSON.stringify(bootstrap.value)).not.toContain('bam2_');
 
+    await expect(handle.getCurrentQuoteCreation()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_catalogue_choice' },
+        presentation: {
+          decision: { kind: 'catalogue' },
+          catalogueChoices: [{ choiceId: CANDIDATE_CHOICE_ID }],
+        },
+      },
+    });
     await expect(handle.acknowledgeQuoteScreen({
       missionId: MISSION_ID,
       commandId: '13131313-1313-4313-8313-131313131313',
@@ -1116,6 +1132,7 @@ describe('Realtime AgentMission capability handle', () => {
     expect(paths).toEqual([
       '/voice/realtime/calls',
       `/voice/realtime/calls/${SESSION_ID}/agent-mission-bootstrap-acknowledgements`,
+      '/agent-missions/current/quote-creation',
       `/agent-missions/${MISSION_ID}/screen-acks`,
       `/agent-missions/${MISSION_ID}/decisions`,
       `/agent-missions/${MISSION_ID}/quote-lines`,
