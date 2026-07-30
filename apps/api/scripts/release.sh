@@ -227,6 +227,7 @@ certify_document_archive_protocol() {
           src/persistence/prisma/document-archive-rollout.postgres.test.ts
       ;;
     2)
+      DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \
       RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
         pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
           src/persistence/prisma/document-archive-integrity.postgres.test.ts
@@ -2772,6 +2773,7 @@ SELECT CASE WHEN EXISTS (
 SQL
   )"
   if [ "$archive_activated_now" = true ]; then
+    DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \
     RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true \
       pnpm --filter @bob/api exec vitest run --testTimeout=30000 \
         src/persistence/prisma/document-archive-integrity.postgres.test.ts

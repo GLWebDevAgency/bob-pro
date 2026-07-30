@@ -482,6 +482,20 @@ test('la production ne peut jamais atteindre les fixtures de certification', () 
     postactivationBody,
     /document-archive-integrity\.postgres\.test\.ts[\s\S]*?invoice-settlement-semantics\.postgres\.test\.ts/u,
   );
+  assert.equal(
+    (
+      release.match(
+        /DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=4 \\\n\s+RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT=true/gu,
+      ) ?? []
+    ).length,
+    2,
+    'Les certificats archive predeploy et postdeploy doivent réserver la capacité du pool staging.',
+  );
+  assert.equal(
+    (release.match(/DOCUMENT_ARCHIVE_CERT_WORKER_COUNT=/gu) ?? []).length,
+    2,
+    'Le budget archive staging doit rester explicite et sans troisième override ambigu.',
+  );
 });
 
 test('les ACL exactes utilisent SET ROLE propriétaire et une allowlist minimale', () => {

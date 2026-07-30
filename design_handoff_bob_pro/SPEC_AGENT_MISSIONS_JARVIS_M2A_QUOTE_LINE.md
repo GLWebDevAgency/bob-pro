@@ -1072,6 +1072,15 @@ Le writer N-1 omet `protocolVersion` et obtient donc exactement `1` par défaut 
 modifier cette colonne après insertion est refusée. Les phases M2-A et leurs événements exigent
 `protocolVersion=2` dans les contraintes SQL finales.
 
+**Budget de connexions des certificats staging.** Une preuve de concurrence vérifie un invariant
+de possession ; ce n'est pas un test de charge et elle exige au minimum deux connexions
+indépendantes. Le certificat d'archive conserve huit workers par défaut sur PostgreSQL isolé, mais
+le rituel Supabase staging en impose exactement quatre : le pool session-mode observé est partagé
+avec l'unique réplique API et limité à quinze clients. La valeur de test est une décimale canonique
+bornée `2..8`; toute autre forme échoue fermée avant connexion. Les deux appels predeploy et
+postdeploy doivent porter le même budget explicite. Un dépassement `EMAXCONNSESSION` n'est jamais
+converti en succès ni masqué par un retry global.
+
 ### 15.1 Trains de livraison — une seule PR active à la fois
 
 | Train | Résultat atomique | Statut actuel | Promotion maximale du train |
@@ -1150,7 +1159,7 @@ projection voix/toucher et la preuve appareil restent dues à M2-A-3.
 
 Les preuves locales reproductibles du 30 juillet 2026 sont :
 
-- suites complètes : core `3 008/3 008`, client API `490/490`, API `2 736/2 736`, avec
+- suites complètes : core `3 008/3 008`, client API `490/490`, API `2 749/2 749`, avec
   `371` certificats opt-in ignorés hors contexte ;
 - contrats de release API : `534/534`, un scénario explicitement ignoré ;
 - certificat AgentMission PostgreSQL 17 sous déployeur/runtime non-superuser : `56/56`, avec
