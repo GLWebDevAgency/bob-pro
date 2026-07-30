@@ -10,12 +10,78 @@ import { PrismaDocumentArchiveJobRepository } from './repositories';
 import { PrismaService } from './prisma.service';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_DOCUMENT_ARCHIVE_CERT === 'true';
-const WORKER_COUNT = 8;
+const DEFAULT_WORKER_COUNT = 8;
+const MIN_WORKER_COUNT = 2;
+const MAX_WORKER_COUNT = 8;
 const ARCHIVE_TEARDOWN_LOCK_TIMEOUT = '5s';
 const ARCHIVE_TEARDOWN_STATEMENT_TIMEOUT = '25s';
 const ARCHIVE_TEARDOWN_MAX_WAIT_MS = 5_000;
 const ARCHIVE_TEARDOWN_TRANSACTION_TIMEOUT_MS = 30_000;
 const ARCHIVE_TEARDOWN_HOOK_TIMEOUT_MS = 40_000;
+
+export function parseDocumentArchiveCertWorkerCount(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_WORKER_COUNT;
+  if (!/^[2-8]$/u.test(raw)) {
+    throw new Error('DOCUMENT_ARCHIVE_CERT_WORKER_COUNT must be a canonical integer from 2 to 8');
+  }
+  const value = Number(raw);
+  if (value < MIN_WORKER_COUNT || value > MAX_WORKER_COUNT) {
+    throw new Error('DOCUMENT_ARCHIVE_CERT_WORKER_COUNT must be a canonical integer from 2 to 8');
+  }
+  return value;
+}
+
+export function singleConnectionPrismaUrl(raw: string): string {
+  const url = new URL(raw);
+  if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
+    throw new Error('PostgreSQL certification URL must use postgres or postgresql');
+  }
+  url.searchParams.set('connection_limit', '1');
+  return url.toString();
+}
+
+const WORKER_COUNT = parseDocumentArchiveCertWorkerCount(
+  process.env.DOCUMENT_ARCHIVE_CERT_WORKER_COUNT,
+);
+
+describe('budget de connexions du certificat archive', () => {
+  it('conserve huit workers sur une base isolée sans configuration de release', () => {
+    expect(parseDocumentArchiveCertWorkerCount(undefined)).toBe(8);
+  });
+
+  it.each([
+    ['2', 2],
+    ['4', 4],
+    ['8', 8],
+  ])('accepte la borne canonique %s', (raw, expected) => {
+    expect(parseDocumentArchiveCertWorkerCount(raw)).toBe(expected);
+  });
+
+  it.each(['', '1', '9', '04', '4.0', ' 4', '4 '])(
+    'refuse la forme non canonique %j avant toute connexion',
+    (raw) => {
+      expect(() => parseDocumentArchiveCertWorkerCount(raw)).toThrow(
+        'DOCUMENT_ARCHIVE_CERT_WORKER_COUNT must be a canonical integer from 2 to 8',
+      );
+    },
+  );
+
+  it('borne chaque engine Prisma à une seule connexion sans perdre les paramètres existants', () => {
+    const result = new URL(
+      singleConnectionPrismaUrl(
+        'postgresql://runtime:secret@example.test/bob?sslmode=require&connection_limit=12',
+      ),
+    );
+    expect(result.searchParams.get('sslmode')).toBe('require');
+    expect(result.searchParams.get('connection_limit')).toBe('1');
+  });
+
+  it('refuse un protocole étranger avant de construire un client', () => {
+    expect(() => singleConnectionPrismaUrl('https://example.test/bob')).toThrow(
+      'PostgreSQL certification URL must use postgres or postgresql',
+    );
+  });
+});
 
 function passesLuhn(value: string): boolean {
   let sum = 0;
@@ -268,10 +334,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       if (!runtimeUrl || !directUrl) {
         throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
       }
-      admin = new PrismaClient({ datasourceUrl: directUrl });
+      const boundedRuntimeUrl = singleConnectionPrismaUrl(runtimeUrl);
+      const boundedDirectUrl = singleConnectionPrismaUrl(directUrl);
+      admin = new PrismaClient({ datasourceUrl: boundedDirectUrl });
       workers = Array.from(
         { length: WORKER_COUNT },
-        () => new PrismaService({ datasourceUrl: runtimeUrl }),
+        () => new PrismaService({ datasourceUrl: boundedRuntimeUrl }),
       );
       await Promise.all([admin.$connect(), ...workers.map((worker) => worker.$connect())]);
       for (const [id, suffix] of [

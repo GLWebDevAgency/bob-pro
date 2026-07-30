@@ -3,6 +3,7 @@ import type { LlmPort, LlmToolCall } from '@bob/ai';
 import type {
   AgentMissionViewV1,
   DecideQuoteAgentMissionOutput,
+  QuoteAgentMissionPresentationV1,
 } from '@bob/core';
 import {
   RealtimeQuoteMissionOrchestrator,
@@ -46,6 +47,17 @@ const LINE_CANDIDATE = Object.freeze({
   priceBasis: 'per_unit',
   vatRateHint: null,
 });
+const EMPTY_PRESENTATION = Object.freeze({
+  schema: 'bob.agent-mission.quote-presentation',
+  version: 1,
+  requiredFact: null,
+  pendingLine: null,
+  decision: null,
+  catalogueChoices: Object.freeze([]),
+  freeLineChoiceId: null,
+  proposalStatus: Object.freeze({ kind: 'absent' }),
+  proposal: null,
+}) satisfies QuoteAgentMissionPresentationV1;
 
 function llm(call: LlmToolCall): LlmPort {
   return {
@@ -277,15 +289,18 @@ function harness(input: {
       ok: true,
       value: input.stageValue ?? {
         outcome: 'staged',
-        mission: mission({ phase: 'awaiting_lines', revision: 4 }),
+        mission: mission({ phase: 'awaiting_line_details', revision: 5 }),
         stagedCount: 1,
         firstQueueOrdinal: 1,
         lastQueueOrdinal: 1,
         continuation: {
-          outcome: 'deferred_to_m2a2',
+          outcome: 'details_requested',
           pendingLineId: '60000000-0000-4000-8000-000000000001',
           presentedChoiceCount: 0,
+          requiredFact: 'unit_price',
+          proposalId: null,
         },
+        presentation: EMPTY_PRESENTATION,
       },
     };
   });
@@ -311,12 +326,15 @@ function harness(input: {
         outcome: 'selected',
         resolution: 'selected',
         invalidationReason: null,
-        mission: mission({ phase: 'awaiting_lines', revision: 6 }),
+        mission: mission({ phase: 'awaiting_line_details', revision: 7 }),
         continuation: {
-          outcome: 'deferred_to_m2a2',
+          outcome: 'details_requested',
           pendingLineId: '60000000-0000-4000-8000-000000000001',
           presentedChoiceCount: 0,
+          requiredFact: 'unit_price',
+          proposalId: null,
         },
+        presentation: EMPTY_PRESENTATION,
       },
     };
   });
@@ -730,7 +748,10 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
           outcome: 'choices_presented',
           pendingLineId: '60000000-0000-4000-8000-000000000001',
           presentedChoiceCount: 3,
+          requiredFact: null,
+          proposalId: null,
         },
+        presentation: EMPTY_PRESENTATION,
       },
     });
 
@@ -767,9 +788,9 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
     });
 
     await expect(h.orchestrator.run(inputV2())).resolves.toEqual({
-      status: 'failed',
-      canonicalSpeech:
-        'Le choix catalogue est enregistré avec sa révision, mais il n’a pas encore été transformé en ligne de devis. Aucun montant n’a été ajouté.',
+      status: 'handled',
+      canonicalSpeech: 'Quel prix unitaire dois-je appliquer à cette ligne ?',
+      speechPurpose: 'structured_choice',
     });
     expect(h.decideCatalogueChoiceFromVoiceTurn).toHaveBeenCalledWith({
       authorization: { owner: OWNER, proof: PROOF_V2 },
@@ -807,12 +828,15 @@ describe('RealtimeQuoteMissionOrchestrator', () => {
         outcome: 'selected',
         resolution: 'free',
         invalidationReason: null,
-        mission: mission({ phase: 'awaiting_lines', revision: 6 }),
+        mission: mission({ phase: 'awaiting_line_details', revision: 7 }),
         continuation: {
-          outcome: 'deferred_to_m2a2',
+          outcome: 'details_requested',
           pendingLineId: '60000000-0000-4000-8000-000000000001',
           presentedChoiceCount: 0,
+          requiredFact: 'unit_price',
+          proposalId: null,
         },
+        presentation: EMPTY_PRESENTATION,
       },
     });
 

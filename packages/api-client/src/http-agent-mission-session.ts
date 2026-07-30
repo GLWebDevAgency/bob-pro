@@ -5,6 +5,7 @@ import {
   isCanonicalAgentMissionUserCommandId,
   isCanonicalAgentMissionUuid,
   normalizeAgentMissionQuoteLineCandidate,
+  normalizeAgentMissionQuoteLinePatch,
   type AcknowledgeQuoteScreenOutput,
   type AgentMissionViewV1,
   type AppError,
@@ -21,6 +22,8 @@ import {
   decodeAgentMissionCurrentV2,
   decodeAgentMissionDecision,
   decodeAgentMissionDecisionV2,
+  decodeAgentMissionLineProposalDecision,
+  decodeAgentMissionPatchQuoteLine,
   decodeAgentMissionScreenAck,
   decodeAgentMissionScreenAckV2,
   decodeAgentMissionStageQuoteLines,
@@ -31,11 +34,17 @@ import {
   REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION,
   REALTIME_AGENT_MISSION_PROTOCOL_VERSION,
   type RealtimeAgentMissionAcknowledgeQuoteScreenInput,
+  type RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2,
   type RealtimeAgentMissionCancelQuoteInput,
   type RealtimeAgentMissionCatalogueChoiceInput,
   type RealtimeAgentMissionCatalogueChoiceOutput,
+  type RealtimeAgentMissionLineProposalDecisionInput,
+  type RealtimeAgentMissionLineProposalDecisionOutput,
+  type RealtimeAgentMissionPatchQuoteLineInput,
+  type RealtimeAgentMissionPatchQuoteLineOutput,
   type RealtimeAgentMissionProtocolVersion,
   type RealtimeAgentMissionQuoteDecisionInput,
+  type RealtimeAgentMissionQuoteDecisionOutputV2,
   type RealtimeAgentMissionSession,
   type RealtimeAgentMissionSessionV1,
   type RealtimeAgentMissionSessionV2,
@@ -46,7 +55,20 @@ import {
 
 const POSTGRES_INT_MAX = 2_147_483_647;
 const SHA_256 = /^[a-f0-9]{64}$/u;
+const CATALOGUE_ITEM_ID = /^[A-Za-z0-9-]{1,128}$/u;
 const AGENT_MISSION_REQUEST_TIMEOUT_MS = 12_000;
+
+type AcknowledgeQuoteScreenOutputFor<
+TProtocol extends RealtimeAgentMissionProtocolVersion,
+> = TProtocol extends typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+  ? RealtimeAgentMissionAcknowledgeQuoteScreenOutputV2
+  : AcknowledgeQuoteScreenOutput;
+
+type DecideQuoteCreationOutputFor<
+TProtocol extends RealtimeAgentMissionProtocolVersion,
+> = TProtocol extends typeof REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+  ? RealtimeAgentMissionQuoteDecisionOutputV2
+  : DecideQuoteAgentMissionOutput;
 
 export interface HttpAgentMissionRequest<T> {
   readonly method: 'GET' | 'POST';
@@ -274,56 +296,56 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
   acknowledgeQuoteScreen(
     input: RealtimeAgentMissionAcknowledgeQuoteScreenInput,
     signal?: AbortSignal,
-  ) {
+  ): Promise<Result<AcknowledgeQuoteScreenOutputFor<TProtocol>, AppError>> {
     if (!isCanonicalAgentMissionUuid(input?.missionId)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'missionId',
         'UUID canonique requis.',
       );
     }
     if (!isCanonicalAgentMissionUserCommandId(input.commandId)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'commandId',
         'UUID v4 canonique requis.',
       );
     }
     if (!revision(input.expectedMissionRevision)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'expectedMissionRevision',
         'Révision positive requise.',
       );
     }
     if (!revision(input.contextRevision)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'contextRevision',
         'Révision de contexte positive requise.',
       );
     }
     if (typeof input.contextDigest !== 'string' || !SHA_256.test(input.contextDigest)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'contextDigest',
         'Digest SHA-256 canonique requis.',
       );
     }
     if (!draftSessionId(input.draftSessionId)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'draftSessionId',
         'Session de brouillon canonique requise.',
       );
     }
     if (!revision(input.expectedDraftSlotRevision)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'expectedDraftSlotRevision',
         'Révision de slot positive requise.',
       );
     }
     if (!revision(input.expectedDraftContentRevision, true)) {
-      return validation<AcknowledgeQuoteScreenOutput>(
+      return validation<AcknowledgeQuoteScreenOutputFor<TProtocol>>(
         'expectedDraftContentRevision',
         'Révision de contenu requise.',
       );
     }
-    return this.call<AcknowledgeQuoteScreenOutput>({
+    return this.call<AcknowledgeQuoteScreenOutputFor<TProtocol>>({
       method: 'POST',
       path: `/agent-missions/${encodeURIComponent(input.missionId)}/screen-acks`,
       body: {
@@ -336,9 +358,11 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
         expectedDraftSlotRevision: input.expectedDraftSlotRevision,
         expectedDraftContentRevision: input.expectedDraftContentRevision,
       },
-      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-        ? decodeAgentMissionScreenAckV2
-        : decodeAgentMissionScreenAck,
+      decode: (
+        this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+          ? decodeAgentMissionScreenAckV2
+          : decodeAgentMissionScreenAck
+      ) as (value: unknown) => AcknowledgeQuoteScreenOutputFor<TProtocol> | null,
       signal,
     });
   }
@@ -346,39 +370,39 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
   decideQuoteCreation(
     input: RealtimeAgentMissionQuoteDecisionInput,
     signal?: AbortSignal,
-  ) {
+  ): Promise<Result<DecideQuoteCreationOutputFor<TProtocol>, AppError>> {
     if (!isCanonicalAgentMissionUuid(input?.missionId)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'missionId',
         'UUID canonique requis.',
       );
     }
     if (!isCanonicalAgentMissionUserCommandId(input.commandId)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'commandId',
         'UUID v4 canonique requis.',
       );
     }
     if (!revision(input.expectedMissionRevision)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'expectedMissionRevision',
         'Révision positive requise.',
       );
     }
     if (!draftSessionId(input.expectedDraftSessionId)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'expectedDraftSessionId',
         'Session de brouillon canonique requise.',
       );
     }
     if (!revision(input.expectedDraftSlotRevision)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'expectedDraftSlotRevision',
         'Révision de slot positive requise.',
       );
     }
     if (!revision(input.expectedDraftContentRevision, true)) {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'expectedDraftContentRevision',
         'Révision de contenu requise.',
       );
@@ -396,25 +420,25 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
         'choiceSetRevision',
         'choiceId',
       ])) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'decision',
           'Décision de choix exacte requise.',
         );
       }
       if (!isCanonicalAgentMissionUuid(input.decisionId)) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'decisionId',
           'UUID canonique requis.',
         );
       }
       if (!revision(input.choiceSetRevision)) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'choiceSetRevision',
           'Révision positive requise.',
         );
       }
       if (!isCanonicalAgentMissionUuid(input.choiceId)) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'choiceId',
           'UUID canonique requis.',
         );
@@ -430,31 +454,33 @@ TProtocol extends RealtimeAgentMissionProtocolVersion,
         'expectedDraftContentRevision',
         'customerId',
       ])) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'decision',
           'Sélection client exacte requise.',
         );
       }
       if (!isCanonicalAgentMissionOpaqueIdentifier(input.customerId)) {
-        return validation<DecideQuoteAgentMissionOutput>(
+        return validation<DecideQuoteCreationOutputFor<TProtocol>>(
           'customerId',
           'Identifiant client canonique requis.',
         );
       }
     } else {
-      return validation<DecideQuoteAgentMissionOutput>(
+      return validation<DecideQuoteCreationOutputFor<TProtocol>>(
         'action',
         'Action de décision inconnue.',
       );
     }
     const { missionId, ...body } = input;
-    return this.call<DecideQuoteAgentMissionOutput>({
+    return this.call<DecideQuoteCreationOutputFor<TProtocol>>({
       method: 'POST',
       path: `/agent-missions/${encodeURIComponent(missionId)}/decisions`,
       body,
-      decode: this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
-        ? (value) => decodeAgentMissionDecisionV2(value, missionId)
-        : (value) => decodeAgentMissionDecision(value, missionId),
+      decode: (
+        this.#protocolVersion === REALTIME_AGENT_MISSION_PROTOCOL_M2A_VERSION
+          ? (value: unknown) => decodeAgentMissionDecisionV2(value, missionId)
+          : (value: unknown) => decodeAgentMissionDecision(value, missionId)
+      ) as (value: unknown) => DecideQuoteCreationOutputFor<TProtocol> | null,
       signal,
     });
   }
@@ -614,6 +640,190 @@ implements RealtimeAgentMissionSessionV2 {
       path: `/agent-missions/${encodeURIComponent(missionId)}/catalogue-choices`,
       body,
       decode: (value) => decodeAgentMissionCatalogueChoice(value, missionId),
+      signal,
+    });
+  }
+
+  patchQuoteLine(
+    input: RealtimeAgentMissionPatchQuoteLineInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!exactInput(input, [
+      'missionId',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'pendingLineId',
+      'expectedWorkRevision',
+      'scope',
+      'patch',
+    ])) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        'command',
+        'Commande de correction exacte requise.',
+      );
+    }
+    const commonIssue = quoteLineCommandIssue(input);
+    if (commonIssue !== null) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        commonIssue.field,
+        commonIssue.message,
+      );
+    }
+    if (!isCanonicalAgentMissionUuid(input.pendingLineId)) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        'pendingLineId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!revision(input.expectedWorkRevision)) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        'expectedWorkRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (
+      input.scope !== 'answer_required_fact'
+      && input.scope !== 'explicit_correction'
+    ) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        'scope',
+        'Portée de correction invalide.',
+      );
+    }
+    const patch = normalizeAgentMissionQuoteLinePatch(input.patch);
+    if (!patch.ok) {
+      return validation<RealtimeAgentMissionPatchQuoteLineOutput>(
+        `patch.${patch.error.field}`,
+        `Correction invalide (${patch.error.reason}).`,
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<RealtimeAgentMissionPatchQuoteLineOutput>({
+      method: 'POST',
+      path: `/agent-missions/${encodeURIComponent(missionId)}/quote-line-patches`,
+      body,
+      decode: (value) => decodeAgentMissionPatchQuoteLine(value, missionId),
+      signal,
+    });
+  }
+
+  decideQuoteLineProposal(
+    input: RealtimeAgentMissionLineProposalDecisionInput,
+    signal?: AbortSignal,
+  ) {
+    if (!isCanonicalAgentMissionUuid(input?.missionId)) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'missionId',
+        'UUID canonique requis.',
+      );
+    }
+    if (!exactInput(input, [
+      'missionId',
+      'commandId',
+      'expectedMissionRevision',
+      'expectedDraftSessionId',
+      'expectedDraftSlotRevision',
+      'expectedDraftContentRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceSetHash',
+      'choiceId',
+      'pendingLineId',
+      'proposalId',
+      'proposalRevision',
+      'expectedWorkRevision',
+      'expectedCatalogue',
+      'diffHash',
+    ])) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'command',
+        'Commande de décision de ligne exacte requise.',
+      );
+    }
+    const commonIssue = quoteLineCommandIssue(input);
+    if (commonIssue !== null) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        commonIssue.field,
+        commonIssue.message,
+      );
+    }
+    for (const [field, value] of [
+      ['decisionId', input.decisionId],
+      ['choiceId', input.choiceId],
+      ['pendingLineId', input.pendingLineId],
+      ['proposalId', input.proposalId],
+    ] as const) {
+      if (!isCanonicalAgentMissionUuid(value)) {
+        return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+          field,
+          'UUID canonique requis.',
+        );
+      }
+    }
+    if (!revision(input.choiceSetRevision)) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'choiceSetRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (!revision(input.expectedWorkRevision)) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'expectedWorkRevision',
+        'Révision positive requise.',
+      );
+    }
+    if (input.proposalRevision !== 1) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'proposalRevision',
+        'Révision de proposition invalide.',
+      );
+    }
+    if (
+      typeof input.choiceSetHash !== 'string'
+      || !SHA_256.test(input.choiceSetHash)
+    ) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'choiceSetHash',
+        'Digest SHA-256 canonique requis.',
+      );
+    }
+    if (typeof input.diffHash !== 'string' || !SHA_256.test(input.diffHash)) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'diffHash',
+        'Digest SHA-256 canonique requis.',
+      );
+    }
+    if (
+      input.expectedCatalogue !== null
+      && (
+        !exactInput(input.expectedCatalogue, ['itemId', 'revision'])
+        || !CATALOGUE_ITEM_ID.test(input.expectedCatalogue.itemId)
+        || !revision(input.expectedCatalogue.revision)
+      )
+    ) {
+      return validation<RealtimeAgentMissionLineProposalDecisionOutput>(
+        'expectedCatalogue',
+        'Fence catalogue exacte requise.',
+      );
+    }
+    const { missionId, ...body } = input;
+    return this.call<RealtimeAgentMissionLineProposalDecisionOutput>({
+      method: 'POST',
+      path: `/agent-missions/${encodeURIComponent(missionId)}/quote-line-decisions`,
+      body,
+      decode: (value) => decodeAgentMissionLineProposalDecision(
+        value,
+        missionId,
+      ),
       signal,
     });
   }

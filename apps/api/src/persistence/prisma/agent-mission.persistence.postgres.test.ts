@@ -266,6 +266,9 @@ function faultAfterWrite(
           selectCustomerCas: async (input) => (
             afterWrite(await tx.quoteDrafts.selectCustomerCas(input))
           ),
+          appendLineCas: async (input) => (
+            afterWrite(await tx.quoteDrafts.appendLineCas(input))
+          ),
         },
         quoteLineWork: {
           listForUpdate: (input) => tx.quoteLineWork.listForUpdate(input),
@@ -286,6 +289,7 @@ function faultAfterWrite(
         quoteScreen: tx.quoteScreen,
         customers: tx.customers,
         catalogueCandidates: tx.catalogueCandidates,
+        quoteVatContext: tx.quoteVatContext,
       };
       return work(wrapped);
       }),
@@ -956,7 +960,7 @@ describe.skipIf(!RUN_CERT)(
           )
           OR has_function_privilege(
             exposed.role_name,
-            'public.guard_agent_mission_event_append_v2()',
+            'public.guard_agent_mission_event_append_v3()',
             'EXECUTE'
           )
           OR has_function_privilege(
@@ -1087,6 +1091,8 @@ describe.skipIf(!RUN_CERT)(
         requiredFact: null,
         catalogueItemId: null,
         expectedCatalogueRevision: null,
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
         proposalId: null,
         proposalRevision: null,
         proposalDiffHash: null,

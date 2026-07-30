@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_MISSION_IDLE_TTL_MS,
-  type AgentMission,
+  AgentMission,
   type AgentMissionKind,
 } from '../../domain/agent/agent-mission';
 import { type AgentMissionEvent } from '../../domain/agent/agent-mission-event';
@@ -10,10 +10,16 @@ import {
   createEmptyQuoteDraftPayload,
   type QuoteDraftPayloadV1,
 } from '../quote-drafts/quote-draft-slot';
+import {
+  applyQuoteDraftCustomerSelection,
+} from '../quote-drafts/apply-quote-draft-transition';
 import { type AgentMissionFingerprintPort } from '../ports/agent-mission-fingerprint';
 import {
   type CustomerCandidateReference,
 } from '../ports/customer-candidate-search';
+import {
+  type CatalogueCandidateRecord,
+} from '../ports/catalogue-candidate-search';
 import {
   type AgentMissionEventLookup,
   type AgentMissionForeground,
@@ -30,6 +36,10 @@ import {
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
 } from '../ports/agent-mission-unit-of-work';
+import {
+  computeQuoteVatContextDigest,
+  type QuoteVatDecisionContext,
+} from '../ports/quote-vat-context';
 import { type IdGeneratorPort } from '../ports/services';
 import {
   AcknowledgeQuoteScreen,
@@ -55,8 +65,21 @@ import {
 import { deriveAgentMissionSystemCommandId } from './agent-mission-application';
 import {
   parseAgentMissionQuoteLineWork,
+  presentQuoteLineProposalOnWork,
   type AgentMissionQuoteLineWork,
 } from './quote-line-work';
+import {
+  deriveQuoteLineProposal,
+} from './derive-quote-line-proposal';
+import {
+  PatchQuoteAgentMissionLine,
+} from './patch-quote-agent-mission-line';
+import {
+  ContinueQuoteAgentMissionLineResolution,
+} from './continue-quote-agent-mission-line-resolution';
+import {
+  DecideQuoteAgentMissionLineProposal,
+} from './decide-quote-agent-mission-line-proposal';
 
 const OWNER = {
   companyId: 'company-1',
@@ -175,6 +198,8 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
   customerSearches = 0;
   customerByIdOverride: CustomerCandidateReference | null | undefined;
   customersByIdsOverride: readonly CustomerCandidateReference[] | undefined;
+  quoteVatContextOverride: QuoteVatDecisionContext | null = null;
+  catalogueByIdOverride: CatalogueCandidateRecord | null = null;
   appliedContext: AgentMissionAuthorizedRealtimeLease['appliedContext'] = {
     revision: 4,
     digest: 'f'.repeat(64),
@@ -184,16 +209,31 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
     return cloneState(this.state);
   }
 
-  setSlot(payload: QuoteDraftPayloadV1, revision = 1): void {
+  setSlot(
+    payload: QuoteDraftPayloadV1,
+    revision = 1,
+    agentMissionId: string | null = null,
+  ): void {
     this.state.slot = {
       ...OWNER,
       revision,
       payloadVersion: 1,
       payload,
-      agentMissionId: null,
+      agentMissionId,
       createdAt: INITIAL_NOW,
       updatedAt: INITIAL_NOW,
     };
+  }
+
+  setMission(mission: AgentMission): void {
+    this.state.missions.set(mission.id, mission);
+  }
+
+  setQuoteLineWork(workItems: readonly AgentMissionQuoteLineWork[]): void {
+    this.state.quoteLineWork.clear();
+    for (const workItem of workItems) {
+      this.state.quoteLineWork.set(workItem.id, workItem);
+    }
   }
 
   setCustomers(customers: readonly CustomerCandidateReference[]): void {
@@ -439,6 +479,49 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
           };
           return nextState.slot;
         },
+        appendLineCas: async ({
+          missionId,
+          expectedSlotRevision,
+          expectedDraftSessionId,
+          expectedDraftContentRevision,
+          payload,
+        }) => {
+          beforeWrite();
+          const slot = scopedSlot();
+          const currentDraft = slot?.payload.draft;
+          const nextDraft = payload.draft;
+          if (
+            slot === null
+            || currentDraft === undefined
+            || slot.agentMissionId !== missionId
+            || slot.revision !== expectedSlotRevision
+            || currentDraft.sessionId !== expectedDraftSessionId
+            || currentDraft.contentRevision !== expectedDraftContentRevision
+            || currentDraft.step !== 'lignes'
+            || currentDraft.customer === null
+            || nextDraft.sessionId !== expectedDraftSessionId
+            || nextDraft.contentRevision !== expectedDraftContentRevision + 1
+            || nextDraft.step !== 'lignes'
+            || nextDraft.customer === null
+            || nextDraft.customer.id !== currentDraft.customer.id
+            || nextDraft.customer.name !== currentDraft.customer.name
+            || nextDraft.lines.length !== currentDraft.lines.length + 1
+            || nextDraft.lineMetadata.length !== currentDraft.lineMetadata.length + 1
+            || JSON.stringify(nextDraft.lines.slice(0, -1))
+              !== JSON.stringify(currentDraft.lines)
+            || JSON.stringify(nextDraft.lineMetadata.slice(0, -1))
+              !== JSON.stringify(currentDraft.lineMetadata)
+          ) {
+            return null;
+          }
+          nextState.slot = {
+            ...slot,
+            revision: slot.revision + 1,
+            payload,
+            updatedAt: this.now,
+          };
+          return nextState.slot;
+        },
       },
       quoteLineWork: {
         listForUpdate: async (scope) => (
@@ -626,7 +709,15 @@ class MemoryAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort {
       },
       catalogueCandidates: {
         search: async () => ({ candidates: [], truncated: false }),
-        getById: async () => null,
+        getById: async () => this.catalogueByIdOverride,
+      },
+      quoteVatContext: {
+        getForUpdate: async ({ companyId, customerId }) => (
+          companyId === owner.companyId
+          && this.quoteVatContextOverride?.customerId === customerId
+            ? this.quoteVatContextOverride
+            : null
+        ),
       },
     };
     const output = await work(transaction);
@@ -672,6 +763,9 @@ function useCases(
   const acknowledge = new AcknowledgeQuoteScreen(deps);
   const advance = new AdvanceQuoteAgentMission(deps);
   const decide = new DecideQuoteAgentMission(deps);
+  const patchLine = new PatchQuoteAgentMissionLine(deps);
+  const continueLineResolution = new ContinueQuoteAgentMissionLineResolution(deps);
+  const decideLineProposal = new DecideQuoteAgentMissionLineProposal(deps);
   return {
     unitOfWork,
     start: {
@@ -709,6 +803,30 @@ function useCases(
       execute: (
         input: Omit<DecideQuoteAgentMissionInput, 'authority'>,
       ) => decide.execute({ ...input, authority }),
+    },
+    patchLine: {
+      execute: (
+        input: Omit<
+          Parameters<PatchQuoteAgentMissionLine['execute']>[0],
+          'authority'
+        >,
+      ) => patchLine.execute({ ...input, authority }),
+    },
+    continueLineResolution: {
+      execute: (
+        input: Omit<
+          Parameters<ContinueQuoteAgentMissionLineResolution['execute']>[0],
+          'authority'
+        >,
+      ) => continueLineResolution.execute({ ...input, authority }),
+    },
+    decideLineProposal: {
+      execute: (
+        input: Omit<
+          Parameters<DecideQuoteAgentMissionLineProposal['execute']>[0],
+          'authority'
+        >,
+      ) => decideLineProposal.execute({ ...input, authority }),
     },
   };
 }
@@ -772,6 +890,152 @@ async function preparedCustomerDecisionMission(input: {
     mission: advanced.value.mission,
     contextRevision,
     contextDigest,
+  };
+}
+
+function preparedLineProposalMission(
+  selectedCatalogue: CatalogueCandidateRecord | null = null,
+) {
+  const suite = useCases(new MemoryAgentMissionUnitOfWork(), AUTHORITY_M2A);
+  const missionId = '70000000-0000-4000-8000-000000000001';
+  const sessionId = 'quote-line-session-1';
+  const workItemId = '70000000-0000-4000-8000-000000000002';
+  const proposalId = '70000000-0000-4000-8000-000000000003';
+  const decisionId = '70000000-0000-4000-8000-000000000004';
+  const confirmChoiceId = '70000000-0000-4000-8000-000000000005';
+  const editChoiceId = '70000000-0000-4000-8000-000000000006';
+  const cancelChoiceId = '70000000-0000-4000-8000-000000000007';
+  const empty = emptyPayload(sessionId);
+  const selectedPayload = applyQuoteDraftCustomerSelection(empty, {
+    id: 'customer-a',
+    name: 'Client A',
+  });
+  if (!selectedPayload.ok) throw new Error('line proposal customer fixture invalid');
+  const started = AgentMission.start({
+    id: missionId,
+    companyId: OWNER.companyId,
+    ownerUserId: OWNER.ownerUserId,
+    protocolVersion: 2,
+    createdAt: INITIAL_NOW,
+    stagedCustomerResolution: null,
+    startOutcome: 'no_slot',
+    draft: { sessionId, slotRevision: 1, contentRevision: 0 },
+  });
+  if (!started.ok) throw new Error('line proposal mission start invalid');
+  const appliedContext = suite.unitOfWork.appliedContext;
+  if (appliedContext === null) throw new Error('line proposal context fixture invalid');
+  const acknowledged = started.value.mission.acknowledgeQuoteScreen({
+    expectedRevision: 1,
+    binding: {
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: appliedContext.revision,
+      contextDigest: appliedContext.digest,
+      screenName: '/devis/new',
+      screenInstanceId: 'line-proposal-screen',
+      acknowledgedAt: '2026-07-26T10:01:00.000Z',
+    },
+    observedDraft: { sessionId, slotRevision: 1, contentRevision: 0 },
+    draftHasCustomer: false,
+    occurredAt: '2026-07-26T10:01:00.000Z',
+  });
+  if (!acknowledged.ok) throw new Error('line proposal mission ACK invalid');
+  const selected = acknowledged.value.mission.selectCustomer({
+    expectedRevision: 2,
+    source: 'screen_selection',
+    customerId: 'customer-a',
+    updatedDraft: { sessionId, slotRevision: 2, contentRevision: 1 },
+    occurredAt: '2026-07-26T10:02:00.000Z',
+  });
+  if (!selected.ok) throw new Error('line proposal customer transition invalid');
+  const work: AgentMissionQuoteLineWork = {
+    id: workItemId,
+    companyId: OWNER.companyId,
+    ownerUserId: OWNER.ownerUserId,
+    missionId,
+    ordinal: 1,
+    revision: 1,
+    state: 'queued',
+    origin: 'user_tap',
+    serviceReference: 'Main-d’œuvre plomberie',
+    category: 'labor',
+    quantityMilli: 2_000,
+    unit: 'heure',
+    unitPriceCents: 5_500,
+    requestedVatRate: 20,
+    priceBasis: 'per_unit',
+    housingOlderThan2y: null,
+    energyRenovation: null,
+    requiredFact: null,
+    catalogueResolution: selectedCatalogue === null ? 'free' : 'selected',
+    catalogueItemId: selectedCatalogue?.id ?? null,
+    expectedCatalogueRevision: selectedCatalogue?.revision ?? null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    createdAt: '2026-07-26T10:02:00.000Z',
+    updatedAt: '2026-07-26T10:02:00.000Z',
+  };
+  const vatContext = {
+    customerId: 'customer-a',
+    companyVatRegime: 'reel_normal',
+    companyTrade: 'plombier',
+    customerType: 'b2b',
+    customerIsSubcontractingBtp: false,
+  } as const;
+  const derivation = deriveQuoteLineProposal({
+    workItem: work,
+    payload: selectedPayload.value,
+    selectedCatalogue,
+    vatContext,
+  });
+  if (derivation.kind !== 'resolved') {
+    throw new Error(`line proposal derivation invalid: ${derivation.kind}`);
+  }
+  const proposedWork = presentQuoteLineProposalOnWork({
+    workItem: work,
+    expectedRevision: 1,
+    facts: derivation.proposal.facts,
+    proposalId,
+    proposalDiffHash: derivation.proposal.diffHash,
+    occurredAt: '2026-07-26T10:03:00.000Z',
+  });
+  if (!proposedWork.ok) throw new Error('line proposal work transition invalid');
+  const presented = selected.value.mission.presentLineProposal({
+    expectedRevision: 3,
+    decisionId,
+    pendingLineId: workItemId,
+    proposalId,
+    expectedDraft: { sessionId, slotRevision: 2, contentRevision: 1 },
+    expectedWorkRevision: proposedWork.value.revision,
+    expectedCatalogue: selectedCatalogue === null
+      ? null
+      : { itemId: selectedCatalogue.id, revision: selectedCatalogue.revision },
+    expectedVatContextDigest: computeQuoteVatContextDigest(vatContext),
+    diffHash: derivation.proposal.diffHash,
+    confirmChoiceId,
+    editChoiceId,
+    cancelChoiceId,
+    occurredAt: '2026-07-26T10:03:00.000Z',
+  });
+  if (!presented.ok) throw new Error('line proposal mission transition invalid');
+  suite.unitOfWork.setSlot(selectedPayload.value, 2, missionId);
+  suite.unitOfWork.setMission(presented.value.mission);
+  suite.unitOfWork.setQuoteLineWork([proposedWork.value]);
+  suite.unitOfWork.quoteVatContextOverride = vatContext;
+  suite.unitOfWork.catalogueByIdOverride = selectedCatalogue;
+  suite.unitOfWork.now = '2026-07-26T10:04:00.000Z';
+  return {
+    ...suite,
+    mission: presented.value.mission,
+    work: proposedWork.value,
+    selectedPayload: selectedPayload.value,
+    proposal: derivation.proposal,
+    decisionId,
+    confirmChoiceId,
+    editChoiceId,
+    cancelChoiceId,
   };
 }
 
@@ -3145,6 +3409,8 @@ describe('AgentMission application M1-A', () => {
       catalogueResolution: 'pending',
       catalogueItemId: null,
       expectedCatalogueRevision: null,
+      catalogueCategoryOverrideConfirmed: false,
+      catalogueUnitOverrideConfirmed: false,
       proposalId: null,
       proposalRevision: null,
       proposalDiffHash: null,
@@ -3248,4 +3514,419 @@ describe('AgentMission application M1-A', () => {
     }))).toBe('revision_conflict');
     expect(suite.unitOfWork.snapshot().quoteLineWork.get(workItem.id)).toEqual(revised);
   });
+
+  it('patche la tête, converge vers une nouvelle proposition et rejoue sans seconde mutation', async () => {
+    const suite = preparedLineProposalMission();
+    const patchCommandId = '80000000-0000-4000-8000-000000000001';
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: patchCommandId,
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      pendingLineId: suite.work.id,
+      expectedWorkRevision: suite.work.revision,
+      scope: 'explicit_correction' as const,
+      patch: {
+        field: 'unit_price' as const,
+        decimal: '60',
+        currency: 'EUR' as const,
+        basis: 'per_unit' as const,
+      },
+    };
+    const patched = await suite.patchLine.execute(command);
+    expect(patched).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'patched',
+        workRevisionAfter: 3,
+        mission: { phase: 'awaiting_lines', revision: 5 },
+      },
+    });
+    expect(await suite.patchLine.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed', workRevisionAfter: 3 },
+    });
+    expect(await suite.patchLine.execute({
+      ...command,
+      scope: 'answer_required_fact',
+    })).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'conflict',
+        entity: 'agent_mission_command',
+        reason: 'fingerprint_mismatch',
+      },
+    });
+
+    const continued = await suite.continueLineResolution.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      parentCommandId: patchCommandId,
+    });
+    expect(continued).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'proposal_presented',
+        pendingLineId: suite.work.id,
+        requiredFact: null,
+        mission: { phase: 'awaiting_line_confirmation', revision: 6 },
+        continuationReceipt: {
+          eventType: 'line_proposal_presented',
+          missionRevisionAfter: 6,
+        },
+      },
+    });
+    expect(await suite.continueLineResolution.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      parentCommandId: patchCommandId,
+    })).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    const state = suite.unitOfWork.snapshot();
+    expect(state.events.map((event) => event.toSnapshot().eventType)).toEqual([
+      'line_fact_patched',
+      'line_proposal_presented',
+    ]);
+    expect(state.quoteLineWork.get(suite.work.id)).toMatchObject({
+      revision: 4,
+      unitPriceCents: 6_000,
+      state: 'awaiting_confirmation',
+    });
+  });
+
+  it('confirme une ligne une seule fois même si la réponse HTTP est perdue', async () => {
+    const suite = preparedLineProposalMission();
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000002',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.confirmChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    };
+    expect(await suite.decideLineProposal.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'confirmed',
+        mission: {
+          phase: 'awaiting_lines',
+          revision: 5,
+          payload: {
+            draft: { slotRevision: 3, contentRevision: 2 },
+          },
+        },
+        commandReceipt: {
+          eventType: 'line_confirmed',
+          missionRevisionAfter: 5,
+        },
+      },
+    });
+    let state = suite.unitOfWork.snapshot();
+    expect(state.slot?.payload.draft.lines).toHaveLength(1);
+    expect(state.slot?.payload.draft.lines[0]).toMatchObject({
+      label: 'Main-d’œuvre plomberie',
+      qty: 2,
+      unit: 'heure',
+      unitPriceHT: 5_500,
+      vatRate: 20,
+    });
+    expect(state.quoteLineWork.size).toBe(0);
+
+    expect(await suite.decideLineProposal.execute(command)).toMatchObject({
+      ok: true,
+      value: { outcome: 'replayed' },
+    });
+    state = suite.unitOfWork.snapshot();
+    expect(state.slot?.payload.draft.lines).toHaveLength(1);
+    expect(state.events).toHaveLength(1);
+  });
+
+  it('invalide une proposition si les faits TVA changent même avec le même taux visible', async () => {
+    const suite = preparedLineProposalMission();
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    suite.unitOfWork.quoteVatContextOverride = {
+      customerId: 'customer-a',
+      companyVatRegime: 'reel_normal',
+      companyTrade: 'coach',
+      customerType: 'b2b',
+      customerIsSubcontractingBtp: false,
+    };
+
+    expect(await suite.decideLineProposal.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000009',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null },
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.confirmChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    })).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'invalidated',
+        invalidationReason: 'choice_set_stale',
+        mission: { phase: 'awaiting_lines' },
+      },
+    });
+    const state = suite.unitOfWork.snapshot();
+    expect(state.slot?.payload.draft.lines).toHaveLength(0);
+    expect(state.quoteLineWork.get(suite.work.id)).toMatchObject({
+      state: 'queued',
+      proposalId: null,
+    });
+  });
+
+  it('échoue fermé si le même contexte ne reproduit plus la proposition scellée', async () => {
+    const suite = preparedLineProposalMission();
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    suite.unitOfWork.setQuoteLineWork([{
+      ...suite.work,
+      category: 'travel',
+    }]);
+    const before = suite.unitOfWork.snapshot();
+
+    await expect(suite.decideLineProposal.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000010',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null },
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.confirmChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'agent_mission_quote_line_proposal',
+        cause: 'proposal_redrive_mismatch',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(before);
+  });
+
+  it('échoue fermé si la décision et la fence catalogue du work se contredisent', async () => {
+    const catalogue: CatalogueCandidateRecord = {
+      id: 'catalogue-fence-a',
+      revision: 3,
+      label: 'Main-d’œuvre plomberie',
+      category: 'labor',
+      unit: 'heure',
+      unitPriceHT: 5_500,
+      vatRate: 20,
+    };
+    const suite = preparedLineProposalMission(catalogue);
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    suite.unitOfWork.setQuoteLineWork([{
+      ...suite.work,
+      catalogueItemId: 'catalogue-fence-b',
+      expectedCatalogueRevision: 4,
+    }]);
+    const before = suite.unitOfWork.snapshot();
+
+    await expect(suite.decideLineProposal.execute({
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000011',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null },
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.confirmChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'agent_mission_quote_line_work',
+        cause: 'line_decision_work_mismatch',
+      },
+    });
+    expect(suite.unitOfWork.snapshot()).toEqual(before);
+  });
+
+  it('invalide la proposition si le catalogue disparaît au lieu de bloquer la mission', async () => {
+    const catalogue: CatalogueCandidateRecord = {
+      id: 'catalogue-stale',
+      revision: 3,
+      label: 'Main-d’œuvre plomberie',
+      category: 'labor',
+      unit: 'heure',
+      unitPriceHT: 5_500,
+      vatRate: 20,
+    };
+    const suite = preparedLineProposalMission(catalogue);
+    suite.unitOfWork.catalogueByIdOverride = null;
+    const decision = suite.mission.payload.decision;
+    if (decision?.kind !== 'line_confirmation') {
+      throw new Error('line confirmation fixture missing decision');
+    }
+    const command = {
+      ...OWNER,
+      missionId: suite.mission.id,
+      commandId: '80000000-0000-4000-8000-000000000008',
+      expectedMissionRevision: suite.mission.revision,
+      expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      origin: { actor: 'user_tap', correlation: null } as const,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      choiceSetHash: decision.choiceSetHash,
+      choiceId: suite.confirmChoiceId,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      diffHash: decision.diffHash,
+    };
+    expect(await suite.decideLineProposal.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'invalidated',
+        invalidationReason: 'candidate_unavailable',
+        mission: { phase: 'awaiting_line_details', revision: 5 },
+        commandReceipt: { eventType: 'decision_invalidated' },
+      },
+    });
+    const state = suite.unitOfWork.snapshot();
+    expect(state.slot?.payload.draft.lines).toHaveLength(0);
+    expect(state.quoteLineWork.get(suite.work.id)).toMatchObject({
+      revision: 3,
+      state: 'awaiting_details',
+      requiredFact: 'service_reference',
+      catalogueResolution: 'pending',
+      catalogueItemId: null,
+      proposalId: null,
+    });
+    expect(await suite.decideLineProposal.execute(command)).toMatchObject({
+      ok: true,
+      value: {
+        outcome: 'replayed',
+        invalidationReason: 'candidate_unavailable',
+      },
+    });
+  });
+
+  it.each([
+    ['edit_requested', '80000000-0000-4000-8000-000000000003', 'edit'],
+    ['cancelled', '80000000-0000-4000-8000-000000000004', 'cancel'],
+  ] as const)(
+    '%s reste possible si la prestation catalogue a disparu',
+    async (expectedOutcome, commandId, action) => {
+      const catalogue: CatalogueCandidateRecord = {
+        id: 'catalogue-deleted',
+        revision: 7,
+        label: 'Main-d’œuvre plomberie',
+        category: 'labor',
+        unit: 'heure',
+        unitPriceHT: 5_500,
+        vatRate: 20,
+      };
+      const suite = preparedLineProposalMission(catalogue);
+      suite.unitOfWork.catalogueByIdOverride = null;
+      const decision = suite.mission.payload.decision;
+      if (decision?.kind !== 'line_confirmation') {
+        throw new Error('line confirmation fixture missing decision');
+      }
+      const choiceId = action === 'edit'
+        ? suite.editChoiceId
+        : suite.cancelChoiceId;
+      expect(await suite.decideLineProposal.execute({
+        ...OWNER,
+        missionId: suite.mission.id,
+        commandId,
+        expectedMissionRevision: suite.mission.revision,
+        expectedDraftSessionId: suite.selectedPayload.draft.sessionId,
+        expectedDraftSlotRevision: 2,
+        expectedDraftContentRevision: 1,
+        origin: { actor: 'user_tap', correlation: null },
+        decisionId: decision.decisionId,
+        choiceSetRevision: decision.choiceSetRevision,
+        choiceSetHash: decision.choiceSetHash,
+        choiceId,
+        pendingLineId: decision.pendingLineId,
+        proposalId: decision.proposalId,
+        proposalRevision: decision.proposalRevision,
+        expectedWorkRevision: decision.expectedWorkRevision,
+        expectedCatalogue: decision.expectedCatalogue,
+        diffHash: decision.diffHash,
+      })).toMatchObject({
+        ok: true,
+        value: { outcome: expectedOutcome },
+      });
+      const state = suite.unitOfWork.snapshot();
+      if (action === 'edit') {
+        expect(state.quoteLineWork.get(suite.work.id)).toMatchObject({
+          state: 'awaiting_details',
+          requiredFact: null,
+        });
+      } else {
+        expect(state.quoteLineWork.size).toBe(0);
+      }
+      expect(state.slot?.payload.draft.lines).toHaveLength(0);
+    },
+  );
 });

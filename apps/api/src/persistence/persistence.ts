@@ -2,6 +2,7 @@ import type {
   AccountingEntryRepository,
   AgentMissionUnitOfWorkPort,
   AgentMissionResumeUnitOfWorkPort,
+  AgentMissionResumeV2UnitOfWorkPort,
   AgentMissionDraftFencePort,
   BankBalanceSnapshotRepository,
   CashMovementProjectionPort,
@@ -183,6 +184,10 @@ export interface Persistence {
    * ne peut pas prouver READ ONLY + REPEATABLE READ + scoping owner.
    */
   createAgentMissionResumeUnitOfWork(): AgentMissionResumeUnitOfWorkPort | null;
+  /**
+   * Snapshot froid M2-A complet. Séparé du wire V1 pour interdire tout fallback de protocole.
+   */
+  createAgentMissionResumeV2UnitOfWork(): AgentMissionResumeV2UnitOfWorkPort | null;
   /**
    * Readiness globale bornée des versions de fingerprint encore retenues par le journal durable.
    * `null` refuse l'activation : un double mémoire ne peut pas attester cette vérité PostgreSQL.

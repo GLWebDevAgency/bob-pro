@@ -4,6 +4,8 @@ import type {
   AgentMissionReadTransaction,
   AgentMissionResumeReadTransaction,
   AgentMissionResumeUnitOfWorkPort,
+  AgentMissionResumeV2ReadTransaction,
+  AgentMissionResumeV2UnitOfWorkPort,
   AgentMissionRealtimeAuthorityProof,
   AgentMissionTransaction,
   AgentMissionUnitOfWorkPort,
@@ -14,8 +16,10 @@ import {
   AdvanceQuoteAgentMission,
   AgentMission,
   ContinueQuoteAgentMissionLineQueue,
+  ContinueQuoteAgentMissionLineResolution,
   DecideQuoteAgentMissionCatalogueChoice,
   DecideQuoteAgentMission,
+  GetResumableQuoteAgentMissionV2,
   StageQuoteAgentMissionLines,
   StartQuoteAgentMission,
   toAgentMissionView,
@@ -59,6 +63,40 @@ const LINE = Object.freeze({
   priceBasis: 'per_unit',
   vatRateHint: null,
 });
+const EMPTY_PRESENTATION = Object.freeze({
+  schema: 'bob.agent-mission.quote-presentation',
+  version: 1,
+  requiredFact: null,
+  pendingLine: null,
+  decision: null,
+  catalogueChoices: Object.freeze([]),
+  freeLineChoiceId: null,
+  proposalStatus: Object.freeze({ kind: 'absent' }),
+  proposal: null,
+} as const);
+
+function resumeProjection(view: AgentMissionViewV1) {
+  const draft = view.payload.draft;
+  if (draft === null) throw new Error('fixture mission sans brouillon');
+  return {
+    mission: {
+      id: view.id,
+      status: view.status as 'active',
+      phase: view.phase,
+      revision: view.revision,
+      actionable: view.actionable,
+      draft,
+      idleExpiresAt: view.idleExpiresAt,
+      hardExpiresAt: view.hardExpiresAt,
+    },
+    draft: {
+      ...draft,
+      step: 'lignes' as const,
+    },
+    customerChoices: [],
+    presentation: EMPTY_PRESENTATION,
+  };
+}
 
 function m2aView(
   phase: AgentMissionViewV1['phase'],
@@ -96,6 +134,41 @@ function m2aView(
     terminalAt: null,
     createdAt: NOW,
     updatedAt: NOW,
+  };
+}
+
+function m2aCatalogueView(revision: number): AgentMissionViewV1 {
+  return {
+    ...m2aView('awaiting_catalogue_choice', revision),
+    payload: {
+      schema: 'bob.agent-mission.quote-creation',
+      version: 1,
+      draft: {
+        sessionId: 'quote-draft-session-1',
+        slotRevision: 2,
+        contentRevision: 1,
+      },
+      decision: {
+        kind: 'catalogue',
+        decisionId: '30000000-0000-4000-8000-000000000001',
+        choiceSetRevision: revision,
+        pendingLineId: '60000000-0000-4000-8000-000000000001',
+        expectedDraft: {
+          sessionId: 'quote-draft-session-1',
+          slotRevision: 2,
+          contentRevision: 1,
+        },
+        expectedWorkRevision: 2,
+        candidates: [{
+          choiceId: '40000000-0000-4000-8000-000000000001',
+          catalogueItemId: 'catalogue-main-oeuvre',
+          expectedCatalogueRevision: 3,
+        }],
+        freeLineChoiceId: '40000000-0000-4000-8000-000000000002',
+        choiceSetHash: 'e'.repeat(64),
+      },
+      stagedCustomerResolution: null,
+    },
   };
 }
 
@@ -237,6 +310,7 @@ class ForegroundUnavailableUnitOfWork implements AgentMissionUnitOfWorkPort {
 function harness(
   unitOfWork: AgentMissionUnitOfWorkPort | null,
   resumeUnitOfWork: AgentMissionResumeUnitOfWorkPort | null = null,
+  resumeV2UnitOfWork: AgentMissionResumeV2UnitOfWorkPort | null = null,
 ) {
   const capabilityInc = vi.fn();
   const foregroundInc = vi.fn();
@@ -249,6 +323,7 @@ function harness(
   const persistence = {
     createAgentMissionUnitOfWork: vi.fn(() => unitOfWork),
     createAgentMissionResumeUnitOfWork: vi.fn(() => resumeUnitOfWork),
+    createAgentMissionResumeV2UnitOfWork: vi.fn(() => resumeV2UnitOfWork),
   } as unknown as Persistence;
   const logger = {
     audit: vi.fn(),
@@ -294,6 +369,32 @@ class ResumeNullUnitOfWork implements AgentMissionResumeUnitOfWorkPort {
   }
 }
 
+class ResumeV2NullUnitOfWork implements AgentMissionResumeV2UnitOfWorkPort {
+  readonly owners: AgentMissionOwner[] = [];
+
+  async readQuoteCreationOwnerV2<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionResumeV2ReadTransaction) => Promise<T>,
+  ) {
+    this.owners.push(owner);
+    return {
+      status: 'executed' as const,
+      value: await work({
+        databaseNow: async () => NOW,
+        missions: {
+          findActive: async () => null,
+          findForeground: async () => null,
+        },
+        quoteDrafts: { get: async () => null },
+        customers: { findByIds: async () => [] },
+        quoteLineWork: { list: async () => [] },
+        catalogue: { findByIds: async () => [] },
+        quoteVatContext: { get: async () => null },
+      }),
+    };
+  }
+}
+
 describe('AgentMissionService metrics', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -326,6 +427,39 @@ describe('AgentMissionService metrics', () => {
     expect(persistence.createAgentMissionResumeUnitOfWork).not.toHaveBeenCalled();
   });
 
+  it('dérive la reprise V2 du même principal sans fallback vers la factory V1', async () => {
+    const resumeV1 = new ResumeNullUnitOfWork();
+    const resumeV2 = new ResumeV2NullUnitOfWork();
+    const { service, persistence } = harness(null, resumeV1, resumeV2);
+
+    const result = await requestContext.run(
+      {
+        correlationId: 'resume-v2-owner-test',
+        principal: { userId: OWNER.ownerUserId, companyId: OWNER.companyId },
+      },
+      () => service.getCurrentResumeV2(),
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      value: { mission: null, presentation: null },
+    });
+    expect(resumeV2.owners).toEqual([OWNER]);
+    expect(persistence.createAgentMissionResumeV2UnitOfWork).toHaveBeenCalledOnce();
+    expect(persistence.createAgentMissionResumeUnitOfWork).not.toHaveBeenCalled();
+  });
+
+  it('refuse la reprise V2 sans principal avant toute factory', async () => {
+    const resumeV2 = new ResumeV2NullUnitOfWork();
+    const { service, persistence } = harness(null, null, resumeV2);
+
+    await expect(service.getCurrentResumeV2()).resolves.toEqual({
+      ok: false,
+      error: { kind: 'forbidden', reason: 'authenticated_owner_required' },
+    });
+    expect(persistence.createAgentMissionResumeV2UnitOfWork).not.toHaveBeenCalled();
+  });
+
   it('convertit une panne du snapshot froid en indisponibilité sans faux mission:null', async () => {
     const resume: AgentMissionResumeUnitOfWorkPort = {
       readQuoteCreationOwner: async () => {
@@ -354,6 +488,71 @@ describe('AgentMissionService metrics', () => {
     expect(JSON.stringify((logger.error as ReturnType<typeof vi.fn>).mock.calls))
       .not.toContain('sensitive database detail');
   });
+
+  it.each([
+    {
+      name: 'une sentinelle de ligne bornée',
+      failure: new Error(
+        'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT:serviceReference:sensitive-detail',
+      ),
+      expectedErrorType: 'error',
+      expectedCauseCode: 'AGENT_MISSION_QUOTE_LINE_WORK_ROW_CORRUPT',
+    },
+    {
+      name: 'une erreur inconnue',
+      failure: new Error('sensitive database detail'),
+      expectedErrorType: 'error',
+      expectedCauseCode: 'unexpected_error',
+    },
+    {
+      name: 'un rejet non Error',
+      failure: 'sensitive non-error detail',
+      expectedErrorType: 'non_error',
+      expectedCauseCode: 'unexpected_error',
+    },
+  ])(
+    'journalise $name de reprise V2 avec une cause structurée sans détail sensible',
+    async ({
+      failure,
+      expectedErrorType,
+      expectedCauseCode,
+    }) => {
+      const resumeV2: AgentMissionResumeV2UnitOfWorkPort = {
+        readQuoteCreationOwnerV2: async () => {
+          throw failure;
+        },
+      };
+      const { service, logger } = harness(null, null, resumeV2);
+
+      const result = await requestContext.run(
+        {
+          correlationId: 'resume-v2-failure-test',
+          principal: { userId: OWNER.ownerUserId, companyId: OWNER.companyId },
+        },
+        () => service.getCurrentResumeV2(),
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          kind: 'unavailable',
+          service: 'agent_mission_resume_v2_persistence',
+        },
+      });
+      expect(logger.error).toHaveBeenCalledWith(
+        'Lecture de reprise AgentMission V2 impossible.',
+        undefined,
+        'AgentMissionService',
+        {
+          errorType: expectedErrorType,
+          causeCode: expectedCauseCode,
+          port: 'agent_mission_resume_v2_persistence',
+        },
+      );
+      expect(JSON.stringify((logger.error as ReturnType<typeof vi.fn>).mock.calls))
+        .not.toContain('sensitive');
+    },
+  );
 
   it.each([
     [
@@ -558,6 +757,120 @@ describe('AgentMissionService metrics', () => {
     expect(screenAckInc).toHaveBeenCalledWith({ outcome: 'accepted' });
   });
 
+  it('renvoie une projection V2 fraîche après ACK et décision ayant convergé vers M2-A-2', async () => {
+    const fixtures = continuationFixtures();
+    const acknowledgedLines = m2aView('awaiting_lines', 3);
+    const details = m2aView('awaiting_line_details', 4);
+    const selectedLines = m2aView('awaiting_lines', 5);
+    const confirmation = m2aView('awaiting_line_confirmation', 6);
+    vi.spyOn(AcknowledgeQuoteScreen.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'acknowledged',
+        receipt: fixtures.receipt,
+        mission: fixtures.acknowledgedView,
+      },
+    });
+    vi.spyOn(AdvanceQuoteAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'advanced',
+        mission: acknowledgedLines,
+      },
+    });
+    vi.spyOn(DecideQuoteAgentMission.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'selected',
+        effect: { kind: 'selected' },
+        mission: selectedLines,
+      },
+    });
+    vi.spyOn(
+      ContinueQuoteAgentMissionLineResolution.prototype,
+      'execute',
+    )
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          outcome: 'details_requested',
+          mission: details,
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          requiredFact: 'unit_price',
+          proposalId: null,
+          continuationReceipt: null,
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          outcome: 'proposal_presented',
+          mission: confirmation,
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          requiredFact: null,
+          proposalId: '70000000-0000-4000-8000-000000000001',
+          continuationReceipt: null,
+        },
+      });
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    )
+      .mockResolvedValueOnce({
+        ok: true,
+        value: resumeProjection(details),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: resumeProjection(confirmation),
+      });
+    const { service } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
+
+    await expect(service.acknowledgeScreen({
+      authorization: authorizationV2('acknowledge_quote_screen'),
+      missionId: MISSION_ID,
+      commandId: ACK_COMMAND_ID,
+      expectedMissionRevision: 1,
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 1,
+      contextDigest: 'd'.repeat(64),
+      draftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 1,
+      expectedDraftContentRevision: 0,
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_line_details', revision: 4 },
+        presentation: EMPTY_PRESENTATION,
+      },
+    });
+
+    await expect(service.decide({
+      authorization: authorizationV2('decide_quote_creation'),
+      missionId: MISSION_ID,
+      commandId: '10000000-0000-4000-8000-000000000006',
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      decision: {
+        action: 'select_screen_customer',
+        customerId: 'customer-camping',
+      },
+      lines: [],
+    })).resolves.toMatchObject({
+      ok: true,
+      value: {
+        mission: { phase: 'awaiting_line_confirmation', revision: 6 },
+        presentation: EMPTY_PRESENTATION,
+      },
+    });
+  });
+
   it('réutilise le turnId comme commandId et construit seule la provenance voix', async () => {
     vi.spyOn(StartQuoteAgentMission.prototype, 'execute').mockResolvedValue({
       ok: false,
@@ -676,7 +989,7 @@ describe('AgentMissionService metrics', () => {
 
   it('stage les lignes voix puis attend la continuation durable avant de répondre', async () => {
     const stagedMission = m2aView('awaiting_lines', 4);
-    const convergedMission = m2aView('awaiting_catalogue_choice', 5);
+    const convergedMission = m2aCatalogueView(5);
     vi.spyOn(StageQuoteAgentMissionLines.prototype, 'execute').mockResolvedValue({
       ok: true,
       value: {
@@ -697,9 +1010,51 @@ describe('AgentMissionService metrics', () => {
         mission: convergedMission,
         pendingLineId: '60000000-0000-4000-8000-000000000001',
         presentedChoiceCount: 2,
+        continuationReceipt: {
+          commandId: '70000000-0000-4000-8000-000000000001',
+          eventType: 'catalogue_choices_presented',
+          missionRevisionAfter: 5,
+        },
       },
     });
-    const { service, logger } = harness(new RejectingUnitOfWork('state'));
+    vi.spyOn(
+      ContinueQuoteAgentMissionLineResolution.prototype,
+      'execute',
+    )
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          outcome: 'needs_catalogue_resolution',
+          mission: stagedMission,
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          requiredFact: null,
+          proposalId: null,
+          continuationReceipt: null,
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          outcome: 'catalogue_choice_pending',
+          mission: convergedMission,
+          pendingLineId: '60000000-0000-4000-8000-000000000001',
+          requiredFact: null,
+          proposalId: null,
+          continuationReceipt: null,
+        },
+      });
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: resumeProjection(convergedMission),
+    });
+    const { service, logger } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
 
     const result = await service.stageLinesFromVoiceTurn({
       authorization: authorizationV2('stage_quote_lines'),
@@ -724,6 +1079,7 @@ describe('AgentMissionService metrics', () => {
           outcome: 'choices_presented',
           presentedChoiceCount: 2,
         },
+        presentation: EMPTY_PRESENTATION,
       },
     });
     expect(StageQuoteAgentMissionLines.prototype.execute).toHaveBeenCalledWith({
@@ -763,8 +1119,72 @@ describe('AgentMissionService metrics', () => {
     );
   });
 
+  it('refuse une présentation lue après qu’une autre commande a changé la mission', async () => {
+    const stagedMission = m2aView('awaiting_lines', 4);
+    const commandMission = m2aView('awaiting_line_details', 5);
+    const newerMission = m2aView('awaiting_line_details', 6);
+    vi.spyOn(StageQuoteAgentMissionLines.prototype, 'execute').mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'staged',
+        mission: stagedMission,
+        stagedCount: 1,
+        firstQueueOrdinal: 1,
+        lastQueueOrdinal: 1,
+      },
+    });
+    vi.spyOn(
+      ContinueQuoteAgentMissionLineResolution.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: {
+        outcome: 'stable',
+        mission: commandMission,
+        pendingLineId: null,
+        requiredFact: null,
+        proposalId: null,
+        continuationReceipt: null,
+      },
+    });
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: resumeProjection(newerMission),
+    });
+    const { service } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
+
+    await expect(service.stageLinesFromVoiceTurn({
+      authorization: authorizationV2('stage_quote_lines'),
+      missionId: MISSION_ID,
+      turnId: '10000000-0000-4000-8000-000000000021',
+      realtimeSessionId: REALTIME_SESSION_ID,
+      contextRevision: 4,
+      contextDigest: 'f'.repeat(64),
+      expectedMissionRevision: 3,
+      expectedDraftSessionId: 'quote-draft-session-1',
+      expectedDraftSlotRevision: 2,
+      expectedDraftContentRevision: 1,
+      lines: [LINE],
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'agent_mission_command_projection',
+        cause: 'mission_changed_after_command',
+      },
+    });
+  });
+
   it('fait converger le même choiceId catalogue au toucher et à la voix avant ACK', async () => {
     const selectedMission = m2aView('awaiting_lines', 6);
+    const resolvedMission = m2aView('awaiting_line_details', 7);
     vi.spyOn(
       DecideQuoteAgentMissionCatalogueChoice.prototype,
       'execute',
@@ -778,18 +1198,35 @@ describe('AgentMissionService metrics', () => {
       },
     });
     vi.spyOn(
-      ContinueQuoteAgentMissionLineQueue.prototype,
+      ContinueQuoteAgentMissionLineResolution.prototype,
       'execute',
     ).mockResolvedValue({
       ok: true,
       value: {
-        outcome: 'deferred_to_m2a2',
-        mission: selectedMission,
+        outcome: 'details_requested',
+        mission: resolvedMission,
         pendingLineId: '60000000-0000-4000-8000-000000000001',
-        presentedChoiceCount: 0,
+        requiredFact: 'unit_price',
+        proposalId: null,
+        continuationReceipt: {
+          commandId: '70000000-0000-4000-8000-000000000002',
+          eventType: 'line_details_requested',
+          missionRevisionAfter: 7,
+        },
       },
     });
-    const { service } = harness(new RejectingUnitOfWork('state'));
+    vi.spyOn(
+      GetResumableQuoteAgentMissionV2.prototype,
+      'execute',
+    ).mockResolvedValue({
+      ok: true,
+      value: resumeProjection(resolvedMission),
+    });
+    const { service } = harness(
+      new RejectingUnitOfWork('state'),
+      null,
+      new ResumeV2NullUnitOfWork(),
+    );
     const common = {
       missionId: MISSION_ID,
       expectedMissionRevision: 5,
@@ -822,14 +1259,20 @@ describe('AgentMissionService metrics', () => {
       ok: true,
       value: {
         resolution: 'selected',
-        continuation: { outcome: 'deferred_to_m2a2' },
+        continuation: {
+          outcome: 'details_requested',
+          requiredFact: 'unit_price',
+        },
       },
     });
     expect(voice).toMatchObject({
       ok: true,
       value: {
         resolution: 'selected',
-        continuation: { outcome: 'deferred_to_m2a2' },
+        continuation: {
+          outcome: 'details_requested',
+          requiredFact: 'unit_price',
+        },
       },
     });
     const calls = vi.mocked(
@@ -852,7 +1295,7 @@ describe('AgentMissionService metrics', () => {
         },
       },
     });
-    expect(ContinueQuoteAgentMissionLineQueue.prototype.execute)
+    expect(ContinueQuoteAgentMissionLineResolution.prototype.execute)
       .toHaveBeenCalledTimes(2);
   });
 });

@@ -2,11 +2,13 @@ import { timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   AGENT_MISSION_PROTOCOL_V1,
+  AGENT_MISSION_PROTOCOL_M2A,
   AGENT_MISSION_PROTOCOL_VERSIONS,
   AgentMission,
   AgentMissionEvent,
   normalizeCustomerName,
   parseAgentMissionQuoteLineWork,
+  parseCustomPrestation,
   parseQuoteDraftPayload,
   type AgentMissionAuthorizedRealtimeLease,
   type AgentMissionCapabilityRejectionReason,
@@ -34,6 +36,8 @@ import {
   type AgentMissionResumeReadExecution,
   type AgentMissionResumeReadTransaction,
   type AgentMissionResumeUnitOfWorkPort,
+  type AgentMissionResumeV2ReadTransaction,
+  type AgentMissionResumeV2UnitOfWorkPort,
   type AgentMissionTransaction,
   type AgentMissionUnitOfWorkPort,
   type AgentMissionWriteExecution,
@@ -41,7 +45,10 @@ import {
   type CustomerCandidateReadPort,
   type CustomerCandidateReference,
   type CustomerCandidateSearchPort,
+  type CatalogueCandidateRecord,
   type QuoteDraftPayloadV1,
+  type QuoteVatContextPort,
+  type QuoteVatDecisionContext,
 } from '@bob/core';
 import {
   Prisma,
@@ -62,6 +69,26 @@ const OWNER_TRANSACTION_OPTIONS = {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const MAX_SUBJECT_HASH_CANDIDATES = 32;
+const QUOTE_VAT_REGIMES = new Set([
+  'franchise',
+  'reel_simpl',
+  'reel_normal',
+] as const);
+const QUOTE_VAT_TRADES = new Set([
+  'plombier',
+  'electricien',
+  'macon',
+  'peintre',
+  'paysagiste',
+  'frigoriste',
+  'mainteneur',
+  'consultant',
+  'freelance_it',
+  'photographe',
+  'coach',
+  'autre',
+] as const);
+const QUOTE_VAT_CUSTOMER_TYPES = new Set(['b2c', 'b2b', 'b2g'] as const);
 
 const MISSION_COLUMNS = Prisma.sql`
   "id",
@@ -116,6 +143,8 @@ const QUOTE_LINE_WORK_COLUMNS = Prisma.sql`
   "requiredFact",
   "catalogueItemId",
   "expectedCatalogueRevision",
+  "catalogueCategoryOverrideConfirmed",
+  "catalogueUnitOverrideConfirmed",
   "proposalId",
   "proposalRevision",
   "proposalDiffHash",
@@ -157,6 +186,46 @@ interface CustomerCandidateRow {
 interface CustomerCandidateReferenceRow {
   readonly customerId: string;
   readonly canonicalName: string;
+}
+
+interface QuoteVatContextRow {
+  readonly customerId: string;
+  readonly companyVatRegime: string;
+  readonly companyTrade: string;
+  readonly customerType: string;
+  readonly customerIsSubcontractingBtp: boolean;
+}
+
+interface AgentMissionResumeCatalogueRow {
+  readonly id: string;
+  readonly label: string;
+  readonly category: string;
+  readonly unit: string | null;
+  readonly unitPriceHT: number;
+  readonly vatRate: Prisma.Decimal;
+  readonly revision: number;
+}
+
+function canonicalAgentMissionResumeCatalogueRecord(
+  row: AgentMissionResumeCatalogueRow,
+): CatalogueCandidateRecord {
+  const prestation = parseCustomPrestation({
+    id: row.id,
+    label: row.label,
+    category: row.category,
+    unit: row.unit,
+    unitPriceHT: row.unitPriceHT,
+    vatRate: canonicalPrismaVatRate(row.vatRate),
+  });
+  if (
+    prestation === null
+    || !Number.isSafeInteger(row.revision)
+    || row.revision < 1
+    || row.revision > 2_147_483_647
+  ) {
+    throw new Error('AGENT_MISSION_RESUME_CATALOGUE_ROW_CORRUPT');
+  }
+  return Object.freeze({ ...prestation, revision: row.revision });
 }
 
 function canonicalCustomerName(value: string): string {
@@ -473,6 +542,10 @@ function quoteLineWorkFromRow(
     requiredFact: row.requiredFact,
     catalogueItemId: row.catalogueItemId,
     expectedCatalogueRevision: row.expectedCatalogueRevision,
+    catalogueCategoryOverrideConfirmed:
+      row.catalogueCategoryOverrideConfirmed,
+    catalogueUnitOverrideConfirmed:
+      row.catalogueUnitOverrideConfirmed,
     proposalId: row.proposalId,
     proposalRevision: row.proposalRevision,
     proposalDiffHash: row.proposalDiffHash,
@@ -1256,6 +1329,50 @@ implements AgentMissionQuoteDraftRepositoryPort {
     `;
     return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
   }
+
+  async appendLineCas(input: AgentMissionOwner & {
+    readonly missionId: string;
+    readonly expectedSlotRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftContentRevision: number;
+    readonly payload: QuoteDraftPayloadV1;
+  }): Promise<AgentMissionQuoteDraftSlot | null> {
+    const payload = parseQuoteDraftPayload(input.payload);
+    if (
+      !payload.ok
+      || payload.value.draft.sessionId !== input.expectedDraftSessionId
+      || payload.value.draft.contentRevision
+        !== input.expectedDraftContentRevision + 1
+      || payload.value.draft.step !== 'lignes'
+      || payload.value.draft.customer === null
+    ) {
+      return null;
+    }
+    await setMissionContext(this.transaction, input.missionId);
+    const payloadJson = JSON.stringify(payload.value);
+    const rows = await this.transaction.$queryRaw<QuoteDraftSlotRow[]>`
+      UPDATE public.quote_draft_slots
+      SET
+        "revision" = "revision" + 1,
+        "payloadVersion" = 1,
+        "payload" = ${payloadJson}::jsonb,
+        "updatedAt" = clock_timestamp()
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "agentMissionId" = ${input.missionId}::UUID
+        AND "revision" = ${input.expectedSlotRevision}
+        AND "revision" < 2147483647
+        AND "payloadVersion" = 1
+        AND "payload" -> 'draft' ->> 'sessionId'
+          = ${input.expectedDraftSessionId}
+        AND ("payload" #>> '{draft,contentRevision}')::integer
+          = ${input.expectedDraftContentRevision}
+        AND "payload" -> 'draft' ->> 'step' = 'lignes'
+        AND "payload" -> 'draft' -> 'customer' <> 'null'::jsonb
+      RETURNING ${QUOTE_DRAFT_COLUMNS}
+    `;
+    return rows[0] === undefined ? null : quoteDraftFromRow(rows[0]);
+  }
 }
 
 function quoteLineWorkForPersistence(
@@ -1301,6 +1418,10 @@ function quoteLineWorkCreateData(
     requiredFact: workItem.requiredFact,
     catalogueItemId: workItem.catalogueItemId,
     expectedCatalogueRevision: workItem.expectedCatalogueRevision,
+    catalogueCategoryOverrideConfirmed:
+      workItem.catalogueCategoryOverrideConfirmed,
+    catalogueUnitOverrideConfirmed:
+      workItem.catalogueUnitOverrideConfirmed,
     proposalId: workItem.proposalId,
     proposalRevision: workItem.proposalRevision,
     proposalDiffHash: workItem.proposalDiffHash,
@@ -1483,6 +1604,10 @@ implements AgentMissionQuoteLineWorkRepositoryPort {
         requiredFact: workItem.requiredFact,
         catalogueItemId: workItem.catalogueItemId,
         expectedCatalogueRevision: workItem.expectedCatalogueRevision,
+        catalogueCategoryOverrideConfirmed:
+          workItem.catalogueCategoryOverrideConfirmed,
+        catalogueUnitOverrideConfirmed:
+          workItem.catalogueUnitOverrideConfirmed,
         proposalId: workItem.proposalId,
         proposalRevision: workItem.proposalRevision,
         proposalDiffHash: workItem.proposalDiffHash,
@@ -1681,6 +1806,59 @@ class PrismaAgentMissionResumeCustomerRepository {
   }
 }
 
+class PrismaAgentMissionResumeQuoteLineWorkRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async list(
+    input: AgentMissionOwner & { readonly missionId: string },
+  ): Promise<readonly AgentMissionQuoteLineWork[]> {
+    const rows = await this.transaction.$queryRaw<AgentMissionQuoteLineWorkRow[]>`
+      SELECT ${QUOTE_LINE_WORK_COLUMNS}
+      FROM public.agent_mission_quote_line_work
+      WHERE "companyId" = ${input.companyId}
+        AND "ownerUserId" = ${input.ownerUserId}
+        AND "missionId" = ${input.missionId}::UUID
+      ORDER BY "ordinal" ASC, "id" ASC
+      LIMIT 21
+    `;
+    return Object.freeze(rows.map(quoteLineWorkFromRow));
+  }
+}
+
+class PrismaAgentMissionResumeCatalogueRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async findByIds(input: {
+    readonly companyId: string;
+    readonly catalogueItemIds: readonly string[];
+  }): Promise<readonly CatalogueCandidateRecord[]> {
+    if (input.catalogueItemIds.length === 0) return Object.freeze([]);
+    const ids = [...new Set(input.catalogueItemIds)];
+    if (ids.length !== input.catalogueItemIds.length || ids.length > 6) {
+      throw new Error('AGENT_MISSION_RESUME_CATALOGUE_INPUT_INVALID');
+    }
+    const rows = await this.transaction.$queryRaw<
+      AgentMissionResumeCatalogueRow[]
+    >`
+      SELECT
+        c."id",
+        c."label",
+        c."category"::TEXT AS "category",
+        c."unit",
+        c."unitPriceHt" AS "unitPriceHT",
+        c."vatRate",
+        c."revision"
+      FROM public.catalogue_prestations AS c
+      WHERE c."companyId" = ${input.companyId}
+        AND c."id" IN (${Prisma.join(ids)})
+      ORDER BY c."id" ASC
+    `;
+    return Object.freeze(
+      rows.map(canonicalAgentMissionResumeCatalogueRecord),
+    );
+  }
+}
+
 interface CanonicalAppliedRealtimeContext {
   readonly revision: number;
   readonly digest: string;
@@ -1740,6 +1918,98 @@ function authorizedRealtimeLease(
       ? null
       : Object.freeze({ revision: applied.revision, digest: applied.digest }),
   });
+}
+
+function canonicalQuoteVatContextRow(
+  row: QuoteVatContextRow,
+): QuoteVatDecisionContext {
+  if (
+    !QUOTE_VAT_REGIMES.has(
+      row.companyVatRegime as 'franchise' | 'reel_simpl' | 'reel_normal',
+    )
+    || !QUOTE_VAT_TRADES.has(
+      row.companyTrade as
+        | 'plombier'
+        | 'electricien'
+        | 'macon'
+        | 'peintre'
+        | 'paysagiste'
+        | 'frigoriste'
+        | 'mainteneur'
+        | 'consultant'
+        | 'freelance_it'
+        | 'photographe'
+        | 'coach'
+        | 'autre',
+    )
+    || !QUOTE_VAT_CUSTOMER_TYPES.has(
+      row.customerType as 'b2c' | 'b2b' | 'b2g',
+    )
+    || typeof row.customerIsSubcontractingBtp !== 'boolean'
+  ) {
+    throw new Error('AGENT_MISSION_QUOTE_VAT_CONTEXT_CORRUPT');
+  }
+  return Object.freeze({
+    customerId: row.customerId,
+    companyVatRegime: row.companyVatRegime as
+      QuoteVatDecisionContext['companyVatRegime'],
+    companyTrade: row.companyTrade as QuoteVatDecisionContext['companyTrade'],
+    customerType: row.customerType as QuoteVatDecisionContext['customerType'],
+    customerIsSubcontractingBtp: row.customerIsSubcontractingBtp,
+  });
+}
+
+class PrismaQuoteVatContext implements QuoteVatContextPort {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async getForUpdate(input: {
+    readonly companyId: string;
+    readonly customerId: string;
+  }): Promise<QuoteVatDecisionContext | null> {
+    const rows = await this.transaction.$queryRaw<QuoteVatContextRow[]>`
+      SELECT
+        customer."id" AS "customerId",
+        company."vatRegime"::TEXT AS "companyVatRegime",
+        company."trade" AS "companyTrade",
+        customer."type"::TEXT AS "customerType",
+        customer."isSubcontractingBtp" AS "customerIsSubcontractingBtp"
+      FROM public.companies AS company
+      JOIN public.customers AS customer
+        ON customer."companyId" = company."id"
+      WHERE company."id" = ${input.companyId}
+        AND customer."id" = ${input.customerId}
+        AND customer."companyId" = ${input.companyId}
+      LIMIT 1
+      FOR SHARE OF company, customer
+    `;
+    return rows[0] === undefined ? null : canonicalQuoteVatContextRow(rows[0]);
+  }
+}
+
+class PrismaAgentMissionResumeQuoteVatContextRepository {
+  constructor(private readonly transaction: Prisma.TransactionClient) {}
+
+  async get(input: {
+    readonly companyId: string;
+    readonly customerId: string;
+  }): Promise<QuoteVatDecisionContext | null> {
+    const rows = await this.transaction.$queryRaw<QuoteVatContextRow[]>`
+      SELECT
+        customer."id" AS "customerId",
+        company."vatRegime"::TEXT AS "companyVatRegime",
+        company."trade" AS "companyTrade",
+        customer."type"::TEXT AS "customerType",
+        customer."isSubcontractingBtp" AS "customerIsSubcontractingBtp"
+      FROM public.companies AS company
+      JOIN public.customers AS customer
+        ON customer."companyId" = company."id"
+      WHERE company."id" = ${input.companyId}
+        AND customer."id" = ${input.customerId}
+        AND customer."companyId" = ${input.companyId}
+      LIMIT 1
+    `;
+    return rows[0] === undefined ? null : canonicalQuoteVatContextRow(rows[0]);
+  }
 }
 
 class PrismaAgentMissionQuoteScreenAuthority
@@ -1825,6 +2095,7 @@ function createWriteTransaction(
     quoteScreen: new PrismaAgentMissionQuoteScreenAuthority(transaction, lease),
     customers: new PrismaAgentMissionCustomerRepository(transaction),
     catalogueCandidates: new PrismaCatalogueCandidateSearch(transaction),
+    quoteVatContext: new PrismaQuoteVatContext(transaction),
   };
 }
 
@@ -1929,7 +2200,7 @@ export class PrismaAgentMissionUnitOfWork implements AgentMissionUnitOfWorkPort 
  * verrou SQL et ne fournit aucun port d'écriture au callback.
  */
 export class PrismaAgentMissionResumeUnitOfWork
-implements AgentMissionResumeUnitOfWorkPort {
+implements AgentMissionResumeUnitOfWorkPort, AgentMissionResumeV2UnitOfWorkPort {
   constructor(private readonly prisma: PrismaService) {}
 
   readQuoteCreationOwner<T>(
@@ -1967,6 +2238,55 @@ implements AgentMissionResumeUnitOfWorkPort {
             ),
             quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
             customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
+          }),
+        } as const;
+      },
+      {
+        ...OWNER_TRANSACTION_OPTIONS,
+        readOnly: true,
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+      },
+    );
+  }
+
+  readQuoteCreationOwnerV2<T>(
+    owner: AgentMissionOwner,
+    work: (transaction: AgentMissionResumeV2ReadTransaction) => Promise<T>,
+  ): Promise<AgentMissionResumeReadExecution<T>> {
+    return this.prisma.withIsolatedOwner(
+      owner.companyId,
+      owner.ownerUserId,
+      async (transaction) => {
+        await setTransactionTimeouts(transaction);
+        const companies = await transaction.$queryRaw<Array<{ closedAt: Date | null }>>`
+          SELECT "closedAt"
+          FROM public.companies
+          WHERE "id" = ${owner.companyId}
+          LIMIT 1
+        `;
+        const company = companies[0];
+        if (company === undefined) {
+          return { status: 'company_unavailable', reason: 'missing' } as const;
+        }
+        if (company.closedAt !== null) {
+          return { status: 'company_unavailable', reason: 'closed' } as const;
+        }
+        const now = await databaseClock(transaction);
+        return {
+          status: 'executed',
+          value: await work({
+            databaseNow: async () => now.toISOString(),
+            missions: new PrismaAgentMissionReadRepository(
+              transaction,
+              AGENT_MISSION_PROTOCOL_M2A,
+            ),
+            quoteDrafts: new PrismaAgentMissionResumeQuoteDraftRepository(transaction),
+            customers: new PrismaAgentMissionResumeCustomerRepository(transaction),
+            quoteLineWork:
+              new PrismaAgentMissionResumeQuoteLineWorkRepository(transaction),
+            catalogue: new PrismaAgentMissionResumeCatalogueRepository(transaction),
+            quoteVatContext:
+              new PrismaAgentMissionResumeQuoteVatContextRepository(transaction),
           }),
         } as const;
       },

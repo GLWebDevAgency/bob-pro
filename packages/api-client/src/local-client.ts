@@ -119,6 +119,7 @@ import {
   type FiscalProfileRepository,
   type FiscalProfileView,
   type QuoteAgentMissionResumeView,
+  type QuoteAgentMissionResumeViewV2,
   SearchAddress,
   CloseAccount,
   type SubscriptionRepository,
@@ -546,6 +547,12 @@ export class LocalBobClient implements BobClient {
     Result<QuoteAgentMissionResumeView, AppError>
   > {
     return err(appUnavailable('agent_mission_resume_persistence'));
+  }
+
+  async getCurrentQuoteAgentMissionResumeV2(): Promise<
+    Result<QuoteAgentMissionResumeViewV2, AppError>
+  > {
+    return err(appUnavailable('agent_mission_resume_v2_persistence'));
   }
 
   private readonly companies = new InMemoryCompanyRepository();

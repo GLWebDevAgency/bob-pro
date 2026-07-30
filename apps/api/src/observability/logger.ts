@@ -107,9 +107,21 @@ export class AppLogger implements LoggerService {
   log(message: unknown, context?: string): void {
     rootLogger.info(this.fields(context), redactTelemetryText(String(message)));
   }
-  error(message: unknown, trace?: string, context?: string): void {
+  error(
+    message: unknown,
+    trace?: string,
+    context?: string,
+    details?: Readonly<Record<string, unknown>>,
+  ): void {
+    const safeDetails = details === undefined
+      ? {}
+      : redactLogValue(details) as Record<string, unknown>;
     rootLogger.error(
-      { ...this.fields(context), trace: trace ? redactTelemetryText(trace) : trace },
+      {
+        ...safeDetails,
+        ...this.fields(context),
+        trace: trace ? redactTelemetryText(trace) : trace,
+      },
       redactTelemetryText(String(message)),
     );
   }

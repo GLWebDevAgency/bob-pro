@@ -477,6 +477,15 @@ export type AgentMissionSystemCommandInput =
       readonly parentEventType: AgentMissionEventSnapshot['eventType'];
       readonly parentCommandId: string;
       readonly parentMissionRevision: number;
+    }
+  | {
+      readonly operation: 'continue_quote_line_resolution';
+      readonly companyId: string;
+      readonly ownerUserId: string;
+      readonly missionId: string;
+      readonly parentEventType: AgentMissionEventSnapshot['eventType'];
+      readonly parentCommandId: string;
+      readonly parentMissionRevision: number;
     };
 
 export function deriveAgentMissionSystemCommandId(

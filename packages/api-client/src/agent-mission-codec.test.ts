@@ -9,6 +9,7 @@ import {
   decodeAgentMissionDecision,
   decodeAgentMissionDecisionV2,
   decodeAgentMissionScreenAck,
+  decodeAgentMissionScreenAckV2,
   decodeAgentMissionStageQuoteLines,
   decodeAgentMissionStart,
   decodeAgentMissionViewV1,
@@ -30,6 +31,10 @@ const M2A_PENDING_LINE_ID = '33333333-3333-4333-8333-333333333333';
 const M2A_DECISION_ID = '44444444-4444-4444-8444-444444444444';
 const M2A_CANDIDATE_CHOICE_ID = '66666666-6666-4666-8666-666666666666';
 const M2A_FREE_CHOICE_ID = '77777777-7777-4777-8777-777777777777';
+const M2A_PROPOSAL_ID = '88888888-8888-4888-8888-888888888888';
+const M2A_CONFIRM_CHOICE_ID = '99999999-9999-4999-8999-999999999991';
+const M2A_EDIT_CHOICE_ID = '99999999-9999-4999-8999-999999999992';
+const M2A_CANCEL_CHOICE_ID = '99999999-9999-4999-8999-999999999993';
 
 function initialMission() {
   const started = AgentMission.start({
@@ -199,6 +204,151 @@ function resolvedM2AMission() {
   });
   if (!resolved.ok) throw new Error(`Résolution M2-A invalide: ${resolved.error.code}`);
   return resolved.value.transition.mission;
+}
+
+function lineDetailsM2AMission() {
+  const base = resolvedM2AMission();
+  const requested = base.requestLineDetails({
+    expectedRevision: base.toSnapshot().revision,
+    pendingLineId: M2A_PENDING_LINE_ID,
+    requiredFact: 'unit_price',
+    workRevisionAfter: 4,
+    occurredAt: '2026-07-26T08:06:00.000Z',
+  });
+  if (!requested.ok) {
+    throw new Error(`Détails M2-A invalides: ${requested.error.code}`);
+  }
+  return requested.value.mission;
+}
+
+function lineProposalM2AMission() {
+  const base = resolvedM2AMission();
+  const draft = base.toSnapshot().payload.draft;
+  if (draft === null) throw new Error('Brouillon M2-A attendu');
+  const presented = base.presentLineProposal({
+    expectedRevision: base.toSnapshot().revision,
+    decisionId: M2A_DECISION_ID,
+    pendingLineId: M2A_PENDING_LINE_ID,
+    proposalId: M2A_PROPOSAL_ID,
+    expectedDraft: draft,
+    expectedWorkRevision: 4,
+    expectedCatalogue: null,
+    expectedVatContextDigest: 'a'.repeat(64),
+    diffHash: 'b'.repeat(64),
+    confirmChoiceId: M2A_CONFIRM_CHOICE_ID,
+    editChoiceId: M2A_EDIT_CHOICE_ID,
+    cancelChoiceId: M2A_CANCEL_CHOICE_ID,
+    occurredAt: '2026-07-26T08:06:00.000Z',
+  });
+  if (!presented.ok) {
+    throw new Error(`Proposition M2-A invalide: ${presented.error.code}`);
+  }
+  return presented.value.mission;
+}
+
+function cataloguePresentation(
+  mission: AgentMissionViewV1,
+) {
+  const decision = mission.payload.decision;
+  if (decision?.kind !== 'catalogue') {
+    throw new Error('Décision catalogue fixture absente.');
+  }
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: decision.pendingLineId,
+      expectedWorkRevision: decision.expectedWorkRevision,
+    },
+    decision: {
+      kind: decision.kind,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      pendingLineId: decision.pendingLineId,
+      expectedDraft: decision.expectedDraft,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      choices: decision.candidates,
+      freeLineChoiceId: decision.freeLineChoiceId,
+      choiceSetHash: decision.choiceSetHash,
+    },
+    catalogueChoices: [{
+      choiceId: M2A_CANDIDATE_CHOICE_ID,
+      available: true,
+      label: 'Heure de main-d’œuvre plomberie',
+      category: 'labor',
+      unit: 'heure',
+      unitPriceCents: 5_500,
+      vatRate: 20,
+    }],
+    freeLineChoiceId: decision.freeLineChoiceId,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  } as const;
+}
+
+function pendingLinePresentation(
+  expectedWorkRevision: number,
+) {
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: M2A_PENDING_LINE_ID,
+      expectedWorkRevision,
+    },
+    decision: null,
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: { kind: 'absent' },
+    proposal: null,
+  } as const;
+}
+
+function lineDetailsPresentation(expectedWorkRevision: number) {
+  return {
+    ...pendingLinePresentation(expectedWorkRevision),
+    requiredFact: 'unit_price',
+  } as const;
+}
+
+function lineProposalPresentation(mission: AgentMissionViewV1) {
+  const decision = mission.payload.decision;
+  if (decision?.kind !== 'line_confirmation') {
+    throw new Error('Décision de ligne fixture absente.');
+  }
+  return {
+    schema: 'bob.agent-mission.quote-presentation',
+    version: 1,
+    requiredFact: null,
+    pendingLine: {
+      pendingLineId: decision.pendingLineId,
+      expectedWorkRevision: decision.expectedWorkRevision,
+    },
+    decision: {
+      kind: decision.kind,
+      decisionId: decision.decisionId,
+      choiceSetRevision: decision.choiceSetRevision,
+      pendingLineId: decision.pendingLineId,
+      proposalId: decision.proposalId,
+      proposalRevision: decision.proposalRevision,
+      expectedDraft: decision.expectedDraft,
+      expectedWorkRevision: decision.expectedWorkRevision,
+      expectedCatalogue: decision.expectedCatalogue,
+      expectedVatContextDigest: decision.expectedVatContextDigest,
+      diffHash: decision.diffHash,
+      choices: decision.choices,
+      choiceSetHash: decision.choiceSetHash,
+    },
+    catalogueChoices: [],
+    freeLineChoiceId: null,
+    proposalStatus: {
+      kind: 'stale',
+      reason: 'vat_context_changed',
+    },
+    proposal: null,
+  } as const;
 }
 
 describe('AgentMission HTTP codecs', () => {
@@ -401,7 +551,10 @@ describe('AgentMission HTTP codecs', () => {
         outcome: 'choices_presented',
         pendingLineId: M2A_PENDING_LINE_ID,
         presentedChoiceCount: 2,
+        requiredFact: null,
+        proposalId: null,
       },
+      presentation: cataloguePresentation(mission),
     };
     expect(decodeAgentMissionStageQuoteLines(wire, MISSION_ID)).toEqual(wire);
     expect(decodeAgentMissionStageQuoteLines({
@@ -439,7 +592,10 @@ describe('AgentMission HTTP codecs', () => {
         outcome: 'deferred_to_m2a2',
         pendingLineId: M2A_PENDING_LINE_ID,
         presentedChoiceCount: 0,
+        requiredFact: null,
+        proposalId: null,
       },
+      presentation: pendingLinePresentation(3),
     };
     expect(decodeAgentMissionCatalogueChoice(wire, MISSION_ID)).toEqual(wire);
     expect(decodeAgentMissionCatalogueChoice({
@@ -474,6 +630,53 @@ describe('AgentMission HTTP codecs', () => {
       outcome: 'selected',
       effect: { kind: 'selected' },
       mission,
+      presentation: cataloguePresentation(mission),
     }, MISSION_ID)).not.toBeNull();
+    expect(decodeAgentMissionDecisionV2({
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission,
+    }, MISSION_ID)).toBeNull();
+  });
+
+  it('projette exactement la question après ACK V2 et la confirmation après décision V2', () => {
+    const details = viewAt(
+      lineDetailsM2AMission(),
+      '2026-07-26T08:06:00.000Z',
+    );
+    const detailsWire = {
+      outcome: 'acknowledged',
+      receipt: receipt(),
+      mission: details,
+      presentation: lineDetailsPresentation(4),
+    };
+    expect(decodeAgentMissionScreenAckV2(detailsWire)).toEqual(detailsWire);
+    expect(decodeAgentMissionScreenAckV2({
+      ...detailsWire,
+      presentation: {
+        ...lineDetailsPresentation(4),
+        pendingLine: null,
+      },
+    })).toBeNull();
+    expect(decodeAgentMissionScreenAck(detailsWire)).toBeNull();
+
+    const confirmation = viewAt(
+      lineProposalM2AMission(),
+      '2026-07-26T08:06:00.000Z',
+    );
+    const confirmationWire = {
+      outcome: 'selected',
+      effect: { kind: 'selected' },
+      mission: confirmation,
+      presentation: lineProposalPresentation(confirmation),
+    };
+    expect(
+      decodeAgentMissionDecisionV2(confirmationWire, MISSION_ID),
+    ).toEqual(confirmationWire);
+    expect(decodeAgentMissionDecisionV2({
+      ...confirmationWire,
+      presentation: pendingLinePresentation(4),
+    }, MISSION_ID)).toBeNull();
+    expect(decodeAgentMissionDecision(confirmationWire, MISSION_ID)).toBeNull();
   });
 });

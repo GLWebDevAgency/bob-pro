@@ -4,7 +4,9 @@ import { sha256Hex } from '../../shared-kernel/sha256';
 import { type Instant } from '../../shared-kernel/time';
 import {
   AGENT_MISSION_EVENT_RETENTION_MS,
+  AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS,
   AGENT_MISSION_START_OUTCOMES,
+  type AgentMissionQuoteLineRequiredFact,
   type AgentMissionEventDataV1,
   type AgentMissionStartConflictOutcome,
   type AgentMissionStartDirectDraftOutcome,
@@ -35,9 +37,18 @@ export const QUOTE_CREATION_MISSION_PHASES = [
   'awaiting_customer_choice',
   'awaiting_lines',
   'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
 ] as const;
 
 export type QuoteCreationMissionPhase = (typeof QUOTE_CREATION_MISSION_PHASES)[number];
+export const QUOTE_MISSION_STAGED_CUSTOMER_RESOLUTION_FORBIDDEN_PHASES = [
+  'awaiting_customer_choice',
+  'awaiting_lines',
+  'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
+] as const satisfies readonly QuoteCreationMissionPhase[];
 
 export const AGENT_MISSION_PAYLOAD_SCHEMA = 'bob.agent-mission.quote-creation' as const;
 export const AGENT_MISSION_PAYLOAD_VERSION = 1 as const;
@@ -68,6 +79,7 @@ export const QUOTE_MISSION_DECISION_KINDS = [
   'confirm_draft_discard',
   'customer',
   'catalogue',
+  'line_confirmation',
 ] as const;
 export const QUOTE_MISSION_DRAFT_DECISION_KEYS = [
   'kind',
@@ -103,6 +115,30 @@ export const QUOTE_MISSION_CATALOGUE_CANDIDATE_KEYS = [
   'choiceId',
   'catalogueItemId',
   'expectedCatalogueRevision',
+] as const;
+export const QUOTE_MISSION_LINE_CONFIRMATION_DECISION_KEYS = [
+  'kind',
+  'decisionId',
+  'choiceSetRevision',
+  'pendingLineId',
+  'proposalId',
+  'proposalRevision',
+  'expectedDraft',
+  'expectedWorkRevision',
+  'expectedCatalogue',
+  'expectedVatContextDigest',
+  'diffHash',
+  'choices',
+  'choiceSetHash',
+] as const;
+export const QUOTE_MISSION_EXPECTED_CATALOGUE_KEYS = [
+  'itemId',
+  'revision',
+] as const;
+export const QUOTE_MISSION_LINE_CONFIRMATION_ACTIONS = [
+  'confirm_line',
+  'edit_line',
+  'cancel_line',
 ] as const;
 export const QUOTE_MISSION_STAGED_CUSTOMER_RESOLUTION_KINDS = [
   'none',
@@ -199,6 +235,28 @@ export interface CatalogueDecisionV1 {
   readonly choiceSetHash: string;
 }
 
+export interface LineConfirmationDecisionV1 {
+  readonly kind: 'line_confirmation';
+  readonly decisionId: string;
+  readonly choiceSetRevision: number;
+  readonly pendingLineId: string;
+  readonly proposalId: string;
+  readonly proposalRevision: 1;
+  readonly expectedDraft: QuoteMissionDraftReferenceV1;
+  readonly expectedWorkRevision: number;
+  readonly expectedCatalogue:
+    | { readonly itemId: string; readonly revision: number }
+    | null;
+  readonly expectedVatContextDigest: string;
+  readonly diffHash: string;
+  readonly choices: readonly [
+    { readonly choiceId: string; readonly action: 'confirm_line' },
+    { readonly choiceId: string; readonly action: 'edit_line' },
+    { readonly choiceId: string; readonly action: 'cancel_line' },
+  ];
+  readonly choiceSetHash: string;
+}
+
 export type QuoteMissionStagedCustomerResolutionV1 =
   | { readonly kind: 'none' }
   | { readonly kind: 'too_many' }
@@ -216,7 +274,8 @@ export type QuoteMissionDecisionV1 =
   | ExistingDraftDecisionV1
   | ConfirmDraftDiscardDecisionV1
   | CustomerDecisionV1
-  | CatalogueDecisionV1;
+  | CatalogueDecisionV1
+  | LineConfirmationDecisionV1;
 
 export interface QuoteCreationMissionPayloadV1 {
   readonly schema: typeof AGENT_MISSION_PAYLOAD_SCHEMA;
@@ -302,7 +361,10 @@ export type AgentMissionError =
         | 'customer_reference'
         | 'pending_line'
         | 'work_revision'
-        | 'catalogue_revision';
+        | 'catalogue_revision'
+        | 'proposal_id'
+        | 'proposal_revision'
+        | 'diff_hash';
     }
   | { readonly code: 'agent_mission_expired' }
   | { readonly code: 'agent_mission_clock_regression' };
@@ -327,6 +389,13 @@ export type AgentMissionAction =
   | 'record_catalogue_not_found'
   | 'select_catalogue_choice'
   | 'invalidate_catalogue_decision'
+  | 'request_line_details'
+  | 'patch_line_fact'
+  | 'present_line_proposal'
+  | 'invalidate_line_proposal'
+  | 'reject_line_proposal'
+  | 'confirm_line'
+  | 'cancel_line'
   | 'cancel'
   | 'expire';
 
@@ -381,6 +450,8 @@ const ACTIVE_PHASES_REQUIRING_BINDING = new Set<QuoteCreationMissionPhase>([
   'awaiting_customer_choice',
   'awaiting_lines',
   'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
 ]);
 const ACKNOWLEDGEABLE_PHASES = new Set<QuoteCreationMissionPhase>([
   'awaiting_quote_screen',
@@ -388,6 +459,8 @@ const ACKNOWLEDGEABLE_PHASES = new Set<QuoteCreationMissionPhase>([
   'awaiting_customer_choice',
   'awaiting_lines',
   'awaiting_catalogue_choice',
+  'awaiting_line_details',
+  'awaiting_line_confirmation',
 ]);
 const CUSTOMER_RESOLUTION_STAGEABLE_PHASES = new Set<QuoteCreationMissionPhase>([
   'awaiting_draft_decision',
@@ -492,6 +565,21 @@ function cloneDecision(decision: QuoteMissionDecisionV1): QuoteMissionDecisionV1
       candidates: Object.freeze(
         decision.candidates.map((candidate) => Object.freeze({ ...candidate })),
       ),
+    });
+  }
+  if (decision.kind === 'line_confirmation') {
+    const choices: LineConfirmationDecisionV1['choices'] = Object.freeze([
+      Object.freeze({ ...decision.choices[0] }),
+      Object.freeze({ ...decision.choices[1] }),
+      Object.freeze({ ...decision.choices[2] }),
+    ]);
+    return Object.freeze({
+      ...decision,
+      expectedDraft: cloneDraft(decision.expectedDraft),
+      expectedCatalogue: decision.expectedCatalogue === null
+        ? null
+        : Object.freeze({ ...decision.expectedCatalogue }),
+      choices,
     });
   }
   if (decision.kind === 'existing_draft') {
@@ -834,6 +922,115 @@ export function computeQuoteMissionCatalogueChoiceSetHash(input: {
   ])));
 }
 
+export function computeQuoteMissionLineConfirmationChoiceSetHash(input: {
+  readonly missionId: string;
+  readonly choiceSetRevision: number;
+  readonly decisionId: string;
+  readonly pendingLineId: string;
+  readonly proposalId: string;
+  readonly proposalRevision: 1;
+  readonly expectedDraft: QuoteMissionDraftReferenceV1;
+  readonly expectedWorkRevision: number;
+  readonly expectedCatalogue:
+    | { readonly itemId: string; readonly revision: number }
+    | null;
+  readonly expectedVatContextDigest: string;
+  readonly diffHash: string;
+  readonly choices: LineConfirmationDecisionV1['choices'];
+}): AgentMissionResult<string> {
+  if (!isPlainRecord(input) || !exactKeys(input, [
+    'missionId',
+    'choiceSetRevision',
+    'decisionId',
+    'pendingLineId',
+    'proposalId',
+    'proposalRevision',
+    'expectedDraft',
+    'expectedWorkRevision',
+    'expectedCatalogue',
+    'expectedVatContextDigest',
+    'diffHash',
+    'choices',
+  ])) {
+    return invalid('$', 'invalid_shape');
+  }
+  if (!isCanonicalUuid(input.missionId)) return invalid('missionId', 'invalid_uuid');
+  if (!isRevision(input.choiceSetRevision, false)) {
+    return invalid('choiceSetRevision', 'invalid_revision');
+  }
+  if (!isCanonicalUuid(input.decisionId)) return invalid('decisionId', 'invalid_uuid');
+  if (!isCanonicalUuid(input.pendingLineId)) return invalid('pendingLineId', 'invalid_uuid');
+  if (!isCanonicalUuid(input.proposalId)) return invalid('proposalId', 'invalid_uuid');
+  if (input.proposalRevision !== 1) {
+    return invalid('proposalRevision', 'invalid_revision');
+  }
+  if (
+    typeof input.expectedVatContextDigest !== 'string'
+    || !SHA256.test(input.expectedVatContextDigest)
+  ) {
+    return invalid('expectedVatContextDigest', 'invalid_digest');
+  }
+  const draft = parseDraft(input.expectedDraft, 'expectedDraft');
+  if (!draft.ok) return draft;
+  if (!isRevision(input.expectedWorkRevision, false)) {
+    return invalid('expectedWorkRevision', 'invalid_revision');
+  }
+  let expectedCatalogue: readonly [string, number] | null = null;
+  if (input.expectedCatalogue !== null) {
+    if (
+      !isPlainRecord(input.expectedCatalogue)
+      || !exactKeys(input.expectedCatalogue, QUOTE_MISSION_EXPECTED_CATALOGUE_KEYS)
+      || typeof input.expectedCatalogue['itemId'] !== 'string'
+      || !CATALOGUE_ITEM_ID.test(input.expectedCatalogue['itemId'])
+      || !isRevision(input.expectedCatalogue['revision'], false)
+    ) {
+      return invalid('expectedCatalogue', 'invalid_shape');
+    }
+    expectedCatalogue = [
+      input.expectedCatalogue['itemId'],
+      input.expectedCatalogue['revision'],
+    ];
+  }
+  if (typeof input.diffHash !== 'string' || !SHA256.test(input.diffHash)) {
+    return invalid('diffHash', 'invalid_digest');
+  }
+  if (!Array.isArray(input.choices) || input.choices.length !== 3) {
+    return invalid('choices', 'invalid_shape');
+  }
+  const choiceIds = new Set<string>();
+  const canonicalChoices: Array<readonly [string, string]> = [];
+  for (let index = 0; index < 3; index += 1) {
+    const choice = input.choices[index];
+    if (
+      !isPlainRecord(choice)
+      || !exactKeys(choice, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || choice['action'] !== QUOTE_MISSION_LINE_CONFIRMATION_ACTIONS[index]
+      || !isCanonicalUuid(choice['choiceId'])
+      || choiceIds.has(choice['choiceId'])
+    ) {
+      return invalid(`choices[${index}]`, 'invalid_value');
+    }
+    choiceIds.add(choice['choiceId']);
+    canonicalChoices.push([choice['choiceId'], choice['action'] as string]);
+  }
+  return ok(sha256Hex(JSON.stringify([
+    'bob.agent-mission.line-confirmation-choice-set.v1',
+    input.missionId,
+    input.choiceSetRevision,
+    input.decisionId,
+    [input.pendingLineId, input.expectedWorkRevision],
+    [
+      draft.value.sessionId,
+      draft.value.slotRevision,
+      draft.value.contentRevision,
+    ],
+    expectedCatalogue,
+    input.expectedVatContextDigest,
+    [input.proposalId, input.proposalRevision, input.diffHash],
+    canonicalChoices,
+  ])));
+}
+
 function createExistingDraftDecision(
   missionId: string,
   revision: number,
@@ -929,6 +1126,70 @@ function createCatalogueDecision(
     ...input,
     choiceSetHash: hash.value,
   }) as CatalogueDecisionV1);
+}
+
+function createLineConfirmationDecision(
+  missionId: string,
+  choiceSetRevision: number,
+  input: Omit<
+    LineConfirmationDecisionV1,
+    'kind' | 'choiceSetRevision' | 'proposalRevision' | 'choices' | 'choiceSetHash'
+  > & {
+    readonly confirmChoiceId: string;
+    readonly editChoiceId: string;
+    readonly cancelChoiceId: string;
+  },
+): AgentMissionResult<LineConfirmationDecisionV1> {
+  if (!isPlainRecord(input) || !exactKeys(input, [
+    'decisionId',
+    'pendingLineId',
+    'proposalId',
+    'expectedDraft',
+    'expectedWorkRevision',
+    'expectedCatalogue',
+    'expectedVatContextDigest',
+    'diffHash',
+    'confirmChoiceId',
+    'editChoiceId',
+    'cancelChoiceId',
+  ])) {
+    return invalid('decision', 'invalid_shape');
+  }
+  const choices: LineConfirmationDecisionV1['choices'] = [
+    { choiceId: input.confirmChoiceId, action: 'confirm_line' },
+    { choiceId: input.editChoiceId, action: 'edit_line' },
+    { choiceId: input.cancelChoiceId, action: 'cancel_line' },
+  ];
+  const hash = computeQuoteMissionLineConfirmationChoiceSetHash({
+    missionId,
+    choiceSetRevision,
+    decisionId: input.decisionId,
+    pendingLineId: input.pendingLineId,
+    proposalId: input.proposalId,
+    proposalRevision: 1,
+    expectedDraft: input.expectedDraft,
+    expectedWorkRevision: input.expectedWorkRevision,
+    expectedCatalogue: input.expectedCatalogue,
+    expectedVatContextDigest: input.expectedVatContextDigest,
+    diffHash: input.diffHash,
+    choices,
+  });
+  if (!hash.ok) return hash;
+  return ok(cloneDecision({
+    kind: 'line_confirmation',
+    decisionId: input.decisionId,
+    choiceSetRevision,
+    pendingLineId: input.pendingLineId,
+    proposalId: input.proposalId,
+    proposalRevision: 1,
+    expectedDraft: input.expectedDraft,
+    expectedWorkRevision: input.expectedWorkRevision,
+    expectedCatalogue: input.expectedCatalogue,
+    expectedVatContextDigest: input.expectedVatContextDigest,
+    diffHash: input.diffHash,
+    choices,
+    choiceSetHash: hash.value,
+  }) as LineConfirmationDecisionV1);
 }
 
 function parseDecision(
@@ -1094,6 +1355,55 @@ function parseDecision(
     return expected;
   }
 
+  if (value['kind'] === 'line_confirmation') {
+    if (!exactKeys(value, QUOTE_MISSION_LINE_CONFIRMATION_DECISION_KEYS)) {
+      return invalid('payload.decision', 'invalid_shape');
+    }
+    if (!Array.isArray(value['choices']) || value['choices'].length !== 3) {
+      return invalid('payload.decision.choices', 'invalid_shape');
+    }
+    if (value['proposalRevision'] !== 1) {
+      return invalid('payload.decision.proposalRevision', 'invalid_revision');
+    }
+    const [confirm, edit, cancel] = value['choices'];
+    if (
+      !isPlainRecord(confirm)
+      || !exactKeys(confirm, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || confirm['action'] !== 'confirm_line'
+      || !isPlainRecord(edit)
+      || !exactKeys(edit, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || edit['action'] !== 'edit_line'
+      || !isPlainRecord(cancel)
+      || !exactKeys(cancel, QUOTE_MISSION_ACTION_CHOICE_KEYS)
+      || cancel['action'] !== 'cancel_line'
+    ) {
+      return invalid('payload.decision.choices', 'invalid_value');
+    }
+    const expected = createLineConfirmationDecision(
+      missionId,
+      choiceSetRevision,
+      {
+        decisionId: value['decisionId'],
+        pendingLineId: value['pendingLineId'] as string,
+        proposalId: value['proposalId'] as string,
+        expectedDraft: value['expectedDraft'] as QuoteMissionDraftReferenceV1,
+        expectedWorkRevision: value['expectedWorkRevision'] as number,
+        expectedCatalogue:
+          value['expectedCatalogue'] as LineConfirmationDecisionV1['expectedCatalogue'],
+        expectedVatContextDigest: value['expectedVatContextDigest'] as string,
+        diffHash: value['diffHash'] as string,
+        confirmChoiceId: confirm['choiceId'] as string,
+        editChoiceId: edit['choiceId'] as string,
+        cancelChoiceId: cancel['choiceId'] as string,
+      },
+    );
+    if (!expected.ok) return expected;
+    if (expected.value.choiceSetHash !== value['choiceSetHash']) {
+      return invalid('payload.decision.choiceSetHash', 'inconsistent_state');
+    }
+    return expected;
+  }
+
   return invalid('payload.decision.kind', 'invalid_value');
 }
 
@@ -1173,6 +1483,7 @@ function validateStateCoherence(snapshot: AgentMissionSnapshot): AgentMissionRes
     awaiting_draft_discard_confirmation: 'confirm_draft_discard',
     awaiting_customer_choice: 'customer',
     awaiting_catalogue_choice: 'catalogue',
+    awaiting_line_confirmation: 'line_confirmation',
   };
   const expected = expectedDecisionKind[phase];
   if (expected === undefined ? payload.decision !== null : payload.decision?.kind !== expected) {
@@ -1191,17 +1502,21 @@ function validateStateCoherence(snapshot: AgentMissionSnapshot): AgentMissionRes
 
   if (
     payload.stagedCustomerResolution !== null
-    && (
-      phase === 'awaiting_customer_choice'
-      || phase === 'awaiting_lines'
-      || phase === 'awaiting_catalogue_choice'
+    && QUOTE_MISSION_STAGED_CUSTOMER_RESOLUTION_FORBIDDEN_PHASES.some(
+      (forbiddenPhase) => forbiddenPhase === phase,
     )
   ) {
     return invalid('payload.stagedCustomerResolution', 'inconsistent_state');
   }
 
   if (
-    (phase === 'awaiting_catalogue_choice' || payload.decision?.kind === 'catalogue')
+    (
+      phase === 'awaiting_catalogue_choice'
+      || phase === 'awaiting_line_details'
+      || phase === 'awaiting_line_confirmation'
+      || payload.decision?.kind === 'catalogue'
+      || payload.decision?.kind === 'line_confirmation'
+    )
     && snapshot.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
   ) {
     return invalid('protocolVersion', 'inconsistent_state');
@@ -1934,7 +2249,9 @@ export class AgentMission {
       | 'awaiting_customer'
       | 'awaiting_customer_choice'
       | 'awaiting_lines'
-      | 'awaiting_catalogue_choice';
+      | 'awaiting_catalogue_choice'
+      | 'awaiting_line_details'
+      | 'awaiting_line_confirmation';
     if (this.snapshot.phase === 'awaiting_quote_screen') {
       nextPhase = input.draftHasCustomer ? 'awaiting_lines' : 'awaiting_customer';
     } else if (
@@ -1942,10 +2259,14 @@ export class AgentMission {
       || this.snapshot.phase === 'awaiting_customer_choice'
       || this.snapshot.phase === 'awaiting_lines'
       || this.snapshot.phase === 'awaiting_catalogue_choice'
+      || this.snapshot.phase === 'awaiting_line_details'
+      || this.snapshot.phase === 'awaiting_line_confirmation'
     ) {
       const expectsCustomer = (
         this.snapshot.phase === 'awaiting_lines'
         || this.snapshot.phase === 'awaiting_catalogue_choice'
+        || this.snapshot.phase === 'awaiting_line_details'
+        || this.snapshot.phase === 'awaiting_line_confirmation'
       );
       if (input.draftHasCustomer !== expectsCustomer) {
         return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
@@ -1961,6 +2282,7 @@ export class AgentMission {
       decision: (
         nextPhase === 'awaiting_customer_choice'
         || nextPhase === 'awaiting_catalogue_choice'
+        || nextPhase === 'awaiting_line_confirmation'
       )
         ? this.snapshot.payload.decision
         : null,
@@ -2529,6 +2851,497 @@ export class AgentMission {
     });
   }
 
+  invalidateLineProposal(input: {
+    readonly expectedRevision: number;
+    readonly reason: 'candidate_unavailable' | 'choice_set_stale';
+    readonly nextPhase: 'awaiting_lines' | 'awaiting_line_details';
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(
+      input,
+      ['expectedRevision', 'reason', 'nextPhase', 'occurredAt'],
+    );
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'invalidate_line_proposal',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_line_confirmation',
+    );
+    if (!ready.ok) return ready;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || this.snapshot.payload.decision?.kind !== 'line_confirmation'
+    ) {
+      return this.invalidTransition('invalidate_line_proposal');
+    }
+    if (
+      (input.reason !== 'candidate_unavailable' && input.reason !== 'choice_set_stale')
+      || (
+        input.nextPhase !== 'awaiting_lines'
+        && input.nextPhase !== 'awaiting_line_details'
+      )
+    ) {
+      return invalid('reason', 'invalid_value');
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: input.nextPhase,
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: { kind: 'decision_invalidated', reason: input.reason },
+    });
+  }
+
+  requestLineDetails(input: {
+    readonly expectedRevision: number;
+    readonly pendingLineId: string;
+    readonly requiredFact: AgentMissionQuoteLineRequiredFact | null;
+    readonly workRevisionAfter: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'pendingLineId',
+      'requiredFact',
+      'workRevisionAfter',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'request_line_details',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_lines',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('request_line_details');
+    }
+    if (!isCanonicalUuid(input.pendingLineId)) {
+      return invalid('pendingLineId', 'invalid_uuid');
+    }
+    if (
+      input.requiredFact !== null
+      && !isOneOf(AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS, input.requiredFact)
+    ) {
+      return invalid('requiredFact', 'invalid_value');
+    }
+    if (!isRevision(input.workRevisionAfter, false)) {
+      return invalid('workRevisionAfter', 'invalid_revision');
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_line_details',
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_details_requested',
+        pendingLineId: input.pendingLineId,
+        requiredFact: input.requiredFact,
+        workRevisionAfter: input.workRevisionAfter,
+      },
+    });
+  }
+
+  patchLineFact(input: {
+    readonly expectedRevision: number;
+    readonly pendingLineId: string;
+    readonly field: AgentMissionQuoteLineRequiredFact;
+    readonly workRevisionAfter: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'pendingLineId',
+      'field',
+      'workRevisionAfter',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'patch_line_fact',
+      input.expectedRevision,
+      input.occurredAt,
+    );
+    if (!ready.ok) return ready;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || (
+        this.snapshot.phase !== 'awaiting_line_details'
+        && this.snapshot.phase !== 'awaiting_line_confirmation'
+        && this.snapshot.phase !== 'awaiting_catalogue_choice'
+      )
+      || (
+        this.snapshot.phase === 'awaiting_catalogue_choice'
+        && input.field !== 'service_reference'
+      )
+    ) {
+      return this.invalidTransition('patch_line_fact');
+    }
+    if (!isCanonicalUuid(input.pendingLineId)) {
+      return invalid('pendingLineId', 'invalid_uuid');
+    }
+    if (!isOneOf(AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS, input.field)) {
+      return invalid('field', 'invalid_value');
+    }
+    if (!isRevision(input.workRevisionAfter, false)) {
+      return invalid('workRevisionAfter', 'invalid_revision');
+    }
+    const decision = this.snapshot.payload.decision;
+    if (
+      decision !== null
+      && (
+        (decision.kind !== 'catalogue' && decision.kind !== 'line_confirmation')
+        || decision.pendingLineId !== input.pendingLineId
+        || decision.expectedWorkRevision + 1 !== input.workRevisionAfter
+      )
+    ) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'work_revision' });
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: this.requireDraft(),
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_fact_patched',
+        pendingLineId: input.pendingLineId,
+        field: input.field,
+        workRevisionAfter: input.workRevisionAfter,
+      },
+    });
+  }
+
+  presentLineProposal(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly expectedDraft: QuoteMissionDraftReferenceV1;
+    readonly expectedWorkRevision: number;
+    readonly expectedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly expectedVatContextDigest: string;
+    readonly diffHash: string;
+    readonly confirmChoiceId: string;
+    readonly editChoiceId: string;
+    readonly cancelChoiceId: string;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'pendingLineId',
+      'proposalId',
+      'expectedDraft',
+      'expectedWorkRevision',
+      'expectedCatalogue',
+      'expectedVatContextDigest',
+      'diffHash',
+      'confirmChoiceId',
+      'editChoiceId',
+      'cancelChoiceId',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'present_line_proposal',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_lines',
+    );
+    if (!ready.ok) return ready;
+    if (this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A) {
+      return this.invalidTransition('present_line_proposal');
+    }
+    const draft = parseDraft(input.expectedDraft, 'expectedDraft');
+    if (!draft.ok) return draft;
+    if (!sameDraft(draft.value, this.requireDraft())) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
+    }
+    const nextRevision = this.nextMissionRevision();
+    if (!nextRevision.ok) return nextRevision;
+    const decision = createLineConfirmationDecision(
+      this.id,
+      nextRevision.value,
+      {
+        decisionId: input.decisionId,
+        pendingLineId: input.pendingLineId,
+        proposalId: input.proposalId,
+        expectedDraft: draft.value,
+        expectedWorkRevision: input.expectedWorkRevision,
+        expectedCatalogue: input.expectedCatalogue,
+        expectedVatContextDigest: input.expectedVatContextDigest,
+        diffHash: input.diffHash,
+        confirmChoiceId: input.confirmChoiceId,
+        editChoiceId: input.editChoiceId,
+        cancelChoiceId: input.cancelChoiceId,
+      },
+    );
+    if (!decision.ok) return decision;
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_line_confirmation',
+      draft: draft.value,
+      decision: decision.value,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_proposal_presented',
+        pendingLineId: input.pendingLineId,
+        proposalId: input.proposalId,
+        proposalRevision: 1,
+        expectedWorkRevision: input.expectedWorkRevision,
+        diffHash: input.diffHash,
+        choiceSetHash: decision.value.choiceSetHash,
+      },
+    });
+  }
+
+  rejectLineProposal(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly observedDraft: QuoteMissionDraftReferenceV1;
+    readonly observedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+    readonly workRevisionAfter: number;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceId',
+      'pendingLineId',
+      'proposalId',
+      'proposalRevision',
+      'expectedWorkRevision',
+      'observedDraft',
+      'observedCatalogue',
+      'diffHash',
+      'workRevisionAfter',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'reject_line_proposal',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_line_confirmation',
+    );
+    if (!ready.ok) return ready;
+    const decision = this.snapshot.payload.decision;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || decision?.kind !== 'line_confirmation'
+    ) {
+      return this.invalidTransition('reject_line_proposal');
+    }
+    const action = this.authorizeLineConfirmationChoice(decision, input);
+    if (!action.ok) return action;
+    if (action.value !== 'edit_line') {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' });
+    }
+    if (
+      !isRevision(input.workRevisionAfter, false)
+      || input.workRevisionAfter !== decision.expectedWorkRevision + 1
+    ) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'work_revision' });
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_line_details',
+      draft: decision.expectedDraft,
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_proposal_rejected',
+        pendingLineId: decision.pendingLineId,
+        proposalId: decision.proposalId,
+        workRevisionAfter: input.workRevisionAfter,
+        choiceId: input.choiceId,
+        choiceSetHash: decision.choiceSetHash,
+      },
+    });
+  }
+
+  confirmLine(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly observedDraft: QuoteMissionDraftReferenceV1;
+    readonly observedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+    readonly updatedDraft: QuoteMissionDraftReferenceV1;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceId',
+      'pendingLineId',
+      'proposalId',
+      'proposalRevision',
+      'expectedWorkRevision',
+      'observedDraft',
+      'observedCatalogue',
+      'diffHash',
+      'updatedDraft',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'confirm_line',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_line_confirmation',
+    );
+    if (!ready.ok) return ready;
+    const decision = this.snapshot.payload.decision;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || decision?.kind !== 'line_confirmation'
+    ) {
+      return this.invalidTransition('confirm_line');
+    }
+    const action = this.authorizeLineConfirmationChoice(decision, input);
+    if (!action.ok) return action;
+    if (action.value !== 'confirm_line') {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' });
+    }
+    const updatedDraft = parseDraft(input.updatedDraft, 'updatedDraft');
+    if (!updatedDraft.ok) return updatedDraft;
+    if (
+      decision.expectedDraft.slotRevision === AGENT_MISSION_INT4_MAX
+      || decision.expectedDraft.contentRevision === AGENT_MISSION_INT4_MAX
+    ) {
+      return err({
+        code: 'agent_mission_revision_overflow',
+        field: decision.expectedDraft.slotRevision === AGENT_MISSION_INT4_MAX
+          ? 'draftSlotRevision'
+          : 'draftContentRevision',
+      });
+    }
+    if (
+      updatedDraft.value.sessionId !== decision.expectedDraft.sessionId
+      || updatedDraft.value.slotRevision !== decision.expectedDraft.slotRevision + 1
+      || updatedDraft.value.contentRevision
+        !== decision.expectedDraft.contentRevision + 1
+    ) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: updatedDraft.value,
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_confirmed',
+        pendingLineId: decision.pendingLineId,
+        proposalId: decision.proposalId,
+        proposalRevision: decision.proposalRevision,
+        expectedWorkRevision: decision.expectedWorkRevision,
+        choiceId: input.choiceId,
+        choiceSetHash: decision.choiceSetHash,
+        diffHash: decision.diffHash,
+      },
+    });
+  }
+
+  cancelLine(input: {
+    readonly expectedRevision: number;
+    readonly decisionId: string;
+    readonly choiceSetRevision: number;
+    readonly choiceId: string;
+    readonly pendingLineId: string;
+    readonly proposalId: string;
+    readonly proposalRevision: 1;
+    readonly expectedWorkRevision: number;
+    readonly observedDraft: QuoteMissionDraftReferenceV1;
+    readonly observedCatalogue:
+      | { readonly itemId: string; readonly revision: number }
+      | null;
+    readonly diffHash: string;
+    readonly occurredAt: Instant;
+  }): AgentMissionResult<AgentMissionTransition> {
+    const shape = requireExactInput(input, [
+      'expectedRevision',
+      'decisionId',
+      'choiceSetRevision',
+      'choiceId',
+      'pendingLineId',
+      'proposalId',
+      'proposalRevision',
+      'expectedWorkRevision',
+      'observedDraft',
+      'observedCatalogue',
+      'diffHash',
+      'occurredAt',
+    ]);
+    if (!shape.ok) return shape;
+    const ready = this.authorize(
+      'cancel_line',
+      input.expectedRevision,
+      input.occurredAt,
+      'awaiting_line_confirmation',
+    );
+    if (!ready.ok) return ready;
+    const decision = this.snapshot.payload.decision;
+    if (
+      this.protocolVersion !== AGENT_MISSION_PROTOCOL_M2A
+      || decision?.kind !== 'line_confirmation'
+    ) {
+      return this.invalidTransition('cancel_line');
+    }
+    const action = this.authorizeLineConfirmationChoice(decision, input);
+    if (!action.ok) return action;
+    if (action.value !== 'cancel_line') {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' });
+    }
+    return this.activeTransition({
+      occurredAt: input.occurredAt,
+      phase: 'awaiting_lines',
+      draft: decision.expectedDraft,
+      decision: null,
+      stagedCustomerResolution: null,
+      currentBinding: this.snapshot.currentBinding,
+      data: {
+        kind: 'line_cancelled',
+        pendingLineId: decision.pendingLineId,
+        expectedWorkRevision: decision.expectedWorkRevision,
+        choiceId: input.choiceId,
+        choiceSetHash: decision.choiceSetHash,
+      },
+    });
+  }
+
   joinActive(input: {
     readonly expectedRevision: number;
     readonly stagedCustomerResolution: QuoteMissionStagedCustomerResolutionV1 | null;
@@ -2660,6 +3473,112 @@ export class AgentMission {
       return err({ code: 'agent_mission_decision_conflict', reason: 'choice_set_revision' });
     }
     const choice = decision.choices.find((candidate) => candidate.choiceId === input.choiceId);
+    return choice === undefined
+      ? err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' })
+      : ok(choice.action);
+  }
+
+  private authorizeLineConfirmationChoice(
+    decision: LineConfirmationDecisionV1,
+    input: {
+      readonly decisionId: string;
+      readonly choiceSetRevision: number;
+      readonly choiceId: string;
+      readonly pendingLineId: string;
+      readonly proposalId: string;
+      readonly proposalRevision: number;
+      readonly expectedWorkRevision: number;
+      readonly observedDraft: QuoteMissionDraftReferenceV1;
+      readonly observedCatalogue:
+        | { readonly itemId: string; readonly revision: number }
+        | null;
+      readonly diffHash: string;
+    },
+  ): AgentMissionResult<
+    'confirm_line' | 'edit_line' | 'cancel_line'
+  > {
+    if (!isCanonicalUuid(input.decisionId)) return invalid('decisionId', 'invalid_uuid');
+    if (!isRevision(input.choiceSetRevision, false)) {
+      return invalid('choiceSetRevision', 'invalid_revision');
+    }
+    if (!isCanonicalUuid(input.choiceId)) return invalid('choiceId', 'invalid_uuid');
+    if (!isCanonicalUuid(input.pendingLineId)) {
+      return invalid('pendingLineId', 'invalid_uuid');
+    }
+    if (!isCanonicalUuid(input.proposalId)) return invalid('proposalId', 'invalid_uuid');
+    if (input.proposalRevision !== 1) {
+      return invalid('proposalRevision', 'invalid_revision');
+    }
+    if (!isRevision(input.expectedWorkRevision, false)) {
+      return invalid('expectedWorkRevision', 'invalid_revision');
+    }
+    if (typeof input.diffHash !== 'string' || !SHA256.test(input.diffHash)) {
+      return invalid('diffHash', 'invalid_digest');
+    }
+    const observedDraft = parseDraft(input.observedDraft, 'observedDraft');
+    if (!observedDraft.ok) return observedDraft;
+    if (
+      input.observedCatalogue !== null
+      && (
+        !isPlainRecord(input.observedCatalogue)
+        || !exactKeys(
+          input.observedCatalogue,
+          QUOTE_MISSION_EXPECTED_CATALOGUE_KEYS,
+        )
+        || typeof input.observedCatalogue['itemId'] !== 'string'
+        || !CATALOGUE_ITEM_ID.test(input.observedCatalogue['itemId'])
+        || !isRevision(input.observedCatalogue['revision'], false)
+      )
+    ) {
+      return invalid('observedCatalogue', 'invalid_shape');
+    }
+    if (input.decisionId !== decision.decisionId) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'decision_id' });
+    }
+    if (input.choiceSetRevision !== decision.choiceSetRevision) {
+      return err({
+        code: 'agent_mission_decision_conflict',
+        reason: 'choice_set_revision',
+      });
+    }
+    if (input.pendingLineId !== decision.pendingLineId) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'pending_line' });
+    }
+    if (input.proposalId !== decision.proposalId) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'proposal_id' });
+    }
+    if (input.proposalRevision !== decision.proposalRevision) {
+      return err({
+        code: 'agent_mission_decision_conflict',
+        reason: 'proposal_revision',
+      });
+    }
+    if (input.expectedWorkRevision !== decision.expectedWorkRevision) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'work_revision' });
+    }
+    if (
+      !sameDraft(observedDraft.value, decision.expectedDraft)
+      || !sameDraft(observedDraft.value, this.requireDraft())
+    ) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'draft_reference' });
+    }
+    const catalogueMatches = decision.expectedCatalogue === null
+      ? input.observedCatalogue === null
+      : input.observedCatalogue !== null
+        && input.observedCatalogue.itemId === decision.expectedCatalogue.itemId
+        && input.observedCatalogue.revision === decision.expectedCatalogue.revision;
+    if (!catalogueMatches) {
+      return err({
+        code: 'agent_mission_decision_conflict',
+        reason: 'catalogue_revision',
+      });
+    }
+    if (input.diffHash !== decision.diffHash) {
+      return err({ code: 'agent_mission_decision_conflict', reason: 'diff_hash' });
+    }
+    const choice = decision.choices.find(
+      (candidate) => candidate.choiceId === input.choiceId,
+    );
     return choice === undefined
       ? err({ code: 'agent_mission_decision_conflict', reason: 'choice_id' })
       : ok(choice.action);

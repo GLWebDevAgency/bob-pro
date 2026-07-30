@@ -5,6 +5,7 @@ import {
   AGENT_MISSION_CORRELATION_SYSTEM_EVENT_TYPES,
   AGENT_MISSION_CORRELATION_USER_EVENT_TYPES,
   AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES,
+  AGENT_MISSION_DRAFT_ADVANCE_LINE_EVENT_TYPES,
   AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES,
   AGENT_MISSION_DRAFT_REPLACE_EVENT_TYPES,
   AGENT_MISSION_DRAFT_START_EVENT_TYPES,
@@ -127,6 +128,58 @@ function dataFor(type: AgentMissionEventType): AgentMissionEventDataV1 {
         choiceId: CHOICE_ID,
         choiceSetHash: DIGEST,
       };
+    case 'line_fact_patched':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        field: 'unit_price',
+        workRevisionAfter: 4,
+      };
+    case 'line_details_requested':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        requiredFact: 'unit_price',
+        workRevisionAfter: 4,
+      };
+    case 'line_proposal_presented':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        proposalId: MISSION_ID,
+        proposalRevision: 1,
+        expectedWorkRevision: 4,
+        diffHash: DIGEST,
+        choiceSetHash: DIGEST,
+      };
+    case 'line_proposal_rejected':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        proposalId: MISSION_ID,
+        workRevisionAfter: 5,
+        choiceId: CHOICE_ID,
+        choiceSetHash: DIGEST,
+      };
+    case 'line_confirmed':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        proposalId: MISSION_ID,
+        proposalRevision: 1,
+        expectedWorkRevision: 4,
+        choiceId: CHOICE_ID,
+        choiceSetHash: DIGEST,
+        diffHash: DIGEST,
+      };
+    case 'line_cancelled':
+      return {
+        kind: type,
+        pendingLineId: EVENT_ID,
+        expectedWorkRevision: 4,
+        choiceId: CHOICE_ID,
+        choiceSetHash: DIGEST,
+      };
     case 'mission_cancelled':
       return { kind: type, reason: 'manual_handoff' };
     case 'mission_expired':
@@ -139,6 +192,8 @@ function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnaps
   const systemContinuation = (
     eventType === 'catalogue_not_found'
     || eventType === 'catalogue_choices_presented'
+    || eventType === 'line_details_requested'
+    || eventType === 'line_proposal_presented'
   );
   const actor = (
     eventType === 'screen_acknowledged'
@@ -159,9 +214,21 @@ function validEventFor(eventType: AgentMissionEventType): AgentMissionEventSnaps
     missionRevisionAfter: isStart ? 1 : 4,
     data: dataFor(eventType),
     draftSlotRevisionBefore: isStart ? null : 7,
-    draftSlotRevisionAfter: isStart ? 1 : eventType === 'draft_discard_confirmed' || eventType === 'customer_selected' ? 8 : 7,
+    draftSlotRevisionAfter: isStart
+      ? 1
+      : eventType === 'draft_discard_confirmed'
+        || eventType === 'customer_selected'
+        || eventType === 'line_confirmed'
+        ? 8
+        : 7,
     draftContentRevisionBefore: isStart ? null : 3,
-    draftContentRevisionAfter: isStart ? 0 : eventType === 'draft_discard_confirmed' ? 0 : eventType === 'customer_selected' ? 4 : 3,
+    draftContentRevisionAfter: isStart
+      ? 0
+      : eventType === 'draft_discard_confirmed'
+        ? 0
+        : eventType === 'customer_selected' || eventType === 'line_confirmed'
+          ? 4
+          : 3,
     realtimeSessionId: needsScreenContext ? SESSION_ID : null,
     turnId: null,
     contextRevision: needsScreenContext ? 2 : null,
@@ -190,6 +257,7 @@ describe('AgentMissionEvent', () => {
       AGENT_MISSION_DRAFT_NO_OP_EVENT_TYPES,
       AGENT_MISSION_DRAFT_REPLACE_EVENT_TYPES,
       AGENT_MISSION_DRAFT_ADVANCE_CUSTOMER_EVENT_TYPES,
+      AGENT_MISSION_DRAFT_ADVANCE_LINE_EVENT_TYPES,
     ]);
     expectExactPartition(AGENT_MISSION_ACTORS, [
       AGENT_MISSION_VOICE_ACTORS,
@@ -479,6 +547,11 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
     'catalogue_not_found',
     'catalogue_choices_presented',
     'catalogue_choice_selected',
+    'line_fact_patched',
+    'line_details_requested',
+    'line_proposal_presented',
+    'line_proposal_rejected',
+    'line_cancelled',
     'mission_cancelled',
     'mission_expired',
   ] as const satisfies readonly AgentMissionEventType[];
@@ -719,6 +792,9 @@ describe('AgentMissionEvent — matrice exhaustive acteur, contexte et effet dra
     ['customer_selected', 7, 8, 3, 4, true],
     ['customer_selected', 7, 7, 3, 4, false],
     ['customer_selected', 7, 8, 3, 3, false],
+    ['line_confirmed', 7, 8, 3, 4, true],
+    ['line_confirmed', 7, 7, 3, 4, false],
+    ['line_confirmed', 7, 8, 3, 3, false],
   ] as const)(
     '%s impose le CAS draft %s→%s/%s→%s => %s',
     (eventType, slotBefore, slotAfter, contentBefore, contentAfter, expected) => {

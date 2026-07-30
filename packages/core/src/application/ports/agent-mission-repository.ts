@@ -117,6 +117,17 @@ export interface AgentMissionQuoteDraftRepositoryPort {
     readonly expectedDraftContentRevision: number;
     readonly payload: QuoteDraftPayloadV1;
   }): Promise<AgentMissionQuoteDraftSlot | null>;
+  /**
+   * CAS étroit d'une ligne confirmée. L'adapter vérifie ownership mission, session, slot et
+   * content revision dans le même UPDATE que le payload dérivé.
+   */
+  appendLineCas(input: AgentMissionOwner & {
+    readonly missionId: string;
+    readonly expectedSlotRevision: number;
+    readonly expectedDraftSessionId: string;
+    readonly expectedDraftContentRevision: number;
+    readonly payload: QuoteDraftPayloadV1;
+  }): Promise<AgentMissionQuoteDraftSlot | null>;
 }
 
 export type AgentMissionDraftFenceResult<T> =

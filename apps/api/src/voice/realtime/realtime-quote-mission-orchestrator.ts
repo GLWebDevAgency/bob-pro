@@ -9,6 +9,7 @@ import {
 import type {
   AgentMissionOwner,
   AgentMissionQuoteLineCandidateV1,
+  AgentMissionQuoteLineRequiredFact,
   AgentMissionRealtimeAuthorityProof,
   AgentMissionViewV1,
   AppError,
@@ -17,6 +18,7 @@ import type {
   StartQuoteAgentMissionOutput,
 } from '@bob/core';
 import type {
+  AgentMissionLineContinuationServiceOutput,
   AgentMissionServiceAuthorization,
   DecideQuoteAgentMissionCatalogueChoiceServiceOutput,
   StageQuoteAgentMissionLinesServiceOutput,
@@ -231,6 +233,51 @@ function canonicalCatalogueChoiceSpeech(count: number): string {
     : 'J’ai trouvé une prestation réelle dans ton catalogue, plus l’option de créer une ligne libre. Les deux choix sont conservés dans cet ordre.';
 }
 
+function requiredFactSpeech(fact: AgentMissionQuoteLineRequiredFact | null): string {
+  switch (fact) {
+    case 'service_reference':
+      return 'J’ai trouvé plus de cinq prestations possibles. Précise le libellé ou le type de prestation pour que je sélectionne la bonne.';
+    case 'category':
+      return 'J’ai besoin de savoir s’il s’agit de main-d’œuvre, de fourniture, de déplacement ou d’abonnement.';
+    case 'quantity':
+      return 'Quelle quantité dois-je facturer pour cette ligne ?';
+    case 'unit':
+      return 'Dans quelle unité dois-je facturer cette prestation ?';
+    case 'unit_price':
+      return 'Quel prix unitaire dois-je appliquer à cette ligne ?';
+    case 'vat_rate':
+      return 'Je ne peux pas déterminer le taux de TVA sans risque. Indique-moi le taux à appliquer.';
+    case 'housing_older_than_2y':
+      return 'Le logement concerné a-t-il plus de deux ans ?';
+    case 'energy_renovation':
+      return 'Ces travaux relèvent-ils de la rénovation énergétique ?';
+    case null:
+      return 'Dis-moi ce que tu veux corriger sur cette ligne.';
+  }
+}
+
+function canonicalLineContinuationState(
+  continuation: AgentMissionLineContinuationServiceOutput,
+  mission: AgentMissionViewV1,
+): RealtimeQuoteMissionOrchestrationOutcome {
+  if (continuation.outcome === 'details_requested') {
+    return {
+      status: 'handled',
+      canonicalSpeech: requiredFactSpeech(continuation.requiredFact),
+      speechPurpose: 'structured_choice',
+    };
+  }
+  if (continuation.outcome === 'proposal_presented') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'J’ai préparé la ligne sans modifier le devis. Vérifie la proposition, puis dis-moi si tu confirmes, si tu veux la corriger ou l’annuler.',
+      speechPurpose: 'structured_choice',
+    };
+  }
+  return canonicalV2MissionState(mission);
+}
+
 function canonicalV2MissionState(
   mission: AgentMissionViewV1 | null,
 ): RealtimeQuoteMissionOrchestrationOutcome {
@@ -264,6 +311,22 @@ function canonicalV2MissionState(
       canonicalSpeech:
         'Les informations données sont conservées dans la mission. Je poursuis à partir de l’état réellement enregistré.',
       speechPurpose: 'action_result',
+    };
+  }
+  if (mission.phase === 'awaiting_line_details') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'Cette ligne attend une précision. Dis-moi ce que tu veux compléter ou corriger.',
+      speechPurpose: 'structured_choice',
+    };
+  }
+  if (mission.phase === 'awaiting_line_confirmation') {
+    return {
+      status: 'handled',
+      canonicalSpeech:
+        'La proposition de ligne est prête. Dis-moi si tu confirmes, si tu veux la corriger ou l’annuler.',
+      speechPurpose: 'structured_choice',
     };
   }
   if (mission.phase === 'awaiting_customer') {
@@ -538,14 +601,10 @@ implements RealtimeQuoteMissionOrchestratorPort {
           speechPurpose: 'action_result',
         };
       }
-      if (staged.value.continuation.outcome === 'deferred_to_m2a2') {
-        return {
-          status: 'failed',
-          canonicalSpeech:
-            'J’ai conservé les faits donnés, mais cette ligne nécessite une étape supplémentaire qui n’est pas encore active. Aucun devis n’a été modifié.',
-        };
-      }
-      return canonicalV2MissionState(staged.value.mission);
+      return canonicalLineContinuationState(
+        staged.value.continuation,
+        staged.value.mission,
+      );
     }
 
     if (
@@ -675,27 +734,15 @@ implements RealtimeQuoteMissionOrchestratorPort {
             speechPurpose: 'action_result',
           };
         }
-        if (
-          decided.value.continuation.outcome === 'choices_presented'
-          || decided.value.continuation.outcome === 'replayed'
-          || decided.value.continuation.outcome === 'superseded'
-        ) {
-          return canonicalV2MissionState(decided.value.mission);
-        }
-        return {
-          status: 'failed',
-          canonicalSpeech:
-            'Cette prestation a changé ou n’est plus disponible. Aucune valeur obsolète n’a été copiée, mais la prochaine étape n’est pas encore active.',
-        };
+        return canonicalLineContinuationState(
+          decided.value.continuation,
+          decided.value.mission,
+        );
       }
-      if (decided.value.continuation.outcome === 'deferred_to_m2a2') {
-        return {
-          status: 'failed',
-          canonicalSpeech:
-            'Le choix catalogue est enregistré avec sa révision, mais il n’a pas encore été transformé en ligne de devis. Aucun montant n’a été ajouté.',
-        };
-      }
-      return canonicalV2MissionState(decided.value.mission);
+      return canonicalLineContinuationState(
+        decided.value.continuation,
+        decided.value.mission,
+      );
     }
 
     return { status: 'failed', canonicalSpeech: UNSAFE_UNDERSTANDING };

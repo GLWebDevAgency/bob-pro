@@ -334,9 +334,9 @@ REVOKE ALL ON TABLE agent_mission_fingerprint_key_version_floors FROM PUBLIC;
 REVOKE ALL ON TABLE agent_mission_fingerprint_key_bindings FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_mutation_v2() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_quote_draft_agent_mission_v1() FROM PUBLIC;
-REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v2() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_quote_line_work_v3() FROM PUBLIC;
 REVOKE ALL ON FUNCTION reject_agent_mission_event_mutation_v1() FROM PUBLIC;
-REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v2() FROM PUBLIC;
+REVOKE ALL ON FUNCTION guard_agent_mission_event_append_v3() FROM PUBLIC;
 REVOKE ALL ON FUNCTION require_agent_mission_event_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_catalogue_prestation_revision_v1() FROM PUBLIC;
 REVOKE ALL ON FUNCTION guard_agent_mission_fingerprint_key_floor_v1() FROM PUBLIC;
@@ -479,7 +479,7 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v2() FROM %I',
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_quote_line_work_v3() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(
@@ -487,7 +487,7 @@ BEGIN
         exposed_role
       );
       EXECUTE pg_catalog.format(
-        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v2() FROM %I',
+        'REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_mission_event_append_v3() FROM %I',
         exposed_role
       );
       EXECUTE pg_catalog.format(

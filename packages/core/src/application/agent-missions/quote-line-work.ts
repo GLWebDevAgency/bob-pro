@@ -12,11 +12,21 @@ import {
   isVatRate,
   type VatRate,
 } from '../../domain/billing/shared/vat-rate';
+import {
+  AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS,
+  type AgentMissionQuoteLineRequiredFact,
+} from '../../domain/agent/agent-mission-event';
 import { type Instant } from '../../shared-kernel/time';
 import {
   AGENT_MISSION_OPAQUE_IDENTIFIER_MAX_LENGTH,
   isCanonicalAgentMissionOpaqueIdentifier,
 } from './agent-mission-identifiers';
+import {
+  type CatalogueCandidateRecord,
+} from '../ports/catalogue-candidate-search';
+import {
+  type NormalizedAgentMissionQuoteLinePatch,
+} from './quote-line-patch';
 
 export const AGENT_MISSION_QUOTE_LINE_WORK_STATES = [
   'queued',
@@ -36,19 +46,10 @@ export const AGENT_MISSION_QUOTE_LINE_WORK_ORIGINS = [
 export type AgentMissionQuoteLineWorkOrigin =
   (typeof AGENT_MISSION_QUOTE_LINE_WORK_ORIGINS)[number];
 
-export const AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS = [
-  'service_reference',
-  'category',
-  'quantity',
-  'unit',
-  'unit_price',
-  'vat_rate',
-  'housing_older_than_2y',
-  'energy_renovation',
-] as const;
-
-export type AgentMissionQuoteLineRequiredFact =
-  (typeof AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS)[number];
+export {
+  AGENT_MISSION_QUOTE_LINE_REQUIRED_FACTS,
+  type AgentMissionQuoteLineRequiredFact,
+} from '../../domain/agent/agent-mission-event';
 
 export const AGENT_MISSION_QUOTE_LINE_CATALOGUE_RESOLUTIONS = [
   'pending',
@@ -97,6 +98,8 @@ export interface AgentMissionQuoteLineWork {
   readonly catalogueResolution: AgentMissionQuoteLineCatalogueResolution;
   readonly catalogueItemId: string | null;
   readonly expectedCatalogueRevision: number | null;
+  readonly catalogueCategoryOverrideConfirmed: boolean;
+  readonly catalogueUnitOverrideConfirmed: boolean;
   readonly proposalId: string | null;
   readonly proposalRevision: typeof AGENT_MISSION_QUOTE_LINE_PROPOSAL_REVISION | null;
   readonly proposalDiffHash: string | null;
@@ -123,7 +126,7 @@ export type AgentMissionQuoteLineWorkResult =
   | { readonly ok: true; readonly value: AgentMissionQuoteLineWork }
   | { readonly ok: false; readonly error: AgentMissionQuoteLineWorkError };
 
-export const AGENT_MISSION_QUOTE_LINE_WORK_KEYS = [
+export const AGENT_MISSION_QUOTE_LINE_WORK_M2A1_KEYS = [
   'id',
   'companyId',
   'ownerUserId',
@@ -145,6 +148,17 @@ export const AGENT_MISSION_QUOTE_LINE_WORK_KEYS = [
   'catalogueResolution',
   'catalogueItemId',
   'expectedCatalogueRevision',
+  'proposalId',
+  'proposalRevision',
+  'proposalDiffHash',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+export const AGENT_MISSION_QUOTE_LINE_WORK_KEYS = [
+  ...AGENT_MISSION_QUOTE_LINE_WORK_M2A1_KEYS.slice(0, 21),
+  'catalogueCategoryOverrideConfirmed',
+  'catalogueUnitOverrideConfirmed',
   'proposalId',
   'proposalRevision',
   'proposalDiffHash',
@@ -250,6 +264,27 @@ function validateStateCoherence(
   ) {
     return fail('catalogueResolution', 'inconsistent_state');
   }
+  if (
+    value['catalogueResolution'] !== 'selected'
+    && (
+      value['catalogueCategoryOverrideConfirmed'] !== false
+      || value['catalogueUnitOverrideConfirmed'] !== false
+    )
+  ) {
+    return fail('catalogueOverride', 'inconsistent_state');
+  }
+  if (
+    (
+      value['catalogueCategoryOverrideConfirmed'] === true
+      && value['category'] === null
+    )
+    || (
+      value['catalogueUnitOverrideConfirmed'] === true
+      && value['unit'] === null
+    )
+  ) {
+    return fail('catalogueOverride', 'inconsistent_state');
+  }
 
   const price = [value['unitPriceCents'], value['priceBasis']];
   if (!allNull(price) && !allPresent(price)) {
@@ -280,11 +315,14 @@ function validateStateCoherence(
         ? null
         : fail('state', 'inconsistent_state');
     case 'awaiting_details':
-      return value['requiredFact'] !== null
-        && (
-          value['catalogueResolution'] !== 'pending'
-          || value['requiredFact'] === 'service_reference'
-        )
+      return (
+        value['requiredFact'] === null
+          ? value['catalogueResolution'] !== 'pending'
+          : (
+              value['catalogueResolution'] !== 'pending'
+              || value['requiredFact'] === 'service_reference'
+            )
+      )
         && allNull(proposal)
         ? null
         : fail('state', 'inconsistent_state');
@@ -295,7 +333,7 @@ function validateStateCoherence(
         && value['unit'] !== null
         && value['unitPriceCents'] !== null
         && value['requestedVatRate'] !== null
-        && value['priceBasis'] !== null
+        && value['priceBasis'] === 'per_unit'
         && value['requiredFact'] === null
         && value['catalogueResolution'] !== 'pending'
         && allPresent(proposal)
@@ -314,9 +352,24 @@ function validateStateCoherence(
 export function parseAgentMissionQuoteLineWork(
   input: unknown,
 ): AgentMissionQuoteLineWorkResult {
-  if (!isRecord(input) || !hasExactKeys(input, AGENT_MISSION_QUOTE_LINE_WORK_KEYS)) {
+  if (!isRecord(input)) {
     return fail('$', 'invalid_shape');
   }
+  const normalizedInput = hasExactKeys(
+    input,
+    AGENT_MISSION_QUOTE_LINE_WORK_M2A1_KEYS,
+  )
+    ? {
+        ...input,
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
+      }
+    : input;
+  if (!hasExactKeys(normalizedInput, AGENT_MISSION_QUOTE_LINE_WORK_KEYS)) {
+    return fail('$', 'invalid_shape');
+  }
+  input = normalizedInput;
+  if (!isRecord(input)) return fail('$', 'invalid_shape');
 
   if (!isCanonicalUuid(input['id'])) return fail('id', 'invalid_uuid');
   if (
@@ -439,6 +492,12 @@ export function parseAgentMissionQuoteLineWork(
   ) {
     return fail('expectedCatalogueRevision', 'invalid_revision');
   }
+  if (typeof input['catalogueCategoryOverrideConfirmed'] !== 'boolean') {
+    return fail('catalogueCategoryOverrideConfirmed', 'invalid_value');
+  }
+  if (typeof input['catalogueUnitOverrideConfirmed'] !== 'boolean') {
+    return fail('catalogueUnitOverrideConfirmed', 'invalid_value');
+  }
   if (input['proposalId'] !== null && !isCanonicalUuid(input['proposalId'])) {
     return fail('proposalId', 'invalid_uuid');
   }
@@ -490,6 +549,9 @@ export function parseAgentMissionQuoteLineWork(
       catalogueResolution: input['catalogueResolution'],
       catalogueItemId: input['catalogueItemId'] as string | null,
       expectedCatalogueRevision: input['expectedCatalogueRevision'] as number | null,
+      catalogueCategoryOverrideConfirmed:
+        input['catalogueCategoryOverrideConfirmed'],
+      catalogueUnitOverrideConfirmed: input['catalogueUnitOverrideConfirmed'],
       proposalId: input['proposalId'] as string | null,
       proposalRevision: input['proposalRevision'] as
         | typeof AGENT_MISSION_QUOTE_LINE_PROPOSAL_REVISION
@@ -521,7 +583,14 @@ export type AgentMissionQuoteLineWorkTransitionError =
         | 'present_catalogue_choices'
         | 'record_catalogue_not_found'
         | 'consume_catalogue_choice'
-        | 'invalidate_catalogue_choice';
+        | 'invalidate_catalogue_choice'
+        | 'request_line_details'
+        | 'patch_line_fact'
+        | 'present_line_proposal'
+        | 'reject_line_proposal';
+    }
+  | {
+      readonly code: 'agent_mission_quote_line_work_catalogue_fence_conflict';
     }
   | {
       readonly code: 'agent_mission_quote_line_work_revision_overflow';
@@ -538,6 +607,22 @@ export type AgentMissionQuoteLineCatalogueChoiceResolution =
       readonly catalogueItemId: string;
       readonly expectedCatalogueRevision: number;
     };
+
+export type AgentMissionQuoteLinePatchScope =
+  | 'answer_required_fact'
+  | 'explicit_correction';
+
+export interface ResolvedAgentMissionQuoteLineFacts {
+  readonly serviceReference: string;
+  readonly category: CatalogueCategory;
+  readonly quantityMilli: number;
+  readonly unit: string;
+  readonly unitPriceCents: number;
+  readonly requestedVatRate: VatRate;
+  readonly priceBasis: 'per_unit';
+  readonly housingOlderThan2y: boolean | null;
+  readonly energyRenovation: boolean | null;
+}
 
 function transitionFailure(
   error: AgentMissionQuoteLineWorkTransitionError,
@@ -605,6 +690,369 @@ function invalidTransition(
   });
 }
 
+function catalogueFenceMatches(
+  workItem: AgentMissionQuoteLineWork,
+  selectedCatalogue: CatalogueCandidateRecord | null,
+): boolean {
+  return workItem.catalogueResolution !== 'selected'
+    ? selectedCatalogue === null
+    : selectedCatalogue !== null
+      && selectedCatalogue.id === workItem.catalogueItemId
+      && selectedCatalogue.revision === workItem.expectedCatalogueRevision;
+}
+
+function applyQuoteLinePatch(
+  workItem: AgentMissionQuoteLineWork,
+  patch: NormalizedAgentMissionQuoteLinePatch,
+  selectedCatalogue: CatalogueCandidateRecord | null,
+): AgentMissionQuoteLineWork {
+  const resetProposal = {
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+  } as const;
+  switch (patch.field) {
+    case 'service_reference':
+      return {
+        ...workItem,
+        serviceReference: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        catalogueResolution: 'pending',
+        catalogueItemId: null,
+        expectedCatalogueRevision: null,
+        catalogueCategoryOverrideConfirmed: false,
+        catalogueUnitOverrideConfirmed: false,
+        ...resetProposal,
+      };
+    case 'category':
+      return {
+        ...workItem,
+        category: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        catalogueCategoryOverrideConfirmed:
+          selectedCatalogue !== null
+          && patch.value !== selectedCatalogue.category,
+        ...resetProposal,
+      };
+    case 'quantity':
+      return {
+        ...workItem,
+        quantityMilli: patch.quantityMilli,
+        state: 'queued',
+        requiredFact: null,
+        ...resetProposal,
+      };
+    case 'unit':
+      return {
+        ...workItem,
+        unit: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        catalogueUnitOverrideConfirmed:
+          selectedCatalogue !== null
+          && patch.value !== selectedCatalogue.unit,
+        ...resetProposal,
+      };
+    case 'unit_price':
+      return {
+        ...workItem,
+        unitPriceCents: patch.unitPriceCents,
+        priceBasis: patch.basis,
+        state: 'queued',
+        requiredFact: null,
+        ...resetProposal,
+      };
+    case 'vat_rate':
+      return {
+        ...workItem,
+        requestedVatRate: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        ...resetProposal,
+      };
+    case 'housing_older_than_2y':
+      return {
+        ...workItem,
+        housingOlderThan2y: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        ...resetProposal,
+      };
+    case 'energy_renovation':
+      return {
+        ...workItem,
+        energyRenovation: patch.value,
+        state: 'queued',
+        requiredFact: null,
+        ...resetProposal,
+      };
+  }
+}
+
+/**
+ * Applique un fait déjà normalisé avec une autorité explicite. Une réponse courte ne peut cibler
+ * que la question durable courante ; une correction nommée peut corriger une autre valeur.
+ */
+export function patchQuoteLineFactOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly patch: NormalizedAgentMissionQuoteLinePatch;
+  readonly scope: AgentMissionQuoteLinePatchScope;
+  readonly selectedCatalogue: CatalogueCandidateRecord | null;
+  readonly selectedCatalogueStatus: 'not_required' | 'matched' | 'stale';
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  const isRequiredFactAnswer = input.scope === 'answer_required_fact';
+  const isExplicitCorrection = input.scope === 'explicit_correction';
+  const validRequiredFactAnswer = isRequiredFactAnswer
+    && input.workItem.state === 'awaiting_details'
+    && input.workItem.requiredFact !== null
+    && input.patch.field === input.workItem.requiredFact;
+  const validExplicitCorrection = isExplicitCorrection && (
+    input.workItem.state === 'awaiting_details'
+    || input.workItem.state === 'awaiting_confirmation'
+    || (
+      input.workItem.state === 'awaiting_catalogue_choice'
+      && input.patch.field === 'service_reference'
+    )
+  );
+  if (!validRequiredFactAnswer && !validExplicitCorrection) {
+    return invalidTransition(input.workItem, 'patch_line_fact');
+  }
+  const needsCatalogueFence = input.workItem.catalogueResolution === 'selected'
+    && (
+      input.patch.field === 'category'
+      || input.patch.field === 'unit'
+    );
+  if (
+    needsCatalogueFence
+    && input.selectedCatalogueStatus === 'matched'
+    && !catalogueFenceMatches(input.workItem, input.selectedCatalogue)
+  ) {
+    return transitionFailure({
+      code: 'agent_mission_quote_line_work_catalogue_fence_conflict',
+    });
+  }
+  if (
+    needsCatalogueFence
+    && input.selectedCatalogueStatus === 'not_required'
+  ) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'selectedCatalogueStatus',
+      reason: 'inconsistent_state',
+    });
+  }
+  if (
+    needsCatalogueFence
+    && input.selectedCatalogueStatus === 'stale'
+    && input.selectedCatalogue !== null
+  ) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'selectedCatalogue',
+      reason: 'inconsistent_state',
+    });
+  }
+  if (
+    !needsCatalogueFence
+    && (
+      input.selectedCatalogue !== null
+      || input.selectedCatalogueStatus !== 'not_required'
+    )
+  ) {
+    return transitionFailure({
+      code: 'invalid_agent_mission_quote_line_work',
+      field: 'selectedCatalogue',
+      reason: 'inconsistent_state',
+    });
+  }
+  const patched = applyQuoteLinePatch(
+    input.workItem,
+    input.patch,
+    input.selectedCatalogue,
+  );
+  return transitionValue({
+    ...patched,
+    ...(needsCatalogueFence && input.selectedCatalogueStatus === 'stale'
+      ? {
+          catalogueResolution: 'pending' as const,
+          catalogueItemId: null,
+          expectedCatalogueRevision: null,
+          catalogueCategoryOverrideConfirmed: false,
+          catalogueUnitOverrideConfirmed: false,
+        }
+      : {}),
+    revision: input.workItem.revision + 1,
+    updatedAt: input.occurredAt,
+  });
+}
+
+export function requestQuoteLineDetailsOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly requiredFact: AgentMissionQuoteLineRequiredFact;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'queued'
+    || (
+      input.workItem.catalogueResolution === 'pending'
+      && input.requiredFact !== 'service_reference'
+    )
+  ) {
+    return invalidTransition(input.workItem, 'request_line_details');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'awaiting_details',
+    requiredFact: input.requiredFact,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+/**
+ * Un item catalogue sélectionné puis supprimé/révisé n'est jamais utilisé avec ses anciennes
+ * valeurs. La référence utilisateur reste visible, mais la fence est effacée et Bob demande une
+ * confirmation/correction explicite avant de relancer la recherche.
+ */
+export function requestQuoteLineCatalogueRefreshOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'queued'
+    || input.workItem.catalogueResolution !== 'selected'
+    || input.workItem.serviceReference === null
+  ) {
+    return invalidTransition(input.workItem, 'request_line_details');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'awaiting_details',
+    requiredFact: 'service_reference',
+    catalogueResolution: 'pending',
+    catalogueItemId: null,
+    expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+export function presentQuoteLineProposalOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly facts: ResolvedAgentMissionQuoteLineFacts;
+  readonly proposalId: string;
+  readonly proposalDiffHash: string;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'queued'
+    || input.workItem.catalogueResolution === 'pending'
+  ) {
+    return invalidTransition(input.workItem, 'present_line_proposal');
+  }
+  return transitionValue({
+    ...input.workItem,
+    ...input.facts,
+    revision: input.workItem.revision + 1,
+    state: 'awaiting_confirmation',
+    requiredFact: null,
+    proposalId: input.proposalId,
+    proposalRevision: AGENT_MISSION_QUOTE_LINE_PROPOSAL_REVISION,
+    proposalDiffHash: input.proposalDiffHash,
+    updatedAt: input.occurredAt,
+  });
+}
+
+export function rejectQuoteLineProposalOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly proposalId: string;
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'awaiting_confirmation'
+    || input.workItem.proposalId !== input.proposalId
+  ) {
+    return invalidTransition(input.workItem, 'reject_line_proposal');
+  }
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: 'awaiting_details',
+    requiredFact: null,
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
+/**
+ * Invalide une proposition dont une autorité relue a changé entre présentation et décision.
+ * Une révision catalogue perdue exige une nouvelle confirmation de référence ; un changement
+ * fiscal/diff remet seulement la tête en file afin de recalculer une proposition fraîche.
+ */
+export function invalidateQuoteLineProposalOnWork(input: {
+  readonly workItem: AgentMissionQuoteLineWork;
+  readonly expectedRevision: number;
+  readonly reason: 'catalogue_stale' | 'proposal_stale';
+  readonly occurredAt: Instant;
+}): AgentMissionQuoteLineWorkTransitionResult {
+  const preparation = prepareTransition(input);
+  if (preparation !== null) return preparation;
+  if (
+    input.workItem.state !== 'awaiting_confirmation'
+    || input.workItem.proposalId === null
+  ) {
+    return invalidTransition(input.workItem, 'reject_line_proposal');
+  }
+  const catalogueStale = input.reason === 'catalogue_stale';
+  return transitionValue({
+    ...input.workItem,
+    revision: input.workItem.revision + 1,
+    state: catalogueStale ? 'awaiting_details' : 'queued',
+    requiredFact: catalogueStale ? 'service_reference' : null,
+    ...(catalogueStale
+      ? {
+          catalogueResolution: 'pending' as const,
+          catalogueItemId: null,
+          expectedCatalogueRevision: null,
+          catalogueCategoryOverrideConfirmed: false,
+          catalogueUnitOverrideConfirmed: false,
+        }
+      : {}),
+    proposalId: null,
+    proposalRevision: null,
+    proposalDiffHash: null,
+    updatedAt: input.occurredAt,
+  });
+}
+
 /**
  * Frontière M2-A-1 : présente des choix sans copier la moindre valeur catalogue dans le work.
  */
@@ -629,6 +1077,8 @@ export function presentCatalogueChoicesOnQuoteLineWork(input: {
     requiredFact: null,
     catalogueItemId: null,
     expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,
@@ -661,6 +1111,8 @@ export function recordCatalogueNotFoundOnQuoteLineWork(input: {
     catalogueResolution: 'free',
     catalogueItemId: null,
     expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,
@@ -718,6 +1170,8 @@ export function consumeCatalogueChoiceOnQuoteLineWork(input: {
     expectedCatalogueRevision: input.resolution.kind === 'selected'
       ? input.resolution.expectedCatalogueRevision
       : null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,
@@ -746,6 +1200,8 @@ export function invalidateCatalogueChoiceOnQuoteLineWork(input: {
     catalogueResolution: 'pending',
     catalogueItemId: null,
     expectedCatalogueRevision: null,
+    catalogueCategoryOverrideConfirmed: false,
+    catalogueUnitOverrideConfirmed: false,
     proposalId: null,
     proposalRevision: null,
     proposalDiffHash: null,
