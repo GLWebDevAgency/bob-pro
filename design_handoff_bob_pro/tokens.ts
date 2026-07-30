@@ -280,6 +280,21 @@ export const patterns = {
     fadeLocations: [0, 0.32, 0.6],
     padding: [8, 10, 26], // haut / côtés / bas
   },
+  /** Retombée de bord (`ProgressiveBlurBob`, 04 § Retombée de bord) : la zone NON
+   *  INTERACTIVE qui dissout le contenu défilant sous un chrome flottant. Mode nominal
+   *  `defaultLayers: 0` — un `LinearGradient` teinté, un draw call, zéro échantillon de flou.
+   *  Profil de hauteurs en POUR CENT, l'unité du contrat et celle que le port reçoit.
+   *  L'intensité est UNIFORME : le progressif vient du RECOUVREMENT de couches frères. */
+  edgeFalloff: {
+    bleed: 44, // dp — débord au-dessus du chrome
+    layerHeightsPercent: [100, 88, 76, 64, 54, 44, 36, 28, 22, 16],
+    layerIntensity: 5,
+    maxLayers: 10, // plafond structurel = longueur du profil
+    defaultLayers: 0, // défaut normatif : aucun échantillon de flou
+    veilLocations: [0, 0.32, 0.6],
+    /** Part MAXIMALE de NOTRE teinte composée par-dessus l'échantillon, dans chaque bande. */
+    layerWash: 0.3,
+  },
 } as const;
 
 /** Kit « matière Bob » (vague P1) — référence figée, parité stricte avec @bob/tokens. */
@@ -338,5 +353,36 @@ export const surfaceTint = {
     success: { flat: '#0D2E24', raised: '#123D30', border: '#1B5343', ink: '#CFF2E2', inkMuted: '#8FCDB3' },
     warning: { flat: '#33230A', raised: '#463010', border: '#5E431A', ink: '#F8E5C4', inkMuted: '#DBB97E' },
     danger: { flat: '#351312', raised: '#481B19', border: '#622825', ink: '#FADDD9', inkMuted: '#E5A9A2' },
+  },
+} as const;
+
+/** Voile de RETOMBÉE DE BORD — la seule matière du kit qui porte un canal alpha, et elle ne
+ *  porte jamais d'information. Trois stops pré-composés par ton : transparent → 92 % →
+ *  OPAQUE. `solid` est le bord ancré et vaut le `flat` du même ton — les encres déjà
+ *  certifiées AA y restent certifiées (`surface-veil.test.ts`). `canvas` est le FOND D'APP :
+ *  il reproduit à l'identique `patterns.bottomTabBar.fade`, déjà livré. */
+export interface SurfaceVeilSpec {
+  stops: readonly [string, string, string];
+  solid: string;
+}
+
+export const surfaceVeil = {
+  light: {
+    canvas: { stops: ['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7'], solid: '#EFF2F7' },
+    neutral: { stops: ['rgba(255,255,255,0)', 'rgba(255,255,255,.92)', '#FFFFFF'], solid: '#FFFFFF' },
+    marine: { stops: ['rgba(244,247,251,0)', 'rgba(244,247,251,.92)', '#F4F7FB'], solid: '#F4F7FB' },
+    ai: { stops: ['rgba(246,244,253,0)', 'rgba(246,244,253,.92)', '#F6F4FD'], solid: '#F6F4FD' },
+    success: { stops: ['rgba(234,242,236,0)', 'rgba(234,242,236,.92)', '#EAF2EC'], solid: '#EAF2EC' },
+    warning: { stops: ['rgba(251,240,223,0)', 'rgba(251,240,223,.92)', '#FBF0DF'], solid: '#FBF0DF' },
+    danger: { stops: ['rgba(251,234,232,0)', 'rgba(251,234,232,.92)', '#FBEAE8'], solid: '#FBEAE8' },
+  },
+  dark: {
+    canvas: { stops: ['rgba(12,35,64,0)', 'rgba(12,35,64,.92)', '#0C2340'], solid: '#0C2340' },
+    neutral: { stops: ['rgba(12,35,64,0)', 'rgba(12,35,64,.92)', '#0C2340'], solid: '#0C2340' },
+    marine: { stops: ['rgba(18,46,82,0)', 'rgba(18,46,82,.92)', '#122E52'], solid: '#122E52' },
+    ai: { stops: ['rgba(34,29,69,0)', 'rgba(34,29,69,.92)', '#221D45'], solid: '#221D45' },
+    success: { stops: ['rgba(13,46,36,0)', 'rgba(13,46,36,.92)', '#0D2E24'], solid: '#0D2E24' },
+    warning: { stops: ['rgba(51,35,10,0)', 'rgba(51,35,10,.92)', '#33230A'], solid: '#33230A' },
+    danger: { stops: ['rgba(53,19,18,0)', 'rgba(53,19,18,.92)', '#351312'], solid: '#351312' },
   },
 } as const;

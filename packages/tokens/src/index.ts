@@ -256,6 +256,58 @@ export const surfaceTint: Record<
   },
 } as const;
 
+/**
+ * SURFACE VEIL — voile de RETOMBÉE DE BORD du kit « matière Bob »
+ * (04 § Retombée de bord). C'est la SEULE matière du produit qui porte un canal alpha, et
+ * elle ne porte JAMAIS d'information : zone décorative, `pointerEvents="none"`, jamais de
+ * texte, jamais animée. Elle dissout le contenu qui défile SOUS un chrome flottant, dans
+ * NOTRE teinte — là où la référence (`davidmokos/revolut-expo-clone` → `progressive-blur.tsx`)
+ * pose un voile noir `rgba(0,0,0,.70)`, inversion complète d'identité sur notre fond clair.
+ *
+ * Trois stops PRÉ-COMPOSÉS par ton : transparent → 92 % → opaque. `solid` est le bord ANCRÉ
+ * (celui qui touche le chrome) et vaut exactement le `flat` du même ton de `surfaceTint` —
+ * les encres `ink`/`inkMuted` déjà certifiées AA y restent donc certifiées, ce que
+ * `surface-veil.test.ts` re-prouve sur la couleur du VOILE et non sur celle de la surface.
+ * Le ton `canvas` n'existe pas dans `surfaceTint` : c'est le FOND D'APP (`neutrals.bg` en
+ * clair, la même encre navy que `neutral` en sombre), et il reproduit à l'identique
+ * `patterns.bottomTabBar.fade`, déjà livré — le voile n'invente pas une seconde recette de
+ * fondu, il généralise celle qui existe.
+ *
+ * Les positions des stops sont communes à tous les tons : `patterns.edgeFalloff.veilLocations`.
+ */
+export type SurfaceVeilTone = SurfaceTintTone | 'canvas';
+
+export interface SurfaceVeilSpec {
+  /** Stops pré-composés du dégradé : transparent → 92 % → opaque, dans la teinte du ton. */
+  stops: readonly [string, string, string];
+  /**
+   * Couleur OPAQUE du bord ancré. C'est elle qui rend le repli LISIBLE : le repli opaque
+   * unique n'est jamais un trou visuel, jamais un aplat gris, jamais un sous-contraste.
+   */
+  solid: string;
+}
+
+export const surfaceVeil: Record<SurfaceTintAppearance, Record<SurfaceVeilTone, SurfaceVeilSpec>> = {
+  light: {
+    canvas: { stops: ['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7'], solid: '#EFF2F7' },
+    neutral: { stops: ['rgba(255,255,255,0)', 'rgba(255,255,255,.92)', '#FFFFFF'], solid: '#FFFFFF' },
+    marine: { stops: ['rgba(244,247,251,0)', 'rgba(244,247,251,.92)', '#F4F7FB'], solid: '#F4F7FB' },
+    ai: { stops: ['rgba(246,244,253,0)', 'rgba(246,244,253,.92)', '#F6F4FD'], solid: '#F6F4FD' },
+    success: { stops: ['rgba(234,242,236,0)', 'rgba(234,242,236,.92)', '#EAF2EC'], solid: '#EAF2EC' },
+    warning: { stops: ['rgba(251,240,223,0)', 'rgba(251,240,223,.92)', '#FBF0DF'], solid: '#FBF0DF' },
+    danger: { stops: ['rgba(251,234,232,0)', 'rgba(251,234,232,.92)', '#FBEAE8'], solid: '#FBEAE8' },
+  },
+  dark: {
+    canvas: { stops: ['rgba(12,35,64,0)', 'rgba(12,35,64,.92)', '#0C2340'], solid: '#0C2340' },
+    neutral: { stops: ['rgba(12,35,64,0)', 'rgba(12,35,64,.92)', '#0C2340'], solid: '#0C2340' },
+    marine: { stops: ['rgba(18,46,82,0)', 'rgba(18,46,82,.92)', '#122E52'], solid: '#122E52' },
+    ai: { stops: ['rgba(34,29,69,0)', 'rgba(34,29,69,.92)', '#221D45'], solid: '#221D45' },
+    success: { stops: ['rgba(13,46,36,0)', 'rgba(13,46,36,.92)', '#0D2E24'], solid: '#0D2E24' },
+    warning: { stops: ['rgba(51,35,10,0)', 'rgba(51,35,10,.92)', '#33230A'], solid: '#33230A' },
+    danger: { stops: ['rgba(53,19,18,0)', 'rgba(53,19,18,.92)', '#351312'], solid: '#351312' },
+  },
+} as const;
+
 export const shadowNative = {
   e1: {
     shadowColor: '#0D2644',
@@ -419,6 +471,50 @@ export const patterns = {
     fade: ['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7'],
     fadeLocations: [0, 0.32, 0.6],
     padding: [8, 10, 26], // haut / côtés / bas
+  },
+  /**
+   * RETOMBÉE DE BORD (`ProgressiveBlurBob`, 04 § Retombée de bord) : la zone NON INTERACTIVE
+   * qui dissout le contenu défilant avant qu'il n'atteigne un chrome flottant.
+   *
+   * Le mode NOMINAL est `defaultLayers: 0` — un seul `LinearGradient` teinté, un draw call,
+   * zéro échantillon de flou. Le PROFIL DE HAUTEURS est celui du contrat, écrit dans son
+   * unité d'origine (le POUR CENT), parce que c'est celle que le port reçoit
+   * (`BlurLayerSpec.heightPercent`) : le stocker en ratio obligerait à le reconvertir, et
+   * `0.88 * 100` ne vaut pas `88` en binaire.
+   *
+   * Le caractère PROGRESSIF ne vient PAS d'une rampe d'intensité — chaque couche porte la
+   * MÊME intensité faible — mais du RECOUVREMENT géométrique de couches FRÈRES : un pixel à
+   * la profondeur d est couvert par toutes les couches dont la hauteur ≥ 1 − d, donc
+   * l'intensité effective monte de 5 (extrémité libre) à 5 × N (bord ancré), par marches
+   * de 5. C'est ce qui rend correcte la troncature aux N PREMIÈRES couches : on garde les
+   * plus hautes, celles qui portent le haut de la rampe, là où l'œil lit la dissolution.
+   *
+   * `maxLayers` est le plafond STRUCTUREL (= longueur du profil) ; le plafond de PRODUCTION
+   * vient de `PERF-CALIBRATION` (10 § Budget de la retombée de bord), jamais du confort
+   * visuel. `veilLocations` reprend `bottomTabBar.fadeLocations` : le repli opaque doit
+   * montrer la MÊME courbe que le mode flouté — même géométrie, même courbe, même couleur,
+   * seuls les échantillons de flou disparaissent.
+   */
+  edgeFalloff: {
+    bleed: 44, // dp — débord au-dessus du chrome (BLUR_BLEED de la référence)
+    /** Profil du contrat, en POUR CENT : `100 / 88 / 76 / 64 / 54 / 44 / 36 / 28 / 22 / 16 %`. */
+    layerHeightsPercent: [100, 88, 76, 64, 54, 44, 36, 28, 22, 16],
+    layerIntensity: 5, // uniforme : l'intensité effective vient du recouvrement
+    maxLayers: 10, // plafond structurel = longueur du profil
+    defaultLayers: 0, // défaut normatif : aucun échantillon de flou
+    veilLocations: [0, 0.32, 0.6],
+    /**
+     * LAVIS DE COUCHE — part MAXIMALE de NOTRE teinte que le kit compose PAR-DESSUS
+     * l'échantillon de flou, DANS chaque bande. C'est la doctrine « surfaces teintées par NOS
+     * tokens » rendue structurelle : un port de flou peut peindre ce qu'il veut, la dernière
+     * couleur composée dans sa bande reste la nôtre, et il n'a aucun moyen de la réduire.
+     * Le lavis est une RAMPE (0 → cette valeur, du bord libre vers le bord ancré), jamais un
+     * aplat : un aplat poserait une couture visible là où le voile vaut encore 0. 0,3 est le
+     * compromis du socle — la teinte s'impose dès la première marche tout en laissant 70 % du
+     * flou lisible, et elle s'épaissit avec le recouvrement (1 − 0,7^k), exactement au rythme
+     * où l'intensité monte de 5 à 5 × N.
+     */
+    layerWash: 0.3,
   },
 } as const;
 
