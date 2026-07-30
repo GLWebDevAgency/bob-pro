@@ -261,11 +261,16 @@ portait un identifiant corrompu, `withالسpring`, qui ne compile pas.*
 
 1. **Jamais** de `opacity:0` / `translateY` d'entrée sur du contenu au repos (ni fill-mode `both`). Le contenu est peint tout de suite.
 2. **Toujours** `tabular-nums` sur un montant (composant `Money`).
-3. Cibles tactiles **≥ 44 pt iOS / 48 dp Android** (`hitSlop` si le visuel est plus petit).
-   **(précisé A17 · 2026-07-30)** La cible appartient au `Pressable` et à son `hitSlop` : une vue
+3. Cibles tactiles **≥ 44 pt iOS / 48 dp Android**.
+   **(précisé A17 · 2026-07-30 ; règle exacte A28)** La cible appartient au `Pressable` : une vue
    `pointerEvents="none"` — dégradé de tab bar, scrim, halo — n'en porte **jamais**, même si ses
-   pixels coïncident. Et un ancêtre `overflow: 'hidden'` annule le `hitSlop` sur Android : à
-   vérifier, pas à supposer.
+   pixels coïncident. Le `hitSlop` complète le visuel **uniquement à l'intérieur du padding du
+   parent** : la recherche de cible n'entre dans un enfant que si le point est déjà dans les bornes
+   de l'ancêtre — Android comme iOS —, donc un `hitSlop` qui déborde son parent n'est **jamais
+   dispatché**. `overflow: 'hidden'` sur un ancêtre est une cause d'annulation **de plus**, pas la
+   condition principale. Quand il n'y a pas de budget dans le parent, on agrandit le `Pressable`,
+   pas son `hitSlop`. Une cible se **mesure** (`measure()` + tap aux bords), elle ne se lit pas dans
+   un style.
 4. Une carte = fond **opaque** + `borderRadius` 16–22 + ombre `e1/e2` + bordure `#EAEEF3` (pour Android).
 5. Couleurs **uniquement** depuis `tokens.ts`. Zéro hex inventé, zéro dégradé décoratif.
 6. Actions sensibles (envoyer/relancer/encaisser/mise en demeure/transmettre compta) = **confirmation utilisateur** obligatoire.
