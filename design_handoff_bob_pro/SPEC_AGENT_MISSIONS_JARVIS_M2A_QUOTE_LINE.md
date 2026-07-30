@@ -8,7 +8,9 @@
 
 **Train M2-A-2 : implemented, flag public OFF ; non certified**
 
-**Date : 29 juillet 2026**
+**Train M2-A-3 : specified, implémentation en cours ; flag public OFF**
+
+**Date : 30 juillet 2026**
 
 **Objectifs servis : O4, O5, O6 et O7**
 
@@ -1109,6 +1111,75 @@ M2-A-2 existants avec les fences de la présentation fraîche et être prouvée 
 Avant ce train, aucune documentation ne peut annoncer que ces opérations A2 sont atteignables à la
 voix ; après ce train, aucun wrapper voix sans appel réel n'est admissible.
 
+### 15.1.1 Contrat d'exécution figé pour M2-A-3
+
+M2-A-3 ne crée ni endpoint métier parallèle, ni store de proposition, ni registre d'outils GPT.
+Il raccorde les surfaces déjà publiées selon les règles binaires suivantes.
+
+**Négociation et autorité uniques.**
+
+- le transport GPT/OpenAI WebRTC demande explicitement le protocole AgentMission `2` ; une réponse
+  `null/null`, une capability V1 ou une capability mal formée n'est jamais rétrogradée en V1 ;
+- le transport Mistral reste sur son contrat historique V1 et hors M2-A conformément au §3.2 :
+  aucune requête, clé ou reprise Mistral n'est autorisée dans une session OpenAI ;
+- le runtime mobile sait conserver les handles V1 N-1 sans modifier leur wire, mais seule une
+  capability V2 peut rendre ou muter une phase M2-A ;
+- le GET capability V1 conserve exactement `{ mission }`. Le GET capability V2 rend exactement
+  `{ mission, presentation }`, avec une présentation fraîche liée aux mêmes mission, phase,
+  révision et brouillon ; une divergence ferme la lecture.
+
+**Reprise autoritaire, sans second consumer.**
+
+- le GET JWT V2 reste strictement `READ ONLY` et restitue honnêtement une tête `queued` ;
+- après un kill, l'utilisateur déclenche explicitement « Reprendre ». Le mobile négocie une
+  nouvelle capability V2, publie le contexte courant puis émet le même ACK d'écran scellé que le
+  chemin chaud ;
+- cet ACK augmente la révision, remplace le binding de contexte et devient l'unique parent durable
+  de continuation. `acknowledgeScreen` appelle la continuation existante pour toute phase M2-A
+  active dont la tête doit converger, pas seulement `awaiting_lines` ;
+- la continuation relit mission, brouillon et work item sous leurs verrous puis dérive ses
+  commandIds système depuis l'ACK. Un ACK rejoué, deux reprises concurrentes ou une réponse HTTP
+  perdue convergent sans deuxième événement métier ni deuxième ligne ;
+- aucun nouveau scan d'événements, scheduler, worker mobile ou mutation cachée dans un GET n'est
+  introduit.
+
+**Compréhension et mutation Realtime.**
+
+- la frame sémantique reste un unique outil fermé, une opération maximum, 20 lignes et 32 KiB ;
+- elle ajoute `patch_pending_line`, `confirm_current_proposal`,
+  `reject_current_proposal` et `cancel_current_line`, ainsi que les phases
+  `awaiting_line_details` et `awaiting_line_confirmation` ;
+- `answer_required_fact` n'est valide que si la présentation persistée porte un `requiredFact`
+  non nul et si le champ du patch lui est exactement égal. Une correction spontanée utilise
+  `explicit_correction` ; après « modifier », une réponse courte sans champ est refusée ;
+- le sideband relit une seconde fois la projection V2 après le modèle. Toute variation de mission,
+  brouillon, work revision, décision, choix, proposition, catalogue ou diff empêche la mutation ;
+- les quatre opérations appellent exclusivement `patchLineFromVoiceTurn` ou
+  `decideLineProposalFromVoiceTurn` avec les fences de cette seconde lecture. Le `turnId` reste
+  l'unique `commandId` voix ;
+- une intention M2-A reconnue ne traverse jamais `askBob`, le parseur regex du wizard ni un outil
+  GPT fournisseur.
+
+**Projection mobile et parité.**
+
+- la reprise V2 hydrate mission, brouillon, choix réels et `presentation` sans parler ni naviguer
+  automatiquement ;
+- une seule surface mission rend successivement catalogue, fait manquant et proposition. Les taps
+  et la voix envoient les mêmes `choiceId`, `proposalId`, révisions et hashes ;
+- `awaiting_lines` maintient Bob et la mission ouverts ; il ne déclenche plus le handoff manuel ;
+- tant que la mission possède le slot, tous les writers legacy du wizard et ses affordances regex
+  restent inertes. « Arrêter Bob », « annuler cette ligne » et « abandonner la mission » demeurent
+  trois gestes distincts ;
+- un seul chrome Bob et une seule sheet peuvent être montés ; les états chargement, erreur,
+  données et indisponibilité sont i18n, accessibles et compatibles `reduce-motion`.
+
+**Frontière acoustique honnête.** M2-A reste, conformément au §3.2, sur
+`audited-signed-url-v1`. Son raccord métier peut atteindre `implemented` avec les preuves
+logicielles et staging ci-dessus, mais la promotion globale `certified` du §18 reste interdite tant
+que le train acoustique OpenAI hybride n'a pas prouvé sur appareils réels micro simultané, AEC,
+silence local au barge-in et reprise du nouveau tour. Un événement `user_speaking` synthétique, un
+tap qui ferme la session ou un micro coupé pendant le playback ne constitue jamais cette preuve.
+
 ### 15.2 Preuves du train M2-A-0
 
 Le commit `4c844111` porte la spec et l'implémentation atomique. Les preuves locales
@@ -1296,6 +1367,37 @@ M2-A-1 est `implemented` uniquement si, flag M2-A toujours OFF :
 - [ ] reader N-1 relit le même `QuoteDraftPayloadV1` pendant toute la mission ;
 - [ ] wizard manuel hors mission reste fonctionnel ;
 - [ ] aucune intention devis ne traverse simultanément AgentMission et le parseur regex local.
+
+### 17.1 Gate spécifique du train M2-A-3
+
+- [ ] `M2A3-01` : OpenAI WebRTC demande exactement le protocole 2 ; absence/refus de capability
+      échoue fermé sans tentative V1 et sans requête Mistral ;
+- [ ] `M2A3-02` : le GET V1 conserve son wire exact et le GET V2 exige mission + présentation
+      cohérentes ; aucun ID, nom client, libellé catalogue ou tarif n'entre dans le LLM ;
+- [ ] `M2A3-03` : `requiredFact`, scope et champ du patch forment une matrice fermée ; « oui »,
+      « modifie » et « annule » utilisent la décision/proposition fraîche et ne tombent jamais dans
+      le cerveau legacy ;
+- [ ] `M2A3-04` : coupure après commit utilisateur et avant continuation, puis nouvel ACK : tête
+      convergée, une ligne au plus, aucun événement métier dupliqué et GET resté read-only ;
+- [ ] `M2A3-05` : kill/relaunch dans `awaiting_lines`, `awaiting_catalogue_choice`,
+      `awaiting_line_details` et `awaiting_line_confirmation` restitue les mêmes IDs/révisions sans
+      parole automatique ;
+- [ ] `M2A3-06` : politiques catalogue 0, 1 exact, 1 fuzzy, 2..5 et ≥6 ; voix et toucher exposent
+      le même ordre, les mêmes choix scellés et la même indisponibilité ;
+- [ ] `M2A3-07` : patch tactile/vocal rejoué conserve son `commandId`; autre valeur ou autre scope
+      échoue par fingerprint sans nouvelle révision ;
+- [ ] `M2A3-08` : confirmer, modifier et annuler consomment les mêmes choice/proposal/diff/work
+      fences ; deux confirmations concurrentes produisent exactement une ligne ;
+- [ ] `M2A3-09` : après confirmation ou annulation, le brouillon frais et la tête suivante sont
+      hydratés, Bob reste ouvert et accepte une autre ligne ;
+- [ ] `M2A3-10` : mission propriétaire du slot = zéro writer legacy, zéro affordance regex, une
+      sheet et un chrome Bob ; le wizard sans mission reste fonctionnel ;
+- [ ] `M2A3-11` : suites core/AI/client/API/mobile, PostgreSQL réel, typecheck, lint, builds et
+      reviews adversariales sont verts depuis un checkout propre ;
+- [ ] `M2A3-12` : Supabase staging exact-SHA sous déployeur/runtime non-superuser restitue la preuve
+      non-PII complète, flags publics OFF ;
+- [ ] `M2A3-13` : sur iPhone et Android physiques, parler pendant Bob coupe localement le son avant
+      le réseau et capture le nouveau tour ; tant que cette preuve manque, M2-A reste non certified.
 
 ## 18. Definition of Done
 
