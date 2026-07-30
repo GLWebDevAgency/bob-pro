@@ -16,6 +16,16 @@
  *   C5  PERF-13 est bien dans la stratégie exécutable de 11 § Performance.
  *   C6  Aucun lien `docs.expo.dev/versions/latest` : une URL qui change sans changer d'adresse
  *       ne peut pas être une source pinée.
+ *   C7  Toutes les ancres de liens internes du socle résolvent vers un titre réel.
+ *   C8  Intégrité des tableaux Markdown (A28) : aucune ligne vide ne coupe un tableau, et toutes
+ *       ses lignes ont le même nombre de colonnes. Défaut invisible à la relecture et fatal au
+ *       rendu — en GFM un tableau se termine à la première ligne vide, et un `|` non échappé
+ *       (y compris dans un `code span`) ajoute une colonne fantôme qui tronque la ligne.
+ *   C9  Affirmations d'ABSENCE de chemin (A28) : « pas de répertoire `x/` » est faux si `x/`
+ *       existe. C'est la famille d'erreur exacte qu'A27 a commise en écrivant « pas de répertoire
+ *       `scripts/` » dans le commit qui créait `scripts/`.
+ *   C10 Affirmations d'ABSENCE de dépendance (A28) : « absents de tous les `package.json` » est
+ *       faux si l'un des paquets nommés y figure.
  *
  * CE QU'IL NE VÉRIFIE PAS. Les gardes d'import, la matrice de routes, les IDs de traçabilité :
  * ce sont d'autres contrôles, à écrire avec les lots qui en ont besoin.
@@ -25,7 +35,7 @@
  * NON BRANCHÉ à turbo ni à la CI : le brancher est une décision de gouvernance (13), pas
  * d'auteur de document.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -197,6 +207,129 @@ for (const file of ALL) {
   });
 }
 ok('C7', `${anchors} ancres de liens internes vérifiées`);
+
+// ── C8 · intégrité des tableaux Markdown ─────────────────────────────────────
+// Deux défauts fatals au rendu et invisibles à la relecture, tous deux commis par ce dossier :
+//   (a) une LIGNE VIDE au milieu d'un tableau. En GFM le tableau se termine là : les rangées
+//       suivantes s'affichent en texte brut. C'est ce qui sortait A17→A27 du journal des
+//       amendements et R43/R44 du registre des risques.
+//   (b) un `|` NON ÉCHAPPÉ dans une cellule — y compris à l'intérieur d'un `code span`, où GFM
+//       le traite quand même comme un séparateur. La colonne surnuméraire tronque la ligne.
+// Un tableau peut légitimement en suivre un autre après une ligne vide : ce cas se reconnaît à
+// la présence d'une ligne de délimiteurs (`| --- |`) juste après la reprise. On ne le compte pas.
+const quotePrefix = (line) => (line.match(/^\s*(?:>\s*)*/) ?? [''])[0].replace(/\s/g, '');
+const isTableLine = (line) => /^\s*(?:>\s*)*\|/.test(line);
+const isBlankish = (line) => /^\s*(?:>\s*)*$/.test(line);
+const isDelimiter = (line) => /^\s*(?:>\s*)*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(line);
+// Colonnes = nombre de `|` non échappés, moins les deux bordures.
+const columns = (line) => {
+  const body = line.replace(/^\s*(?:>\s*)*/, '');
+  let count = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] === '|' && body[i - 1] !== '\\') count += 1;
+  }
+  return count - 1;
+};
+// Deux passes indépendantes : la passe (b) saute d'un bloc de tableau à l'autre, elle ne peut
+// donc pas porter aussi la passe (a), qui doit visiter CHAQUE rangée. Les mélanger avait produit
+// un contrôle muet — vérifié par test négatif avant de le déclarer vert.
+let tables = 0;
+for (const file of ALL) {
+  const lines = read(file).split('\n');
+
+  // (a) coupure par ligne vide — chaque rangée est visitée
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!isTableLine(lines[i])) continue;
+    let j = i + 1;
+    while (j < lines.length && isBlankish(lines[j])) j += 1;
+    if (j > i + 1 && j < lines.length && isTableLine(lines[j])
+        && quotePrefix(lines[j]) === quotePrefix(lines[i])
+        && !isDelimiter(lines[j + 1] ?? '')) {
+      fail('C8', `${file}:${i + 2} — ligne vide au milieu d’un tableau : la rangée ${j + 1} sort du tableau au rendu`);
+    }
+  }
+
+  // (b) largeur constante, mesurée sur la ligne de délimiteurs
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!isTableLine(lines[i]) || !isDelimiter(lines[i + 1] ?? '')) continue;
+    tables += 1;
+    const width = columns(lines[i]);
+    let k = i;
+    while (k < lines.length && isTableLine(lines[k]) && quotePrefix(lines[k]) === quotePrefix(lines[i])) {
+      if (columns(lines[k]) !== width) {
+        fail('C8', `${file}:${k + 1} — ${columns(lines[k])} colonnes au lieu de ${width} (un « | » non échappé ajoute une colonne, même dans un code span)`);
+      }
+      k += 1;
+    }
+    i = k - 1;
+  }
+}
+ok('C8', `${tables} tableaux Markdown vérifiés — aucune coupure, largeur constante`);
+
+// ── C9 · affirmations d'absence de chemin ────────────────────────────────────
+// A27 a écrit « vérifié le 2026-07-30 : pas de répertoire `scripts/` » DANS le commit qui créait
+// `scripts/check-mobile-experience-docs.mjs`. Une affirmation d'absence est un fait de dépôt : elle
+// se vérifie comme les autres.
+const ABSENCE = [
+  /(?:pas|aucun|absence)\s+(?:de\s+)?(?:répertoire|dossier|fichier|script)\s+`([^`]+)`/gi,
+  /`([^`]+)`\s+n[’']existe\s+pas\s+(?:encore\s+)?dans\s+le\s+dépôt/gi,
+];
+// Même convention éditoriale que C2 : une affirmation d'absence PÉRIMÉE peut rester citée, à
+// condition de porter sa supersession sur la même ligne. Les guillemets seuls ne suffisent pas —
+// c'est justement sous guillemets qu'une phrase fausse se recopie sans être requalifiée.
+const ABSENCE_SUPERSEDED = /~~|supersédée?|Rédaction A\d|corrigé A\d|rectifié A\d|\bfausse\b/i;
+let claims = 0;
+for (const file of ALL) {
+  read(file).split('\n').forEach((line, i) => {
+    if (ABSENCE_SUPERSEDED.test(line)) return;
+    for (const re of ABSENCE) {
+      re.lastIndex = 0;
+      for (const m of line.matchAll(re)) {
+        const target = m[1].trim();
+        if (!/^[\w@./-]+$/.test(target)) continue; // pas un chemin : on ne devine pas
+        claims += 1;
+        if (existsSync(join(ROOT, target))) {
+          fail('C9', `${file}:${i + 1} affirme l’absence de « ${target} » — ce chemin EXISTE dans le dépôt`);
+        }
+      }
+    }
+  });
+}
+ok('C9', `${claims} affirmation(s) d’absence de chemin vérifiée(s) contre le dépôt`);
+
+// ── C10 · affirmations d'absence de dépendance ───────────────────────────────
+const manifests = [];
+(function walk(dir) {
+  for (const entry of readdirSync(dir)) {
+    if (entry === 'node_modules' || entry === '.git' || entry.startsWith('dist')) continue;
+    const p = join(dir, entry);
+    if (statSync(p).isDirectory()) walk(p);
+    else if (entry === 'package.json') manifests.push(p);
+  }
+})(ROOT);
+const declared = new Set();
+for (const p of manifests) {
+  const m = JSON.parse(readFileSync(p, 'utf8'));
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies']) {
+    for (const name of Object.keys(m[field] ?? {})) declared.add(name);
+  }
+}
+let absents = 0;
+for (const file of ALL) {
+  read(file).split('\n').forEach((line, i) => {
+    if (!/absent[es]?\s+de\s+tous\s+les\s+`package\.json`/i.test(line)) return;
+    const names = [...line.matchAll(/`([a-z0-9@][\w@./-]*)`/gi)]
+      .map((m) => m[1])
+      .filter((n) => n !== 'package.json');
+    for (const name of names) {
+      absents += 1;
+      if (declared.has(name)) {
+        fail('C10', `${file}:${i + 1} déclare « ${name} » absent de tous les package.json — il y est déclaré`);
+      }
+    }
+  });
+}
+ok('C10', `${absents} dépendance(s) déclarée(s) absente(s) vérifiée(s) sur ${manifests.length} package.json`);
 
 // ── rapport ──────────────────────────────────────────────────────────────────
 for (const line of checks) console.log(`  ok   ${line}`);
