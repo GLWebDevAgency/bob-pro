@@ -19,6 +19,12 @@
 > **Amendement A17 — 2026-07-30 · une zone non interactive ne porte aucune cible** — § Cibles
 > tactiles. Source : [04 § Cibles tactiles et Dynamic Type](04-navigation-scroll-surfaces.md#cibles-tactiles-et-dynamic-type).
 >
+> **Amendement A28 — 2026-07-30 · ce qu'un `hitSlop` peut et ne peut pas** — § Cibles tactiles,
+> ligne Reduce Transparency du tableau des préférences, § Critères d'acceptation. A17 laissait
+> croire qu'un `hitSlop` pouvait tenir une cible n'importe où pourvu qu'aucun ancêtre ne rogne ;
+> il ne franchit en réalité **jamais** les bornes d'un ancêtre, sur aucun des deux OS. Et la ligne
+> « Reduce Transparency : sans effet » rendait sans objet la règle fail-closed d'A18.
+>
 > **Amendement A19 — 2026-07-30 · plancher ≠ hauteur fixe** — § Typographie. Source : même.
 >
 > **Amendement A13 — 2026-07-29** — § Apparence claire/sombre, prérequis du thème sombre complet.
@@ -43,7 +49,7 @@ prototype, testée pendant l'implémentation et signée avant rollout.
 | Differentiate Without Color | Icône, texte, forme ou motif en plus de la couleur. |
 | Reduce Motion | Suppression du spatial/ambient, crossfade ou instantané. |
 | Prefers Cross-Fade | Préférer remplacement par fondu. |
-| Reduce Transparency | **(amendé A1)** Sans effet : le chrome est déjà opaque et teinté (`surfaceTint`). Contraste stable par construction. |
+| Reduce Transparency | **(amendé A1 ; portée corrigée A28 · 2026-07-30)** Sans effet **sur les surfaces** : le chrome est déjà opaque et teinté (`surfaceTint`), contraste stable par construction. **Un seul objet du produit y répond** : la retombée de bord en **mode flouté**, qui sert alors le repli opaque unique ([04 § Quand le repli opaque unique s'applique](04-navigation-scroll-surfaces.md#quand-le-repli-opaque-unique-sapplique--sans-exception)). Écrire « sans effet » sans cette réserve rendait la règle fail-closed de la ligne ci-dessous sans objet. |
 | VoiceOver/TalkBack | Sémantique, ordre, focus et annonces dédupliquées. |
 | Switch Control/accès moteur | Toutes les actions accessibles sans drag précis. |
 | Haptique/son désactivé | Information visuelle et textuelle complète. |
@@ -133,16 +139,36 @@ utile au-delà lorsque la plateforme le permet.
 
 - Minimum produit : 44 × 44 pt sur iOS.
 - Android : viser au moins 48 × 48 dp pour les contrôles principaux.
-- **(ajouté A17 · 2026-07-30)** La cible appartient à l'élément qui **reçoit la touche** —
-  `Pressable`, bouton, `Touchable` — et à son `hitSlop`. Une vue `pointerEvents="none"` (dégradé,
+- **(ajouté A17 · 2026-07-30 ; borné A28)** La cible appartient à l'élément qui **reçoit la
+  touche** — `Pressable`, bouton, `Touchable` — et à son `hitSlop` **dans les limites posées
+  par la règle exacte ci-dessous**. Une vue `pointerEvents="none"` (dégradé,
   scrim, retombée de bord, halo, ombre) ne reçoit aucune touche : elle ne peut donc **jamais** être
   invoquée pour tenir une cible à 44 pt. Un raisonnement qui adosse une cible à une zone décorative
   est faux même quand les pixels coïncident.
 - **(ajouté A17 · 2026-07-30)** Le **visuel** d'un contrôle peut être plus petit que sa cible ; la
   cible ne rétrécit pas avec lui. Quand le visuel descend sous le minimum, le complément vient d'un
-  `hitSlop`, et un ancêtre en `overflow: 'hidden'` l'annule sur Android — à vérifier, pas à
-  supposer.
+  `hitSlop` — **à condition qu'il reste dans les bornes du parent** (règle ci-dessous).
+- **(règle exacte, ajoutée A28 · 2026-07-30)** **Un `hitSlop` n'agrandit jamais une cible au-delà
+  de son parent.** La recherche de cible descend l'arbre et n'entre dans un enfant que si le point
+  est **déjà** dans les bornes de l'ancêtre : sur Android
+  (`TouchTargetHelper.findTouchTargetView` n'élargit du `hitSlop` que l'enfant testé, jamais ses
+  ancêtres) comme sur iOS (`hitTest:` s'arrête au premier `pointInside:` faux d'une superview).
+  Conséquences pratiques, toutes vérifiables :
+  - le budget réel d'un `hitSlop` vertical est le **padding vertical du parent**, pas la place
+    libre à l'écran ;
+  - une zone **voisine** — même contiguë, même exactement de la bonne taille — ne peut rien
+    compléter : elle est hors des bornes du parent ;
+  - `overflow: 'hidden'` sur un ancêtre est une cause **supplémentaire** d'annulation, pas la
+    condition principale. Vérifier son absence ne prouve rien à lui seul.
+
+  *Rédaction A17 (précisée) : « un ancêtre en `overflow: 'hidden'` l'annule sur Android — à
+  vérifier, pas à supposer ». Vrai, mais présenté comme LA condition d'exécution : une spécification
+  l'a lu ainsi et a fondé sur ce `hitSlop` une cible qui n'aurait jamais reçu de touche
+  ([04 § Cibles tactiles et Dynamic Type](04-navigation-scroll-surfaces.md#cibles-tactiles-et-dynamic-type)).*
 - `hitSlop` ne crée pas de zones qui se chevauchent de façon ambiguë.
+- **(ajouté A28 · 2026-07-30)** Une cible se **mesure** (`measure()` sur l'élément qui reçoit la
+  touche), elle ne se déduit pas d'un style lu dans le code : `minHeight` n'est pas une hauteur, et
+  un contrôle peut être plus petit que son `minHeight` si un parent le contraint.
 - Au moins 8–12 dp d'espace entre petites actions selon le contexte.
 - Une action drag possède un bouton/menu alternatif.
 - Les contrôles denses financiers privilégient la précision et l'espacement.
@@ -330,8 +356,12 @@ mouvement, y compris sur le tout premier frame.
 
 - [ ] Zéro action essentielle tronquée ou inaccessible à ~200 %.
 - [ ] Cibles tactiles mesurées et non chevauchantes.
-- [ ] **(ajouté A17)** Aucune cible tactile ne repose sur une vue `pointerEvents="none"` ; chaque
-      cible sous-dimensionnée visuellement est complétée par un `hitSlop` non chevauchant.
+- [ ] **(ajouté A17 ; précisé A28 · 2026-07-30)** Aucune cible tactile ne repose sur une vue
+      `pointerEvents="none"` **ni sur un `hitSlop` qui sort des bornes du parent** ; chaque cible
+      sous-dimensionnée visuellement est complétée soit par la **hauteur de l'élément pressable
+      lui-même**, soit par un `hitSlop` **contenu dans le padding du parent** et non chevauchant.
+      La vérification est une **mesure** (`measure()`) plus une **preuve de touche** aux bords, pas
+      une lecture de style.
 - [ ] **(ajouté A18)** Cold start avec Reduce Motion, Reduce Transparency et lecteur d'écran
       **déjà actifs** : aucune animation, aucun flou, aucun détecteur de geste au premier frame ;
       aucune animation rejouée après la résolution des préférences.

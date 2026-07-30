@@ -169,7 +169,11 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
 
 ## DoD accessibilité
 
-- [ ] Cibles 44 pt/48 dp selon plateforme et contrôles.
+- [ ] Cibles 44 pt/48 dp selon plateforme et contrôles. **(précisé A28 · 2026-07-30)** La cible est
+      **mesurée** sur l'élément qui reçoit la touche, jamais lue dans un style, jamais adossée à une
+      vue `pointerEvents="none"` ni à un `hitSlop` qui déborde son parent — un tel `hitSlop` n'est
+      jamais dispatché, ni sur Android ni sur iOS
+      ([08 § Cibles tactiles](08-accessibility-adaptive-design.md#cibles-tactiles)).
 - [ ] Contraste texte/composants certifié.
 - [ ] Information non dépendante de la couleur.
 - [ ] Dynamic Type et Bold Text.

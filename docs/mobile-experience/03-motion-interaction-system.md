@@ -247,7 +247,9 @@ composant actuel. Écrire l'inverse laisserait croire que la case est déjà coc
 ### Icône seule
 
 - surface tactile ≥ 44 pt iOS et ≥ 48 dp Android ;
-- **(précisé A17 · 2026-07-30)** cette surface est celle du **`Pressable`** et de son `hitSlop` ; un
+- **(précisé A17 · 2026-07-30 ; borné A28)** cette surface est celle du **`Pressable`**, plus
+  son `hitSlop` **s'il reste dans le padding du parent** — au-delà, il n'est jamais
+  dispatché ([08 § Cibles tactiles](08-accessibility-adaptive-design.md#cibles-tactiles)) ; un
   glyphe de 23 pt dans une cible de 44 pt est le cas nominal, pas une dérogation. Aucune vue
   décorative (`pointerEvents="none"`) ne tient une cible ;
 - feedback porté par la surface entière, pas seulement le glyph ;
