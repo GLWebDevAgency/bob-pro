@@ -8,6 +8,16 @@
 > hors de `packages/ui`, non-redéfinition des noms de tokens) et deux tests unitaires de surface
 > sont reformulés. **Aucun test n'est retiré**, la pyramide et la matrice appareils sont
 > inchangées.
+>
+> **Amendement A21 — 2026-07-30.** § Performance : la liste des scénarios s'arrêtait à `PERF-12` et
+> laissait `PERF-13` hors de la stratégie exécutable.
+>
+> **Amendement A27 — 2026-07-30.** § Tests statiques et § Gates CI : ces contrôles n'existent pas
+> dans le dépôt et étaient pourtant cités comme preuves de sortie. L'état réel est écrit ; aucun
+> contrôle n'est retiré de la liste des contrôles **à écrire**.
+>
+> **Amendement A18 — 2026-07-30.** § Tests composants : la préférence d'accessibilité **inconnue**
+> devient un cas de test à part entière.
 
 ## Principe
 
@@ -27,6 +37,35 @@ correct avec animation complète, réduite, interrompue ou absente, et que le m�
 | Appareil/perf | Sensation, audio, haptique, GPU, batterie. | Manuel/automatisé | Gate canary |
 
 ## Tests statiques
+
+> **État réel, ajouté A27 · 2026-07-30.** **Aucun** des contrôles listés ci-dessous n'existe
+> aujourd'hui dans le dépôt — vérifié le 2026-07-30 : pas de répertoire `scripts/`, aucun job de CI
+> dédié, et le `package.json` racine n'expose que `build`, `test`, `typecheck`, `lint` et `dev`. Ce
+> sont des **contrôles à écrire**, pas des contrôles en vigueur. Tant qu'un contrôle n'est pas
+> exécutable par une commande, il vaut `NOT RUN` au sens de
+> [12 — DoD](12-definition-of-done.md#règle-na-limitation-et-waiver) et **ne peut être invoqué comme
+> preuve par aucun work package** — en particulier `WP-0303` et `WP-0307`, dont les preuves de
+> sortie citent un « contrôle statique ». Le premier lot qui a besoin d'un de ces contrôles le livre
+> avec son code ; il ne le suppose pas acquis parce qu'il est écrit ici.
+>
+> **Deux** contrôles existent aujourd'hui, et seulement eux :
+>
+> 1. `pnpm --filter @bob/tokens test` (`packages/tokens/src/index.test.ts`) — certifie les
+>    contrastes AA des couples `ink`/`inkMuted` sur `flat` **et** `raised`. Il ne couvre ni les
+>    couleurs composées en dehors de `surfaceTint`, ni les couples texte/fond formés à l'exécution
+>    — voir la limite nommée en
+>    [UX-ADR-004](adr/UX-ADR-004-adaptive-appearance.md#ce-que-bobsurface-ne-fait-pas--ink-et-highcontrast-ne-se-propagent-pas).
+> 2. **`node scripts/check-mobile-experience-docs.mjs`** *(ajouté A27 · 2026-07-30)* — valide le
+>    présent socle **contre le code** : versions SDK citées vs `apps/mobile/package.json`,
+>    absence de mention active d'un SDK périmé, constantes livrées (`Toast`, `Button`,
+>    `PressableScale`) citées à l'identique par [17](17-references.md#autorités-normatives), table
+>    de contraste de [04 § 2](04-navigation-scroll-surfaces.md#2-highlight-glissant-à-ressort-interruptible)
+>    **recalculée** depuis `packages/tokens`, présence de `PERF-13` dans la stratégie, sources Expo
+>    pinées sur une version, et résolution de toutes les ancres de liens internes. Sans dépendance
+>    ni accès réseau ; **non branché** à la CI — le brancher relève de
+>    [13 — Gouvernance](13-delivery-governance.md), pas d'un auteur de document. Il ne remplace
+>    aucun contrôle de la liste ci-dessous : il ferme la famille d'erreurs que ce dossier a
+>    réellement commise, celle où un document affirme un fait que le dépôt contredit.
 
 - Garde d'import Clean Architecture.
 - Interdiction des durées/easing inline hors allowlist.
@@ -112,6 +151,10 @@ Pour chaque primitive :
 - recoverable/terminal error ;
 - grandes polices ;
 - Reduce Motion/Transparency ;
+- **(ajouté A18 · 2026-07-30)** préférence **inconnue** au premier rendu : le composant se comporte
+  en variante réduite, et ne rejoue **aucune** animation quand la préférence se résout ensuite ;
+- **(ajouté A17 · 2026-07-30)** cible tactile **mesurée** à l'état le plus compact du composant, et
+  non déduite d'une zone décorative ;
 - VoiceOver/TalkBack props ;
 - unmount pendant animation ;
 - double tap ;
@@ -126,6 +169,10 @@ rotation ; reduced motion ; une seule sheet ; retour focus.
 
 - sélection ; retap ; badge ; état préservé ; deep link ; clavier ; safe area ; rotation ;
 screen reader ; flag figé au démarrage.
+- **(ajouté A17/A19/A22/A23 · 2026-07-30)** cible tactile mesurée **à l'état replié** et à ~200 % ;
+  labels non tronqués puis retirés au palier prévu ; navigation de fin de scrub **dans la même
+  frame** que le recalage du ressort (et non après lui) ; contraste des trois rôles `navigation.*`
+  mesuré **sur la teinte de highlight retenue**, pas seulement sur la pilule.
 
 ### Layout transition
 
@@ -290,7 +337,11 @@ Chaque écran financier/sensible inclut :
 
 ## Performance
 
-Exécuter les scénarios `PERF-01` à `PERF-12` du document performance avec :
+Exécuter les scénarios `PERF-01` à **`PERF-13`** du document performance
+**(corrigé A21 · 2026-07-30 : la liste s'arrêtait à `PERF-12` et laissait `PERF-13` — le seul
+scénario de la tab bar portée — hors de la stratégie exécutable ; son protocole détaillé est en
+[10 § Protocole `PERF-13`](10-performance-observability.md#protocole-perf-13--la-barre-du-bas))**
+avec :
 
 - build release ;
 - trois warm runs ;
@@ -301,6 +352,9 @@ Exécuter les scénarios `PERF-01` à `PERF-12` du document performance avec :
 - comparaison version legacy/nouvelle.
 
 ## Gates CI proposées
+
+> **(précisé A27 · 2026-07-30)** « Proposées » est à prendre au pied de la lettre : aucune de ces
+> dix gates n'est branchée au 2026-07-30. Les nommer ne les exécute pas.
 
 1. format/lint/typecheck ;
 2. tests tokens/UI/mobile ciblés ;

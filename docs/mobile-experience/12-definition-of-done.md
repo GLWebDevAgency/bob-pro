@@ -85,6 +85,14 @@ nature du lot. Une équipe ne choisit pas librement les sections à appliquer.
       `BobSurface` ; zéro `rgba` translucide, zéro import `expo-glass-effect`, zéro dépendance à
       une capability de matière. Un composant qui n'aurait d'aspect correct qu'avec une matière
       système n'est pas Done.
+- [ ] **(ajouté A23 · 2026-07-30)** **Encre conforme** : chaque texte posé sur une surface teintée
+      utilise `ink`/`inkMuted` du ton, ou son contraste sur ce fond est **mesuré** et ≥ AA.
+      `BobSurface` ne propage pas l'encre : la case ne se coche pas au composant, elle se coche au
+      point d'usage.
+- [ ] **(ajouté A17 · 2026-07-30)** **Cible mesurée à l'état le plus compact** du composant, et
+      jamais adossée à une vue `pointerEvents="none"`.
+- [ ] **(ajouté A18 · 2026-07-30)** **Préférence inconnue** : le composant rend la variante réduite
+      tant que la préférence n'est pas résolue, et ne rejoue rien ensuite.
 - [ ] Nominal, press, focus, selected, disabled, loading, success et error.
 - [ ] Entrée et sortie si l'une existe.
 - [ ] Interruption/unmount sans fuite.

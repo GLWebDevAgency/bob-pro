@@ -17,10 +17,20 @@
 > posée** et doit être **vérifiée** en build release.
 > *Rédaction initiale 2026-07-23 (supersédée) : « Reanimated existe transitivement dans le lockfile
 > mais n'est pas une dépendance mobile directe ».*
+>
+> **Amendement A25 — 2026-07-30 · SDK cible actualisé**
+> **Source.** `apps/mobile/package.json`, lu le 2026-07-30 : `expo ~57.0.8`,
+> `react-native 0.86.0`, `react 19.2.3`, `expo-router ^57.0.8`.
+> **Portée.** § Contexte et § Preuves minimales, où « Expo 56 / RN 0.85 » servait de **cible de
+> certification**. Options, décision proposée et critères de vérification sont inchangés.
+> **Pourquoi ça compte.** Une preuve minimale est une gate : exiger une matrice de compatibilité
+> « Expo 56 » aurait fait signer une compatibilité avec une version que le produit n'exécute plus,
+> tout en laissant la version réelle non certifiée.
 
 ## Statut
 
-Proposed — 2026-07-23 · amendé A7 le 2026-07-29 (fait de dépendance)
+Proposed — 2026-07-23 · amendé A7 le 2026-07-29 (fait de dépendance) · amendé A25 le 2026-07-30
+(SDK cible)
 
 ## Décideurs attendus
 
@@ -33,8 +43,9 @@ L'app utilise RN Animated dans plusieurs composants et possède des animations m
 mount-only. Les interactions futures exigent layout transitions, gestes liés au doigt, scroll et
 interruptibilité. ~~Reanimated existe transitivement dans le lockfile mais n'est pas une dépendance
 mobile directe~~ **(corrigé A7 · 2026-07-29 : dépendance directe `4.5.0` + `worklets` `0.10.0`,
-importée nulle part — voir l'encadré en tête)** ; Expo SDK 56/RN 0.85 utilisent la New
-Architecture.
+importée nulle part — voir l'encadré en tête)** ; ~~Expo SDK 56/RN 0.85~~ **(corrigé A25 ·
+2026-07-30 : `apps/mobile` est sur **Expo 57.0.8 / RN 0.86.0 / React 19.2.3 / Expo Router 57.0.8**)**
+utilisent la New Architecture.
 
 ## Drivers
 
@@ -70,7 +81,10 @@ les listes et boutons.
 Ces preuves sont produites par le spike non publié `WP-0004` ; elles autorisent la décision, pas le
 rollout :
 
-- matrice officielle Expo 56/RN 0.85/Reanimated/Worklets et dépendances directes proposée ;
+- **(corrigé A25 · 2026-07-30)** matrice officielle **Expo 57 / RN 0.86** / Reanimated `4.5.0` /
+  Worklets `0.10.0` et dépendances directes proposée. *Rédaction 2026-07-23 (supersédée) :
+  « Expo 56/RN 0.85 » — une matrice de compatibilité produite sur une version que le produit
+  n'exécute plus ne certifie rien.* ;
 - harness jetable Button + liste avec layout + sheet gestuelle en build release iOS/Android ;
 - smoke test Fabric/dev client/module audio et comparaison baseline frame/bundle/mémoire ;
 - stratégie de coexistence RN Animated/Reanimated et rollback écrite ;
